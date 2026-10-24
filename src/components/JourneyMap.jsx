@@ -1,0 +1,33 @@
+import { useEffect, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+export default function JourneyMap({ journeys, onPhoto, large=false }) {
+  const container=useRef(null);
+  const geometry=JSON.stringify(journeys.map(({route,routeSegments,photos})=>({route,routeSegments,photos})));
+  useEffect(()=>{
+    const map=L.map(container.current,{scrollWheelZoom:false,zoomControl:false}).setView([-33.66,115.01],12);
+    L.control.zoom({position:'bottomright'}).addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'&copy; OpenStreetMap contributors &copy; CARTO',maxZoom:19}).addTo(map);
+    const bounds=[];
+    JSON.parse(geometry).forEach(j=>{
+      if(!j.route.length)return;
+      bounds.push(...j.route);
+      (j.routeSegments||[j.route]).forEach(segment=>{
+        L.polyline(segment,{color:'#ffffff',weight:8}).addTo(map);
+        L.polyline(segment,{color:'#db663f',weight:4,lineCap:'round'}).addTo(map);
+      });
+      [j.route[0],j.route.at(-1)].forEach((p,i)=>L.marker(p,{icon:L.divIcon({className:'route-marker',html:i?'⚑':'',iconSize:[20,20]})}).addTo(map).bindTooltip(i?'Finish':'Start'));
+      j.photos.filter(p=>p.point).forEach(p=>{
+        const button=document.createElement('button');button.className=`photo-pin ${p.locationSource==='inferred'?'inferred-photo':''}`;button.setAttribute('aria-label',`View photo: ${p.caption}`);
+        const img=document.createElement('img');img.src=p.url;img.alt=p.caption;button.append(img);
+        button.onclick=()=>onPhoto?.(j,p.id);
+        L.marker(p.point,{icon:L.divIcon({className:'photo-marker',html:button,iconSize:[48,48],iconAnchor:[24,24]})}).addTo(map);
+      });
+    });
+    if(bounds.length)map.fitBounds(bounds,{padding:[45,55],maxZoom:14});
+    const observer=new ResizeObserver(()=>map.invalidateSize());observer.observe(container.current);
+    return ()=>{observer.disconnect();map.remove();};
+  },[geometry,onPhoto]);
+  return <div ref={container} className={`journey-map ${large?'large':''}`} aria-label="Interactive journey route map" />;
+}

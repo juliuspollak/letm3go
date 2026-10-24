@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "strict": true, "lib": ["deno.ns", "dom"] },
+  "fmt": { "singleQuote": true, "lineWidth": 100 }
+}

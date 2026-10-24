@@ -1,0 +1,2 @@
+app_identifier('au.jpollak.journey')
+team_id(ENV.fetch('APPLE_TEAM_ID', '8YP6PFWVZ9'))
