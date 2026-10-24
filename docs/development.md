@@ -19,7 +19,14 @@ transient exchange failures permit retry. Browser dismissal does not erase PKCE 
 
 The project-local CLI is installed. Use `npm run supabase -- <arguments>`;
 the wrapper disables telemetry and keeps CLI home state under ignored
-`.supabase-cli/` rather than reusing global credentials. Remote linking is absent.
+`.supabase-cli/` rather than reusing global credentials. The wrapper requires an
+exported `SUPABASE_ACCESS_TOKEN` or an owned mode-0600 `.env.supabase.local` file,
+and exits before invoking CLI if neither supplies a token. It blocks interactive
+credential storage and debug flags. See [secure CLI setup](supabase-connection.md)
+for local token entry and read-only verification. Never put this token in
+`.env.local` or a `VITE_*` variable. This checkout is now linked to
+`subobfmlkfqcsaekygat`; linking does not deploy anything. See
+[deployment readiness](backend-deployment-readiness.md) for the current audit.
 `project_id = "letm3go"` is a local namespace, not a hosted project reference.
 
 Docker with a running daemon is required for the local stack:

@@ -1,0 +1,96 @@
+# Production readiness audit — 25 October 2026
+
+> Build 6 follow-up: the owner reported no visible response to Check sign-in. The previous control showed no progress and placed results below the backup section; it was also disabled after an offline verification. A new inline control shows checking/Auth/profile phases, scrolls feedback into view, permits retry after reconnection, and times out stalled requests. Automated checks now pass 116 tests across 31 files. A read-only aggregate check found one Apple account, one matching profile and one session record; this does not prove the current phone token or restart/reauthentication. Physical verification remains pending.
+
+**Verdict:** suitable for installing a development build and supervised basic tests, subject to real sign-in. Automatic journeys are implemented but have not passed the locked-phone walking/driving acceptance test. Not ready for public beta/TestFlight distribution or App Store production. Apple sign-in remains incomplete until the owner signs in on the iPhone and its Supabase session/profile are verified.
+
+This audit inspected React/Vite, Capacitor, Swift recorder/security/photo plugins, iOS target/plists, all migrations and Edge Functions, pure privacy/media helpers, session/profile/onboarding, maps/vehicles/households, CI/signing/Fastlane and the existing backup helper. Remote work was read-only. ImBored/PediaterVIP were not modified. No migrations, migration-history repairs, secrets, functions, paid infrastructure or uploads were deployed.
+
+## Feature audit
+
+“Automated” means isolated mocks, PostgreSQL fixtures, portable Swift checks or build validation as described below, not a successful external provider/device interaction.
+
+| Feature | Implemented | Backend connected | Tested | Remaining work |
+|---|---|---|---|---|
+| Mandatory auth/navigation | Single AuthProvider gates private UI and recorder | Real Supabase Auth calls; native independently verifies owner | Automated guard, restore, expired/offline and switching cases | Real email/Apple login acceptance |
+| Email signup/confirmation/recovery | Actual SDK methods/deep links | Provider enabled; redirects/SMTP incomplete | Mocked UI and callback tests | Sender, redirect policy and actual mail delivery |
+| Native Apple | AuthenticationServices, 256-bit random nonce/state, SHA256, ID-token exchange | Hosted provider enabled; audience matches `au.jpollak.journey` | Native nonce/hash, mocked SDK, signed capability/profile checks | Owner consent, resulting real session, restart/sign-out/reauth |
+| Profile creation/edit | Real owned profiles, duplicate-race handling; local avatar | Hosted profile RLS/FK/grants inspected | Automated profile ownership and SDK fixtures | Live profile insert/edit as actual account; avatar cloud upload |
+| Session storage/logout | Device-only Keychain; encrypted user stores; explicit logout locks GPS | Real getUser and session lifecycle | Automated stale-session, switching and restoration; Swift encryption | Physical relaunch, biometric/device-lock and revoked-session tests |
+| Account deletion | Recent-auth endpoint and local crypto erasure after server confirmation | `account` function absent; provider cleanup secrets missing | SQL cascades/freeze and mocked UI | Staging provider/R2 deletion, retry/race testing; deploy approval |
+| Onboarding | Profile → optional Home → tracking → vehicles → household → completion | Basic progress/name in Auth metadata; preferences mostly native | Automated continuation/skip/completion | Physical permission and signed-in repeat-launch tests |
+| Automatic recording | Core Location significant changes/visits/regions, Core Motion, departure/arrival detector, route persistence | Local encrypted history; no server needed for recording | Synthetic detector/classifier/storage tests | Locked-phone Home→walk/drive→Home tests, battery measurement |
+| Manual recording | Walk/run/hike/MTB/cycling/road cycling/kitesurf/driving/Other, pause/resume/finish | Local encrypted history | Synthetic GPS, distance/duration/gaps and build checks | All actual sports/lock/GPS interruption acceptance; measured elevation gain absent |
+| Plugin registration | Scene constructs JourneyViewController; registers ManualRecorder + SecureSession | Native bridge source compiled | Signed/simulator build; existing browser-unavailable tests | Exercise every native method on installed signed build |
+| History/historical trips | Native manual/automatic/historical records unified | Local only by default | Automated provenance and native persistence | Tesla ingestion and cloud download/reconciliation |
+| Edit/tags/notes/collections | Real native metadata editing/classification override | SQL structures present; backup proposal supports metadata | Native/JS tests | Physical edits and larger histories |
+| Deletion/tombstones | Native delete and SQL tombstones prevent resurrection | Four scripts applied manually by owner; RPC backup proposal tested locally | PostgreSQL tests | Multi-device/Tesla delayed ingest tests; media-cleanup worker |
+| Home/Work/favourites | Address search, map selection, current-fix confirmation, edit/remove; geofences/name recognition | Native private store; cloud places table exists | Place UI/SQL/native logic tests | Real address/GPS/geofence tests; durable stop extraction |
+| Garage | Manual create/edit/categories/archive/restore/remove; historical labels retained | Native per-user prefs; manual vehicle cloud sync absent | New CRUD/error tests; native decode/build | Shared household vehicles and stable vehicle-ID associations |
+| Tesla customer OAuth | Owner-scoped code/state exchange, AES-GCM tokens, own discovery/selection, interactive disconnect | Function absent, secrets missing, flags off | URL/owner/credential/SQL tests; type checks | Live OAuth, regional registration, serialized refresh/rotation, pairing |
+| Tesla automatic recording | **Not implemented** | No actual telemetry receiver/host/ingestion | **Not tested; no simulated telemetry counted** | Official mTLS receiver, domain/key/partner setup, ownership, delayed event dedupe, trip reconciliation |
+| Maps | Interactive Leaflet routes, pause breaks, start/finish, private photo bubbles; layers and explicit current position | External public tile providers; native GPS | Geometry/provenance tests; production build | Clustering/viewport query, device performance, provider terms review |
+| Photo memories | PhotoKit/PHPicker permissions, timestamp suggestions, explicit accept/skip, local JPEGs, GPS/inferred bubbles, captions/remove/cover | Local encrypted media; R2 endpoint code not deployed | JPEG/privacy tests and native compile | Device limited-library/iCloud cases; cloud metadata queue and retries |
+| Private backup | **New explicit foreground path**, owner binding, per-operation durable receipts, atomic activity revision/hash RPC | New migration absent; `VITE_ENABLE_PRIVATE_BACKUP` default off | New client + PostgreSQL owner/idempotency/conflict/tombstone tests | Approve migration then test actual JWT/API. This is not full sync or restore |
+| Cloud photo/storage | Server-side sanitized R2 upload and authorized short-lived downloads | Five R2 secret names present; no deployed functions | Pure JPEG/media/privacy helper tests | Actual bucket permissions/write/list/delete, upload queue and cleanup |
+| Household setup | Real create/invite/join/member RPC UI | SQL functions applied; no live account exercise | PostgreSQL invitations/ownership/leave tests | Concurrency, directory UI and live two-account acceptance |
+| Family/friends live location | **Not implemented**; never implicitly enabled | No live-location schema/publication/consent receiver | Not tested | Separate consent, pause/expiry, presence and authorized subscriptions |
+| Sharing/public pages | Sensitive-place masking and detached projection endpoint; public page actual request | Function absent; publish UI intentionally disabled | Geometry/EXIF/RLS/revision tests | Cloud prerequisites, publish/recipient UI, revocation/cache tests |
+| Friends/Explore/likes/block/report | **Not implemented**; explicitly described as unavailable | No working backend | Not tested | Moderation, relationship and audience model before public beta |
+| Bookmarks | Real per-account local activity bookmarks | Not cloud-synced | Existing local persistence tests | Cross-device bookmarks if desired |
+| Push | Contextual permission, token-owner/session RPC and native callbacks | SQL exists; sender/events/inbox absent; capability disabled | Mocked permissions/late callbacks and real SQL grants | Own APNs keys/profile, sender, session checks and delivery testing |
+| CI/release | Web/native/check/audit jobs; manual protected packaging/upload lanes | Referenced GitHub secrets not inspected; no upload | Local Ruby/bash/Python syntax, builds | Actual CI run, distribution profile/ASC validation and approved TestFlight |
+
+## Locally corrected findings
+
+1. Removed demo history/editing from the product entrypoint. Illustrative coordinates/photos now live under `src/test/fixtures/` and are referenced only by tests. Production history has no sample fallback.
+2. Replaced Social's contradictory “households unavailable” screen with its real household setup component; live social features remain honestly unavailable.
+3. Added garage edits, categories, archive/restore and confirmed removal. Archived/removed vehicle names already saved in activities remain selectable during edits; modifying an unrelated field no longer silently loses the label. Vehicle IDs are still not a full native/cloud association model.
+4. Fixed native logout migration: an explicit Keychain signed-out marker is now returned to the JS adapter, which refuses to migrate a stale WebView session over it. New regression test covers this boundary.
+5. Replaced dead/unsafe backup upserts with a real, gated foreground backup path. Native owner must match getUser; every activity RPC receives expected owner; places include explicit owner; successful operations checkpoint receipts. The **new local migration** adds transactional revision comparison and idempotent content hashes, so stale edits do not silently overwrite cloud changes and lost receipts do not churn publications. It remains off until approval/deployment/live testing; photos/download/reconciliation are not implemented.
+6. Added Other and Road cycling manual recording choices; vehicle selection also works for bicycles. Legacy shorter passwords can be used to sign in; new passwords require 12 characters locally.
+7. Prioritized Home/Work inside iOS's finite region-monitor limit. Stationary pre-departure monitoring returns to lower-accuracy/pausable settings. This is a code correction, not a measured battery result.
+8. Added map tile-layer selection and explicit contextual current location. Bounded native map display geometry preserves endpoints/pause segments without changing saved GPS. Map displays up to 50 recent routes; clustering is still missing.
+9. Bounded decrypted media cache, skipped invisible-page recorder polling, removed empty template lifecycle callbacks, improved Tesla status errors, and checked release profiles for Apple sign-in entitlement. Signing scratch files now use restrictive permissions.
+10. Existing earlier hardening remains: hosted-default APNs function grants corrected, private stops/media owner constraints and deletion guards, sensitive-place query limits, safe account deletion preflight, idempotent Tesla vehicle selection and credential-write error checks.
+
+## Temporary/dead-code classification
+
+| Finding | Classification | Action |
+|---|---|---|
+| Demo routes/photos/history editor and unused global demo load/save | Development fixtures/dead production code | Removed production paths; test fixture retained |
+| Synthetic GPS and mocked provider responses under tests | Legitimate tests | Retained and labelled; not real integration evidence |
+| Old `demoOverrides` native preference field / unassigned legacy quarantine | Compatibility preservation | Not rendered; kept to avoid destroying existing stored data |
+| Unused cloud-sync scaffold | Unfinished production feature | Replaced with explicit tested backup; full sync remains separate |
+| Blank UIKit lifecycle methods | Dead template code | Removed |
+| Disabled public publishing/Tesla/push | Unfinished production features | Clear unavailable state; not silently enabled before infrastructure/configuration |
+| Empty catches for browser dismissal or offline logout cleanup | Intentional idempotence/offline handling | Retained where failure must not block local protection; server cleanup not claimed |
+| Household status fetch ignored errors | Unfinished error handling | Fixed loading/failure states and confirmed leave action |
+| Tesla receiver, feeds, APNs sender, photo sync | Missing implementations | Explicit remaining work, not classified as mocks or complete |
+
+## Hosted configuration / security evidence
+
+Project linked to `subobfmlkfqcsaekygat`. Read-only catalogs show 21 public tables, RLS and hardened owner constraints; four user-applied scripts are not in a migration ledger. Zero functions deployed and zero public tables in the Realtime publication. Hosted advisors flag deliberately exposed SECURITY DEFINER RPCs and overlapping grant-read policies; these require contextual review, not blind revocation. APNs lookup stays service-only. No real cross-user JWT/API security test has been performed.
+
+Only five custom secret names are configured: the R2 key/secret/endpoint/region/bucket names. Presence is not a working R2 test. Apple provider/audience match is verified; browser/email callback allow-list is empty, site URL localhost, custom SMTP absent, server password minimum 6. No secret values were printed. See the configuration checklist for all actions.
+
+A read-only size query measured about 12.0 MB total database and 0.54 MB application tables (including indexes); these are aggregate byte sizes, not a count of product data or proof of capacity. Dense 50,000-point JSON routes, two-second bridge snapshots, and large histories need profiling, pagination, retention and possibly compressed/segmented geometry. Do not move raw GPS to high-frequency Realtime or poll sleeping Tesla vehicles. Supabase's documented Free database allowance is 500 MB; actual plan/account quota was not verified and no plan was changed. R2 media avoids storing photo bytes in PostgreSQL, but Edge-mediated transfers still consume applicable service/network quotas. [Supabase billing documentation](https://supabase.com/docs/guides/platform/billing-on-supabase).
+
+## Tesla official-document review
+
+Current code uses the documented Tesla authorization URL, Fleet-auth exchange host, customer state and explicit optional location scope. Tokens are owner/provider-bound ciphertext; no personal Tesla account, fixed user or vehicle list is wired into production. Vehicle discovery/selection is separately gated. The official flow requires durable rotation of refreshed credentials; ongoing refresh is not implemented here. Domain registration, signing key publication and user virtual-key pairing are separate requirements. There is **no deployable Fleet Telemetry receiver** in this repository. The official receiver uses TLS client authentication and a vehicle transport; a generic Supabase JSON callback is not a substitute. Receiver hosting/configuration and ingestion must be implemented/approved before automatic Tesla trips can exist. No billed Fleet calls were made.
+
+Sources: [Tesla tokens](https://developer.tesla.com/docs/fleet-api/authentication/third-party-tokens), [virtual keys](https://developer.tesla.com/docs/fleet-api/virtual-keys/developer-guide), [official receiver](https://github.com/teslamotors/fleet-telemetry), [billing/limits](https://developer.tesla.com/docs/fleet-api/billing-and-limits). External requirements were reviewed; live compatibility was not tested.
+
+## Validation ledger
+
+- Automated pass: 111 tests across 30 files, including actual local PostgreSQL RLS/RPC/constraint execution with Auth fixtures, frontend/native-provider mocks and new backup/garage/logout/map cases. New backup SQL is executed locally, not on hosted Supabase.
+- Automated pass: 58 portable Swift assertions covering GPS/duration/gaps/classification/storage/encryption and Apple nonce/hash generation. Core Location/Core Motion/PhotoKit hardware behavior is not exercised by these tests.
+- Automated pass: ESLint, production Vite build, four locked Deno function type/dependency checks, Capacitor sync, Ruby/bash/Python signing-script syntax. Edge runtime HTTP/provider tests remain outstanding.
+- Automated pass: npm audit reports **zero known dependency vulnerabilities** at audit time. This is npm's database, not a complete native supply-chain/security assessment.
+- Signed build 5 and simulator compilation passed. Strict signature, bundle/team, Apple entitlement in binary/profile and exact JS bundle matching passed. Build 5 installed and launched successfully on the paired physical iPhone; this is an installation/launch pass only. Physical Apple session, permissions and GPS acceptance remain pending. Simulator runtime startup also passed: Welcome shows enabled Apple sign-in without a secure-storage error or premature permission prompt. No simulator GPS or Apple consent was exercised.
+- No Docker/psql toolchain is available for a full local Supabase stack. No destructive live tests, remote test accounts, telemetry events, R2 uploads/deletes or real login were generated by the agent.
+
+Remaining work, test procedure and exact approval boundaries are in the companion reports. None of the failed/untested integrations is counted as production complete.
+
+Final artifact check: the actual CLI token was compared internally against production JS; no match was found and its value was never printed. A separate forbidden-marker scan found no CLI/server-secret names, private-key marker, demo title or Unsplash URLs. This is an artifact check, not a complete exfiltration/security proof.

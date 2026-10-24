@@ -103,4 +103,11 @@ check(try! encrypted.readData(name:"media/photo.jpg") == Data("private-photo".ut
 do { _ = try otherKey.readData(name:"media/photo.jpg"); fatalError("another account decrypted a photo") } catch { assertions += 1 }
 try encrypted.delete(interrupted.id)
 check(try! encrypted.deletedIDs().contains(interrupted.id),"encrypted deletion tombstones survive recovery")
-print("\(assertions) native recorder assertions passed")
+let appleChallenge = try AppleAuthChallenge.make()
+let anotherAppleChallenge = try AppleAuthChallenge.make()
+check(appleChallenge.nonce.count == 64 && appleChallenge.state.count == 64,"Apple nonce and state contain 256 random bits")
+check(appleChallenge.nonce != anotherAppleChallenge.nonce && appleChallenge.state != anotherAppleChallenge.state,"Apple challenges are fresh for each request")
+check(appleChallenge.nonce != appleChallenge.state,"Apple nonce and state are independent")
+check(AppleAuthChallenge.hash("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","Apple nonce hashing matches SHA256")
+check(appleChallenge.hashedNonce != appleChallenge.nonce && appleChallenge.hashedNonce.count == 64,"Only the SHA256 nonce is sent to Apple")
+print("\(assertions) native recorder/auth assertions passed")

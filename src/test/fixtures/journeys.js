@@ -1,3 +1,4 @@
+// Test-only illustrative routes; never imported by the application.
 const coast = [[-33.6501,115.0278],[-33.6508,115.0250],[-33.6519,115.0218],[-33.6532,115.0190],[-33.6554,115.0160],[-33.6580,115.0133],[-33.6604,115.0102],[-33.6622,115.0065],[-33.6633,115.0030],[-33.6641,114.9991],[-33.6655,114.9953],[-33.6667,114.9911],[-33.6680,114.9872],[-33.6697,114.9840],[-33.6720,114.9810],[-33.6750,114.9785],[-33.6777,114.9765],[-33.6798,114.9734]];
 export const photo = (id, width = 1000) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&q=80`;
 export const demoJourneys = [
@@ -5,5 +6,3 @@ export const demoJourneys = [
   { id:'forest',title:'Among the giants',location:'Boranup Forest, WA',activity:'Mountain biking',date:'2026-10-21',distance:24.8,minutes:112,elevation:412,description:'Winding singletrack through the towering karri trees. One for the memory book.',cover:photo('photo-1448375240586-882707db888b'),route:[[-34.155,115.061],[-34.159,115.065],[-34.164,115.063],[-34.169,115.068],[-34.175,115.073],[-34.18,115.067]],tags:['Forest','On two wheels'],photos:[] },
   { id:'sunrise',title:'A slower kind of morning',location:'Busselton, WA',activity:'Walking',date:'2026-10-19',distance:5.2,minutes:64,elevation:18,description:'Coffee, a sunrise and a walk beside Geographe Bay.',cover:photo('photo-1470252649378-9c29740c9fa8'),route:[[-33.645,115.345],[-33.644,115.34],[-33.643,115.332],[-33.642,115.324],[-33.641,115.316]],tags:['Morning ritual'],photos:[] },
 ];
-export function loadJourneys() { try { const data=JSON.parse(localStorage.getItem('letm3go-demo-v1')); return Array.isArray(data)&&data.length&&data.every(t=>t.id&&t.title&&Array.isArray(t.route))?data:demoJourneys; } catch { return demoJourneys; } }
-export function formatDuration(minutes) { return `${Math.floor(minutes/60)}h ${minutes%60}m`; }

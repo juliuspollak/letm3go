@@ -12,14 +12,22 @@ export async function signInWithApple() {
   if (!supabase || !config.appleEnabled) throw new Error('Apple sign-in has not been configured.');
   const native = Capacitor.isNativePlatform();
   if(native){
-    const credentials=await registerPlugin('SecureSession').signInWithApple();
+    let credentials;
+    try{credentials=await registerPlugin('SecureSession').signInWithApple();}
+    catch(error){if(error.code==='APPLE_SIGN_IN_CANCELLED')return {cancelled:true};throw error;}
+    if(!credentials.idToken||!credentials.nonce)throw new Error('Apple did not return valid sign-in credentials. Please retry.');
     const {data,error}=await supabase.auth.signInWithIdToken({provider:'apple',token:credentials.idToken,nonce:credentials.nonce});if(error)throw error;
-    if(credentials.name)await supabase.auth.updateUser({data:{full_name:credentials.name}});
+    if(!data.session||!data.user||data.session.user.id!==data.user.id)throw new Error('Apple sign-in did not create a verified Supabase session. Please retry.');
+    // Apple supplies the name once. Never clear it when later credentials omit it.
+    if(credentials.name?.trim()){
+      const {error:nameError}=await supabase.auth.updateUser({data:{full_name:credentials.name.trim()}});
+      if(nameError)window.dispatchEvent(new CustomEvent('letm3go:integration-warning',{detail:{ownerID:data.user.id,message:'Signed in. Enter your display name during profile setup.'}}));
+    }
     if(credentials.authorizationCode&&data.session){
       const {error}=await supabase.functions.invoke('account',{body:{action:'captureAppleAuthorization',code:credentials.authorizationCode}});
       if(error)window.dispatchEvent(new CustomEvent('letm3go:integration-warning',{detail:{ownerID:data.session.user.id,message:'Apple sign-in succeeded, but account-deletion revocation setup needs configuration before release.'}}));
     }
-    return;
+    return {cancelled:false,userID:data.user.id};
   }
   await authStorage.setItem('letm3go-oauth-pending',String(Date.now()));
   const { data, error } = await supabase.auth.signInWithOAuth({

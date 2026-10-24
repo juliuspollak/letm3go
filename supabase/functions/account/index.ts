@@ -39,6 +39,9 @@ Deno.serve(async request=>{
   const claims=JSON.parse(atob(encoded.replace(/-/g,'+').replace(/_/g,'/')));
   const recent=(claims.amr||[]).some((entry:{timestamp:number})=>entry.timestamp>Date.now()/1000-600);
   if(!recent)return reply({error:'Sign in again before deleting your account'},428);
+  // Validate cleanup prerequisites before revoking providers or freezing the account.
+  const required=['R2_REGION','R2_ENDPOINT','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY','R2_BUCKET_NAME'];
+  if(required.some(name=>!Deno.env.get(name)))return reply({error:'Private media cleanup configuration is incomplete'},503);
   const {data:services,error:serviceError}=await admin.from('connected_services').select('provider,status').eq('owner_id',owner);if(serviceError)throw serviceError;
   // Tesla's documented consent revocation is interactive. Do not delete an account while live Tesla consent remains.
   const {data:teslaCredentials,error:teslaError}=await admin.from('provider_credentials').select('provider').eq('owner_id',owner).eq('provider','tesla');if(teslaError)throw teslaError;
@@ -55,8 +58,6 @@ Deno.serve(async request=>{
   const {error:marked}=await admin.auth.admin.updateUserById(owner,{app_metadata:{...data.user.app_metadata,deletion_requested:true}});if(marked)throw marked;
   // All application media keys are owner-prefixed. List the private prefix so paginated
   // PostgREST defaults cannot leave images beyond the first 1,000 rows behind.
-  const required=['R2_REGION','R2_ENDPOINT','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY','R2_BUCKET_NAME'];
-  if(required.some(name=>!Deno.env.get(name)))return reply({error:'Private media cleanup configuration is incomplete'},503);
   const r2=new S3Client({region:Deno.env.get('R2_REGION'),endpoint:Deno.env.get('R2_ENDPOINT'),credentials:{accessKeyId:Deno.env.get('R2_ACCESS_KEY_ID')!,secretAccessKey:Deno.env.get('R2_SECRET_ACCESS_KEY')!}});
   for(let batch=0;batch<10;batch++){
    const listed=await r2.send(new ListObjectsV2Command({Bucket:Deno.env.get('R2_BUCKET_NAME'),Prefix:`${owner}/`,MaxKeys:1000}));

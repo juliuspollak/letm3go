@@ -1,9 +1,11 @@
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider, useAuth } from './AuthContext.jsx';
+import { ensureUserProfile } from './userProfile.js';
 const mocks=vi.hoisted(()=>({callback:null,user:null,session:null,auth:{getSession:vi.fn(),getUser:vi.fn(),onAuthStateChange:vi.fn(),signOut:vi.fn(),startAutoRefresh:vi.fn(),stopAutoRefresh:vi.fn()},store:{bind:vi.fn(),lock:vi.fn(),save:vi.fn()},storage:{getItem:vi.fn(),removeItem:vi.fn()},stopPush:vi.fn()}));
 vi.mock('./supabase.js',()=>({supabase:{auth:mocks.auth}}));
 vi.mock('./sessionStorage.js',()=>({AUTH_STORAGE_KEY:'letm3go-auth',authStorage:mocks.storage,accountStore:mocks.store,defaultPreferences:()=>({onboardingComplete:false,vehicles:[]})}));
+vi.mock('./userProfile.js',()=>({ensureUserProfile:vi.fn(async(_,user)=>({id:user.id,display_name:''}))}));
 vi.mock('./config.js',()=>({config:{key:'test-public-key'}}));
 vi.mock('./auth.js',()=>({listenForNativeAuth:async()=>()=>{},authRedirect:()=>''}));
 vi.mock('./pushAccount.js',()=>({stopAccountPush:mocks.stopPush,resumeAccountPush:vi.fn()}));
@@ -29,4 +31,8 @@ it('rejects revoked access and pauses private tracking without deleting recordin
 });
 it('saves preferences against the current user, not an unscoped device key',async()=>{
  render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');fireEvent.click(screen.getByRole('button',{name:'Save name'}));await waitFor(()=>expect(mocks.store.save).toHaveBeenCalledWith(expect.objectContaining({displayName:'Changed'}),'owner-a'));
+});
+it('keeps verified authentication and private recording available when profile sync is offline',async()=>{
+ vi.mocked(ensureUserProfile).mockRejectedValueOnce(new Error('Profile unavailable'));
+ render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');expect(mocks.store.bind).toHaveBeenCalled();
 });

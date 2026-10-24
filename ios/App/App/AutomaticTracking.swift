@@ -16,6 +16,11 @@ extension LocationRecorder {
             if activity.stationary { types.append("Stationary") }
             let confidence = activity.confidence == .high ? "high" : activity.confidence == .medium ? "medium" : "low"
             self.motion = MotionEvidence(types:types,confidence:confidence,timestamp:Date().timeIntervalSince1970,continuous:true)
+            if self.automaticAvailable, self.active == nil, self.automaticTrip == nil, activity.stationary {
+                self.manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+                self.manager.distanceFilter = 50
+                self.manager.pausesLocationUpdatesAutomatically = true
+            }
             if self.automaticAvailable, self.active == nil, types.contains(where: { $0 != "Stationary" }) {
                 self.manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
                 self.manager.distanceFilter = 15
@@ -57,7 +62,7 @@ extension LocationRecorder {
     func configurePlaceRegions() {
         for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { manager.stopMonitoring(for:region) }
         guard CLLocationManager.isMonitoringAvailable(for:CLCircularRegion.self) else { return }
-        for place in places.prefix(18) {
+        for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(18) {
             let region = CLCircularRegion(center:CLLocationCoordinate2D(latitude:place.latitude,longitude:place.longitude),radius:min(place.radius,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-\(place.id)")
             region.notifyOnEntry = true; region.notifyOnExit = true
             manager.startMonitoring(for:region)

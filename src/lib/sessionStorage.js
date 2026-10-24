@@ -4,7 +4,8 @@ export const AUTH_STORAGE_KEY='letm3go-auth';
 export const authStorage={
  async getItem(key){
   if(!Capacitor.isNativePlatform())return key===AUTH_STORAGE_KEY&&localStorage.getItem('letm3go-signed-out')?null:localStorage.getItem(key);
-  const {value}=await secure.get({key});
+  const {value,signedOut}=await secure.get({key});
+  if(signedOut){localStorage.removeItem(key);return null;}
   if(value!=null){localStorage.removeItem(key);return value;}
   // Upgrade only Supabase session/verifier keys; native binding still verifies identity.
   if(value==null){const old=localStorage.getItem(key);if(old!=null){await secure.set({key,value:old});localStorage.removeItem(key);return old;}}

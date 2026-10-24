@@ -52,7 +52,9 @@ Deno.serve(async request=>{
   if(error||!trip||trip.owner_id!==owner)return reply({error:'Activity unavailable'},404);
   if(body.action==='publish'){
    if(!['public','household','friends'].includes(body.audience)||body.revision!==trip.revision)return reply({error:'Review the current activity and audience before publishing'},409);
-   const {data:places,error:placesError}=await userClient.from('saved_places').select('*');if(placesError)throw placesError;
+   // Query the at-most-two sensitive places explicitly; favourites must not crowd
+   // Home/Work out of PostgREST's default row limit and weaken route masking.
+   const {data:places,error:placesError}=await userClient.from('saved_places').select('*').in('kind',['home','work']);if(placesError)throw placesError;
    // Fail closed: a client must confirm its saved places were synchronised before preview.
    if(body.placesConfirmed!==true)return reply({error:'Sync saved Home/Work places and review masking first'},400);
    const {data:assets,error:mediaError}=await userClient.from('media_assets').select('id,caption,latitude,longitude').eq('activity_id',trip.id);if(mediaError)throw mediaError;

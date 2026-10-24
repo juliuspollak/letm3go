@@ -44,12 +44,22 @@ struct AccountPreferences: Codable {
     var notificationsEnabled: Bool?
     var demoOverrides: String?
     var bookmarks: [String]?
+    var syncReceipts: [String: SyncReceipt]?
+    var lastBackup: String?
+}
+struct SyncReceipt: Codable {
+    var owner: String
+    var fingerprint: String?
+    var revision: Int?
+    var deleted: Bool?
 }
 struct LocalVehicle: Codable {
     var id: String
     var name: String
     var make: String
     var model: String
+    var category: String?
+    var archived: Bool?
 }
 
 extension LocationRecorder {
@@ -99,8 +109,9 @@ extension LocationRecorder {
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
-              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000,
-              updated.vehicles.allSatisfy({ UUID(uuidString:$0.id) != nil && !$0.name.isEmpty && $0.name.count <= 100 && $0.make.count <= 100 && $0.model.count <= 100 }) else { throw failure("Account settings are invalid or too large.") }
+              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.syncReceipts?.count ?? 0) <= 10_000,
+              (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
+              updated.vehicles.allSatisfy({ UUID(uuidString:$0.id) != nil && !$0.name.isEmpty && $0.name.count <= 100 && $0.make.count <= 100 && $0.model.count <= 100 && ["car","motorcycle","bicycle","other"].contains($0.category ?? "car") }) else { throw failure("Account settings are invalid or too large.") }
         if let avatar = updated.avatar, !avatar.hasPrefix("data:image/jpeg;base64,") { throw failure("Use a JPEG profile image.") }
         try storage.writeData(JSONEncoder().encode(updated),name:"preferences.data"); preferences = updated
     }
@@ -161,7 +172,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["preserved":true])
         } catch { call.reject("Earlier preferences could not be safely preserved. Original data was kept.") }
     } }
-    @objc func get(_ call: CAPPluginCall) { guard let key = storageKey(call) else { return }; do { if key == "auth-letm3go-auth", try AccountKeychain.get("signed-out") != nil { call.resolve(["value":NSNull()]); return }; call.resolve(["value":try AccountKeychain.get(key).flatMap { String(data:$0,encoding:.utf8) } as Any? ?? NSNull()]) } catch { call.reject("Secure session storage is unavailable (\((error as NSError).code)). Unlock your device and retry.") } }
+    @objc func get(_ call: CAPPluginCall) { guard let key = storageKey(call) else { return }; do { if key == "auth-letm3go-auth", try AccountKeychain.get("signed-out") != nil { call.resolve(["value":NSNull(),"signedOut":true]); return }; call.resolve(["value":try AccountKeychain.get(key).flatMap { String(data:$0,encoding:.utf8) } as Any? ?? NSNull()]) } catch { call.reject("Secure session storage is unavailable (\((error as NSError).code)). Unlock your device and retry.") } }
     @objc func set(_ call: CAPPluginCall) { guard let key = storageKey(call) else { return }; guard let value = call.getString("value"), value.utf8.count < 100_000 else { call.reject("Session value is invalid or too large."); return }; do { try AccountKeychain.set(key,data:Data(value.utf8)); call.resolve() } catch { call.reject("Unable to save the secure session.") } }
     @objc func remove(_ call: CAPPluginCall) { guard let key = storageKey(call) else { return }; do { try AccountKeychain.set(key,data:nil); call.resolve() } catch { call.reject("Unable to clear the secure session.") } }
     @objc func bindAccount(_ call: CAPPluginCall) { DispatchQueue.main.async {

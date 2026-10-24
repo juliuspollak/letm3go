@@ -11,6 +11,7 @@ with open(sys.argv[1], 'rb') as stream:
 team = os.environ['APPLE_TEAM_ID']
 entitlements = profile.get('Entitlements', {})
 assert profile['TeamIdentifier'] == [team], 'Profile team mismatch'
+assert entitlements.get('com.apple.developer.applesignin') == ['Default'], 'Profile must authorize native Sign in with Apple'
 assert entitlements.get('application-identifier') == f'{team}.au.jpollak.journey', 'Profile is not for Letm3go'
 assert not entitlements.get('get-task-allow', False), 'Development profile cannot distribute to TestFlight'
 assert not profile.get('ProvisionedDevices') and not profile.get('ProvisionsAllDevices'), 'App Store profile required'

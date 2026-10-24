@@ -1,0 +1,8 @@
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import Garage from './Garage.jsx';
+vi.mock('../lib/config.js',()=>({config:{teslaEnabled:false}}));
+vi.mock('../lib/supabase.js',()=>({supabase:null}));
+afterEach(cleanup);
+it('edits and archives a manually added vehicle without requiring Tesla',async()=>{const onSave=vi.fn().mockResolvedValue();const vehicles=[{id:'car',name:'Family car',make:'Kia',model:'EV6'}];const {rerender}=render(<Garage vehicles={vehicles} onSave={onSave}/>);fireEvent.click(screen.getByRole('button',{name:'Edit Family car'}));fireEvent.change(screen.getByLabelText('Vehicle name'),{target:{value:'My Kia'}});fireEvent.click(screen.getByRole('button',{name:'Save vehicle'}));await waitFor(()=>expect(onSave).toHaveBeenCalledWith([expect.objectContaining({id:'car',name:'My Kia',category:'car'})]));rerender(<Garage vehicles={vehicles} onSave={onSave}/>);fireEvent.click(screen.getByRole('button',{name:'Archive Family car'}));await waitFor(()=>expect(onSave).toHaveBeenLastCalledWith([expect.objectContaining({archived:true})]));});
+it('confirms removal and never claims failed persistence succeeded',async()=>{const onSave=vi.fn().mockRejectedValue(new Error('Full'));render(<Garage vehicles={[{id:'bike',name:'Bike'}]} onSave={onSave}/>);fireEvent.click(screen.getByRole('button',{name:'Remove Bike'}));expect(onSave).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'Confirm removal'}));expect(await screen.findByRole('status')).toHaveTextContent('could not be saved');expect(screen.getByText('Bike',{exact:true})).toBeInTheDocument();});

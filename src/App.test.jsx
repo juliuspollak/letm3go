@@ -1,6 +1,7 @@
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App.jsx';
+import { demoJourneys } from './test/fixtures/journeys.js';
 import { emptyRecorder } from './lib/recorder.js';
 const { identity, recorderHook }=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn()}));
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
@@ -20,11 +21,7 @@ it('shows profile onboarding after first authentication rather than Home',()=>{
  signedIn();identity.value.preferences.onboardingComplete=false;render(<App/>);
  expect(screen.getByRole('heading',{name:'Make it yours.'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open profile'})).not.toBeInTheDocument();
 });
-it('preserves real/demo isolation and demo editing after authentication',async()=>{
- signedIn();render(<App/>);expect(screen.getByText('No device recordings yet.')).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Browse labelled demo journeys'}));
- fireEvent.change(screen.getByRole('textbox',{name:'Search journeys'}),{target:{value:'Boranup'}});fireEvent.click(screen.getByRole('button',{name:'Open Among the giants'}));fireEvent.click(screen.getByRole('button',{name:'Edit',exact:true}));
- fireEvent.change(screen.getByLabelText('Journey title'),{target:{value:'Our forest ride'}});fireEvent.click(screen.getByRole('button',{name:'Save changes'}));expect(await screen.findByRole('heading',{name:'Our forest ride'})).toBeInTheDocument();expect(identity.value.savePreferences).toHaveBeenCalledWith(expect.objectContaining({demoOverrides:expect.any(String)}));
-});
+it('keeps demonstration routes and photos out of the real application',()=>{signedIn();render(<App/>);expect(screen.getByText('No device recordings yet.')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Browse labelled demo journeys'})).not.toBeInTheDocument();for(const fixture of demoJourneys)expect(screen.queryByText(fixture.title)).not.toBeInTheDocument();});
 it('restores returning users to Home and keeps browser GPS unavailable',()=>{
  signedIn();render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Start activity'}));expect(screen.getByRole('button',{name:'Start walking'})).toBeDisabled();
 });

@@ -116,6 +116,8 @@ language sql stable security definer set search_path='' as $$
  select d.* from public.push_devices d join auth.sessions s on s.id=d.session_id and s.user_id=d.owner_id where d.owner_id=p_owner
 $$;
 revoke all on function public.register_push_device(uuid,text,text,uuid),public.unregister_push_device(uuid,uuid),public.eligible_push_devices(uuid) from public,anon;
+-- Hosted defaults grant authenticated separately; this lookup is service-only.
+revoke all on function public.eligible_push_devices(uuid) from authenticated;
 grant execute on function public.register_push_device(uuid,text,text,uuid),public.unregister_push_device(uuid,uuid) to authenticated;
 grant execute on function public.eligible_push_devices(uuid) to service_role;
 

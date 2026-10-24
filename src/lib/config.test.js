@@ -9,3 +9,5 @@ it('requires both public configuration values and a valid URL', () => {
   expect(readConfig({ VITE_SUPABASE_URL: 'https://example.supabase.co' }).configured).toBe(false);
   expect(readConfig({ VITE_SUPABASE_URL: 'http://127.0.0.1:54321', VITE_SUPABASE_PUBLISHABLE_KEY: 'public-test' }).configured).toBe(true);
 });
+
+it('enables native Apple independently of the browser OAuth feature flag',()=>{expect(readConfig({VITE_ENABLE_APPLE_AUTH:'false'},{native:true}).appleEnabled).toBe(true);expect(readConfig({VITE_ENABLE_APPLE_AUTH:'false'}).appleEnabled).toBe(false);});

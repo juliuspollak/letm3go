@@ -1,4 +1,4 @@
-# Local configuration only. No hosted project is linked.
+# Local settings only. CLI link is stored in ignored supabase/.temp/project-ref; this file does not configure hosted Auth.
 project_id = "letm3go"
 
 [api]

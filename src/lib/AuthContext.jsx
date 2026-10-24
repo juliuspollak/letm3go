@@ -8,6 +8,7 @@ import { resolveIdentity, isTransientAuthError } from './authCore.js';
 import { listenForNativeAuth, authRedirect } from './auth.js';
 import { setPrivateMediaOwner } from './privateMedia.js';
 import { stopAccountPush, resumeAccountPush } from './pushAccount.js';
+import { ensureUserProfile } from './userProfile.js';
 const Context=createContext(null);
 export function AuthProvider({children}){
  const [identity,setIdentity]=useState({status:'restoring',session:null,preferences:defaultPreferences()}),[error,setError]=useState(''),[integrationWarning,setIntegrationWarning]=useState(''),[recovery,setRecovery]=useState(()=>new URLSearchParams(window.location.search).get('flow')==='recovery');
@@ -22,6 +23,16 @@ export function AuthProvider({children}){
    if(boundOwner.current&&boundOwner.current!==session?.user.id)await stopAccountPush();
    if(!session){await accountStore.lock();if(turn===generation.current)setIdentity({status:'signedOut',session:null,preferences:defaultPreferences()});return;}
    const next=await resolveIdentity({client:supabase,session,store:accountStore,apiKey:config.key,isCurrent:()=>turn===generation.current});
+   if(turn!==generation.current)return;
+   if(next.status==='authenticated'){
+    next.verifiedAt=new Date().toISOString();
+    try{
+     const profile=await ensureUserProfile(supabase,next.session.user);
+     if(turn!==generation.current)return;
+     next.profileVerified=true;
+     if(!next.preferences.displayName&&profile.display_name){const stored=await accountStore.save({...next.preferences,displayName:profile.display_name},next.session.user.id);next.preferences=stored.preferences;}
+    }catch{if(turn!==generation.current)return;next.profileVerified=false;setIntegrationWarning('Signed in. Profile synchronization needs attention; reconnect and verify your account again.');}
+   }
    if(turn!==generation.current)return;
    const remote=next.session?.user.user_metadata?.letm3go_onboarding_v1;
    if(next.status!=='deletionPending'&&next.preferences&&!next.preferences.onboardingComplete&&remote?.complete){

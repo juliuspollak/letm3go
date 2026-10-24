@@ -5,23 +5,54 @@ the app to a hosted Supabase project.
 
 ## Secure CLI authorisation
 
-From this repository in your own terminal:
+The wrapper requires `SUPABASE_ACCESS_TOKEN` before it starts the CLI. It never
+starts interactive login; login/logout and debug logging flags are blocked. An
+exported token takes precedence over the optional dedicated file. Exporting a
+token in another terminal does not make it available to the coding agent.
+
+To share your existing token with repository CLI commands, run locally:
 
 ```sh
-npm run supabase -- login --agent no --output-format text
+cd /Users/juliuspollak/Projects/letm3go
+(umask 077; touch .env.supabase.local)
+chmod 600 .env.supabase.local
+code --wait .env.supabase.local
 ```
 
-Complete the browser login and enter its verification code in that same terminal.
-Do not paste tokens or verification codes into chat. This repository's wrapper
-uses ignored `.supabase-cli/` for CLI state; a plain global `supabase login` may
-not authenticate this wrapper. If the CLI uses your OS credential store, allow
-only the intended Supabase login when prompted.
+In that file, enter this assignment, replacing the placeholder with your existing
+Personal Access Token, then save and close the editor:
 
-Read-only project discovery after login:
+```dotenv
+SUPABASE_ACCESS_TOKEN=<paste your existing token here>
+```
+
+Do not paste the token into chat, shell command arguments, `.env.local`, or a
+`VITE_*` variable. The file must belong to your user and have exactly mode `0600`;
+symlinks, extra environment keys and unsafe permissions are rejected. The wrapper
+uses Node's `util.parseEnv`, including standard quoting/comment support. It reads
+only the token from this file and never echoes it. Errors do not include values.
+Missing/blank tokens stop execution before the CLI can fall back to Keychain.
+The environment file does not execute shell expressions.
+
+The file is explicitly Git-ignored. Vite exposes only `VITE_*` variables and the
+`supabase` Vite mode is reserved/blocked so this dedicated file cannot become a
+Vite mode file. The file lives outside `public`/`dist`; Capacitor copies only
+`dist` into iOS assets and Xcode does not reference this file. Never copy it into
+frontend/native assets. No build script loads this credential file.
+
+Safely check permissions, Git exclusion and authentication without printing the token:
 
 ```sh
+stat -f '%Lp' .env.supabase.local  # must print 600 on macOS
+git check-ignore .env.supabase.local
 npm run supabase -- projects list --output-format json
 ```
+
+Project listing is read-only and displays project metadata, not the access token.
+Use the repository wrapper rather than bare `npx supabase`, which bypasses these
+guards. No `supabase login` is needed. `.supabase-cli/` remains the ignored,
+repository-specific CLI home. An invalid/revoked token still needs replacing;
+the wrapper does not obtain or create credentials for you.
 
 Match the dedicated Letm3go project's name, organisation and project reference
 against the Dashboard. Never choose ImBored or PediaterVIP. No `supabase link`

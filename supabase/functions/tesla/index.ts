@@ -68,12 +68,13 @@ Deno.serve(async request=>{
    const response=await fetch(`${audience}/api/1/vehicles`,{headers:{Authorization:`Bearer ${credentials.access_token}`}});if(!response.ok)return reply({error:'Tesla vehicle retrieval failed'},502);
    const payload=await response.json();
    const vehicles=(payload.response||[]).map((vehicle:{id_s:string;id:number;display_name:string})=>({teslaID:vehicle.id_s||String(vehicle.id),name:vehicle.display_name||'Tesla vehicle'}));
-   const ciphertext=await sealCredentials({...credentials,vehicles},encryption,owner,'tesla');await admin.from('provider_credentials').upsert({owner_id:owner,provider:'tesla',ciphertext});return reply({vehicles});
+   const ciphertext=await sealCredentials({...credentials,vehicles},encryption,owner,'tesla');const {error:cacheError}=await admin.from('provider_credentials').upsert({owner_id:owner,provider:'tesla',ciphertext});if(cacheError)throw cacheError;return reply({vehicles});
   }
   const selected=Array.isArray(body.ids)?body.ids:[];
   const vehicles=(credentials.vehicles||[]).filter((vehicle:{teslaID:string})=>selected.includes(vehicle.teslaID)).map((vehicle:{teslaID:string;name:string})=>({id:crypto.randomUUID(),owner_id:owner,name:vehicle.name,make:'Tesla',model:'',tesla_vehicle_id:vehicle.teslaID}));
   if(!vehicles.length||vehicles.length!==selected.length)return reply({error:'Select only vehicles returned for your own account'},400);
-  const {error:saveError}=await admin.from('vehicles').insert(vehicles);if(saveError)throw saveError;
-  return reply({vehicles:vehicles.map(({id,name,make,model}:{id:string;name:string;make:string;model:string})=>({id,name,make,model}))});
+  const {error:saveError}=await admin.from('vehicles').upsert(vehicles,{onConflict:'owner_id,tesla_vehicle_id',ignoreDuplicates:true});if(saveError)throw saveError;
+  const {data:stored,error:storedError}=await admin.from('vehicles').select('id,name,make,model').eq('owner_id',owner).in('tesla_vehicle_id',selected);if(storedError||!stored||stored.length!==selected.length)throw storedError||new Error('Vehicle selection was not persisted');
+  return reply({vehicles:stored});
  }catch(error){console.error('Tesla operation failed',error instanceof Error?error.name:'unknown');return reply({error:'Tesla operation could not be completed'},500);}
 });

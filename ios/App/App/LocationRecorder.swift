@@ -65,7 +65,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard storage != nil else { throw failure("Local storage is unavailable. Recording cannot start safely.") }
         guard active == nil else { throw failure("Finish the existing activity first.") }
         guard authorized, CLLocationManager.locationServicesEnabled() else { throw failure("Enable location access before starting.") }
-        let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running"]
+        let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
         guard allowed.contains(activity) else { throw failure("Choose a supported activity.") }
         if automaticTrip != nil { try finishAutomatic() }
         detector.reset()

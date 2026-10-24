@@ -1,13 +1,16 @@
 # Database verification
 
-`npm run test:database` executes the proposed smart-activities migration against
-embedded PostgreSQL (PGlite), with separate anonymous/authenticated/service roles
-and an `auth.uid()` claim fixture. It verifies private-place and route isolation,
-ownership spoofing denial, detached publication, edit/place-change revocation,
-revision race rejection, confirmed-contact access/revocation, tombstones, rate
-budgets, vehicle ownership and service-only Tesla vault references.
+`npm run test:database` runs all pending SQL migrations in embedded PostgreSQL
+(PGlite) with anonymous/authenticated/service roles and Auth claim fixtures.
+The readiness suite reproduces the hosted default table/function privileges;
+this caught a service-only APNs lookup that retained authenticated EXECUTE.
 
-These are real PostgreSQL RLS/trigger tests, not hosted Supabase tests. The initial
-profiles migration is separate. With Docker available, also run `npm run db:start`,
-`npm run db:reset`, `npm run db:lint`, and repeat auth/API checks against local
-Supabase. Neither migration was applied remotely in this milestone.
+Tests cover ownership, private routes/places/stops/media, sharing/revocation,
+households, live-session APNs registration, provider credentials, deletion
+cascades/freeze and server-side integrity constraints. See
+[deployment readiness](../../docs/backend-deployment-readiness.md) for current
+results, remaining configuration, remote state and the deployment hold.
+
+These tests execute real PostgreSQL SQL/RLS/triggers locally. They do not verify
+the hosted Supabase gateway, Auth callbacks, external providers or iPhone GPS.
+No remote migration is run by this test command.

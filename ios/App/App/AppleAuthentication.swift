@@ -8,14 +8,12 @@ extension SecureSessionPlugin: ASAuthorizationControllerDelegate, ASAuthorizatio
     @objc func signInWithApple(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.bridge?.viewController?.view.window != nil else { call.reject("Open the app before signing in with Apple."); return }
         guard self.appleCall == nil else { call.reject("Apple sign-in is already open."); return }
-        var bytes = [UInt8](repeating:0,count:32)
-        guard SecRandomCopyBytes(kSecRandomDefault,bytes.count,&bytes) == errSecSuccess else { call.reject("Unable to prepare secure Apple sign-in."); return }
-        let nonce = bytes.map { String(format:"%02x",$0) }.joined()
-        let state = UUID().uuidString
-        self.appleNonce=nonce; self.appleState=state; self.appleCall=call
+        let challenge: AppleAuthChallenge
+        do { challenge=try AppleAuthChallenge.make() } catch { call.reject("Unable to prepare secure Apple sign-in."); return }
+        self.appleNonce=challenge.nonce; self.appleState=challenge.state; self.appleCall=call
         let request=ASAuthorizationAppleIDProvider().createRequest()
-        request.requestedScopes=[.fullName,.email]; request.state=state
-        request.nonce=SHA256.hash(data:Data(nonce.utf8)).map { String(format:"%02x",$0) }.joined()
+        request.requestedScopes=[.fullName,.email]; request.state=challenge.state
+        request.nonce=challenge.hashedNonce
         let controller=ASAuthorizationController(authorizationRequests:[request]); controller.delegate=self; controller.presentationContextProvider=self
         self.appleController=controller; controller.performRequests()
     } }
@@ -30,7 +28,8 @@ extension SecureSessionPlugin: ASAuthorizationControllerDelegate, ASAuthorizatio
         call.resolve(value)
     }
     public func authorizationController(controller: ASAuthorizationController,didCompleteWithError error: Error) {
-        appleCall?.reject((error as? ASAuthorizationError)?.code == .canceled ? "Apple sign-in was cancelled." : "Apple sign-in could not be completed. Check the Letm3go Apple configuration.")
+        let cancelled = (error as? ASAuthorizationError)?.code == .canceled
+        appleCall?.reject(cancelled ? "Apple sign-in was cancelled." : "Apple sign-in could not be completed. Check the Letm3go Apple configuration.", cancelled ? "APPLE_SIGN_IN_CANCELLED" : "APPLE_SIGN_IN_FAILED")
         appleCall=nil; appleNonce=nil; appleState=nil; appleController=nil
     }
 }

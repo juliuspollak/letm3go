@@ -79,3 +79,7 @@ users complete saved onboarding; iOS sessions use Keychain and native data is
 encrypted per account. Earlier anonymous records are preserved separately rather
 than automatically assigned to a login. See [build 3 details and setup](docs/auth-onboarding-build-3.md)
 for implemented behavior, external activation steps and test boundaries.
+
+## Current audit and acceptance
+
+The audited development build 5 installed and launched on the paired iPhone. Native Apple session and physical automatic tracking acceptance are still pending; the app is not ready for public beta or production. See [production audit](docs/production-readiness-audit.md), [configuration checklist](docs/configuration-checklist.md), [device acceptance plan](docs/real-device-test-plan.md) and [remaining work](docs/remaining-work.md). Four SQL scripts were applied manually without a migration ledger; do not replay them. The new private-backup migration is local-only and needs approval. No functions were deployed by the audit.

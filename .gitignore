@@ -4,6 +4,8 @@ dist/
 coverage/
 .env
 .env.*
+# Server-only Supabase CLI token; never commit or copy into build assets.
+.env.supabase.local
 !.env.example
 *.local
 .DS_Store

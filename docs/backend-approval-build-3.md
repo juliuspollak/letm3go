@@ -1,3 +1,7 @@
+# Historical build-3 deployment scope — superseded
+
+The latest user instruction is **do not deploy**. Earlier approval recorded below is superseded by this hold. CLI access/linking and the hosted inventory have since been verified. See [current deployment readiness](backend-deployment-readiness.md), including the new fourth hardening migration. Do not execute this historical scope without a new go-ahead.
+
 # Build 3 backend deployment review
 
 The user approved this deployment scope on 24 October 2026. No remote changes have been made yet. Deployment approval persists; another approval is not needed for this scope.
