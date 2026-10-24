@@ -39,7 +39,7 @@
     "db:reset": "npm run supabase -- db reset --local",
     "db:lint": "npm run supabase -- db lint --local",
     "functions:serve": "npm run supabase -- functions serve",
-    "ios:build": "xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath .build/ios -clonedSourcePackagesDirPath .build/SourcePackages CODE_SIGNING_ALLOWED=NO build",
+    "ios:build": "xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath .build/ios -clonedSourcePackagesDirPath .build/SourcePackages CODE_SIGN_IDENTITY=- build",
     "ios:sync:production": "VITE_APNS_ENVIRONMENT=production npm run ios:sync",
     "supabase:check": "node scripts/check-supabase.mjs",
     "test:native": "mkdir -p .build && swiftc -module-cache-path .build/swift-test-cache ios/App/App/RecorderCore.swift tests/native/main.swift -o .build/recorder-tests && .build/recorder-tests",

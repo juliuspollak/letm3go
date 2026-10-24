@@ -14,7 +14,7 @@ extension LocationRecorder {
         guard updated.count <= 50 else { throw failure("Up to 50 saved places are supported.") }
         let data = try JSONEncoder().encode(updated)
         guard let storage = storage else { throw failure("Place storage is unavailable.") }
-        try data.write(to:storage.directory.appendingPathComponent("places.data"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication]); places = updated
+        try storage.writeData(data,name:"places.data"); places = updated
         if automaticAvailable { configurePlaceRegions() }
     }
     func updateActivity(id: String, title: String, activity: String, description: String, notes: String, tags: [String], collection: String, vehicle: String?) throws {
@@ -63,7 +63,7 @@ extension LocationRecorder {
         let media = storage.directory.appendingPathComponent("media",isDirectory:true)
         try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
         let url = media.appendingPathComponent(filename)
-        try data.write(to:url,options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
+        try storage.writeData(data,name:"media/\(filename)")
         let time = asset?.creationDate?.timeIntervalSince1970
         var lat = asset?.location?.coordinate.latitude, lon = asset?.location?.coordinate.longitude
         var locationSource = lat == nil ? "unlocated" : "gps"
@@ -81,11 +81,26 @@ extension LocationRecorder {
 final class PositionRequest: NSObject, CLLocationManagerDelegate {
     let manager = CLLocationManager()
     let call: CAPPluginCall
+    let owner = LocationRecorder.shared.ownerID
     var finished = false
     init(call: CAPPluginCall) { self.call = call; super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyBest }
-    func begin() { manager.requestLocation() }
+    var requesting = false
+    func begin() {
+        if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+        else { requestFix() }
+    }
+    func requestFix() {
+        guard !finished, !requesting else { return }
+        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { finished=true;call.reject("Location permission was declined. Use address search, select the map, or enable access in iOS Settings.");return }
+        requesting=true;manager.requestLocation()
+        DispatchQueue.main.asyncAfter(deadline:.now()+20) { if !self.finished { self.finished=true;self.call.reject("No recent location fix. Try outdoors or select a point on the map.") } }
+    }
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        if manager.authorizationStatus != .notDetermined { requestFix() }
+    }
     func locationManager(_ manager: CLLocationManager,didUpdateLocations locations: [CLLocation]) {
         guard !finished, let location = locations.last, location.horizontalAccuracy >= 0, abs(location.timestamp.timeIntervalSinceNow) < 30 else { return }
+        guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { finished=true; call.reject("Account changed."); return }
         finished = true; call.resolve(["latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy])
     }
     func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) { guard !finished else { return }; finished = true; call.reject(error.localizedDescription) }
@@ -93,21 +108,24 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
 
 extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     @objc func setAutomatic(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setAutomatic(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func savePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.savePlace(SavedPlace(id:call.getString("id") ?? UUID().uuidString,name:call.getString("name") ?? "",kind:call.getString("kind") ?? "favourite",latitude:call.getDouble("latitude") ?? 999,longitude:call.getDouble("longitude") ?? 999,radius:call.getDouble("radius") ?? 150)); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func removePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         let r = LocationRecorder.shared
-        do { guard let storage = r.storage else { throw r.failure("Place storage unavailable.") }; let updated = r.places.filter { $0.id != call.getString("id") }; try JSONEncoder().encode(updated).write(to:storage.directory.appendingPathComponent("places.data"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication]); r.places = updated; if r.automaticAvailable { r.configurePlaceRegions() }; call.resolve(r.snapshot()) } catch { call.reject(error.localizedDescription) }
+        do { guard let storage = r.storage else { throw r.failure("Place storage unavailable.") }; let updated = r.places.filter { $0.id != call.getString("id") }; try storage.writeData(JSONEncoder().encode(updated),name:"places.data"); r.places = updated; if r.automaticAvailable { r.configurePlaceRegions() }; call.resolve(r.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func currentPosition(_ call: CAPPluginCall) { DispatchQueue.main.async {
-        guard LocationRecorder.shared.authorized else { call.reject("Allow location access before using your current position."); return }
+        guard self.requireAccount(call) else { return }
         let request = PositionRequest(call:call); self.positionRequest = request; request.begin()
-        DispatchQueue.main.asyncAfter(deadline:.now()+20) { if !request.finished { request.finished = true; request.call.reject("No recent location fix. Try outdoors or select a point on the map.") } }
     } }
     @objc func searchAddress(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         let text = call.getString("query") ?? ""
         guard text.count >= 3, text.count <= 200 else { call.reject("Enter an address (3–200 characters)."); return }
         self.geocoder.cancelGeocode()
@@ -120,17 +138,21 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         }
     } }
     @objc func editActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func deleteActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.deleteActivity(call.getString("id") ?? ""); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func addHistorical(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.historical(title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Other",startedAt:call.getDouble("startedAt") ?? 0,seconds:call.getDouble("seconds") ?? 0,meters:call.getDouble("meters") ?? 0,vehicle:call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func pickPhotos(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         guard self.photoCall == nil, let id = call.getString("id"), LocationRecorder.shared.trips.contains(where:{$0.id == id}) else { call.reject("Activity unavailable or photo picker already open."); return }
-        self.photoCall = call; self.photoTripID = id
+        self.photoCall = call; self.photoTripID = id; self.photoOwnerID = LocationRecorder.shared.ownerID
         var configuration = PHPickerConfiguration(photoLibrary:.shared()); configuration.filter = .images; configuration.selectionLimit = 20
         let picker = PHPickerViewController(configuration:configuration); picker.delegate = self
         self.bridge?.viewController?.present(picker,animated:true)
@@ -138,6 +160,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     public func picker(_ picker: PHPickerViewController,didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated:true)
         guard let call = photoCall, let id = photoTripID else { return }
+        let owner = photoOwnerID
         let group = DispatchGroup(); var messages: [String] = []
         for result in results {
             guard result.itemProvider.canLoadObject(ofClass:UIImage.self) else { continue }
@@ -145,6 +168,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             result.itemProvider.loadObject(ofClass:UIImage.self) { object,error in
                 DispatchQueue.main.async {
                     defer { group.leave() }
+                    guard self.photoOwnerID == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { messages.append("Account changed. Photo was not imported."); return }
                     guard let image = object as? UIImage else { messages.append(error?.localizedDescription ?? "Unable to read selected image."); return }
                     let allowed = PHPhotoLibrary.authorizationStatus(for:.readWrite)
                     let asset = (allowed == .authorized || allowed == .limited) ? result.assetIdentifier.flatMap { PHAsset.fetchAssets(withLocalIdentifiers:[$0],options:nil).firstObject } : nil
@@ -153,12 +177,14 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             }
         }
         group.notify(queue:.main) {
-            self.photoCall = nil; self.photoTripID = nil
+            self.photoCall = nil; self.photoTripID = nil; self.photoOwnerID = nil
+            guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { call.reject("Account changed."); return }
             if !messages.isEmpty { LocationRecorder.shared.lastError = messages.joined(separator:" ") }
             call.resolve(LocationRecorder.shared.snapshot())
         }
     }
     @objc func editPhoto(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
         let r = LocationRecorder.shared
         guard let storage = r.storage, let index = r.trips.firstIndex(where:{$0.id == call.getString("id")}), var metadata = r.trips[index].details,
               let photoIndex = metadata.photos.firstIndex(where:{$0.id == call.getString("photoID")}) else { call.reject("Photo not found."); return }

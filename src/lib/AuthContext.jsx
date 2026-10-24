@@ -1,0 +1,104 @@
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { App as NativeApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
+import { supabase } from './supabase.js';
+import { config } from './config.js';
+import { authStorage, AUTH_STORAGE_KEY, accountStore, defaultPreferences } from './sessionStorage.js';
+import { resolveIdentity, isTransientAuthError } from './authCore.js';
+import { listenForNativeAuth, authRedirect } from './auth.js';
+import { setPrivateMediaOwner } from './privateMedia.js';
+import { stopAccountPush, resumeAccountPush } from './pushAccount.js';
+const Context=createContext(null);
+export function AuthProvider({children}){
+ const [identity,setIdentity]=useState({status:'restoring',session:null,preferences:defaultPreferences()}),[error,setError]=useState(''),[integrationWarning,setIntegrationWarning]=useState(''),[recovery,setRecovery]=useState(()=>new URLSearchParams(window.location.search).get('flow')==='recovery');
+ const preferencesRef=useRef(defaultPreferences()),preferencesQueue=useRef(Promise.resolve());
+ const boundOwner=useRef(null);
+ const generation=useRef(0),explicitLogout=useRef(false),latestSession=useRef(null);
+ const invalidate=useCallback(()=>{generation.current+=1;},[]);
+ const reconcile=useCallback(async(session)=>{
+  const turn=++generation.current;latestSession.current=session;
+  if(!session||boundOwner.current!==session.user.id){setIntegrationWarning('');setIdentity(old=>({...old,status:'restoring'}));setPrivateMediaOwner(null);}
+  try{
+   if(boundOwner.current&&boundOwner.current!==session?.user.id)await stopAccountPush();
+   if(!session){await accountStore.lock();if(turn===generation.current)setIdentity({status:'signedOut',session:null,preferences:defaultPreferences()});return;}
+   const next=await resolveIdentity({client:supabase,session,store:accountStore,apiKey:config.key,isCurrent:()=>turn===generation.current});
+   if(turn!==generation.current)return;
+   const remote=next.session?.user.user_metadata?.letm3go_onboarding_v1;
+   if(next.status!=='deletionPending'&&next.preferences&&!next.preferences.onboardingComplete&&remote?.complete){
+    const preferences={...next.preferences,onboardingComplete:true,onboardingStep:5,displayName:next.preferences.displayName||remote.display_name||''};
+    const stored=await accountStore.save(preferences,next.session.user.id);next.preferences=stored.preferences;
+   }
+   if(turn!==generation.current)return;
+   boundOwner.current=next.session?.user.id||null;
+   preferencesRef.current=next.preferences||defaultPreferences();
+   setPrivateMediaOwner(['authenticated','offline'].includes(next.status)?next.session.user.id:null);setIdentity(next);setError('');
+  }catch(err){if(turn!==generation.current)return;await accountStore.lock().catch(()=>{});if(turn!==generation.current)return;setError(err.message||'Sign in again to unlock your private data.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}
+ },[]);
+ useEffect(()=>{
+  if(!supabase){const timer=setTimeout(()=>void reconcile(null),0);return()=>clearTimeout(timer);}
+  let alive=true,stopNative,stopApp;
+  async function restore(){try{
+   await accountStore.preserveLegacy?.();
+   const {data,error}=await supabase.auth.getSession();if(!alive||explicitLogout.current)return;
+   if(error){if(!isTransientAuthError(error))throw error;const cached=await authStorage.getItem(AUTH_STORAGE_KEY);await reconcile(cached?JSON.parse(cached):null);}
+   else if(data.session||!latestSession.current)await reconcile(data.session);
+  }catch(err){if(alive){setError(err.message||'Session restoration failed.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}}}
+  const {data:listener}=supabase.auth.onAuthStateChange((event,session)=>{
+   if(!alive||explicitLogout.current)return;
+   if(event==='PASSWORD_RECOVERY')setRecovery(true);
+   // Auth requests must run outside Supabase's callback/session lock.
+   setTimeout(()=>{if(alive&&!explicitLogout.current)void reconcile(session);},0);
+  });
+  void restore();
+  const report=()=>{if(alive)setError('The sign-in link could not be completed. Request a new link and retry.');};
+  listenForNativeAuth(report,()=>setRecovery(true)).then(stop=>{if(alive)stopNative=stop;else stop();}).catch(report);
+  const visible=()=>{if(document.visibilityState==='visible'&&!explicitLogout.current)void restore();};
+  const warn=event=>{if(event.detail?.ownerID===latestSession.current?.user.id)setIntegrationWarning(event.detail.message);};
+  const completed=event=>{if(event.detail?.session){explicitLogout.current=false;void reconcile(event.detail.session);}};
+  window.addEventListener('letm3go:auth-completed',completed);
+  window.addEventListener('letm3go:integration-warning',warn);
+  document.addEventListener('visibilitychange',visible);
+  if(Capacitor.isNativePlatform())NativeApp.addListener('appStateChange',({isActive})=>{if(isActive){supabase.auth.startAutoRefresh();void restore();}else supabase.auth.stopAutoRefresh();}).then(handle=>{if(alive)stopApp=handle;else void handle.remove();}).catch(report);
+  return()=>{alive=false;invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:auth-completed',completed);};
+ },[reconcile,invalidate]);
+ useEffect(()=>{
+  const owner=identity.session?.user.id;
+  if(!owner||!['authenticated','offline'].includes(identity.status)||!identity.preferences?.notificationsEnabled||!config.pushEnabled)return;
+  let alive=true;const report=()=>{if(alive)setIntegrationWarning('Notification registration needs attention. Review notification settings after reconnecting.');};
+  void resumeAccountPush(owner,report).catch(report);return()=>{alive=false;};
+ },[identity.session?.user.id,identity.status,identity.preferences?.notificationsEnabled]);
+ async function signOut(){
+  explicitLogout.current=true;++generation.current;setPrivateMediaOwner(null);
+  try{await accountStore.lock();await stopAccountPush();supabase?.auth.stopAutoRefresh();
+   const result=await supabase?.auth.signOut({scope:'local'});
+   // Local sign-out still completes if the network cannot revoke the server session.
+   if(result?.error)setIntegrationWarning('Signed out locally. Server-session revocation could not be confirmed.');
+   await authStorage.removeItem(AUTH_STORAGE_KEY);await authStorage.removeItem(`${AUTH_STORAGE_KEY}-code-verifier`);await authStorage.removeItem(`${AUTH_STORAGE_KEY}-user`);await authStorage.removeItem('letm3go-oauth-pending');
+   latestSession.current=null;boundOwner.current=null;setIdentity({status:'signedOut',session:null,preferences:defaultPreferences()});setRecovery(false);setError('');
+  }catch(err){explicitLogout.current=false;setError(err.message);throw err;}
+ }
+ async function savePreferences(patch){
+  const owner=identity.session?.user.id;
+  const operation=async()=>{
+   if(!owner||latestSession.current?.user.id!==owner)throw new Error('Account changed. Settings were not saved.');
+   const preferences={...preferencesRef.current,...patch};const result=await accountStore.save(preferences,owner);
+   if(latestSession.current?.user.id!==owner)throw new Error('Account changed.');
+   preferencesRef.current=result.preferences;setIdentity(old=>({...old,preferences:result.preferences}));return result.preferences;
+  };
+  const task=preferencesQueue.current.then(operation,operation);preferencesQueue.current=task.catch(()=>{});return task;
+ }
+ async function deleteAccount(){
+  if(identity.status==='offline')throw new Error('Reconnect before deleting your account.');
+  explicitLogout.current=true;++generation.current;setPrivateMediaOwner(null);setIdentity(old=>({...old,status:'deleting'}));
+  try{await accountStore.prepareDelete();await stopAccountPush();
+   const {data,error}=await supabase.functions.invoke('account',{body:{action:'delete',confirmation:'DELETE'}});if(error||data?.deleted!==true)throw new Error('Account deletion was not completed. Backend setup or recent reauthentication may be required. Your data is preserved unless the server confirmed deletion.');
+   await accountStore.deleteLocal();await signOut();
+  }catch(err){explicitLogout.current=false;await reconcile(latestSession.current);setError(err.message);throw err;}
+ }
+ const beginSignIn=async()=>{supabase?.auth.stopAutoRefresh();await accountStore.beginSignIn();explicitLogout.current=false;setError('');supabase?.auth.startAutoRefresh();};
+ async function updatePassword(password){const {error}=await supabase.auth.updateUser({password});if(error)throw error;setRecovery(false);window.history.replaceState({},'',window.location.pathname);await reconcile(latestSession.current);}
+ return <Context.Provider value={{...identity,error,integrationWarning,recovery,setError,beginSignIn,cancelRecovery:()=>{setRecovery(false);window.history.replaceState({},'',window.location.pathname);},signOut,deleteAccount,savePreferences,updatePassword,retry:()=>reconcile(latestSession.current),redirect:authRedirect}}>{children}</Context.Provider>;
+}
+// One provider/session manager for the entire private application.
+// eslint-disable-next-line react-refresh/only-export-components
+export function useAuth(){return useContext(Context);}

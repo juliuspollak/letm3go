@@ -49,3 +49,8 @@ Build 2 now has a successful local Release archive at
 `.build/device`. This archive has not been exported with App Store distribution
 signing, uploaded, or processed by TestFlight. Smart-activity details and remaining
 remote/device verification are in [the build 2 report](smart-activities-milestone.md).
+
+Build 3 introduces mandatory account/onboarding guards and encrypted per-user
+native stores. It keeps optional Apple/APNs capabilities disabled pending their
+own provider/profile setup. See [build 3 setup and test boundaries](auth-onboarding-build-3.md)
+and [the backend approval scope](backend-approval-build-3.md). No upload has occurred.

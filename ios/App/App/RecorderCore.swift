@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct GPSPoint: Codable {
     var latitude: Double
@@ -96,42 +97,51 @@ final class RecordingStorage {
     let directory: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    init(directory: URL) throws {
+    private let encryptionKey: Data?
+    init(directory: URL, encryptionKey: Data? = nil) throws {
         self.directory = directory
+        self.encryptionKey = encryptionKey
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    func writeData(_ data: Data, name: String) throws {
+        let output: Data
+        if let key = encryptionKey { output = try AES.GCM.seal(data,using:SymmetricKey(data:key)).combined! } else { output = data }
+        let url = directory.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
+        #if os(iOS)
+        try output.write(to:url,options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
+        #else
+        try output.write(to:url,options:.atomic)
+        #endif
+    }
+    func readData(name: String) throws -> Data {
+        let data = try Data(contentsOf:directory.appendingPathComponent(name))
+        if let key = encryptionKey { return try AES.GCM.open(AES.GCM.SealedBox(combined:data),using:SymmetricKey(data:key)) }
+        return data
     }
     var tombstonesURL: URL { directory.appendingPathComponent("deletions.log") }
     func deletedIDs() throws -> Set<String> {
         guard FileManager.default.fileExists(atPath:tombstonesURL.path) else { return [] }
-        return Set(try String(contentsOf:tombstonesURL, encoding:.utf8).split(separator:"\n").map(String.init))
+        return Set(String(decoding:try readData(name:"deletions.log"),as:UTF8.self).split(separator:"\n").map(String.init))
     }
     func delete(_ id: String) throws {
         guard UUID(uuidString:id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
         var ids = try deletedIDs(); ids.insert(id)
         let data = Data((ids.sorted().joined(separator:"\n")+"\n").utf8)
-        #if os(iOS)
-        try data.write(to:tombstonesURL,options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try data.write(to:tombstonesURL,options:.atomic)
-        #endif
+        try writeData(data,name:"deletions.log")
         let url = directory.appendingPathComponent("\(id).json")
         if FileManager.default.fileExists(atPath:url.path) { try FileManager.default.removeItem(at:url) }
     }
     func save(_ trip: RecordedActivity) throws {
         guard UUID(uuidString:trip.id) != nil, !(try deletedIDs()).contains(trip.id) else { throw CocoaError(.fileWriteNoPermission) }
         let data = try encoder.encode(trip)
-        let url = directory.appendingPathComponent("\(trip.id).json")
-        #if os(iOS)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try data.write(to: url, options: .atomic)
-        #endif
+        try writeData(data,name:"\(trip.id).json")
     }
     func load() throws -> [RecordedActivity] {
         let deleted = try deletedIDs()
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil }
-            .map { try decoder.decode(RecordedActivity.self, from: Data(contentsOf: $0)) }
+            .map { try decoder.decode(RecordedActivity.self, from: readData(name:$0.lastPathComponent)) }
             .filter { !deleted.contains($0.id) }
             .sorted { $0.startedAt > $1.startedAt }
     }

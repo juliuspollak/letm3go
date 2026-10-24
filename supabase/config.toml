@@ -71,3 +71,11 @@ entrypoint = "./functions/health/index.ts"
 [functions.journeys]
 verify_jwt = false
 entrypoint = "./functions/journeys/index.ts"
+
+[functions.account]
+verify_jwt = false
+entrypoint = "./functions/account/index.ts"
+
+[functions.tesla]
+verify_jwt = false
+entrypoint = "./functions/tesla/index.ts"

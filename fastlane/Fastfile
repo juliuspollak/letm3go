@@ -17,7 +17,7 @@ platform :ios do
     latest = latest_testflight_build_number(api_key: connect_key, app_identifier: APP_IDENTIFIER, version: version, initial_build_number: 0).to_i
     override = ENV.fetch('BUILD_NUMBER_OVERRIDE', '').strip
     UI.user_error!('Build override must be a positive integer') unless override.empty? || override.match?(/\A[1-9]\d*\z/)
-    number = override.empty? ? latest + 1 : override.to_i
+    number = override.empty? ? [latest + 1, get_build_number(xcodeproj: 'ios/App/App.xcodeproj').to_i].max : override.to_i
     UI.user_error!('Build number must exceed the latest TestFlight build') if number <= latest
     increment_build_number(build_number: number, xcodeproj: 'ios/App/App.xcodeproj')
     update_code_signing_settings(

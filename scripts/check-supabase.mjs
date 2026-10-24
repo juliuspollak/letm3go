@@ -23,7 +23,7 @@ for (const [name, route] of [['Auth gateway', '/auth/v1/settings']]) {
       method: 'GET', headers: { apikey: key }, redirect: 'error', signal: AbortSignal.timeout(15000),
     });
     console.log(`${response.ok ? 'PASS' : 'FAIL'}: ${name} returned HTTP ${response.status}.`);
-    await response.body?.cancel();
+    if(response.ok){const settings=await response.json();console.log(`Auth settings: email=${settings.external?.email===true}, Apple=${settings.external?.apple===true}, email auto-confirm=${settings.mailer_autoconfirm===true}, signups disabled=${settings.disable_signup===true}.`);}else await response.body?.cancel();
     if (!response.ok) failed = true;
   } catch {
     failed = true;

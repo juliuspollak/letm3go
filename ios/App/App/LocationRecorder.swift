@@ -14,14 +14,22 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var currentSpeed: Double = 0
     var lastFixAt: Double?
     var recoveryMessage = ""
-    let motionManager = CMMotionActivityManager()
+    var motionManager: CMMotionActivityManager?
     var motion = MotionEvidence()
     var detector = AutomaticDetector()
     var automaticTrip: RecordedActivity?
-    var automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-enabled")
+    var automaticEnabled = false
+    var ownerID: String?
+    var uiUnlocked = false
+    var accountDeleting = false
+    var accountSuspended = true
+    var storeOpened = false
+    var trackingBoundary: Double = 0
+    var preferences = AccountPreferences()
     var places: [SavedPlace] = []
     var arrivalTimer: Timer?
-    var automaticAvailable: Bool { automaticEnabled && manager.authorizationStatus == .authorizedAlways && CLLocationManager.locationServicesEnabled() }
+    var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && CLLocationManager.locationServicesEnabled() }
+    var lastAutomaticFixAt: Double?
     var motionPermission: String { String(describing:CMMotionActivityManager.authorizationStatus()) }
 
     override init() {
@@ -33,30 +41,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         manager.showsBackgroundLocationIndicator = true
         manager.allowsBackgroundLocationUpdates = true
         do {
-            let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            storage = try RecordingStorage(directory: root.appendingPathComponent("Letm3goRecordings", isDirectory: true))
-            var values = URLResourceValues(); values.isExcludedFromBackup = true
-            var dir = storage!.directory; try dir.setResourceValues(values)
-            let stored = try storage!.load()
-            trips = stored.filter { $0.state == "finished" }
-            let unfinished = stored.filter { $0.state != "finished" }
-            active = unfinished.first { $0.recordingMode != "automatic" }
-            for var interrupted in unfinished where interrupted.recordingMode == "automatic" {
-                interrupted.recoverAfterInterruption()
-                interrupted.finish(at:interrupted.points.last?.timestamp ?? interrupted.startedAt)
-                try storage!.save(interrupted); trips.insert(interrupted,at:0)
-            }
-            let placesFile = storage!.directory.appendingPathComponent("places.data")
-            if FileManager.default.fileExists(atPath:placesFile.path) { places = try JSONDecoder().decode([SavedPlace].self,from:Data(contentsOf:placesFile)) }
-
-            if var recovered = active, recovered.state == "recording" {
-                recovered.recoverAfterInterruption()
-                try storage!.save(recovered)
-                active = recovered
-                recoveryMessage = "Recovered a paused activity after interruption. Resume explicitly; the interruption is excluded from duration."
-            }
-            if unfinished.filter({ $0.recordingMode != "automatic" }).count > 1 { lastError = "Multiple unfinished records found. Local files are preserved; contact support before starting another activity." }
-        } catch { lastError = "Local recording storage could not be loaded: \(error.localizedDescription)"; storage = nil }
+            try sealLegacyData()
+            if try AccountKeychain.get("signed-out") == nil, let data = try AccountKeychain.get("active-account"), let id = String(data:data,encoding:.utf8) { try openAccount(id) }
+        } catch { lastError = "Private storage could not be opened. Unlock the device and sign in to retry."; storage = nil; ownerID = nil }
         refreshAutomaticMonitoring()
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self, self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970) else { return }
@@ -91,7 +78,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         trip.details = ActivityDetails()
         try storage!.save(trip)
         active = trip; lastError = ""; recoveryMessage = ""; accuracy = nil; lastFixAt = nil
-        startMotionUpdates()
+        if CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
         beginUpdates()
     }
     func beginUpdates() {
@@ -120,6 +107,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if active?.state == "recording" { beginUpdates() } else { manager.stopUpdatingLocation(); refreshAutomaticMonitoring() }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard !accountSuspended else { return }
         if active == nil { processAutomatic(locations); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970
@@ -157,10 +145,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func failure(_ message: String) -> NSError { NSError(domain: "Letm3goRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     func dictionary(_ trip: RecordedActivity) -> [String: Any] {
         guard let data = try? JSONEncoder().encode(trip), var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [:] }
-        if let storage = storage, let photos = trip.details?.photos {
+        if storage != nil, let photos = trip.details?.photos {
             dict["localPhotos"] = photos.map { photo -> [String:Any] in
                 var item = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(photo))) as? [String:Any] ?? [:]
-                item["path"] = storage.directory.appendingPathComponent("media").appendingPathComponent(photo.filename).path
+                item["privateURI"] = "private-photo:\(ownerID ?? "")/\(trip.id)/\(photo.id)"
                 return item
             }
         }
@@ -169,7 +157,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func snapshot() -> [String: Any] {
         let info = Bundle.main.infoDictionary ?? [:]
-        return ["automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
+        guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
+        let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
+        return ["ownerID":ownerID!, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
+                "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticTrip != nil ? "recording" : detector.phase,
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
                 "motionAvailable": CMMotionActivityManager.isActivityAvailable(), "motionPermission": motionPermission,
@@ -194,6 +185,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     let geocoder = CLGeocoder()
     var photoCall: CAPPluginCall?
     var photoTripID: String?
+    var photoOwnerID: String?
     public let identifier = "ManualRecorderPlugin"
     public let jsName = "ManualRecorder"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -210,15 +202,27 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "suggestPhotos", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "acceptSuggestion", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipSuggestion", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readPhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "transition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise)
     ]
+    func requireAccount(_ call: CAPPluginCall) -> Bool {
+        guard LocationRecorder.shared.uiUnlocked, LocationRecorder.shared.storeOpened, LocationRecorder.shared.ownerID != nil, !LocationRecorder.shared.accountDeleting else { call.reject("Sign in to access private device data."); return false }; return true
+    }
+    @objc func readPhoto(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let r = LocationRecorder.shared
+        guard call.getString("ownerID") == r.ownerID, let trip = r.trips.first(where:{$0.id == call.getString("tripID")}),
+              let photo = trip.details?.photos.first(where:{$0.id == call.getString("photoID")}), let storage = r.storage else { call.reject("Photo unavailable."); return }
+        do { let data = try storage.readData(name:"media/\(photo.filename)"); call.resolve(["url":"data:image/jpeg;base64,\(data.base64EncodedString())"]) } catch { call.reject("Photo unavailable.") }
+    } }
     @objc func getState(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(LocationRecorder.shared.snapshot()) } }
     @objc func requestPermission(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            guard self.requireAccount(call) else { return }
             let recorder = LocationRecorder.shared
             if call.getBool("always") == true && recorder.manager.authorizationStatus == .authorizedWhenInUse { recorder.manager.requestAlwaysAuthorization() }
             else { recorder.manager.requestWhenInUseAuthorization() }
@@ -227,18 +231,21 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func start(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            guard self.requireAccount(call) else { return }
             do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }
     }
     @objc func transition(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            guard self.requireAccount(call) else { return }
             do { try LocationRecorder.shared.transition(call.getString("action") ?? ""); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }
     }
     @objc func openSettings(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            guard self.requireAccount(call) else { return }
             guard let url = URL(string: UIApplication.openSettingsURLString) else { call.reject("Settings unavailable"); return }
             UIApplication.shared.open(url, options: [:]) { success in success ? call.resolve() : call.reject("Unable to open Settings") }
         }
@@ -248,6 +255,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
 @objc(JourneyViewController)
 class JourneyViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
+        bridge?.registerPluginInstance(SecureSessionPlugin())
         bridge?.registerPluginInstance(ManualRecorderPlugin())
         _ = LocationRecorder.shared
     }

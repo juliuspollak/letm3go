@@ -10,6 +10,7 @@ export function readConfig(env = {}) {
     url, key, configured: validUrl && Boolean(key),
     appleEnabled: env.VITE_ENABLE_APPLE_AUTH === 'true',
     pushEnabled: env.VITE_ENABLE_PUSH === 'true',
+    teslaEnabled: env.VITE_ENABLE_TESLA === 'true',
     apnsEnvironment: env.VITE_APNS_ENVIRONMENT === 'production' ? 'production' : 'sandbox',
   };
 }

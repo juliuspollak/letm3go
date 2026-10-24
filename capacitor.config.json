@@ -2,6 +2,18 @@
   "appId": "au.jpollak.journey",
   "appName": "Letm3go",
   "webDir": "dist",
-  "ios": { "contentInset": "automatic", "backgroundColor": "#16352f" },
-  "plugins": { "PushNotifications": { "presentationOptions": ["badge", "sound", "alert"] } }
+  "ios": {
+    "contentInset": "automatic",
+    "backgroundColor": "#16352f"
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  },
+  "loggingBehavior": "none"
 }

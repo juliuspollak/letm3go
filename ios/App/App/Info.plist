@@ -78,9 +78,9 @@
 		</dict>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Letm3go records your route when you start an activity, including while the screen is locked.</string>
+	<string>Letm3go records your route when you start an activity or choose to enable automatic history.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Allow background location for activities you explicitly start. Family sharing and automatic history stay off.</string>
+	<string>Keep a private journey history in the background when automatic history is enabled. Family location sharing is separate and off by default.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
@@ -89,5 +89,7 @@
 	<string>Letm3go uses motion activity to distinguish walking, cycling and driving when you enable automatic tracking.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Find and preview photos taken during an activity. Only photos you explicitly add are copied to this device; nothing uploads automatically.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a profile photo or journey memory only when you choose to use the camera.</string>
 </dict>
 </plist>

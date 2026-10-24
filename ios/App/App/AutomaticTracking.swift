@@ -5,7 +5,8 @@ import CoreMotion
 extension LocationRecorder {
     func startMotionUpdates() {
         guard CMMotionActivityManager.isActivityAvailable() else { return }
-        motionManager.startActivityUpdates(to:.main) { [weak self] activity in
+        if motionManager == nil { motionManager = CMMotionActivityManager() }
+        motionManager?.startActivityUpdates(to:.main) { [weak self] activity in
             guard let self = self, let activity = activity else { return }
             var types: [String] = []
             if activity.walking { types.append("Walking") }
@@ -26,8 +27,9 @@ extension LocationRecorder {
         guard storage != nil else { throw failure("Recording storage is unavailable.") }
         if !enabled, automaticTrip != nil { try finishAutomatic() }
         automaticEnabled = enabled
-        UserDefaults.standard.set(enabled,forKey:"letm3go-automatic-enabled")
-        if enabled { startMotionUpdates() } else { motionManager.stopActivityUpdates(); motion = MotionEvidence(); detector.reset() }
+        lastAutomaticFixAt = nil
+        UserDefaults.standard.set(enabled,forKey:"letm3go-automatic-\(ownerID ?? "locked")")
+        if enabled { startMotionUpdates() } else { motionManager?.stopActivityUpdates(); motion = MotionEvidence(); detector.reset() }
         refreshAutomaticMonitoring()
     }
     func refreshAutomaticMonitoring() {
@@ -45,7 +47,7 @@ extension LocationRecorder {
                 startMotionUpdates()
             }
         } else {
-            if !automaticEnabled, active == nil { motionManager.stopActivityUpdates(); motion = MotionEvidence() }
+            if !automaticEnabled, active == nil { motionManager?.stopActivityUpdates(); motion = MotionEvidence() }
             manager.stopMonitoringSignificantLocationChanges()
             manager.stopMonitoringVisits()
             for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { manager.stopMonitoring(for:region) }
@@ -67,6 +69,8 @@ extension LocationRecorder {
         if CMMotionActivityManager.authorizationStatus() != .authorized { motion = MotionEvidence() }
         for location in locations {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
+            if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
+            guard sample.timestamp >= trackingBoundary else { continue }
             let event = detector.observe(sample,motion:motion,manualActive:false,now:now)
             do {
                 if event == "depart", let first = detector.candidate.first {

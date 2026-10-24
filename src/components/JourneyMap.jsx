@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { resolvePhoto } from '../lib/privateMedia.js';
 
 export default function JourneyMap({ journeys, onPhoto, large=false }) {
   const container=useRef(null);
@@ -20,7 +21,8 @@ export default function JourneyMap({ journeys, onPhoto, large=false }) {
       [j.route[0],j.route.at(-1)].forEach((p,i)=>L.marker(p,{icon:L.divIcon({className:'route-marker',html:i?'⚑':'',iconSize:[20,20]})}).addTo(map).bindTooltip(i?'Finish':'Start'));
       j.photos.filter(p=>p.point).forEach(p=>{
         const button=document.createElement('button');button.className=`photo-pin ${p.locationSource==='inferred'?'inferred-photo':''}`;button.setAttribute('aria-label',`View photo: ${p.caption}`);
-        const img=document.createElement('img');img.src=p.url;img.alt=p.caption;button.append(img);
+        const img=document.createElement('img');img.alt=p.caption;button.append(img);
+        resolvePhoto(p.url).then(url=>{if(container.current?.contains(button))img.src=url;}).catch(()=>{button.title='Photo unavailable';});
         button.onclick=()=>onPhoto?.(j,p.id);
         L.marker(p.point,{icon:L.divIcon({className:'photo-marker',html:button,iconSize:[48,48],iconAnchor:[24,24]})}).addTo(map);
       });

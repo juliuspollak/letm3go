@@ -21,6 +21,8 @@
 		B40000000000000000000001 /* AutomaticTracking.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001; };
 		B40000000000000000000002 /* ActivityServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002; };
 		B40000000000000000000003 /* PhotoSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000003; };
+		B60000000000000000000001 /* AccountSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001; };
+		B80000000000000000000001 /* AppleAuthentication.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +42,8 @@
 		B30000000000000000000001 /* AutomaticTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticTracking.swift; sourceTree = "<group>"; };
 		B30000000000000000000002 /* ActivityServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityServices.swift; sourceTree = "<group>"; };
 		B30000000000000000000003 /* PhotoSuggestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSuggestions.swift; sourceTree = "<group>"; };
+		B50000000000000000000001 /* AccountSecurity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSecurity.swift; sourceTree = "<group>"; };
+		B70000000000000000000001 /* AppleAuthentication.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAuthentication.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +83,8 @@
 				B30000000000000000000001 /* AutomaticTracking.swift */,
 				B30000000000000000000002 /* ActivityServices.swift */,
 				B30000000000000000000003 /* PhotoSuggestions.swift */,
+				B50000000000000000000001 /* AccountSecurity.swift */,
+				B70000000000000000000001 /* AppleAuthentication.swift */,
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
@@ -179,6 +185,8 @@
 				B40000000000000000000001 /* AutomaticTracking.swift in Sources */,
 				B40000000000000000000002 /* ActivityServices.swift in Sources */,
 				B40000000000000000000003 /* PhotoSuggestions.swift in Sources */,
+				B60000000000000000000001 /* AccountSecurity.swift in Sources */,
+				B80000000000000000000001 /* AppleAuthentication.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -321,7 +329,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 8YP6PFWVZ9;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -344,7 +352,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 8YP6PFWVZ9;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (

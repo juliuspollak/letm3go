@@ -71,3 +71,11 @@ are now implemented. See [the build 2 report](docs/smart-activities-milestone.md
 for precise implementation boundaries, security tests, signed artifacts and
 physical test cases. Publication/cloud integration and live Tesla ingestion
 remain incomplete; proposed remote changes require approval.
+
+## Authentication and onboarding — build 3
+
+Private application use now requires a confirmed Supabase account. First-time
+users complete saved onboarding; iOS sessions use Keychain and native data is
+encrypted per account. Earlier anonymous records are preserved separately rather
+than automatically assigned to a login. See [build 3 details and setup](docs/auth-onboarding-build-3.md)
+for implemented behavior, external activation steps and test boundaries.

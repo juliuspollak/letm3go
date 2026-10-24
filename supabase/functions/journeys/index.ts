@@ -34,6 +34,9 @@ Deno.serve(async request=>{
   const {data:auth,error:authError}=await userClient.auth.getUser();
   if(authError||!auth.user)return reply({error:'Sign in required'},401);
   const owner=auth.user.id;
+  const {data:deleting,error:deletionError}=await admin.from('account_deletion_requests').select('owner_id').eq('owner_id',owner).maybeSingle();
+  if(deletionError)return reply({error:'Account services need backend configuration'},503);
+  if(deleting)return reply({error:'Account deletion is in progress'},409);
   const {data:budget}=await admin.rpc('consume_operation',{p_key:`user:${owner}`,p_max:120});if(!budget)return reply({error:'Please retry later'},429);
   const body=await boundedJSON(request);
   if(body.action==='publicMedia'){
