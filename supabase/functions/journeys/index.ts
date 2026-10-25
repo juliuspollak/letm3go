@@ -82,7 +82,10 @@ Deno.serve(async request=>{
    if(existing)return reply({id:mediaID,alreadyUploaded:true});
    const key=`${owner}/${trip.id}/${mediaID}.jpg`;
    await r2().send(new PutObjectCommand({Bucket:bucket,Key:key,Body:image,ContentType:'image/jpeg',CacheControl:'private, max-age=60'}));
-   const {error:insertError}=await admin.from('media_assets').insert({id:mediaID,owner_id:owner,activity_id:trip.id,object_key:key,caption:String(body.caption||'').slice(0,500),byte_size:image.length,mime_type:'image/jpeg'});
+   const latitude=typeof body.latitude==='number'&&Number.isFinite(body.latitude)&&Math.abs(body.latitude)<=90?body.latitude:null;
+   const longitude=typeof body.longitude==='number'&&Number.isFinite(body.longitude)&&Math.abs(body.longitude)<=180?body.longitude:null;
+   const locationSource=['gps','inferred'].includes(body.locationSource)&&latitude!==null&&longitude!==null?body.locationSource:'unlocated';
+   const {error:insertError}=await admin.from('media_assets').insert({id:mediaID,owner_id:owner,activity_id:trip.id,object_key:key,caption:String(body.caption||'').slice(0,500),byte_size:image.length,mime_type:'image/jpeg',latitude,longitude,location_source:locationSource});
    if(insertError){await r2().send(new DeleteObjectCommand({Bucket:bucket,Key:key}));throw insertError;}
    return reply({id:mediaID});
   }
