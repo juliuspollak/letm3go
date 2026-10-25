@@ -140,7 +140,7 @@ function PrivateApp(){
   document.addEventListener('keydown',keydown);
   return()=>{document.body.style.overflow=overflow;document.removeEventListener('keydown',keydown);previous?.focus();};
  },[sheet,lightbox]);
- const openPhoto=useCallback((trip,id)=>setLightbox({trip,index:trip.photos.findIndex(p=>p.id===id)}),[setLightbox]);
+ const openPhoto=useCallback((trip,id)=>{const index=trip.photos?.findIndex(p=>p.id===id)??-1;if(index>=0)setLightbox({trip,index});},[setLightbox]);
  async function bookmark(id){const next=saved.includes(id)?saved.filter(x=>x!==id):[...saved,id];try{await auth.savePreferences({bookmarks:next});}catch(err){setError(err.message||'Favourite could not be saved.');}}
  const sort=metricView==="Today's distance"?'distance':metricView==='Recorded time'?'duration':metricView==='Activities today'?'newest':sortPreference;
  const visibleJourneys=grouping.journeys;
@@ -202,6 +202,6 @@ function PrivateApp(){
  {sheet==='household'&&<Household/>}
 
 {error&&<p role="alert" className="error">{error}</p>}</DismissibleSheet></div>}
- {lightbox&&<div className="lightbox" role="dialog" aria-modal="true" aria-label="Journey photographs"><button className="close icon-button" aria-label="Close photographs" onClick={()=>setLightbox(null)}><X/></button><PrivateImage src={lightbox.trip.photos[lightbox.index].url} alt={lightbox.trip.photos[lightbox.index].caption}/><p>{lightbox.trip.photos[lightbox.index].caption}</p><div><button className="icon-button" aria-label="Previous photo" disabled={lightbox.index===0} onClick={()=>setLightbox({...lightbox,index:lightbox.index-1})}><ArrowLeft/></button><span>{lightbox.index+1} / {lightbox.trip.photos.length} · {lightbox.trip.source?'Private photo':'Demo photo'}</span><button className="icon-button" aria-label="Next photo" disabled={lightbox.index===lightbox.trip.photos.length-1} onClick={()=>setLightbox({...lightbox,index:lightbox.index+1})}><ArrowRight/></button></div></div>}
+ {lightbox&&<div className="lightbox" role="dialog" aria-modal="true" aria-label="Journey photographs" onClick={e=>{if(e.target===e.currentTarget)setLightbox(null);}}><button type="button" className="close icon-button" aria-label="Close photographs" onClick={()=>setLightbox(null)}><X/></button><PrivateImage src={lightbox.trip.photos[lightbox.index].url} alt={lightbox.trip.photos[lightbox.index].caption}/><p>{lightbox.trip.photos[lightbox.index].caption}</p><div><button className="icon-button" aria-label="Previous photo" disabled={lightbox.index===0} onClick={()=>setLightbox({...lightbox,index:lightbox.index-1})}><ArrowLeft/></button><span>{lightbox.index+1} / {lightbox.trip.photos.length} · {lightbox.trip.source?'Private photo':'Demo photo'}</span><button className="icon-button" aria-label="Next photo" disabled={lightbox.index===lightbox.trip.photos.length-1} onClick={()=>setLightbox({...lightbox,index:lightbox.index+1})}><ArrowRight/></button></div></div>}
  </div></>;
 }
