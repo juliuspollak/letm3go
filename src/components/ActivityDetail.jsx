@@ -14,18 +14,8 @@ export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,on
  const [trimEnd,setTrimEnd]=useState(trip.visibleRouteEnd??Math.max(0,pointCount-1));
  const trimValid=pointCount>=2&&trimStart<trimEnd;
  const trimChanged=trimStart!==(trip.visibleRouteStart??0)||trimEnd!==(trip.visibleRouteEnd??pointCount-1);
- const trimPoints=trimValid?trip.points.slice(trimStart,trimEnd+1):trip.points;
- const trimPreview={...trip,route:trimPoints.map(p=>[p.latitude,p.longitude]),routeSegments:trimPoints.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
+ const fullPreview={...trip,route:trip.points.map(p=>[p.latitude,p.longitude]),routeSegments:trip.points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
  const pointTime=i=>new Date(trip.points[i]?.timestamp*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',second:'2-digit'});
- const adjust=(side,seconds)=>{
-  const current=side==='start'?trimStart:trimEnd;
-  const target=(trip.points[current]?.timestamp||0)+seconds;
-  let index=current;
-  if(seconds<0)while(index>0&&trip.points[index-1].timestamp>=target)index--;
-  else while(index<pointCount-1&&trip.points[index+1].timestamp<=target)index++;
-  if(side==='start')setTrimStart(Math.min(index,trimEnd-1));
-  else setTrimEnd(Math.max(index,trimStart+1));
- };
  async function applyTrim(){
   if(!trimValid)return;
   const result=await perform('setRouteDisplay',{id:trip.id,start:trimStart,end:trimEnd});
@@ -37,16 +27,16 @@ export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,on
  return <SwipeBack onBack={onBack}><div className="detail page-enter"><button className="back text-button" onClick={onBack}><ArrowLeft size={18}/> Back to activities</button><div className="page-heading activity-detail-heading"><div><div className="activity-title-line"><h1>{trip.title}</h1>{local&&<button type="button" className="icon-button activity-title-edit" aria-label="Edit activity" onClick={onEdit} disabled={busy}><Pencil size={17}/></button>}{local&&<ActivityPrivacy trip={trip} places={places||[]}/>}</div><p className="activity-detail-subtitle muted">{trip.activity} · {trip.date}</p><p className="muted"><MapPin size={14}/>{trip.location}</p></div></div>
  {trip.telemetryIncomplete&&<p className="notice">Route incomplete · Missing telemetry has not been reconstructed.</p>}
  {trip.sourceRecords&&<section className="notice"><h3>Recordings of this drive</h3><p>Both sources are preserved. Photos and notes stay with their originals.</p>{trip.sourceRecords.map(s=><button key={s.id} className="secondary" onClick={()=>onSource?.(s)}>View {s.source==='tesla'?'Tesla':'iPhone'} recording</button>)}</section>}
- {trip.route.length?<JourneyMap journeys={[trimPreview]} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {trip.route.length?<JourneyMap journeys={[pointCount>=2?fullPreview:trip]} trimRange={local&&pointCount>=2?{start:trimStart,end:trimEnd,points:trip.points}:null} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
  {trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
   <h2>Route shown on map</h2>
   <p className="muted small-copy">Choose which part of this recording appears on the map. Original GPS points are kept. The map above updates as you drag.</p>
-  <div className="route-range">
+  <div className="route-range route-dual-slider">
    <div className="route-range-track" aria-hidden="true"><span style={{left:`${100*trimStart/(pointCount-1)}%`,right:`${100*(pointCount-1-trimEnd)/(pointCount-1)}%`}}/></div>
-   <label>Start · {pointTime(trimStart)}<input aria-label="Visible route start" type="range" min="0" max={trimEnd-1} value={trimStart} onChange={e=>setTrimStart(Number(e.target.value))}/></label>
-   <label>Finish · {pointTime(trimEnd)}<input aria-label="Visible route finish" type="range" min={trimStart+1} max={pointCount-1} value={trimEnd} onChange={e=>setTrimEnd(Number(e.target.value))}/></label>
+   <input aria-label="Visible route start" type="range" min="0" max={pointCount-1} value={trimStart} onChange={e=>setTrimStart(Math.min(Number(e.target.value),trimEnd-1))}/>
+   <input aria-label="Visible route finish" type="range" min="0" max={pointCount-1} value={trimEnd} onChange={e=>setTrimEnd(Math.max(Number(e.target.value),trimStart+1))}/>
   </div>
-  <div className="detail-actions"><button type="button" className="secondary" onClick={()=>adjust('start',-5)}>Start −5s</button><button type="button" className="secondary" onClick={()=>adjust('start',5)}>Start +5s</button><button type="button" className="secondary" onClick={()=>adjust('end',-5)}>End −5s</button><button type="button" className="secondary" onClick={()=>adjust('end',5)}>End +5s</button></div>
+  <div className="route-range-times"><span>Start · {pointTime(trimStart)}</span><span>Finish · {pointTime(trimEnd)}</span></div>
   <div className="detail-actions"><button type="button" className="secondary" onClick={()=>{setTrimStart(0);setTrimEnd(pointCount-1);}}>Show full route</button><button type="button" className="primary" disabled={busy||!trimValid||!trimChanged} onClick={applyTrim}>Save visible route</button></div>
  </section>}
  <div className="record-metrics"><div><strong>{trip.distance} km</strong><span>Estimated distance</span></div><div><strong>{trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`}</strong><span>Active duration</span></div><div><strong>{trip.source?speedLabel(trip.distanceMeters,trip.durationSeconds):'—'}</strong><span>Average speed</span></div></div>
