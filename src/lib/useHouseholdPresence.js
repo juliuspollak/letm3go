@@ -10,7 +10,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   if(mine.error||others.error){setError('Social presence is unavailable. The database migration may not be deployed.');return;}
   setSelf(mine.data?.[0]||{sharing_enabled:false});setPeople(others.data||[]);setError('');
  },[owner,online]);
- useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>void refresh(),60000);return()=>{clearTimeout(initial);clearInterval(timer);};},[refresh,online]);
+ useEffect(()=>{if(!online)return;const load=()=>{if(document.visibilityState==='visible')void refresh();};const initial=setTimeout(load,0);const timer=setInterval(load,15000);document.addEventListener('visibilitychange',load);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',load);};},[refresh,online]);
  useEffect(()=>{
   if(!owner||!online||!supabase||self?.sharing_enabled!==true){lastAutomatic.current=undefined;lastPlace.current=null;lastPlaceSentAt.current=0;return;}
   if(lastAutomatic.current===automaticActivity)return;
