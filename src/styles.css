@@ -274,4 +274,4 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .lightbox>img{max-height:calc(70dvh - env(safe-area-inset-top));pointer-events:none}
 
 .journey-custom-tags .journey-remember-place{display:flex;align-items:center;gap:9px;flex:1 0 100%;font-size:12px;font-weight:500;color:var(--muted);margin-top:2px;cursor:pointer}
-.journey-custom-tags .journey-remember-place input{width:17px;height:17px;flex:none;margin:0;accent-color:var(--accent)}
+.journey-custom-tags .journey-remember-place input{width:17px;height:17px;flex:none;margin:0;padding:0;border:0;accent-color:var(--accent)}
