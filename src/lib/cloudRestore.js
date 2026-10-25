@@ -25,7 +25,7 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
    if(result.restored){restored++;locallyKnown.add(row.id.toLowerCase());}
   }
   if(row.sync_fingerprint)receipts[row.id]={owner,fingerprint:row.sync_fingerprint,revision:row.revision};
-  const {data:assets,error:assetsError}=await supabase.from('media_assets').select('id,caption').eq('owner_id',owner).eq('activity_id',row.id).limit(50);
+  const {data:assets,error:assetsError}=await supabase.from('media_assets').select('id,caption,latitude,longitude,location_source').eq('owner_id',owner).eq('activity_id',row.id).limit(50);
   if(assetsError)throw new Error('Could not retrieve this activity\'s private photo metadata.');
   for(const photo of assets||[]){
    const {data:link,error:linkError}=await supabase.functions.invoke('journeys',{body:{action:'download',id:row.id,mediaID:photo.id}});
@@ -36,7 +36,7 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
    if(bytes.byteLength>5_000_000)throw new Error('Cloud photo exceeds safe recovery size.');
    const data=new Uint8Array(bytes);
    let binary='';for(let i=0;i<data.length;i+=8192)binary+=String.fromCharCode(...data.subarray(i,i+8192));
-   const outcome=await recorder.restorePhoto({tripID:row.id,photoID:photo.id,base64:btoa(binary),caption:photo.caption||''});
+   const outcome=await recorder.restorePhoto({tripID:row.id,photoID:photo.id,base64:btoa(binary),caption:photo.caption||'',latitude:photo.latitude,longitude:photo.longitude,locationSource:photo.location_source});
    if(outcome.restored)photosRestored++;
    receipts[`photo:${row.id}:${photo.id}`]={owner,uploaded:true};
   }
