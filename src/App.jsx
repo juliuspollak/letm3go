@@ -130,7 +130,7 @@ function PrivateApp(){
  const selectedActivity=selected&&!selected.isGroupedJourney?(visibleJourneys.find(j=>j.id===selected.id)||realJourneys.find(j=>j.id===selected.id)||selected):null;
  const today=new Date().toLocaleDateString('en-CA');
  const filtered=visibleJourneys.filter(t=>(!favouritesOnly||saved.includes(t.id))&&(dayFilter!=='today'||t.date===today||t.segments?.some(s=>s.date===today))&&(filter==='All activities'||t.activity===filter)&&`${t.searchIndex||''} ${t.title} ${t.location} ${t.date} ${t.collection||''} ${t.notes||''} ${t.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='duration'?b.durationSeconds-a.durationSeconds||b.startedAt-a.startedAt:sort==='distance'?b.distanceMeters-a.distanceMeters||b.startedAt-a.startedAt:b.startedAt-a.startedAt);
- const canMergeRow=t=>!t.isGroupedJourney&&t.activity==='Driving'&&t.state==='finished'&&t.source==='device';
+ const canMergeRow=t=>!t.isGroupedJourney&&(t.activity==='Driving'||t.activity==='Unknown')&&t.state==='finished'&&t.source==='device';
  const confirmMerge=async()=>{
   if(!mergeSource||!mergeTarget)return;
   const pair=[mergeSource,mergeTarget];
