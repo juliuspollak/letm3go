@@ -87,6 +87,15 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     // Draw normal pins first; full-size photo thumbnails must sit above them.
                     for pin in content.pins where (pin["kind"] as? String) != "photo" {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
+                        if (pin["kind"] as? String)=="home-presence" {
+                            let count=max(1,min(30,pin["count"] as? Int ?? 1))
+                            let bounds=CGRect(x:p.x-21,y:p.y-21,width:42,height:42)
+                            UIColor.systemPurple.setFill();ctx.fillEllipse(in:bounds)
+                            UIColor.white.setStroke();ctx.setLineWidth(3);ctx.strokeEllipse(in:bounds)
+                            let text=("⌂ " + String(count)) as NSString
+                            text.draw(at:CGPoint(x:p.x-14,y:p.y-10),withAttributes:[.font:UIFont.boldSystemFont(ofSize:14),.foregroundColor:UIColor.white])
+                            continue
+                        }
                         let color=(pin["kind"] as? String)=="location" ? UIColor.systemBlue : routeColor
                         ctx.setFillColor(color.cgColor);ctx.setStrokeColor(UIColor.white.cgColor);ctx.setLineWidth(2)
                         ctx.fillEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10));ctx.strokeEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
@@ -193,6 +202,13 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
+        if kind=="home-presence" {
+            let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
+            marker.markerTintColor = .systemPurple
+            marker.glyphImage=UIImage(systemName:"house.fill")
+            marker.canShowCallout=true
+            return marker
+        }
         if kind=="photo",let photoID=pin.metadata["photoID"] as? String,
            let thumbnail=journalPhotoThumbnail(photoID,size:52) {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
