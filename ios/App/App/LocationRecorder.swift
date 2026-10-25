@@ -337,8 +337,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             let storage=r.storage, let index=r.trips.firstIndex(where:{$0.id == tripID}) else { call.reject("Invalid recovery photo."); return }
         if r.trips[index].details?.photos.contains(where:{$0.id == photoID}) == true { call.resolve(["restored":false,"existing":true]); return }
         do {
-            let filename="\\(photoID).jpg"
-            try storage.writeData(data,name:"media/\\(filename)")
+            let filename="\(photoID).jpg"
+            try storage.writeData(data,name:"media/\(filename)")
             var trip=r.trips[index]
             var details=trip.details ?? ActivityDetails()
             guard details.photos.count < 50 else { call.reject("Activity photo limit reached."); return }
