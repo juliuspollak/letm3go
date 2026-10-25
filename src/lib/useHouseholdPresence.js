@@ -16,6 +16,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   if(lastAutomatic.current===automaticActivity)return;
   if(!automaticActivity&&lastPlace.current==='Home')return;
   lastAutomatic.current=automaticActivity;
+  if(automaticActivity)lastPlace.current=null;
   let cancelled=false;
   const send=async()=>{
    const {error:failure}=await supabase.rpc('set_household_presence',{p_enabled:true,p_activity:automaticActivity,p_place:null});
