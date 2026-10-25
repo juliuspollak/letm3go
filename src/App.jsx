@@ -50,15 +50,23 @@ function PrivateApp(){
  const realJourneys=recording.state.trips.filter(t=>t.source==='device').map(recordedJourney);
  const [draggingTrip,setDraggingTrip]=useState(null),[mergeSource,setMergeSource]=useState(null),[mergeTarget,setMergeTarget]=useState(null),[dropTarget,setDropTarget]=useState(null);
  const touchMerge=useRef(null);
+ const touchDropTarget=useRef(null);
  const touchTimer=useRef(null);
  const suppressTripClick=useRef(false);
  const [floatingTrip,setFloatingTrip]=useState(null);
  const [touchPoint,setTouchPoint]=useState(null);
  const cancelTouchMerge=()=>{
+  touchDropTarget.current=null;
   clearTimeout(touchTimer.current);touchTimer.current=null;touchMerge.current=null;
   setFloatingTrip(null);setTouchPoint(null);setDropTarget(null);
  };
  useEffect(()=>()=>clearTimeout(touchTimer.current),[]);
+ useEffect(()=>{
+  if(!floatingTrip)return;
+  const blockScroll=e=>{if(e.cancelable)e.preventDefault();};
+  document.addEventListener("touchmove",blockScroll,{passive:false});
+  return ()=>document.removeEventListener("touchmove",blockScroll);
+ },[floatingTrip]);
  const touchStartMerge=(event,trip)=>{
   if(!canMergeRow(trip)||event.touches.length!==1||mergeTarget)return;
   const t=event.touches[0],origin={x:t.clientX,y:t.clientY};
@@ -84,12 +92,14 @@ function PrivateApp(){
   setTouchPoint({x,y});
   const row=document.elementFromPoint(x,y)?.closest('[data-merge-id]');
   const id=row?.dataset.mergeId;
-  setDropTarget(id&&id!==m.id?id:null);
+  touchDropTarget.current=id&&id!==m.id?id:null;
+  setDropTarget(touchDropTarget.current);
  };
  const touchEndMerge=()=>{
-  const m=touchMerge.current, target=dropTarget;
+  const m=touchMerge.current, target=touchDropTarget.current;
   if(m?.active&&target&&target!==m.id){setMergeSource(m.id);setMergeTarget(target);}
   cancelTouchMerge();
+  if(m?.active)setTimeout(()=>{suppressTripClick.current=false;},400);
  };
  const [tab,setTab]=useState('Home'),[selected,setSelected]=useState(null),[sheet,setSheet]=useState(null),[query,setQuery]=useState(''),[filter,setFilter]=useState('All activities'),[dayFilter,setDayFilter]=useState('all'),[sort,setSort]=useState('newest'),[favouritesOnly,setFavouritesOnly]=useState(false),[error,setError]=useState(''),[lightbox,setLightbox]=useState(null),[theme,setTheme]=useState(()=>localStorage.getItem('letm3go-theme')||'light');
  useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('letm3go-theme',theme);void setNativeAppearance(theme).catch(()=>{});window.dispatchEvent(new Event('letm3go:theme-changed'));},[theme]);
