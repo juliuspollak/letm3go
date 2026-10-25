@@ -275,3 +275,12 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 .journey-custom-tags .journey-remember-place{display:flex;align-items:center;gap:9px;flex:1 0 100%;font-size:12px;font-weight:500;color:var(--muted);margin-top:2px;cursor:pointer}
 .journey-custom-tags .journey-remember-place input{width:17px;height:17px;flex:none;margin:0;padding:0;border:0;accent-color:var(--accent)}
+
+/* Trip list: readable two-line titles; protect distance and actions from ellipsis. */
+.recent-activity-row{min-width:0;gap:9px}
+.recent-activity-info{min-width:0;overflow:hidden}
+.recent-activity-info>strong{white-space:normal!important;display:-webkit-box!important;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;text-overflow:ellipsis;overflow-wrap:anywhere;line-height:1.4}
+.recent-activity-info>small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recent-activity-distance{flex:0 0 auto;min-width:44px;white-space:nowrap;text-align:right}
+.recent-activity-distance .trip-time-distance{white-space:nowrap}
+@media(max-width:480px){.recent-activity-row{padding:12px 8px;gap:7px}.recent-activity-distance{font-size:13px}.recent-activity-row>svg{width:14px}}
