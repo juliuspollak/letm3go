@@ -82,6 +82,6 @@ it('shows one grouped journey and finds it through an intermediate locality sear
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[a,b]},run:vi.fn(),busy:false,error:''});
  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
  fireEvent.change(screen.getByRole('textbox',{name:'Search journeys'}),{target:{value:'Kew'}});
- expect(screen.getByRole('button',{name:'Open Sydney → Gold Coast'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open a'})).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'Open Sydney → Gold Coast'}));expect(screen.getByRole('heading',{name:'Segments & stops'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Rename journey'})).toBeInTheDocument();expect(screen.getAllByText('Kew',{exact:true}).length).toBeGreaterThan(0);
+ expect(screen.getByRole('button',{name:'Open Driving to Gold Coast'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open a'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Open Driving to Gold Coast'}));expect(screen.getByRole('heading',{name:'Segments & stops'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Rename journey'})).toBeInTheDocument();expect(screen.getAllByText('Kew',{exact:true}).length).toBeGreaterThan(0);
 });
