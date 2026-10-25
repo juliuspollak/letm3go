@@ -131,7 +131,7 @@ extension LocationRecorder {
                         // drive. Do not write this fix to the old walking trip.
                         continue
                     } catch {
-                        lastError = "Driving transition could not be saved: \\(error.localizedDescription)"
+                        lastError = "Driving transition could not be saved: \(error.localizedDescription)"
                         drivingTransition.reset()
                     }
                 }
@@ -154,7 +154,7 @@ extension LocationRecorder {
                 } else if var trip = automaticTrip {
                     let previousDistance=trip.distanceMeters
                     if trip.accept(sample,now:now), let first = trip.points.first {
-                        if sample.speed >= 0.3 { trip.applyPrediction(SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now),distance:trip.distanceMeters-previousDistance) }
+                        if sample.speed >= 0.3 && !(["Walking", "Hiking", "Running"].contains(trip.activity) && motion.types == ["Driving"]) { trip.applyPrediction(SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now),distance:trip.distanceMeters-previousDistance) }
                         try storage.save(trip); automaticTrip = trip
                     }
                 }
@@ -180,10 +180,11 @@ extension LocationRecorder {
         walking.distanceMeters = zip(walking.points,walking.points.dropFirst()).reduce(0) { sum,pair in
             sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
         }
-        walking.activity = "Walking"
+        // Preserve the original on-foot subtype, rather than relabelling hiking or running.
+        walking.activity = ["Walking", "Hiking", "Running"].contains(walking.activity) ? walking.activity : "Walking"
         walking.finish(at:max(walking.startedAt,walking.points.last?.timestamp ?? first.timestamp))
         walking.updatedAt=Date().timeIntervalSince1970
-        walking.title="Walking"
+        walking.title=walking.activity
         var driving = RecordedActivity(activity:"Driving",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Driving")
         driving.recordingMode="automatic"
         driving.details=ActivityDetails()
