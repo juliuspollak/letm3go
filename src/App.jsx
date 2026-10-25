@@ -51,7 +51,7 @@ function PrivateApp(){
  const saved=auth.preferences.bookmarks||[];
  const recording=useRecorder(session.user.id);
  const automaticPresenceActivity=recording.state.automaticTrip?'On the move':recording.state.active?.state==='recording'?(recording.state.active.activity==='Driving'?'On the move':'Outdoors'):null;
- const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated',automaticPresenceActivity);
+ const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated',automaticPresenceActivity,recording.state.places||[]);
  const presenceHidden=presence.self?.sharing_enabled!==true;
  const [presenceBusy,setPresenceBusy]=useState(false);
  const togglePresence=async()=>{
