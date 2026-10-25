@@ -1,3 +1,4 @@
+import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
 export const GROUPING_VERSION=1;
@@ -104,7 +105,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
  const journeys=groups.map(segments=>{
-  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||s.title,location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
+  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||(automaticTitle(s)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<700):s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>internalStops(t,context));
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
@@ -112,7 +113,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
   const tags=[...new Set([...segments.flatMap(s=>s.tags||[]),...(metadata.manualTags?.[first.id]||[]),...start.tags,...end.tags,...stops.flatMap(s=>[s.name,...s.tags])])];
   const distanceMeters=segments.reduce((n,s)=>n+(s.distanceMeters||0),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
-  return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||`${start.locality||start.name.replace('Unnamed stop','Start')} → ${end.locality||end.name.replace('Unnamed stop','Destination')}`,titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
+  return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||contextualJourneyTitle(metadata.types[first.id]||first.activity,start,end,metres(endpoint(first,false),endpoint(last,true))<700),titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
  });
  // Place/stop text is indexed for singles as well as grouped journeys.
  for(const j of journeys){const stops=j.stops||j.recognisedStops||[];j.searchIndex=[j.title,j.location,j.collection,j.notes,...(j.tags||[]),...stops.flatMap(s=>[s.name,...s.tags])].filter(Boolean).join(' ').toLowerCase();}
