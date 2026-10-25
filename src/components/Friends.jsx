@@ -7,7 +7,7 @@ export default function Friends(){
  const refresh=useCallback(async()=>{try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}},[rpc]);
  useEffect(()=>{const t=setTimeout(()=>void refresh(),0);return()=>clearTimeout(t);},[refresh]);
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
- return <section className="household-friends"><h2><Users size={19}/> Friends</h2>
+ return <section className="social-panel household-friends"><h2><Users size={19}/> Friends</h2>
  <p className="muted small-copy">Friends are separate from household members. Adding a friend never shares vehicles, routes or private history. Only an explicitly shared, unexpired status may appear in their feed.</p>
  {friends.map(f=><div key={f.user_id} className="home-friend-row"><span className="home-friends-avatar"><Users size={17}/></span><span><strong>{f.display_name}</strong></span><button type="button" className="icon-button" aria-label={`Remove friend ${f.display_name}`} disabled={busy} onClick={()=>action(async()=>{await rpc('remove_friend',{p_friend:f.user_id});await refresh();})}><UserMinus size={17}/></button></div>)}
  {!friends.length&&<p className="muted small-copy">No friends added yet.</p>}
