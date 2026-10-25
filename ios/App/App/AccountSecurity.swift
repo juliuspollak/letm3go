@@ -53,6 +53,7 @@ struct SyncReceipt: Codable {
     var fingerprint: String?
     var revision: Int?
     var deleted: Bool?
+    var uploaded: Bool?
 }
 struct LocalVehicle: Codable {
     var source: String?
