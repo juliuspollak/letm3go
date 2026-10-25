@@ -171,3 +171,10 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .social-panel .privacy-footer{display:flex;align-items:center;gap:7px;margin-top:18px;line-height:1.5}
 .social-privacy-note{grid-column:1/-1;margin:0;padding:0 3px}
 @media(max-width:900px){.social-layout{grid-template-columns:1fr;gap:14px}.social-panel{padding:18px!important}}
+
+.journey-photos{margin:22px 0;padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}
+.journey-photos .section-heading{margin-bottom:12px}
+.journey-photo-actions{margin-top:14px}
+.journey-photo-actions label{display:block;font-size:12px;font-weight:600;margin:10px 0}
+.journey-photo-actions select{display:block;width:100%;font-size:16px;margin-top:8px;padding:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px}
+.journey-photo-actions .detail-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:12px 0}
