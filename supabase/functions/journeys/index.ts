@@ -13,6 +13,7 @@ Deno.serve(async request=>{
  const admin=createClient(url,service,{auth:{persistSession:false}});
  const r2=()=>new S3Client({region:Deno.env.get('R2_REGION')||'auto',endpoint:Deno.env.get('R2_ENDPOINT'),credentials:{accessKeyId:Deno.env.get('R2_ACCESS_KEY_ID')!,secretAccessKey:Deno.env.get('R2_SECRET_ACCESS_KEY')!}});
  const bucket=Deno.env.get('R2_BUCKET_NAME')!;
+ let stage='initialisation';
  try{
   const token=new URL(request.url).searchParams.get('token');
   if(request.method==='GET'&&uuid(token)){
@@ -31,13 +32,17 @@ Deno.serve(async request=>{
   }
   if(request.method!=='POST')return reply({error:'Unsupported request'},405);
   const userClient=createClient(url,anon,{global:{headers:{Authorization:request.headers.get('Authorization')||''}},auth:{persistSession:false}});
+  stage='authentication';
   const {data:auth,error:authError}=await userClient.auth.getUser();
   if(authError||!auth.user)return reply({error:'Sign in required'},401);
   const owner=auth.user.id;
+  stage='account_check';
   const {data:deleting,error:deletionError}=await admin.from('account_deletion_requests').select('owner_id').eq('owner_id',owner).maybeSingle();
   if(deletionError)return reply({error:'Account services need backend configuration'},503);
   if(deleting)return reply({error:'Account deletion is in progress'},409);
+  stage='rate_limit';
   const {data:budget}=await admin.rpc('consume_operation',{p_key:`user:${owner}`,p_max:120});if(!budget)return reply({error:'Please retry later'},429);
+  stage='request_parse';
   const body=await boundedJSON(request);
   if(body.action==='publicMedia'){
    if(!uuid(body.token)||!uuid(body.mediaID))return reply({error:'Invalid request'},400);
@@ -52,6 +57,7 @@ Deno.serve(async request=>{
    const {data:shared,error}=await admin.from('shared_journeys').select('audience,token').eq('activity_id',body.id).eq('owner_id',owner).maybeSingle();if(error)throw error;
    return reply({audience:shared?.audience||'private',token:shared?.token||null});
   }
+  stage='activity_lookup';
   const {data:trip,error}=await userClient.from('activities').select('*').eq('id',body.id).maybeSingle();
   if(error||!trip||trip.owner_id!==owner)return reply({error:'Activity unavailable'},404);
   if(body.action==='publish'){
@@ -70,6 +76,7 @@ Deno.serve(async request=>{
   }
   if(body.action==='revoke'){const {error}=await userClient.rpc('revoke_activity_publication',{p_id:trip.id});if(error)throw error;return reply({revoked:true});}
   if(body.action==='upload'){
+   stage='photo_validation';
    const {count,error:countError}=await userClient.from('media_assets').select('id',{head:true,count:'exact'}).eq('activity_id',trip.id);if(countError)throw countError;
    if((count||0)>=50)return reply({error:'Photo limit reached'},429);
    if(typeof body.base64!=='string'||body.base64.length>6_700_000)return reply({error:'Image too large'},400);
@@ -81,10 +88,12 @@ Deno.serve(async request=>{
    if(lookupError)throw lookupError;
    if(existing)return reply({id:mediaID,alreadyUploaded:true});
    const key=`${owner}/${trip.id}/${mediaID}.jpg`;
+   stage='r2_upload';
    await r2().send(new PutObjectCommand({Bucket:bucket,Key:key,Body:image,ContentType:'image/jpeg',CacheControl:'private, max-age=60'}));
    const latitude=typeof body.latitude==='number'&&Number.isFinite(body.latitude)&&Math.abs(body.latitude)<=90?body.latitude:null;
    const longitude=typeof body.longitude==='number'&&Number.isFinite(body.longitude)&&Math.abs(body.longitude)<=180?body.longitude:null;
    const locationSource=['gps','inferred'].includes(body.locationSource)&&latitude!==null&&longitude!==null?body.locationSource:'unlocated';
+   stage='media_metadata';
    const {error:insertError}=await admin.from('media_assets').insert({id:mediaID,owner_id:owner,activity_id:trip.id,object_key:key,caption:String(body.caption||'').slice(0,500),byte_size:image.length,mime_type:'image/jpeg',latitude,longitude,location_source:locationSource});
    if(insertError){await r2().send(new DeleteObjectCommand({Bucket:bucket,Key:key}));throw insertError;}
    return reply({id:mediaID});
@@ -95,5 +104,5 @@ Deno.serve(async request=>{
    return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
   }
   return reply({error:'Unsupported action'},400);
- }catch(error){console.error('Journey operation failed',error instanceof Error?error.name:'unknown');return reply({error:'Unable to complete journey operation'},400);}
+ }catch(error){console.error('Journey operation failed',stage,error instanceof Error?error.name:'unknown');return reply({error:'Cloud photo operation failed',stage},500);}
 });
