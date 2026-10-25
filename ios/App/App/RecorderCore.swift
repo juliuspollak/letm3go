@@ -229,6 +229,9 @@ struct ActivityPhoto: Codable {
 
 struct AutomaticDetector {
     var stationarySince:Double?
+    // An absence of GPS fixes is not evidence of arrival. Only conclude arrival
+    // while the recorder is receiving fresh, valid location observations.
+    var lastValidFixAt:Double?
     mutating func noteMotion(_ motion:MotionEvidence,now:Double){
         if Self.freshStationary(motion,now:now) {if stationarySince == nil {stationarySince=now}}
         else if Self.credibleMovement(motion,now:now) {stationarySince=nil}
@@ -257,6 +260,7 @@ struct AutomaticDetector {
     mutating func observe(_ point: GPSPoint, motion: MotionEvidence, manualActive: Bool, now: Double) -> String? {
         guard !manualActive else { reset(); return nil }
         guard point.accuracy >= 0, point.accuracy <= 65, abs(now-point.timestamp) <= 20 else { return nil }
+        lastValidFixAt = point.timestamp
         if let previous = candidate.last, point.timestamp <= previous.timestamp { return nil }
         if let previous = anchor, point.timestamp > previous.timestamp, previous.distance(to: point) / (point.timestamp-previous.timestamp) > 85 { return nil }
         if phase == "idle" {
@@ -281,7 +285,12 @@ struct AutomaticDetector {
         }
         return shouldArrive(now:now) ? "arrive" : nil
     }
-    func shouldArrive(now: Double) -> Bool { phase == "recording" && (now-(lastMovementAt ?? now) >= arrivalSeconds || stationarySince.map{now-$0>=arrivalSeconds} == true) }
+    func shouldArrive(now: Double) -> Bool {
+        // The arrival timer also calls this when no delegate callbacks arrive.
+        // Never turn a GPS outage or iOS suspension into a false arrival.
+        guard phase == "recording", let fix = lastValidFixAt, now - fix >= 0, now - fix <= 45 else { return false }
+        return now-(lastMovementAt ?? now) >= arrivalSeconds || stationarySince.map{now-$0>=arrivalSeconds} == true
+    }
 }
 
 func duplicateActivity(_ a: RecordedActivity, _ b: RecordedActivity) -> Bool {
