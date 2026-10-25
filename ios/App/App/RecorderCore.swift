@@ -285,11 +285,15 @@ struct AutomaticDetector {
         }
         return shouldArrive(now:now) ? "arrive" : nil
     }
-    func shouldArrive(now: Double) -> Bool {
+    func shouldArrive(now: Double, activity: String = "Driving") -> Bool {
         // The arrival timer also calls this when no delegate callbacks arrive.
         // Never turn a GPS outage or iOS suspension into a false arrival.
         guard phase == "recording", let fix = lastValidFixAt, now - fix >= 0, now - fix <= 45 else { return false }
-        return now-(lastMovementAt ?? now) >= arrivalSeconds || stationarySince.map{now-$0>=arrivalSeconds} == true
+        // Walking and other on-foot activities include extended visits to one place.
+        // A short pause at a park must not close the activity; only a sustained
+        // stationary stay with fresh fixes can do so. Driving retains 3 minutes.
+        let dwell = ["Walking", "Hiking", "Running"].contains(activity) ? 1800.0 : arrivalSeconds
+        return now-(lastMovementAt ?? now) >= dwell || stationarySince.map{now-$0>=dwell} == true
     }
 }
 
