@@ -68,6 +68,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var lastAutomaticFixAt: Double?
     var continuousStartedAt:Double?
     var continuousStoppedAt:Double?
+    private var trackingStartedAt: Double?
+    private var continuousSeconds: Double = 0
+    private var gpsStartCount = 0
     var lastTrackingEvent="Initialising"
     var lastTrackingEventAt:Double?
     func trackingEvent(_ reason:String){lastTrackingEvent=reason;lastTrackingEventAt=Date().timeIntervalSince1970}
@@ -104,10 +107,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // requests and OS pause callbacks, separately from permission/capability flags.
     func startContinuousLocation(){
         updateIndicatorPolicy()
-        if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingEvent(gpsReason)}
+        if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingStartedAt=continuousStartedAt;gpsStartCount += 1;trackingEvent(gpsReason)}
     }
     func stopContinuousLocation(){
-        if continuousLocationRequested {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;trackingEvent("Continuous GPS stopped")}
+        if continuousLocationRequested {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;if let start=trackingStartedAt {continuousSeconds += max(0,continuousStoppedAt!-start)};trackingStartedAt=nil;trackingEvent("Continuous GPS stopped")}
         continuousLocationRequested=false;locationUpdatesPaused=false;updateIndicatorPolicy()
     }
     func startSignificantMonitoring(){manager.startMonitoringSignificantLocationChanges();significantLocationRequested=true}
@@ -237,6 +240,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticTrip != nil ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "lowPowerIdle",
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
+                "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
                 "locationManagerID":"LocationRecorder.shared.manager",
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
                 "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
