@@ -8,10 +8,31 @@ import { sourceLabel } from '../lib/activityPrivacy.js';
 import { recordedJourney, speedLabel, paceLabel } from '../lib/recorder.js';
 export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,onUpdated,onDeleted,busy,error}){
  const [deleting,setDeleting]=useState(false),[suggestions,setSuggestions]=useState(null),[showSkipped,setShowSkipped]=useState(false),[message,setMessage]=useState('');
+ const [showTrim,setShowTrim]=useState(false),[trimStart,setTrimStart]=useState(0),[trimEnd,setTrimEnd]=useState(null);
+ const pointCount=trip.points?.length||0;
+ const trimLast=trimEnd==null?pointCount-1:Math.min(trimEnd,pointCount-1);
+ const trimValid=pointCount>=2 && trimStart<trimLast;
+ const trimPreview=showTrim&&trimValid?{...trip,route:trip.route.slice(trimStart,trimLast+1),routeSegments:trip.points.slice(trimStart,trimLast+1).reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)}:trip;
+ async function applyTrim(){
+  if(!trimValid||!window.confirm('Trim this saved route? GPS points outside the selected interval will be permanently removed from this device.'))return;
+  const result=await perform('trimActivity',{id:trip.id,start:trimStart,end:trimLast});
+  if(result){setShowTrim(false);setTrimStart(0);setTrimEnd(null);}
+ }
+
  async function perform(method,...args){const result=await run(method,...args);if(result?.trips){const updated=result.trips.find(t=>t.id===trip.id);if(updated)onUpdated(recordedJourney(updated));}return result;}
  async function findSuggestions(){const result=await run('suggestPhotos',trip.id);if(result){setSuggestions(result.suggestions);setMessage(result.limited?'Showing locally available photos within your limited library access.':'Showing locally available photos captured during this activity.');}}
  return <SwipeBack onBack={onBack}><div className="detail page-enter"><button className="back text-button" onClick={onBack}><ArrowLeft size={18}/> Back to activities</button><div className="page-heading activity-detail-heading"><div><div className="activity-title-line"><h1>{trip.title}</h1><button type="button" className="icon-button activity-title-edit" aria-label="Edit activity" onClick={onEdit} disabled={busy}><Pencil size={17}/></button>{trip.source&&<ActivityPrivacy trip={trip} places={places||[]}/>}</div><p className="activity-detail-subtitle muted">{trip.activity} · {trip.date}</p><p className="muted"><MapPin size={14}/>{trip.location}</p></div></div>
- {trip.route.length?<JourneyMap journeys={[trip]} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {trip.route.length?<JourneyMap journeys={[trimPreview]} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
+  <h2>Trim start or finish</h2>
+  <p className="muted">Remove a private starting location or an accidentally recorded ending. Works for manual and automatic trips. Trimming permanently removes excluded GPS points from this device.</p>
+  {!showTrim?<button type="button" className="secondary" onClick={()=>setShowTrim(true)}>Trim route</button>:<>
+   <label>Start point · {trimStart+1} of {pointCount}<input aria-label="Trim start point" type="range" min="0" max={Math.max(0,trimLast-1)} value={Math.min(trimStart,trimLast-1)} onChange={e=>setTrimStart(Number(e.target.value))}/></label>
+   <label>End point · {trimLast+1} of {pointCount}<input aria-label="Trim end point" type="range" min={Math.min(pointCount-1,trimStart+1)} max={pointCount-1} value={trimLast} onChange={e=>setTrimEnd(Number(e.target.value))}/></label>
+   <p className="muted small-copy">The map previews the portion that will remain. Distance and duration will be recalculated from those recorded points. This cannot be undone.</p>
+   <div className="detail-actions"><button type="button" className="secondary" onClick={()=>{setShowTrim(false);setTrimStart(0);setTrimEnd(null);}}>Cancel</button><button type="button" className="primary" disabled={busy||!trimValid||(trimStart===0&&trimLast===pointCount-1)} onClick={applyTrim}>Save trimmed route</button></div>
+  </>}
+ </section>}
  <div className="record-metrics"><div><strong>{trip.distance} km</strong><span>Estimated distance</span></div><div><strong>{trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`}</strong><span>Active duration</span></div><div><strong>{trip.source?speedLabel(trip.distanceMeters,trip.durationSeconds):'—'}</strong><span>Average speed</span></div></div>
  <div className="activity-facts"><p><strong>{trip.source?sourceLabel(trip):'Illustrative demonstration'}</strong> · {trip.source==='simulator'?'Simulator GPS':trip.recordingMode==='automatic'?'Estimated / lower-resolution route':trip.recordingMode==='historical'?'No recorded geometry':'Accuracy-filtered GPS'}</p>{trip.vehicle&&<p>Vehicle: {trip.vehicle}</p>}{trip.collection&&<p>Collection: {trip.collection}</p>}{trip.source&&<p>Average pace: {paceLabel(trip.distanceMeters,trip.durationSeconds)} · {trip.points.length} GPS samples · Local only</p>}{trip.classification&&<p>Prediction: {trip.classification.predicted} · {trip.classification.confidence} confidence {trip.corrected?'· Your correction is preserved':''}</p>}{trip.classification?.evidence?.map(e=><small key={e}>{e}</small>)}</div>
  {trip.recognisedStops?.length>0&&<section className="journey-timeline"><h2>Stops along the way</h2>{trip.recognisedStops.map(stop=><div className="journey-stop" key={stop.id}><strong>{stop.name}</strong><p>{Math.round(stop.durationSeconds/60)} min{stop.charging==='possible'?' · Possible charging':stop.charging==='confirmed'?' · Charging confirmed by vehicle':''}</p>{stop.nearbyName&&<p className="small-copy">Nearby: {stop.nearbyName}</p>}</div>)}</section>}
