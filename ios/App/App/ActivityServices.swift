@@ -34,6 +34,17 @@ extension LocationRecorder {
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip); trips[index] = trip
     }
+    func setRouteDisplay(id: String, start: Int, end: Int) throws {
+        guard let index=trips.firstIndex(where:{$0.id==id}), let storage=storage else { throw failure("Activity not found.") }
+        var trip=trips[index]
+        guard trip.state=="finished", trip.points.count>=2, start>=0, end<trip.points.count, start<end else { throw failure("Choose a valid visible route range.") }
+        var details=trip.details ?? ActivityDetails()
+        details.visibleRouteStart = start == 0 ? nil : start
+        details.visibleRouteEnd = end == trip.points.count-1 ? nil : end
+        trip.details=details
+        trip.updatedAt=Date().timeIntervalSince1970
+        try storage.save(trip);trips[index]=trip
+    }
     func trimActivity(id: String, start: Int, end: Int) throws {
         guard let index = trips.firstIndex(where: { $0.id == id }),
               let storage = storage else { throw failure("Activity not found.") }
@@ -193,6 +204,12 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     @objc func editActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func setRouteDisplay(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let start=call.getInt("start"), let end=call.getInt("end") else {call.reject("Choose valid route points.");return}
+        do {try LocationRecorder.shared.setRouteDisplay(id:call.getString("id") ?? "",start:start,end:end);call.resolve(LocationRecorder.shared.snapshot())}
+        catch {call.reject(error.localizedDescription)}
     } }
     @objc func trimActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
