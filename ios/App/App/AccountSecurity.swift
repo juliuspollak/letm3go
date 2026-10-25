@@ -44,6 +44,7 @@ struct AccountPreferences: Codable {
     var notificationsEnabled: Bool?
     var demoOverrides: String?
     var bookmarks: [String]?
+    var journeyGrouping: String?
     var syncReceipts: [String: SyncReceipt]?
     var lastBackup: String?
 }
@@ -111,9 +112,12 @@ extension LocationRecorder {
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
-              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.syncReceipts?.count ?? 0) <= 10_000,
+              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
               (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
               updated.vehicles.allSatisfy({ UUID(uuidString:$0.id) != nil && !$0.name.isEmpty && $0.name.count <= 100 && $0.make.count <= 100 && $0.model.count <= 100 && ["car","motorcycle","bicycle","other"].contains($0.category ?? "car") }) else { throw failure("Account settings are invalid or too large.") }
+        if let value=updated.journeyGrouping {
+            guard let data=value.data(using:.utf8),let meta=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],(meta["owner"] as? String)?.lowercased()==ownerID,(meta["version"] as? Int)==1 else {throw failure("Journey metadata belongs to another account or is invalid.")}
+        }
         if let avatar = updated.avatar, !avatar.hasPrefix("data:image/jpeg;base64,") { throw failure("Use a JPEG profile image.") }
         try storage.writeData(JSONEncoder().encode(updated),name:"preferences.data"); preferences = updated
     }

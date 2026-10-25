@@ -72,3 +72,16 @@ it('opens distinct Home distance, duration and activity views with numeric sorti
  fireEvent.click(screen.getByRole('button',{name:/Activities today:/}));
  expect(titles()).toEqual(['Open Newest trip','Open Longest time','Open Longest distance']);
 });
+it('shows one grouped journey and finds it through an intermediate locality search',()=>{
+ signedIn();identity.value.preferences.vehicles=[{id:'kia',name:'Kia'}];
+ const at=Date.now()/1000-36000,p=(lat,lon,time)=>({latitude:lat,longitude:lon,timestamp:time,accuracy:5,segment:0});
+ const raw=(id,start,end,from,to)=>({id,title:id,source:'device',activity:'Driving',state:'finished',vehicle:'Kia',startedAt:start,endedAt:end,durationSeconds:end-start,distanceMeters:100000,points:[from,to],details:{}});
+ const a=raw('a',at,at+3600,p(-33.8,151.2,at),p(-31.6,152.7,at+3600));
+ const b=raw('b',at+5700,at+9300,p(-31.6,152.7,at+5700),p(-28,153.4,at+9300));
+ identity.value.preferences.journeyGrouping=JSON.stringify({version:1,owner:'owner',links:[],cuts:[],history:[],titles:{},stopEdits:{},places:{'-33.8000,151.2000':{locality:'Sydney'},'-31.6000,152.7000':{locality:'Kew'},'-28.0000,153.4000':{locality:'Gold Coast'}}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[a,b]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.change(screen.getByRole('textbox',{name:'Search journeys'}),{target:{value:'Kew'}});
+ expect(screen.getByRole('button',{name:'Open Sydney → Gold Coast'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open a'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Open Sydney → Gold Coast'}));expect(screen.getByRole('heading',{name:'Segments & stops'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Rename journey'})).toBeInTheDocument();expect(screen.getAllByText('Kew',{exact:true}).length).toBeGreaterThan(0);
+});

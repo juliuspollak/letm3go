@@ -3,6 +3,7 @@ import CoreLocation
 import Photos
 import PhotosUI
 import UIKit
+import MapKit
 
 extension LocationRecorder {
     func savePlace(_ place: SavedPlace) throws {
@@ -140,6 +141,29 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             }])
         }
     } }
+    @objc func recogniseTripPlace(_ call:CAPPluginCall){DispatchQueue.main.async {
+        guard self.requireAccount(call) else {return}
+        let r=LocationRecorder.shared,owner=r.ownerID
+        guard let trip=r.trips.first(where:{$0.id==call.getString("id")}),let index=call.getInt("index"),trip.points.indices.contains(index) else {call.reject("Recorded place not found.");return}
+        let p=trip.points[index]
+        if let saved=r.places.first(where:{$0.contains(p)}) {call.resolve(["locality":saved.name,"nearbyName":"","possibleCharging":false,"source":"saved-place"]);return}
+        let location=CLLocation(latitude:p.latitude,longitude:p.longitude),lookup=CLGeocoder()
+        lookup.reverseGeocodeLocation(location){ results,error in
+            _ = lookup // Keep this independent lookup alive until its callback.
+            guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
+            guard error==nil,let place=results?.first else {call.reject("Place recognition is unavailable offline. It will retry later.");return}
+            let locality=place.locality ?? place.subLocality ?? place.administrativeArea ?? ""
+            let request=MKLocalPointsOfInterestRequest(center:location.coordinate,radius:150)
+            let search=MKLocalSearch(request:request)
+            search.start { response,_ in
+                _ = search
+                guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
+                let nearby=(response?.mapItems ?? []).filter{($0.placemark.location?.distance(from:location) ?? .infinity)<=100}.sorted{($0.placemark.location?.distance(from:location) ?? .infinity)<($1.placemark.location?.distance(from:location) ?? .infinity)}
+                let charger=nearby.contains{$0.pointOfInterestCategory == .evCharger}
+                call.resolve(["locality":locality,"nearbyName":nearby.first?.name ?? "","possibleCharging":charger,"source":"apple-geocoder-mapkit"])
+            }
+        }
+    }}
     @objc func editActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }

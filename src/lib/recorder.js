@@ -14,6 +14,7 @@ export const recorder = {
  removePlace:id=>native.removePlace({id}),
  currentPosition:()=>native.currentPosition(),
  searchAddress:query=>native.searchAddress({query}),
+ recogniseTripPlace:(id,index)=>native.recogniseTripPlace({id,index}),
  editActivity:trip=>native.editActivity(trip),
  deleteActivity:id=>native.deleteActivity({id}),
  addHistorical:trip=>native.addHistorical(trip),
