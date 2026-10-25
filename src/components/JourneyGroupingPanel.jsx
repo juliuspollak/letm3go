@@ -1,7 +1,7 @@
 import {useState} from 'react';
 export default function JourneyGroupingPanel({activities,grouping,onClose,onReview}){
  const [selected,setSelected]=useState([]);
- const drives=activities.filter(t=>t.activity==='Driving'&&t.endedAt!=null).sort((a,b)=>a.startedAt-b.startedAt);
+ const drives=activities.filter(t=>(t.activity==='Driving'||t.activity==='Unknown')&&t.endedAt!=null).sort((a,b)=>a.startedAt-b.startedAt);
  return <section className="journey-grouping-panel"><h2>Group journeys</h2><p className="muted small-copy">Combine consecutive drives into one journey. Original routes and edits stay intact. Only your own drives can be grouped; known different vehicles stay separate.</p>
  {grouping.sourceSuggestions?.length>0&&<section><h3>Possible duplicate recordings</h3>{grouping.sourceSuggestions.map(s=><div className="journey-suggestion" key={s.id}><p>{s.reason}</p><button className="secondary" disabled={grouping.busy} onClick={()=>s.requiresVehicle?onReview?.(s.phoneID):grouping.act({type:'sourceLink',ids:s.ids})}>{s.requiresVehicle?'Choose vehicle for iPhone recording':'Link these recordings'}</button></div>)}</section>}
  {grouping.suggestions.length>0&&<section><h3>Possible continuations</h3>{grouping.suggestions.map(s=><div key={s.id} className="journey-suggestion"><strong>{s.stop?.name||'Nearby stop'}</strong><p className="small-copy">{s.reason}</p><button className="secondary" disabled={grouping.busy} onClick={()=>grouping.act({type:'merge',ids:s.segmentIDs})}>Continue as one journey</button><button className="text-button" disabled={grouping.busy} onClick={()=>grouping.act({type:'split',after:s.segmentIDs[0],before:s.segmentIDs[1]})}>Keep separate</button></div>)}</section>}
