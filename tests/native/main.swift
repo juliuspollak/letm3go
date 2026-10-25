@@ -69,6 +69,21 @@ var corrected = interrupted
 corrected.recordingMode = "automatic"; corrected.activity = "Hiking"; corrected.details = ActivityDetails(); corrected.details?.userCorrected = true
 corrected.applyPrediction(Classification(predicted:"Driving",confidence:"high",evidence:["test"]))
 check(corrected.activity == "Hiking", "user correction survives prediction")
+var transition=DrivingTransition()
+let vehicleMotion=MotionEvidence(types:["Driving"],confidence:"high",timestamp:100,continuous:true)
+func drivingFix(_ latitude: Double, _ time: Double, speed: Double = 12) -> GPSPoint {
+    GPSPoint(latitude:latitude,longitude:151,timestamp:time,accuracy:8,altitude:0,speed:speed)
+}
+check(!transition.observe(drivingFix(-33,100),motion:vehicleMotion,now:100),"one driving fix cannot split walking")
+check(!transition.observe(drivingFix(-32.998,110),motion:vehicleMotion,now:110),"two driving fixes cannot split walking")
+check(!transition.observe(drivingFix(-32.996,125),motion:vehicleMotion,now:125),"stale motion cannot split walking")
+check(transition.candidates.isEmpty,"stale motion clears driving transition")
+let freshDriving=MotionEvidence(types:["Driving"],confidence:"high",timestamp:200,continuous:true)
+check(!transition.observe(drivingFix(-33,200),motion:freshDriving,now:200),"fresh driving candidate begins")
+check(!transition.observe(drivingFix(-32.999,210),motion:freshDriving,now:210),"brief driving evidence is insufficient")
+check(transition.observe(drivingFix(-32.998,223),motion:freshDriving,now:223),"sustained driving confirms walking to driving transition")
+transition.reset()
+check(!transition.observe(drivingFix(-33,300),motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:300),now:300),"walking motion cannot trigger a vehicle transition")
 var detector = AutomaticDetector()
 check(detector.observe(point(-33,100),motion:motion,manualActive:false,now:100) == nil,"departure candidate")
 check(detector.observe(point(-32.9997,115),motion:motion,manualActive:false,now:115) == nil,"short movement ignored")
