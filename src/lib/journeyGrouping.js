@@ -75,20 +75,18 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  const positions=new Map(sorted.map((s,i)=>[s.id,i]));
  const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[a,b]]:[];}catch{return [];}});
  const groups=[],suggestions=[];let previous;
- const drives=sorted.filter(moving);
- for(const t of drives){const group=groups.at(-1),stop=previous?makeStop(previous,t,context):null;
+ for(const t of sorted){const group=groups.at(-1),stop=previous?makeStop(previous,t,context):null;
   let verdict=previous?continuation(previous,t,stop,context):{decision:'separate'};
   const currentTitle=group?.map(s=>metadata.titles[s.id]).find(Boolean);
   if(verdict.decision==='auto'&&currentTitle&&metadata.titles[t.id]&&currentTitle!==metadata.titles[t.id])verdict={decision:'suggest',reason:'Both journeys have your titles'};
   const key=previous?edge(previous.id,t.id):'';
   const previousVehicle=previous?vehicle(previous,vehicles):null,currentVehicle=vehicle(t,vehicles);
-  const manual=metadata.links.includes(key)&&stop&&stop.durationSeconds<=86400&&(!previousVehicle||!currentVehicle||previousVehicle===currentVehicle);
+  const manual=metadata.links.includes(key)&&previous?.endedAt!=null&&t.startedAt>=previous.endedAt&&t.startedAt-previous.endedAt<=86400&&(!previousVehicle||!currentVehicle||previousVehicle===currentVehicle);
   const cut=cutRanges.some(([a,b])=>(positions.get(previous?.id)??-1)>=a&&(positions.get(t.id)??Infinity)<=b);
-  if(group&&moving(previous)&&moving(t)&&!cut&&(verdict.decision==='auto'||manual))group.push(t);
+  if(group&&!cut&&((moving(previous)&&moving(t)&&verdict.decision==='auto')||manual))group.push(t);
   else {if(verdict.decision==='suggest'&&!cut)suggestions.push({id:key,segmentIDs:[previous.id,t.id],reason:verdict.reason,stop});groups.push([t]);}
   previous=t;
  }
- groups.push(...sorted.filter(t=>!moving(t)).map(t=>[t]));
  const journeys=groups.map(segments=>{
   if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||s.title,location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
@@ -114,12 +112,14 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
   next.sourceLinks=[...(next.sourceLinks||[]),action.ids];
  }else if(action.type==='merge'){
   const selected=new Set(action.ids);const trips=ordered.filter(t=>selected.has(t.id));
-  if(trips.length<2||trips.length!==selected.size||trips.some(t=>!moving(t)))throw new Error('Select at least two of your recorded drives.');
-  const driving=ordered.filter(moving);const indices=trips.map(t=>driving.indexOf(t));if(indices.at(-1)-indices[0]+1!==trips.length)throw new Error('Select consecutive drives; an intervening activity must not be skipped.');
+  if(trips.length<2||trips.length!==selected.size||trips.some(t=>t.endedAt==null||t.state==='recording'))throw new Error('Select at least two completed activities.');
+  const indices=trips.map(t=>ordered.indexOf(t));if(indices.at(-1)-indices[0]+1!==trips.length)throw new Error('Select consecutive activities; an intervening activity must not be skipped.');
   const known=new Set(trips.map(t=>vehicle(t,vehicles)).filter(Boolean));if(known.size>1)throw new Error('Journeys from different vehicles cannot be merged.');
   for(let i=1;i<trips.length;i++){
    const stop=makeStop(trips[i-1],trips[i],{owner,metadata:meta,places,vehicles,telemetry:[]});
-   if(!stop||stop.durationSeconds>86400)throw new Error('These routes overlap, are disconnected or are more than a day apart.');
+   const gap=trips[i].startedAt-trips[i-1].endedAt;
+   if(gap<0||gap>86400)throw new Error('These activities overlap or are more than a day apart.');
+   if(moving(trips[i-1])&&moving(trips[i])&&!stop)throw new Error('These driving routes are disconnected.');
    const key=edge(trips[i-1].id,trips[i].id);next.links=[...new Set([...next.links,key])];next.cuts=next.cuts.filter(k=>k!==key);
   }
  }else if(action.type==='split'){
