@@ -59,3 +59,5 @@ Grouped parents stay private. They do not expose the single-activity public-shar
 - No SQL/Edge Functions/website/TestFlight deployment, real vehicle reads or remote configuration changes were made.
 
 Final device result: build 40 rebuilt after the final search/split fixes and strict code-signature verification passed through macOS trust services. Installation was attempted but CoreDevice could not locate the paired iPhone (error 1011); it was also listed unavailable. Build 40 has **not** been installed or launched. The last confirmed installed version remains build 38. No TestFlight upload occurred. The final targeted grouping/App regression rerun passed 27 tests.
+
+Device update: after the user reconnected the iPhone, CoreDevice reported it connected. The existing signed build 40 passed signature verification, installed successfully and launched successfully. This supersedes the unavailable-device result above. No rebuild or TestFlight upload was needed. Real journey grouping/place recognition and background tracking acceptance remain to be tested on the phone.

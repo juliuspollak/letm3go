@@ -7,18 +7,18 @@ export function metres(a,b){if(!point(a)||!point(b))return Infinity;const r=Math
 const edge=(a,b)=>JSON.stringify([a,b]);
 const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
-export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},places:{},stopEdits:{},history:[]};}
+export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},places:{},stopEdits:{},history:[],sourceLinks:[]};}
 export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m};}catch{return emptyGrouping(owner);}}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function geo(p,places,metadata){
  if(!point(p))return {name:'Unknown location',tags:[]};
  const saved=places.find(s=>metres(s,p)<=Math.min(s.radius||100,2000));
  const found=metadata.places[placeKey(p)]||{};
- return {name:saved?.name||found.locality||found.nearbyName||'Unnamed stop',locality:found.locality||'',nearbyName:found.nearbyName||'',kind:saved?.kind||'',tags:[...new Set([saved?.name,found.locality,found.nearbyName].filter(Boolean))],possibleCharging:found.possibleCharging===true,latitude:p.latitude,longitude:p.longitude};
+ return {name:saved?.name||found.locality||found.nearbyName||'Unnamed stop',locality:found.locality||'',nearbyName:found.nearbyName||'',kind:saved?.kind||'',tags:[...new Set([saved?.name,found.locality,found.region,found.nearbyName,...(found.categories||[])].filter(Boolean))],possibleCharging:found.possibleCharging===true,latitude:p.latitude,longitude:p.longitude};
 }
 function charging(stop,telemetry,owner,vehicleID){
  // Only verified provider evidence for this owner AND exact vehicle can confirm it.
- const confirmed=!!vehicleID&&telemetry.some(e=>e.verified===true&&e.ownerID===owner&&e.vehicleID===vehicleID&&e.type==='charging'&&e.startedAt<stop.endedAt&&e.endedAt>stop.startedAt&&metres(e,stop)<=200);
+ const confirmed=!!vehicleID&&telemetry.some(e=>e.verified===true&&e.ownerID===owner&&e.vehicleID===vehicleID&&e.type==='charging'&&e.startedAt<stop.endedAt&&e.endedAt>stop.startedAt&&(!point(e)||metres(e,stop)<=200));
  return confirmed?'confirmed':stop.possibleCharging?'possible':'none';
 }
 function makeStop(a,b,{places,metadata,telemetry,owner,vehicles}){
@@ -29,7 +29,8 @@ function makeStop(a,b,{places,metadata,telemetry,owner,vehicles}){
  stop.charging=charging(stop,telemetry,owner,vehicle(a,vehicles));
  stop.name=manual.name||location.locality||location.name;
  stop.tags=[...new Set([...location.tags,...(manual.tags||[]),...(stop.charging==='confirmed'?['Charging']:stop.charging==='possible'?['Possible charging']:[])])];
- stop.meaningful=stop.durationSeconds>=300||(stop.durationSeconds>=180&&(stop.charging!=='none'||!!location.nearbyName));
+ if(manual.replaceTags)stop.tags=[...new Set(manual.tags||[])];
+ stop.meaningful=!manual.ignored&&(stop.durationSeconds>=300||(stop.durationSeconds>=180&&(stop.charging!=='none'||!!location.nearbyName)));
  return stop;
 }
 export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
@@ -58,7 +59,7 @@ export function internalStops(t,context){
  const result=[],points=t.points||[];let start=0;
  while(start<points.length){const first=points[start];if(!point(first)||first.accuracy>35){start++;continue;}let end=start+1;
   while(end<points.length&&points[end].segment===first.segment&&points[end].accuracy<=35&&points[end].timestamp-points[end-1].timestamp<=120&&metres(first,points[end])<=50)end++;
-  const last=points[end-1];if(last.timestamp-first.timestamp>=300){const location=geo(first,context.places,context.metadata);const id=`dwell:${t.id}:${first.timestamp}`,manual=context.metadata.stopEdits[id]||{};const stop={id,segmentID:t.id,pointIndex:start,startedAt:first.timestamp,endedAt:last.timestamp,durationSeconds:last.timestamp-first.timestamp,...location,name:manual.name||location.locality||location.name,meaningful:true};stop.charging=charging(stop,context.telemetry,context.owner,vehicle(t,context.vehicles));stop.tags=[...new Set([...location.tags,...(manual.tags||[]),...(stop.charging==='possible'?['Possible charging']:stop.charging==='confirmed'?['Charging']:[])])];result.push(stop);}start=Math.max(start+1,end);
+  const last=points[end-1];if(last.timestamp-first.timestamp>=300){const location=geo(first,context.places,context.metadata);const id=`dwell:${t.id}:${first.timestamp}`,manual=context.metadata.stopEdits[id]||{};const stop={id,segmentID:t.id,pointIndex:start,startedAt:first.timestamp,endedAt:last.timestamp,durationSeconds:last.timestamp-first.timestamp,...location,name:manual.name||location.locality||location.name,meaningful:true};stop.charging=charging(stop,context.telemetry,context.owner,vehicle(t,context.vehicles));stop.tags=manual.replaceTags?[...new Set(manual.tags||[])]:[...new Set([...location.tags,...(manual.tags||[]),...(stop.charging==='possible'?['Possible charging']:stop.charging==='confirmed'?['Charging']:[])])];if(!manual.ignored)result.push(stop);}start=Math.max(start+1,end);
  }
  return result;
 }
@@ -104,10 +105,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
 }
 export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=[]}){
  if(meta.owner!==owner)throw new Error('Account changed. Grouping was not saved.');
- const next=structuredClone(meta);const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,stopEdits:meta.stopEdits};
+ const next=structuredClone(meta);const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,stopEdits:meta.stopEdits,sourceLinks:meta.sourceLinks||[]};
  if(action.type==='undo'){const prior=next.history.pop();if(!prior)throw new Error('Nothing to undo.');return {...next,...prior};}
  const ordered=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
- if(action.type==='merge'){
+ if(action.type==='sourceLink'){
+  const trips=activities.filter(t=>action.ids.includes(t.id)&&(!t.ownerID||t.ownerID===owner||t.sharedToHousehold===true));const identity=t=>t.providerVehicleID||vehicles.find(v=>v.id===t.vehicleID||v.name===t.vehicle)?.teslaVehicleID||vehicle(t,vehicles);if(trips.length!==2||!identity(trips[0])||identity(trips[0])!==identity(trips[1]))throw new Error('Select matching recordings of your vehicle.');
+  next.sourceLinks=[...(next.sourceLinks||[]),action.ids];
+ }else if(action.type==='merge'){
   const selected=new Set(action.ids);const trips=ordered.filter(t=>selected.has(t.id));
   if(trips.length<2||trips.length!==selected.size||trips.some(t=>!moving(t)))throw new Error('Select at least two of your recorded drives.');
   const driving=ordered.filter(moving);const indices=trips.map(t=>driving.indexOf(t));if(indices.at(-1)-indices[0]+1!==trips.length)throw new Error('Select consecutive drives; an intervening activity must not be skipped.');
@@ -123,7 +127,7 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
  }else if(action.type==='rename'){
   if(!ordered.some(t=>t.id===action.anchor)||!action.title?.trim()||action.title.length>150)throw new Error('Enter a journey name (up to 150 characters).');next.titles[action.anchor]=action.title.trim();
  }else if(action.type==='stop'){
-  if(!action.id||!action.name?.trim()||action.name.length>100||action.tags?.some(t=>t.length>60))throw new Error('Enter a stop name and short tags.');next.stopEdits[action.id]={name:action.name.trim(),tags:(action.tags||[]).slice(0,20)};
+  if(!action.id||!action.name?.trim()||action.name.length>100||action.tags?.some(t=>t.length>60))throw new Error('Enter a stop name and short tags.');next.stopEdits[action.id]={name:action.name.trim(),tags:(action.tags||[]).slice(0,20),replaceTags:action.replaceTags===true,ignored:action.ignored===true};
  }else throw new Error('Unsupported grouping change.');
  next.history=[...next.history,snapshot].slice(-20);return next;
 }

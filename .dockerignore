@@ -1,0 +1,22 @@
+# The telemetry image must never receive the app workspace, credentials or GPS data.
+**
+!services/
+!services/fleet-telemetry/
+!services/fleet-telemetry/Dockerfile
+!services/fleet-telemetry/package.json
+!services/fleet-telemetry/package-lock.json
+!services/fleet-telemetry/consumer.mjs
+!services/fleet-telemetry/control.mjs
+!supabase/
+!supabase/functions/
+!supabase/functions/_shared/
+!supabase/functions/_shared/fleetTelemetry.js
+# Explicit deny rules also apply if a directory is re-included above.
+**/.env*
+**/secrets/**
+**/tls/**
+**/node_modules/**
+**/*.pem
+**/*.p8
+**/*.p12
+**/.build/**

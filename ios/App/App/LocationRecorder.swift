@@ -111,6 +111,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         #if targetEnvironment(simulator)
         trip.source = "simulator"
         #endif
+        let assigned=preferences.vehicles.filter{$0.name==vehicle}
+        trip.vehicleID=assigned.count==1 ? assigned[0].id : nil
         trip.recordingMode = "manual"
         trip.details = ActivityDetails()
         try storage!.save(trip)

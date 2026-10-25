@@ -28,6 +28,8 @@ extension LocationRecorder {
         metadata.description = String(description.prefix(4000)); metadata.notes = String(notes.prefix(4000))
         metadata.tags = Array(tags.prefix(20)).map { String($0.prefix(60)) }; metadata.collection = String(collection.prefix(100))
         metadata.visibility = "private"
+        let assigned=preferences.vehicles.filter{$0.name==vehicle}
+        if assigned.count==1 {trip.vehicleID=assigned[0].id}else if vehicle != trip.vehicle {trip.vehicleID=nil}
         trip.title = title; trip.activity = activity; trip.vehicle = vehicle; trip.details = metadata
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip); trips[index] = trip
@@ -56,6 +58,7 @@ extension LocationRecorder {
         #if targetEnvironment(simulator)
         trip.source = "simulator"
         #endif
+        let assigned=preferences.vehicles.filter{$0.name==vehicle};trip.vehicleID=assigned.count==1 ? assigned[0].id : nil
         trip.recordingMode = "historical"; trip.state = "finished"; trip.endedAt = startedAt+seconds
         trip.accumulatedSeconds = seconds; trip.distanceMeters = meters; trip.details = ActivityDetails(); trip.details?.userCorrected = true
         guard !trip.title.isEmpty else { throw failure("Enter an activity title.") }
@@ -153,8 +156,13 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     @objc func recogniseTripPlace(_ call:CAPPluginCall){DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
         let r=LocationRecorder.shared,owner=r.ownerID
-        guard let trip=r.trips.first(where:{$0.id==call.getString("id")}),let index=call.getInt("index"),trip.points.indices.contains(index) else {call.reject("Recorded place not found.");return}
-        let p=trip.points[index]
+        let p:GPSPoint
+        if let trip=r.trips.first(where:{$0.id==call.getString("id")}),let index=call.getInt("index"),trip.points.indices.contains(index) {p=trip.points[index]}
+        else if call.getBool("cloud")==true,let lat=call.getDouble("latitude"),let lon=call.getDouble("longitude"),lat.isFinite,lon.isFinite,abs(lat)<=90,abs(lon)<=180 {
+            // Public place lookup for an authenticated user's RLS-filtered cloud route.
+            // This reads no private native recording and never starts GPS.
+            p=GPSPoint(latitude:lat,longitude:lon,timestamp:0,accuracy:65,altitude:0,speed:0)
+        }else{call.reject("Recorded place not found.");return}
         if let saved=r.places.first(where:{$0.contains(p)}) {call.resolve(["locality":saved.name,"nearbyName":"","possibleCharging":false,"source":"saved-place"]);return}
         let location=CLLocation(latitude:p.latitude,longitude:p.longitude),lookup=CLGeocoder()
         lookup.reverseGeocodeLocation(location){ results,error in
@@ -169,7 +177,16 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
                 guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
                 let nearby=(response?.mapItems ?? []).filter{($0.placemark.location?.distance(from:location) ?? .infinity)<=100}.sorted{($0.placemark.location?.distance(from:location) ?? .infinity)<($1.placemark.location?.distance(from:location) ?? .infinity)}
                 let charger=nearby.contains{$0.pointOfInterestCategory == .evCharger}
-                call.resolve(["locality":locality,"nearbyName":nearby.first?.name ?? "","possibleCharging":charger,"source":"apple-geocoder-mapkit"])
+                let firstDistance=nearby.first?.placemark.location?.distance(from:location) ?? .infinity
+                let nextDistance=nearby.dropFirst().first?.placemark.location?.distance(from:location) ?? .infinity
+                let confident=firstDistance<=40 && nextDistance-firstDistance>=25
+                var categories:[String]=[]
+                if confident,let category=nearby.first?.pointOfInterestCategory {
+                    if category == .park || category == .nationalPark {categories=["Park","Nature","Outdoors"]}
+                    else if category == .store {categories=["Shopping"]}
+                    else if category == .restaurant || category == .cafe {categories=["Food"]}
+                }
+                call.resolve(["locality":locality,"region":place.administrativeArea ?? "","nearbyName":confident ? nearby.first?.name ?? "" : "","categories":categories,"possibleCharging":charger,"source":"apple-geocoder-mapkit"])
             }
         }
     }}

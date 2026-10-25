@@ -79,3 +79,12 @@ entrypoint = "./functions/account/index.ts"
 [functions.tesla]
 verify_jwt = false
 entrypoint = "./functions/tesla/index.ts"
+
+# HMAC-authenticated trusted receiver consumer only; no browser ingestion.
+[functions.telemetry-ingest]
+verify_jwt = false
+entrypoint = "./functions/telemetry-ingest/index.ts"
+
+[functions.tesla-recording]
+verify_jwt = false
+entrypoint = "./functions/tesla-recording/index.ts"

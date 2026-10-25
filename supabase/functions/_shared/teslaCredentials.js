@@ -27,3 +27,9 @@ export async function freshTeslaCredentials(admin,owner,lease,key,clientID,{fetc
  await saveTeslaCredentials(admin,owner,lease,refreshed,key,cryptoImpl);
  return refreshed;
 }
+
+// Report only scopes actually returned by Tesla, never the requested consent flag.
+export function teslaLocationAccess(credentials){
+ if(typeof credentials?.scope!=='string'||!credentials.scope.trim())return null;
+ return credentials.scope.trim().split(/\s+/).includes('vehicle_location');
+}

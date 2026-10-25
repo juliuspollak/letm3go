@@ -22,6 +22,7 @@ struct RecordedActivity: Codable {
     var id = UUID().uuidString
     var activity: String
     var vehicle: String?
+    var vehicleID: String?
     var startedAt: Double
     var endedAt: Double?
     var state = "recording"

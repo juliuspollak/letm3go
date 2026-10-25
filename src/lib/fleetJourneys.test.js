@@ -1,0 +1,11 @@
+import {it,expect} from 'vitest';
+import {reconcileSources} from './fleetJourneys.js';
+const point=(timestamp,latitude)=>({timestamp,latitude,longitude:151,accuracy:5});
+const a={id:'phone',ownerID:'owner',source:'device',vehicle:'Tesla',vehicleID:'car',startedAt:100,endedAt:200,durationSeconds:100,points:[point(100,-33),point(150,-32.999),point(200,-32.998)],photos:[{id:'photo'}],tags:['Holiday'],notes:'Keep this',title:'My drive'};
+const b={...a,id:'fleet',source:'tesla',photos:[],tags:['Tesla'],notes:''};
+const context={owner:'owner',vehicles:[{id:'car',name:'Tesla',teslaVehicleID:'123'}]};
+it('links one physical drive while retaining both originals and all iPhone memories',()=>{const input=[structuredClone(a),structuredClone(b)],before=structuredClone(input);const result=reconcileSources(input,context);expect(result.activities).toHaveLength(1);expect(result.activities[0].sourceRecords).toHaveLength(2);expect(result.activities[0].photos).toEqual(a.photos);expect(result.activities[0].notes).toContain('Keep this');expect(input).toEqual(before);});
+it('does not deduplicate different vehicles or unrelated household members',()=>{expect(reconcileSources([a,{...b,vehicleID:'other'}],context).activities).toHaveLength(2);expect(reconcileSources([a,{...b,ownerID:'stranger'}],context).activities).toHaveLength(1);});
+it('suggests linking incomplete routes and honours explicit same-vehicle source linking',()=>{const partial={...b,points:[]};expect(reconcileSources([a,partial],context).suggestions).toHaveLength(1);expect(reconcileSources([a,partial],{...context,links:[['phone','fleet']]}).activities).toHaveLength(1);});
+it('deduplicates repeat deliveries and waits for source association when vehicle identity is missing',()=>{expect(reconcileSources([a,b,b],context).activities).toHaveLength(1);expect(reconcileSources([{...a,vehicle:null,vehicleID:null},b],context).activities).toHaveLength(2);});
+it('allows an explicitly shared household vehicle source only when the same known vehicle and route match',()=>{const shared={...b,ownerID:'other',sharedToHousehold:true,vehicleID:'household-car',providerVehicleID:'123'};expect(reconcileSources([a,shared],context).activities).toHaveLength(1);expect(reconcileSources([a,{...shared,providerVehicleID:'different'}],context).activities).toHaveLength(2);});

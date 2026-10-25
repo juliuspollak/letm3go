@@ -25,3 +25,7 @@ website/.wrangler/
 website/.output/
 *.private.pem
 *private-key*.pem
+# Fleet receiver runtime certificates, broker data and local secrets.
+services/fleet-telemetry/secrets/
+services/fleet-telemetry/tls/
+services/fleet-telemetry/.env

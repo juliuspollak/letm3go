@@ -1,0 +1,1 @@
+{"name":"letm3go-fleet-services","private":true,"type":"module","engines":{"node":">=24"},"scripts":{"consumer":"node consumer.mjs","control":"node control.mjs"},"dependencies":{"kafkajs":"2.2.4"}}

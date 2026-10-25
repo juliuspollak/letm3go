@@ -1,0 +1,72 @@
+# Prepared pilot topology; DO NOT run without infrastructure/DNS/billing approval.
+# Public 443 terminates Tesla mTLS directly at the official receiver, not Cloudflare.
+services:
+  receiver:
+    build:
+      context: https://github.com/teslamotors/fleet-telemetry.git#bd076fe1494841707528449560c4a19d0d426da4
+    restart: unless-stopped
+    ports: ["443:4443"]
+    group_add: ["1000"]
+    volumes:
+      - ./receiver.json:/etc/fleet-telemetry/config.json:ro
+      - ./tls:/run/tls:ro
+    depends_on: [kafka]
+    logging: &logging
+      driver: local
+      options: {max-size: "10m", max-file: "3"}
+  kafka:
+    image: apache/kafka:4.1.1
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx1g
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+    logging: *logging
+  consumer:
+    build: {context: ../.., dockerfile: services/fleet-telemetry/Dockerfile}
+    restart: unless-stopped
+    env_file: [./secrets/consumer.env]
+    environment: {KAFKA_BROKERS: "kafka:9092"}
+    depends_on: [kafka,receiver]
+    logging: *logging
+  command-proxy:
+    build:
+      context: https://github.com/teslamotors/vehicle-command.git#fc5a1910ad45c42921d541089e3e366d0b897f52
+    restart: unless-stopped
+    group_add: ["1000"]
+    environment:
+      TESLA_HTTP_PROXY_HOST: 0.0.0.0
+      TESLA_HTTP_PROXY_PORT: 4443
+      TESLA_HTTP_PROXY_TLS_CERT: /run/proxy-tls/cert.pem
+      TESLA_HTTP_PROXY_TLS_KEY: /run/proxy-tls/key.pem
+      TESLA_KEY_FILE: /run/secrets/tesla-key.pem
+    volumes:
+      - ./secrets/tesla-key.pem:/run/secrets/tesla-key.pem:ro
+      - ./secrets/proxy-tls:/run/proxy-tls:ro
+    logging: *logging
+  control:
+    build: {context: ../.., dockerfile: services/fleet-telemetry/Dockerfile}
+    command: [node,control.mjs]
+    restart: unless-stopped
+    ports: ["8443:8443"]
+    env_file: [./secrets/control.env]
+    volumes:
+      - ./tls:/run/tls:ro
+      - ./secrets/proxy-tls:/run/proxy-tls:ro
+    depends_on: [command-proxy]
+    logging: *logging
+volumes:
+  kafka-data:
