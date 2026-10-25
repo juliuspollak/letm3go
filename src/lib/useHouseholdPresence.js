@@ -2,7 +2,7 @@ import {useCallback,useEffect,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {recorder,recorderAvailable} from './recorder.js';
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[]){
- const lastAutomatic=useRef(undefined), lastPlace=useRef(null), locationBusy=useRef(false);
+ const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const refresh=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
@@ -26,6 +26,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   return()=>{cancelled=true;};
  },[owner,online,self?.sharing_enabled,automaticActivity,refresh]);
 
+ const homeKey=places.filter(p=>p.kind==='home').map(p=>[p.id,p.latitude,p.longitude,p.radius].join(':')).join('|');
  useEffect(()=>{
   const home=places.find(p=>p.kind==='home');
   if(!owner||!online||!supabase||!recorderAvailable()||!home||self?.sharing_enabled!==true)return;
@@ -40,10 +41,10 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
     const a=Math.sin(dlat/2)**2+Math.cos(point.latitude*radians)*Math.cos(home.latitude*radians)*Math.sin(dlon/2)**2;
     const within=6371000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=Math.max(50,Math.min(2000,Number(home.radius)||150));
     const next=within?'Home':null;
-    if(next===lastPlace.current)return;
+    if(next===lastPlace.current && (!within || Date.now()-lastPlaceSentAt.current<900000))return;
     if(!within&&lastPlace.current!=='Home'&&self?.activity_label!=='At home')return;
     const {error:failure}=await supabase.rpc('set_household_presence',{p_enabled:true,p_activity:within?'At home':null,p_place:next});
-    if(!failure&&alive){lastPlace.current=next;void refresh();}
+    if(!failure&&alive){lastPlace.current=next;lastPlaceSentAt.current=Date.now();void refresh();}
    }catch{/* GPS unavailable: never guess household presence. */}
    finally{locationBusy.current=false;}
   };
@@ -52,7 +53,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   const onVisible=()=>{if(document.visibilityState==='visible')void check();};
   document.addEventListener('visibilitychange',onVisible);
   return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
- },[owner,online,self?.sharing_enabled,self?.activity_label,automaticActivity,places,refresh]);
+ },[owner,online,self?.sharing_enabled,self?.activity_label,automaticActivity,homeKey,refresh]);
  const update=async(enabled,activity=null,place=null)=>{
   if(!online||!supabase)throw new Error('Connect to change live visibility securely.');
   setBusy(true);
