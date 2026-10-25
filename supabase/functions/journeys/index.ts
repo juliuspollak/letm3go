@@ -74,7 +74,13 @@ Deno.serve(async request=>{
    if((count||0)>=50)return reply({error:'Photo limit reached'},429);
    if(typeof body.base64!=='string'||body.base64.length>6_700_000)return reply({error:'Image too large'},400);
    const image=sanitizeJPEG(Uint8Array.from(atob(body.base64),c=>c.charCodeAt(0)));
-   const mediaID=crypto.randomUUID(),key=`${owner}/${trip.id}/${mediaID}.jpg`;
+   // The native photo ID is stable across retries; never upload two copies of the same photo.
+   const mediaID=body.mediaID;
+   if(!uuid(mediaID))return reply({error:'Invalid photo identifier'},400);
+   const {data:existing,error:lookupError}=await userClient.from('media_assets').select('id').eq('id',mediaID).eq('activity_id',trip.id).maybeSingle();
+   if(lookupError)throw lookupError;
+   if(existing)return reply({id:mediaID,alreadyUploaded:true});
+   const key=`${owner}/${trip.id}/${mediaID}.jpg`;
    await r2().send(new PutObjectCommand({Bucket:bucket,Key:key,Body:image,ContentType:'image/jpeg',CacheControl:'private, max-age=60'}));
    const {error:insertError}=await admin.from('media_assets').insert({id:mediaID,owner_id:owner,activity_id:trip.id,object_key:key,caption:String(body.caption||'').slice(0,500),byte_size:image.length,mime_type:'image/jpeg'});
    if(insertError){await r2().send(new DeleteObjectCommand({Bucket:bucket,Key:key}));throw insertError;}
