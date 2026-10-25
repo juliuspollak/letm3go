@@ -238,3 +238,16 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .journey-custom-tags .manual-tag{display:inline-flex;align-items:center;gap:6px}
 .journey-custom-tags .manual-tag button{display:inline-flex;padding:2px;color:inherit}
 @media(max-width:760px){.trips-search-active{position:sticky;top:8px;background:var(--bg);padding:8px 0;margin-top:-8px;border-radius:12px;box-shadow:0 8px 15px #00000010}.trips-search-active .select-filter{display:none}.journey-custom-tags form{flex-wrap:wrap}.journey-custom-tags form button{min-height:40px}}
+
+/* Animated wordmark: consistent optical spacing across playful combinations. */
+.playful-wordmark .wordmark-motion{width:100%;gap:0;white-space:nowrap}
+.playful-wordmark .playful-part{display:inline-block;flex:0 0 auto;overflow:hidden;white-space:nowrap;max-width:0;opacity:0;transition:max-width .55s cubic-bezier(.22,1,.36,1),opacity .3s ease,transform .55s cubic-bezier(.22,1,.36,1);transform:translateY(-3px)}
+.playful-wordmark .playful-fixed{max-width:1.55em;opacity:1;transform:none}
+.playful-wordmark .playful-m.is-shown{max-width:.65em;opacity:1;transform:none}
+.playful-wordmark .playful-three{color:var(--accent)!important;text-align:center}
+.playful-wordmark .playful-three.is-shown{max-width:.55em;opacity:1;transform:none}
+.playful-wordmark .playful-go.is-shown{max-width:1.08em;opacity:1;transform:none}
+.playful-wordmark .playful-arrow{display:inline-flex;align-items:center}
+.playful-wordmark .playful-arrow.is-shown{max-width:1.05em;opacity:1;transform:none}
+.playful-wordmark .playful-arrow .brand-mark{margin-left:.12em}
+@media(prefers-reduced-motion:reduce){.playful-wordmark .playful-part{transition:none}}
