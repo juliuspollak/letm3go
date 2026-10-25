@@ -120,6 +120,24 @@ extension LocationRecorder {
             guard sample.accuracy >= 0,sample.accuracy <= 65,abs(now-sample.timestamp)<=20 else {continue}
             if automaticTrip == nil,motion.types == ["Stationary"],motion.confidence != "low",now-motion.timestamp<=90,sample.speed<3 {continue}
             if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:now) {beginAutomaticProbe()}
+            // Split an on-foot visit only with sustained, fresh automotive and
+            // GPS evidence; never switch on a single Core Motion classification.
+            if let trip = automaticTrip, ["Walking", "Hiking", "Running"].contains(trip.activity),
+               trip.details?.userCorrected != true {
+                if drivingTransition.observe(sample,motion:motion,now:now) {
+                    do {
+                        try transitionToDriving()
+                        // The confirmed samples were already included in the new
+                        // drive. Do not write this fix to the old walking trip.
+                        continue
+                    } catch {
+                        lastError = "Driving transition could not be saved: \\(error.localizedDescription)"
+                        drivingTransition.reset()
+                    }
+                }
+            } else {
+                drivingTransition.reset()
+            }
             let event = detector.observe(sample,motion:motion,manualActive:false,now:now,activity:automaticTrip?.activity ?? "Driving")
             do {
                 if event == "depart", let first = detector.candidate.first {
@@ -150,6 +168,43 @@ extension LocationRecorder {
             }
         }
     }
+    // Persist both independent activities before changing the active recorder.
+    // Retain real GPS fixes only; never interpolate a missing part of the route.
+    func transitionToDriving() throws {
+        guard var walking = automaticTrip, let storage = storage,
+              let first = drivingTransition.candidates.first,
+              let last = drivingTransition.candidates.last,
+              last.timestamp > first.timestamp else { return }
+        let drivingPoints = drivingTransition.candidates
+        walking.points = walking.points.filter { $0.timestamp < first.timestamp }
+        walking.distanceMeters = zip(walking.points,walking.points.dropFirst()).reduce(0) { sum,pair in
+            sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
+        }
+        walking.activity = "Walking"
+        walking.finish(at:max(walking.startedAt,walking.points.last?.timestamp ?? first.timestamp))
+        walking.updatedAt=Date().timeIntervalSince1970
+        walking.title="Walking"
+        var driving = RecordedActivity(activity:"Driving",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Driving")
+        driving.recordingMode="automatic"
+        driving.details=ActivityDetails()
+        driving.details?.classification = Classification(predicted:"Driving",confidence:"high",evidence:["Fresh driving motion and sustained GPS movement"])
+        for point in drivingPoints { _ = driving.accept(point,now:point.timestamp) }
+        try storage.save(driving)
+        do { try storage.save(walking) } catch {
+            try? storage.delete(driving.id)
+            throw error
+        }
+        trips.insert(walking,at:0)
+        automaticTrip=driving
+        drivingTransition.reset()
+        detector.reset()
+        detector.phase="recording"
+        detector.lastMovementAt=last.timestamp
+        detector.lastValidFixAt=last.timestamp
+        detector.anchor=last
+        trackingEvent("Walking ended; driving journey started")
+        reconcileAutomaticSampling()
+    }
     func finishAutomatic() throws {
         guard var trip = automaticTrip, let storage = storage else { detector.reset(); return }
         let end = max(trip.startedAt, min(Date().timeIntervalSince1970,min(detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
@@ -163,7 +218,7 @@ extension LocationRecorder {
         else { trip.title = trip.activity == "Unknown" ? "Journey" : trip.activity }
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip)
-        trips.insert(trip,at:0); automaticTrip = nil; detector.reset()
+        trips.insert(trip,at:0); automaticTrip = nil; detector.reset(); drivingTransition.reset()
         trackingEvent("Automatic arrival confirmed")
         automaticSampling.stop(now:Date().timeIntervalSince1970)
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil
