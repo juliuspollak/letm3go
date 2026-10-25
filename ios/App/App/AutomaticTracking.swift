@@ -210,7 +210,16 @@ extension LocationRecorder {
     }
     func finishAutomatic() throws {
         guard var trip = automaticTrip, let storage = storage else { detector.reset(); return }
-        let end = max(trip.startedAt, min(Date().timeIntervalSince1970,min(detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
+        // Include a genuine accurate final approach fix near the last movement.
+        // Do not extend the journey across the arrival dwell or a GPS outage.
+        let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
+        let approach = trip.points.last(where: { point in
+            point.timestamp >= lastMovement && point.timestamp <= lastMovement + 40 &&
+            point.accuracy <= 25 &&
+            (trip.points.last(where: {$0.timestamp <= lastMovement}).map {$0.distance(to:point) <= 45} ?? false)
+        })
+        let end = max(trip.startedAt,min(Date().timeIntervalSince1970,
+            min(approach?.timestamp ?? lastMovement,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
         trip.points = trip.points.filter { $0.timestamp <= end }
         trip.distanceMeters = zip(trip.points,trip.points.dropFirst()).reduce(0) { sum,pair in
             sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
