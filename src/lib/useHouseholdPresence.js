@@ -12,7 +12,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  },[owner,online]);
  useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>void refresh(),60000);return()=>{clearTimeout(initial);clearInterval(timer);};},[refresh,online]);
  useEffect(()=>{
-  if(!owner||!online||!supabase||self?.sharing_enabled!==true){lastAutomatic.current=undefined;return;}
+  if(!owner||!online||!supabase||self?.sharing_enabled!==true){lastAutomatic.current=undefined;lastPlace.current=null;lastPlaceSentAt.current=0;return;}
   if(lastAutomatic.current===automaticActivity)return;
   if(!automaticActivity&&lastPlace.current==='Home')return;
   lastAutomatic.current=automaticActivity;
