@@ -50,7 +50,15 @@ function PrivateApp(){
  const unit=auth.preferences.distanceUnit||'km';
  const saved=auth.preferences.bookmarks||[];
  const recording=useRecorder(session.user.id);
- const automaticPresenceActivity=recording.state.automaticTrip?'On the move':recording.state.active?.state==='recording'?(recording.state.active.activity==='Driving'?'On the move':'Outdoors'):null;
+ const liveTrip=recording.state.active?.state==='recording'?recording.state.active:recording.state.automaticTrip;
+ const motionFresh=Number.isFinite(recording.state.motionTimestamp)&&Math.abs(Date.now()/1000-recording.state.motionTimestamp)<=45&&recording.state.motionConfidence!=='low';
+ const motionTypes=motionFresh?recording.state.motionTypes||[]:[];
+ const automaticPresenceActivity=liveTrip?.activity==='Driving'?'Driving':
+  motionTypes.includes('Driving')?'Driving':
+  liveTrip?.activity==='Running'||motionTypes.includes('Running')?'Running':
+  ['Cycling','Road cycling','MTB'].includes(liveTrip?.activity)||motionTypes.includes('Cycling')?'Cycling':
+  ['Walking','Hiking'].includes(liveTrip?.activity)||motionTypes.includes('Walking')?'Walking':
+  liveTrip?'On the move':null;
  const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated',automaticPresenceActivity,recording.state.places||[]);
  const presenceHidden=presence.self?.sharing_enabled!==true;
  const [presenceBusy,setPresenceBusy]=useState(false);
