@@ -148,6 +148,14 @@ check(!jitterArrival.shouldArrive(now:279),"stationary arrival still observes th
 jitterArrival.noteMotion(MotionEvidence(types:["Driving"],confidence:"high",timestamp:280),now:280)
 check(!jitterArrival.shouldArrive(now:281),"fresh movement cancels stationary arrival")
 check(!jitterArrival.shouldArrive(now:326),"stale GPS cannot trigger arrival even with stationary evidence")
+var parkWalk=AutomaticDetector()
+parkWalk.phase="recording";parkWalk.lastMovementAt=100;parkWalk.lastValidFixAt=690
+check(!parkWalk.shouldArrive(now:700,activity:"Walking"),"park walk stays open after ten minutes at one place")
+check(parkWalk.shouldArrive(now:700,activity:"Driving"),"driving still confirms parking after three minutes")
+parkWalk.lastValidFixAt=1900
+check(parkWalk.shouldArrive(now:1900,activity:"Walking"),"extended stationary walking visit eventually closes")
+parkWalk.lastValidFixAt=100
+check(!parkWalk.shouldArrive(now:1900,activity:"Walking"),"stale GPS never finishes walking visit")
 var lostDrive=AutomaticDetector()
 lostDrive.phase="recording";lostDrive.lastMovementAt=178;lostDrive.lastValidFixAt=178
 check(!lostDrive.shouldArrive(now:560),"ten minute ongoing drive with a GPS outage remains active")
