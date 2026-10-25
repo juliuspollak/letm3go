@@ -81,10 +81,10 @@ extension LocationRecorder {
         if active != nil {return}
         if automaticSampling.needsGPS(automaticAvailable:automaticAvailable,manualRecording:false,automaticRecording:automaticTrip != nil,now:now) {
             // Acquire the first route samples promptly; idle still uses no continuous GPS.
-            manager.desiredAccuracy=automaticTrip == nil ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
-            manager.distanceFilter=automaticTrip == nil ? 5 : 15
+            manager.desiredAccuracy=kCLLocationAccuracyBest
+            manager.distanceFilter=5
             manager.pausesLocationUpdatesAutomatically=false
-            manager.activityType = .other
+            manager.activityType = automaticTrip?.activity == "Driving" || motion.types.contains("Driving") ? .automotiveNavigation : .other
             startContinuousLocation()
         } else {
             stopContinuousLocation()
@@ -150,7 +150,9 @@ extension LocationRecorder {
                     trip.details?.startPlace = places.first { $0.contains(first) }?.name
                     try storage.save(trip); automaticTrip = trip
                     trackingEvent("Automatic departure confirmed")
-                    manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters; manager.distanceFilter = 15; manager.pausesLocationUpdatesAutomatically = false
+                    // Keep the departure's buffered, genuine fixes and retain precise GPS throughout the drive.
+                    manager.desiredAccuracy = kCLLocationAccuracyBest; manager.distanceFilter = 5; manager.pausesLocationUpdatesAutomatically = false
+                    manager.activityType = motion.types.contains("Driving") ? .automotiveNavigation : .other
                 } else if var trip = automaticTrip {
                     let previousDistance=trip.distanceMeters
                     if trip.accept(sample,now:now), let first = trip.points.first {
