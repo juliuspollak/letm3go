@@ -153,7 +153,11 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             let hint=UILabel();hint.text="Tap the map to place your pin";hint.font = .preferredFont(forTextStyle:.subheadline);hint.textAlignment = .center;hint.backgroundColor = .secondarySystemBackground;hint.layer.cornerRadius=14;hint.clipsToBounds=true;hint.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(hint)
             NSLayoutConstraint.activate([hint.centerXAnchor.constraint(equalTo:view.centerXAnchor),hint.bottomAnchor.constraint(equalTo:map.bottomAnchor,constant:-24),hint.widthAnchor.constraint(equalToConstant:280),hint.heightAnchor.constraint(equalToConstant:40)])
         }
-        for segment in content.routes where segment.count>1 {map.addOverlay(MKPolyline(coordinates:segment,count:segment.count))}
+        for segment in content.routes where segment.count>1 {
+            // Use the same complete coordinate sequence as the preview; draw above labels
+            // to prevent Apple Maps road styling from obscuring portions of sparse routes.
+            map.addOverlay(MKPolyline(coordinates:segment,count:segment.count),level:.aboveLabels)
+        }
         for metadata in content.pins {
             guard let c=coordinate(metadata["point"]) else {continue}
             let pin=JourneyPin();pin.coordinate=c;pin.title=metadata["title"] as? String;pin.metadata=metadata;map.addAnnotation(pin)
@@ -181,7 +185,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         navigationItem.rightBarButtonItem?.isEnabled=true
     }
     func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
-        if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=4;renderer.lineCap = .round;return renderer}
+        if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=5;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let circle=overlay as? MKCircle {let renderer=MKCircleRenderer(circle:circle);renderer.strokeColor = .systemBlue;renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.12);renderer.lineWidth=1;return renderer}
         return MKOverlayRenderer(overlay:overlay)
     }
