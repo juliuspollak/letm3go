@@ -14,7 +14,7 @@ export const authStorage={
  async setItem(key,value){if(Capacitor.isNativePlatform()){await secure.set({key,value});localStorage.removeItem(key);}else localStorage.setItem(key,value);},
  async removeItem(key){if(Capacitor.isNativePlatform())await secure.remove({key});localStorage.removeItem(key);},
 };
-const defaults=()=>({displayName:'',avatar:null,vehicles:[],onboardingStep:0,onboardingComplete:false,notificationsEnabled:false,demoOverrides:null,bookmarks:[]});
+const defaults=()=>({displayName:'',avatar:null,vehicles:[],onboardingStep:0,onboardingComplete:false,notificationsEnabled:false,distanceUnit:'km',demoOverrides:null,bookmarks:[]});
 let webOwner=null;
 export const accountStore={
  async beginSignIn(){
