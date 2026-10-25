@@ -218,3 +218,16 @@ check(TrackingPresentation.indicator(always:false,manual:false),"When In Use doe
 check(TrackingPresentation.reason(continuous:false,manual:false,automatic:false,stationary:true,probing:false,available:true).contains("Low-power standby"),"idle diagnostics identify low-power services")
 check(TrackingPresentation.reason(continuous:true,manual:false,automatic:true,stationary:true,probing:false,available:true).contains("Confirming arrival"),"stationary recording explains arrival window")
 check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:true,available:true).contains("departure check"),"probe diagnostics explain bounded GPS")
+
+
+var shortDrive = AutomaticDetector()
+let carMotion = MotionEvidence(types:["Driving"],confidence:"high",timestamp:1000)
+check(shortDrive.observe(point(-33,1000),motion:carMotion,manualActive:false,now:1000) == nil,"initial short-drive fix stays buffered")
+check(shortDrive.observe(point(-32.9998,1006),motion:carMotion,manualActive:false,now:1006) == nil,"vehicle departure needs three fixes")
+check(shortDrive.observe(point(-32.99955,1014),motion:carMotion,manualActive:false,now:1014) == "depart","credible short drive confirms within 14 seconds and retains departure fixes")
+check(shortDrive.candidate.count == 3,"confirmed departure preserves real buffered GPS points")
+var shortWalk = AutomaticDetector()
+let walkMotion = MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000)
+check(shortWalk.observe(point(-33,1000),motion:walkMotion,manualActive:false,now:1000) == nil,"walk starting")
+check(shortWalk.observe(point(-32.9998,1006),motion:walkMotion,manualActive:false,now:1006) == nil,"walking remains conservative")
+check(shortWalk.observe(point(-32.99955,1014),motion:walkMotion,manualActive:false,now:1014) == nil,"walking does not use automotive fast confirmation")
