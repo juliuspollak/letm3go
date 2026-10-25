@@ -54,13 +54,15 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             let snapshotter=MKMapSnapshotter(options:options)
             snapshotter.start { snapshot,error in
                 guard let snapshot=snapshot,error==nil else {call.reject("Apple map preview unavailable");return}
+                let trimPreview = call.getBool("trimPreview") == true
+                let projection = trimPreview ? content.routes.map { segment in segment.map { c in let p=snapshot.point(for:c); return [Double(p.x),Double(p.y)] } } : []
                 let image=UIGraphicsImageRenderer(size:options.size).image { context in
                     snapshot.image.draw(at:.zero)
                     let ctx=context.cgContext
                     for segment in content.routes where segment.count>1 {
                         let path=UIBezierPath();path.move(to:snapshot.point(for:segment[0]));for c in segment.dropFirst(){path.addLine(to:snapshot.point(for:c))}
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
-                        routeColor.setStroke();path.lineWidth=3.5;path.stroke()
+                        (trimPreview ? UIColor.systemGray3 : routeColor).setStroke();path.lineWidth=3.5;path.stroke()
                     }
                     for pin in content.pins {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
@@ -71,7 +73,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     }
                 }
                 guard let bytes=image.jpegData(compressionQuality:0.85) else {call.reject("Map preview unavailable");return}
-                call.resolve(["image":"data:image/jpeg;base64,"+bytes.base64EncodedString()])
+                call.resolve(["image":"data:image/jpeg;base64,"+bytes.base64EncodedString(),"projection":projection])
             }
         }
     }
