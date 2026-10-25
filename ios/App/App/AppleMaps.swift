@@ -7,6 +7,26 @@ private func coordinate(_ value: Any?) -> CLLocationCoordinate2D? {
     guard let p=value as? [Double],p.count==2,p.allSatisfy({$0.isFinite}),abs(p[0])<=90,abs(p[1])<=180 else { return nil }
     return CLLocationCoordinate2D(latitude:p[0],longitude:p[1])
 }
+
+private func journalPhotoThumbnail(_ photoID:String, size:CGFloat=48)->UIImage? {
+    let recorder=LocationRecorder.shared
+    guard recorder.uiUnlocked,recorder.ownerID != nil,
+          let storage=recorder.storage,
+          let trip=recorder.trips.first(where:{$0.details?.photos.contains(where:{$0.id==photoID}) == true}),
+          let photo=trip.details?.photos.first(where:{$0.id==photoID}),
+          let data=try? storage.readData(name:"media/\(photo.filename)"),
+          let source=UIImage(data:data) else {return nil}
+    let renderer=UIGraphicsImageRenderer(size:CGSize(width:size,height:size))
+    return renderer.image { _ in
+        let bounds=CGRect(x:0,y:0,width:size,height:size)
+        UIBezierPath(ovalIn:bounds).addClip()
+        let ratio=max(size/source.size.width,size/source.size.height)
+        let width=source.size.width*ratio,height=source.size.height*ratio
+        source.draw(in:CGRect(x:(size-width)/2,y:(size-height)/2,width:width,height:height))
+        UIColor.white.setStroke()
+        let ring=UIBezierPath(ovalIn:bounds.insetBy(dx:2,dy:2));ring.lineWidth=3;ring.stroke()
+    }
+}
 private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let pins: [[String:Any]]
@@ -67,6 +87,12 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     for pin in content.pins {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
                         // No image bytes or private file paths are passed into MapKit.
+                        if (pin["kind"] as? String)=="photo",
+                           let photoID=pin["photoID"] as? String,
+                           let thumbnail=journalPhotoThumbnail(photoID,size:38) {
+                            thumbnail.draw(in:CGRect(x:p.x-19,y:p.y-19,width:38,height:38))
+                            continue
+                        }
                         let color=(pin["kind"] as? String)=="location" ? UIColor.systemBlue : routeColor
                         ctx.setFillColor(color.cgColor);ctx.setStrokeColor(UIColor.white.cgColor);ctx.setLineWidth(2)
                         ctx.fillEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10));ctx.strokeEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
@@ -161,8 +187,16 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     }
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
-        let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil);marker.canShowCallout=true
         let kind=pin.metadata["kind"] as? String
+        if kind=="photo",let photoID=pin.metadata["photoID"] as? String,
+           let thumbnail=journalPhotoThumbnail(photoID,size:52) {
+            let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+            view.image=thumbnail;view.centerOffset=CGPoint(x:0,y:-24)
+            view.canShowCallout=true
+            view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
+            return view
+        }
+        let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil);marker.canShowCallout=true
         marker.markerTintColor=kind=="location" ? .systemBlue : routeColor
         marker.glyphImage=UIImage(systemName:kind=="photo" ? "photo" : kind=="finish" ? "flag.checkered" : kind=="start" ? "play.fill" : "mappin")
         if kind=="photo" {marker.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)}
