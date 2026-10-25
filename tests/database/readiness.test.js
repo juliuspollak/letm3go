@@ -77,6 +77,17 @@ it('backs up atomically with owner checks, idempotent receipts, conflict rejecti
  await as('authenticated',a,`delete from public.activities where id='${id}'`);
  await expect(as('authenticated',a,call(a,'b'))).rejects.toThrow('deleted');
 });
+it('reserves Tesla rotation leases for service role and prevents stale or cross-owner writes',async()=>{
+ for(const role of ['anon','authenticated'])await expect(as(role,a,`select public.acquire_tesla_token_lease('${a}')`)).rejects.toThrow();
+ const lease=(await as('service_role','',`select public.acquire_tesla_token_lease('${a}') as lease`)).rows[0].lease;
+ expect(lease).toBeTruthy();
+ expect((await as('service_role','',`select public.acquire_tesla_token_lease('${a}') as lease`)).rows[0].lease).toBeNull();
+ await expect(as('service_role','',`select public.save_tesla_credentials('${b}','${lease}','encrypted')`)).rejects.toThrow('lease expired');
+ await as('service_role','',`select public.save_tesla_credentials('${a}','${lease}','encrypted')`);
+ await expect(as('authenticated',b,'select * from public.tesla_token_leases')).rejects.toThrow();
+ await as('service_role','',`select public.release_tesla_token_lease('${a}','${lease}')`);
+ await expect(as('service_role','',`select public.save_tesla_credentials('${a}','${lease}','stale')`)).rejects.toThrow('lease expired');
+});
 it('freezes direct client and service writes during deletion then cascades without restoring tombstones', async () => {
   await as('authenticated', a, `insert into public.saved_places(id,name,kind,latitude,longitude,radius) values('${trip}','Home','home',-33,151,150)`);
   await as('authenticated', a, `update public.activity_stops set saved_place_id='${trip}' where activity_id='${trip}'`);

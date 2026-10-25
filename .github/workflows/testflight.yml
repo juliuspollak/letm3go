@@ -19,6 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   package:
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 60
     environment: ios-signing
@@ -31,6 +32,12 @@ jobs:
       VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Xcode and iPhoneOS SDK
+        run: |
+          xcodebuild -version
+          sdk_version=$(xcrun --sdk iphoneos --show-sdk-version)
+          sdk_major=${sdk_version%%.*}
+          [[ "$sdk_major" -ge 26 ]] || { echo "::error::iPhoneOS SDK 26 or later required"; exit 1; }
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -38,13 +45,15 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.1.7'
-      - run: bundle install --jobs 4
+          bundler-cache: true
       - name: Validate release configuration
         run: |
           for name in APPLE_TEAM_ID APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_API_KEY_BASE64 VITE_SUPABASE_URL VITE_SUPABASE_PUBLISHABLE_KEY; do
             if [ -z "${!name:-}" ]; then echo "::error::Missing required secret $name"; exit 1; fi
           done
       - run: npm ci
+      - run: npm run release:check
+      - run: npm run testflight:check
       - run: npm run check
       - run: npm run check:edge
       - run: npm run test:native
@@ -65,6 +74,7 @@ jobs:
           path: |
             .build/release/Letm3go.ipa
             .build/release/build-number.txt
+            .build/release/Letm3go.manifest.json
           retention-days: 7
       - name: Clean signing material
         if: always()
@@ -85,7 +95,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.1.7'
-      - run: bundle install --jobs 4
+          bundler-cache: true
       - uses: actions/download-artifact@v4
         with:
           name: letm3go-ipa-${{ github.run_id }}

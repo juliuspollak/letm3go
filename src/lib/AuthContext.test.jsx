@@ -1,4 +1,4 @@
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider, useAuth } from './AuthContext.jsx';
 import { ensureUserProfile } from './userProfile.js';
@@ -10,7 +10,7 @@ vi.mock('./config.js',()=>({config:{key:'test-public-key'}}));
 vi.mock('./auth.js',()=>({listenForNativeAuth:async()=>()=>{},authRedirect:()=>''}));
 vi.mock('./pushAccount.js',()=>({stopAccountPush:mocks.stopPush,resumeAccountPush:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>false},registerPlugin:()=>({})}));
-function Probe(){const value=useAuth();return <><p role="status">{value.status}:{value.session?.user.id||'none'}</p><button onClick={()=>void value.signOut()}>Logout</button><button onClick={()=>void value.savePreferences({displayName:'Changed'})}>Save name</button></>;}
+function Probe(){const value=useAuth();return <><p role="status">{value.status}:{value.session?.user.id||'none'}</p><p data-testid="auth-error">{value.error}</p><p data-testid="account-notice">{value.accountDeletionNotice}</p><p data-testid="integration-banner">{value.integrationWarning}</p><button onClick={()=>void value.signOut()}>Logout</button><button onClick={()=>void value.savePreferences({displayName:'Changed'})}>Save name</button></>;}
 beforeEach(()=>{
  mocks.user={id:'owner-a',email_confirmed_at:'2026-10-24'};mocks.session={access_token:'test',user:mocks.user};
  mocks.auth.getSession.mockImplementation(async()=>({data:{session:mocks.session}}));mocks.auth.getUser.mockImplementation(async()=>({data:{user:mocks.user}}));mocks.auth.onAuthStateChange.mockImplementation(callback=>{mocks.callback=callback;return {data:{subscription:{unsubscribe:vi.fn()}}};});mocks.auth.signOut.mockResolvedValue({error:null});
@@ -36,3 +36,7 @@ it('keeps verified authentication and private recording available when profile s
  vi.mocked(ensureUserProfile).mockRejectedValueOnce(new Error('Profile unavailable'));
  render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');expect(mocks.store.bind).toHaveBeenCalled();
 });
+it('retries a discarded refresh without exposing the SDK error or forcing logout',async()=>{mocks.auth.getSession.mockResolvedValueOnce({data:{session:null},error:{name:'AuthRefreshDiscardedError',status:409,message:'Refresh result discarded: session state changed mid-flight'}});render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');expect(screen.getByTestId('auth-error')).toBeEmptyDOMElement();expect(mocks.store.lock).not.toHaveBeenCalled();});
+it('ignores an old restore finishing after a newer sign-in',async()=>{let finish;mocks.auth.getSession.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));render(<AuthProvider><Probe/></AuthProvider>);await waitFor(()=>expect(finish).toBeTypeOf('function'));act(()=>mocks.callback('SIGNED_IN',mocks.session));await screen.findByText('authenticated:owner-a');await act(async()=>finish({data:{session:null}}));expect(screen.getByRole('status')).toHaveTextContent('authenticated:owner-a');expect(mocks.store.lock).not.toHaveBeenCalled();});
+
+it('keeps deletion availability in account settings and isolated to the correct account',async()=>{render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');act(()=>window.dispatchEvent(new CustomEvent('letm3go:account-service-warning',{detail:{ownerID:'owner-a',message:'Account deletion is temporarily unavailable.'}})));expect(screen.getByTestId('account-notice')).toHaveTextContent('temporarily unavailable');expect(screen.getByTestId('integration-banner')).toBeEmptyDOMElement();mocks.user={id:'owner-b',email_confirmed_at:'2026-10-24'};mocks.session={access_token:'other',user:mocks.user};act(()=>mocks.callback('SIGNED_IN',mocks.session));await screen.findByText('authenticated:owner-b');expect(screen.getByTestId('account-notice')).toBeEmptyDOMElement();});

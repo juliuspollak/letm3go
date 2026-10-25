@@ -48,6 +48,10 @@ Deno.serve(async request=>{
    return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
   }
   if(!uuid(body.id))return reply({error:'Activity identifier required'},400);
+  if(body.action==='status'){
+   const {data:shared,error}=await admin.from('shared_journeys').select('audience,token').eq('activity_id',body.id).eq('owner_id',owner).maybeSingle();if(error)throw error;
+   return reply({audience:shared?.audience||'private',token:shared?.token||null});
+  }
   const {data:trip,error}=await userClient.from('activities').select('*').eq('id',body.id).maybeSingle();
   if(error||!trip||trip.owner_id!==owner)return reply({error:'Activity unavailable'},404);
   if(body.action==='publish'){

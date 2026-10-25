@@ -3,8 +3,9 @@
   "appName": "Letm3go",
   "webDir": "dist",
   "ios": {
-    "contentInset": "automatic",
-    "backgroundColor": "#16352f"
+    "contentInset": "never",
+    "backgroundColor": "#f6f7fb",
+    "appendUserAgent": "Letm3go/1.0 (au.jpollak.journey)"
   },
   "plugins": {
     "PushNotifications": {

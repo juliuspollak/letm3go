@@ -79,10 +79,13 @@ extension LocationRecorder {
 }
 
 final class PositionRequest: NSObject, CLLocationManagerDelegate {
+    static var activeRequests=Set<UUID>()
+    let requestID=UUID()
     let manager = CLLocationManager()
     let call: CAPPluginCall
     let owner = LocationRecorder.shared.ownerID
-    var finished = false
+    var finished = false {didSet{if finished {Self.activeRequests.remove(requestID)}}}
+    deinit {Self.activeRequests.remove(requestID)}
     init(call: CAPPluginCall) { self.call = call; super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyBest }
     var requesting = false
     func begin() {
@@ -92,7 +95,7 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     func requestFix() {
         guard !finished, !requesting else { return }
         guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { finished=true;call.reject("Location permission was declined. Use address search, select the map, or enable access in iOS Settings.");return }
-        requesting=true;manager.requestLocation()
+        requesting=true;Self.activeRequests.insert(requestID);manager.requestLocation()
         DispatchQueue.main.asyncAfter(deadline:.now()+20) { if !self.finished { self.finished=true;self.call.reject("No recent location fix. Try outdoors or select a point on the map.") } }
     }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

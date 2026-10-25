@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="fastlane.lanes">
+    
+    
+    
+      
+      <testcase classname="fastlane.lanes" name="0: default_platform" time="0.000199">
+        
+      </testcase>
+    
+      
+      <testcase classname="fastlane.lanes" name="1: python3 /Users/juliuspollak/Projects/letm3go/scripts/validate-ipa.py /Users/juliuspollak/Projects/letm3go/.build/release/Letm3go.ipa" time="0.119253">
+        
+      </testcase>
+    
+      
+      <testcase classname="fastlane.lanes" name="2: app_store_connect_api_key" time="0.004019">
+        
+      </testcase>
+    
+      
+      <testcase classname="fastlane.lanes" name="3: upload_to_testflight" time="192.472468">
+        
+      </testcase>
+    
+  </testsuite>
+</testsuites>

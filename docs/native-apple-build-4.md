@@ -1,5 +1,8 @@
 # Native Sign in with Apple — build 4, 25 October 2026
 
+> Physical Apple sign-in acceptance — 25 October 2026: the owner reports build 6 Check sign-in shows verified, account ending `ff305055`. A read-only hosted query scoped to that suffix found exactly one matching Auth user, an Apple identity, confirmed email, the owned profiles row and one session row not past its configured expiry. This confirms successful real iPhone Apple sign-in and the matching Supabase account/session/profile, together with the app’s fresh getUser/profile check. No tokens were read or printed and no remote data was changed. Separate controlled restart, explicit sign-out/reauthentication, offline and background GPS acceptance remain outstanding.
+
+
 > Later audit update: audited build 5 was successfully installed and launched on the paired iPhone. Real Apple consent and session/profile/restart acceptance remain pending. See [production audit](production-readiness-audit.md) and [device plan](real-device-test-plan.md). The build-4 installation failure below is historical.
 
 **Status: implementation and signed build verified; physical iPhone acceptance is pending. Apple sign-in is not complete.** Installing build 4 failed because the device connection reset. The last known installed app is build 3; its disabled Apple button is not evidence about build 4. No database migrations, Edge Functions, secrets or TestFlight builds were deployed by this work.

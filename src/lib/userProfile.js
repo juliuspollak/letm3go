@@ -25,24 +25,6 @@ export async function ensureUserProfile(client, user) {
   return data;
 }
 
-export async function verifyAccountSession(client, session, {onProgress=()=>{},timeoutMs=15000}={}) {
-  if (!session?.access_token || !session.user?.id) throw new Error('Sign in before checking your account.');
-  async function bounded(operation,message){
-    let timer;
-    try{return await Promise.race([Promise.resolve().then(operation),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),timeoutMs);})]);}
-    finally{clearTimeout(timer);}
-  }
-  const { data, error } = await bounded(()=>client.auth.getUser(session.access_token),'The sign-in check timed out. Check your connection and try again. Your local recordings are preserved.');
-  if (error || data?.user?.id !== session.user.id) throw new Error('Your sign-in could not be verified. Reconnect or sign in again.');
-  const provider=data.user.identities?.some(i=>i.provider==='apple')?'Apple':'Email';
-  const summary=`${provider} sign-in verified. Account ending ${data.user.id.slice(-8)}.`;
-  onProgress(`${summary} Checking your profile…`);
-  try{
-    const profile=await bounded(()=>ensureUserProfile(client,data.user),'Profile check timed out.');
-    return { userID:data.user.id,provider,profileVerified:profile.id===data.user.id };
-  }catch{throw new Error(`${summary} Your profile check did not complete. Reconnect and retry; do not delete or reinstall the app.`);}
-}
-
 export async function saveProfileName(client, user, name) {
   await ensureUserProfile(client, user);
   const { data, error } = await client.from('profiles').update({ display_name: name }).eq('id', user.id).select('id').single();

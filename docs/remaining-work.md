@@ -1,5 +1,8 @@
 # Remaining work — 25 October 2026
 
+> Physical Apple sign-in acceptance — 25 October 2026: the owner reports build 6 Check sign-in shows verified, account ending `ff305055`. A read-only hosted query scoped to that suffix found exactly one matching Auth user, an Apple identity, confirmed email, the owned profiles row and one session row not past its configured expiry. This confirms successful real iPhone Apple sign-in and the matching Supabase account/session/profile, together with the app’s fresh getUser/profile check. No tokens were read or printed and no remote data was changed. Separate controlled restart, explicit sign-out/reauthentication, offline and background GPS acceptance remain outstanding.
+
+
 ## 1. Critical blockers preventing real use
 
 - **First priority: real native Apple acceptance.** Signed implementation/capability and tests exist, but owner consent, resulting Supabase session/profile, restart and reauth are not yet verified. Connect/unlock phone, install audited build, sign in and use Check sign-in. Do not call Apple complete before this passes.
@@ -16,7 +19,7 @@
 2. New **`20261025000000_private_backup.sql`** is local only. Apply only after history reconciliation and approval; then owner/cross-user/anonymous JWT checks. Only then set `VITE_ENABLE_PRIVATE_BACKUP=true` and verify actual receipts. Old four applied scripts are not new pending schema work.
 3. Deploy `journeys` after real R2 permissions/metadata stripping/publication tests; private publishing UI and upload/reconciliation still need implementation. Ordinary media deletion's cleanup outbox has no automatic worker.
 4. Deploy `account` after recent-auth, Apple/Tesla revocation, R2 cleanup and retry/race staging tests. Add a crash-recovery strategy across nontransactional R2/provider/SQL operations. Account deletion cannot be called complete before this.
-5. Deploy `tesla` only after own developer credentials/domain/partner/virtual key/region/callback/encryption setup; keep Fleet reads gated pending separate billing approval. Implement serialized token refresh/rotation before ongoing use. Do not create a fake HTTP telemetry receiver.
+5. Deploy `tesla` only after own developer credentials/domain/partner/virtual key/region/callback/encryption setup; keep Fleet reads gated pending separate billing approval. Serialized on-demand token refresh/rotation and service-only lease SQL are now prepared locally; deploy after approval and verify with the real provider before ongoing use. Do not create a fake HTTP telemetry receiver.
 6. Optional `health` is liveness only. No existing function is deployed.
 7. APNs still needs own capability/provisioning/key/environment plus a real sender, events and notification navigation. SQL token ownership alone does not produce household/share/journey notifications.
 8. GitHub distribution/API secret presence and environment protections are unverified remotely. Local signing/syntax is not a successful CI release.

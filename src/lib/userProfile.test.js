@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { accountDisplayName, ensureUserProfile, verifyAccountSession, saveProfileName } from './userProfile.js';
+import { accountDisplayName, ensureUserProfile, saveProfileName } from './userProfile.js';
 const user={id:'owner',email:'relay@privaterelay.appleid.com',user_metadata:{full_name:'Apple Person'}};
 function setup(reads,created){const q={};for(const name of ['select','eq','insert','update'])q[name]=vi.fn(()=>q);q.maybeSingle=vi.fn();for(const r of reads)q.maybeSingle.mockResolvedValueOnce(r);q.single=vi.fn().mockResolvedValue(created);return {q,client:{from:vi.fn(()=>q)}};}
 it('creates only the verified user profile with minimal granted columns',async()=>{
@@ -20,20 +20,6 @@ it('recovers a duplicate insert race and rejects a wrong owner response',async()
 it('reports RLS/profile failures without leaking server error details',async()=>{
  const {client}=setup([{error:new Error('sensitive internals')}]);await expect(ensureUserProfile(client,user)).rejects.toThrow('could not be loaded');
 });
-it('verifies the current Supabase access token and profile owner before reporting Apple sign-in',async()=>{
- const {client}=setup([{data:{id:'owner',display_name:'Saved'}}]);client.auth={getUser:vi.fn().mockResolvedValue({data:{user:{...user,identities:[{provider:'apple'}]}}})};
- expect(await verifyAccountSession(client,{access_token:'test-session-token',user})).toEqual({userID:'owner',provider:'Apple',profileVerified:true});expect(client.auth.getUser).toHaveBeenCalledWith('test-session-token');
- client.auth.getUser.mockResolvedValue({data:{user:{id:'other'}}});await expect(verifyAccountSession(client,{access_token:'test',user})).rejects.toThrow('could not be verified');
- client.auth.getUser.mockResolvedValue({error:{status:401}});await expect(verifyAccountSession(client,{access_token:'test',user})).rejects.toThrow('could not be verified');
-});
 it('synchronizes an edited name only to the authenticated profile',async()=>{
  const {q,client}=setup([{data:{id:'owner',display_name:'Original'}}],{data:{id:'owner'}});await saveProfileName(client,user,'Chosen name');expect(q.update).toHaveBeenCalledWith({display_name:'Chosen name'});expect(q.eq).toHaveBeenCalledWith('id','owner');
-});
-it('times out a stalled Auth request instead of leaving the check busy forever',async()=>{
- const client={auth:{getUser:()=>new Promise(()=>{})}};
- await expect(verifyAccountSession(client,{access_token:'test',user},{timeoutMs:5})).rejects.toThrow('sign-in check timed out');
-});
-it('reports verified authentication separately when the profile request stalls',async()=>{
- const {q,client}=setup([]);client.auth={getUser:async()=>({data:{user:{...user,identities:[{provider:'apple'}]}}})};q.maybeSingle.mockImplementation(()=>new Promise(()=>{}));const onProgress=vi.fn();
- await expect(verifyAccountSession(client,{access_token:'test',user},{timeoutMs:5,onProgress})).rejects.toThrow('Apple sign-in verified. Account ending owner. Your profile check did not complete.');expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('Checking your profile'));
 });

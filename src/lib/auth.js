@@ -24,8 +24,12 @@ export async function signInWithApple() {
       if(nameError)window.dispatchEvent(new CustomEvent('letm3go:integration-warning',{detail:{ownerID:data.user.id,message:'Signed in. Enter your display name during profile setup.'}}));
     }
     if(credentials.authorizationCode&&data.session){
-      const {error}=await supabase.functions.invoke('account',{body:{action:'captureAppleAuthorization',code:credentials.authorizationCode}});
-      if(error)window.dispatchEvent(new CustomEvent('letm3go:integration-warning',{detail:{ownerID:data.session.user.id,message:'Apple sign-in succeeded, but account-deletion revocation setup needs configuration before release.'}}));
+      try {
+        const {error}=await supabase.functions.invoke('account',{body:{action:'captureAppleAuthorization',code:credentials.authorizationCode}});
+        if(error)throw error;
+      } catch {
+        window.dispatchEvent(new CustomEvent('letm3go:account-service-warning',{detail:{ownerID:data.session.user.id,message:'Account deletion is temporarily unavailable. Reconnect and try again later.'}}));
+      }
     }
     return {cancelled:false,userID:data.user.id};
   }
@@ -49,7 +53,7 @@ const handle = createCallbackHandler(async (code) => {
 
 export async function listenForNativeAuth(onError,onRecovery=()=>{}) {
   if (!supabase || !Capacitor.isNativePlatform()) return () => {};
-  const receive = async (url) => { try { const incoming=new URL(url);if(incoming.protocol==='au.jpollak.journey:'&&incoming.hostname==='tesla'&&incoming.pathname==='/connected'){try{await Browser.close();}catch{/* Already dismissed. */}window.dispatchEvent(new Event('letm3go:tesla-connected'));return;} if(!parseNativeOAuthCallback(url))return; await handle(url); if(new URL(url).searchParams.get('flow')==='recovery')onRecovery(); } catch (error) { onError(error); } };
+  const receive = async (url) => { try { const incoming=new URL(url);if(incoming.protocol==='au.jpollak.journey:'&&incoming.hostname==='tesla'&&incoming.pathname==='/connected'&&!incoming.username&&!incoming.password&&!incoming.port){try{await Browser.close();}catch{/* Already dismissed. */}window.dispatchEvent(new CustomEvent('letm3go:tesla-connected',{detail:{status:incoming.searchParams.get('status')}}));return;} if(!parseNativeOAuthCallback(url))return; await handle(url); if(new URL(url).searchParams.get('flow')==='recovery')onRecovery(); } catch (error) { onError(error); } };
   const listener = await App.addListener('appUrlOpen', ({ url }) => { void receive(url); });
   try {
     const launch = await App.getLaunchUrl();

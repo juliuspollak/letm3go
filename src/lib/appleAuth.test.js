@@ -28,5 +28,7 @@ it('rejects missing credentials and rejected or mismatched sessions',async()=>{
 });
 it('preserves successful login when optional profile or revocation setup needs attention',async()=>{
  const events=[];const listener=event=>events.push(event.detail);window.addEventListener('letm3go:integration-warning',listener);
- try{m.update.mockResolvedValue({error:new Error('Offline')});m.invoke.mockResolvedValue({error:new Error('Function absent')});await expect(signInWithApple()).resolves.toMatchObject({userID:user.id});expect(events).toHaveLength(2);expect(events.every(e=>e.ownerID===user.id)).toBe(true);}finally{window.removeEventListener('letm3go:integration-warning',listener);}
+ try{m.update.mockResolvedValue({error:new Error('Offline')});m.invoke.mockResolvedValue({error:new Error('Function absent')});await expect(signInWithApple()).resolves.toMatchObject({userID:user.id});expect(events).toHaveLength(1);expect(events.every(e=>e.ownerID===user.id)).toBe(true);}finally{window.removeEventListener('letm3go:integration-warning',listener);}
 });
+
+it('keeps account-deletion failures out of the successful sign-in banner',async()=>{const banner=vi.fn(),notice=vi.fn();window.addEventListener('letm3go:integration-warning',banner);window.addEventListener('letm3go:account-service-warning',notice);try{m.invoke.mockRejectedValue(new Error('Function unavailable'));await expect(signInWithApple()).resolves.toMatchObject({userID:user.id});expect(banner).not.toHaveBeenCalled();expect(notice).toHaveBeenCalledOnce();expect(notice.mock.calls[0][0].detail.message).not.toMatch(/configuration|revocation|before release/i);}finally{window.removeEventListener('letm3go:integration-warning',banner);window.removeEventListener('letm3go:account-service-warning',notice);}});

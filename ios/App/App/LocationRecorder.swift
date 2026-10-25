@@ -1,6 +1,7 @@
 import Capacitor
 import CoreLocation
 import UIKit
+import WebKit
 import CoreMotion
 
 final class LocationRecorder: NSObject, CLLocationManagerDelegate {
@@ -18,6 +19,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var motion = MotionEvidence()
     var detector = AutomaticDetector()
     var automaticTrip: RecordedActivity?
+    var automaticSampling = AutomaticSampling()
+    var automaticProbeTimer: Timer?
     var automaticEnabled = false
     var ownerID: String?
     var uiUnlocked = false
@@ -29,7 +32,21 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var places: [SavedPlace] = []
     var arrivalTimer: Timer?
     var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && CLLocationManager.locationServicesEnabled() }
+    var continuousLocationRequested=false
+    var significantLocationRequested=false
+    var visitMonitoringRequested=false
+    var motionUpdatesRequested=false
+    var locationUpdatesPaused=false
+    var lastLocationUpdateAt: Double?
+    var lastLocationAccuracy: Double?
     var lastAutomaticFixAt: Double?
+    var continuousStartedAt:Double?
+    var continuousStoppedAt:Double?
+    var lastTrackingEvent="Initialising"
+    var lastTrackingEventAt:Double?
+    func trackingEvent(_ reason:String){lastTrackingEvent=reason;lastTrackingEventAt=Date().timeIntervalSince1970}
+    func updateIndicatorPolicy(){manager.showsBackgroundLocationIndicator=TrackingPresentation.indicator(always:manager.authorizationStatus == .authorizedAlways,manual:active?.state == "recording")}
+    var gpsReason:String {TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable)}
     var motionPermission: String { String(describing:CMMotionActivityManager.authorizationStatus()) }
 
     override init() {
@@ -38,7 +55,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
-        manager.showsBackgroundLocationIndicator = true
+        updateIndicatorPolicy()
         manager.allowsBackgroundLocationUpdates = true
         do {
             try sealLegacyData()
@@ -46,10 +63,29 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         } catch { lastError = "Private storage could not be opened. Unlock the device and sign in to retry."; storage = nil; ownerID = nil }
         refreshAutomaticMonitoring()
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
-            guard let self = self, self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970) else { return }
+            guard let self = self else { return }
+            self.reconcileAutomaticSampling()
+            guard self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970) else { return }
             do { try self.finishAutomatic() } catch { self.lastError = error.localizedDescription }
         }
     }
+    // Core Location has no getter for hardware GPS activity. Expose our real service
+    // requests and OS pause callbacks, separately from permission/capability flags.
+    func startContinuousLocation(){
+        updateIndicatorPolicy()
+        if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingEvent(gpsReason)}
+    }
+    func stopContinuousLocation(){
+        if continuousLocationRequested {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;trackingEvent("Continuous GPS stopped")}
+        continuousLocationRequested=false;locationUpdatesPaused=false;updateIndicatorPolicy()
+    }
+    func startSignificantMonitoring(){manager.startMonitoringSignificantLocationChanges();significantLocationRequested=true}
+    func stopSignificantMonitoring(){manager.stopMonitoringSignificantLocationChanges();significantLocationRequested=false}
+    func startVisitMonitoring(){manager.startMonitoringVisits();visitMonitoringRequested=true}
+    func stopVisitMonitoring(){manager.stopMonitoringVisits();visitMonitoringRequested=false}
+    func stopMotionUpdates(){motionManager?.stopActivityUpdates();motionUpdatesRequested=false}
+    func locationManagerDidPauseLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=true}
+    func locationManagerDidResumeLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=false}
     var authorized: Bool { manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse }
     var permission: String {
         switch manager.authorizationStatus {
@@ -86,7 +122,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
         manager.activityType = active?.activity == "Driving" ? .automotiveNavigation : .fitness
-        manager.startUpdatingLocation()
+        startContinuousLocation()
     }
     func transition(_ action: String) throws {
         guard var trip = active, let storage = storage else { throw failure("There is no active activity.") }
@@ -104,9 +140,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if action == "finish" { trips.insert(trip, at: 0); active = nil }
         else { active = trip }
         currentSpeed = 0
-        if active?.state == "recording" { beginUpdates() } else { manager.stopUpdatingLocation(); refreshAutomaticMonitoring() }
+        if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring() }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let last=locations.last {lastLocationUpdateAt=last.timestamp.timeIntervalSince1970;lastLocationAccuracy=last.horizontalAccuracy>=0 ? last.horizontalAccuracy : nil}
         guard !accountSuspended else { return }
         if active == nil { processAutomatic(locations); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
@@ -126,19 +163,20 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             trip.pause(at: now); active = trip
             lastError = "Recording paused because local saving failed. Free device storage and finish to retry: \(error.localizedDescription)"
         }
-        if active?.state != "recording" { manager.stopUpdatingLocation() }
+        if active?.state != "recording" { stopContinuousLocation() }
     }
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         if (error as? CLError)?.code == .locationUnknown { lastError = "GPS signal temporarily unavailable. Recording will retry; gaps are not reconstructed." }
         else { lastError = error.localizedDescription }
     }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        updateIndicatorPolicy()
         if !automaticAvailable, automaticTrip != nil {
             do { try finishAutomatic() } catch { lastError = "Automatic recording could not finalize after permission changed: \(error.localizedDescription)" }
         }
         refreshAutomaticMonitoring()
         if !authorized, active?.state == "recording" {
-            do { try transition("pause") } catch { lastError = "Permission changed; saving failed: \(error.localizedDescription)"; manager.stopUpdatingLocation() }
+            do { try transition("pause") } catch { lastError = "Permission changed; saving failed: \(error.localizedDescription)"; stopContinuousLocation() }
             lastError = "Recording paused: location permission is unavailable."
         }
     }
@@ -162,7 +200,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         return ["ownerID":ownerID!, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticTrip != nil ? "recording" : detector.phase,
+                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticTrip != nil ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "lowPowerIdle",
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
+                "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
+                "locationManagerID":"LocationRecorder.shared.manager",
+                "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
+                "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
+                "lastTrackingEvent":lastTrackingEvent,"lastTrackingEventAt":lastTrackingEventAt as Any? ?? NSNull(),
+                "applicationState":UIApplication.shared.applicationState == .background ? "Background" : UIApplication.shared.applicationState == .active ? "Foreground" : "Inactive",
+                "oneShotLocationRequests":PositionRequest.activeRequests.count,
+                "desiredAccuracyMeters":manager.desiredAccuracy,"distanceFilterMeters":manager.distanceFilter,
+                "lastLocationUpdateAt":lastLocationUpdateAt as Any? ?? NSNull(),"lastLocationAccuracy":lastLocationAccuracy as Any? ?? NSNull(),
+                "probeEndsAt":automaticSampling.probeUntil as Any? ?? NSNull(),"stationarySince":detector.stationarySince as Any? ?? NSNull(),
+                "lastDetectedTrip":trips.first(where:{$0.recordingMode == "automatic"}).map{["activity":$0.activity,"startedAt":$0.startedAt,"endedAt":$0.endedAt ?? $0.startedAt] as [String:Any]} as Any? ?? NSNull(),
                 "motionAvailable": CMMotionActivityManager.isActivityAvailable(), "motionPermission": motionPermission,
                 "motionTypes": motion.types, "motionConfidence": motion.confidence,
                 "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius] as [String:Any] },
@@ -255,8 +305,14 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
 @objc(JourneyViewController)
 class JourneyViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
+        // CSS owns safe-area padding. Native rubber-banding moves the entire
+        // web viewport (including fixed navigation) and exposes the view below.
+        webView?.scrollView.contentInsetAdjustmentBehavior = .never
+        webView?.scrollView.bounces = false
+        webView?.scrollView.alwaysBounceVertical = false
         bridge?.registerPluginInstance(SecureSessionPlugin())
         bridge?.registerPluginInstance(ManualRecorderPlugin())
+        bridge?.registerPluginInstance(AppleMapsPlugin())
         _ = LocationRecorder.shared
     }
 }

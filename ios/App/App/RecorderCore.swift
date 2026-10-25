@@ -35,11 +35,23 @@ struct RecordedActivity: Codable {
     var recordingMode: String?
     var details: ActivityDetails?
     var updatedAt: Double?
-    mutating func applyPrediction(_ classification: Classification) {
+    mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
-        metadata.classification = classification
-        if recordingMode == "automatic" && !metadata.userCorrected { activity = classification.predicted }
-        details = metadata
+        // Unknown or a brief walk after parking must not replace a whole drive.
+        guard classification.predicted != "Unknown",distance.isFinite,distance>0 else { return }
+        var weights=metadata.classificationDistances ?? [:]
+        if metadata.classificationDistances == nil,metadata.classification.predicted != "Unknown" {
+            weights[metadata.classification.predicted]=max(0,distanceMeters-distance)
+        }
+        weights[classification.predicted,default:0] += distance
+        metadata.classificationDistances=weights
+        let winner=weights.keys.sorted().max { (weights[$0] ?? 0) < (weights[$1] ?? 0) } ?? classification.predicted
+        if winner == classification.predicted {
+            metadata.classification=classification
+            metadata.classification.evidence.append("Journey prediction uses accumulated movement distance, not the final sample")
+        }
+        if recordingMode == "automatic" && !metadata.userCorrected { activity=winner }
+        details=metadata
     }
     func duration(at now: Double) -> Double {
         accumulatedSeconds + (state == "recording" ? max(0, now - (resumedAt ?? now)) : 0)
@@ -78,7 +90,7 @@ struct RecordedActivity: Codable {
             guard dt > 0 else { return false }
             if previous.segment == segment && dt <= (recordingMode == "automatic" ? 180 : 30) {
                 let distance = previous.distance(to: point)
-                let maxSpeed: Double = activity == "Driving" ? 85 : activity == "Walking" || activity == "Hiking" ? 12 : 35
+                let maxSpeed: Double = recordingMode == "automatic" || activity == "Driving" ? 85 : activity == "Walking" || activity == "Hiking" ? 12 : 35
                 guard distance / dt <= maxSpeed else { return false }
                 // Accuracy-aware jitter suppression, while retaining the first fix.
                 guard distance >= max(3, min(10, (previous.accuracy + point.accuracy) / 4)) else { return false }
@@ -198,6 +210,7 @@ struct ActivityDetails: Codable {
     var visibility = "private"
     var userCorrected = false
     var classification = Classification(predicted: "Unknown", confidence: "low", evidence: [])
+    var classificationDistances: [String:Double]?
     var startPlace: String?
     var endPlace: String?
     var coverPhotoID: String?
@@ -215,6 +228,24 @@ struct ActivityPhoto: Codable {
 }
 
 struct AutomaticDetector {
+    var stationarySince:Double?
+    mutating func noteMotion(_ motion:MotionEvidence,now:Double){
+        if Self.freshStationary(motion,now:now) {if stationarySince == nil {stationarySince=now}}
+        else if Self.credibleMovement(motion,now:now) {stationarySince=nil}
+    }
+    static func freshStationary(_ motion:MotionEvidence,now:Double)->Bool {
+        motion.confidence != "low" && motion.types == ["Stationary"] && now-motion.timestamp >= 0 && now-motion.timestamp <= 30
+    }
+    static func credibleMovement(_ motion:MotionEvidence,now:Double)->Bool {
+        motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 && motion.types.contains(where:{["Walking","Running","Cycling","Driving"].contains($0)})
+    }
+    static func movementBegan(previous:MotionEvidence,current:MotionEvidence,now:Double)->Bool {
+        credibleMovement(current,now:now) && !credibleMovement(previous,now:now)
+    }
+    static func shouldProbe(_ point:GPSPoint,motion:MotionEvidence,now:Double)->Bool {
+        if motion.confidence != "low",motion.types == ["Stationary"],now-motion.timestamp<=90,point.speed<3 {return false}
+        return point.speed>=0.5 || (motion.confidence != "low" && motion.types.contains(where:{["Walking","Running","Cycling","Driving"].contains($0)}))
+    }
     var phase = "idle"
     var candidate: [GPSPoint] = []
     var lastMovementAt: Double?
@@ -239,17 +270,18 @@ struct AutomaticDetector {
             guard let first = candidate.first else { return nil }
             let distance = first.distance(to: point)
             if candidate.count >= 3 && distance >= max(minimumDistance,first.accuracy+point.accuracy+30) && point.timestamp-first.timestamp >= minimumSeconds {
-                phase = "recording"; lastMovementAt = point.timestamp; anchor = point
+                phase = "recording"; stationarySince=nil; lastMovementAt = point.timestamp; anchor = point
                 return "depart"
             }
             return nil
         }
+        if point.speed>=3,point.accuracy<=25,let old=anchor,old.distance(to:point)>max(30,point.accuracy*2) {stationarySince=nil}
         if let old = anchor, old.distance(to: point) >= max(20, point.accuracy) {
             lastMovementAt = point.timestamp; anchor = point
         }
         return shouldArrive(now:now) ? "arrive" : nil
     }
-    func shouldArrive(now: Double) -> Bool { phase == "recording" && now-(lastMovementAt ?? now) >= arrivalSeconds }
+    func shouldArrive(now: Double) -> Bool { phase == "recording" && (now-(lastMovementAt ?? now) >= arrivalSeconds || stationarySince.map{now-$0>=arrivalSeconds} == true) }
 }
 
 func duplicateActivity(_ a: RecordedActivity, _ b: RecordedActivity) -> Bool {
@@ -264,4 +296,37 @@ func matchedPhotoPoint(captureTime: Double?, trip: RecordedActivity) -> GPSPoint
     guard let time = captureTime, time >= trip.startedAt, time <= (trip.endedAt ?? trip.points.last?.timestamp ?? trip.startedAt),
           let point = trip.points.min(by:{ abs($0.timestamp-time) < abs($1.timestamp-time) }), abs(point.timestamp-time) <= 120 else { return nil }
     return point
+}
+
+// Bounded departure checks. Repeated callbacks cannot keep idle GPS alive forever.
+struct AutomaticSampling {
+    var probeUntil: Double?
+    var retryAfter: Double = 0
+    mutating func requestProbe(now: Double, movementBegan:Bool = false) {
+        guard probeUntil == nil, movementBegan || now >= retryAfter else { return }
+        probeUntil=now+120
+    }
+    mutating func expire(now: Double) -> Bool {
+        guard let end=probeUntil,now>=end else { return false }
+        probeUntil=nil;retryAfter=now+60;return true
+    }
+    mutating func stop(now: Double) {probeUntil=nil;retryAfter=now+60}
+    func needsGPS(automaticAvailable:Bool,manualRecording:Bool,automaticRecording:Bool,now:Double)->Bool {
+        manualRecording || (automaticAvailable && (automaticRecording || (probeUntil ?? 0)>now))
+    }
+}
+
+// Automatic Always-authorised tracking reports its status in-app. Manual recording
+// keeps the prominent indicator; When In Use presentation remains controlled by iOS.
+enum TrackingPresentation {
+    static func indicator(always:Bool,manual:Bool)->Bool {manual || !always}
+    static func reason(continuous:Bool,manual:Bool,automatic:Bool,stationary:Bool,probing:Bool,available:Bool)->String {
+        if continuous {
+            if manual {return "Manual recording"}
+            if automatic {return stationary ? "Confirming arrival (up to 3 minutes)" : "Recording automatic journey"}
+            if probing {return "Bounded departure check (up to 2 minutes)"}
+            return "Stopping continuous location service"
+        }
+        return available ? "Low-power standby: significant changes, visits, geofences and motion" : "Tracking off or permission unavailable"
+    }
 }

@@ -1,3 +1,4 @@
+import { isDiscardedRefresh } from './authMessages.js';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { App as NativeApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
@@ -13,6 +14,7 @@ const Context=createContext(null);
 export function AuthProvider({children}){
  const [identity,setIdentity]=useState({status:'restoring',session:null,preferences:defaultPreferences()}),[error,setError]=useState(''),[integrationWarning,setIntegrationWarning]=useState(''),[recovery,setRecovery]=useState(()=>new URLSearchParams(window.location.search).get('flow')==='recovery');
  const preferencesRef=useRef(defaultPreferences()),preferencesQueue=useRef(Promise.resolve());
+ const [accountDeletionNotice,setAccountDeletionNotice]=useState(null);
  const boundOwner=useRef(null);
  const generation=useRef(0),explicitLogout=useRef(false),latestSession=useRef(null);
  const invalidate=useCallback(()=>{generation.current+=1;},[]);
@@ -43,17 +45,27 @@ export function AuthProvider({children}){
    boundOwner.current=next.session?.user.id||null;
    preferencesRef.current=next.preferences||defaultPreferences();
    setPrivateMediaOwner(['authenticated','offline'].includes(next.status)?next.session.user.id:null);setIdentity(next);setError('');
-  }catch(err){if(turn!==generation.current)return;await accountStore.lock().catch(()=>{});if(turn!==generation.current)return;setError(err.message||'Sign in again to unlock your private data.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}
+  }catch(err){if(turn!==generation.current||isDiscardedRefresh(err))return;await accountStore.lock().catch(()=>{});if(turn!==generation.current)return;setError(err.message||'Sign in again to unlock your private data.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}
  },[]);
  useEffect(()=>{
   if(!supabase){const timer=setTimeout(()=>void reconcile(null),0);return()=>clearTimeout(timer);}
-  let alive=true,stopNative,stopApp;
-  async function restore(){try{
+  let alive=true,stopNative,stopApp,restoring=false,discardedRetries=0;
+  let restoreRetry;
+  function retryDiscardedRefresh(){
+   if(discardedRetries++<1)restoreRetry=setTimeout(()=>{if(alive&&!explicitLogout.current)void restore();},150);
+   else if(!latestSession.current){setError('Please sign in again to continue. Your saved journeys are safe on this device.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}
+  }
+  async function restore(){
+   if(restoring||explicitLogout.current)return;
+   restoring=true;const startedGeneration=generation.current;
+   try{
    await accountStore.preserveLegacy?.();
-   const {data,error}=await supabase.auth.getSession();if(!alive||explicitLogout.current)return;
+   const {data,error}=await supabase.auth.getSession();if(!alive||explicitLogout.current||startedGeneration!==generation.current)return;
+   if(isDiscardedRefresh(error)){retryDiscardedRefresh();return;}
+   discardedRetries=0;
    if(error){if(!isTransientAuthError(error))throw error;const cached=await authStorage.getItem(AUTH_STORAGE_KEY);await reconcile(cached?JSON.parse(cached):null);}
    else if(data.session||!latestSession.current)await reconcile(data.session);
-  }catch(err){if(alive){setError(err.message||'Session restoration failed.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}}}
+  }catch(err){if(alive&&!explicitLogout.current&&startedGeneration===generation.current){if(isDiscardedRefresh(err)){retryDiscardedRefresh();return;}setError('Please sign in again to continue. Your saved journeys are safe on this device.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}}finally{restoring=false;}}
   const {data:listener}=supabase.auth.onAuthStateChange((event,session)=>{
    if(!alive||explicitLogout.current)return;
    if(event==='PASSWORD_RECOVERY')setRecovery(true);
@@ -66,11 +78,13 @@ export function AuthProvider({children}){
   const visible=()=>{if(document.visibilityState==='visible'&&!explicitLogout.current)void restore();};
   const warn=event=>{if(event.detail?.ownerID===latestSession.current?.user.id)setIntegrationWarning(event.detail.message);};
   const completed=event=>{if(event.detail?.session){explicitLogout.current=false;void reconcile(event.detail.session);}};
+  const accountWarning=event=>{if(event.detail?.ownerID&&event.detail.ownerID===latestSession.current?.user.id)setAccountDeletionNotice({ownerID:event.detail.ownerID,message:event.detail.message});};
+  window.addEventListener('letm3go:account-service-warning',accountWarning);
   window.addEventListener('letm3go:auth-completed',completed);
   window.addEventListener('letm3go:integration-warning',warn);
   document.addEventListener('visibilitychange',visible);
   if(Capacitor.isNativePlatform())NativeApp.addListener('appStateChange',({isActive})=>{if(isActive){supabase.auth.startAutoRefresh();void restore();}else supabase.auth.stopAutoRefresh();}).then(handle=>{if(alive)stopApp=handle;else void handle.remove();}).catch(report);
-  return()=>{alive=false;invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:auth-completed',completed);};
+  return()=>{alive=false;clearTimeout(restoreRetry);invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:account-service-warning',accountWarning);window.removeEventListener('letm3go:auth-completed',completed);};
  },[reconcile,invalidate]);
  useEffect(()=>{
   const owner=identity.session?.user.id;
@@ -102,13 +116,13 @@ export function AuthProvider({children}){
   if(identity.status==='offline')throw new Error('Reconnect before deleting your account.');
   explicitLogout.current=true;++generation.current;setPrivateMediaOwner(null);setIdentity(old=>({...old,status:'deleting'}));
   try{await accountStore.prepareDelete();await stopAccountPush();
-   const {data,error}=await supabase.functions.invoke('account',{body:{action:'delete',confirmation:'DELETE'}});if(error||data?.deleted!==true)throw new Error('Account deletion was not completed. Backend setup or recent reauthentication may be required. Your data is preserved unless the server confirmed deletion.');
+   const {data,error}=await supabase.functions.invoke('account',{body:{action:'delete',confirmation:'DELETE'}});if(error||data?.deleted!==true)throw new Error('Deletion could not be confirmed. Please reconnect, sign in again and retry.');
    await accountStore.deleteLocal();await signOut();
   }catch(err){explicitLogout.current=false;await reconcile(latestSession.current);setError(err.message);throw err;}
  }
  const beginSignIn=async()=>{supabase?.auth.stopAutoRefresh();await accountStore.beginSignIn();explicitLogout.current=false;setError('');supabase?.auth.startAutoRefresh();};
  async function updatePassword(password){const {error}=await supabase.auth.updateUser({password});if(error)throw error;setRecovery(false);window.history.replaceState({},'',window.location.pathname);await reconcile(latestSession.current);}
- return <Context.Provider value={{...identity,error,integrationWarning,recovery,setError,beginSignIn,cancelRecovery:()=>{setRecovery(false);window.history.replaceState({},'',window.location.pathname);},signOut,deleteAccount,savePreferences,updatePassword,retry:()=>reconcile(latestSession.current),redirect:authRedirect}}>{children}</Context.Provider>;
+ return <Context.Provider value={{...identity,error,integrationWarning,accountDeletionNotice:accountDeletionNotice&&accountDeletionNotice.ownerID===identity.session?.user.id?accountDeletionNotice.message:'',recovery,setError,beginSignIn,cancelRecovery:()=>{setRecovery(false);window.history.replaceState({},'',window.location.pathname);},signOut,deleteAccount,savePreferences,updatePassword,retry:()=>reconcile(latestSession.current),redirect:authRedirect}}>{children}</Context.Provider>;
 }
 // One provider/session manager for the entire private application.
 // eslint-disable-next-line react-refresh/only-export-components

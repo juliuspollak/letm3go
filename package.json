@@ -40,12 +40,15 @@
     "db:lint": "npm run supabase -- db lint --local",
     "functions:serve": "npm run supabase -- functions serve",
     "ios:build": "xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath .build/ios -clonedSourcePackagesDirPath .build/SourcePackages CODE_SIGN_IDENTITY=- build",
-    "ios:sync:production": "VITE_APNS_ENVIRONMENT=production npm run ios:sync",
+    "ios:sync:production": "npm run release:check && VITE_APNS_ENVIRONMENT=production npm run ios:sync && node scripts/check-release.mjs --synced",
     "supabase:check": "node scripts/check-supabase.mjs",
     "test:native": "mkdir -p .build && swiftc -module-cache-path .build/swift-test-cache ios/App/App/AppleAuthCore.swift ios/App/App/RecorderCore.swift tests/native/main.swift -o .build/recorder-tests && .build/recorder-tests",
     "ios:device": "bash scripts/install-iphone.sh",
     "check:edge": "node scripts/check-edge.mjs",
-    "test:database": "vitest run tests/database"
+    "test:database": "vitest run tests/database",
+    "testflight:check": "node scripts/testflight.mjs preflight",
+    "testflight:package": "node scripts/testflight.mjs package",
+    "release:check": "node scripts/check-release.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",
@@ -55,7 +58,6 @@
     "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/push-notifications": "^8.1.3",
     "@supabase/supabase-js": "^2.118.0",
-    "leaflet": "^1.9.4",
     "lucide-react": "^1.61.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
