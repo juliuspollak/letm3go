@@ -1,7 +1,7 @@
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
 export const GROUPING_VERSION=1;
-const moving=t=>t.activity==='Driving'&&t.endedAt!=null&&t.state!=='recording';
+const moving=t=>(t.activity==='Driving'||t.activity==='Unknown')&&t.endedAt!=null&&t.state!=='recording';
 const point=p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180;
 export function metres(a,b){if(!point(a)||!point(b))return Infinity;const r=Math.PI/180,dlat=(b.latitude-a.latitude)*r,dlon=(b.longitude-a.longitude)*r,x=Math.sin(dlat/2)**2+Math.cos(a.latitude*r)*Math.cos(b.latitude*r)*Math.sin(dlon/2)**2;return 6371000*2*Math.atan2(Math.sqrt(x),Math.sqrt(Math.max(0,1-x)));}
 const edge=(a,b)=>JSON.stringify([a,b]);
@@ -38,6 +38,7 @@ export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
  const av=vehicle(a,vehicles),bv=vehicle(b,vehicles);
  if(av&&bv&&av!==bv)return {decision:'separate',reason:'Different vehicles'};
  if(!stop)return {decision:'separate',reason:'Overlapping times or disconnected routes'};
+ if(a.activity!=='Driving'||b.activity!=='Driving')return {decision:'suggest',reason:'Unclassified journey — confirm both recordings belong to the same drive'};
  if(stop.durationSeconds>24*3600)return {decision:'separate',reason:'More than one day apart'};
  if(['home','work'].includes(stop.kind))return {decision:'separate',reason:`Stopped at ${stop.kind}`};
  const from=endpoint(a,false),to=endpoint(b,true);
