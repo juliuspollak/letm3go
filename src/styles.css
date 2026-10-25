@@ -78,26 +78,33 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 .trip-grouping-tools{display:flex;justify-content:space-between;gap:12px;margin-bottom:18px}.journey-grouping-panel>section{margin:24px 0}.journey-grouping-panel h3{font-size:16px;margin:18px 0 12px}.journey-suggestion{padding:14px;background:var(--soft);border-radius:12px;margin-bottom:10px}.journey-suggestion .secondary{margin:10px 12px 0 0}.journey-merge-list{display:grid;max-height:40dvh;overflow:auto}.journey-merge-list label{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--line)}.journey-merge-list input{width:18px!important;flex-shrink:0}.journey-merge-list strong,.journey-merge-list small{display:block;font-size:12px}.journey-merge-list small{color:var(--muted);font-size:11px;margin-top:5px}.journey-timeline{margin:28px 0}.journey-timeline-item{padding:16px 0 16px 18px;border-left:2px solid var(--line)}.journey-segment-link{text-align:left;display:block;padding:10px 0;width:100%}.journey-segment-link small{display:block;color:var(--muted);margin-top:6px}.journey-stop{padding:16px;margin:10px 0;background:var(--soft);border-radius:12px;font-size:13px}.journey-stop .icon-button{vertical-align:middle}.journey-split{margin-top:10px;color:var(--accent)}.journey-rename{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:18px 0;padding:16px;background:var(--surface);border-radius:12px}.journey-rename label{display:grid;gap:7px;font-size:12px;flex:1;min-width:160px}.journey-rename input{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
 
-/* Merge affordances in the journey list */
-.trip-list-row[draggable="true"] { cursor: grab; }
-.trip-list-row.merge-drop-target { outline: 2px dashed var(--accent, #697ed9); outline-offset: -2px; border-radius: 12px; }
-.trip-merge-button { flex-shrink: 0; font-size: .8rem; padding: .3rem .45rem; }
-.trip-list-row[draggable="true"]:active { cursor: grabbing; }
-
-/* A lifted route card leaves a ghost in its original position while dragged. */
-.trip-list-row { transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease, background-color .18s ease; }
-.trip-list-row.merge-dragging {
- opacity: .43;
- transform: scale(.975) rotate(-1deg);
- border: 1px dashed currentColor;
+/* Journey merge: subtle lift, source placeholder, and clearly indicated target. */
+.trip-list-row {
+ position: relative;
  border-radius: 14px;
- background: var(--surface, transparent);
- box-shadow: inset 0 0 0 1px rgba(120,120,120,.12);
+ transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .18s ease, opacity .18s ease, background-color .18s ease;
+}
+.trip-list-row[draggable="true"] { cursor: grab; }
+.trip-list-row[draggable="true"]:active { cursor: grabbing; }
+.trip-merge-button { flex-shrink: 0; font-size: .8rem; padding: .35rem .6rem; border-radius: 9px; }
+.trip-list-row.merge-dragging {
+ opacity: .36;
+ transform: scale(.985);
+ outline: 1.5px dashed var(--line);
+ outline-offset: -3px;
+ background: var(--soft);
 }
 .trip-list-row.merge-drop-target {
- transform: scale(1.025);
- box-shadow: 0 10px 30px rgba(0,0,0,.16);
- background: var(--surface, transparent);
+ z-index: 1;
+ transform: translateY(-2px) scale(1.012);
+ outline: 2px solid var(--accent);
+ outline-offset: -2px;
+ background: var(--surface);
+ box-shadow: 0 9px 28px rgba(0,0,0,.12), 0 2px 7px rgba(0,0,0,.05);
+}
+@media (hover: none), (pointer: coarse) {
+ .trip-list-row[draggable="true"] { cursor: auto; }
+ .trip-merge-button { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
  .trip-list-row { transition: none; }
