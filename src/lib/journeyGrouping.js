@@ -7,8 +7,8 @@ export function metres(a,b){if(!point(a)||!point(b))return Infinity;const r=Math
 const edge=(a,b)=>JSON.stringify([a,b]);
 const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
-export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[]};}
-export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{}};}catch{return emptyGrouping(owner);}}
+export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{}};}
+export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{}};}catch{return emptyGrouping(owner);}}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function geo(p,places,metadata){
  if(!point(p))return {name:'Unknown location',tags:[]};
@@ -104,13 +104,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
  const journeys=groups.map(segments=>{
-  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||s.title,location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
+  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||s.title,location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>internalStops(t,context));
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
   stops.sort((a,b)=>a.startedAt-b.startedAt);
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
-  const tags=[...new Set([...segments.flatMap(s=>s.tags||[]),...start.tags,...end.tags,...stops.flatMap(s=>[s.name,...s.tags])])];
+  const tags=[...new Set([...segments.flatMap(s=>s.tags||[]),...(metadata.manualTags?.[first.id]||[]),...start.tags,...end.tags,...stops.flatMap(s=>[s.name,...s.tags])])];
   const distanceMeters=segments.reduce((n,s)=>n+(s.distanceMeters||0),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
   return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||`${start.locality||start.name.replace('Unnamed stop','Start')} → ${end.locality||end.name.replace('Unnamed stop','Destination')}`,titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
  });
@@ -120,10 +120,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
 }
 export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=[]}){
  if(meta.owner!==owner)throw new Error('Account changed. Grouping was not saved.');
- const next=structuredClone(meta);const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,types:meta.types||{},stopEdits:meta.stopEdits,sourceLinks:meta.sourceLinks||[]};
+ const next=structuredClone(meta);next.manualTags ||= {};const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,types:meta.types||{},stopEdits:meta.stopEdits,sourceLinks:meta.sourceLinks||[],manualTags:meta.manualTags||{}};
  if(action.type==='undo'){const prior=next.history.pop();if(!prior)throw new Error('Nothing to undo.');return {...next,...prior};}
  const ordered=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
- if(action.type==='sourceLink'){
+ if(action.type==='manualTags'){
+  if(!ordered.some(t=>t.id===action.anchor)||!Array.isArray(action.tags)||action.tags.length>20||action.tags.some(t=>typeof t!=='string'||t.length>50))throw new Error('Choose up to 20 short tags.');
+  next.manualTags[action.anchor]=[...new Set(action.tags.map(t=>t.trim()).filter(Boolean))];
+ }else if(action.type==='sourceLink'){
   const trips=activities.filter(t=>action.ids.includes(t.id)&&(!t.ownerID||t.ownerID===owner||t.sharedToHousehold===true));const identity=t=>t.providerVehicleID||vehicles.find(v=>v.id===t.vehicleID||v.name===t.vehicle)?.teslaVehicleID||vehicle(t,vehicles);if(trips.length!==2||!identity(trips[0])||identity(trips[0])!==identity(trips[1]))throw new Error('Select matching recordings of your vehicle.');
   next.sourceLinks=[...(next.sourceLinks||[]),action.ids];
  }else if(action.type==='merge'){
