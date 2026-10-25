@@ -46,7 +46,9 @@ function PrivateApp(){
  const auth=useAuth();
  const session=auth.session;
  const saved=auth.preferences.bookmarks||[];
- const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated');
+ const recording=useRecorder(session.user.id);
+ const automaticPresenceActivity=recording.state.automaticTrip?'On the move':recording.state.active?.state==='recording'?(recording.state.active.activity==='Driving'?'On the move':'Outdoors'):null;
+ const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated',automaticPresenceActivity);
  const presenceHidden=presence.self?.sharing_enabled!==true;
  const [presenceBusy,setPresenceBusy]=useState(false);
  const togglePresence=async()=>{
@@ -55,7 +57,6 @@ function PrivateApp(){
   catch(e){setError(e.message||'Visibility could not be changed.');}
   finally{setPresenceBusy(false);}
  };
- const recording=useRecorder(session.user.id);
  const fleet=useFleetJourneys(session.user.id,true);
  const grouping=useJourneyGrouping({owner:session.user.id,activities:recording.state.ownerID&&recording.state.ownerID.toLowerCase()!==session.user.id.toLowerCase()?[]:recording.state.trips.filter(t=>t.source==='device').map(recordedJourney).concat(fleet.activities),telemetry:fleet.charges,places:recording.state.places||[],vehicles:auth.preferences.vehicles||[],serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences});
  const [currentPosition,setCurrentPosition]=useState(null);
