@@ -5,13 +5,19 @@ export function activityTitle(trip){return automaticTitle(trip)?(trip.activity==
 
 const genericPlaces=new Set(['unknown location','unnamed stop','start','destination']);
 function placeName(place){
- const name=(place?.nearbyName||place?.name||place?.locality||'').trim();
+ const name=(place?.name||place?.nearbyName||place?.locality||'').trim();
  return name&&!genericPlaces.has(name.toLowerCase())?name:null;
 }
 export function contextualJourneyTitle(activity,from,to,isLoop=false){
  const place=placeName(to)||placeName(from);
  if(!place)return activity==='Unknown'?'Journey':activity;
- if(activity==='Driving')return isLoop?`Drive around ${place}`:`Driving to ${place}`;
+ if(activity==='Driving'){
+  if(to?.kind==='home')return 'Driving home';
+  if(to?.kind==='work')return 'Driving to work';
+  if(isLoop)return `Drive around ${place}`;
+  if(from?.kind==='home'&&place.toLowerCase()!=='home')return `Driving from home to ${place}`;
+  return `Driving to ${place}`;
+ }
  if(activity==='Walking')return isLoop?`Walk around ${place}`:`Walk to ${place}`;
  if(activity==='Running')return `Run around ${place}`;
  if(activity==='Hiking')return `Hike around ${place}`;
