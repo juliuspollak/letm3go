@@ -1,4 +1,4 @@
-import {useCallback,useRef,useState} from 'react';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
 import {config} from '../lib/config.js';
@@ -6,7 +6,7 @@ import {syncPrivateActivities} from '../lib/cloudSync.js';
 export default function PrivateBackup({state}){
  const auth=useAuth(),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('');
  const active=useRef(false),lastAttempt=useRef(0),current=useRef({state,auth});
- current.current={state,auth};
+ useEffect(()=>{current.current={state,auth};},[state,auth]);
  const execute=useCallback(async()=>{
   const {state:latest,auth:user}=current.current;
   if(active.current||!config.backupEnabled||!supabase||user.status!=='authenticated'||!latest?.ownerID||latest.ownerID.toLowerCase()!==user.session.user.id.toLowerCase()||!navigator.onLine)return;
