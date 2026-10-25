@@ -19,6 +19,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var motion = MotionEvidence()
     var detector = AutomaticDetector()
     var automaticTrip: RecordedActivity?
+    var drivingTransition = DrivingTransition()
     var automaticSampling = AutomaticSampling()
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
