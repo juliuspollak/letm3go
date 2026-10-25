@@ -15,7 +15,7 @@ export default function AnimatedWordmark(){
  const [index,setIndex]=useState(0);
  useEffect(()=>{
   if(typeof window==='undefined')return;
-  const preference=window.matchMedia('(prefers-reduced-motion: reduce)');
+  const preference=typeof window.matchMedia==='function'?window.matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
   let timeout;
   let current=0;
   const step=()=>{current=(current+1)%variations.length;setIndex(current);timeout=window.setTimeout(step,variations[current].duration);};
