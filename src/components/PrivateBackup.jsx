@@ -1,13 +1,36 @@
-import { useState } from 'react';
-import { useAuth } from '../lib/AuthContext.jsx';
-import { supabase } from '../lib/supabase.js';
-import { config } from '../lib/config.js';
-import { syncPrivateActivities } from '../lib/cloudSync.js';
+import {useCallback,useEffect,useRef,useState} from 'react';
+import {useAuth} from '../lib/AuthContext.jsx';
+import {supabase} from '../lib/supabase.js';
+import {config} from '../lib/config.js';
+import {syncPrivateActivities} from '../lib/cloudSync.js';
 export default function PrivateBackup({state}){
- const auth=useAuth(),[consent,setConsent]=useState(false),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('');
- async function backup(){setBusy(true);setError('');try{
-  const result=await syncPrivateActivities(supabase,state,auth.preferences.syncReceipts||{},{checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});
-  await auth.savePreferences({syncReceipts:result.receipts,lastBackup:result.lastSync});setMessage(`Backup confirmed: ${result.uploaded} activities saved, ${result.deleted} cloud deletions confirmed. Photos remain on this device.`);
- }catch(err){setError(err.message);}finally{setBusy(false);}}
- return <section><h3>Private backup</h3><p>Copy completed activities, exact routes and saved Home/Work places to your own private account. Photos stay on this device. This does not publish journeys or restore them to another device.</p>{!config.backupEnabled?<p className="notice">Private backup is not enabled yet. Your recordings remain on this iPhone.</p>:<><label className="checkbox-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/> I agree to back up these private locations.</label><button className="secondary full" disabled={!consent||busy||auth.status==='offline'||!state?.ownerID} onClick={backup}>{busy?'Backing up…':'Back up now'}</button></>}{auth.preferences.lastBackup&&<p>Last confirmed backup: {new Date(auth.preferences.lastBackup).toLocaleString()}</p>}{message&&<p role="status">{message}</p>}{error&&<p role="alert">{error}</p>}</section>;
+ const auth=useAuth(),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('');
+ const active=useRef(false),lastAttempt=useRef(0),current=useRef({state,auth});
+ current.current={state,auth};
+ const execute=useCallback(async()=>{
+  const {state:latest,auth:user}=current.current;
+  if(active.current||!config.backupEnabled||!supabase||user.status!=='authenticated'||!latest?.ownerID||latest.ownerID.toLowerCase()!==user.session.user.id.toLowerCase()||!navigator.onLine)return;
+  active.current=true;lastAttempt.current=Date.now();setBusy(true);setError('');
+  try{
+   const result=await syncPrivateActivities(supabase,latest,user.preferences.syncReceipts||{},{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
+   await user.savePreferences({syncReceipts:result.receipts,lastBackup:result.lastSync});
+   setMessage(`Cloud synchronised · ${result.uploaded} activities and ${result.photosUploaded||0} photos uploaded in this pass.`);
+  }catch(err){setError(err.message||'Cloud sync failed; local recordings are preserved.');}
+  finally{active.current=false;setBusy(false);}
+ },[]);
+ useEffect(()=>{
+  if(!config.backupEnabled)return;
+  const trySync=()=>{if(document.visibilityState==='visible'&&Date.now()-lastAttempt.current>=120000)void execute();};
+  const initial=setTimeout(trySync,3000),timer=setInterval(trySync,120000);
+  window.addEventListener('online',trySync);document.addEventListener('visibilitychange',trySync);
+  return()=>{clearTimeout(initial);clearInterval(timer);window.removeEventListener('online',trySync);document.removeEventListener('visibilitychange',trySync);};
+ },[execute]);
+ return <section className="cloud-sync-settings"><h3>Cloud sync</h3>
+ <p>Completed iPhone recordings and GPS routes are synchronised privately to Supabase; compressed photos go to private Cloudflare R2. Your iPhone keeps offline copies while uploads complete.</p>
+ {!config.backupEnabled?<p className="notice">Cloud sync is not activated in this build. Keep the app installed: locally recorded journeys and photos have not been verified in the cloud.</p>:<><p className="muted small-copy">Sync runs when the app is open and connected. Upload failures are retried, and local files are retained.</p><button type="button" className="secondary full" disabled={busy||auth.status!=='authenticated'||!state?.ownerID} onClick={()=>void execute()}>{busy?'Synchronising…':'Sync now'}</button></>}
+ {auth.preferences.lastBackup&&<p className="muted small-copy">Last successful upload check: {new Date(auth.preferences.lastBackup).toLocaleString('en-AU')}</p>}
+ {message&&<p role="status" className="notice">{message}</p>}
+ {error&&<p role="alert" className="error">{error}</p>}
+ <p className="muted small-copy">Restore to a replacement iPhone is not available yet. A cloud upload is not a verified recoverable backup until restore is implemented and tested.</p>
+ </section>;
 }
