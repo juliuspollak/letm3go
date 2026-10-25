@@ -65,7 +65,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self else { return }
             self.reconcileAutomaticSampling()
-            guard self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970) else { return }
+            guard self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970,activity:self.automaticTrip?.activity ?? "Driving") else { return }
             do { try self.finishAutomatic() } catch { self.lastError = error.localizedDescription }
         }
     }
