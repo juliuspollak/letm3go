@@ -328,7 +328,12 @@ struct AutomaticDetector {
             if candidate.count > 200 { candidate.removeFirst() }
             guard let first = candidate.first else { return nil }
             let distance = first.distance(to: point)
-            if candidate.count >= 3 && distance >= max(minimumDistance,first.accuracy+point.accuracy+30) && point.timestamp-first.timestamp >= minimumSeconds {
+            let automotive = Self.credibleMovement(motion,now:now) && motion.types.contains("Driving")
+            let requiredDistance = automotive && first.accuracy <= 25 && point.accuracy <= 25
+                ? max(35,first.accuracy+point.accuracy+15)
+                : max(minimumDistance,first.accuracy+point.accuracy+30)
+            let requiredSeconds = automotive ? 12.0 : minimumSeconds
+            if candidate.count >= 3 && distance >= requiredDistance && point.timestamp-first.timestamp >= requiredSeconds {
                 phase = "recording"; stationarySince=nil; lastMovementAt = point.timestamp; anchor = point
                 return "depart"
             }
