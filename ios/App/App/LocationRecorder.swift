@@ -342,7 +342,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             var trip=r.trips[index]
             var details=trip.details ?? ActivityDetails()
             guard details.photos.count < 50 else { call.reject("Activity photo limit reached."); return }
-            details.photos.append(ActivityPhoto(id:photoID,filename:filename,caption:call.getString("caption") ?? "",latitude:nil,longitude:nil,captureTime:nil,locationSource:"unlocated"))
+            details.photos.append(ActivityPhoto(id:photoID,filename:filename,caption:call.getString("caption") ?? "",latitude:call.getDouble("latitude"),longitude:call.getDouble("longitude"),captureTime:nil,locationSource:call.getString("locationSource") ?? "unlocated"))
             trip.details=details
             try storage.save(trip);r.trips[index]=trip
             call.resolve(["restored":true])
