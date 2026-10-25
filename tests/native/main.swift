@@ -74,7 +74,9 @@ check(detector.observe(point(-33,100),motion:motion,manualActive:false,now:100) 
 check(detector.observe(point(-32.9997,115),motion:motion,manualActive:false,now:115) == nil,"short movement ignored")
 check(detector.observe(point(-32.999,140),motion:motion,manualActive:false,now:140) == "depart","sustained departure")
 check(!detector.shouldArrive(now:200),"short stop is not arrival")
-check(detector.shouldArrive(now:321),"stationary dwell ends trip")
+check(!detector.shouldArrive(now:321),"missing GPS callbacks cannot be mistaken for arrival")
+_ = detector.observe(point(-32.999,310),motion:motion,manualActive:false,now:310)
+check(detector.shouldArrive(now:321),"stationary dwell with fresh GPS confirms arrival")
 _ = detector.observe(point(-32.99,350),motion:motion,manualActive:true,now:350)
 check(detector.phase == "idle", "manual recording overrides automatic detection")
 var jitter = AutomaticDetector()
@@ -138,13 +140,19 @@ check(!sampling.needsGPS(automaticAvailable:false,manualRecording:false,automati
 check(sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:true,now:500),"recorded journey survives probe expiry")
 check(sampling.needsGPS(automaticAvailable:false,manualRecording:true,automaticRecording:false,now:500),"manual recording is independent of automatic preference")
 var jitterArrival=AutomaticDetector()
-jitterArrival.phase="recording";jitterArrival.lastMovementAt=100
+jitterArrival.phase="recording";jitterArrival.lastMovementAt=100; jitterArrival.lastValidFixAt=280
 jitterArrival.noteMotion(MotionEvidence(types:["Stationary"],confidence:"high",timestamp:100),now:100)
 jitterArrival.lastMovementAt=270
 check(jitterArrival.shouldArrive(now:280),"stationary evidence confirms arrival despite GPS jitter updating the movement anchor")
 check(!jitterArrival.shouldArrive(now:279),"stationary arrival still observes the three-minute threshold")
 jitterArrival.noteMotion(MotionEvidence(types:["Driving"],confidence:"high",timestamp:280),now:280)
 check(!jitterArrival.shouldArrive(now:281),"fresh movement cancels stationary arrival")
+check(!jitterArrival.shouldArrive(now:326),"stale GPS cannot trigger arrival even with stationary evidence")
+var lostDrive=AutomaticDetector()
+lostDrive.phase="recording";lostDrive.lastMovementAt=178;lostDrive.lastValidFixAt=178
+check(!lostDrive.shouldArrive(now:560),"ten minute ongoing drive with a GPS outage remains active")
+lostDrive.lastValidFixAt=559
+check(lostDrive.shouldArrive(now:560),"fresh stationary fix can complete a journey after arrival threshold")
 let idleFix=GPSPoint(latitude:0,longitude:0,timestamp:100,accuracy:10,altitude:0,speed:0)
 check(!AutomaticDetector.shouldProbe(idleFix,motion:MotionEvidence(types:["Stationary"],confidence:"high",timestamp:100),now:100),"stationary low-power fixes do not restart continuous GPS")
 check(AutomaticDetector.shouldProbe(idleFix,motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:100),now:100),"walking evidence can start a bounded departure check")
