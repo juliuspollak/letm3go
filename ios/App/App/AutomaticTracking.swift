@@ -120,7 +120,7 @@ extension LocationRecorder {
             guard sample.accuracy >= 0,sample.accuracy <= 65,abs(now-sample.timestamp)<=20 else {continue}
             if automaticTrip == nil,motion.types == ["Stationary"],motion.confidence != "low",now-motion.timestamp<=90,sample.speed<3 {continue}
             if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:now) {beginAutomaticProbe()}
-            let event = detector.observe(sample,motion:motion,manualActive:false,now:now)
+            let event = detector.observe(sample,motion:motion,manualActive:false,now:now,activity:automaticTrip?.activity ?? "Driving")
             do {
                 if event == "depart", let first = detector.candidate.first {
                     var trip = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Automatically detected journey")
@@ -173,7 +173,7 @@ extension LocationRecorder {
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) { if automaticAvailable, active == nil { manager.requestLocation() } }
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         if visit.departureDate != .distantFuture, automaticAvailable, active == nil { beginAutomaticProbe() }
-        if visit.departureDate == .distantFuture, automaticTrip != nil, detector.shouldArrive(now:Date().timeIntervalSince1970) {
+        if visit.departureDate == .distantFuture, automaticTrip != nil, detector.shouldArrive(now:Date().timeIntervalSince1970,activity:automaticTrip?.activity ?? "Driving") {
             do { try finishAutomatic() } catch { lastError = error.localizedDescription }
         }
     }
