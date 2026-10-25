@@ -7,8 +7,8 @@ export function metres(a,b){if(!point(a)||!point(b))return Infinity;const r=Math
 const edge=(a,b)=>JSON.stringify([a,b]);
 const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
-export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},places:{},stopEdits:{},history:[],sourceLinks:[]};}
-export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m};}catch{return emptyGrouping(owner);}}
+export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[]};}
+export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{}};}catch{return emptyGrouping(owner);}}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function geo(p,places,metadata){
  if(!point(p))return {name:'Unknown location',tags:[]};
@@ -112,7 +112,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
   const tags=[...new Set([...segments.flatMap(s=>s.tags||[]),...start.tags,...end.tags,...stops.flatMap(s=>[s.name,...s.tags])])];
   const distanceMeters=segments.reduce((n,s)=>n+(s.distanceMeters||0),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
-  return {...first,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||`${start.locality||start.name.replace('Unnamed stop','Start')} → ${end.locality||end.name.replace('Unnamed stop','Destination')}`,titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
+  return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||`${start.locality||start.name.replace('Unnamed stop','Start')} → ${end.locality||end.name.replace('Unnamed stop','Destination')}`,titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
  });
  // Place/stop text is indexed for singles as well as grouped journeys.
  for(const j of journeys){const stops=j.stops||j.recognisedStops||[];j.searchIndex=[j.title,j.location,j.collection,j.notes,...(j.tags||[]),...stops.flatMap(s=>[s.name,...s.tags])].filter(Boolean).join(' ').toLowerCase();}
@@ -120,7 +120,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
 }
 export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=[]}){
  if(meta.owner!==owner)throw new Error('Account changed. Grouping was not saved.');
- const next=structuredClone(meta);const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,stopEdits:meta.stopEdits,sourceLinks:meta.sourceLinks||[]};
+ const next=structuredClone(meta);const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,types:meta.types||{},stopEdits:meta.stopEdits,sourceLinks:meta.sourceLinks||[]};
  if(action.type==='undo'){const prior=next.history.pop();if(!prior)throw new Error('Nothing to undo.');return {...next,...prior};}
  const ordered=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  if(action.type==='sourceLink'){
@@ -141,6 +141,9 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
  }else if(action.type==='split'){
   const a=ordered.find(t=>t.id===action.after),b=ordered.find(t=>t.id===action.before);
   if(!a||!b)throw new Error('Segment not found.');const key=edge(a.id,b.id);next.cuts=[...new Set([...next.cuts,key])];next.links=next.links.filter(k=>k!==key);
+ }else if(action.type==='classify'){
+  if(!ordered.some(t=>t.id===action.anchor)||!['Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Other','Unknown'].includes(action.activity))throw new Error('Choose a supported journey activity type.');
+  next.types[action.anchor]=action.activity;
  }else if(action.type==='rename'){
   if(!ordered.some(t=>t.id===action.anchor)||!action.title?.trim()||action.title.length>150)throw new Error('Enter a journey name (up to 150 characters).');next.titles[action.anchor]=action.title.trim();
  }else if(action.type==='stop'){
