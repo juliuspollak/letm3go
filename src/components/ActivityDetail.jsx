@@ -9,15 +9,27 @@ import { recordedJourney, speedLabel, paceLabel } from '../lib/recorder.js';
 export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,onUpdated,onDeleted,busy,error,onSource,onStopChange}){
  const local=trip.source==='device'||trip.source==='simulator';
  const [deleting,setDeleting]=useState(false),[suggestions,setSuggestions]=useState(null),[showSkipped,setShowSkipped]=useState(false),[message,setMessage]=useState('');
- const [showTrim,setShowTrim]=useState(false),[trimStart,setTrimStart]=useState(0),[trimEnd,setTrimEnd]=useState(null);
  const pointCount=trip.points?.length||0;
- const trimLast=trimEnd==null?pointCount-1:Math.min(trimEnd,pointCount-1);
- const trimValid=pointCount>=2 && trimStart<trimLast;
- const trimPreview=showTrim&&trimValid?{...trip,route:trip.route.slice(trimStart,trimLast+1),routeSegments:trip.points.slice(trimStart,trimLast+1).reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)}:trip;
+ const [trimStart,setTrimStart]=useState(trip.visibleRouteStart??0);
+ const [trimEnd,setTrimEnd]=useState(trip.visibleRouteEnd??Math.max(0,pointCount-1));
+ const trimValid=pointCount>=2&&trimStart<trimEnd;
+ const trimChanged=trimStart!==(trip.visibleRouteStart??0)||trimEnd!==(trip.visibleRouteEnd??pointCount-1);
+ const trimPoints=trimValid?trip.points.slice(trimStart,trimEnd+1):trip.points;
+ const trimPreview={...trip,route:trimPoints.map(p=>[p.latitude,p.longitude]),routeSegments:trimPoints.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
+ const pointTime=i=>new Date(trip.points[i]?.timestamp*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',second:'2-digit'});
+ const adjust=(side,seconds)=>{
+  const current=side==='start'?trimStart:trimEnd;
+  const target=(trip.points[current]?.timestamp||0)+seconds;
+  let index=current;
+  if(seconds<0)while(index>0&&trip.points[index-1].timestamp>=target)index--;
+  else while(index<pointCount-1&&trip.points[index+1].timestamp<=target)index++;
+  if(side==='start')setTrimStart(Math.min(index,trimEnd-1));
+  else setTrimEnd(Math.max(index,trimStart+1));
+ };
  async function applyTrim(){
-  if(!trimValid||!window.confirm('Trim this saved route? GPS points outside the selected interval will be permanently removed from this device.'))return;
-  const result=await perform('trimActivity',{id:trip.id,start:trimStart,end:trimLast});
-  if(result){setShowTrim(false);setTrimStart(0);setTrimEnd(null);}
+  if(!trimValid)return;
+  const result=await perform('setRouteDisplay',{id:trip.id,start:trimStart,end:trimEnd});
+  if(result)setMessage('Visible map route saved. All original GPS points are preserved.');
  }
 
  async function perform(method,...args){const result=await run(method,...args);if(result?.trips){const updated=result.trips.find(t=>t.id===trip.id);if(updated)onUpdated(recordedJourney(updated));}return result;}
@@ -27,14 +39,15 @@ export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,on
  {trip.sourceRecords&&<section className="notice"><h3>Recordings of this drive</h3><p>Both sources are preserved. Photos and notes stay with their originals.</p>{trip.sourceRecords.map(s=><button key={s.id} className="secondary" onClick={()=>onSource?.(s)}>View {s.source==='tesla'?'Tesla':'iPhone'} recording</button>)}</section>}
  {trip.route.length?<JourneyMap journeys={[trimPreview]} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
  {trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
-  <h2>Trim start or finish</h2>
-  <p className="muted">Remove a private starting location or an accidentally recorded ending. Works for manual and automatic trips. Trimming permanently removes excluded GPS points from this device.</p>
-  {!showTrim?<button type="button" className="secondary" onClick={()=>setShowTrim(true)}>Trim route</button>:<>
-   <label>Start point · {trimStart+1} of {pointCount}<input aria-label="Trim start point" type="range" min="0" max={Math.max(0,trimLast-1)} value={Math.min(trimStart,trimLast-1)} onChange={e=>setTrimStart(Number(e.target.value))}/></label>
-   <label>End point · {trimLast+1} of {pointCount}<input aria-label="Trim end point" type="range" min={Math.min(pointCount-1,trimStart+1)} max={pointCount-1} value={trimLast} onChange={e=>setTrimEnd(Number(e.target.value))}/></label>
-   <p className="muted small-copy">The map previews the portion that will remain. Distance and duration will be recalculated from those recorded points. This cannot be undone.</p>
-   <div className="detail-actions"><button type="button" className="secondary" onClick={()=>{setShowTrim(false);setTrimStart(0);setTrimEnd(null);}}>Cancel</button><button type="button" className="primary" disabled={busy||!trimValid||(trimStart===0&&trimLast===pointCount-1)} onClick={applyTrim}>Save trimmed route</button></div>
-  </>}
+  <h2>Route shown on map</h2>
+  <p className="muted small-copy">Choose which part of this recording appears on the map. Original GPS points are kept. The map above updates as you drag.</p>
+  <div className="route-range">
+   <div className="route-range-track" aria-hidden="true"><span style={{left:`${100*trimStart/(pointCount-1)}%`,right:`${100*(pointCount-1-trimEnd)/(pointCount-1)}%`}}/></div>
+   <label>Start · {pointTime(trimStart)}<input aria-label="Visible route start" type="range" min="0" max={trimEnd-1} value={trimStart} onChange={e=>setTrimStart(Number(e.target.value))}/></label>
+   <label>Finish · {pointTime(trimEnd)}<input aria-label="Visible route finish" type="range" min={trimStart+1} max={pointCount-1} value={trimEnd} onChange={e=>setTrimEnd(Number(e.target.value))}/></label>
+  </div>
+  <div className="detail-actions"><button type="button" className="secondary" onClick={()=>adjust('start',-5)}>Start −5s</button><button type="button" className="secondary" onClick={()=>adjust('start',5)}>Start +5s</button><button type="button" className="secondary" onClick={()=>adjust('end',-5)}>End −5s</button><button type="button" className="secondary" onClick={()=>adjust('end',5)}>End +5s</button></div>
+  <div className="detail-actions"><button type="button" className="secondary" onClick={()=>{setTrimStart(0);setTrimEnd(pointCount-1);}}>Show full route</button><button type="button" className="primary" disabled={busy||!trimValid||!trimChanged} onClick={applyTrim}>Save visible route</button></div>
  </section>}
  <div className="record-metrics"><div><strong>{trip.distance} km</strong><span>Estimated distance</span></div><div><strong>{trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`}</strong><span>Active duration</span></div><div><strong>{trip.source?speedLabel(trip.distanceMeters,trip.durationSeconds):'—'}</strong><span>Average speed</span></div></div>
  <div className="activity-facts"><p><strong>{trip.source==='tesla'?'Tesla vehicle telemetry · driver not identified':trip.isReconciled?'Linked source recordings':sourceLabel(trip)}</strong> · {trip.source==='simulator'?'Simulator GPS':trip.recordingMode==='automatic'?'Estimated / lower-resolution route':trip.recordingMode==='historical'?'No recorded geometry':trip.source==='tesla'?'Vehicle telemetry · GPS accuracy not supplied':'Accuracy-filtered GPS'}</p>{trip.vehicle&&<p>Vehicle: {trip.vehicle}</p>}{trip.collection&&<p>Collection: {trip.collection}</p>}{local&&<p>Average pace: {paceLabel(trip.distanceMeters,trip.durationSeconds)} · {trip.points.length} GPS samples · Local only</p>}{trip.classification&&<p>Prediction: {trip.classification.predicted} · {trip.classification.confidence} confidence {trip.corrected?'· Your correction is preserved':''}</p>}{trip.classification?.evidence?.map(e=><small key={e}>{e}</small>)}</div>
