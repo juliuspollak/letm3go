@@ -1,3 +1,4 @@
+import {resolvePhoto} from './privateMedia.js';
 // Explicit foreground backup. Native records remain authoritative and durable.
 // This is not a download/reconciliation service or a background sync scheduler.
 export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto}={}){
@@ -39,5 +40,24 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
   updated[trip.id]={owner,fingerprint,revision};uploaded++;await acknowledge();
  }
- return {receipts:updated,uploaded,deleted,lastSync:new Date().toISOString()};
+ let photosUploaded=0;
+ for(const trip of state.trips||[]){
+  if(trip.source!=='device'||!Number.isFinite(trip.endedAt)||tombstones.has(trip.id.toLowerCase()))continue;
+  for(const photo of trip.details?.photos||[]){
+   const photoID=photo.id;
+   if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(photoID||''))continue;
+   const receiptKey=`photo:${trip.id}:${photoID}`;
+   if(updated[receiptKey]?.owner===owner&&updated[receiptKey]?.uploaded===true)continue;
+   if(!client.functions?.invoke)throw new Error('Private photo upload service is unavailable. Photos remain safely on this iPhone.');
+   const privateURI=`private-photo:${owner}/${trip.id}/${photoID}`;
+   const url=await resolvePhoto(privateURI);
+   if(!url?.startsWith('data:image/jpeg;base64,'))throw new Error('Private image cannot be read for cloud sync. Local original is preserved.');
+   const base64=url.slice('data:image/jpeg;base64,'.length);
+   if(base64.length>6_700_000)throw new Error('Compressed photo exceeds the safe upload limit.');
+   const {data:result,error:failure}=await client.functions.invoke('journeys',{body:{action:'upload',id:trip.id,mediaID:photoID,base64,caption:photo.caption||''}});
+   if(failure||!result||result.id?.toLowerCase()!==photoID.toLowerCase())throw new Error('Cloud photo upload was not confirmed. The local photo is preserved.');
+   updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
+  }
+ }
+ return {receipts:updated,uploaded,photosUploaded,deleted,lastSync:new Date().toISOString()};
 }
