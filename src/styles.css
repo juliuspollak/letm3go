@@ -272,3 +272,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .lightbox{z-index:5000;padding-top:calc(65px + env(safe-area-inset-top));padding-bottom:calc(28px + env(safe-area-inset-bottom))}
 .lightbox>.close{position:absolute!important;top:calc(12px + env(safe-area-inset-top))!important;right:calc(14px + env(safe-area-inset-right))!important;left:auto!important;z-index:5010;display:flex;align-items:center;justify-content:center;width:48px;height:48px;min-height:48px;background:#ffffff26;color:white;border:1px solid #ffffff66;border-radius:50%;pointer-events:auto}
 .lightbox>img{max-height:calc(70dvh - env(safe-area-inset-top));pointer-events:none}
+
+.journey-custom-tags .journey-remember-place{display:flex;align-items:center;gap:9px;flex:1 0 100%;font-size:12px;font-weight:500;color:var(--muted);margin-top:2px;cursor:pointer}
+.journey-custom-tags .journey-remember-place input{width:17px;height:17px;flex:none;margin:0;accent-color:var(--accent)}
