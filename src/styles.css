@@ -83,3 +83,23 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-list-row.merge-drop-target { outline: 2px dashed var(--accent, #697ed9); outline-offset: -2px; border-radius: 12px; }
 .trip-merge-button { flex-shrink: 0; font-size: .8rem; padding: .3rem .45rem; }
 .trip-list-row[draggable="true"]:active { cursor: grabbing; }
+
+/* A lifted route card leaves a ghost in its original position while dragged. */
+.trip-list-row { transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease, background-color .18s ease; }
+.trip-list-row.merge-dragging {
+ opacity: .43;
+ transform: scale(.975) rotate(-1deg);
+ border: 1px dashed currentColor;
+ border-radius: 14px;
+ background: var(--surface, transparent);
+ box-shadow: inset 0 0 0 1px rgba(120,120,120,.12);
+}
+.trip-list-row.merge-drop-target {
+ transform: scale(1.025);
+ box-shadow: 0 10px 30px rgba(0,0,0,.16);
+ background: var(--surface, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+ .trip-list-row { transition: none; }
+ .trip-list-row.merge-dragging,.trip-list-row.merge-drop-target { transform: none; }
+}
