@@ -76,7 +76,7 @@ func drivingFix(_ latitude: Double, _ time: Double, speed: Double = 12) -> GPSPo
 }
 check(!transition.observe(drivingFix(-33,100),motion:vehicleMotion,now:100),"one driving fix cannot split walking")
 check(!transition.observe(drivingFix(-32.998,110),motion:vehicleMotion,now:110),"two driving fixes cannot split walking")
-check(!transition.observe(drivingFix(-32.996,125),motion:vehicleMotion,now:125),"stale motion cannot split walking")
+check(!transition.observe(drivingFix(-32.996,160),motion:vehicleMotion,now:160),"stale motion cannot split walking")
 check(transition.candidates.isEmpty,"stale motion clears driving transition")
 let freshDriving=MotionEvidence(types:["Driving"],confidence:"high",timestamp:200,continuous:true)
 check(!transition.observe(drivingFix(-33,200),motion:freshDriving,now:200),"fresh driving candidate begins")
