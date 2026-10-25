@@ -8,7 +8,7 @@ export function useHouseholdPresence(owner,online){
   if(mine.error||others.error){setError('Social presence is unavailable. The database migration may not be deployed.');return;}
   setSelf(mine.data?.[0]||{sharing_enabled:false});setPeople(others.data||[]);setError('');
  },[owner,online]);
- useEffect(()=>{void refresh();if(!online)return;const timer=setInterval(()=>void refresh(),60000);return()=>clearInterval(timer);},[refresh,online]);
+ useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>void refresh(),60000);return()=>{clearTimeout(initial);clearInterval(timer);};},[refresh,online]);
  const update=async(enabled,activity=null,place=null)=>{
   if(!online||!supabase)throw new Error('Connect to change live visibility securely.');
   setBusy(true);
