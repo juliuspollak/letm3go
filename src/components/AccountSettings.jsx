@@ -3,6 +3,7 @@ import ProfilePhotoCrop from './ProfilePhotoCrop.jsx';
 import AccountActions from './AccountActions.jsx';
 import PrivateBackup from './PrivateBackup.jsx';
 import { Bell } from 'lucide-react';
+import {distanceUnits} from '../lib/distanceUnits.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { config } from '../lib/config.js';
 import { enableAccountPush } from '../lib/pushAccount.js';
