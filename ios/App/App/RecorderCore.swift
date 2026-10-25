@@ -257,7 +257,7 @@ struct AutomaticDetector {
     var minimumSeconds: Double = 25
     var arrivalSeconds: Double = 180
     mutating func reset() { self = AutomaticDetector() }
-    mutating func observe(_ point: GPSPoint, motion: MotionEvidence, manualActive: Bool, now: Double) -> String? {
+    mutating func observe(_ point: GPSPoint, motion: MotionEvidence, manualActive: Bool, now: Double, activity: String = "Driving") -> String? {
         guard !manualActive else { reset(); return nil }
         guard point.accuracy >= 0, point.accuracy <= 65, abs(now-point.timestamp) <= 20 else { return nil }
         lastValidFixAt = point.timestamp
@@ -283,7 +283,7 @@ struct AutomaticDetector {
         if let old = anchor, old.distance(to: point) >= max(20, point.accuracy) {
             lastMovementAt = point.timestamp; anchor = point
         }
-        return shouldArrive(now:now) ? "arrive" : nil
+        return shouldArrive(now:now,activity:activity) ? "arrive" : nil
     }
     func shouldArrive(now: Double, activity: String = "Driving") -> Bool {
         // The arrival timer also calls this when no delegate callbacks arrive.
