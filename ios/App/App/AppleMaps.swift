@@ -202,6 +202,13 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if kind=="photo" {marker.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)}
         return marker
     }
+    func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        guard !picker,let pin=view.annotation as? JourneyPin,
+              (pin.metadata["kind"] as? String)=="photo",
+              let photo=pin.metadata["photoID"] as? String,
+              let journey=pin.metadata["journeyID"] as? String else{return}
+        finish(["photoID":photo,"journeyID":journey])
+    }
     func mapView(_ mapView:MKMapView,annotationView view:MKAnnotationView,calloutAccessoryControlTapped control:UIControl){
         guard let pin=view.annotation as? JourneyPin,let photo=pin.metadata["photoID"] as? String,let journey=pin.metadata["journeyID"] as? String else{return}
         finish(["photoID":photo,"journeyID":journey])
