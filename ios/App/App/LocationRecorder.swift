@@ -32,7 +32,32 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var preferences = AccountPreferences()
     var places: [SavedPlace] = []
     var arrivalTimer: Timer?
-    var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && CLLocationManager.locationServicesEnabled() }
+    // CLLocationManager.locationServicesEnabled() may block on the main thread.
+    // Read it off-main, cache the answer, and refresh when the app becomes active.
+    private(set) var locationServicesAvailable = false
+    private var locationServicesCheckPending = false
+    private var foregroundLocationObserver: NSObjectProtocol?
+    var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
+    func refreshLocationServicesAvailable() {
+        guard !locationServicesCheckPending else { return }
+        locationServicesCheckPending = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let available = CLLocationManager.locationServicesEnabled()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.locationServicesCheckPending = false
+                let changed = self.locationServicesAvailable != available
+                self.locationServicesAvailable = available
+                if changed {
+                    self.refreshAutomaticMonitoring()
+                    if !available && self.active?.state == "recording" {
+                        do { try self.transition("pause") }
+                        catch { self.lastError = "Location services disabled; recording could not pause: \(error.localizedDescription)" }
+                    }
+                }
+            }
+        }
+    }
     var continuousLocationRequested=false
     var significantLocationRequested=false
     var visitMonitoringRequested=false
@@ -53,6 +78,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     override init() {
         super.init()
         manager.delegate = self
+        refreshLocationServicesAvailable()
+        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refreshLocationServicesAvailable() }
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
@@ -69,6 +96,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970,activity:self.automaticTrip?.activity ?? "Driving") else { return }
             do { try self.finishAutomatic() } catch { self.lastError = error.localizedDescription }
         }
+    }
+    deinit {
+        if let foregroundLocationObserver { NotificationCenter.default.removeObserver(foregroundLocationObserver) }
     }
     // Core Location has no getter for hardware GPS activity. Expose our real service
     // requests and OS pause callbacks, separately from permission/capability flags.
@@ -101,7 +131,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func start(activity: String, vehicle: String?) throws {
         guard storage != nil else { throw failure("Local storage is unavailable. Recording cannot start safely.") }
         guard active == nil else { throw failure("Finish the existing activity first.") }
-        guard authorized, CLLocationManager.locationServicesEnabled() else { throw failure("Enable location access before starting.") }
+        guard authorized, locationServicesAvailable else { throw failure("Enable location access before starting.") }
         let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
         guard allowed.contains(activity) else { throw failure("Choose a supported activity.") }
         if automaticTrip != nil { try finishAutomatic() }
@@ -173,6 +203,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         else { lastError = error.localizedDescription }
     }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        refreshLocationServicesAvailable()
         updateIndicatorPolicy()
         if !automaticAvailable, automaticTrip != nil {
             do { try finishAutomatic() } catch { lastError = "Automatic recording could not finalize after permission changed: \(error.localizedDescription)" }
@@ -222,7 +253,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
                 "active": active.map(dictionary) as Any? ?? NSNull(), "trips": trips.map(dictionary),
                 "permission": permission, "precise": manager.accuracyAuthorization == .fullAccuracy,
-                "locationServices": CLLocationManager.locationServicesEnabled(),
+                "locationServices": locationServicesAvailable,
                 "backgroundEnabled": manager.allowsBackgroundLocationUpdates,
                 "backgroundRecording": active?.state == "recording" && authorized,
                 "accuracy": accuracy as Any? ?? NSNull(), "lastFixAt": lastFixAt as Any? ?? NSNull(),
