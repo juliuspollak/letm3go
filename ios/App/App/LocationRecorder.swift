@@ -252,7 +252,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "probeEndsAt":automaticSampling.probeUntil as Any? ?? NSNull(),"stationarySince":detector.stationarySince as Any? ?? NSNull(),
                 "lastDetectedTrip":trips.first(where:{$0.recordingMode == "automatic"}).map{["activity":$0.activity,"startedAt":$0.startedAt,"endedAt":$0.endedAt ?? $0.startedAt] as [String:Any]} as Any? ?? NSNull(),
                 "motionAvailable": CMMotionActivityManager.isActivityAvailable(), "motionPermission": motionPermission,
-                "motionTypes": motion.types, "motionConfidence": motion.confidence,
+                "motionTypes": motion.types, "motionConfidence": motion.confidence, "motionTimestamp": motion.timestamp,
                 "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
                 "active": active.map(dictionary) as Any? ?? NSNull(), "trips": trips.map(dictionary),
