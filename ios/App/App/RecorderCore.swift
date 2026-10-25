@@ -105,6 +105,34 @@ struct RecordedActivity: Codable {
     }
 }
 
+// Trim by recorded point indices rather than coordinates. No interpolated route
+// or invented time is introduced, and segment breaks remain intact.
+enum RouteTrimming {
+    static func trimmed(_ original: RecordedActivity, start: Int, end: Int) -> RecordedActivity? {
+        guard original.state == "finished", original.points.count >= 2,
+              start >= 0, end < original.points.count, start < end else { return nil }
+        var trip = original
+        let chosen = Array(original.points[start...end])
+        guard let first = chosen.first, let last = chosen.last,
+              last.timestamp > first.timestamp else { return nil }
+        trip.points = chosen
+        trip.startedAt = first.timestamp
+        trip.endedAt = last.timestamp
+        trip.resumedAt = nil
+        trip.accumulatedSeconds = last.timestamp-first.timestamp
+        trip.distanceMeters = zip(chosen,chosen.dropFirst()).reduce(0) { total, pair in
+            total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
+        }
+        trip.updatedAt = Date().timeIntervalSince1970
+        // Named endpoints and classification weights reflect the untrimmed
+        // route and must not be carried over as facts about the new endpoints.
+        trip.details?.startPlace = nil
+        trip.details?.endPlace = nil
+        trip.details?.classificationDistances = nil
+        return trip
+    }
+}
+
 final class RecordingStorage {
     let directory: URL
     private let encoder = JSONEncoder()
