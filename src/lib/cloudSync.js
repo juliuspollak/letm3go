@@ -16,12 +16,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  }
  // Sensitive places precede routes; owner_id is explicit to reject a mid-request
  // account switch even if the SDK has already switched its Authorization header.
- const localPlaces=new Set((state.places||[]).map(p=>`place:${p.id}`));
- for(const [key,receipt] of Object.entries(updated)){
-  if(key.startsWith('place:')&&receipt.owner===owner&&!localPlaces.has(key)){
-   const {error}=await client.from('saved_places').delete().eq('id',key.slice(6)).eq('owner_id',owner);if(error)throw new Error('Cloud place removal failed.');delete updated[key];await acknowledge();
-  }
- }
+ // Never infer cloud deletions from a missing local place on a new device.
  for(const place of state.places||[]){
   const key=`place:${place.id}`,row={id:place.id,owner_id:owner,name:place.name,kind:place.kind,latitude:place.latitude,longitude:place.longitude,radius:place.radius};
   const fingerprint=await hash(row),receipt=updated[key];
