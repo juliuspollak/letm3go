@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useRef,useState} from 'react';
+import {useCallback,useRef,useState} from 'react';
 import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
 import {config} from '../lib/config.js';
@@ -18,13 +18,6 @@ export default function PrivateBackup({state}){
   }catch(err){setError(err.message||'Cloud sync failed; local recordings are preserved.');}
   finally{active.current=false;setBusy(false);}
  },[]);
- useEffect(()=>{
-  if(!config.backupEnabled)return;
-  const trySync=()=>{if(document.visibilityState==='visible'&&Date.now()-lastAttempt.current>=120000)void execute();};
-  const initial=setTimeout(trySync,3000),timer=setInterval(trySync,120000);
-  window.addEventListener('online',trySync);document.addEventListener('visibilitychange',trySync);
-  return()=>{clearTimeout(initial);clearInterval(timer);window.removeEventListener('online',trySync);document.removeEventListener('visibilitychange',trySync);};
- },[execute]);
  return <section className="cloud-sync-settings"><h3>Cloud sync</h3>
  <p>Completed iPhone recordings and GPS routes are synchronised privately to Supabase; compressed photos go to private Cloudflare R2. Your iPhone keeps offline copies while uploads complete.</p>
  {!config.backupEnabled?<p className="notice">Cloud sync is not activated in this build. Keep the app installed: locally recorded journeys and photos have not been verified in the cloud.</p>:<><p className="muted small-copy">Sync runs when the app is open and connected. Upload failures are retried, and local files are retained.</p><button type="button" className="secondary full" disabled={busy||auth.status!=='authenticated'||!state?.ownerID} onClick={()=>void execute()}>{busy?'Synchronising…':'Sync now'}</button></>}
