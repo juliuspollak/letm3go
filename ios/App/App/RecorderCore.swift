@@ -227,6 +227,30 @@ struct ActivityPhoto: Codable {
     var publicSelected = false
 }
 
+// Conservative transition from an on-foot activity to a vehicle journey.
+// Motion alone is insufficient: require fresh Core Motion driving evidence and
+// sustained, accurate GPS movement before splitting an activity.
+struct DrivingTransition {
+    var candidates: [GPSPoint] = []
+    mutating func reset() { candidates.removeAll() }
+    mutating func observe(_ point: GPSPoint, motion: MotionEvidence, now: Double) -> Bool {
+        guard motion.types == ["Driving"], motion.confidence != "low",
+              now >= motion.timestamp, now - motion.timestamp <= 30,
+              point.accuracy >= 0, point.accuracy <= 25, point.speed >= 5,
+              abs(now-point.timestamp) <= 20 else { reset(); return false }
+        if let last = candidates.last {
+            guard point.timestamp > last.timestamp, point.timestamp-last.timestamp <= 45,
+                  last.distance(to:point) / (point.timestamp-last.timestamp) >= 4 else {
+                candidates = [point]; return false
+            }
+        }
+        candidates.append(point)
+        guard let first = candidates.first else { return false }
+        return candidates.count >= 3 && point.timestamp-first.timestamp >= 20 &&
+               first.distance(to:point) >= 100
+    }
+}
+
 struct AutomaticDetector {
     var stationarySince:Double?
     // An absence of GPS fixes is not evidence of arrival. Only conclude arrival
