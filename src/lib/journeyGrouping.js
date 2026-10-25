@@ -105,7 +105,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
  const journeys=groups.map(segments=>{
-  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||(automaticTitle(s)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<700):s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
+  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||((automaticTitle(s)||s.title===s.activity)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<700):s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>internalStops(t,context));
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
