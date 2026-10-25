@@ -290,6 +290,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "acceptSuggestion", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "skipSuggestion", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readPhoto", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "restoreActivity", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "restorePhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
@@ -305,6 +307,46 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         guard call.getString("ownerID") == r.ownerID, let trip = r.trips.first(where:{$0.id == call.getString("tripID")}),
               let photo = trip.details?.photos.first(where:{$0.id == call.getString("photoID")}), let storage = r.storage else { call.reject("Photo unavailable."); return }
         do { let data = try storage.readData(name:"media/\(photo.filename)"); call.resolve(["url":"data:image/jpeg;base64,\(data.base64EncodedString())"]) } catch { call.reject("Photo unavailable.") }
+    } }
+    @objc func restoreActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let r = LocationRecorder.shared
+        guard let raw = call.getObject("activity"), let storage = r.storage else { call.reject("Account storage unavailable."); return }
+        do {
+            let bytes = try JSONSerialization.data(withJSONObject:raw)
+            let trip = try JSONDecoder().decode(RecordedActivity.self,from:bytes)
+            guard UUID(uuidString:trip.id) != nil, trip.state == "finished",
+                trip.source == "device", trip.endedAt != nil, trip.points.count <= 50000,
+                trip.startedAt.isFinite, (trip.endedAt ?? 0).isFinite,
+                trip.distanceMeters.isFinite, trip.distanceMeters >= 0 else { call.reject("Invalid recovery record."); return }
+            if r.trips.contains(where:{$0.id == trip.id}) { call.resolve(["restored":false,"existing":true]); return }
+            guard !(try storage.deletedIDs()).contains(trip.id) else { call.reject("This activity was intentionally deleted on this device."); return }
+            try storage.save(trip)
+            r.trips.append(trip); r.trips.sort{$0.startedAt > $1.startedAt}
+            call.resolve(["restored":true])
+        } catch { call.reject("Could not restore this activity safely.") }
+    } }
+    @objc func restorePhoto(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let r = LocationRecorder.shared
+        guard let tripID=call.getString("tripID"), let photoID=call.getString("photoID"),
+            UUID(uuidString:photoID) != nil, let encoded=call.getString("base64"),
+            encoded.count <= 6_700_000, let data=Data(base64Encoded:encoded),
+            data.count > 0 && data.count <= 5_000_000,
+            data.prefix(3).elementsEqual([0xff,0xd8,0xff]),
+            let storage=r.storage, let index=r.trips.firstIndex(where:{$0.id == tripID}) else { call.reject("Invalid recovery photo."); return }
+        if r.trips[index].details?.photos.contains(where:{$0.id == photoID}) == true { call.resolve(["restored":false,"existing":true]); return }
+        do {
+            let filename="\\(photoID).jpg"
+            try storage.writeData(data,name:"media/\\(filename)")
+            var trip=r.trips[index]
+            var details=trip.details ?? ActivityDetails()
+            guard details.photos.count < 50 else { call.reject("Activity photo limit reached."); return }
+            details.photos.append(ActivityPhoto(id:photoID,filename:filename,caption:call.getString("caption") ?? "",latitude:nil,longitude:nil,captureTime:nil,locationSource:"unlocated"))
+            trip.details=details
+            try storage.save(trip);r.trips[index]=trip
+            call.resolve(["restored":true])
+        } catch { call.reject("Could not restore photo safely.") }
     } }
     @objc func getState(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(LocationRecorder.shared.snapshot()) } }
     @objc func requestPermission(_ call: CAPPluginCall) {
