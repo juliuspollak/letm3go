@@ -220,3 +220,21 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .social-person small{font-size:11px;color:var(--muted);line-height:1.3}
 .social-person small svg{vertical-align:middle;margin-right:3px}
 .social-visibility-caption{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+
+/* Trip search: visible matches and one-tap clear without horizontal overflow. */
+.trips-search-controls{position:relative;z-index:3;scroll-margin-top:16px}
+.trips-search-controls .search{min-width:0}
+.trips-search-controls .search input{min-width:0;flex:1}
+.trips-search-controls .search input::-webkit-search-cancel-button{-webkit-appearance:none}
+.trip-search-clear{display:grid;place-items:center;width:32px;height:32px;min-width:32px;border-radius:50%;color:var(--muted);background:var(--soft);padding:0}
+.trip-search-clear:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.trip-search-reason{display:flex!important;align-items:center;gap:5px;line-height:1.4;color:var(--accent)!important;white-space:normal;overflow-wrap:anywhere}
+.trip-search-reason strong{font-size:inherit!important;font-weight:600;white-space:normal!important;overflow-wrap:anywhere}
+.journey-custom-tags{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
+.journey-custom-tags h3{display:flex;gap:8px;align-items:center;font-size:16px;margin:0 0 8px}
+.journey-custom-tags form{display:flex;gap:9px;margin-top:13px}
+.journey-custom-tags form input{min-width:0;flex:1;padding:11px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px;font-size:16px}
+.journey-custom-tags form button{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.journey-custom-tags .manual-tag{display:inline-flex;align-items:center;gap:6px}
+.journey-custom-tags .manual-tag button{display:inline-flex;padding:2px;color:inherit}
+@media(max-width:760px){.trips-search-active{position:sticky;top:8px;background:var(--bg);padding:8px 0;margin-top:-8px;border-radius:12px;box-shadow:0 8px 15px #00000010}.trips-search-active .select-filter{display:none}.journey-custom-tags form{flex-wrap:wrap}.journey-custom-tags form button{min-height:40px}}
