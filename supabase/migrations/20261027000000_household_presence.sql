@@ -15,11 +15,9 @@ revoke all on public.household_presence from public,anon,authenticated;
 grant all on public.household_presence to service_role;
 create or replace function public.set_household_presence(p_enabled boolean,p_activity text default null,p_place text default null)
 returns void language plpgsql security definer set search_path='' as $$
-declare hid uuid;
 begin
  if auth.uid() is null then raise exception 'Sign in required'; end if;
- select household_id into hid from public.household_memberships where user_id=auth.uid();
- if p_enabled and hid is null then raise exception 'Join a household before sharing presence'; end if;
+ -- A user may enable sharing before joining a household or accepting a friend; no one can read it without an accepted relationship.
  if p_enabled and (p_activity is not null and p_activity not in ('At home','At work','Shopping','At the beach','Outdoors','On the move','Other')) then raise exception 'Invalid status'; end if;
  if p_enabled and p_place is not null and (length(trim(p_place)) < 1 or length(p_place)>60) then raise exception 'Invalid place'; end if;
  insert into public.household_presence(user_id,sharing_enabled,activity_label,place_label,expires_at,updated_at)
