@@ -284,3 +284,12 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .recent-activity-distance{flex:0 0 auto;min-width:44px;white-space:nowrap;text-align:right}
 .recent-activity-distance .trip-time-distance{white-space:nowrap}
 @media(max-width:480px){.recent-activity-row{padding:12px 8px;gap:7px}.recent-activity-distance{font-size:13px}.recent-activity-row>svg{width:14px}}
+
+/* Compact historical day browsing, without scrolling through every journey. */
+.trip-date-navigator{display:flex;align-items:center;gap:10px;margin:4px 0 16px;max-width:420px}
+.trip-date-navigator>button{width:44px;min-width:44px;height:44px;display:grid;place-items:center;border-radius:12px;background:var(--soft);color:var(--ink)}
+.trip-date-navigator>button:disabled{opacity:.3}
+.trip-prev-icon{transform:rotate(180deg)}
+.trip-date-navigator>label{display:flex;flex:1;align-items:center;gap:10px;min-width:0;padding:5px 10px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.trip-date-navigator>label>span{color:var(--muted);font-size:11px;white-space:nowrap}
+.trip-date-navigator input[type=date]{width:100%;min-width:0;border:0;background:transparent;color:var(--ink);font-size:14px;padding:6px 0}
