@@ -1,11 +1,11 @@
-import {useEffect,useState} from 'react';
+import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
 import {Users,UserPlus,UserMinus} from 'lucide-react';
 export default function Friends(){
  const [friends,setFriends]=useState([]),[invite,setInvite]=useState(''),[code,setCode]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
- async function rpc(name,params){if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;}
- async function refresh(){try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}}
- useEffect(()=>{const t=setTimeout(()=>void refresh(),0);return()=>clearTimeout(t);},[]);
+ const rpc=useCallback(async(name,params)=>{if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;},[]);
+ const refresh=useCallback(async()=>{try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}},[rpc]);
+ useEffect(()=>{const t=setTimeout(()=>void refresh(),0);return()=>clearTimeout(t);},[refresh]);
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
  return <section className="household-friends"><h2><Users size={19}/> Friends</h2>
  <p className="muted small-copy">Friends are separate from household members. Adding a friend never shares vehicles, routes or private history. Only an explicitly shared, unexpired status may appear in their feed.</p>
