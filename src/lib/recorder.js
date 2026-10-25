@@ -5,6 +5,8 @@ export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
 export const emptyRecorder = { active:null, trips:[], permission:'unavailable', automaticEnabled:false, automaticAvailable:false, automaticState:'idle', places:[], deletedIDs:[], backgroundEnabled:false, accuracy:null, version:'1.0', build:'web', error:'', recovery:'', storageReady:false };
 export const recorder = {
  getState:()=>recorderAvailable()?native.getState():Promise.resolve(emptyRecorder),
+ restoreActivity:activity=>native.restoreActivity({activity}),
+ restorePhoto:params=>native.restorePhoto(params),
  requestPermission:always=>native.requestPermission({always}),
  start:(activity,vehicle)=>native.start({activity,vehicle:vehicle||undefined}),
  transition:action=>native.transition({action}),
