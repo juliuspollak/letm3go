@@ -256,3 +256,19 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .distance-unit-setting h3{font-size:16px;margin:0 0 7px}
 .distance-unit-setting label{display:block;font-size:12px;font-weight:600;margin-top:12px}
 .distance-unit-setting select{display:block;width:100%;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font-size:16px}
+
+/* Wordmark: original three-line collapse plus short playful spelling variations. */
+.playful-wordmark .playful-let{max-width:0;opacity:0}
+.playful-wordmark .playful-let.is-shown{max-width:1.55em;opacity:1;transform:none}
+.playful-wordmark .playful-core{display:inline-grid;place-items:center;width:0;max-width:0;opacity:0;position:relative;overflow:hidden;transition:width .55s cubic-bezier(.22,1,.36,1),opacity .3s ease;color:var(--accent)!important;flex:none}
+.playful-wordmark .playful-core.is-shown{width:.58em;max-width:.58em;opacity:1}
+.playful-wordmark .playful-core-digit{grid-area:1/1;opacity:0;transform:scale(.35);transition:opacity .35s,transform .45s;color:var(--accent)!important}
+.playful-wordmark .playful-core-digit.is-shown{opacity:1;transform:scale(1)}
+.playful-wordmark .playful-core-lines{grid-area:1/1;width:.75em;height:.75em;opacity:0;transform:scale(.4);transition:opacity .35s,transform .45s;color:var(--accent)!important}
+.playful-wordmark .playful-core-lines.is-shown{opacity:1;transform:scale(1)}
+.playful-wordmark .playful-arrow,.playful-wordmark .playful-arrow svg{color:var(--accent)!important}
+@media(prefers-reduced-motion:reduce){.playful-wordmark .playful-core,.playful-wordmark .playful-core-digit,.playful-wordmark .playful-core-lines{transition:none}}
+/* Always keep the photo viewer dismiss button clear of iPhone safe areas and above the image. */
+.lightbox{z-index:5000;padding-top:calc(65px + env(safe-area-inset-top));padding-bottom:calc(28px + env(safe-area-inset-bottom))}
+.lightbox>.close{position:absolute!important;top:calc(12px + env(safe-area-inset-top))!important;right:calc(14px + env(safe-area-inset-right))!important;left:auto!important;z-index:5010;display:flex;align-items:center;justify-content:center;width:48px;height:48px;min-height:48px;background:#ffffff26;color:white;border:1px solid #ffffff66;border-radius:50%;pointer-events:auto}
+.lightbox>img{max-height:calc(70dvh - env(safe-area-inset-top));pointer-events:none}
