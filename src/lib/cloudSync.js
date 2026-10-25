@@ -49,7 +49,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    if(!url?.startsWith('data:image/jpeg;base64,'))throw new Error('Private image cannot be read for cloud sync. Local original is preserved.');
    const base64=url.slice('data:image/jpeg;base64,'.length);
    if(base64.length>6_700_000)throw new Error('Compressed photo exceeds the safe upload limit.');
-   const {data:result,error:failure}=await client.functions.invoke('journeys',{body:{action:'upload',id:trip.id,mediaID:photoID,base64,caption:photo.caption||''}});
+   const {data:result,error:failure}=await client.functions.invoke('journeys',{body:{action:'upload',id:trip.id,mediaID:photoID,base64,caption:photo.caption||'',latitude:photo.latitude,longitude:photo.longitude,locationSource:photo.locationSource}});
    if(failure||!result||result.id?.toLowerCase()!==photoID.toLowerCase())throw new Error('Cloud photo upload was not confirmed. The local photo is preserved.');
    updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
   }
