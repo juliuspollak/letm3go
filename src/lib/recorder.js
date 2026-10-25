@@ -17,6 +17,7 @@ export const recorder = {
  recogniseTripPlace:(id,index,point)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude}),
  editActivity:trip=>native.editActivity(trip),
  trimActivity:params=>native.trimActivity(params),
+ setRouteDisplay:params=>native.setRouteDisplay(params),
  deleteActivity:id=>native.deleteActivity({id}),
  addHistorical:trip=>native.addHistorical(trip),
  pickPhotos:id=>native.pickPhotos({id}),
