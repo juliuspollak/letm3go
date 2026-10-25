@@ -178,3 +178,9 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .journey-photo-actions label{display:block;font-size:12px;font-weight:600;margin:10px 0}
 .journey-photo-actions select{display:block;width:100%;font-size:16px;margin-top:8px;padding:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px}
 .journey-photo-actions .detail-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:12px 0}
+
+/* Keep the animated 3 optically centred between the m and g in both header sizes. */
+.wordmark-three{width:.55em;transform-origin:center;}
+.wordmark-prefix{--word-width:2.15em}
+.wordmark-suffix{--word-width:1.08em}
+.wordmark-digit{position:relative;left:-.015em}
