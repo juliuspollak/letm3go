@@ -32,6 +32,15 @@ extension LocationRecorder {
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip); trips[index] = trip
     }
+    func trimActivity(id: String, start: Int, end: Int) throws {
+        guard let index = trips.firstIndex(where: { $0.id == id }),
+              let storage = storage else { throw failure("Activity not found.") }
+        guard let trimmed = RouteTrimming.trimmed(trips[index],start:start,end:end) else {
+            throw failure("Select at least two recorded route points on a finished activity.")
+        }
+        try storage.save(trimmed)
+        trips[index] = trimmed
+    }
     func deleteActivity(_ id: String) throws {
         guard let storage = storage, trips.contains(where: { $0.id == id }) else { throw failure("Activity not found.") }
         let photos = trips.first { $0.id == id }?.details?.photos ?? []
@@ -167,6 +176,16 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     @objc func editActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func trimActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let start = call.getInt("start"), let end = call.getInt("end") else {
+            call.reject("Choose valid route trim points."); return
+        }
+        do {
+            try LocationRecorder.shared.trimActivity(id:call.getString("id") ?? "",start:start,end:end)
+            call.resolve(LocationRecorder.shared.snapshot())
+        } catch { call.reject(error.localizedDescription) }
     } }
     @objc func deleteActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
