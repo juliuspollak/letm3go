@@ -6,7 +6,7 @@ import {syncPrivateActivities} from '../lib/cloudSync.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state}){
  const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0);
- latest.current={auth,state};
+ useEffect(()=>{latest.current={auth,state};},[auth,state]);
  useEffect(()=>{
   if(!config.backupEnabled||!supabase)return;
   let alive=true;
