@@ -84,18 +84,19 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
                         (trimPreview ? UIColor.systemGray3 : routeColor).setStroke();path.lineWidth=3.5;path.stroke()
                     }
-                    for pin in content.pins {
+                    // Draw normal pins first; full-size photo thumbnails must sit above them.
+                    for pin in content.pins where (pin["kind"] as? String) != "photo" {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
-                        // No image bytes or private file paths are passed into MapKit.
-                        if (pin["kind"] as? String)=="photo",
-                           let photoID=pin["photoID"] as? String,
-                           let thumbnail=journalPhotoThumbnail(photoID,size:38) {
-                            thumbnail.draw(in:CGRect(x:p.x-19,y:p.y-19,width:38,height:38))
-                            continue
-                        }
                         let color=(pin["kind"] as? String)=="location" ? UIColor.systemBlue : routeColor
                         ctx.setFillColor(color.cgColor);ctx.setStrokeColor(UIColor.white.cgColor);ctx.setLineWidth(2)
                         ctx.fillEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10));ctx.strokeEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
+                    }
+                    for pin in content.pins where (pin["kind"] as? String) == "photo" {
+                        guard let c=coordinate(pin["point"]),let photoID=pin["photoID"] as? String else {continue}
+                        let p=snapshot.point(for:c)
+                        if let thumbnail=journalPhotoThumbnail(photoID,size:52) {
+                            thumbnail.draw(in:CGRect(x:p.x-26,y:p.y-26,width:52,height:52))
+                        }
                     }
                 }
                 guard let bytes=image.jpegData(compressionQuality:0.85) else {call.reject("Map preview unavailable");return}
