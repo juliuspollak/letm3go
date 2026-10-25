@@ -50,7 +50,13 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    const base64=url.slice('data:image/jpeg;base64,'.length);
    if(base64.length>6_700_000)throw new Error('Compressed photo exceeds the safe upload limit.');
    const {data:result,error:failure}=await client.functions.invoke('journeys',{body:{action:'upload',id:trip.id,mediaID:photoID,base64,caption:photo.caption||'',latitude:photo.latitude,longitude:photo.longitude,locationSource:photo.locationSource}});
-   if(failure||!result||result.id?.toLowerCase()!==photoID.toLowerCase())throw new Error('Cloud photo upload was not confirmed. The local photo is preserved.');
+   if(failure||!result||result.id?.toLowerCase()!==photoID.toLowerCase()){
+    let stage=result?.stage||'unknown';
+    let reason=result?.error||'Upload was not acknowledged';
+    if(failure?.context?.json)try{const response=await failure.context.json();stage=response?.stage||stage;reason=response?.error||reason;}catch{/* Supabase transport error has no JSON body. */}
+    const status=failure?.context?.status;
+    throw new Error(`Cloud photo upload failed (${stage}${status?`, HTTP ${status}`:''}): ${reason}. Local photo is preserved.`);
+   }
    updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
   }
  }
