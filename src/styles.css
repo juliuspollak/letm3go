@@ -251,3 +251,8 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .playful-wordmark .playful-arrow.is-shown{max-width:1.05em;opacity:1;transform:none}
 .playful-wordmark .playful-arrow .brand-mark{margin-left:.12em}
 @media(prefers-reduced-motion:reduce){.playful-wordmark .playful-part{transition:none}}
+
+.distance-unit-setting{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
+.distance-unit-setting h3{font-size:16px;margin:0 0 7px}
+.distance-unit-setting label{display:block;font-size:12px;font-weight:600;margin-top:12px}
+.distance-unit-setting select{display:block;width:100%;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font-size:16px}
