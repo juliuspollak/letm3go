@@ -293,3 +293,10 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-date-navigator>label{display:flex;flex:1;align-items:center;gap:10px;min-width:0;padding:5px 10px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
 .trip-date-navigator>label>span{color:var(--muted);font-size:11px;white-space:nowrap}
 .trip-date-navigator input[type=date]{width:100%;min-width:0;border:0;background:transparent;color:var(--ink);font-size:14px;padding:6px 0}
+
+.diagnostic-quality{margin-top:26px;display:grid;gap:12px}
+.diagnostic-quality h3{font-size:17px}
+.diagnostic-trip{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);display:grid;gap:8px}
+.diagnostic-trip>strong{font-size:13px;overflow-wrap:anywhere}
+.diagnostic-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;font-size:12px;color:var(--muted)}
+.diagnostic-stats span{min-width:0;overflow-wrap:anywhere}
