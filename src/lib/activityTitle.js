@@ -15,7 +15,6 @@ export function contextualJourneyTitle(activity,from,to,isLoop=false){
   if(to?.kind==='home')return 'Driving home';
   if(to?.kind==='work')return 'Driving to work';
   if(isLoop)return `Drive around ${place}`;
-  if(from?.kind==='home'&&place.toLowerCase()!=='home')return `Driving from home to ${place}`;
   return `Driving to ${place}`;
  }
  if(activity==='Walking')return isLoop?`Walk around ${place}`:`Walk to ${place}`;
