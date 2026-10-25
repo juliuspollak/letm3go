@@ -4,7 +4,7 @@ import hooks from 'eslint-plugin-react-hooks';
 import refresh from 'eslint-plugin-react-refresh';
 
 export default [
-  { ignores: ['dist/**', 'ios/**', 'node_modules/**', '.build/**', 'supabase/**'] },
+  { ignores: ['dist/**', 'ios/**', 'node_modules/**', '.build/**', 'supabase/**', 'vendor/**'] },
   js.configs.recommended,
   {
     files: ['**/*.{js,jsx,mjs}'],
