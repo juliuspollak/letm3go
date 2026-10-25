@@ -75,7 +75,8 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  const positions=new Map(sorted.map((s,i)=>[s.id,i]));
  const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[a,b]]:[];}catch{return [];}});
  const groups=[],suggestions=[];let previous;
- for(const t of sorted){const group=groups.at(-1),stop=previous?makeStop(previous,t,context):null;
+ const drives=sorted.filter(moving);
+ for(const t of drives){const group=groups.at(-1),stop=previous?makeStop(previous,t,context):null;
   let verdict=previous?continuation(previous,t,stop,context):{decision:'separate'};
   const currentTitle=group?.map(s=>metadata.titles[s.id]).find(Boolean);
   if(verdict.decision==='auto'&&currentTitle&&metadata.titles[t.id]&&currentTitle!==metadata.titles[t.id])verdict={decision:'suggest',reason:'Both journeys have your titles'};
@@ -86,6 +87,21 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   if(group&&!cut&&((moving(previous)&&moving(t)&&verdict.decision==='auto')||manual))group.push(t);
   else {if(verdict.decision==='suggest'&&!cut)suggestions.push({id:key,segmentIDs:[previous.id,t.id],reason:verdict.reason,stop});groups.push([t]);}
   previous=t;
+ }
+ groups.push(...sorted.filter(t=>!moving(t)).map(t=>[t]));
+ // Apply explicit cross-activity links after drive-only automatic grouping.
+ // This preserves automatic drive continuations across unrelated walks.
+ for(const key of metadata.links){
+  let ids;try{ids=JSON.parse(key);}catch{continue;}
+  if(!Array.isArray(ids)||ids.length!==2)continue;
+  const a=groups.findIndex(g=>g.some(t=>t.id===ids[0]));
+  const b=groups.findIndex(g=>g.some(t=>t.id===ids[1]));
+  if(a<0||b<0||a===b)continue;
+  const left=sorted.find(t=>t.id===ids[0]),right=sorted.find(t=>t.id===ids[1]);
+  if(!left||!right||left.endedAt==null||right.startedAt<left.endedAt||right.startedAt-left.endedAt>86400)continue;
+  if(metadata.cuts.includes(key))continue;
+  const merged=[...groups[a],...groups[b]].sort((x,y)=>x.startedAt-y.startedAt||x.id.localeCompare(y.id));
+  groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
  const journeys=groups.map(segments=>{
   if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||s.title,location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:[...new Set([...(s.tags||[]),...from.tags,...to.tags])],recognisedStops:internalStops(s,context)};}
