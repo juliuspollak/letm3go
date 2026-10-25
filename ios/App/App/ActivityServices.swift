@@ -79,10 +79,19 @@ extension LocationRecorder {
         guard let storage = storage, let index = trips.firstIndex(where: { $0.id == tripID }) else { throw failure("Activity not found.") }
         var trip = trips[index]; var details = trip.details ?? ActivityDetails()
         guard details.photos.count < 50 else { throw failure("Up to 50 photos per activity are supported.") }
-        let scale = min(1, 1600 / max(image.size.width,image.size.height))
+        // Journal-sized original: constrain pixel dimensions before any persistence or upload.
+        let scale = min(1, 1920 / max(image.size.width,image.size.height))
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
         let resized = UIGraphicsImageRenderer(size:CGSize(width:image.size.width*scale,height:image.size.height*scale),format:format).image { _ in image.draw(in:CGRect(x:0,y:0,width:image.size.width*scale,height:image.size.height*scale)) }
-        guard let data = resized.jpegData(compressionQuality:0.78), data.count <= 5_000_000 else { throw failure("Photo is too large.") }
+        // JPEG re-encoding removes camera EXIF and location metadata from the uploaded bytes.
+        // Adapt quality rather than rejecting large but otherwise valid user photos.
+        var compressed: Data? = nil
+        for quality in [0.78,0.68,0.58,0.48,0.38] {
+            guard let candidate = resized.jpegData(compressionQuality:quality) else { continue }
+            compressed = candidate
+            if candidate.count <= 550_000 { break }
+        }
+        guard let data = compressed, data.count <= 5_000_000 else { throw failure("Photo could not be compressed safely.") }
         let id = UUID().uuidString; let filename = "\(id).jpg"
         let media = storage.directory.appendingPathComponent("media",isDirectory:true)
         try FileManager.default.createDirectory(at:media,withIntermediateDirectories:true)
