@@ -50,6 +50,8 @@ extension LocationRecorder {
            Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60 {
             // Low-power significant-change callbacks can wake a suspended app
             // without keeping continuous GPS active for family presence.
+            stopContinuousLocation()
+            stopVisitMonitoring()
             startSignificantMonitoring()
             return
         }
