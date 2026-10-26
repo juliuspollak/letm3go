@@ -1,6 +1,6 @@
 import { expect,it,vi } from 'vitest';
 vi.mock('@capacitor/core',()=>({Capacitor:{getPlatform:()=> 'ios'},registerPlugin:()=>({})}));
-import { mapPayload } from './appleMaps.js';
+import { appleMaps, mapPayload } from './appleMaps.js';
 it('preserves route gaps and forwards photo references without private image paths or GPS timestamps',()=>{
  const payload=mapPayload([{id:'trip',routeSegments:[[[1,2],[3,4]],[[5,6],[7,8]]],photos:[{id:'photo',point:[3,4],caption:'Stop',url:'private://secret',exif:{secret:true}}],route:[],startedAt:'secret'}]);
  expect(payload.routes).toEqual([[[1,2],[3,4]],[[5,6],[7,8]]]);
@@ -10,4 +10,12 @@ it('preserves route gaps and forwards photo references without private image pat
 it('rejects non-finite and out-of-range locations and includes current-location accuracy',()=>{
  const result=mapPayload([{route:[[NaN,2],[100,4],[1,2]],photos:[]}],{latitude:0,longitude:0,accuracy:25});
  expect(result.routes).toEqual([[[1,2]]]);expect(result.pins.at(-1)).toMatchObject({point:[0,0],radius:25,kind:'location'});
+});
+
+it('provides a native photo-selection event subscription used by embedded maps',()=>{
+ expect(typeof appleMaps.addListener).toBe('function');
+});
+it('marks opted-in friends separately from household members on the map',()=>{
+ const p=mapPayload([],null,null,[{latitude:-34.6,longitude:150.87,display_name:'Friend',source:'friend'},{latitude:-34.7,longitude:150.8,display_name:'Family'}]);
+ expect(p.pins.map(pin=>pin.kind)).toEqual(['friend-live','family-live']);
 });
