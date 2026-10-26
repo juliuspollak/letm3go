@@ -1,11 +1,44 @@
 name: Check
+
 on:
   push:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'design/**'
+      - 'website/**'
+      - 'ios/App/App/Assets.xcassets/**'
+      - 'public/brand/**'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'design/**'
+      - 'website/**'
+      - 'ios/App/App/Assets.xcassets/**'
+      - 'public/brand/**'
+  workflow_dispatch:
+    inputs:
+      checks:
+        description: 'Which checks to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - web
+          - ios
+
 permissions:
   contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 jobs:
   web:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.checks == 'web' || inputs.checks == 'all' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +50,9 @@ jobs:
       - run: npm run check
       - run: npm run check:edge
       - run: npm audit --audit-level=moderate
+
   ios:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.checks == 'ios' || inputs.checks == 'all') }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
