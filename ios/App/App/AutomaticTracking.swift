@@ -181,6 +181,14 @@ extension LocationRecorder {
                     manager.desiredAccuracy = kCLLocationAccuracyBest; manager.distanceFilter = 5; manager.pausesLocationUpdatesAutomatically = false
                     manager.activityType = motion.types.contains("Driving") ? .automotiveNavigation : .other
                 } else if var trip = automaticTrip {
+                    if let last=trip.points.last,sample.timestamp-last.timestamp>45 {
+                        let gap=Int(sample.timestamp-last.timestamp)
+                        let note="GPS resumed after \(gap)s without saved route samples; distance within gap excluded"
+                        let previousNotes=trip.details?.trackingNotes ?? []
+                        if previousNotes.last != note {
+                            trip.details?.trackingNotes=Array((previousNotes+[note]).suffix(24))
+                        }
+                    }
                     let previousDistance=trip.distanceMeters
                     if trip.accept(sample,now:now), let first = trip.points.first {
                         if sample.speed >= 0.3 && !(["Walking", "Hiking", "Running"].contains(trip.activity) && motion.types == ["Driving"]) { trip.applyPrediction(SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now),distance:trip.distanceMeters-previousDistance) }
