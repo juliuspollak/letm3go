@@ -442,3 +442,5 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .household-reveal[aria-expanded=true]>svg{transform:rotate(180deg)}
 .household-simple .household-garage{margin:0;padding:14px;border-radius:14px}
 .household-member-list{padding:12px 16px;border-radius:12px;background:var(--soft)}
+
+.household-people{padding:8px 0 2px}.household-people-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.household-people-heading h3{font-size:16px;margin:0}.household-people-grid{display:flex;flex-wrap:wrap;gap:18px}.household-person{width:72px;display:flex;align-items:center;flex-direction:column;gap:5px;text-align:center}.household-person-avatar{display:grid;place-items:center;width:59px;height:59px;border-radius:50%;background:var(--soft);color:var(--accent);font-size:22px;font-weight:750;border:3px solid var(--surface);box-shadow:0 0 0 1px var(--line)}.household-person strong{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.household-person small{font-size:10px;color:var(--muted)}
