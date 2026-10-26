@@ -44,11 +44,14 @@ it('scopes linked-vehicle trip summaries to current household membership',async(
  const car=(await as('authenticated',a,"select public.add_household_vehicle('Family car') as id")).rows[0].id;
  const local='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
  await as('authenticated',a,`select public.link_household_vehicle('${car}','${local}')`);
+ await as('authenticated',a,'select public.set_household_trip_sharing(true)');
  await expect(as('authenticated',c,`select public.publish_household_vehicle_trip('${car}','${local}','trip-c','Spoofed',now(),1)`)).rejects.toThrow();
  await as('authenticated',a,`select public.publish_household_vehicle_trip('${car}','${local}','drive-a','Drive to beach',now(),8.2)`);
  expect((await as('authenticated',b,'select * from public.my_household_vehicle_trip_feed()')).rows).toHaveLength(1);
  expect((await as('authenticated',c,'select * from public.my_household_vehicle_trip_feed()')).rows).toHaveLength(0);
  await expect(as('authenticated',b,'select * from public.household_vehicle_trips')).rejects.toThrow();
+ await as('authenticated',a,'select public.set_household_trip_sharing(false)');
+ expect((await as('authenticated',b,'select * from public.my_household_vehicle_trip_feed()')).rows).toHaveLength(0);
  await as('authenticated',b,'select public.leave_household()');
  expect((await as('authenticated',b,'select * from public.my_household_vehicle_trip_feed()')).rows).toHaveLength(0);
 },30000);
