@@ -1,6 +1,7 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {recorder,recorderAvailable} from './recorder.js';
+import {config} from './config.js';
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[]){
  const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -77,11 +78,36 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   document.addEventListener('visibilitychange',poll);
   return()=>{clearTimeout(start);clearInterval(timer);document.removeEventListener('visibilitychange',poll);};
  },[online,refreshLive]);
+ // Keep the native uploader armed with a short-lived session only while
+ // the owner has separately opted into precise family sharing. Native tracking
+ // uses existing Core Location callbacks when JavaScript is suspended.
+ useEffect(()=>{
+  if(!recorderAvailable()||!online||!owner)return;
+  let alive=true;
+  const arm=async()=>{
+   if(!liveEnabled){
+    await recorder.configureLiveSharing({enabled:false}).catch(()=>{});
+    return;
+   }
+   const {data:{session},error}=await supabase.auth.getSession();
+   if(!alive||error||session?.user?.id!==owner||!session?.expires_at)return;
+   await recorder.configureLiveSharing({
+    enabled:true,accessToken:session.access_token,expiresAt:session.expires_at,
+    endpoint:config.url+'/rest/v1/rpc/set_my_live_location',apiKey:config.key
+   }).catch(()=>{});
+  };
+  void arm();
+  const timer=setInterval(()=>void arm(),120000);
+  const foreground=()=>{if(document.visibilityState==='visible')void arm();};
+  document.addEventListener('visibilitychange',foreground);
+  return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',foreground);};
+ },[owner,online,liveEnabled]);
  const setLiveSharing=async enabled=>{
   if(!online||!supabase)throw new Error('Connect to change location sharing.');
   const {error:failure}=await supabase.rpc('set_my_live_location',{p_enabled:enabled});
   if(failure)throw new Error(failure.message||'Could not change location sharing.');
   liveConsent.current=enabled;
+  if(!enabled)await recorder.configureLiveSharing({enabled:false}).catch(()=>{});
   setLiveEnabled(enabled);
   if(enabled)lastPlaceSentAt.current=0;
   await refreshLive();
