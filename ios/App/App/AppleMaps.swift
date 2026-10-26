@@ -14,7 +14,7 @@ private func friendInitialBubble(_ name:String,size:CGFloat=54)->UIImage {
     return renderer.image { ctx in
         let bounds=CGRect(x:0,y:0,width:size,height:size)
         UIColor.systemIndigo.setFill()
-        ctx.fillEllipse(in:bounds.insetBy(dx:2,dy:2))
+        ctx.cgContext.fillEllipse(in:bounds.insetBy(dx:2,dy:2))
         UIColor.white.setStroke()
         let ring=UIBezierPath(ovalIn:bounds.insetBy(dx:2,dy:2))
         ring.lineWidth=3;ring.stroke()
