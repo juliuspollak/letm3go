@@ -14,7 +14,7 @@ export function useFriendLocations(owner,online){
    setEnabled(setting.data===true);setPeople(locations.data||[]);setError('');
   }catch(e){setError(e.message);setPeople([]);}
  },[owner,online]);
- useEffect(()=>{if(!online)return;void refresh();const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
+ useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
  const send=useCallback(async()=>{
   if(!enabled||!online||!recorderAvailable()||!supabase)return;
   try{
@@ -24,7 +24,7 @@ export function useFriendLocations(owner,online){
    if(e)throw e;setError('');
   }catch{setError('Could not update friend location. Check location permission and connection.');}
  },[enabled,online]);
- useEffect(()=>{if(!enabled||!online)return;void send();const timer=setInterval(()=>{if(document.visibilityState==='visible')void send();},30000);const visible=()=>{if(document.visibilityState==='visible')void send();};document.addEventListener('visibilitychange',visible);return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[enabled,online,send]);
+ useEffect(()=>{if(!enabled||!online)return;const initial=setTimeout(()=>void send(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void send();},30000);const visible=()=>{if(document.visibilityState==='visible')void send();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[enabled,online,send]);
  useEffect(()=>{
   if(!owner||!recorderAvailable())return;
   let alive=true;
