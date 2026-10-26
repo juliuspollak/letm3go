@@ -45,6 +45,14 @@ extension LocationRecorder {
     func refreshAutomaticMonitoring() {
         updateIndicatorPolicy()
         guard storage != nil else { stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();return }
+        if !automaticAvailable && liveShareToken != nil && uiUnlocked && !accountSuspended &&
+           manager.authorizationStatus == .authorizedAlways &&
+           Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60 {
+            // Low-power significant-change callbacks can wake a suspended app
+            // without keeping continuous GPS active for family presence.
+            startSignificantMonitoring()
+            return
+        }
         if automaticAvailable {
             startSignificantMonitoring()
             startVisitMonitoring()
