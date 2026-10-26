@@ -60,10 +60,14 @@ export function AuthProvider({children}){
    restoring=true;const startedGeneration=generation.current;
    try{
    await accountStore.preserveLegacy?.();
-   const {data,error}=await supabase.auth.getSession();if(!alive||explicitLogout.current||startedGeneration!==generation.current)return;
+   let data,error,offlineOnly=false;
+   try{({data,error}=await Promise.race([supabase.auth.getSession(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('Session request timed out')),6000))]));}
+   catch{offlineOnly=true;const cached=await authStorage.getItem(AUTH_STORAGE_KEY);if(!cached)throw new Error('No saved account session');data={session:JSON.parse(cached)};}
+   if(!alive||explicitLogout.current||startedGeneration!==generation.current)return;
    if(isDiscardedRefresh(error)){retryDiscardedRefresh();return;}
    discardedRetries=0;
    if(error){if(!isTransientAuthError(error))throw error;const cached=await authStorage.getItem(AUTH_STORAGE_KEY);await reconcile(cached?JSON.parse(cached):null);}
+   else if(offlineOnly&&data.session){const turn=++generation.current;const next=await resolveIdentity({client:supabase,session:data.session,store:accountStore,apiKey:config.key,isCurrent:()=>turn===generation.current,offlineOnly:true});if(turn===generation.current){latestSession.current=next.session;boundOwner.current=next.session.user.id;preferencesRef.current=next.preferences;setPrivateMediaOwner(next.session.user.id);setIdentity(next);setError('');}}
    else if(data.session||!latestSession.current)await reconcile(data.session);
   }catch(err){if(alive&&!explicitLogout.current&&startedGeneration===generation.current){if(isDiscardedRefresh(err)){retryDiscardedRefresh();return;}setError('Please sign in again to continue. Your saved journeys are safe on this device.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}}finally{restoring=false;}}
   const {data:listener}=supabase.auth.onAuthStateChange((event,session)=>{
