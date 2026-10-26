@@ -332,6 +332,16 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             marker.glyphText=kind=="start" ? "S" : "F"
             marker.displayPriority = .required
         } else if kind=="photo" {
+            if let photoID=pin.metadata["photoID"] as? String,
+               let thumbnail=journalPhotoThumbnail(photoID,size:52) {
+                let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+                view.image=thumbnail
+                view.centerOffset=CGPoint(x:0,y:-24)
+                view.canShowCallout=true
+                view.displayPriority = .required
+                view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
+                return view
+            }
             marker.markerTintColor = .systemOrange
             marker.glyphImage=UIImage(systemName:"photo")
         } else if kind=="home-presence" {
