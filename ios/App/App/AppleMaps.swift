@@ -85,6 +85,24 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
                         (trimPreview ? UIColor.systemGray3 : routeColor).setStroke();path.lineWidth=3.5;path.stroke()
                     }
+                    // The place radius is rendered on previews as well as the fullscreen picker.
+                    for pin in content.pins {
+                        guard let center=coordinate(pin["point"]),let radius=pin["radius"] as? Double,radius.isFinite,radius>0 else {continue}
+                        let circle=MKCircle(center:center,radius:min(radius,100000))
+                        let bounds=circle.boundingMapRect
+                        let top=MKMapPoint(x:bounds.midX,y:bounds.minY).coordinate
+                        let bottom=MKMapPoint(x:bounds.midX,y:bounds.maxY).coordinate
+                        let p1=snapshot.point(for:top),p2=snapshot.point(for:bottom),centerPoint=snapshot.point(for:center)
+                        let screenRadius=abs(p2.y-p1.y)/2
+                        if screenRadius.isFinite && screenRadius>0 && screenRadius<10000 {
+                            let rect=CGRect(x:centerPoint.x-screenRadius,y:centerPoint.y-screenRadius,width:screenRadius*2,height:screenRadius*2)
+                            ctx.setFillColor(UIColor.systemBlue.withAlphaComponent(0.13).cgColor)
+                            ctx.fillEllipse(in:rect)
+                            ctx.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.85).cgColor)
+                            ctx.setLineWidth(2.5)
+                            ctx.strokeEllipse(in:rect)
+                        }
+                    }
                     // Draw normal pins first; full-size photo thumbnails must sit above them.
                     for pin in content.pins where (pin["kind"] as? String) != "photo" {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
@@ -180,6 +198,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 guard let coordinate=coordinate(metadata["point"]) else {continue}
                 let pin=JourneyPin();pin.coordinate=coordinate;pin.title=metadata["title"] as? String;pin.metadata=metadata
                 map.addAnnotation(pin)
+                if let radius=metadata["radius"] as? Double,radius.isFinite,radius>0 {map.addOverlay(MKCircle(center:coordinate,radius:min(radius,100000)))}
             }
             if !content.coordinates.isEmpty && call.getBool("preserveViewport") != true {
                 map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:false)
