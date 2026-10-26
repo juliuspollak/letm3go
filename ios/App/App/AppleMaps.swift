@@ -193,8 +193,12 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 button.accessibilityLabel="Open full screen map"
                 button.addAction(UIAction { [weak self] _ in
                     guard let self=self,let parent=self.bridge?.viewController,parent.presentedViewController==nil else {return}
+                    // Hide the embedded MKMapView while fullscreen MapKit owns the screen.
+                    // It otherwise competes for rendering and can leave a blank map.
+                    map.isHidden=true
                     let controller=AppleMapController(content:content,picker:false)
-                    controller.completion={ [weak self] result in
+                    controller.completion={ [weak self, weak map] result in
+                        map?.isHidden=false
                         if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
                             self?.notifyListeners("photoSelected",data:["photoID":photoID,"journeyID":journeyID])
                         }
