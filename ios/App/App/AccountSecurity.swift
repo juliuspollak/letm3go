@@ -69,6 +69,7 @@ struct LocalVehicle: Codable {
 extension LocationRecorder {
     func applicationSupport() throws -> URL { try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true) }
     func openAccount(_ id: String) throws {
+        disableLiveSharing()
         lastLocationUpdateAt=nil;lastLocationAccuracy=nil
         storeOpened = false
         guard UUID(uuidString:id) != nil else { throw failure("Invalid account identifier.") }
@@ -97,6 +98,7 @@ extension LocationRecorder {
         storeOpened = true
     }
     func stopAccount() throws {
+        disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling()
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
