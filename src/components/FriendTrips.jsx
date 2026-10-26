@@ -8,7 +8,13 @@ export default function FriendTrips({activities=[]}){
   if(a.error||b.error){setError('Friend activity feed is unavailable until its database migration is applied.');return;}
   setFeed(a.data||[]);setPublished((b.data||[]).map(x=>x.trip_id));setError('');
  },[]);
- useEffect(()=>{const timer=setTimeout(()=>void refresh(),0);return()=>clearTimeout(timer);},[refresh]);
+ useEffect(()=>{
+  const initial=setTimeout(()=>void refresh(),0);
+  const interval=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},30000);
+  const onVisible=()=>{if(document.visibilityState==='visible')void refresh();};
+  document.addEventListener('visibilitychange',onVisible);
+  return()=>{clearTimeout(initial);clearInterval(interval);document.removeEventListener('visibilitychange',onVisible);};
+ },[refresh]);
  async function share(t){
   setBusy(true);setError('');
   try{
