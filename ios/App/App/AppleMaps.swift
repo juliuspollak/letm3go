@@ -49,9 +49,10 @@ private struct MapContent {
 public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     private weak var presentedMap:AppleMapController?
     private var presentedID:String?
+    private var embeddedMaps:[String:MKMapView]=[:]
     public let identifier="AppleMapsPlugin"
     public let jsName="AppleMaps"
-    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise)]
+    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise)]
     @objc func setAppearance(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             let dark=call.getString("theme")=="dark"
@@ -117,6 +118,62 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 guard let bytes=image.jpegData(compressionQuality:0.85) else {call.reject("Map preview unavailable");return}
                 call.resolve(["image":"data:image/jpeg;base64,"+bytes.base64EncodedString(),"projection":projection])
             }
+        }
+    }
+    @objc func embed(_ call:CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let id=call.getString("mapID"), let webView=self.bridge?.webView,
+                  let x=call.getDouble("x"),let y=call.getDouble("y"),
+                  let width=call.getDouble("width"),let height=call.getDouble("height"),
+                  width>80,height>80 else {call.reject("Map layout unavailable");return}
+            let content=MapContent(call.options)
+            let scroll=webView.scrollView
+            let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
+            map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
+            map.layer.cornerRadius=16;map.clipsToBounds=true
+            if self.embeddedMaps[id] == nil {
+                map.isZoomEnabled=true;map.isScrollEnabled=true;map.showsCompass=true
+                if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)}
+                map.delegate=self
+                scroll.addSubview(map)
+                self.embeddedMaps[id]=map
+                let button=UIButton(type:.system)
+                button.setImage(UIImage(systemName:"arrow.up.left.and.arrow.down.right"),for:.normal)
+                button.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
+                button.layer.cornerRadius=18
+                button.frame=CGRect(x:max(0,width-52),y:12,width:36,height:36)
+                button.autoresizingMask=[.flexibleLeftMargin]
+                button.accessibilityLabel="Open full screen map"
+                button.addAction(UIAction { [weak self] _ in
+                    guard let self=self,let parent=self.bridge?.viewController,parent.presentedViewController==nil else {return}
+                    let controller=AppleMapController(content:content,picker:false)
+                    let nav=UINavigationController(rootViewController:controller)
+                    nav.modalPresentationStyle = .fullScreen
+                    parent.present(nav,animated:true)
+                },for:.touchUpInside)
+                map.addSubview(button)
+            }
+            map.removeOverlays(map.overlays);map.removeAnnotations(map.annotations)
+            for segment in content.routes where segment.count>1 {
+                map.addOverlay(MKPolyline(coordinates:segment,count:segment.count))
+            }
+            for metadata in content.pins {
+                guard let coordinate=coordinate(metadata["point"]) else {continue}
+                let pin=MKPointAnnotation();pin.coordinate=coordinate;pin.title=metadata["title"] as? String
+                map.addAnnotation(pin)
+            }
+            if !content.coordinates.isEmpty && call.getBool("preserveViewport") != true {
+                map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:false)
+            }
+            call.resolve()
+        }
+    }
+    @objc func unembed(_ call:CAPPluginCall) {
+        DispatchQueue.main.async {
+            if let id=call.getString("mapID"),let map=self.embeddedMaps.removeValue(forKey:id) {
+                map.delegate=nil;map.removeFromSuperview()
+            }
+            call.resolve()
         }
     }
     @objc func close(_ call:CAPPluginCall) {
@@ -246,5 +303,16 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,annotationView view:MKAnnotationView,calloutAccessoryControlTapped control:UIControl){
         guard let pin=view.annotation as? JourneyPin,let photo=pin.metadata["photoID"] as? String,let journey=pin.metadata["journeyID"] as? String else{return}
         finish(["photoID":photo,"journeyID":journey])
+    }
+}
+
+extension AppleMapsPlugin: MKMapViewDelegate {
+    public func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
+        if let route=overlay as? MKPolyline {
+            let renderer=MKPolylineRenderer(polyline:route)
+            renderer.strokeColor=routeColor;renderer.lineWidth=4;renderer.lineCap = .round
+            return renderer
+        }
+        return MKOverlayRenderer(overlay:overlay)
     }
 }
