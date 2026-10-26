@@ -26,7 +26,7 @@ returns table(user_id uuid,display_name text,latitude double precision,longitude
 language sql security definer set search_path=public,pg_temp as $$
  select p.user_id,f.display_name::text,p.latitude,p.longitude,p.updated_at
  from public.my_friends() f join public.friend_presence_shares p on p.user_id=f.user_id
- where auth.uid() is not null and p.enabled and p.updated_at>now()-interval '90 seconds'
+ where auth.uid() is not null and p.enabled and p.updated_at>now()-interval '30 minutes' order by p.updated_at desc
 $$;
 create or replace function public.my_friend_location_setting()
 returns boolean language sql security definer set search_path=public,pg_temp as $$
