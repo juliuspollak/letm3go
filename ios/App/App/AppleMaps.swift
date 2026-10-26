@@ -8,6 +8,22 @@ private func coordinate(_ value: Any?) -> CLLocationCoordinate2D? {
     return CLLocationCoordinate2D(latitude:p[0],longitude:p[1])
 }
 
+private func friendInitialBubble(_ name:String,size:CGFloat=54)->UIImage {
+    let display=String(name.prefix(1)).uppercased()
+    let renderer=UIGraphicsImageRenderer(size:CGSize(width:size,height:size))
+    return renderer.image { ctx in
+        let bounds=CGRect(x:0,y:0,width:size,height:size)
+        UIColor.systemIndigo.setFill()
+        ctx.fillEllipse(in:bounds.insetBy(dx:2,dy:2))
+        UIColor.white.setStroke()
+        let ring=UIBezierPath(ovalIn:bounds.insetBy(dx:2,dy:2))
+        ring.lineWidth=3;ring.stroke()
+        let font=UIFont.systemFont(ofSize:size*0.4,weight:.bold)
+        let attrs:[NSAttributedString.Key:Any]=[.font:font,.foregroundColor:UIColor.white]
+        let rect=(display as NSString).boundingRect(with:bounds.size,options:[],attributes:attrs,context:nil)
+        (display as NSString).draw(at:CGPoint(x:(size-rect.width)/2,y:(size-rect.height)/2),withAttributes:attrs)
+    }
+}
 private func journalPhotoThumbnail(_ photoID:String, size:CGFloat=48)->UIImage? {
     let recorder=LocationRecorder.shared
     guard recorder.uiUnlocked,recorder.ownerID != nil,
@@ -303,7 +319,15 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
-        if kind=="family-live" || kind=="friend-live" {
+        if kind=="friend-live" {
+            let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+            view.image=friendInitialBubble((pin.title ?? "F").components(separatedBy:" · ").first ?? "F")
+            view.centerOffset=CGPoint(x:0,y:-22)
+            view.canShowCallout=true
+            view.displayPriority = .required
+            return view
+        }
+        if kind=="family-live" {
             let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
             marker.markerTintColor = .systemPurple
             marker.glyphImage=UIImage(systemName:"person.crop.circle.fill")
@@ -364,6 +388,14 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         let kind=pin.metadata["kind"] as? String ?? ""
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
         marker.canShowCallout=true
+        if kind=="friend-live" {
+            let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+            view.image=friendInitialBubble((pin.title ?? "F").components(separatedBy:" · ").first ?? "F")
+            view.centerOffset=CGPoint(x:0,y:-22)
+            view.canShowCallout=true
+            view.displayPriority = .required
+            return view
+        }
         if kind=="start" || kind=="finish" {
             marker.markerTintColor=kind=="start" ? .systemGreen : .systemRed
             marker.glyphText=kind=="start" ? "S" : "F"
