@@ -13,9 +13,20 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
  useEffect(()=>()=>{if(appleMapsAvailable()){void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
  const data=JSON.stringify(payload);
+ const interactiveData=JSON.stringify(trimRange?.points?.length>1?(()=>{
+  const points=trimRange.points.slice(trimRange.start,trimRange.end+1).filter(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
+  if(points.length<2)return payload;
+  const routes=[];let segment=null;
+  for(const point of points){
+   if(point.segment!==segment){routes.push([]);segment=point.segment;}
+   routes.at(-1).push([point.latitude,point.longitude]);
+  }
+  const pins=payload.pins.filter(pin=>!['start','finish'].includes(pin.kind));
+  pins.push({point:routes[0][0],title:'Start',kind:'start'},{point:routes.at(-1).at(-1),title:'Finish',kind:'finish'});
+  return {...payload,routes,pins};
+ })():payload);
  useEffect(()=>{
-  if(!appleMapsAvailable())return;
-  if(trimRange){if(embeddedOnce.current){embeddedOnce.current=false;void appleMaps.unembed({mapID}).catch(()=>{});}return;}
+  if(!appleMapsAvailable()||picker)return;
   let active=true;let previous='';
   const mount=()=>{
    if(!active||!mapSurface.current)return;
@@ -24,14 +35,14 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
    const geometry=[box.x,box.y,box.width,box.height].map(n=>n.toFixed(1)).join(':');
    if(geometry===previous)return;
    const preserveViewport=embeddedOnce.current;previous=geometry;
-   void appleMaps.embed({...JSON.parse(data),mapID,x:box.x,y:box.y,width:box.width,height:box.height,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
+   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:box.height,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
   };
   const timer=setTimeout(mount,100);
   const observer=new ResizeObserver(mount);if(mapSurface.current)observer.observe(mapSurface.current);
   const resized=()=>{previous='';mount();};
   window.addEventListener('resize',resized);
   return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);};
- },[data,mapID,trimRange]);
+ },[interactiveData,mapID,picker]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
