@@ -3,18 +3,17 @@ import {supabase} from '../lib/supabase.js';
 
 // Household shares only activities assigned to a vehicle deliberately linked to this household.
 // No routes, point locations or photographs leave the device through this feature.
-export default function HouseholdTrips({owner,activities=[]}){
- const key='letm3go-household-trip-share:'+owner;
- const [enabled,setEnabled]=useState(()=>localStorage.getItem(key)==='true');
+export default function HouseholdTrips({activities=[]}){
+ const [enabled,setEnabled]=useState(false);
  const [vehicles,setVehicles]=useState([]),[feed,setFeed]=useState([]),[published,setPublished]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const active=useRef(false);
  const refresh=useCallback(async()=>{
   if(!supabase)return;
   try{
-   const results=await Promise.all([supabase.rpc('my_household_vehicles'),supabase.rpc('my_household_vehicle_trip_feed'),supabase.rpc('my_published_household_trip_ids')]);
+   const results=await Promise.all([supabase.rpc('my_household_vehicles'),supabase.rpc('my_household_vehicle_trip_feed'),supabase.rpc('my_published_household_trip_ids'),supabase.rpc('my_household_trip_sharing_setting')]);
    if(results.some(x=>x.error))throw Error('Household journeys are unavailable until the database migration is applied.');
-   setVehicles(results[0].data||[]);setFeed(results[1].data||[]);setPublished((results[2].data||[]).map(x=>x.trip_id));setError('');
-   return {cars:results[0].data||[],ids:new Set((results[2].data||[]).map(x=>x.trip_id))};
+   setVehicles(results[0].data||[]);setFeed(results[1].data||[]);setPublished((results[2].data||[]).map(x=>x.trip_id));setEnabled(results[3].data===true);setError('');
+   return {cars:results[0].data||[],ids:new Set((results[2].data||[]).map(x=>x.trip_id)),sharingEnabled:results[3].data===true};
   }catch(e){setError(e.message||'Could not load household journeys.');return null;}
  },[]);
  const eligible=useMemo(()=>activities.filter(t=>!t.readOnly&&!t.isGroupedJourney&&t.endedAt&&Number.isFinite(t.startedAt)&&
@@ -24,7 +23,7 @@ export default function HouseholdTrips({owner,activities=[]}){
   if(!supabase||active.current)return;
   active.current=true;setBusy(true);
   try{
-   const current=initial||await refresh();if(!current)return;
+   const current=initial||await refresh();if(!current?.sharingEnabled)return;
    const matches=activities.filter(t=>!t.readOnly&&!t.isGroupedJourney&&t.endedAt&&Number.isFinite(t.startedAt)&&
     (t.activity==='Driving'||t.activity==='Unknown')).map(t=>({t,car:current.cars.find(v=>v.local_vehicle_id&&String(v.local_vehicle_id)===String(t.vehicleID||''))})).filter(x=>x.car&&!current.ids.has(String(x.t.id)));
    for(const {t,car} of matches.slice(0,30)){
@@ -51,13 +50,20 @@ export default function HouseholdTrips({owner,activities=[]}){
   if(!enabled){
    const current=await refresh();if(!current)return;
    if(!current.cars.some(v=>v.local_vehicle_id)){setError('Link your vehicle in the Household section first.');return;}
-   localStorage.setItem(key,'true');setEnabled(true);void sync(current);
+   setBusy(true);
+   try {
+    const result=await supabase.rpc('set_household_trip_sharing',{p_enabled:true});
+    if(result.error)throw result.error;
+    const settings=await refresh();
+    if(settings?.sharingEnabled)void sync(settings);
+   }catch(e){setError(e.message||'Could not enable household sharing.');}
+   finally{setBusy(false);}
   }else{
    setBusy(true);
    try{
-    const result=await supabase.rpc('my_published_household_trip_ids');if(result.error)throw result.error;
-    for(const t of result.data||[]){const r=await supabase.rpc('unpublish_household_vehicle_trip',{p_trip:t.trip_id});if(r.error)throw r.error;}
-    localStorage.removeItem(key);setEnabled(false);await refresh();
+    const result=await supabase.rpc('set_household_trip_sharing',{p_enabled:false});
+    if(result.error)throw result.error;
+    await refresh();
    }catch(e){setError(e.message||'Failed to stop household trip sharing.');}
    finally{setBusy(false);}
   }
