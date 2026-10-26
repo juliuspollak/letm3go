@@ -13,7 +13,7 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
   (j.photos||[]).filter(p=>valid(p.point)).forEach(p=>pins.push({point:p.point,title:p.caption||'Journey photo',kind:'photo',journeyID:String(j.id),photoID:String(p.id)}));
  });
  if(homePresence&&valid([homePresence.latitude,homePresence.longitude])&&homePresence.count>0)pins.push({point:[homePresence.latitude,homePresence.longitude],title:homePresence.names?.join(', ')||'Family at Home',kind:'home-presence',count:homePresence.count});
- for(const member of livePeople){if(valid([member.latitude,member.longitude]))pins.push({point:[member.latitude,member.longitude],title:`${member.display_name||'Family member'} · ${Number.isFinite(member.speed_kmh)?Math.round(member.speed_kmh)+' km/h':'Recent location'}`,kind:member.source==='friend'?'friend-live':'family-live',speed:member.speed_kmh});}
+ for(const member of livePeople){if(valid([member.latitude,member.longitude]))pins.push({point:[member.latitude,member.longitude],title:`${member.display_name||'Family member'} · ${member.source==='friend'&&member.updated_at?'Last seen '+new Date(member.updated_at).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'}):Number.isFinite(member.speed_kmh)?Math.round(member.speed_kmh)+' km/h':'Recent location'}`,kind:member.source==='friend'?'friend-live':'family-live',speed:member.speed_kmh});}
  if(currentPosition&&valid([currentPosition.latitude,currentPosition.longitude]))pins.push({point:[currentPosition.latitude,currentPosition.longitude],title:'Your current location',kind:'location',radius:Math.max(0,Number(currentPosition.accuracy)||0)});
  return {routes,pins};
 }
