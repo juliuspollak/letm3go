@@ -1,0 +1,35 @@
+name: iOS Native Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/App/App/**'
+      - 'src/components/AppleMap.jsx'
+      - 'src/components/PlacePicker.jsx'
+      - 'src/lib/appleMaps.js'
+      - 'src/lib/useFriendLocations.js'
+      - '.github/workflows/ios-native-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:native
+      - run: npm run ios:sync
+      - run: npm run ios:build
