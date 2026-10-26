@@ -27,10 +27,10 @@ returns void language plpgsql security definer set search_path='' as $$
 begin
  if auth.uid() is null then raise exception 'Sign in required'; end if;
  if p_enabled and (
-  p_latitude is not null and (not isfinite(p_latitude) or p_latitude not between -90 and 90)
-  or p_longitude is not null and (not isfinite(p_longitude) or p_longitude not between -180 and 180)
-  or p_accuracy is not null and (not isfinite(p_accuracy) or p_accuracy not between 0 and 100)
-  or p_speed is not null and (not isfinite(p_speed) or p_speed not between 0 and 250))
+  p_latitude is not null and (p_latitude not between -90 and 90)
+  or p_longitude is not null and (p_longitude not between -180 and 180)
+  or p_accuracy is not null and (p_accuracy not between 0 and 100)
+  or p_speed is not null and (p_speed not between 0 and 250))
  then raise exception 'Invalid location'; end if;
  if p_enabled and ((p_latitude is null) <> (p_longitude is null)) then raise exception 'Incomplete coordinate'; end if;
  if p_enabled and not exists(select 1 from public.household_memberships m where m.user_id=auth.uid()) then
