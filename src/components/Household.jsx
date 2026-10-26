@@ -3,7 +3,7 @@ import { Users, ShieldCheck, Copy, ChevronDown } from 'lucide-react';
 import { supabase } from '../lib/supabase.js';
 export default function Household({vehicles=[],onSaveVehicles}){
  const [membersLoading,setMembersLoading]=useState(false);
- [showTransport,setShowTransport]=useState(false),[showSettings,setShowSettings]=useState(false),[copied,setCopied]=useState(false);
+ const [showTransport,setShowTransport]=useState(false),[showSettings,setShowSettings]=useState(false),[copied,setCopied]=useState(false);
  const [garage,setGarage]=useState([]),[garageMessage,setGarageMessage]=useState('');
  const [household,setHousehold]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[invite,setInvite]=useState(''),[members,setMembers]=useState([]),[loading,setLoading]=useState(Boolean(supabase)),[leaving,setLeaving]=useState(false);
  useEffect(()=>{let active=true;if(supabase)Promise.resolve(supabase.rpc('my_household')).then(({data,error})=>{if(active){if(error)setError('Household status could not be loaded. Reconnect and reopen this screen.');else if(data?.length)setHousehold(data[0]);}}).catch(()=>{if(active)setError('Household status could not be loaded. Reconnect and reopen this screen.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[]);
