@@ -78,7 +78,11 @@ extension LocationRecorder {
     func beginAutomaticProbe(movementBegan:Bool = false) {
         guard automaticAvailable,active == nil else { return }
         let now=Date().timeIntervalSince1970
-        if automaticTrip == nil {automaticSampling.requestProbe(now:now,movementBegan:movementBegan)}
+        if automaticTrip == nil {
+            let wasIdle=(automaticSampling.probeUntil ?? 0)<=now
+            automaticSampling.requestProbe(now:now,movementBegan:movementBegan)
+            if wasIdle {trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")}
+        }
         reconcileAutomaticSampling()
         if let end=automaticSampling.probeUntil,automaticProbeTimer == nil {
             automaticProbeTimer=Timer.scheduledTimer(withTimeInterval:max(1,end-now),repeats:false){ [weak self] _ in
@@ -129,7 +133,12 @@ extension LocationRecorder {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
             if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
             guard sample.timestamp >= trackingBoundary else { continue }
-            guard sample.accuracy >= 0,sample.accuracy <= 65,abs(now-sample.timestamp)<=20 else {continue}
+            guard sample.accuracy >= 0,sample.accuracy <= 65,abs(now-sample.timestamp)<=20 else {
+                if automaticTrip == nil && now-(lastTrackingEventAt ?? 0)>45 {
+                    trackingEvent("GPS rejected: accuracy or timestamp outside reliable recording limits")
+                }
+                continue
+            }
             if automaticTrip == nil,motion.types == ["Stationary"],motion.confidence != "low",now-motion.timestamp<=90,sample.speed<3 {continue}
             if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:now) {beginAutomaticProbe()}
             // Split an on-foot visit only with sustained, fresh automotive and
@@ -159,7 +168,7 @@ extension LocationRecorder {
                     trip.source = "simulator"
                     #endif
                     for candidate in detector.candidate { _ = trip.accept(candidate,now:candidate.timestamp) }
-                    trip.details?.trackingNotes = [
+                    trip.details?.trackingNotes = recentTrackingNotes(before:now) + [
                         "Detection confirmed after buffered GPS movement",
                         "First accepted GPS: \(Date(timeIntervalSince1970:first.timestamp))",
                         "GPS candidate samples: \(detector.candidate.count)",
