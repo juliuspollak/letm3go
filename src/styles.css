@@ -329,3 +329,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .lightbox .zoomable-photo{display:block;max-width:90vw;max-height:70dvh;width:auto;height:auto;object-fit:contain;transform-origin:center;touch-action:none;user-select:none}
 .lightbox .photo-zoom-controls{display:flex;gap:10px;align-items:center;justify-content:center;margin:9px 0}
 .lightbox .photo-zoom-controls button{border:1px solid #ffffff55;border-radius:10px;min-width:44px;min-height:44px;color:white}
+
+.lightbox .photo-zoom-viewport{display:grid;place-items:center;max-width:95vw;width:100%;height:min(65dvh,680px);overflow:hidden;touch-action:none}
+.lightbox .photo-zoom-viewport .zoomable-photo{max-width:90vw;max-height:60dvh;pointer-events:auto}
