@@ -79,6 +79,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var lastLocationUpdateAt: Double?
     var lastLocationAccuracy: Double?
     var lastAutomaticFixAt: Double?
+    var automaticGPSRecoveryAt: Double = 0
     var continuousStartedAt:Double?
     var continuousStoppedAt:Double?
     private var trackingStartedAt: Double?
@@ -124,6 +125,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self else { return }
             self.reconcileAutomaticSampling()
+            self.recoverStalledAutomaticGPS()
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:Date().timeIntervalSince1970,activity:self.automaticTrip?.activity ?? "Driving") else { return }
             do { try self.finishAutomatic() } catch { self.lastError = error.localizedDescription }
         }
@@ -206,6 +208,22 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 }
             }
         }.resume()
+    }
+    func recoverStalledAutomaticGPS(){
+        let now=Date().timeIntervalSince1970
+        guard automaticTrip != nil,automaticAvailable,active == nil,continuousLocationRequested,
+              !accountSuspended,let last=lastAutomaticFixAt,now-last>60,
+              now-automaticGPSRecoveryAt>120 else {return}
+        automaticGPSRecoveryAt=now
+        trackingEvent("Automatic GPS silent for \(Int(now-last))s; restarting location updates")
+        manager.stopUpdatingLocation()
+        continuousLocationRequested=false
+        locationUpdatesPaused=false
+        manager.desiredAccuracy=kCLLocationAccuracyBest
+        manager.distanceFilter=5
+        manager.pausesLocationUpdatesAutomatically=false
+        manager.activityType=automaticTrip?.activity == "Driving" ? .automotiveNavigation : .other
+        startContinuousLocation()
     }
     func startContinuousLocation(){
         updateIndicatorPolicy()
