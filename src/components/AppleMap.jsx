@@ -18,7 +18,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   if(!appleMapsAvailable())return;
   let disposed=false;let listener;
   void appleMaps.addListener('photoSelected',result=>{
-   if(!disposed&&result?.photoID&&result?.journeyID&&payload.pins.some(pin=>pin.kind==='photo'&&pin.photoID===result.photoID&&pin.journeyID===result.journeyID))latest.current?.(result);
+   if(!disposed&&result?.photoID&&result?.journeyID&&JSON.parse(photoPins).some(pin=>pin.kind==='photo'&&pin.photoID===result.photoID&&pin.journeyID===result.journeyID))latest.current?.(result);
   }).then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
  },[mapID,photoPins]);
