@@ -51,7 +51,14 @@ function PrivateApp(){
  const saved=auth.preferences.bookmarks||[];
  const recording=useRecorder(session.user.id);
  const liveTrip=recording.state.active?.state==='recording'?recording.state.active:recording.state.automaticTrip;
- const motionFresh=Number.isFinite(recording.state.motionTimestamp)&&Math.abs(Date.now()/1000-recording.state.motionTimestamp)<=45&&recording.state.motionConfidence!=='low';
+ const [motionClock,setMotionClock]=useState(()=>Date.now());
+ useEffect(()=>{
+  const updateClock=()=>setMotionClock(Date.now());
+  const interval=setInterval(updateClock,15000);
+  document.addEventListener('visibilitychange',updateClock);
+  return()=>{clearInterval(interval);document.removeEventListener('visibilitychange',updateClock);};
+ },[]);
+ const motionFresh=Number.isFinite(recording.state.motionTimestamp)&&Math.abs(motionClock/1000-recording.state.motionTimestamp)<=45&&recording.state.motionConfidence!=='low';
  const motionTypes=motionFresh?recording.state.motionTypes||[]:[];
  const automaticPresenceActivity=liveTrip?.activity==='Driving'?'Driving':
   motionTypes.includes('Driving')?'Driving':
