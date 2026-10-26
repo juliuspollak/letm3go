@@ -30,6 +30,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveShareTokenExpiresAt: Double = 0
     var liveShareLastSentAt: Double = 0
     var liveShareInFlight = false
+    var friendShareToken: String?
+    var friendShareEndpoint: URL?
+    var friendShareApiKey: String?
+    var friendShareTokenExpiresAt: Double = 0
+    var friendShareLastSentAt: Double = 0
+    var friendShareInFlight = false
     var ownerID: String?
     var uiUnlocked = false
     var accountDeleting = false
@@ -113,11 +119,47 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Core Location has no getter for hardware GPS activity. Expose our real service
     // requests and OS pause callbacks, separately from permission/capability flags.
     func disableLiveSharing() {
+        disableHouseholdLiveSharing()
+        disableFriendLiveSharing()
+    }
+    func disableHouseholdLiveSharing() {
         liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil
         liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false
         refreshAutomaticMonitoring()
     }
+    func disableFriendLiveSharing() {
+        friendShareToken=nil;friendShareEndpoint=nil;friendShareApiKey=nil
+        friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false
+        refreshAutomaticMonitoring()
+    }
+    func publishFriendPosition(_ location:CLLocation) {
+        let now=Date().timeIntervalSince1970
+        guard uiUnlocked,!accountSuspended,!accountDeleting,
+              let token=friendShareToken,let endpoint=friendShareEndpoint,let apiKey=friendShareApiKey,
+              now<friendShareTokenExpiresAt-60,!friendShareInFlight,now-friendShareLastSentAt>=25,
+              location.horizontalAccuracy>=0,location.horizontalAccuracy<=100,
+              abs(location.timestamp.timeIntervalSince1970-now)<25 else {return}
+        let payload:[String:Any]=["p_enabled":true,"p_latitude":location.coordinate.latitude,
+            "p_longitude":location.coordinate.longitude,"p_accuracy":location.horizontalAccuracy]
+        guard let data=try? JSONSerialization.data(withJSONObject:payload) else {return}
+        var request=URLRequest(url:endpoint)
+        request.httpMethod="POST";request.httpBody=data;request.timeoutInterval=12
+        request.setValue("application/json",forHTTPHeaderField:"Content-Type")
+        request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
+        request.setValue(apiKey,forHTTPHeaderField:"apikey")
+        friendShareInFlight=true;friendShareLastSentAt=now
+        URLSession.shared.dataTask(with:request){[weak self] _,response,error in
+            DispatchQueue.main.async {
+                guard let self=self else{return}
+                self.friendShareInFlight=false
+                if error != nil || !((response as? HTTPURLResponse).map{(200...299).contains($0.statusCode)} ?? false) {
+                    self.friendShareLastSentAt=Date().timeIntervalSince1970-15
+                }
+            }
+        }.resume()
+    }
     func publishLivePosition(_ location: CLLocation) {
+        publishFriendPosition(location)
         let now=Date().timeIntervalSince1970
         guard uiUnlocked,!accountSuspended,!accountDeleting,
               let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
@@ -403,16 +445,26 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func configureLiveSharing(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
         let recorder=LocationRecorder.shared
-        if call.getBool("enabled") != true {recorder.disableLiveSharing();call.resolve();return}
+        let friends=call.getString("channel")=="friends"
+        if call.getBool("enabled") != true {
+            if friends {recorder.disableFriendLiveSharing()} else {recorder.disableHouseholdLiveSharing()}
+            call.resolve();return
+        }
+        let suffix=friends ? "/rest/v1/rpc/set_friend_location" : "/rest/v1/rpc/set_my_live_location"
         guard let token=call.getString("accessToken"),token.count>100,
               let rawURL=call.getString("endpoint"),let url=URL(string:rawURL),
-              url.scheme=="https",url.path.hasSuffix("/rest/v1/rpc/set_my_live_location"),
+              url.scheme=="https",url.path.hasSuffix(suffix),
               let apiKey=call.getString("apiKey"),!apiKey.isEmpty,
               let expiry=call.getDouble("expiresAt"),expiry>Date().timeIntervalSince1970+90 else {
             call.reject("Valid signed-in session required for background sharing.");return
         }
-        recorder.liveShareToken=token;recorder.liveShareEndpoint=url
-        recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
+        if friends {
+            recorder.friendShareToken=token;recorder.friendShareEndpoint=url
+            recorder.friendShareApiKey=apiKey;recorder.friendShareTokenExpiresAt=expiry
+        } else {
+            recorder.liveShareToken=token;recorder.liveShareEndpoint=url
+            recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
+        }
         recorder.refreshAutomaticMonitoring()
         call.resolve()
     } }
