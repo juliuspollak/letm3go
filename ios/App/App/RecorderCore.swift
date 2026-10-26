@@ -240,6 +240,7 @@ struct ActivityDetails: Codable {
     var userCorrected = false
     var classification = Classification(predicted: "Unknown", confidence: "low", evidence: [])
     var classificationDistances: [String:Double]?
+    var trackingNotes: [String] = []
     var visibleRouteStart: Int?
     var visibleRouteEnd: Int?
     var startPlace: String?
