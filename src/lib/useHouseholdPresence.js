@@ -4,6 +4,8 @@ import {recorder,recorderAvailable} from './recorder.js';
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[]){
  const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [liveEnabled,setLiveEnabled]=useState(false),[livePeople,setLivePeople]=useState([]),[liveError,setLiveError]=useState('');
+ const liveBusy=useRef(false);
  const refresh=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
   const [mine,others]=await Promise.all([supabase.rpc('my_presence_settings'),supabase.rpc('my_household_presence')]);
@@ -55,6 +57,60 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   document.addEventListener('visibilitychange',onVisible);
   return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
  },[owner,online,self?.sharing_enabled,self?.activity_label,automaticActivity,homeKey,refresh]);
+
+ const refreshLive=useCallback(async()=>{
+  if(!owner||!online||!supabase)return;
+  const [settings,others]=await Promise.all([
+   supabase.rpc('my_live_location_settings'),
+   supabase.rpc('my_household_live_locations')
+  ]);
+  if(settings.error||others.error){setLiveError('Precise family location is not available. Apply the live-location migration.');return;}
+  setLiveEnabled(settings.data?.[0]?.enabled===true);
+  setLivePeople(others.data||[]);
+  setLiveError('');
+ },[owner,online]);
+ useEffect(()=>{
+  if(!online)return;
+  const poll=()=>{if(document.visibilityState==='visible')void refreshLive();};
+  const start=setTimeout(poll,0),timer=setInterval(poll,15000);
+  document.addEventListener('visibilitychange',poll);
+  return()=>{clearTimeout(start);clearInterval(timer);document.removeEventListener('visibilitychange',poll);};
+ },[online,refreshLive]);
+ const setLiveSharing=async enabled=>{
+  if(!online||!supabase)throw new Error('Connect to change location sharing.');
+  const {error:failure}=await supabase.rpc('set_my_live_location',{p_enabled:enabled});
+  if(failure)throw new Error(failure.message||'Could not change location sharing.');
+  setLiveEnabled(enabled);
+  if(enabled)lastPlaceSentAt.current=0;
+  await refreshLive();
+ };
+ useEffect(()=>{
+  if(!owner||!online||!liveEnabled||!recorderAvailable())return;
+  let alive=true;
+  const send=async()=>{
+   if(!alive||document.visibilityState==='hidden'||liveBusy.current)return;
+   liveBusy.current=true;
+   try{
+    const position=await recorder.currentPosition();
+    if(!alive||!position||!Number.isFinite(position.latitude)||!Number.isFinite(position.longitude)||
+      !Number.isFinite(position.accuracy)||position.accuracy<0||position.accuracy>100)return;
+    // The location API can expose speed in m/s; do not guess speed when absent.
+    const speed=Number.isFinite(position.speed)&&position.speed>=0?
+      Math.max(0,Math.min(250,position.speed*3.6)):null;
+    const {error:failure}=await supabase.rpc('set_my_live_location',{
+      p_enabled:true,p_latitude:position.latitude,p_longitude:position.longitude,
+      p_accuracy:position.accuracy,p_speed:speed
+    });
+    if(failure&&alive)setLiveError('Unable to update live location.');
+   }catch{/* Never replace the last confirmed location with a guess. */}
+   finally{liveBusy.current=false;}
+  };
+  void send();
+  const timer=setInterval(()=>void send(),30000);
+  const visible=()=>{if(document.visibilityState==='visible')void send();};
+  document.addEventListener('visibilitychange',visible);
+  return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',visible);};
+ },[owner,online,liveEnabled]);
  const update=async(enabled,activity=null,place=null)=>{
   if(!online||!supabase)throw new Error('Connect to change live visibility securely.');
   setBusy(true);
@@ -64,5 +120,5 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    await refresh();
   }finally{setBusy(false);}
  };
- return {people,self,error,busy,refresh,update};
+ return {people,self,error,busy,refresh,update,liveEnabled,livePeople,liveError,setLiveSharing,refreshLive};
 }
