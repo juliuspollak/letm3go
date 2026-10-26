@@ -372,3 +372,13 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-compact-navigation .trip-date-navigator input[type=date]{font-size:12px}
 .trip-results-heading{margin-bottom:10px}.trips-activity-list{margin-top:0}
 @media(max-width:600px){.trip-compact-navigation{flex-wrap:wrap;gap:9px}.trip-compact-navigation .trip-date-navigator{max-width:none;flex-basis:100%}.trip-compact-navigation .trip-period-filter{width:100%;justify-content:flex-start}.trip-journal-heading h1{font-size:27px}.trip-round-action{width:38px;height:38px}}
+
+/* Distinctive, smoothly changing wordmark without overlapping glyphs. */
+.mobile-brand .animated-wordmark.stable-wordmark,.desktop-rail .animated-wordmark.stable-wordmark{color:var(--ink)!important;-webkit-text-fill-color:var(--ink)!important}
+.mobile-brand .stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines):not(.stable-wordmark-accent),.desktop-rail .stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines):not(.stable-wordmark-accent){color:var(--ink)!important;-webkit-text-fill-color:var(--ink)!important}
+.mobile-brand .stable-wordmark-inner .stable-wordmark-accent,.desktop-rail .stable-wordmark-inner .stable-wordmark-accent{color:var(--accent)!important;-webkit-text-fill-color:var(--accent)!important}
+.mobile-brand .stable-wordmark-inner .stable-wordmark-arrow,.desktop-rail .stable-wordmark-inner .stable-wordmark-arrow{color:var(--accent)!important;-webkit-text-fill-color:var(--accent)!important}
+.stable-wordmark-inner{letter-spacing:0!important;gap:0!important;animation:stable-wordmark-switch .55s cubic-bezier(.2,.8,.2,1) both}
+.stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines){letter-spacing:-.045em;flex-shrink:0}
+@keyframes stable-wordmark-switch{from{opacity:.15;transform:translateY(5px);filter:blur(2px)}to{opacity:1;transform:translateY(0);filter:blur(0)}}
+@media(prefers-reduced-motion:reduce){.stable-wordmark-inner{animation:none}}
