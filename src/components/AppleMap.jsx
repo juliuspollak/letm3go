@@ -13,6 +13,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
  const [mapID]=useState(()=>crypto.randomUUID());
  useEffect(()=>()=>{if(appleMapsAvailable()){void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
+ const photoPins=JSON.stringify(payload.pins);
  useEffect(()=>{
   if(!appleMapsAvailable())return;
   let disposed=false;let listener;
@@ -20,7 +21,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
    if(!disposed&&result?.photoID&&result?.journeyID&&payload.pins.some(pin=>pin.kind==='photo'&&pin.photoID===result.photoID&&pin.journeyID===result.journeyID))latest.current?.(result);
   }).then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
- },[mapID,JSON.stringify(payload.pins)]);
+ },[mapID,photoPins]);
  const data=JSON.stringify(payload);
  const interactiveData=JSON.stringify(trimRange?.points?.length>1?(()=>{
   const points=trimRange.points.slice(trimRange.start,trimRange.end+1).filter(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
