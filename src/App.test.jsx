@@ -36,7 +36,7 @@ it('permits deliberately public journey links without mounting private recording
 });
 it('opens Tracking & Permissions from Profile through Account settings',()=>{signedIn();render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Open profile'}));fireEvent.click(screen.getByRole('button',{name:'Account & settings'}));fireEvent.click(screen.getByRole('button',{name:'Tracking & Permissions'}));expect(screen.getByRole('heading',{name:'Tracking & Permissions'})).toBeInTheDocument();expect(screen.getByRole('switch',{name:'Automatic Tracking'})).toBeInTheDocument();});
 it('keeps the activity list in Trips rather than duplicating it on Home and Map',()=>{signedIn();recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[{id:'trip',source:'device',title:'Walk to park',activity:'Walking',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:100,points:[],details:{}}]},run:vi.fn(),busy:false,error:''});render(<App/>);expect(screen.queryByRole('button',{name:'Open Walk to park'})).not.toBeInTheDocument();expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);expect(screen.getByRole('button',{name:'Open Walk to park'})).toBeInTheDocument();fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Walk to park'})).not.toBeInTheDocument();expect(screen.queryByText('Recorded paths')).not.toBeInTheDocument();});
-it('opens today-only Trips from Home metrics and allows returning to all dates',()=>{signedIn();const date=new Date();date.setHours(12,0,0,0);const previous=new Date(date);previous.setDate(date.getDate()-1);const trip=(id,title,at)=>({id,title,source:'device',activity:'Walking',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{}});recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('today','Today walk',date),trip('previous','Yesterday walk',previous)]},run:vi.fn(),busy:false,error:''});render(<App/>);fireEvent.click(screen.getByRole('button',{name:/Activities today: 1/}));expect(screen.getByRole('button',{name:'Open Today walk'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Yesterday walk'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'Today',exact:true})).toHaveAttribute('aria-pressed','true');fireEvent.click(screen.getByRole('button',{name:'All dates'}));expect(screen.getByRole('button',{name:'Open Yesterday walk'})).toBeInTheDocument();});
+it('opens today-only Trips from Home metrics and allows returning to all dates',()=>{signedIn();const date=new Date();date.setHours(12,0,0,0);const previous=new Date(date);previous.setDate(date.getDate()-1);const trip=(id,title,at)=>({id,title,source:'device',activity:'Walking',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{}});recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('today','Today walk',date),trip('previous','Yesterday walk',previous)]},run:vi.fn(),busy:false,error:''});render(<App/>);fireEvent.click(screen.getByRole('button',{name:/Activities today: 1/}));expect(screen.getByRole('button',{name:'Open Today walk'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Yesterday walk'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'Today',exact:true})).toHaveAttribute('aria-pressed','true');fireEvent.click(screen.getByRole('button',{name:'All',exact:true}));expect(screen.getByRole('button',{name:'Open Yesterday walk'})).toBeInTheDocument();});
 
 it('filters favourites and saves the star without opening the trip',()=>{
  signedIn();identity.value.preferences.bookmarks=['first'];
@@ -61,10 +61,12 @@ it('opens distinct Home distance, duration and activity views with numeric sorti
  render(<App/>);
  const titles=()=>screen.getAllByRole('button',{name:/^Open (Longest|Newest)/}).map(button=>button.getAttribute('aria-label'));
  fireEvent.click(screen.getByRole('button',{name:/Today's distance:/}));
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
  expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('distance');
  expect(titles()).toEqual(['Open Longest distance','Open Longest time','Open Newest trip']);
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:/Recorded time:/}));
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
  expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('duration');
  expect(titles()).toEqual(['Open Longest time','Open Longest distance','Open Newest trip']);
  expect(screen.getByText('Today · 31 min recorded · Longest first')).toBeInTheDocument();
@@ -81,7 +83,8 @@ it('shows one grouped journey and finds it through an intermediate locality sear
  identity.value.preferences.journeyGrouping=JSON.stringify({version:1,owner:'owner',links:[],cuts:[],history:[],titles:{},stopEdits:{},places:{'-33.8000,151.2000':{locality:'Sydney'},'-31.6000,152.7000':{locality:'Kew'},'-28.0000,153.4000':{locality:'Gold Coast'}}});
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[a,b]},run:vi.fn(),busy:false,error:''});
  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
- fireEvent.change(screen.getByRole('textbox',{name:'Search journeys'}),{target:{value:'Kew'}});
+ fireEvent.click(screen.getByRole('button',{name:'Search all activities'}));
+ fireEvent.change(screen.getByRole('searchbox',{name:'Search all activity history'}),{target:{value:'Kew'}});
  expect(screen.getByRole('button',{name:'Open Driving to Gold Coast'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open a'})).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Open Driving to Gold Coast'}));expect(screen.getByRole('heading',{name:'Segments & stops'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Rename journey'})).toBeInTheDocument();expect(screen.getAllByText('Kew',{exact:true}).length).toBeGreaterThan(0);
 });
