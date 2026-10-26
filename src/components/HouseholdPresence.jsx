@@ -1,4 +1,4 @@
-import {EyeOff,MapPin,Users,CarFront,Footprints,Bike,Activity} from 'lucide-react';
+import {MapPin,CarFront,Footprints,Bike,Activity} from 'lucide-react';
 const MotionIcon=({activity})=>activity==='Driving'?<CarFront size={18}/>:activity==='Walking'||activity==='Running'?<Footprints size={18}/>:activity==='Cycling'?<Bike size={18}/>:<Activity size={18}/>;
 export default function HouseholdPresence({presence,places=[],onSetHome}){
  return <section className="social-panel household-presence">
