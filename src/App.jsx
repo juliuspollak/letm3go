@@ -1,7 +1,7 @@
 import Friends from './components/Friends.jsx';
 import FriendTrips from './components/FriendTrips.jsx';
 import HouseholdTrips from './components/HouseholdTrips.jsx';
-import { Archive,useHouseholdPresence} from './lib/useHouseholdPresence.js';
+import {useHouseholdPresence} from './lib/useHouseholdPresence.js';
 import {useFriendLocations} from './lib/useFriendLocations.js';
 import HouseholdPresence from './components/HouseholdPresence.jsx';
 import {useFleetJourneys} from './lib/useFleetJourneys.js';
@@ -17,7 +17,7 @@ import BrandMark from './components/BrandMark.jsx';
 import DismissibleSheet from './components/DismissibleSheet.jsx';
 import PrivateImage from './components/PrivateImage.jsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Footprints, Home, Map, MapPin, Mountain, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Bike, Car, Waves, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
+import {Archive, ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Footprints, Home, Map, MapPin, Mountain, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Bike, Car, Waves, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
 import JourneyMap from './components/JourneyMap.jsx';
 import RecorderPanel from './components/RecorderPanel.jsx';
 import Diagnostics from './components/Diagnostics.jsx';
