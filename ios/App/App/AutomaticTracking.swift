@@ -159,6 +159,12 @@ extension LocationRecorder {
                     trip.source = "simulator"
                     #endif
                     for candidate in detector.candidate { _ = trip.accept(candidate,now:candidate.timestamp) }
+                    trip.details?.trackingNotes = [
+                        "Detection confirmed after buffered GPS movement",
+                        "First accepted GPS: \(Date(timeIntervalSince1970:first.timestamp))",
+                        "GPS candidate samples: \(detector.candidate.count)",
+                        "Motion: \(motion.types.joined(separator:", ")) (\(motion.confidence))"
+                    ]
                     trip.details?.startPlace = places.first { $0.contains(first) }?.name
                     try storage.save(trip); automaticTrip = trip
                     trackingEvent("Automatic departure confirmed")
@@ -197,11 +203,13 @@ extension LocationRecorder {
         // Preserve the original on-foot subtype, rather than relabelling hiking or running.
         walking.activity = ["Walking", "Hiking", "Running"].contains(walking.activity) ? walking.activity : "Walking"
         walking.finish(at:max(walking.startedAt,walking.points.last?.timestamp ?? first.timestamp))
+        walking.details?.trackingNotes = (walking.details?.trackingNotes ?? []) + ["Split from drive after walking-to-driving transition"]
         walking.updatedAt=Date().timeIntervalSince1970
         walking.title=walking.activity
         var driving = RecordedActivity(activity:"Driving",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Driving")
         driving.recordingMode="automatic"
         driving.details=ActivityDetails()
+        driving.details?.trackingNotes=["Walking to driving transition confirmed using sustained GPS and automotive motion", "Driving transition samples: \(drivingPoints.count)"]
         driving.details?.classification = Classification(predicted:"Driving",confidence:"high",evidence:["Fresh driving motion and sustained GPS movement"])
         for point in drivingPoints { _ = driving.accept(point,now:point.timestamp) }
         try storage.save(driving)
@@ -236,6 +244,7 @@ extension LocationRecorder {
         trip.distanceMeters = zip(trip.points,trip.points.dropFirst()).reduce(0) { sum,pair in
             sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
         }
+        trip.details?.trackingNotes = Array(((trip.details?.trackingNotes ?? []) + ["Arrival detected", "Movement end: \(Date(timeIntervalSince1970:lastMovement))", "Recorded fixes: \(trip.points.count)", "Final GPS coverage: \(Int(max(0,end - (trip.points.last?.timestamp ?? trip.startedAt)))) seconds before finish"]).suffix(16))
         trip.finish(at:end)
         if let last = trip.points.last { trip.details?.endPlace = places.first { $0.contains(last) }?.name }
         if let from = trip.details?.startPlace, let to = trip.details?.endPlace { trip.title = "\(from) → \(to)" }
