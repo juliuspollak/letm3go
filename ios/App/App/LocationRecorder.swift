@@ -287,6 +287,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
+                "nativeFamilySharing":["armed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"uploadInFlight":liveShareInFlight],
                 "locationManagerID":"LocationRecorder.shared.manager",
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
                 "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
