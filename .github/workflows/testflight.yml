@@ -1,16 +1,17 @@
-name: Package Letm3go for TestFlight
+name: Deploy Letm3go to TestFlight
+run-name: 'TestFlight • ${{ github.ref_name }} • ${{ inputs.upload_approved && \'Build + upload\' || \'Build only\' }}'
 on:
   workflow_dispatch:
     inputs:
       upload_approved:
-        description: 'I approve uploading this build to App Store Connect'
+        description: 'Upload signed build to TestFlight (untick for build-only)'
         type: boolean
         default: false
       build_number:
-        description: 'Optional build number (blank = latest TestFlight + 1)'
+        description: 'Build number override (blank = latest TestFlight + 1)'
         type: string
       release_notes:
-        description: 'What to test'
+        description: 'What to Test notes for App Store Connect'
         type: string
 permissions:
   contents: read
