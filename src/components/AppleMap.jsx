@@ -43,17 +43,21 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   const mount=()=>{
    if(!active||openingFullscreen.current||!mapSurface.current)return;
    const box=mapSurface.current.getBoundingClientRect();
-   if(box.width<80||box.height<80)return;
-   const geometry=[box.x,box.y,box.width,box.height].map(n=>n.toFixed(1)).join(':');
+   const nav=document.querySelector('.mobile-nav');
+   const navTop=nav&&getComputedStyle(nav).display!=='none'?nav.getBoundingClientRect().top:window.innerHeight;
+   const visibleHeight=Math.min(box.height,Math.max(0,navTop-box.top-8));
+   if(box.width<80||visibleHeight<80){if(embeddedOnce.current){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
+   const geometry=[box.x,box.y,box.width,visibleHeight].map(n=>n.toFixed(1)).join(':');
    if(geometry===previous)return;
    const preserveViewport=embeddedOnce.current;previous=geometry;
-   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:box.height,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
+   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
   };
   const timer=setTimeout(mount,100);
   const observer=new ResizeObserver(mount);if(mapSurface.current)observer.observe(mapSurface.current);
   const resized=()=>{previous='';mount();};
   window.addEventListener('resize',resized);
-  return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);};
+  window.addEventListener('scroll',resized,{passive:true});
+  return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized);};
  },[interactiveData,mapID,picker,reopenVersion]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
