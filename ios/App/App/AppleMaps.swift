@@ -148,6 +148,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)}
                 map.delegate=self
                 scroll.addSubview(map)
+                scroll.bringSubviewToFront(map)
                 self.embeddedMaps[id]=map
                 let button=UIButton(type:.system)
                 button.setImage(UIImage(systemName:"arrow.up.left.and.arrow.down.right"),for:.normal)
@@ -165,6 +166,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 },for:.touchUpInside)
                 map.addSubview(button)
             }
+            scroll.bringSubviewToFront(map)
             map.removeOverlays(map.overlays);map.removeAnnotations(map.annotations)
             for segment in content.routes where segment.count>1 {
                 map.addOverlay(MKPolyline(coordinates:segment,count:segment.count))
