@@ -86,7 +86,22 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     private var gpsStartCount = 0
     var lastTrackingEvent="Initialising"
     var lastTrackingEventAt:Double?
-    func trackingEvent(_ reason:String){lastTrackingEvent=reason;lastTrackingEventAt=Date().timeIntervalSince1970}
+    // Bounded in-memory breadcrumbs for the next automatic journey. No coordinates,
+    // user identifiers or raw motion samples. Once a trip starts its recent
+    // breadcrumbs are persisted inside that trip's private details.
+    var trackingTimeline:[(at:Double,note:String)]=[]
+    func trackingEvent(_ reason:String){
+        let now=Date().timeIntervalSince1970
+        lastTrackingEvent=reason;lastTrackingEventAt=now
+        if trackingTimeline.last?.note == reason, let previous=trackingTimeline.last?.at, now-previous<30 {return}
+        trackingTimeline.append((at:now,note:reason))
+        trackingTimeline=trackingTimeline.filter{now-$0.at<=3600}.suffix(80).map{$0}
+    }
+    func recentTrackingNotes(before end:Double)->[String]{
+        trackingTimeline.filter{$0.at>=end-1800 && $0.at<=end+30}.suffix(30).map{
+            "\(Date(timeIntervalSince1970:$0.at)): \($0.note)"
+        }
+    }
     func updateIndicatorPolicy(){manager.showsBackgroundLocationIndicator=TrackingPresentation.indicator(always:manager.authorizationStatus == .authorizedAlways,manual:active?.state == "recording")}
     var gpsReason:String {TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable)}
     var motionPermission: String { String(describing:CMMotionActivityManager.authorizationStatus()) }
