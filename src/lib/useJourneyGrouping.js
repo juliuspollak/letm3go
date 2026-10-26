@@ -19,7 +19,12 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
   async function enrich(){
    // Sequential lookups avoid geocoder throttling; results are cached per account.
    const context={owner,metadata:current.current,places,vehicles,telemetry:[]};
-   const candidates=activities.flatMap(t=>t.points?.length?[{id:t.id,index:0,point:t.points[0],cloud:t.source!=='device'&&t.source!=='simulator'},{id:t.id,index:t.points.length-1,point:t.points.at(-1),cloud:t.source!=='device'&&t.source!=='simulator'},...internalStops(t,context).map(s=>({id:t.id,index:s.pointIndex,point:t.points[s.pointIndex],cloud:t.source!=='device'&&t.source!=='simulator'}))]:[]);
+   const candidates=activities.flatMap(t=>{
+    const points=t.points||[];if(!points.length)return [];
+    const indexes=[0,points.length-1,...internalStops(t,context).map(s=>s.pointIndex)];
+    if(['Hiking','Walking','Running','Cycling','MTB','Road cycling','Mountain biking'].includes(t.activity)&&points.length>10)indexes.push(...[.2,.4,.6,.8].map(f=>Math.round((points.length-1)*f)));
+    return [...new Set(indexes)].filter(i=>points[i]).map(index=>({id:t.id,index,point:points[index],cloud:t.source!=='device'&&t.source!=='simulator'}));
+   });
    const seen=new Set();
    for(const c of candidates){
     if(!alive)return;const key=placeKey(c.point);if(!key||seen.has(key))continue;seen.add(key);
