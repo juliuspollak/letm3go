@@ -1,6 +1,7 @@
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from './supabase.js';
 import {recorder,recorderAvailable} from './recorder.js';
+import {config} from './config.js';
 
 // Only friends see location, only after explicit consent. Positions expire after 90 seconds.
 export function useFriendLocations(owner,online){
@@ -24,6 +25,30 @@ export function useFriendLocations(owner,online){
   }catch{setError('Could not update friend location. Check location permission and connection.');}
  },[enabled,online]);
  useEffect(()=>{if(!enabled||!online)return;void send();const timer=setInterval(()=>{if(document.visibilityState==='visible')void send();},30000);const visible=()=>{if(document.visibilityState==='visible')void send();};document.addEventListener('visibilitychange',visible);return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[enabled,online,send]);
+ useEffect(()=>{
+  if(!owner||!recorderAvailable())return;
+  let alive=true;
+  const arm=async()=>{
+   if(!enabled||!online||!supabase){
+    await recorder.configureLiveSharing({enabled:false,channel:'friends'}).catch(()=>{});
+    return;
+   }
+   try{
+    const {data:{session},error:e}=await supabase.auth.getSession();
+    if(!alive||e||session?.user?.id!==owner||!session?.expires_at)return;
+    await recorder.configureLiveSharing({
+     enabled:true,channel:'friends',accessToken:session.access_token,
+     expiresAt:session.expires_at,endpoint:config.url+'/rest/v1/rpc/set_friend_location',
+     apiKey:config.key
+    });
+   }catch{if(alive)setError('Background friend location could not be enabled. Foreground updates remain available.');}
+  };
+  void arm();
+  const interval=setInterval(()=>void arm(),120000);
+  const visible=()=>{if(document.visibilityState==='visible')void arm();};
+  document.addEventListener('visibilitychange',visible);
+  return()=>{alive=false;clearInterval(interval);document.removeEventListener('visibilitychange',visible);};
+ },[owner,online,enabled]);
  const setSharing=async next=>{
   if(!supabase||!online)throw Error('Connect to change friend sharing.');
   if(next){const fix=await recorder.currentPosition();if(!Number.isFinite(fix?.latitude)||!Number.isFinite(fix?.longitude)||!Number.isFinite(fix?.accuracy)||fix.accuracy>100||Math.abs(Date.now()/1000-fix.timestamp)>30)throw Error('A fresh accurate GPS position is needed before sharing.');
