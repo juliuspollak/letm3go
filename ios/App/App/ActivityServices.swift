@@ -137,7 +137,7 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager,didUpdateLocations locations: [CLLocation]) {
         guard !finished, let location = locations.last, location.horizontalAccuracy >= 0, abs(location.timestamp.timeIntervalSinceNow) < 30 else { return }
         guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { finished=true; call.reject("Account changed."); return }
-        finished = true; call.resolve(["latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy])
+        finished = true; call.resolve(["latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy,"speed":location.speed >= 0 ? location.speed : NSNull(),"timestamp":location.timestamp.timeIntervalSince1970])
     }
     func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) { guard !finished else { return }; finished = true; call.reject(error.localizedDescription) }
 }
