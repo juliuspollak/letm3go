@@ -67,8 +67,8 @@ it('opens distinct Home distance, duration and activity views with numeric sorti
  expect(titles()).toEqual(['Open Longest distance','Open Longest time','Open Newest trip']);
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:/Recorded time:/}));
- const filtersButton=screen.getByRole('button',{name:'Activity filters'});
- if(filtersButton.getAttribute('aria-expanded')!=='true')fireEvent.click(filtersButton);
+ const reopenedFiltersButton=screen.getByRole('button',{name:'Activity filters'});
+ if(reopenedFiltersButton.getAttribute('aria-expanded')!=='true')fireEvent.click(reopenedFiltersButton);
  expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('duration');
  expect(titles()).toEqual(['Open Longest time','Open Longest distance','Open Newest trip']);
  expect(screen.getByText('Today · 31 min recorded · Longest first')).toBeInTheDocument();
