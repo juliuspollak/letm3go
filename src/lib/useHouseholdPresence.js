@@ -30,10 +30,10 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   return()=>{cancelled=true;};
  },[owner,online,self?.sharing_enabled,automaticActivity,refresh]);
 
- const homeKey=places.filter(p=>p.kind==='home').map(p=>[p.id,p.latitude,p.longitude,p.radius].join(':')).join('|');
+ const home=places.find(p=>p.kind==='home');
+ const homeId=home?.id,homeLatitude=home?.latitude,homeLongitude=home?.longitude,homeRadius=home?.radius;
  useEffect(()=>{
-  const home=places.find(p=>p.kind==='home');
-  if(!owner||!online||!supabase||!recorderAvailable()||!home||self?.sharing_enabled!==true)return;
+  if(!owner||!online||!supabase||!recorderAvailable()||!homeId||self?.sharing_enabled!==true)return;
   let alive=true;
   const check=async()=>{
    if(!alive||document.visibilityState==='hidden'||locationBusy.current||automaticActivity)return;
@@ -41,9 +41,9 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    try {
     const point=await recorder.currentPosition();
     if(!alive||!point||!Number.isFinite(point.latitude)||!Number.isFinite(point.longitude)||point.accuracy>100)return;
-    const radians=Math.PI/180,dlat=(point.latitude-home.latitude)*radians,dlon=(point.longitude-home.longitude)*radians;
-    const a=Math.sin(dlat/2)**2+Math.cos(point.latitude*radians)*Math.cos(home.latitude*radians)*Math.sin(dlon/2)**2;
-    const within=6371000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=Math.max(50,Math.min(2000,Number(home.radius)||150));
+    const radians=Math.PI/180,dlat=(point.latitude-homeLatitude)*radians,dlon=(point.longitude-homeLongitude)*radians;
+    const a=Math.sin(dlat/2)**2+Math.cos(point.latitude*radians)*Math.cos(homeLatitude*radians)*Math.sin(dlon/2)**2;
+    const within=6371000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=Math.max(50,Math.min(2000,Number(homeRadius)||150));
     const next=within?'Home':null;
     if(next===lastPlace.current && (!within || Date.now()-lastPlaceSentAt.current<900000))return;
     if(!within&&lastPlace.current!=='Home'&&self?.activity_label!=='At home')return;
@@ -57,7 +57,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   const onVisible=()=>{if(document.visibilityState==='visible')void check();};
   document.addEventListener('visibilitychange',onVisible);
   return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
- },[owner,online,self?.sharing_enabled,self?.activity_label,automaticActivity,homeKey,refresh]);
+ },[owner,online,self?.sharing_enabled,self?.activity_label,automaticActivity,homeId,homeLatitude,homeLongitude,homeRadius,refresh]);
 
  const refreshLive=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
