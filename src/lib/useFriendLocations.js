@@ -3,7 +3,7 @@ import {supabase} from './supabase.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {config} from './config.js';
 
-// Only friends see location, only after explicit consent. Positions expire after 90 seconds.
+// Only friends see location, only after explicit consent. Locations are visible for up to 30 minutes with timestamps.
 export function useFriendLocations(owner,online){
  const [people,setPeople]=useState([]),[enabled,setEnabled]=useState(false),[error,setError]=useState('');
  const refresh=useCallback(async()=>{
