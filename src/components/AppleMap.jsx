@@ -5,6 +5,8 @@ import { appleMaps, appleMapsAvailable } from '../lib/appleMaps.js';
 export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null}){
  const mapSurface=useRef(null);
  const embeddedOnce=useRef(false);
+ const openingFullscreen=useRef(false);
+ const [reopenVersion,setReopenVersion]=useState(0);
  const [embedded,setEmbedded]=useState(false);
  const [preview,setPreview]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const [projection,setProjection]=useState([]);
@@ -39,7 +41,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   if(!appleMapsAvailable()||picker)return;
   let active=true;let previous='';
   const mount=()=>{
-   if(!active||!mapSurface.current)return;
+   if(!active||openingFullscreen.current||!mapSurface.current)return;
    const box=mapSurface.current.getBoundingClientRect();
    if(box.width<80||box.height<80)return;
    const geometry=[box.x,box.y,box.width,box.height].map(n=>n.toFixed(1)).join(':');
@@ -52,13 +54,32 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   const resized=()=>{previous='';mount();};
   window.addEventListener('resize',resized);
   return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);};
- },[interactiveData,mapID,picker]);
+ },[interactiveData,mapID,picker,reopenVersion]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
  const endIndex=trimRange&&projected.length>1?Math.max(startIndex+1,Math.min(projected.length-1,Math.round(trimRange.end/(trimRange.points.length-1)*(projected.length-1)))):0;
  const selected=trimRange&&projected.length>1?projected.slice(startIndex,endIndex+1):[];
  useEffect(()=>{let alive=true;if(!appleMapsAvailable())return;appleMaps.snapshot({...JSON.parse(data),trimPreview:isTrimPreview,width:700,height:large?600:350}).then(result=>{if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[data,large,themeVersion,isTrimPreview]);
- async function open(){setBusy(true);setError('');try{const result=await appleMaps.open({...JSON.parse(data),picker,mapID});latest.current?.(result);}catch{setError('Apple Maps could not open. Please retry.');}finally{setBusy(false);}}
+ async function open(){
+  if(busy)return;
+  setBusy(true);setError('');
+  openingFullscreen.current=true;
+  try{
+   // MapKit fullscreen presentation can appear blank while another live MKMapView
+   // overlays the Capacitor WebView. Release that view before presenting.
+   await appleMaps.unembed({mapID}).catch(()=>{});
+   setEmbedded(false);
+   const result=await appleMaps.open({...JSON.parse(data),picker,mapID});
+   latest.current?.(result);
+  }catch{
+   setError('The interactive map could not open. The route preview remains available; please retry.');
+  }finally{
+   openingFullscreen.current=false;
+   embeddedOnce.current=false;
+   setBusy(false);
+   setReopenVersion(v=>v+1);
+  }
+ }
  return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span><span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{onLocate&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{error&&<p role="status" className="notice">{error}</p>}</div>;
 }
