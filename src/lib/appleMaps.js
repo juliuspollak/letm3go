@@ -17,6 +17,6 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
  if(currentPosition&&valid([currentPosition.latitude,currentPosition.longitude]))pins.push({point:[currentPosition.latitude,currentPosition.longitude],title:'Your current location',kind:'location',radius:Math.max(0,Number(currentPosition.accuracy)||0)});
  return {routes,pins};
 }
-export const appleMaps={snapshot:options=>native.snapshot(options),open:options=>native.open(options),close:options=>native.close(options),embed:options=>native.embed(options),unembed:options=>native.unembed(options)};
+export const appleMaps={snapshot:options=>native.snapshot(options),open:options=>native.open(options),close:options=>native.close(options),embed:options=>native.embed(options),unembed:options=>native.unembed(options),addListener:(event,callback)=>native.addListener(event,callback)};
 
 export async function setNativeAppearance(theme){if(appleMapsAvailable())await native.setAppearance({theme});}
