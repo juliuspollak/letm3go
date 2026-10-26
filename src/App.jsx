@@ -141,8 +141,9 @@ function PrivateApp(){
  const [tripFiltersOpen,setTripFiltersOpen]=useState(false);
  const [tripActionsOpen,setTripActionsOpen]=useState(false);
  const tripSearchRef=useRef(null);
- useEffect(()=>{if(tab==='Trips'&&tripSearchOpen)tripSearchRef.current?.focus();},[tab,tripSearchOpen]);
+
  const [tab,setTab]=useState('Home'),[selected,setSelected]=useState(null),[sheet,setSheet]=useState(null),[query,setQuery]=useState(''),[filter,setFilter]=useState('All activities'),[dayFilter,setDayFilter]=useState('all'),[sortPreference,setSortPreference]=useState(()=>{const saved=localStorage.getItem('letm3go-trip-sort');return ['newest','distance','duration'].includes(saved)?saved:'newest';}),[favouritesOnly,setFavouritesOnly]=useState(false),[error,setError]=useState(''),[lightbox,setLightbox]=useState(null),[theme,setTheme]=useState(()=>localStorage.getItem('letm3go-theme')||'light');
+ useEffect(()=>{if(tab==='Trips'&&tripSearchOpen)tripSearchRef.current?.focus();},[tab,tripSearchOpen]);
  useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('letm3go-theme',theme);void setNativeAppearance(theme).catch(()=>{});window.dispatchEvent(new Event('letm3go:theme-changed'));},[theme]);
  useEffect(()=>{
   if(!sheet&&!lightbox)return;
