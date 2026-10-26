@@ -3,17 +3,19 @@ import { useEffect, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable } from '../lib/appleMaps.js';
 export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null}){
  const mapSurface=useRef(null);
+ const embeddedOnce=useRef(false);
  const [embedded,setEmbedded]=useState(false);
  const [preview,setPreview]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const [projection,setProjection]=useState([]);
  const [themeVersion,setThemeVersion]=useState(0);
  useEffect(()=>{const changed=()=>setThemeVersion(v=>v+1);window.addEventListener('letm3go:theme-changed',changed);return()=>window.removeEventListener('letm3go:theme-changed',changed);},[]);
  const [mapID]=useState(()=>crypto.randomUUID());
- useEffect(()=>()=>{if(appleMapsAvailable())void appleMaps.close({mapID}).catch(()=>{});},[mapID]);
+ useEffect(()=>()=>{if(appleMapsAvailable()){void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
  const data=JSON.stringify(payload);
  useEffect(()=>{
-  if(!appleMapsAvailable()||trimRange)return;
+  if(!appleMapsAvailable())return;
+  if(trimRange){if(embeddedOnce.current){embeddedOnce.current=false;void appleMaps.unembed({mapID}).catch(()=>{});}return;}
   let active=true;let previous='';
   const mount=()=>{
    if(!active||!mapSurface.current)return;
@@ -21,14 +23,14 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
    if(box.width<80||box.height<80)return;
    const geometry=[box.x,box.y,box.width,box.height].map(n=>n.toFixed(1)).join(':');
    if(geometry===previous)return;
-   const preserveViewport=previous!=='';previous=geometry;
-   void appleMaps.embed({...JSON.parse(data),mapID,x:box.x,y:box.y,width:box.width,height:box.height,preserveViewport}).then(()=>{if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
+   const preserveViewport=embeddedOnce.current;previous=geometry;
+   void appleMaps.embed({...JSON.parse(data),mapID,x:box.x,y:box.y,width:box.width,height:box.height,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
   };
   const timer=setTimeout(mount,100);
   const observer=new ResizeObserver(mount);if(mapSurface.current)observer.observe(mapSurface.current);
   const resized=()=>{previous='';mount();};
   window.addEventListener('resize',resized);
-  return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);void appleMaps.unembed({mapID}).catch(()=>{});};
+  return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);};
  },[data,mapID,trimRange]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
