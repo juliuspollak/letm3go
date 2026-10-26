@@ -103,9 +103,21 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                             text.draw(at:CGPoint(x:p.x-14,y:p.y-10),withAttributes:[.font:UIFont.boldSystemFont(ofSize:14),.foregroundColor:UIColor.white])
                             continue
                         }
-                        let color=(pin["kind"] as? String)=="location" ? UIColor.systemBlue : routeColor
-                        ctx.setFillColor(color.cgColor);ctx.setStrokeColor(UIColor.white.cgColor);ctx.setLineWidth(2)
-                        ctx.fillEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10));ctx.strokeEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
+                        let kind=pin["kind"] as? String ?? ""
+                        if kind=="start" || kind=="finish" {
+                            let color:UIColor=kind=="start" ? .systemGreen : .systemRed
+                            let bounds=CGRect(x:p.x-15,y:p.y-15,width:30,height:30)
+                            ctx.setFillColor(color.cgColor);ctx.fillEllipse(in:bounds)
+                            ctx.setStrokeColor(UIColor.white.cgColor);ctx.setLineWidth(3);ctx.strokeEllipse(in:bounds)
+                            let label=(kind=="start" ? "S" : "F") as NSString
+                            let attributes:[NSAttributedString.Key:Any]=[.font:UIFont.boldSystemFont(ofSize:15),.foregroundColor:UIColor.white]
+                            let size=label.size(withAttributes:attributes)
+                            label.draw(at:CGPoint(x:p.x-size.width/2,y:p.y-size.height/2),withAttributes:attributes)
+                        } else {
+                            let color=kind=="location" ? UIColor.systemBlue : routeColor
+                            ctx.setFillColor(color.cgColor);ctx.setStrokeColor(UIColor.white.cgColor);ctx.setLineWidth(2)
+                            ctx.fillEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10));ctx.strokeEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
+                        }
                     }
                     for pin in content.pins where (pin["kind"] as? String) == "photo" {
                         guard let c=coordinate(pin["point"]),let photoID=pin["photoID"] as? String else {continue}
