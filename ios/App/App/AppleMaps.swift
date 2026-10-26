@@ -159,7 +159,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             for metadata in content.pins {
                 guard let coordinate=coordinate(metadata["point"]) else {continue}
-                let pin=MKPointAnnotation();pin.coordinate=coordinate;pin.title=metadata["title"] as? String
+                let pin=JourneyPin();pin.coordinate=coordinate;pin.title=metadata["title"] as? String;pin.metadata=metadata
                 map.addAnnotation(pin)
             }
             if !content.coordinates.isEmpty && call.getBool("preserveViewport") != true {
@@ -289,7 +289,8 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         }
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil);marker.canShowCallout=true
         marker.markerTintColor=kind=="location" ? .systemBlue : routeColor
-        marker.glyphImage=UIImage(systemName:kind=="photo" ? "photo" : kind=="finish" ? "flag.checkered" : kind=="start" ? "play.fill" : "mappin")
+        marker.glyphImage=UIImage(systemName:kind=="photo" ? "photo" : "mappin")
+        if kind=="start" || kind=="finish" {marker.markerTintColor = kind=="start" ? .systemGreen : .systemRed;marker.glyphImage=nil;marker.glyphText=kind=="start" ? "S" : "F";marker.displayPriority = .required}
         if kind=="photo" {marker.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)}
         return marker
     }
@@ -307,6 +308,26 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
 }
 
 extension AppleMapsPlugin: MKMapViewDelegate {
+    public func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
+        guard let pin=annotation as? JourneyPin else{return nil}
+        let kind=pin.metadata["kind"] as? String ?? ""
+        let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
+        marker.canShowCallout=true
+        if kind=="start" || kind=="finish" {
+            marker.markerTintColor=kind=="start" ? .systemGreen : .systemRed
+            marker.glyphText=kind=="start" ? "S" : "F"
+            marker.displayPriority = .required
+        } else if kind=="photo" {
+            marker.markerTintColor = .systemOrange
+            marker.glyphImage=UIImage(systemName:"photo")
+        } else if kind=="home-presence" {
+            marker.markerTintColor = .systemPurple
+            marker.glyphImage=UIImage(systemName:"house.fill")
+        } else {
+            marker.markerTintColor = .systemBlue
+        }
+        return marker
+    }
     public func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
         if let route=overlay as? MKPolyline {
             let renderer=MKPolylineRenderer(polyline:route)
