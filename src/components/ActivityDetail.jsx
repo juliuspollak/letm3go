@@ -11,13 +11,15 @@ import { recordedJourney, speedLabel, paceLabel } from '../lib/recorder.js';
 export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,onUpdated,onDeleted,busy,error,onSource,onStopChange,grouping,unit='km'}){
  const local=trip.source==='device'||trip.source==='simulator';
  const [deleting,setDeleting]=useState(false),[suggestions,setSuggestions]=useState(null),[showSkipped,setShowSkipped]=useState(false),[message,setMessage]=useState('');
- const pointCount=trip.points?.length||0;
+ const points=Array.isArray(trip.points)?trip.points:[];
+ const route=Array.isArray(trip.route)?trip.route:[];
+ const pointCount=points.length;
  const [trimStart,setTrimStart]=useState(trip.visibleRouteStart??0);
  const [trimEnd,setTrimEnd]=useState(trip.visibleRouteEnd??Math.max(0,pointCount-1));
  const trimValid=pointCount>=2&&trimStart<trimEnd;
  const trimChanged=trimStart!==(trip.visibleRouteStart??0)||trimEnd!==(trip.visibleRouteEnd??pointCount-1);
- const fullPreview={...trip,route:trip.points.map(p=>[p.latitude,p.longitude]),routeSegments:trip.points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
- const pointTime=i=>new Date(trip.points[i]?.timestamp*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',second:'2-digit'});
+ const fullPreview={...trip,route:points.map(p=>[p.latitude,p.longitude]),routeSegments:points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
+ const pointTime=i=>new Date(points[i]?.timestamp*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',second:'2-digit'});
  async function applyTrim(){
   if(!trimValid)return;
   const result=await perform('setRouteDisplay',{id:trip.id,start:trimStart,end:trimEnd});
@@ -29,7 +31,7 @@ export default function ActivityDetail({trip,places,onBack,onEdit,onPhoto,run,on
  return <SwipeBack onBack={onBack}><div className="detail page-enter"><button className="back text-button" onClick={onBack}><ArrowLeft size={18}/> Back to activities</button><div className="page-heading activity-detail-heading"><div><div className="activity-title-line"><h1>{trip.title}</h1>{local&&<button type="button" className="icon-button activity-title-edit" aria-label="Edit activity" onClick={onEdit} disabled={busy}><Pencil size={17}/></button>}{local&&<ActivityPrivacy trip={trip} places={places||[]}/>}</div><p className="activity-detail-subtitle muted">{trip.activity} · {trip.date}</p><p className="muted"><MapPin size={14}/>{trip.location}</p></div></div>
  {trip.telemetryIncomplete&&<p className="notice">Route incomplete · Missing telemetry has not been reconstructed.</p>}
  {trip.sourceRecords&&<section className="notice"><h3>Recordings of this drive</h3><p>Both sources are preserved. Photos and notes stay with their originals.</p>{trip.sourceRecords.map(s=><button key={s.id} className="secondary" onClick={()=>onSource?.(s)}>View {s.source==='tesla'?'Tesla':'iPhone'} recording</button>)}</section>}
- {trip.route.length?<JourneyMap journeys={[pointCount>=2?fullPreview:trip]} trimRange={local&&pointCount>=2?{start:trimStart,end:trimEnd,points:trip.points}:null} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {route.length?<JourneyMap journeys={[pointCount>=2?fullPreview:trip]} trimRange={local&&pointCount>=2?{start:trimStart,end:trimEnd,points}:null} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
  {trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
   <h2>Route shown on map</h2>
   <p className="muted small-copy">Choose which part of this recording appears on the map. Original GPS points are kept. The map above updates as you drag.</p>
