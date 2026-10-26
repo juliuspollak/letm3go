@@ -125,10 +125,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
               location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
               abs(location.timestamp.timeIntervalSince1970-now) < 25 else {return}
         let speed=location.speed >= 0 ? min(250,location.speed*3.6) : 0
+        let speedValue: Any = location.speed >= 0 ? speed as Any : NSNull()
         let payload:[String:Any]=["p_enabled":true,"p_latitude":location.coordinate.latitude,
                                   "p_longitude":location.coordinate.longitude,
                                   "p_accuracy":location.horizontalAccuracy,
-                                  "p_speed":location.speed >= 0 ? speed : NSNull()]
+                                  "p_speed":speedValue]
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data
