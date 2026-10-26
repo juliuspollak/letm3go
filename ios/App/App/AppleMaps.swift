@@ -303,7 +303,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
-        if kind=="family-live" {
+        if kind=="family-live" || kind=="friend-live" {
             let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
             marker.markerTintColor = .systemPurple
             marker.glyphImage=UIImage(systemName:"person.crop.circle.fill")
