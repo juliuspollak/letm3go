@@ -160,6 +160,11 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 button.addAction(UIAction { [weak self] _ in
                     guard let self=self,let parent=self.bridge?.viewController,parent.presentedViewController==nil else {return}
                     let controller=AppleMapController(content:content,picker:false)
+                    controller.completion={ [weak self] result in
+                        if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
+                            self?.notifyListeners("photoSelected",data:["photoID":photoID,"journeyID":journeyID])
+                        }
+                    }
                     let nav=UINavigationController(rootViewController:controller)
                     nav.modalPresentationStyle = .fullScreen
                     parent.present(nav,animated:true)
@@ -322,6 +327,19 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
 }
 
 extension AppleMapsPlugin: MKMapViewDelegate {
+    private func reportPhotoSelection(_ annotation:MKAnnotation?) {
+        guard let pin=annotation as? JourneyPin,
+              (pin.metadata["kind"] as? String)=="photo",
+              let photoID=pin.metadata["photoID"] as? String,
+              let journeyID=pin.metadata["journeyID"] as? String else {return}
+        notifyListeners("photoSelected",data:["photoID":photoID,"journeyID":journeyID])
+    }
+    public func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        reportPhotoSelection(view.annotation)
+    }
+    public func mapView(_ mapView:MKMapView,annotationView view:MKAnnotationView,calloutAccessoryControlTapped control:UIControl) {
+        reportPhotoSelection(view.annotation)
+    }
     public func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String ?? ""
