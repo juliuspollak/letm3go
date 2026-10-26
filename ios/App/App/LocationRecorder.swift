@@ -23,6 +23,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticSampling = AutomaticSampling()
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
+    // In-memory, short-lived native background sharing: off after restart or sign-out.
+    var liveShareToken: String?
+    var liveShareEndpoint: URL?
+    var liveShareApiKey: String?
+    var liveShareTokenExpiresAt: Double = 0
+    var liveShareLastSentAt: Double = 0
+    var liveShareInFlight = false
     var ownerID: String?
     var uiUnlocked = false
     var accountDeleting = false
@@ -105,6 +112,42 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     // Core Location has no getter for hardware GPS activity. Expose our real service
     // requests and OS pause callbacks, separately from permission/capability flags.
+    func disableLiveSharing() {
+        liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil
+        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false
+    }
+    func publishLivePosition(_ location: CLLocation) {
+        let now=Date().timeIntervalSince1970
+        guard uiUnlocked,!accountSuspended,!accountDeleting,
+              let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
+              now < liveShareTokenExpiresAt-60,!liveShareInFlight,
+              now-liveShareLastSentAt >= 25,
+              location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
+              abs(location.timestamp.timeIntervalSince1970-now) < 25 else {return}
+        let speed=location.speed >= 0 ? min(250,location.speed*3.6) : 0
+        let payload:[String:Any]=["p_enabled":true,"p_latitude":location.coordinate.latitude,
+                                  "p_longitude":location.coordinate.longitude,
+                                  "p_accuracy":location.horizontalAccuracy,
+                                  "p_speed":location.speed >= 0 ? speed : NSNull()]
+        guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
+        var request=URLRequest(url:endpoint)
+        request.httpMethod="POST";request.httpBody=data
+        request.timeoutInterval=12
+        request.setValue("application/json",forHTTPHeaderField:"Content-Type")
+        request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
+        request.setValue(apiKey,forHTTPHeaderField:"apikey")
+        liveShareInFlight=true
+        liveShareLastSentAt=now
+        URLSession.shared.dataTask(with:request){[weak self] _,response,error in
+            DispatchQueue.main.async {
+                guard let self=self else{return}
+                self.liveShareInFlight=false
+                if error != nil || !((response as? HTTPURLResponse).map{(200...299).contains($0.statusCode)} ?? false) {
+                    self.liveShareLastSentAt=Date().timeIntervalSince1970-15
+                }
+            }
+        }.resume()
+    }
     func startContinuousLocation(){
         updateIndicatorPolicy()
         if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingStartedAt=continuousStartedAt;gpsStartCount += 1;trackingEvent(gpsReason)}
@@ -181,6 +224,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let last=locations.last {lastLocationUpdateAt=last.timestamp.timeIntervalSince1970;lastLocationAccuracy=last.horizontalAccuracy>=0 ? last.horizontalAccuracy : nil}
         guard !accountSuspended else { return }
+        if let last=locations.last {publishLivePosition(last)}
         if active == nil { processAutomatic(locations); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970
@@ -277,6 +321,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "ManualRecorderPlugin"
     public let jsName = "ManualRecorder"
     public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "configureLiveSharing", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "savePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removePlace", returnType: CAPPluginReturnPromise),
@@ -351,6 +396,21 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             try storage.save(trip);r.trips[index]=trip
             call.resolve(["restored":true])
         } catch { call.reject("Could not restore photo safely.") }
+    } }
+    @objc func configureLiveSharing(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else {return}
+        let recorder=LocationRecorder.shared
+        if call.getBool("enabled") != true {recorder.disableLiveSharing();call.resolve();return}
+        guard let token=call.getString("accessToken"),token.count>100,
+              let rawURL=call.getString("endpoint"),let url=URL(string:rawURL),
+              url.scheme=="https",url.path.hasSuffix("/rest/v1/rpc/set_my_live_location"),
+              let apiKey=call.getString("apiKey"),!apiKey.isEmpty,
+              let expiry=call.getDouble("expiresAt"),expiry>Date().timeIntervalSince1970+90 else {
+            call.reject("Valid signed-in session required for background sharing.");return
+        }
+        recorder.liveShareToken=token;recorder.liveShareEndpoint=url
+        recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
+        call.resolve()
     } }
     @objc func getState(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(LocationRecorder.shared.snapshot()) } }
     @objc func requestPermission(_ call: CAPPluginCall) {
