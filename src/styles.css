@@ -421,3 +421,24 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .map-layer-popover{position:absolute;top:50px;right:0;width:min(225px,90%);display:grid;gap:3px;z-index:20;background:var(--surface);box-shadow:0 12px 35px #0002;border:1px solid var(--line);border-radius:18px;padding:7px}
 .map-layer-popover button{text-align:left;min-height:43px;padding:10px 14px;border-radius:10px;color:var(--ink);font-size:13px}.map-layer-popover button[aria-pressed=true]{background:var(--soft);color:var(--accent);font-weight:700}
 @media(max-width:760px){.map-social-explorer .journey-map.large{height:min(52dvh,580px)}.map-social-explorer .apple-map-frame{margin-bottom:12px}}
+
+/* Household setup: inviting family should not feel like configuring a database. */
+.household-simple{display:flex;flex-direction:column;gap:14px}
+.household-head{display:flex;gap:13px;align-items:center}
+.household-head h2{margin:0}
+.household-head-icon{width:46px;height:46px;border-radius:16px;display:grid;place-items:center;background:var(--soft);color:var(--accent);flex-shrink:0}
+.household-head .small-copy{margin:5px 0 0}
+.household-status{display:flex;align-items:flex-start;gap:9px;background:var(--soft);padding:12px 14px;border-radius:12px;font-size:12px;line-height:1.5}
+.household-status svg{flex-shrink:0;margin-top:1px}
+.household-main-actions{display:grid;gap:9px}
+.household-main-actions button{min-height:48px}
+.household-invite-card{display:grid;gap:11px;background:var(--soft);padding:16px;border-radius:14px}
+.household-invite-card code{white-space:normal;overflow-wrap:anywhere;user-select:all;font-size:13px}
+.household-invite-card button{justify-self:start}
+.household-invite-card small{color:var(--muted)}
+.household-reveal{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;padding:16px 4px;border-top:1px solid var(--line);color:var(--ink);font-size:14px;font-weight:700}
+.household-reveal span{display:grid;gap:5px}
+.household-reveal small{font-size:12px;font-weight:400;color:var(--muted)}
+.household-reveal[aria-expanded=true]>svg{transform:rotate(180deg)}
+.household-simple .household-garage{margin:0;padding:14px;border-radius:14px}
+.household-member-list{padding:12px 16px;border-radius:12px;background:var(--soft)}
