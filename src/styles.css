@@ -332,3 +332,17 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 .lightbox .photo-zoom-viewport{display:grid;place-items:center;max-width:95vw;width:100%;height:min(65dvh,680px);overflow:hidden;touch-action:none}
 .lightbox .photo-zoom-viewport .zoomable-photo{max-width:90vw;max-height:60dvh;pointer-events:auto}
+
+
+/* Dynamic Letm3go identity: one unbroken line of type, no width transitions. */
+.animated-wordmark.stable-wordmark{display:inline-flex!important;align-items:center;justify-content:flex-start;width:auto!important;min-width:0;max-width:100%;height:1.35em;letter-spacing:0!important;white-space:nowrap;color:var(--ink)!important}
+.stable-wordmark-inner{display:inline-flex;align-items:baseline;gap:0!important;white-space:nowrap;letter-spacing:-.045em;font-kerning:normal;animation:stable-wordmark-enter .3s ease-out both}
+.stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines){display:inline!important;width:auto!important;max-width:none!important;min-width:0!important;opacity:1!important;transform:none!important;flex:0 0 auto}
+.stable-wordmark-inner .stable-wordmark-accent{color:var(--accent)!important;-webkit-text-fill-color:var(--accent)!important}
+.stable-wordmark-inner .stable-wordmark-arrow{display:inline-flex;align-self:center;margin-left:.11em;color:var(--accent)!important;letter-spacing:0}
+.stable-wordmark-inner .stable-wordmark-arrow svg,.stable-wordmark-inner .stable-wordmark-arrow svg path{color:var(--accent)!important;stroke:var(--accent)!important}
+.stable-wordmark-inner .stable-wordmark-arrow svg{width:.92em;height:.92em;display:block}
+.stable-wordmark-lines{display:inline-flex;align-self:center;width:1em;height:1em;color:var(--accent)!important}
+.stable-wordmark-lines svg{width:100%;height:100%}
+@keyframes stable-wordmark-enter{from{opacity:.35;transform:translateY(2px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.stable-wordmark-inner{animation:none}}
