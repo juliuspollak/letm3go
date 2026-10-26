@@ -302,3 +302,30 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .diagnostic-stats span{min-width:0;overflow-wrap:anywhere}
 
 .home-presence-status{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;background:var(--soft);border-radius:12px;margin:14px 0}.home-presence-status>div{min-width:0}.home-presence-status .secondary{flex:none}
+
+
+/* Stable wordmark spacing and consistent accent on the digit and arrow. */
+.playful-wordmark .wordmark-motion{gap:0.035em;letter-spacing:0;min-width:0}
+.playful-wordmark .playful-core{overflow:visible!important;flex:0 0 auto}
+.playful-wordmark .playful-core.is-shown{width:.69em!important;max-width:.69em!important;margin-inline:.035em}
+.playful-wordmark .playful-m.is-shown{max-width:.82em!important}
+.playful-wordmark .playful-go.is-shown{max-width:1.3em!important}
+.playful-wordmark .playful-core-digit{color:var(--accent)!important}
+.playful-wordmark .playful-arrow.is-shown{max-width:1.3em!important}
+.playful-wordmark .playful-arrow .brand-mark{color:var(--accent)!important}
+/* Status is a fixed circular control even in narrow iPhone headers. */
+.top-actions .presence-toggle{display:grid;place-items:center;flex:0 0 36px;width:36px!important;height:36px!important;min-width:36px;min-height:36px;padding:0!important;aspect-ratio:1;border-radius:50%!important}
+.top-actions .presence-toggle svg{width:19px;height:19px}
+/* Keep uploaded photos from stretching the trip page or its grids. */
+.detail,.detail-story,.detail-story>div,.journey-photos,.photo-management,.photo-management form{min-width:0;max-width:100%}
+.detail-story{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.photo-strip{width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;padding-bottom:7px}
+.photo-strip button{flex:0 0 120px;min-width:120px;max-width:120px;display:block}
+.photo-strip img,.photo-management img{display:block;max-width:100%}
+.photo-management{grid-template-columns:repeat(2,minmax(0,1fr))}
+.photo-management form{overflow:hidden}
+@media(max-width:760px){.detail-story{grid-template-columns:minmax(0,1fr);gap:22px}.photo-management{grid-template-columns:minmax(0,1fr)}}
+/* Pinch and button zoom in the private photo viewer. */
+.lightbox .zoomable-photo{display:block;max-width:90vw;max-height:70dvh;width:auto;height:auto;object-fit:contain;transform-origin:center;touch-action:none;user-select:none}
+.lightbox .photo-zoom-controls{display:flex;gap:10px;align-items:center;justify-content:center;margin:9px 0}
+.lightbox .photo-zoom-controls button{border:1px solid #ffffff55;border-radius:10px;min-width:44px;min-height:44px;color:white}
