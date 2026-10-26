@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {tripDiagnostics} from './TripDiagnostics.jsx';
+import {tripDiagnostics} from '../lib/tripDiagnostics.js';
 it('identifies late GPS activation and gaps without inventing route points',()=>{
  const trip={startedAt:100,endedAt:290,distanceMeters:500,points:[
  {latitude:-34.5,longitude:150.8,timestamp:145,accuracy:12},
