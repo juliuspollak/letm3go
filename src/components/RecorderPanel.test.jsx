@@ -27,3 +27,16 @@ it('routes pause to native state and requires finish confirmation',()=>{
  expect(screen.getByRole('button',{name:'Save activity'})).toBeInTheDocument();
 });
 it('groups cycling styles under Cycling and passes the precise subtype to native recording',()=>{const run=vi.fn();render(<RecorderPanel state={{active:null,permission:'always',storageReady:true}} run={run} vehicles={[]}/>);expect(screen.queryByRole('button',{name:'Road'})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Cycling',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Mountain biking'}));expect(screen.getByRole('button',{name:'Cycling',exact:true})).toHaveAttribute('aria-pressed','true');fireEvent.click(screen.getByRole('button',{name:'Start mountain biking'}));expect(run).toHaveBeenLastCalledWith('start','MTB','');fireEvent.click(screen.getByRole('button',{name:'Road',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Start road cycling'}));expect(run).toHaveBeenLastCalledWith('start','Road cycling','');});
+
+it('lets the rider select their own e-bike or regular bicycle without showing cars',()=>{
+ const run=vi.fn();
+ render(<RecorderPanel state={{active:null,permission:'always',storageReady:true}} run={run} vehicles={[{id:'1',name:'Road bike',category:'bicycle'},{id:'2',name:'E-MTB',category:'ebike'},{id:'3',name:'Family Tesla',category:'car'}]}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Cycling',exact:true}));
+ const selector=screen.getByRole('combobox');
+ expect(screen.getByRole('option',{name:'Road bike'})).toBeInTheDocument();
+ expect(screen.getByRole('option',{name:'E-MTB'})).toBeInTheDocument();
+ expect(screen.queryByRole('option',{name:'Family Tesla'})).not.toBeInTheDocument();
+ fireEvent.change(selector,{target:{value:'E-MTB'}});
+ fireEvent.click(screen.getByRole('button',{name:'Start cycling'}));
+ expect(run).toHaveBeenCalledWith('start','Cycling','E-MTB');
+});
