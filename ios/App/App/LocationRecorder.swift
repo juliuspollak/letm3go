@@ -115,6 +115,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func disableLiveSharing() {
         liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil
         liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false
+        refreshAutomaticMonitoring()
     }
     func publishLivePosition(_ location: CLLocation) {
         let now=Date().timeIntervalSince1970
@@ -411,6 +412,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         recorder.liveShareToken=token;recorder.liveShareEndpoint=url
         recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
+        recorder.refreshAutomaticMonitoring()
         call.resolve()
     } }
     @objc func getState(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(LocationRecorder.shared.snapshot()) } }
