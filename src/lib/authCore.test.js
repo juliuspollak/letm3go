@@ -20,3 +20,11 @@ it('keeps a server-controlled pending deletion outside normal private applicatio
  const user={...session.user,app_metadata:{deletion_requested:true}};const options=setup({data:{user}});
  expect((await resolveIdentity(options)).status).toBe('deletionPending');
 });
+
+it('unlocks only a previously verified local account when restoring without reception',async()=>{
+ const options=setup();
+ const result=await resolveIdentity({...options,offlineOnly:true});
+ expect(result.status).toBe('offline');
+ expect(options.client.auth.getUser).not.toHaveBeenCalled();
+ expect(options.store.bind).toHaveBeenCalledWith(session,undefined,{offline:true});
+});
