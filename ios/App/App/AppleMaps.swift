@@ -87,6 +87,12 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     // Draw normal pins first; full-size photo thumbnails must sit above them.
                     for pin in content.pins where (pin["kind"] as? String) != "photo" {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
+                        if (pin["kind"] as? String)=="family-live" {
+                            let bounds=CGRect(x:p.x-12,y:p.y-12,width:24,height:24)
+                            UIColor.systemPurple.setFill();ctx.fillEllipse(in:bounds)
+                            UIColor.white.setStroke();ctx.setLineWidth(3);ctx.strokeEllipse(in:bounds)
+                            continue
+                        }
                         if (pin["kind"] as? String)=="home-presence" {
                             let count=max(1,min(30,pin["count"] as? Int ?? 1))
                             let bounds=CGRect(x:p.x-21,y:p.y-21,width:42,height:42)
@@ -202,6 +208,13 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
+        if kind=="family-live" {
+            let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
+            marker.markerTintColor = .systemPurple
+            marker.glyphImage=UIImage(systemName:"person.crop.circle.fill")
+            marker.canShowCallout=true
+            return marker
+        }
         if kind=="home-presence" {
             let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
             marker.markerTintColor = .systemPurple
