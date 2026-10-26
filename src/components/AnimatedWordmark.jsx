@@ -1,8 +1,8 @@
 import {useEffect,useState} from 'react';
 import BrandMark from './BrandMark.jsx';
 
-// Start with the original full logo, collapse into its three-line mark,
-// and only then play with the name. Always return to the full identity.
+// Render each animated variation as a single inline word, never as overlapping
+// independently animated width containers. The full name remains the default.
 const variations=[
  {text:'letm3go',duration:5300},
  {text:'lines',duration:1500},
@@ -25,6 +25,13 @@ export default function AnimatedWordmark(){
   restart();preference.addEventListener?.('change',restart);
   return()=>{window.clearTimeout(timeout);preference.removeEventListener?.('change',restart);};
  },[]);
- const value=variations[index].text,lines=value==='lines',hasM=value.includes('m'),has3=value.includes('3'),hasGo=value.endsWith('go');
- return <span className="animated-wordmark playful-wordmark" role="img" aria-label="letm3go"><span className="wordmark-motion" aria-hidden="true"><span className={`playful-part playful-let ${!lines?'is-shown':''}`}>let</span><span className={`playful-part playful-m ${hasM?'is-shown':''}`}>m</span><span className={`playful-core ${has3||lines?'is-shown':''}`}><span className={`playful-core-digit ${has3?'is-shown':''}`}>3</span><svg className={`playful-core-lines ${lines?'is-shown':''}`} viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M6 8h20M6 16h20M6 24h20" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/></svg></span><span className={`playful-part playful-go ${hasGo?'is-shown':''}`}>go</span><span className={`playful-part playful-arrow ${value==='letm3go'?'is-shown':''}`}><BrandMark/></span></span></span>;
+ const value=variations[index].text;
+ return <span className="animated-wordmark stable-wordmark" role="img" aria-label="letm3go">
+  <span className="stable-wordmark-inner" aria-hidden="true" key={value}>
+   {value==='lines'?<span className="stable-wordmark-lines"><svg viewBox="0 0 32 32" fill="none"><path d="M6 8h20M6 16h20M6 24h20" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"/></svg></span>:<>
+    {Array.from(value).map((letter,i)=><span key={i} className={letter==='3'?'stable-wordmark-accent':undefined}>{letter}</span>)}
+    {value==='letm3go'&&<span className="stable-wordmark-arrow"><BrandMark/></span>}
+   </>}
+  </span>
+ </span>;
 }
