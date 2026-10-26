@@ -1,5 +1,4 @@
 name: Deploy Letm3go to TestFlight
-run-name: 'TestFlight • ${{ github.ref_name }} • ${{ inputs.upload_approved && \'Build + upload\' || \'Build only\' }}'
 on:
   workflow_dispatch:
     inputs:
