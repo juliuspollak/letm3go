@@ -61,12 +61,14 @@ it('opens distinct Home distance, duration and activity views with numeric sorti
  render(<App/>);
  const titles=()=>screen.getAllByRole('button',{name:/^Open (Longest|Newest)/}).map(button=>button.getAttribute('aria-label'));
  fireEvent.click(screen.getByRole('button',{name:/Today's distance:/}));
- fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
+ const filtersButton=screen.getByRole('button',{name:'Activity filters'});
+ if(filtersButton.getAttribute('aria-expanded')!=='true')fireEvent.click(filtersButton);
  expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('distance');
  expect(titles()).toEqual(['Open Longest distance','Open Longest time','Open Newest trip']);
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:/Recorded time:/}));
- fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
+ const filtersButton=screen.getByRole('button',{name:'Activity filters'});
+ if(filtersButton.getAttribute('aria-expanded')!=='true')fireEvent.click(filtersButton);
  expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('duration');
  expect(titles()).toEqual(['Open Longest time','Open Longest distance','Open Newest trip']);
  expect(screen.getByText('Today · 31 min recorded · Longest first')).toBeInTheDocument();
