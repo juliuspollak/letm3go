@@ -190,16 +190,17 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
             guard error==nil,let place=results?.first else {call.reject("Place recognition is unavailable offline. It will retry later.");return}
             let locality=place.locality ?? place.subLocality ?? place.administrativeArea ?? ""
-            let request=MKLocalPointsOfInterestRequest(center:location.coordinate,radius:150)
+            let explore=call.getBool("explore")==true
+            let request=MKLocalPointsOfInterestRequest(center:location.coordinate,radius:explore ? 400 : 150)
             let search=MKLocalSearch(request:request)
             search.start { response,_ in
                 _ = search
                 guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
-                let nearby=(response?.mapItems ?? []).filter{($0.placemark.location?.distance(from:location) ?? .infinity)<=100}.sorted{($0.placemark.location?.distance(from:location) ?? .infinity)<($1.placemark.location?.distance(from:location) ?? .infinity)}
+                let nearby=(response?.mapItems ?? []).filter{($0.placemark.location?.distance(from:location) ?? .infinity)<=(explore ? 200 : 100)}.sorted{($0.placemark.location?.distance(from:location) ?? .infinity)<($1.placemark.location?.distance(from:location) ?? .infinity)}
                 let charger=nearby.contains{$0.pointOfInterestCategory == .evCharger}
                 let firstDistance=nearby.first?.placemark.location?.distance(from:location) ?? .infinity
                 let nextDistance=nearby.dropFirst().first?.placemark.location?.distance(from:location) ?? .infinity
-                let confident=firstDistance<=40 && nextDistance-firstDistance>=25
+                let confident=explore ? (firstDistance<=150 && nextDistance-firstDistance>=35) : (firstDistance<=40 && nextDistance-firstDistance>=25)
                 var categories:[String]=[]
                 if confident,let category=nearby.first?.pointOfInterestCategory {
                     if category == .park || category == .nationalPark {categories=["Park","Nature","Outdoors"]}
