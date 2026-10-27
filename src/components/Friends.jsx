@@ -1,8 +1,10 @@
+import InviteSharingPrompt from './InviteSharingPrompt.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
 import {Users,UserPlus,UserMinus,Share2,Copy,MessageCircle} from 'lucide-react';
-export default function Friends(){
+export default function Friends({onShareLive}){
+ const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  const [friends,setFriends]=useState([]),[invite,setInvite]=useState(''),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
  const rpc=useCallback(async(name,params)=>{if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;},[]);
  const refresh=useCallback(async()=>{try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}},[rpc]);
@@ -15,10 +17,11 @@ export default function Friends(){
  <p className="muted small-copy">Friends are separate from household members. Adding a friend never shares vehicles, routes or private history. Only an explicitly shared, unexpired status may appear in their feed.</p>
  {friends.map(f=><div key={f.user_id} className="home-friend-row"><PersonAvatar name={f.display_name}/><span><strong>{f.display_name}</strong></span><button type="button" className="icon-button" aria-label={`Remove friend ${f.display_name}`} disabled={busy} onClick={()=>action(async()=>{await rpc('remove_friend',{p_friend:f.user_id});await refresh();})}><UserMinus size={17}/></button></div>)}
  {!friends.length&&<p className="muted small-copy">No friends added yet.</p>}
+ {inviteAccepted&&<InviteSharingPrompt kind="friend" busy={shareBusy} error={shareError} onClose={()=>{setInviteAccepted(false);setShareError('');}} onEnable={async()=>{setShareBusy(true);setShareError('');try{if(!onShareLive)throw new Error('Location sharing is unavailable.');await onShareLive();setInviteAccepted(false);setFeedback('Live location sharing is on. You can turn it off whenever you like.');}catch(e){setShareError(e.message||'Could not enable sharing.');}finally{setShareBusy(false);}}}/>}
  <button type="button" className="secondary full" disabled={busy} onClick={()=>action(async()=>setInvite(await rpc('create_friend_invite')))}><UserPlus size={16}/> Generate invitation</button>
  {invite&&<div className="friend-invite-actions"><p className="muted small-copy">Invite ready · expires in 48 hours. Send it by Messages, WhatsApp or another app.</p><button type="button" className="primary full" onClick={shareInvite}><Share2 size={17}/> Share invitation</button><button type="button" className="secondary full" onClick={copyInvite}><Copy size={16}/> Copy invitation</button><a className="secondary full friend-sms-link" href={`sms:&body=${encodeURIComponent(inviteText)}`}><MessageCircle size={16}/> Send via SMS</a><details><summary>Show invitation code</summary><code className="friend-invite-code">{invite}</code></details></div>}
  {feedback&&<p role="status" className="notice">{feedback}</p>}
- <form onSubmit={e=>{e.preventDefault();void action(async()=>{await rpc('accept_friend_invite',{p_token:code.trim()});setCode('');await refresh();});}}>
+ <form onSubmit={e=>{e.preventDefault();void action(async()=>{await rpc('accept_friend_invite',{p_token:code.trim()});setCode('');await refresh();setInviteAccepted(true);});}}>
   <label>Have an invitation? Paste the code<input value={code} onChange={e=>setCode(e.target.value)} required placeholder="Paste their private code"/></label><button className="secondary full" disabled={busy}>Add friend</button>
  </form>
  {error&&<p role="alert" className="error">{error}</p>}
