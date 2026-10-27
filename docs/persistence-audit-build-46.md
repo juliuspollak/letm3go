@@ -182,18 +182,31 @@ after the server or function acknowledged it.
   SQL) for the 15 previously unrecorded versions plus the two new ones, so a
   future `db push` cannot replay them.
 
-### Cloudflare R2 (not verified end-to-end)
+### Cloudflare R2 (verified end-to-end, deployed project)
 
-- The `journeys` function is deployed and JWT-guarded (HTTP 401 without a token).
+Re-run on 27 October 2026 against `subobfmlkfqcsaekygat` with a real authenticated
+session (temporary probe accounts, removed afterwards through the account-deletion
+endpoint, which also deletes their objects).
+
+- The `journeys` function rejects unauthenticated callers (HTTP 401).
 - The R2 secrets exist on the project (`R2_ENDPOINT`, `R2_ACCESS_KEY_ID`,
   `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_REGION`); values were never
-  printed or read — only the secret **names** were listed.
-- **No authenticated upload/download was executed.** `media_assets` currently has
-  0 rows, so even the trip-photo path has no live evidence in this project.
-  Claiming otherwise on the strength of unit tests would be wrong.
-- The collection photo key is deterministic and owner-bound, so a retry can only
-  overwrite its own object; the database check makes cross-account references
-  impossible even if the client were hostile.
+  printed — only the secret **names** were listed.
+- **Collection photo:** `backup_collection_item` (revision 1) → `collectionPhoto`
+  wrote `{owner}/collection/{itemId}.jpg` (HTTP 200) → `collectionDownload`
+  returned a 60 s signed URL → the object came back, the GPS `Exif` payload had
+  been stripped by `sanitizeJPEG`, and the body still starts with `ff d8`.
+- **Trip photo:** `backup_private_activity` → `upload` → `media_assets` row
+  written with the matching object key → `download` signed URL → the stored 28-byte
+  JPEG came back with the `Exif` payload removed. Re-sending the same `mediaID`
+  returned `alreadyUploaded: true` (no second object, no second row).
+- **Private bucket:** the unsigned object URL is refused by R2
+  (`400 InvalidArgument / Authorization`), so nothing under the prefix is public.
+- **Owner isolation:** a second account gets `404 Photo unavailable` on both
+  download actions, sees 0 rows in `collection_items`/`account_settings`, and
+  cannot write a row for another owner (`Authenticated backup owner mismatch`).
+- The collection key is still deterministic and owner-bound, so a retry can only
+  overwrite its own object; the database check rejects cross-account references.
 
 ### Levels of evidence actually obtained
 
@@ -203,9 +216,37 @@ after the server or function acknowledged it.
 | Unit tests (jsdom, mocked) | Yes — 79 files / 387 tests |
 | Local database (PGlite, all migrations) | Yes — 8 files / 48 tests |
 | Deployed Supabase (RLS + RPC, rolled back) | Yes |
-| Deployed Supabase (authenticated app session) | No — no test account was created |
-| Real Cloudflare R2 upload/download | **No** |
+| Deployed Supabase (authenticated app session) | **Yes** — probe accounts, live REST + edge functions |
+| Real Cloudflare R2 upload/download | **Yes** — both photo paths, private bucket, EXIF stripped |
+| In-app account deletion (live) | **Yes** — `deleted:true`, auth user and R2 prefix gone |
 | Physical iPhone | **No** — simulator build only |
+
+All probe data was removed afterwards: `auth.users` back to 3, `activities` still
+24, and `collection_items`, `account_settings`, `media_assets` and
+`account_deletion_requests` back to 0 rows with no orphans.
+
+How this was re-verified without touching the app (Management API, read-only
+except for the probe accounts):
+
+1. `supabase_migrations.schema_migrations` — 20 versions recorded, including both
+   build-46 migrations; `20261026000000` absent.
+2. `information_schema`/`pg_proc`/`pg_trigger`/`pg_policy` compared against every
+   `create table|function|trigger|policy|add column|add constraint` in
+   `supabase/migrations/*.sql` — 20 of 21 files match object-for-object.
+3. `/v1/projects/{ref}/functions` — `journeys`, `tesla`, `account` only.
+4. `/v1/projects/{ref}/secrets` — names only; `FLEET_RECEIVER_HOST` missing,
+   which is why Tesla setup answers 503 by design.
+
+### Real account traffic observed during the audit
+
+Independently of the probe accounts, one of the three pre-existing accounts wrote
+its own rows while this audit was running: a `collection_items` row
+(`category = car`, no photo yet) at 19:29:47 UTC and `account_settings`
+`revision = 1` at 19:29:46 UTC, followed by activity updates at 19:35 UTC. That
+is the build-46 client backing up a real Collection item and settings payload to
+this project, not a synthetic test. `media_assets` stayed at 0, so no real photo
+had been uploaded at that point — the photo paths are covered by the probe
+evidence above, not by real-account traffic.
 
 ## E. Fresh-device recovery
 
@@ -216,9 +257,9 @@ It is not automatic, and there is no silent background download by design.
 | Question | Answer |
 |---|---|
 | Trips and GPS routes recovered? | Yes (existing path, unchanged) |
-| Trip photos recovered? | Yes in code; **no live R2 proof yet** |
+| Trip photos recovered? | Yes — proved live (signed download returns the stored JPEG) |
 | Collection items, categories and attributes? | Yes |
-| Collection photos? | Yes after Restore; same R2 caveat |
+| Collection photos? | Yes after Restore — proved live end-to-end |
 | Trip equipment links still resolve? | Yes — same stable item UUIDs; proved **db-live** |
 | Does renaming an item break a link? | No — links are id-based, names are fallback labels |
 | Tesla vehicles duplicated? | No — the merge matches `tesla_vehicle_id` |
@@ -235,6 +276,7 @@ It is not automatic, and there is no silent background download by design.
    - `20261101000000_collection_and_settings_backup.sql`
    - `20261101010000_activity_view_metadata.sql`
    - `journeys` edge function (adds `collectionPhoto` / `collectionDownload`)
+   - `account` edge function (deployed 27 Oct 2026, version 1, status `ACTIVE`)
    - `migration repair` for the two new versions (metadata only)
 2. **Still required — needs your explicit approval**:
    apply `20261026000000_fleet_telemetry.sql` (or let `db push` apply it now that
@@ -242,11 +284,18 @@ It is not automatic, and there is no silent background download by design.
    `activities.vehicle_id`, triggers, RLS) and passes the local database suite,
    but it enables Tesla telemetry, so it was left for approval. Until then
    `tesla-recording` `feed` fails and Trips shows “Tesla journey sync is
-   unavailable”.
-3. **Account deletion**: the `account` and `health` functions are not deployed
-   (HTTP 404). Deploy `account` before promising in-app deletion:
-   `npm run supabase -- functions deploy account --project-ref subobfmlkfqcsaekygat`
-   (requires `APPLE_*`, `ACCOUNT_CREDENTIAL_KEY` and R2 secrets — all present).
+   unavailable”. Verified read-only on 27 Oct 2026: **none** of the 26 objects in
+   that migration exist in `subobfmlkfqcsaekygat` (no `fleet_*` tables, no
+   `activities.vehicle_id`, no fleet functions/policies/triggers), and the
+   migration version is absent from `supabase_migrations.schema_migrations`.
+   Deploying the SQL alone would not help: `tesla-recording`, `telemetry-ingest`
+   and `health` are also not deployed, and `FLEET_RECEIVER_HOST` is not set, so
+   setup intentionally answers “awaits operator infrastructure and billing
+   approval”. Nothing user-facing depends on this today.
+3. **Account deletion**: `account` is deployed and verified live
+   (`deleted:true`, auth user removed, R2 prefix removed, second sign-in refused
+   401/400, unauthenticated call 401, `confirmation` required). The `health`
+   function is only used by the Tesla receiver stack and is still not deployed.
 4. **Client build**: `VITE_ENABLE_PRIVATE_BACKUP=true` must be in the build-time
    environment (it is in `.env.local`). Build 46 is already synced into `ios/`.
 5. **No new secrets, buckets or workers are required** for this change: it reuses
@@ -264,11 +313,36 @@ It is not automatic, and there is no silent background download by design.
 | `npm run ios:sync` | Pass |
 | `npm run ios:build` | **BUILD SUCCEEDED** (simulator) |
 
+### Live verification matrix (27 October 2026, deployed project)
+
+Every row was executed against `subobfmlkfqcsaekygat` with a real JWT; probe
+accounts were deleted at the end, and the deletion itself cleans their R2 prefix.
+
+| Check | Result |
+|---|---|
+| Collection item + photo written, then read back by the restore query | Pass (revision 1; photo 28 bytes) |
+| Collection `attributes` (string map) and `archived` survive restore | Pass |
+| Trip + `equipment` + `view_metadata` written, then read back by the restore query | Pass (both values match) |
+| Trip photo `media_assets` row and signed download | Pass |
+| Settings (`displayName`, `distanceUnit`, `notificationsEnabled`, `bookmarks`, `archivedTrips`, `journeyGrouping`) round-trip | Pass |
+| Stale `p_expected_revision` on trip / Collection / settings | Rejected: `Cloud activity conflict`, `Cloud collection item conflict`, `Cloud settings conflict` |
+| Repeated fingerprint (retry after a dropped response) | Idempotent — same revision, no duplicate row |
+| `delete_collection_item` then re-backup of the same id | Tombstone wins: `refusing resurrection` |
+| Cloud trip deletion then re-backup of the same id | `Activity was deleted` |
+| Profile avatar write, reload, non-image rejection, cross-account write | Pass / pass / rejected by `profiles_avatar_check` / 0 rows affected |
+| Unauthenticated `journeys` and `account` calls | 401 both |
+
+Where the local suites and the live project disagree, nothing was found: 20 of the
+21 migrations match the live schema object-for-object, the only gap being the
+fleet migration described in §F.2.
+
 ### What still needs a human, on a device
 
 1. Sign in on an iPhone built with `VITE_ENABLE_PRIVATE_BACKUP=true`. Add a
-   Collection item with a photo, assign it to a trip, archive a trip and
-   favourite another. Tap **Sync now** and confirm no error.
+   Collection item **with a photo**, assign it to a trip, archive a trip and
+   favourite another. Tap **Sync now** and confirm no error. (Item + settings
+   synchronisation is already happening on a real account — see §D — but no
+   real photo has been uploaded yet.)
 2. On a second iPhone (or after deleting the app), sign in and tap
    **Restore journeys, Collection and photos from cloud**. Check the item, its
    photo, the trip's equipment chip, and the archived/favourite states.

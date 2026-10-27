@@ -85,6 +85,23 @@ A Collection photo key is not free-form: the database requires
 `owner_id || '/collection/' || id || '.jpg'`, so a row can never be pointed at
 another account's object.
 
+### 6.1 Deployed and verified (27 October 2026)
+
+`account` (version 1, `ACTIVE`) and `journeys` (version 12) are live on
+`subobfmlkfqcsaekygat`, next to `tesla` (version 2). A live probe with temporary
+accounts proved:
+
+- both photo paths (trip + Collection) upload to the private bucket and download
+  through a 60 s signed URL, with EXIF already stripped;
+- an unsigned object URL is refused by R2, and a second account can neither read
+  nor overwrite the rows or the objects;
+- account deletion returns `deleted:true`, removes the auth user and every object
+  under `{owner}/`, and afterwards refuses both sign-in and re-use;
+- stale revisions are rejected for trips, Collection items and settings, retries
+  with the same fingerprint are idempotent, and deleted rows stay deleted.
+
 Still outstanding in this project: `20261026000000_fleet_telemetry.sql` is not
-applied (Tesla fleet journeys fail), and the `account` edge function used for
-in-app account deletion is not deployed (HTTP 404).
+applied and the `tesla-recording`, `telemetry-ingest` and `health` functions are
+not deployed, so Tesla fleet journeys remain unavailable (see
+`persistence-audit-build-46.md` §F.2). Nothing else is missing: the other 20
+migrations match the live schema.
