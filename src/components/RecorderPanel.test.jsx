@@ -27,6 +27,38 @@ it('routes pause to native state and requires finish confirmation',()=>{
  expect(screen.getByRole('button',{name:'Save activity'})).toBeInTheDocument();
 });
 it('groups cycling styles under Cycling and passes the precise subtype to native recording',()=>{const run=vi.fn();render(<RecorderPanel state={{active:null,permission:'always',storageReady:true}} run={run} vehicles={[]}/>);expect(screen.queryByRole('button',{name:'Road'})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Cycling',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Mountain biking'}));expect(screen.getByRole('button',{name:'Cycling',exact:true})).toHaveAttribute('aria-pressed','true');fireEvent.click(screen.getByRole('button',{name:'Start mountain biking'}));expect(run).toHaveBeenLastCalledWith('start','MTB','');fireEvent.click(screen.getByRole('button',{name:'Road',exact:true}));fireEvent.click(screen.getByRole('button',{name:'Start road cycling'}));expect(run).toHaveBeenLastCalledWith('start','Road cycling','');});
+it('lets the driver finish an automatic journey that has not confirmed arrival',()=>{
+ const run=vi.fn().mockResolvedValue({trips:[]});
+ render(<RecorderPanel state={{active:null,automaticTrip:{activity:'Driving',source:'device',state:'recording',startedAt:1000,points:[],durationSeconds:600,distanceMeters:5000},permission:'always',storageReady:true}} run={run} vehicles={[]}/>);
+ expect(screen.getByText('Driving · detected automatically')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Finish automatic journey'}));
+ expect(run).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'Save journey'}));
+ expect(run).toHaveBeenCalledWith('transition','finish');
+});
+it('explains that a stopped journey continues when movement resumes nearby',()=>{
+ const run=vi.fn();
+ render(<RecorderPanel state={{active:null,automaticState:'settled',automaticTrip:{activity:'Walking',source:'device',state:'paused',startedAt:1000,points:[],durationSeconds:900,distanceMeters:1200},permission:'always',storageReady:true}} run={run} vehicles={[]}/>);
+ expect(screen.getByText('Walking · detected automatically')).toBeInTheDocument();
+ expect(screen.getByText(/move again near here and this continues in the same journey/)).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Finish automatic journey'})).toBeInTheDocument();
+});
+it('hides the automatic journey panel once a manual activity is active',()=>{
+ const run=vi.fn();
+ render(<RecorderPanel state={{active:{activity:'Walking',source:'device',state:'recording',startedAt:1000,points:[],durationSeconds:20,distanceMeters:0},automaticTrip:{activity:'Driving',state:'recording',points:[],durationSeconds:600,distanceMeters:5000},permission:'whenInUse'}} run={run} vehicles={[]}/>);
+ expect(screen.queryByRole('button',{name:'Finish automatic journey'})).not.toBeInTheDocument();
+});
+it('does not carry a pending automatic finish into the manual activity panel',()=>{
+ const run=vi.fn().mockResolvedValue({trips:[]});
+ const {rerender}=render(<RecorderPanel state={{active:null,automaticTrip:{activity:'Driving',source:'device',state:'recording',startedAt:1000,points:[],durationSeconds:600,distanceMeters:5000},permission:'always',storageReady:true}} run={run} vehicles={[]}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Finish automatic journey'}));
+ expect(screen.getByRole('button',{name:'Save journey'})).toBeInTheDocument();
+ rerender(<RecorderPanel state={{active:{activity:'Walking',source:'device',state:'recording',startedAt:1000,points:[],durationSeconds:20,distanceMeters:0},permission:'always',storageReady:true}} run={run} vehicles={[]}/>);
+ expect(screen.getByRole('button',{name:'Finish'})).toBeInTheDocument();
+ expect(screen.queryByText('Finish and save this activity on your iPhone?')).not.toBeInTheDocument();
+});
+
+
 
 it('lets the rider select their own e-bike or regular bicycle without showing cars',()=>{
  const run=vi.fn();

@@ -78,8 +78,8 @@ corrected.applyPrediction(Classification(predicted:"Driving",confidence:"high",e
 check(corrected.activity == "Hiking", "user correction survives prediction")
 var transition=DrivingTransition()
 let vehicleMotion=MotionEvidence(types:["Driving"],confidence:"high",timestamp:100,continuous:true)
-func drivingFix(_ latitude: Double, _ time: Double, speed: Double = 12) -> GPSPoint {
-    GPSPoint(latitude:latitude,longitude:151,timestamp:time,accuracy:8,altitude:0,speed:speed)
+func drivingFix(_ latitude: Double, _ time: Double, speed: Double = 12, accuracy: Double = 8) -> GPSPoint {
+    GPSPoint(latitude:latitude,longitude:151,timestamp:time,accuracy:accuracy,altitude:0,speed:speed)
 }
 check(!transition.observe(drivingFix(-33,100),motion:vehicleMotion,now:100),"one driving fix cannot split walking")
 check(!transition.observe(drivingFix(-32.998,110),motion:vehicleMotion,now:110),"two driving fixes cannot split walking")
@@ -91,6 +91,40 @@ check(!transition.observe(drivingFix(-32.999,210),motion:freshDriving,now:210),"
 check(transition.observe(drivingFix(-32.998,223),motion:freshDriving,now:223),"sustained driving confirms walking to driving transition")
 transition.reset()
 check(!transition.observe(drivingFix(-33,300),motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:300),now:300),"walking motion cannot trigger a vehicle transition")
+
+// iOS reports overlapping flags (Driving + Stationary), medium confidence and
+// coarse fixes while driving. None of these may discard a real transition.
+transition.reset()
+let overlappingDriving=MotionEvidence(types:["Driving","Stationary"],confidence:"medium",timestamp:400)
+check(!transition.observe(drivingFix(-33,400,speed:9,accuracy:30),motion:overlappingDriving,now:400),"overlapping driving flags start a candidate")
+check(!transition.observe(drivingFix(-32.9988,412,speed:9,accuracy:30),motion:overlappingDriving,now:412),"two overlapping-flag fixes cannot split")
+check(transition.observe(drivingFix(-32.9976,426,speed:9,accuracy:30),motion:overlappingDriving,now:426),"medium-confidence overlapping driving motion still splits walking")
+transition.reset()
+let preciseDriving=MotionEvidence(types:["Driving"],confidence:"high",timestamp:500)
+check(!transition.observe(drivingFix(-33,500,accuracy:10),motion:preciseDriving,now:500),"precise driving chain starts")
+check(!transition.observe(drivingFix(-32.999,510,accuracy:120),motion:preciseDriving,now:510),"a single unusable fix is ignored")
+check(transition.candidates.count == 1,"an unusable fix does not erase the driving candidate chain")
+check(!transition.observe(drivingFix(-32.9978,520),motion:preciseDriving,now:520),"chain resumes after an unusable fix")
+check(transition.observe(drivingFix(-32.9966,530),motion:preciseDriving,now:530),"sustained driving after a poor fix confirms the split")
+transition.reset()
+let walkingAtWheel=MotionEvidence(types:["Walking"],confidence:"high",timestamp:600)
+check(!transition.observe(drivingFix(-33.01,600,speed:10),motion:walkingAtWheel,now:600),"GPS-only transition needs a full chain")
+check(!transition.observe(drivingFix(-33.0088,612,speed:10),motion:walkingAtWheel,now:612),"two GPS fixes cannot override walking motion")
+check(transition.observe(drivingFix(-33.0076,626,speed:10),motion:walkingAtWheel,now:626),"sustained GPS speed splits when Core Motion reports walking")
+transition.reset()
+let slowUnconfirmed=MotionEvidence(types:["Walking"],confidence:"high",timestamp:700)
+check(!transition.observe(drivingFix(-33,700,speed:5),motion:slowUnconfirmed,now:700),"uncorroborated 5 m/s fix is rejected")
+check(!transition.observe(drivingFix(-32.9965,715,speed:5),motion:slowUnconfirmed,now:715),"uncorroborated slow movement stays pending")
+check(!transition.observe(drivingFix(-32.993,730,speed:5),motion:slowUnconfirmed,now:730),"5 m/s without automotive motion is not a drive")
+check(transition.candidates.isEmpty,"5 m/s without automotive motion is never buffered as driving")
+// A brisk e-bike reaches driving speeds; fresh cycling motion must win.
+transition.reset()
+let eBike=MotionEvidence(types:["Cycling"],confidence:"high",timestamp:800)
+check(!transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800),"fresh cycling motion rejects a fast fix")
+check(!transition.observe(drivingFix(-32.9988,812,speed:8),motion:eBike,now:812),"fresh cycling motion rejects a fast chain")
+check(!transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826),"an e-bike at driving speed is not split into a drive")
+check(transition.candidates.isEmpty,"cycling motion is never buffered as a driving transition")
+check(AutomaticDetector.cyclingMotion(eBike,now:801),"fresh cycling motion is credible")
 var detector = AutomaticDetector()
 check(detector.observe(point(-33,100),motion:motion,manualActive:false,now:100) == nil,"departure candidate")
 check(detector.observe(point(-32.9997,115),motion:motion,manualActive:false,now:115) == nil,"short movement ignored")
@@ -162,22 +196,50 @@ check(!sampling.needsGPS(automaticAvailable:false,manualRecording:false,automati
 check(sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:true,now:500),"recorded journey survives probe expiry")
 check(sampling.needsGPS(automaticAvailable:false,manualRecording:true,automaticRecording:false,now:500),"manual recording is independent of automatic preference")
 var jitterArrival=AutomaticDetector()
-jitterArrival.phase="recording";jitterArrival.lastMovementAt=100; jitterArrival.lastValidFixAt=280
+jitterArrival.phase="recording";jitterArrival.lastMovementAt=100; jitterArrival.lastValidFixAt=220
 jitterArrival.noteMotion(MotionEvidence(types:["Stationary"],confidence:"high",timestamp:100),now:100)
-jitterArrival.lastMovementAt=270
-check(jitterArrival.shouldArrive(now:280),"stationary evidence confirms arrival despite GPS jitter updating the movement anchor")
-check(!jitterArrival.shouldArrive(now:279),"stationary arrival still observes the three-minute threshold")
-jitterArrival.noteMotion(MotionEvidence(types:["Driving"],confidence:"high",timestamp:280),now:280)
-check(!jitterArrival.shouldArrive(now:281),"fresh movement cancels stationary arrival")
-check(!jitterArrival.shouldArrive(now:326),"stale GPS cannot trigger arrival even with stationary evidence")
-var parkWalk=AutomaticDetector()
-parkWalk.phase="recording";parkWalk.lastMovementAt=100;parkWalk.lastValidFixAt=690
-check(!parkWalk.shouldArrive(now:700,activity:"Walking"),"park walk stays open after ten minutes at one place")
-check(parkWalk.shouldArrive(now:700,activity:"Driving"),"driving still confirms parking after three minutes")
-parkWalk.lastValidFixAt=1900
-check(parkWalk.shouldArrive(now:1900,activity:"Walking"),"extended stationary walking visit eventually closes")
-parkWalk.lastValidFixAt=100
-check(!parkWalk.shouldArrive(now:1900,activity:"Walking"),"stale GPS never finishes walking visit")
+jitterArrival.lastMovementAt=200
+check(!jitterArrival.shouldArrive(now:219),"a confirmed stop still waits for two minutes of stillness")
+check(jitterArrival.shouldArrive(now:220),"confirmed stillness stops a journey despite GPS jitter moving the anchor")
+jitterArrival.noteMotion(MotionEvidence(types:["Driving"],confidence:"high",timestamp:220),now:220)
+check(!jitterArrival.shouldArrive(now:221),"fresh movement cancels a confirmed stop")
+check(!jitterArrival.shouldArrive(now:266),"stale GPS cannot stop a journey even with stationary evidence")
+check(!AutomaticDetector.freshStationary(MotionEvidence(types:["Driving","Stationary"],confidence:"high",timestamp:300),now:300),"overlapping driving and stationary is not confirmed stillness")
+check(AutomaticDetector.freshStationary(MotionEvidence(types:["Stationary"],confidence:"high",timestamp:300),now:300),"stationary alone is confirmed stillness")
+// Every activity now stops quickly: the journey stays open for a continuation,
+// so a wrong stop costs a segment break instead of waiting out a long visit.
+var stopPolicy=AutomaticDetector()
+stopPolicy.phase="recording";stopPolicy.lastMovementAt=220;stopPolicy.lastValidFixAt=399
+check(!stopPolicy.shouldArrive(now:399,activity:"Walking"),"a shop visit does not stop a walk before three minutes")
+stopPolicy.lastValidFixAt=400
+check(stopPolicy.shouldArrive(now:400,activity:"Walking"),"three minutes without movement stops a walking journey")
+stopPolicy.lastMovementAt=100;stopPolicy.lastValidFixAt=100
+check(!stopPolicy.shouldArrive(now:560,activity:"Walking"),"a GPS outage is never mistaken for a stop")
+stopPolicy.lastValidFixAt=560
+check(stopPolicy.shouldArrive(now:560,activity:"Walking"),"a fresh fix after an outage confirms the stop")
+check(JourneyContinuation.canResume(stoppedAt:1000,now:1600,distance:40,family:.onFoot,movement:.onFoot),"a walk continues after a shop visit")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1000+JourneyContinuation.window+1,distance:40,family:.onFoot,movement:.onFoot),"a continuation expires after the window")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:JourneyContinuation.radius+1,family:.onFoot,movement:.onFoot),"a continuation must begin near the stop")
+check(JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving),"walking into a car continues the journey so the drive can be split out")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot),"walking away from a parked car starts a new activity")
+check(JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.driving),"a drive continues after a break")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.cycling,movement:.driving),"a bicycle is not continued by a drive")
+check(JourneyFamily.of("MTB") == .cycling && JourneyFamily.of("Hiking") == .onFoot,"activity families group manual types")
+check(JourneyContinuation.movement(MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),speed:0,now:1000) == .onFoot,"motion identifies on-foot movement")
+check(JourneyContinuation.movement(MotionEvidence(),speed:12,now:1000) == .driving,"GPS speed identifies driving without motion")
+// A continuation appends real fixes only and keeps the stop out of the moving
+// duration and distance.
+var continued=RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walk")
+continued.recordingMode="automatic"
+_ = continued.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:1.4),now:0)
+_ = continued.accept(GPSPoint(latitude:0,longitude:0.0003,timestamp:60,accuracy:5,altitude:0,speed:1.4),now:60)
+continued.pause(at:120)
+continued.resume(at:3600)
+_ = continued.accept(GPSPoint(latitude:0,longitude:0.0006,timestamp:3660,accuracy:5,altitude:0,speed:1.4),now:3660)
+check(continued.points.count == 3,"a continuation appends real fixes only")
+check(continued.points.last?.segment == 1,"the stop remains a segment break in the route")
+check(continued.duration(at:3660) == 180,"the stop is excluded from the moving duration")
+check(continued.distanceMeters > 30 && continued.distanceMeters < 40,"distance is not measured across the stop")
 var lostDrive=AutomaticDetector()
 lostDrive.phase="recording";lostDrive.lastMovementAt=178;lostDrive.lastValidFixAt=178
 check(!lostDrive.shouldArrive(now:560),"ten minute ongoing drive with a GPS outage remains active")
@@ -216,7 +278,8 @@ check(!TrackingPresentation.indicator(always:true,manual:false),"Always automati
 check(TrackingPresentation.indicator(always:true,manual:true),"manual recording keeps indicator")
 check(TrackingPresentation.indicator(always:false,manual:false),"When In Use does not opt out of indicator")
 check(TrackingPresentation.reason(continuous:false,manual:false,automatic:false,stationary:true,probing:false,available:true).contains("Low-power standby"),"idle diagnostics identify low-power services")
-check(TrackingPresentation.reason(continuous:true,manual:false,automatic:true,stationary:true,probing:false,available:true).contains("Confirming arrival"),"stationary recording explains arrival window")
+check(TrackingPresentation.reason(continuous:true,manual:false,automatic:true,stationary:true,probing:false,available:true).contains("Confirming stop"),"stationary recording explains the stop window")
+check(TrackingPresentation.reason(continuous:true,manual:false,automatic:true,settled:true,stationary:true,probing:false,available:true).contains("continuation"),"a stopped journey explains that it is watching for a continuation")
 check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:true,available:true).contains("departure check"),"probe diagnostics explain bounded GPS")
 
 
@@ -231,6 +294,26 @@ let walkMotion = MotionEvidence(types:["Walking"],confidence:"high",timestamp:10
 check(shortWalk.observe(point(-33,1000),motion:walkMotion,manualActive:false,now:1000) == nil,"walk starting")
 check(shortWalk.observe(point(-32.9998,1006),motion:walkMotion,manualActive:false,now:1006) == nil,"walking remains conservative")
 check(shortWalk.observe(point(-32.99955,1014),motion:walkMotion,manualActive:false,now:1014) == nil,"walking does not use automotive fast confirmation")
+
+// Departure must not depend on an automotive classification that iOS may omit
+// or delay while the phone is still reporting the previous activity.
+var speedDeparture=AutomaticDetector()
+let walkingAtCar=MotionEvidence(types:["Walking"],confidence:"high",timestamp:2000)
+let sustainedA=GPSPoint(latitude:-33,longitude:151,timestamp:2000,accuracy:8,altitude:20,speed:3)
+let sustainedB=GPSPoint(latitude:-32.9997,longitude:151,timestamp:2008,accuracy:8,altitude:20,speed:3)
+let sustainedC=GPSPoint(latitude:-32.9994,longitude:151,timestamp:2016,accuracy:8,altitude:20,speed:3)
+check(speedDeparture.observe(sustainedA,motion:walkingAtCar,manualActive:false,now:2000) == nil,"speed-first departure buffers the first fix")
+check(speedDeparture.observe(sustainedB,motion:walkingAtCar,manualActive:false,now:2008) == nil,"two sustained fixes are not enough")
+check(speedDeparture.observe(sustainedC,motion:walkingAtCar,manualActive:false,now:2016) == "depart","sustained GPS speed confirms departure without automotive motion")
+check(speedDeparture.candidate.count == 3,"speed-first departure keeps the real buffered fixes")
+var singleSpike=AutomaticDetector()
+let jitteryFix=GPSPoint(latitude:-33,longitude:151,timestamp:2100,accuracy:8,altitude:20,speed:8)
+check(singleSpike.observe(jitteryFix,motion:walkingAtCar,manualActive:false,now:2100) == nil,"one fast fix is buffered")
+_ = singleSpike.observe(point(-32.9999,2110),motion:walkingAtCar,manualActive:false,now:2110)
+check(singleSpike.observe(point(-32.9998,2120),motion:walkingAtCar,manualActive:false,now:2120) == nil,"a single speed spike next to walking speeds cannot start a journey")
+check(AutomaticDetector.drivingMotion(MotionEvidence(types:["Driving","Stationary"],confidence:"medium",timestamp:300),now:301),"overlapping driving motion is credible")
+check(!AutomaticDetector.drivingMotion(MotionEvidence(types:["Driving"],confidence:"low",timestamp:300),now:301),"low confidence driving motion is not credible")
+check(!AutomaticDetector.drivingMotion(MotionEvidence(types:["Driving"],confidence:"high",timestamp:300),now:400),"stale driving motion is not credible")
 
 // Shopping return-trip regression: standby must keep a location wake-up path.
 var returningSampling=AutomaticSampling()
@@ -250,6 +333,16 @@ check(!departure.observe(shop,now:200),"stationary shop fix establishes departur
 var coarseDrive=shop;coarseDrive.timestamp=205;coarseDrive.accuracy=100;coarseDrive.speed=8
 check(departure.observe(coarseDrive,now:205),"coarse moving fix promotes precise GPS even though it cannot be saved as route geometry")
 check(departure.recentMovement(now:206),"GPS departure evidence prevents a delayed stationary motion callback from cancelling acquisition")
+// A stopped journey anchors on a precise stop fix, so it continues on a smaller
+// movement than an idle departure check would need to prove.
+var stopWatch=DepartureEvidence()
+let stopAnchor=GPSPoint(latitude:-33,longitude:151,timestamp:300,accuracy:5,altitude:0,speed:0)
+stopWatch.anchor=stopAnchor
+var idleWatch=DepartureEvidence()
+idleWatch.anchor=stopAnchor
+let coarseWalk=GPSPoint(latitude:-33,longitude:151.00045,timestamp:360,accuracy:55,altitude:0,speed:1.4)
+check(!idleWatch.observe(coarseWalk,now:360),"idle departure evidence waits for the coarse fix uncertainty")
+check(stopWatch.observe(coarseWalk,now:360,minimumDistance:40),"a stopped journey continues on a smaller move from its precise anchor")
 check(!departure.recentMovement(now:240),"old movement cannot keep a stationary departure probe alive")
 check(!departure.observe(coarseDrive,now:206),"duplicate observations do not retrigger departure")
 var unsafeRoute=RecordedActivity(activity:"Unknown",startedAt:200,resumedAt:200,title:"Probe")

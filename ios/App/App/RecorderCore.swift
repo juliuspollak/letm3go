@@ -260,19 +260,30 @@ struct ActivityPhoto: Codable {
 }
 
 // Conservative transition from an on-foot activity to a vehicle journey.
-// Motion alone is insufficient: require fresh Core Motion driving evidence and
-// sustained, accurate GPS movement before splitting an activity.
+// Fresh Core Motion driving evidence is preferred, but iOS often delays or omits
+// the automotive classification (and reports overlapping flags such as
+// Driving + Stationary). Sustained GPS speed is accepted as corroboration then,
+// with a higher speed floor so a fast bicycle is not relabelled as a drive.
 struct DrivingTransition {
     var candidates: [GPSPoint] = []
     mutating func reset() { candidates.removeAll() }
     mutating func observe(_ point: GPSPoint, motion: MotionEvidence, now: Double) -> Bool {
-        guard motion.types == ["Driving"], motion.confidence != "low",
-              now >= motion.timestamp, now - motion.timestamp <= 30,
-              point.accuracy >= 0, point.accuracy <= 25, point.speed >= 5,
-              abs(now-point.timestamp) <= 20 else { reset(); return false }
+        guard point.accuracy >= 0, point.accuracy <= 65,
+              abs(now-point.timestamp) <= 20 else { return false }
+        // Core Motion cannot distinguish a coasting car from a walk, so require a
+        // higher sustained speed when it does not confirm automotive movement.
+        // A fresh cycling classification is a strong e-bike signal, so only
+        // explicit automotive evidence may override it.
+        let automotive = AutomaticDetector.drivingMotion(motion,now:now)
+        let cycling = AutomaticDetector.cyclingMotion(motion,now:now)
+        guard automotive || !cycling, point.speed >= (automotive ? 4 : 6) else { return false }
         if let last = candidates.last {
-            guard point.timestamp > last.timestamp, point.timestamp-last.timestamp <= 45,
-                  last.distance(to:point) / (point.timestamp-last.timestamp) >= 4 else {
+            guard point.timestamp > last.timestamp else { return false }
+            let interval = point.timestamp-last.timestamp
+            // A long GPS gap cannot corroborate a continuous transition. Permit a
+            // tunnel-sized hole only when Core Motion confirms a vehicle.
+            guard interval <= (automotive ? 120 : 45) else { reset(); return false }
+            guard last.distance(to:point) / interval >= (automotive ? 3 : 4) else {
                 candidates = [point]; return false
             }
         }
@@ -280,6 +291,52 @@ struct DrivingTransition {
         guard let first = candidates.first else { return false }
         return candidates.count >= 3 && point.timestamp-first.timestamp >= 20 &&
                first.distance(to:point) >= 100
+    }
+}
+
+// A stopped journey stays open for a while so a shop visit, a red light or a
+// short break does not split one outing into pieces. A continuation appends real
+// fixes only; the stop itself stays a segment break and is excluded from the
+// moving duration and distance.
+enum JourneyFamily: String {
+    case onFoot, driving, cycling, other
+    static func of(_ activity: String) -> JourneyFamily {
+        switch activity {
+        case "Walking", "Hiking", "Running": return .onFoot
+        case "Driving": return .driving
+        case "Cycling", "MTB", "Road cycling": return .cycling
+        default: return .other
+        }
+    }
+}
+struct JourneyContinuation {
+    // How long a stopped journey can still absorb a continuation, and how far
+    // from the stop the continuation may begin.
+    static let window: Double = 45*60
+    static let radius: Double = 300
+    // Confident motion wins; otherwise GPS speed decides whether the person is
+    // walking away from the stop or driving off.
+    static func movement(_ motion: MotionEvidence, speed: Double, now: Double) -> JourneyFamily? {
+        if AutomaticDetector.drivingMotion(motion,now:now) { return .driving }
+        if AutomaticDetector.cyclingMotion(motion,now:now) { return .cycling }
+        if motion.confidence != "low", abs(now-motion.timestamp) <= 30,
+           motion.types.contains(where:{["Walking","Running"].contains($0)}) { return .onFoot }
+        if speed >= 5 { return .driving }
+        if speed >= 0.8, speed < 2.6 { return .onFoot }
+        return nil
+    }
+    // A vehicle journey only continues with vehicle movement: walking away from
+    // a parked car is a new activity. On-foot journeys absorb anything, because
+    // the existing driving transition splits a genuine drive out of them.
+    static func canResume(stoppedAt: Double, now: Double, distance: Double,
+                          family: JourneyFamily, movement: JourneyFamily?,
+                          window: Double = window, radius: Double = radius) -> Bool {
+        guard now >= stoppedAt, now-stoppedAt <= window, distance.isFinite, distance <= radius else { return false }
+        switch family {
+        case .driving: return movement == nil || movement == .driving
+        case .cycling: return movement != .driving
+        default: return true
+        }
     }
 }
 
@@ -297,8 +354,24 @@ struct AutomaticDetector {
         if Self.freshStationary(motion,now:now) {if stationarySince == nil {stationarySince=now}}
         else if Self.credibleMovement(motion,now:now) {stationarySince=nil}
     }
+    // Core Motion reports overlapping flags (a parked car can be reported as
+    // Driving + Stationary), so require the Stationary flag to be present and
+    // every movement flag to be absent instead of an exact ["Stationary"] match.
     static func freshStationary(_ motion:MotionEvidence,now:Double)->Bool {
-        motion.confidence != "low" && motion.types == ["Stationary"] && now-motion.timestamp >= 0 && now-motion.timestamp <= 30
+        motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 &&
+        motion.types.contains("Stationary") &&
+        !motion.types.contains(where:{["Walking","Running","Cycling","Driving"].contains($0)})
+    }
+    // Core Motion reports overlapping flags (for example Driving + Stationary) and
+    // medium confidence while driving. Requiring exactly ["Driving"] discarded
+    // real drives, so accept any fresh, confident driving flag.
+    static func drivingMotion(_ motion:MotionEvidence,now:Double)->Bool {
+        motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 &&
+        motion.types.contains("Driving")
+    }
+    static func cyclingMotion(_ motion:MotionEvidence,now:Double)->Bool {
+        motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 &&
+        motion.types.contains("Cycling")
     }
     static func credibleMovement(_ motion:MotionEvidence,now:Double)->Bool {
         motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 && motion.types.contains(where:{["Walking","Running","Cycling","Driving"].contains($0)})
@@ -317,6 +390,11 @@ struct AutomaticDetector {
     var minimumDistance: Double = 60
     var minimumSeconds: Double = 25
     var arrivalSeconds: Double = 180
+    // A stop is cheap to correct now: the journey stays open and absorbs a
+    // continuation, so a premature stop costs one segment break instead of
+    // splitting one outing into several activities.
+    static let stopDwell: Double = 180
+    static let motionStopDwell: Double = 120
     mutating func reset() { self = AutomaticDetector() }
     mutating func observe(_ point: GPSPoint, motion: MotionEvidence, manualActive: Bool, now: Double, activity: String = "Driving") -> String? {
         guard !manualActive else { reset(); return nil }
@@ -334,11 +412,17 @@ struct AutomaticDetector {
             if candidate.count > 200 { candidate.removeFirst() }
             guard let first = candidate.first else { return nil }
             let distance = first.distance(to: point)
-            let automotive = Self.credibleMovement(motion,now:now) && motion.types.contains("Driving")
-            let requiredDistance = automotive && first.accuracy <= 25 && point.accuracy <= 25
+            let automotive = Self.drivingMotion(motion,now:now)
+            // Sustained speed is independent departure evidence when Core Motion is
+            // late, unavailable or still reports the previous (parked) activity.
+            // Three consecutive fixes are still required, so one noisy speed spike
+            // cannot start a journey.
+            let sustainedSpeed = candidate.count >= 3 && candidate.suffix(3).allSatisfy { $0.speed >= 2.5 }
+            let preciseAutomotive = automotive && first.accuracy <= 25 && point.accuracy <= 25
+            let requiredDistance = preciseAutomotive || sustainedSpeed
                 ? max(35,first.accuracy+point.accuracy+15)
                 : max(minimumDistance,first.accuracy+point.accuracy+30)
-            let requiredSeconds = automotive ? 12.0 : minimumSeconds
+            let requiredSeconds = automotive ? 12.0 : sustainedSpeed ? 15.0 : minimumSeconds
             if candidate.count >= 3 && distance >= requiredDistance && point.timestamp-first.timestamp >= requiredSeconds {
                 phase = "recording"; stationarySince=nil; lastMovementAt = point.timestamp; anchor = point
                 return "depart"
@@ -355,11 +439,11 @@ struct AutomaticDetector {
         // The arrival timer also calls this when no delegate callbacks arrive.
         // Never turn a GPS outage or iOS suspension into a false arrival.
         guard phase == "recording", let fix = lastValidFixAt, now - fix >= 0, now - fix <= 45 else { return false }
-        // Walking and other on-foot activities include extended visits to one place.
-        // A short pause at a park must not close the activity; only a sustained
-        // stationary stay with fresh fixes can do so. Driving retains 3 minutes.
-        let dwell = ["Walking", "Hiking", "Running"].contains(activity) ? 1800.0 : arrivalSeconds
-        return now-(lastMovementAt ?? now) >= dwell || stationarySince.map{now-$0>=dwell} == true
+        // Confirmed stillness stops sooner than GPS-only stillness. Both are far
+        // shorter than a visit, because the recorder keeps the journey open and
+        // continues it when movement resumes near the stop location.
+        if let still = stationarySince, now - still >= Self.motionStopDwell { return true }
+        return now - (lastMovementAt ?? now) >= Self.stopDwell
     }
 }
 
@@ -408,7 +492,7 @@ struct DepartureEvidence {
     var lastMovementAt:Double?
     mutating func reset(){anchor=nil;lastMovementAt=nil}
     func recentMovement(now:Double)->Bool {lastMovementAt.map{now >= $0 && now-$0<=30} ?? false}
-    mutating func observe(_ point:GPSPoint,now:Double)->Bool {
+    mutating func observe(_ point:GPSPoint,now:Double,minimumDistance:Double?=nil)->Bool {
         guard point.latitude.isFinite,point.longitude.isFinite,
               abs(point.latitude)<=90,abs(point.longitude)<=180,
               point.accuracy>=0,point.accuracy<=150,
@@ -417,7 +501,11 @@ struct DepartureEvidence {
         if point.speed>=3 {anchor=point;lastMovementAt=point.timestamp;return true}
         guard let old=anchor else {anchor=point;return false}
         let distance=old.distance(to:point)
-        if distance>=max(35,old.accuracy+point.accuracy),distance/max(1,point.timestamp-old.timestamp)<=85 {
+        // A stopped journey anchors on a precise fix, so it passes a tighter
+        // distance instead of waiting for a coarse standby fix to prove the
+        // accuracy sum: a wrong continuation only costs one segment break.
+        if distance>=max(minimumDistance ?? 0,minimumDistance == nil ? old.accuracy+point.accuracy : 0),
+           distance>=35,distance/max(1,point.timestamp-old.timestamp)<=85 {
             anchor=point;lastMovementAt=point.timestamp;return true
         }
         return false
@@ -428,10 +516,11 @@ struct DepartureEvidence {
 // keeps the prominent indicator; When In Use presentation remains controlled by iOS.
 enum TrackingPresentation {
     static func indicator(always:Bool,manual:Bool)->Bool {manual || !always}
-    static func reason(continuous:Bool,manual:Bool,automatic:Bool,stationary:Bool,probing:Bool,available:Bool)->String {
+    static func reason(continuous:Bool,manual:Bool,automatic:Bool,settled:Bool=false,stationary:Bool,probing:Bool,available:Bool)->String {
         if continuous {
             if manual {return "Manual recording"}
-            if automatic {return stationary ? "Confirming arrival (up to 3 minutes)" : "Recording automatic journey"}
+            if settled {return "Journey stopped; watching for a continuation"}
+            if automatic {return stationary ? "Confirming stop (up to 3 minutes)" : "Recording automatic journey"}
             if probing {return "Bounded departure check (up to 2 minutes)"}
             if available {return "Departure standby: lower-accuracy background location"}
             return "Stopping continuous location service"

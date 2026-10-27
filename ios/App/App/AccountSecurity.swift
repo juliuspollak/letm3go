@@ -87,7 +87,7 @@ extension LocationRecorder {
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         let records = try storage!.load()
         trips = records.filter { $0.state == "finished" }
-        active = nil; automaticTrip = nil; detector.reset();departureEvidence.reset()
+        active = nil; automaticTrip = nil; settledAt = nil; detector.reset();departureEvidence.reset()
         for var record in records where record.state != "finished" {
             record.recoverAfterInterruption()
             if record.recordingMode == "automatic" { record.finish(at:record.points.last?.timestamp ?? record.startedAt); try storage!.save(record); trips.append(record) }
@@ -110,7 +110,7 @@ extension LocationRecorder {
         if var trip = active { trip.pause(at:Date().timeIntervalSince1970); try storage?.save(trip); active = trip }
         if automaticTrip != nil { try finishAutomatic() }
         try AccountKeychain.set("active-account",data:nil)
-        uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; trips = []; places = []; automaticEnabled = false
+        uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; trips = []; places = []; automaticEnabled = false
         preferences = AccountPreferences(); lastAutomaticFixAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -252,7 +252,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
-            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.trips=[]; r.places=[]; r.preferences=AccountPreferences(); r.automaticEnabled=false
+            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.trips=[]; r.places=[]; r.preferences=AccountPreferences(); r.automaticEnabled=false
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
             UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
