@@ -31,7 +31,7 @@ function activityPlaceTags(activity,from,to,stops=[]){
  if(to.nearbyName)candidates.push({name:to.nearbyName,kind:to.kind?'saved':'destination'});
  for(const stop of stops.filter(s=>s.meaningful)){
   if(stop.nearbyName)candidates.push({name:stop.nearbyName,kind:stop.kind?'saved':'stop'});
-  else if(stop.name)candidates.push({name:stop.name,kind:'stop'});
+  else if(stop.locality||stop.name)candidates.push({name:stop.locality||stop.name,kind:'stop'});
  }
  return rankPlaceCandidates(candidates,{activity:activity.activity}).map(x=>x.name);
 }
