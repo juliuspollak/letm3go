@@ -5,7 +5,7 @@ export default function InviteSharingPrompt({kind='friend',onEnable,onClose,busy
  return <section className="invite-sharing" role="dialog" aria-label="Choose live location sharing">
   <span className="invite-sharing-icon"><MapPin size={27}/></span>
   <h3>You're connected!</h3>
-  <p>{kind==='household'?'Your household can now see you as a member.':'You're now connected as friends.'}</p>
+  <p>{kind==='household'?'Your household can now see you as a member.':"You are now connected as friends."}</p>
   <h4>Share your live location?</h4>
   <p className="muted small-copy">Let connected people see where you are on the map. You can stop sharing at any time. Your previous trips remain private.</p>
   <button type="button" className="primary full" disabled={busy} onClick={onEnable}>{busy?'Enabling…':'Share live location'}</button>
