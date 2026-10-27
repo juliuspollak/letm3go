@@ -47,13 +47,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run check 2>&1 | tee npm-check.log
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-check-log
-          path: npm-check.log
-          retention-days: 3
+      - run: npm run check
       - run: npm run check:edge
       - run: npm audit --audit-level=moderate
 
