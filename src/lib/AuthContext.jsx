@@ -9,7 +9,7 @@ import { resolveIdentity, isTransientAuthError } from './authCore.js';
 import { listenForNativeAuth, authRedirect } from './auth.js';
 import { setPrivateMediaOwner } from './privateMedia.js';
 import { stopAccountPush, resumeAccountPush } from './pushAccount.js';
-import { ensureUserProfile } from './userProfile.js';
+import { ensureUserProfile, saveProfileAvatar } from './userProfile.js';
 const Context=createContext(null);
 export function AuthProvider({children}){
  const [identity,setIdentity]=useState({status:'restoring',session:null,preferences:defaultPreferences()}),[error,setError]=useState(''),[integrationWarning,setIntegrationWarning]=useState(''),[recovery,setRecovery]=useState(()=>new URLSearchParams(window.location.search).get('flow')==='recovery');
@@ -33,6 +33,9 @@ export function AuthProvider({children}){
      if(turn!==generation.current)return;
      next.profileVerified=true;
      if(!next.preferences.displayName&&profile.display_name){const stored=await accountStore.save({...next.preferences,displayName:profile.display_name},next.session.user.id);next.preferences=stored.preferences;}
+     // A replacement device has no local photo yet; the owner-only profile row
+     // restores it before the first render that needs it.
+     if(!next.preferences.avatar&&profile.avatar){const stored=await accountStore.save({...next.preferences,avatar:profile.avatar},next.session.user.id);next.preferences=stored.preferences;}
     }catch{if(turn!==generation.current)return;next.profileVerified=false;setIntegrationWarning('Signed in. Profile synchronization needs attention; reconnect and verify your account again.');}
    }
    if(turn!==generation.current)return;
@@ -112,7 +115,14 @@ export function AuthProvider({children}){
    if(!owner||latestSession.current?.user.id!==owner)throw new Error('Account changed. Settings were not saved.');
    const preferences={...preferencesRef.current,...patch};const result=await accountStore.save(preferences,owner);
    if(latestSession.current?.user.id!==owner)throw new Error('Account changed.');
-   preferencesRef.current=result.preferences;setIdentity(old=>({...old,preferences:result.preferences}));return result.preferences;
+   preferencesRef.current=result.preferences;setIdentity(old=>({...old,preferences:result.preferences}));
+   // The decrypted device copy stays authoritative. The owner-only profile copy
+   // of the photo is best-effort, so a replacement device can still show it.
+   if(supabase&&Object.hasOwn(patch,'avatar')&&latestSession.current?.user){
+    try{await saveProfileAvatar(supabase,latestSession.current.user,result.preferences.avatar||null);}
+    catch{setIntegrationWarning('Profile photo saved on this device but not yet in the cloud. Reconnect and choose it again if you replace this iPhone.');}
+   }
+   return result.preferences;
   };
   const task=preferencesQueue.current.then(operation,operation);preferencesQueue.current=task.catch(()=>{});return task;
  }

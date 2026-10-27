@@ -1,4 +1,5 @@
-// Proposed server implementation. NOT deployed in this milestone.
+// JWT-verified private media endpoint. Uploads go to the private R2 bucket; the
+// client never receives R2 credentials, only short-lived signed URLs.
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from 'npm:@aws-sdk/client-s3@3';
 import { getSignedUrl } from 'npm:@aws-sdk/s3-request-presigner@3';
@@ -51,6 +52,27 @@ Deno.serve(async request=>{
    const {data:asset}=await admin.from('media_assets').select('object_key').eq('id',body.mediaID).maybeSingle();
    if(!asset)return reply({error:'Photo unavailable'},404);
    return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
+  }
+  // Collection photos use the same private bucket, but a deterministic per-item
+  // key derived from the verified JWT owner. One account can therefore never
+  // write under another account's prefix, and a retry overwrites the same object
+  // instead of creating a duplicate. Metadata is written by the authenticated
+  // backup RPC afterwards, so a row is never created before its object exists.
+  if(body.action==='collectionPhoto'){
+   stage='collection_photo';
+   if(!uuid(body.itemID)||typeof body.base64!=='string'||body.base64.length>6_700_000)return reply({error:'Invalid Collection photo'},400);
+   if(typeof body.sha256!=='string'||!/^[a-f0-9]{64}$/.test(body.sha256))return reply({error:'Invalid photo fingerprint'},400);
+   const image=sanitizeJPEG(Uint8Array.from(atob(body.base64),c=>c.charCodeAt(0)));
+   const key=`${owner}/collection/${body.itemID}.jpg`;
+   await r2().send(new PutObjectCommand({Bucket:bucket,Key:key,Body:image,ContentType:'image/jpeg',CacheControl:'private, max-age=60'}));
+   return reply({itemID:body.itemID,objectKey:key,sha256:body.sha256,byteSize:image.length});
+  }
+  if(body.action==='collectionDownload'){
+   if(!uuid(body.itemID))return reply({error:'Invalid Collection item'},400);
+   const {data:item,error}=await userClient.from('collection_items').select('photo_object_key').eq('id',body.itemID).maybeSingle();
+   if(error)throw error;
+   if(!item?.photo_object_key)return reply({error:'Photo unavailable'},404);
+   return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:item.photo_object_key}),{expiresIn:60})});
   }
   if(!uuid(body.id))return reply({error:'Activity identifier required'},400);
   if(body.action==='status'){

@@ -220,6 +220,11 @@ Results: `npm run lint` clean, `npm test` green, `npm run test:database` 40 test
 `npm run test:native` 373 assertions, `npm run build` OK, `npm run ios:build`
 BUILD SUCCEEDED.
 
+> Build 46 fixed the persistence gaps this build did not cover: Collection items,
+> their photos and trip equipment references are now backed up and restorable on a
+> new device. See `docs/persistence-audit-build-46.md` (which also raised the
+> database suite to 48 tests).
+
 ## 7. Deliberate limits
 
 * Equipment is **not** stored on the trip's distance, route or segments — assignment

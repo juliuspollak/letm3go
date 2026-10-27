@@ -3,6 +3,8 @@ import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
 import {config} from '../lib/config.js';
 import {syncPrivateActivities} from '../lib/cloudSync.js';
+import {syncCollections} from '../lib/collectionSync.js';
+import {syncAccountSettings} from '../lib/settingsSync.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state}){
  const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0);
@@ -16,8 +18,17 @@ export default function AutoCloudSync({state}){
    if(user.status!=='authenticated'||!recordings?.ownerID||recordings.ownerID.toLowerCase()!==user.session.user.id.toLowerCase())return;
    running.current=true;lastAttempt.current=Date.now();
    try{
-    const result=await syncPrivateActivities(supabase,recordings,user.preferences.syncReceipts||{},{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
-    if(alive)await user.savePreferences({syncReceipts:result.receipts,lastBackup:result.lastSync});
+    // Settings and the Collection are small and independent of the route upload,
+    // so one failing photo must not block them. The first failure is re-thrown
+    // after every stage has been attempted; nothing local is removed.
+    let failure=null,receipts=user.preferences.syncReceipts||{};
+    const attempt=async(step)=>{try{receipts=(await step(receipts)).receipts;}catch(error){failure=failure||error;}};
+    await attempt(next=>syncAccountSettings(supabase,{owner:recordings.ownerID,preferences:user.preferences,receipts:next},{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})}));
+    await attempt(next=>syncCollections(supabase,{owner:recordings.ownerID,vehicles:user.preferences.vehicles,receipts:next},{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})}));
+    const trips=await syncPrivateActivities(supabase,recordings,receipts,{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
+    receipts=trips.receipts;
+    if(alive)await user.savePreferences({syncReceipts:receipts,lastBackup:trips.lastSync});
+    if(failure)throw failure;
    }catch{
     // The Settings screen is the explicit retry/error surface. Nothing local is deleted.
    }finally{running.current=false;}
@@ -29,3 +40,4 @@ export default function AutoCloudSync({state}){
  },[]);
  return null;
 }
+

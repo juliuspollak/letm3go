@@ -1,5 +1,6 @@
 import {recorder} from './recorder.js';
 import {supabase} from './supabase.js';
+import {COLLECTION_PHOTO_LIMIT} from './collection.js';
 
 // Explicit, additive recovery. Never replaces existing activities or removes local files.
 // The server's RLS restricts every query to the authenticated account.
@@ -10,7 +11,7 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
  const owner=auth.user.id;
  const local=await recorder.getState();
  if(local.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('The iPhone recorder is not unlocked for this account.');
- const {data:rows,error}=await supabase.from('activities').select('id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,vehicle,description,notes,tags,collection,equipment,classification,user_corrected,route_points,sync_fingerprint,revision').eq('owner_id',owner).eq('visibility','private').order('started_at',{ascending:true}).limit(1000);
+ const {data:rows,error}=await supabase.from('activities').select('id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,vehicle,description,notes,tags,collection,equipment,view_metadata,classification,user_corrected,route_points,sync_fingerprint,revision').eq('owner_id',owner).eq('visibility','private').order('started_at',{ascending:true}).limit(1000);
  if(error)throw new Error('Could not read private cloud activities. Check the database migration and RLS.');
  let restored=0,photosRestored=0;
  const receipts={};
@@ -21,7 +22,8 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<start)continue;
   if(!locallyKnown.has(row.id.toLowerCase())){
    const restoredEquipment=(Array.isArray(row.equipment)?row.equipment:[]).filter(ref=>ref&&typeof ref.id==='string'&&ref.id).slice(0,8).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)}));
-   const activity={id:row.id,activity:row.activity,title:row.title,vehicle:row.vehicle||null,vehicleID:restoredEquipment[0]?.id||null,equipment:restoredEquipment,startedAt:start,endedAt:end,state:'finished',accumulatedSeconds:row.duration_seconds,resumedAt:null,segment:0,points:row.route_points,distanceMeters:row.distance_meters,source:'device',recordingMode:row.recording_mode,details:{description:row.description||'',notes:row.notes||'',tags:row.tags||[],collection:row.collection||'',classification:row.classification||{predicted:'Unknown',confidence:'low',evidence:[]},userCorrected:!!row.user_corrected}};
+   const view=row.view_metadata&&typeof row.view_metadata==='object'?row.view_metadata:{};
+   const activity={id:row.id,activity:row.activity,title:row.title,vehicle:row.vehicle||null,vehicleID:restoredEquipment[0]?.id||null,equipment:restoredEquipment,startedAt:start,endedAt:end,state:'finished',accumulatedSeconds:row.duration_seconds,resumedAt:null,segment:0,points:row.route_points,distanceMeters:row.distance_meters,source:'device',recordingMode:row.recording_mode,details:{description:row.description||'',notes:row.notes||'',tags:row.tags||[],collection:row.collection||'',classification:row.classification||{predicted:'Unknown',confidence:'low',evidence:[]},userCorrected:!!row.user_corrected,visibleRouteStart:Number.isInteger(view.visibleRouteStart)?view.visibleRouteStart:undefined,visibleRouteEnd:Number.isInteger(view.visibleRouteEnd)?view.visibleRouteEnd:undefined,startPlace:typeof view.startPlace==='string'?view.startPlace:undefined,endPlace:typeof view.endPlace==='string'?view.endPlace:undefined,coverPhotoID:typeof view.coverPhotoID==='string'?view.coverPhotoID:undefined}};
    const result=await recorder.restoreActivity(activity);
    if(result.restored){restored++;locallyKnown.add(row.id.toLowerCase());}
   }
@@ -43,5 +45,42 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
   }
   onProgress({restored,photosRestored});
  }
- return {restored,photosRestored,receipts};
+ // Collection items and their photos, then the small settings backup. Both are
+ // read-only here: the caller merges them into preferences without overwriting
+ // anything this device already holds.
+ const {data:items,error:itemError}=await supabase.from('collection_items')
+  .select('id,category,name,make,model,attributes,source,tesla_vehicle_id,archived,photo_object_key,photo_sha256,revision,sync_fingerprint')
+  .eq('owner_id',owner).is('deleted_at',null).order('updated_at',{ascending:true}).limit(200);
+ if(itemError)throw new Error('Could not read your private Collection. Check the database migration and RLS.');
+ const collection=[];let collectionPhotos=0;
+ for(const item of items||[]){
+  let photo=null;
+  if(item.photo_object_key){
+   try{
+    const {data:link,error:linkError}=await supabase.functions.invoke('journeys',{body:{action:'collectionDownload',itemID:item.id}});
+    if(!linkError&&link?.url){
+     const response=await fetch(link.url);
+     if(response.ok){
+      const bytes=await response.arrayBuffer();
+      if(bytes.byteLength<=5_000_000){
+       const data=new Uint8Array(bytes);let binary='';
+       for(let index=0;index<data.length;index+=8192)binary+=String.fromCharCode(...data.subarray(index,index+8192));
+       const url=`data:image/jpeg;base64,${btoa(binary)}`;
+       if(url.length<=COLLECTION_PHOTO_LIMIT){photo=url;collectionPhotos++;}
+      }
+     }
+    }
+   }catch{/* A missing object must not block the rest of the restore. */}
+  }
+  collection.push({id:item.id,category:item.category,name:item.name,make:item.make,model:item.model,
+   attributes:item.attributes||{},source:item.source,teslaVehicleID:item.tesla_vehicle_id||undefined,
+   archived:item.archived===true,photo});
+  if(item.sync_fingerprint)receipts[`collection:${item.id}`]={owner,fingerprint:item.sync_fingerprint,revision:item.revision};
+  if(item.photo_object_key)receipts[`collection-photo:${item.id}`]={owner,uploaded:true,sha256:item.photo_sha256};
+ }
+ const {data:setting,error:settingError}=await supabase.from('account_settings')
+  .select('payload,revision,sync_fingerprint').eq('owner_id',owner).maybeSingle();
+ if(settingError)throw new Error('Could not read your private settings backup.');
+ if(setting?.sync_fingerprint)receipts.settings={owner,fingerprint:setting.sync_fingerprint,revision:setting.revision};
+ return {restored,photosRestored,receipts,collection,collectionPhotos,settings:setting?.payload||{}};
 }

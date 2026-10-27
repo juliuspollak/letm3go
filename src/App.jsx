@@ -95,11 +95,33 @@ function PrivateApp(){
  const grouping=useJourneyGrouping({owner:session.user.id,activities:recording.state.ownerID&&recording.state.ownerID.toLowerCase()!==session.user.id.toLowerCase()?[]:recording.state.trips.filter(t=>t.source==='device'&&t.details?.provisional!==true).map(recordedJourney).concat(fleet.activities),telemetry:fleet.charges,places:recording.state.places||[],vehicles:auth.preferences.vehicles||[],serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences});
 
  const vehicles=auth.preferences.vehicles||[];
- const setVehicles=vehicles=>auth.savePreferences({vehicles});
+ // A removed Collection item leaves an explicit tombstone receipt so the cloud
+ // copy is deleted on the next sync. Restore therefore cannot resurrect it.
+ const setVehicles=async next=>{
+  const previous=vehicles;
+  const removed=(Array.isArray(next)?previous:[]).filter(item=>!next.some(entry=>String(entry?.id)===String(item?.id)));
+  if(!removed.length)return auth.savePreferences({vehicles:next});
+  const receipts={...(auth.preferences.syncReceipts||{})};
+  for(const item of removed)receipts[`collection:${item.id}`]={owner:session.user.id,deleted:true};
+  return auth.savePreferences({vehicles:next,syncReceipts:receipts});
+ };
  const realJourneys=recording.state.trips.filter(t=>t.source==='device').map(recordedJourney);
  const [draggingTrip,setDraggingTrip]=useState(null),[mergeSource,setMergeSource]=useState(null),[mergeTarget,setMergeTarget]=useState(null),[dropTarget,setDropTarget]=useState(null);
  const archiveKey='letm3go:archived-trips:'+session.user.id;
- const [archivedTrips,setArchivedTrips]=useState(()=>{try{return JSON.parse(localStorage.getItem(archiveKey)||'[]');}catch{return [];}});
+ // Archived trips belong to the account, not to one installation: they now live
+ // in the encrypted preferences file (and in the settings backup) so a restored
+ // device keeps them. A list written by an older build is used until the first
+ // successful save moves it into preferences.
+ const [legacyArchived]=useState(()=>{try{const value=JSON.parse(localStorage.getItem(archiveKey)||'[]');return Array.isArray(value)?value:[];}catch{return [];}});
+ const archivedTrips=auth.preferences.archivedTrips??legacyArchived;
+ useEffect(()=>{
+  if(!legacyArchived.length||auth.preferences.archivedTrips)return;
+  void auth.savePreferences({archivedTrips:legacyArchived})
+   .then(()=>localStorage.removeItem(archiveKey))
+   .catch(()=>{/* Keep using the plaintext list until a save succeeds. */});
+  // Runs once per sign-in: the legacy key is tied to this account id.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[]);
  const [showArchived,setShowArchived]=useState(false);
  const [lastArchived,setLastArchived]=useState(null);
  const [swipedTrip,setSwipedTrip]=useState(null);
@@ -124,11 +146,11 @@ function PrivateApp(){
   return ()=>document.removeEventListener("touchmove",blockScroll);
  },[floatingTrip]);
  const archiveTrip=trip=>{
-  setArchivedTrips(old=>{const next=[...new Set([...old,trip.id])];localStorage.setItem(archiveKey,JSON.stringify(next));return next;});
+  void auth.savePreferences({archivedTrips:[...new Set([...archivedTrips,trip.id])]}).catch(err=>setError(err.message||'Archive could not be saved.'));
   setLastArchived(trip);setSwipedTrip(null);
  };
  const restoreTrip=id=>{
-  setArchivedTrips(old=>{const next=old.filter(x=>x!==id);localStorage.setItem(archiveKey,JSON.stringify(next));return next;});
+  void auth.savePreferences({archivedTrips:archivedTrips.filter(x=>x!==id)}).catch(err=>setError(err.message||'Archive could not be saved.'));
   setLastArchived(null);setSwipedTrip(null);setShowArchived(false);
  };
  const startRowTouch=(e,t)=>{

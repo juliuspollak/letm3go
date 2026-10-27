@@ -44,6 +44,10 @@ struct AccountPreferences: Codable {
     var notificationsEnabled: Bool?
     var demoOverrides: String?
     var bookmarks: [String]?
+    // Archived trips used to live in plain localStorage, which is neither
+    // encrypted nor account-scoped after a restore. They belong with the other
+    // per-account preferences so they can be backed up.
+    var archivedTrips: [String]?
     var journeyGrouping: String?
     var syncReceipts: [String: SyncReceipt]?
     var lastBackup: String?
@@ -54,6 +58,9 @@ struct SyncReceipt: Codable {
     var revision: Int?
     var deleted: Bool?
     var uploaded: Bool?
+    // SHA-256 of the uploaded JPEG, so an unchanged Collection photo is not
+    // uploaded again after the first successful transfer.
+    var sha256: String?
 }
 struct LocalVehicle: Codable {
     var source: String?
@@ -129,7 +136,7 @@ extension LocationRecorder {
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
-              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
+              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
               (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
               updated.vehicles.allSatisfy({ vehicle in
                 let category = vehicle.category ?? "car"

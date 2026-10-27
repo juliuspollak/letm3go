@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { accountDisplayName, ensureUserProfile, saveProfileName } from './userProfile.js';
+import { accountDisplayName, ensureUserProfile, saveProfileAvatar, saveProfileName } from './userProfile.js';
 const user={id:'owner',email:'relay@privaterelay.appleid.com',user_metadata:{full_name:'Apple Person'}};
 function setup(reads,created){const q={};for(const name of ['select','eq','insert','update'])q[name]=vi.fn(()=>q);q.maybeSingle=vi.fn();for(const r of reads)q.maybeSingle.mockResolvedValueOnce(r);q.single=vi.fn().mockResolvedValue(created);return {q,client:{from:vi.fn(()=>q)}};}
 it('creates only the verified user profile with minimal granted columns',async()=>{
@@ -22,4 +22,16 @@ it('reports RLS/profile failures without leaking server error details',async()=>
 });
 it('synchronizes an edited name only to the authenticated profile',async()=>{
  const {q,client}=setup([{data:{id:'owner',display_name:'Original'}}],{data:{id:'owner'}});await saveProfileName(client,user,'Chosen name');expect(q.update).toHaveBeenCalledWith({display_name:'Chosen name'});expect(q.eq).toHaveBeenCalledWith('id','owner');
+});
+it('stores and reads the owner photo on the private profile row',async()=>{
+ const photo='data:image/jpeg;base64,AAAA';
+ const {q,client}=setup([{data:{id:'owner',display_name:'Jules',avatar:photo}}]);
+ expect((await ensureUserProfile(client,user)).avatar).toBe(photo);
+ expect(q.select).toHaveBeenCalledWith('id,display_name,avatar');
+ const saved=setup([{data:{id:'owner'}},{data:{id:'owner'}}]);
+ await saveProfileAvatar(saved.client,user,photo);
+ expect(saved.q.update).toHaveBeenCalledWith({avatar:photo});
+ expect(saved.q.eq).toHaveBeenCalledWith('id','owner');
+ await saveProfileAvatar(saved.client,user,null);
+ expect(saved.q.update).toHaveBeenLastCalledWith({avatar:null});
 });
