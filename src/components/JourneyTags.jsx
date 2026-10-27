@@ -10,25 +10,44 @@ export default function JourneyTags({trip,grouping,run}){
  const hidden=grouping.metadata.hiddenTags?.[anchor]||[];
  const autoTags=(trip.tags||[]).filter(t=>!custom.some(c=>c.toLowerCase()===t.toLowerCase()));
  async function scanRoute(){
-  if(scanning)return;setScanning(true);setNotice('');
-  const result=[];const segments=trip.segments?.length?trip.segments:[trip];
-  try{
-   for(const seg of segments){
-    if(!seg.points?.length)continue;
-    const indexes=[0,Math.round((seg.points.length-1)*.2),Math.round((seg.points.length-1)*.4),Math.round((seg.points.length-1)*.6),Math.round((seg.points.length-1)*.8),seg.points.length-1];
-    for(const index of [...new Set(indexes)]){
-     const point=seg.points[index],key=placeKey(point);if(!key)continue;
-     let place=grouping.metadata.places[key];
-     if(!place?.locality&&!place?.nearbyName&&!place?.categories?.length)place=await recorder.recogniseTripPlace(seg.id,index,seg.source!=='device'&&seg.source!=='simulator'?point:null);
-     for(const name of [place?.nearbyName,...(place?.categories||[]),place?.locality].filter(Boolean)){
-      if(name.length>50||result.some(x=>x.tag.toLowerCase()===name.toLowerCase())||hidden.some(x=>x.toLowerCase()===name.toLowerCase()))continue;
-      result.push({tag:name,point:index,source:place?.source||'Apple Maps'});
-     }
-    }
+  if(scanning)return;
+  setScanning(true);setSuggestions([]);setNotice('Preparing route locations…');
+  const segments=trip.segments?.length?trip.segments:[trip];
+  const samples=[];
+  for(const segment of segments){
+   const points=Array.isArray(segment.points)&&segment.points.length?segment.points:
+    (segment.routeSegments||[]).flat().map(p=>Array.isArray(p)?{latitude:p[0],longitude:p[1]}:p);
+   if(!points.length)continue;
+   const count=Math.min(10,points.length);
+   for(let i=0;i<count;i++){
+    const index=Math.round(i*(points.length-1)/Math.max(1,count-1));
+    const point=points[index];
+    if(placeKey(point)&&!samples.some(item=>placeKey(item.point)===placeKey(point)))samples.push({point,index});
    }
-   setSuggestions(result.filter(x=>!trip.tags?.some(t=>t.toLowerCase()===x.tag.toLowerCase())));
-   setNotice(result.length?'Review the suggestions below. Nothing is added automatically by this scan.':'No additional named places were found.');
-  }catch(e){setNotice(e.message||'Place lookup unavailable. Try again on your iPhone.');}
+  }
+  if(!samples.length){setNotice('This activity has no usable GPS route points to search.');setScanning(false);return;}
+  const result=[],errors=[];
+  try{
+   for(let n=0;n<samples.length;n++){
+    setNotice(`Checking place ${n+1} of ${samples.length}…`);
+    const {point}=samples[n],key=placeKey(point);
+    let place=grouping.metadata.places?.[key];
+    if(!place?.locality&&!place?.nearbyName&&!place?.categories?.length){
+     try{
+      // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
+      place=await recorder.recogniseTripPlace(null,0,point);
+     }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
+    }
+    for(const name of [place?.nearbyName,...(place?.categories||[]),place?.locality].filter(Boolean)){
+     if(typeof name!=='string'||name.length>50||result.some(x=>x.tag.toLowerCase()===name.toLowerCase())||hidden.some(x=>x.toLowerCase()===name.toLowerCase()))continue;
+     result.push({tag:name,point:n,source:place?.source||'Apple Maps'});
+    }
+    const visible=result.filter(x=>!trip.tags?.some(t=>t.toLowerCase()===x.tag.toLowerCase()));
+    setSuggestions([...visible]);
+   }
+   const available=result.filter(x=>!trip.tags?.some(t=>t.toLowerCase()===x.tag.toLowerCase()));
+   setNotice(available.length?`Found ${available.length} place suggestions. Review them below.`:errors.length===samples.length?'Place lookup could not run. Check your connection and try again on your iPhone.':errors.length?`No new places found; ${errors.length} lookups failed. Try again with a connection.`:'No additional named places found along this route. You can still add a place name manually.');
+  }catch(error){setNotice(error?.message||'Place search failed. Please try again.');}
   finally{setScanning(false);}
  }
  const end=(trip.segments?.at(-1)||trip).points?.at(-1);
