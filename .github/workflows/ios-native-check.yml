@@ -1,15 +1,7 @@
 name: iOS Native Check
 
+# Run expensive macOS verification only when explicitly requested.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'ios/App/App/**'
-      - 'src/components/AppleMap.jsx'
-      - 'src/components/PlacePicker.jsx'
-      - 'src/lib/appleMaps.js'
-      - 'src/lib/useFriendLocations.js'
-      - '.github/workflows/ios-native-check.yml'
   workflow_dispatch:
 
 permissions:
