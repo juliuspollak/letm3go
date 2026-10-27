@@ -23,7 +23,7 @@ extension LocationRecorder {
             self.motion = MotionEvidence(types:types,confidence:confidence,timestamp:activity.startDate.timeIntervalSince1970,continuous:true)
             self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970)
             if self.automaticAvailable,self.active == nil {
-                if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil {
+                if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now) {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
                     self.detector.reset()
                     self.reconcileAutomaticSampling()
@@ -36,6 +36,7 @@ extension LocationRecorder {
     func setAutomatic(_ enabled: Bool) throws {
         guard storage != nil else { throw failure("Recording storage is unavailable.") }
         if !enabled, automaticTrip != nil { try finishAutomatic() }
+        departureEvidence.reset()
         automaticEnabled = enabled
         lastAutomaticFixAt = nil
         UserDefaults.standard.set(enabled,forKey:"letm3go-automatic-\(ownerID ?? "locked")")
@@ -67,7 +68,7 @@ extension LocationRecorder {
             }
         } else {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
-            automaticSampling=AutomaticSampling()
+            automaticSampling=AutomaticSampling();departureEvidence.reset()
             if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
@@ -92,22 +93,30 @@ extension LocationRecorder {
     }
     func reconcileAutomaticSampling() {
         let now=Date().timeIntervalSince1970
-        if automaticSampling.expire(now:now),automaticTrip == nil {detector.reset();trackingEvent("Departure check expired; returning to standby")}
+        if automaticSampling.expire(now:now),automaticTrip == nil {detector.reset();trackingEvent("Departure check expired; returning to location standby")}
         // A paused manual activity continues to take precedence over automation.
         if active != nil {return}
-        if automaticSampling.needsGPS(automaticAvailable:automaticAvailable,manualRecording:false,automaticRecording:automaticTrip != nil,now:now) {
-            // Acquire the first route samples promptly; idle still uses no continuous GPS.
+        switch automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticTrip != nil,now:now) {
+        case .precise:
             manager.desiredAccuracy=kCLLocationAccuracyBest
             manager.distanceFilter=5
             manager.pausesLocationUpdatesAutomatically=false
             manager.activityType = automaticTrip?.activity == "Driving" || motion.types.contains("Driving") ? .automotiveNavigation : .other
             startContinuousLocation()
-        } else {
+        case .standby:
+            // Motion callbacks cannot wake a suspended app. Keep standard location
+            // running at reduced accuracy so the next departure can promote GPS.
+            manager.desiredAccuracy=kCLLocationAccuracyNearestTenMeters
+            manager.distanceFilter=25
+            manager.pausesLocationUpdatesAutomatically=false
+            manager.activityType = .other
+            startContinuousLocation()
+        case .off:
+            departureEvidence.reset()
             stopContinuousLocation()
-            manager.desiredAccuracy=kCLLocationAccuracyHundredMeters
-            manager.pausesLocationUpdatesAutomatically=true
         }
     }
+
     func configurePlaceRegions() {
         for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { manager.stopMonitoring(for:region) }
         guard CLLocationManager.isMonitoringAvailable(for:CLCircularRegion.self) else { return }
@@ -129,23 +138,32 @@ extension LocationRecorder {
         guard automaticAvailable, active == nil, let storage = storage else { return }
         let now = Date().timeIntervalSince1970
         if CMMotionActivityManager.authorizationStatus() != .authorized { motion = MotionEvidence() }
-        for location in locations {
+        for location in locations.sorted(by:{$0.timestamp<$1.timestamp}) {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
             if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
             guard sample.timestamp >= trackingBoundary else { continue }
-            guard sample.accuracy >= 0,sample.accuracy <= 65,abs(now-sample.timestamp)<=20 else {
+            // Promote GPS before applying the stricter route-accuracy filter.
+            // Otherwise a coarse background wake can be thrown away without
+            // starting the precise observations needed to confirm departure.
+            if automaticTrip == nil,departureEvidence.observe(sample,now:now) {
+                beginAutomaticProbe(movementBegan:true)
+            }
+            guard AutomaticDetector.acceptsDelivery(sample,receivedAt:now,boundary:trackingBoundary) else {
                 if automaticTrip == nil && now-(lastTrackingEventAt ?? 0)>45 {
                     trackingEvent("GPS rejected: accuracy or timestamp outside reliable recording limits")
                 }
                 continue
             }
-            if automaticTrip == nil,motion.types == ["Stationary"],motion.confidence != "low",now-motion.timestamp<=90,sample.speed<3 {continue}
-            if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:now) {beginAutomaticProbe()}
+            let observedAt=sample.timestamp
+            if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:observedAt) {beginAutomaticProbe()}
+            // Standby fixes only watch for departure. Do not turn time spent
+            // parked into the beginning of a journey or accumulate GPS jitter.
+            if automaticTrip == nil,(automaticSampling.probeUntil ?? 0)<=now {continue}
             // Split an on-foot visit only with sustained, fresh automotive and
             // GPS evidence; never switch on a single Core Motion classification.
             if let trip = automaticTrip, ["Walking", "Hiking", "Running"].contains(trip.activity),
                trip.details?.userCorrected != true {
-                if drivingTransition.observe(sample,motion:motion,now:now) {
+                if drivingTransition.observe(sample,motion:motion,now:observedAt) {
                     do {
                         try transitionToDriving()
                         // The confirmed samples were already included in the new
@@ -159,7 +177,7 @@ extension LocationRecorder {
             } else {
                 drivingTransition.reset()
             }
-            let event = detector.observe(sample,motion:motion,manualActive:false,now:now,activity:automaticTrip?.activity ?? "Driving")
+            let event = detector.observe(sample,motion:motion,manualActive:false,now:observedAt,activity:automaticTrip?.activity ?? "Driving")
             do {
                 if event == "depart", let first = detector.candidate.first {
                     var trip = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Automatically detected journey")
@@ -190,8 +208,8 @@ extension LocationRecorder {
                         }
                     }
                     let previousDistance=trip.distanceMeters
-                    if trip.accept(sample,now:now), let first = trip.points.first {
-                        if sample.speed >= 0.3 && !(["Walking", "Hiking", "Running"].contains(trip.activity) && motion.types == ["Driving"]) { trip.applyPrediction(SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now),distance:trip.distanceMeters-previousDistance) }
+                    if trip.accept(sample,now:observedAt), let first = trip.points.first {
+                        if sample.speed >= 0.3 && !(["Walking", "Hiking", "Running"].contains(trip.activity) && motion.types == ["Driving"]) { trip.applyPrediction(SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:observedAt),distance:trip.distanceMeters-previousDistance) }
                         try storage.save(trip); automaticTrip = trip
                     }
                 }
@@ -270,16 +288,16 @@ extension LocationRecorder {
         else { trip.title = trip.activity == "Unknown" ? "Journey" : trip.activity }
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip)
-        trips.insert(trip,at:0); automaticTrip = nil; detector.reset(); drivingTransition.reset()
+        trips.insert(trip,at:0); automaticTrip = nil; detector.reset(); drivingTransition.reset();departureEvidence.reset()
         trackingEvent("Automatic arrival confirmed")
         automaticSampling.stop(now:Date().timeIntervalSince1970)
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil
         refreshAutomaticMonitoring()
     }
-    func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) { if automaticAvailable, active == nil { beginAutomaticProbe() } }
+    func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) { if automaticAvailable, active == nil,region.identifier.hasPrefix("letm3go-place-") { trackingEvent("Place exit triggered departure check");beginAutomaticProbe(movementBegan:true) } }
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) { if automaticAvailable, active == nil { manager.requestLocation() } }
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        if visit.departureDate != .distantFuture, automaticAvailable, active == nil { beginAutomaticProbe() }
+        if visit.departureDate != .distantFuture, automaticAvailable, active == nil { trackingEvent("Visit departure triggered departure check");beginAutomaticProbe(movementBegan:true) }
         if visit.departureDate == .distantFuture, automaticTrip != nil, detector.shouldArrive(now:Date().timeIntervalSince1970,activity:automaticTrip?.activity ?? "Driving") {
             do { try finishAutomatic() } catch { lastError = error.localizedDescription }
         }

@@ -21,6 +21,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticTrip: RecordedActivity?
     var drivingTransition = DrivingTransition()
     var automaticSampling = AutomaticSampling()
+    var departureEvidence = DepartureEvidence()
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
     // In-memory, short-lived native background sharing: off after restart or sign-out.
@@ -111,7 +112,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         super.init()
         manager.delegate = self
         refreshLocationServicesAvailable()
-        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refreshLocationServicesAvailable() }
+        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refreshLocationServicesAvailable();self?.refreshAutomaticMonitoring();self?.recoverStalledAutomaticGPS() }
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
@@ -211,19 +212,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func recoverStalledAutomaticGPS(){
         let now=Date().timeIntervalSince1970
-        guard automaticTrip != nil,automaticAvailable,active == nil,continuousLocationRequested,
-              !accountSuspended,let last=lastAutomaticFixAt,now-last>60,
+        guard automaticAvailable,active == nil,continuousLocationRequested,
+              !accountSuspended,let started=continuousStartedAt else {return}
+        let precise=automaticSampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticTrip != nil,now:now)
+        guard precise||locationUpdatesPaused else {return}
+        let last=max(started,(precise ? lastAutomaticFixAt : lastLocationUpdateAt) ?? started)
+        guard now-last>60,
               now-automaticGPSRecoveryAt>120 else {return}
         automaticGPSRecoveryAt=now
         trackingEvent("Automatic GPS silent for \(Int(now-last))s; restarting location updates")
         manager.stopUpdatingLocation()
         continuousLocationRequested=false
         locationUpdatesPaused=false
-        manager.desiredAccuracy=kCLLocationAccuracyBest
-        manager.distanceFilter=5
-        manager.pausesLocationUpdatesAutomatically=false
-        manager.activityType=automaticTrip?.activity == "Driving" ? .automotiveNavigation : .other
-        startContinuousLocation()
+        reconcileAutomaticSampling()
     }
     func startContinuousLocation(){
         updateIndicatorPolicy()
@@ -358,7 +359,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         return ["ownerID":ownerID!, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticTrip != nil ? "recording" : detector.phase,
-                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticTrip != nil ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "lowPowerIdle",
+                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticTrip != nil ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "locationStandby",
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],

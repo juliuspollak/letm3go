@@ -284,6 +284,11 @@ struct DrivingTransition {
 }
 
 struct AutomaticDetector {
+    static func acceptsDelivery(_ point:GPSPoint,receivedAt:Double,boundary:Double)->Bool {
+        point.timestamp>=boundary && receivedAt-point.timestamp>=0 && receivedAt-point.timestamp<=120 &&
+        point.accuracy>=0 && point.accuracy<=65 && point.latitude.isFinite && point.longitude.isFinite &&
+        abs(point.latitude)<=90 && abs(point.longitude)<=180
+    }
     var stationarySince:Double?
     // An absence of GPS fixes is not evidence of arrival. Only conclude arrival
     // while the recorder is receiving fresh, valid location observations.
@@ -388,6 +393,35 @@ struct AutomaticSampling {
     func needsGPS(automaticAvailable:Bool,manualRecording:Bool,automaticRecording:Bool,now:Double)->Bool {
         manualRecording || (automaticAvailable && (automaticRecording || (probeUntil ?? 0)>now))
     }
+    func locationMode(available:Bool,manualActive:Bool,automaticRecording:Bool,now:Double)->AutomaticLocationMode {
+        guard available,!manualActive else {return .off}
+        return needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticRecording,now:now) ? .precise : .standby
+    }
+}
+
+enum AutomaticLocationMode {case off,standby,precise}
+
+// Coarse standby observations may start GPS, but never become route geometry.
+// Speed or displacement must exceed the uncertainty of the location fixes.
+struct DepartureEvidence {
+    var anchor:GPSPoint?
+    var lastMovementAt:Double?
+    mutating func reset(){anchor=nil;lastMovementAt=nil}
+    func recentMovement(now:Double)->Bool {lastMovementAt.map{now >= $0 && now-$0<=30} ?? false}
+    mutating func observe(_ point:GPSPoint,now:Double)->Bool {
+        guard point.latitude.isFinite,point.longitude.isFinite,
+              abs(point.latitude)<=90,abs(point.longitude)<=180,
+              point.accuracy>=0,point.accuracy<=150,
+              now-point.timestamp>=0,now-point.timestamp<=30 else {return false}
+        if let old=anchor,point.timestamp<=old.timestamp {return false}
+        if point.speed>=3 {anchor=point;lastMovementAt=point.timestamp;return true}
+        guard let old=anchor else {anchor=point;return false}
+        let distance=old.distance(to:point)
+        if distance>=max(35,old.accuracy+point.accuracy),distance/max(1,point.timestamp-old.timestamp)<=85 {
+            anchor=point;lastMovementAt=point.timestamp;return true
+        }
+        return false
+    }
 }
 
 // Automatic Always-authorised tracking reports its status in-app. Manual recording
@@ -399,6 +433,7 @@ enum TrackingPresentation {
             if manual {return "Manual recording"}
             if automatic {return stationary ? "Confirming arrival (up to 3 minutes)" : "Recording automatic journey"}
             if probing {return "Bounded departure check (up to 2 minutes)"}
+            if available {return "Departure standby: lower-accuracy background location"}
             return "Stopping continuous location service"
         }
         return available ? "Low-power standby: significant changes, visits, geofences and motion" : "Tracking off or permission unavailable"

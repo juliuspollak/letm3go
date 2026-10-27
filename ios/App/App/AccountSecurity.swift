@@ -87,7 +87,7 @@ extension LocationRecorder {
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         let records = try storage!.load()
         trips = records.filter { $0.state == "finished" }
-        active = nil; automaticTrip = nil; detector.reset()
+        active = nil; automaticTrip = nil; detector.reset();departureEvidence.reset()
         for var record in records where record.state != "finished" {
             record.recoverAfterInterruption()
             if record.recordingMode == "automatic" { record.finish(at:record.points.last?.timestamp ?? record.startedAt); try storage!.save(record); trips.append(record) }

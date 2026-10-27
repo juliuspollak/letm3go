@@ -148,12 +148,12 @@ _ = startingWalk.accept(GPSPoint(latitude:0,longitude:0,timestamp:100,accuracy:5
 check(startingWalk.accept(GPSPoint(latitude:0,longitude:0.002,timestamp:110,accuracy:5,altitude:0,speed:22),now:110), "initial walking label must not discard later driving fixes")
 
 var sampling=AutomaticSampling()
-check(!sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:false,now:100),"idle automatic monitoring does not run continuous GPS")
+check(!sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:false,now:100),"idle automatic monitoring does not request precise GPS")
 sampling.requestProbe(now:100);sampling.requestProbe(now:200)
 check(sampling.probeUntil == 220,"motion callbacks cannot indefinitely extend a departure probe")
 check(sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:false,now:150),"departure probe temporarily enables detailed GPS")
 check(sampling.expire(now:220),"departure probe expires without an arrival or motion callback")
-check(!sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:false,now:220),"expired probe stops continuous GPS")
+check(!sampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:false,now:220),"expired probe stops precise GPS")
 sampling.requestProbe(now:230)
 check(sampling.probeUntil == nil,"idle fixes cannot immediately restart an expired probe")
 sampling.requestProbe(now:300)
@@ -188,7 +188,7 @@ check(!AutomaticDetector.shouldProbe(idleFix,motion:MotionEvidence(types:["Stati
 check(AutomaticDetector.shouldProbe(idleFix,motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:100),now:100),"walking evidence can start a bounded departure check")
 var movingFix=idleFix;movingFix.speed=10
 check(AutomaticDetector.shouldProbe(movingFix,motion:MotionEvidence(types:["Stationary"],confidence:"high",timestamp:100),now:100),"clear GPS movement overrides delayed stationary motion classification")
-print("\(assertions) native recorder/auth assertions passed")
+
 
 // A genuine new departure bypasses the idle cooldown once, without extending probes.
 let freshWalking=MotionEvidence(types:["Walking"],confidence:"high",timestamp:501)
@@ -231,3 +231,57 @@ let walkMotion = MotionEvidence(types:["Walking"],confidence:"high",timestamp:10
 check(shortWalk.observe(point(-33,1000),motion:walkMotion,manualActive:false,now:1000) == nil,"walk starting")
 check(shortWalk.observe(point(-32.9998,1006),motion:walkMotion,manualActive:false,now:1006) == nil,"walking remains conservative")
 check(shortWalk.observe(point(-32.99955,1014),motion:walkMotion,manualActive:false,now:1014) == nil,"walking does not use automotive fast confirmation")
+
+// Shopping return-trip regression: standby must keep a location wake-up path.
+var returningSampling=AutomaticSampling()
+check(returningSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:100) == .standby,"idle keeps lower-accuracy location alive instead of relying on suspended motion callbacks")
+returningSampling.requestProbe(now:100,movementBegan:true)
+check(returningSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:110) == .precise,"departure upgrades standby to precise GPS")
+returningSampling.stop(now:200)
+check(returningSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:201) == .standby,"arrival returns to location standby, not an unwakeable motion-only state")
+returningSampling.requestProbe(now:201,movementBegan:true)
+check(returningSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:201) == .precise,"leaving the shop immediately bypasses previous arrival cooldown")
+check(returningSampling.locationMode(available:false,manualActive:false,automaticRecording:false,now:201) == .off,"disabled automatic tracking stops standby too")
+check(returningSampling.locationMode(available:true,manualActive:true,automaticRecording:false,now:201) == .off,"paused or active manual recorder keeps precedence")
+
+var departure=DepartureEvidence()
+let shop=GPSPoint(latitude:-33,longitude:151,timestamp:200,accuracy:10,altitude:0,speed:0)
+check(!departure.observe(shop,now:200),"stationary shop fix establishes departure anchor")
+var coarseDrive=shop;coarseDrive.timestamp=205;coarseDrive.accuracy=100;coarseDrive.speed=8
+check(departure.observe(coarseDrive,now:205),"coarse moving fix promotes precise GPS even though it cannot be saved as route geometry")
+check(departure.recentMovement(now:206),"GPS departure evidence prevents a delayed stationary motion callback from cancelling acquisition")
+check(!departure.recentMovement(now:240),"old movement cannot keep a stationary departure probe alive")
+check(!departure.observe(coarseDrive,now:206),"duplicate observations do not retrigger departure")
+var unsafeRoute=RecordedActivity(activity:"Unknown",startedAt:200,resumedAt:200,title:"Probe")
+check(!unsafeRoute.accept(coarseDrive,now:205),"coarse wake-up evidence never weakens recorded-route accuracy filtering")
+departure.reset()
+check(!departure.observe(shop,now:200),"new shop anchor")
+var shopJitter=shop;shopJitter.timestamp=205;shopJitter.latitude += 0.00005
+check(!departure.observe(shopJitter,now:205),"stationary GPS jitter does not promote precise GPS")
+var exitFix=shop;exitFix.timestamp=215;exitFix.latitude += 0.0005
+check(departure.observe(exitFix,now:215),"displacement starts precise GPS when speed and motion are unavailable")
+var staleExit=exitFix;staleExit.timestamp=220
+check(!departure.observe(staleExit,now:260),"stale cached fixes cannot trigger a new departure")
+var inaccurateExit=exitFix;inaccurateExit.timestamp=230;inaccurateExit.accuracy=500;inaccurateExit.speed=15
+check(!departure.observe(inaccurateExit,now:230),"unbounded coarse uncertainty cannot start a departure probe")
+check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:true,probing:false,available:true).contains("Departure standby"),"diagnostics explain the retained background service")
+
+let deliveredStart=GPSPoint(latitude:-33,longitude:151,timestamp:1000,accuracy:10,altitude:0,speed:8)
+check(AutomaticDetector.acceptsDelivery(deliveredStart,receivedAt:1080,boundary:900),"accurate GPS delivered in a delayed batch retains real departure fixes")
+check(!AutomaticDetector.acceptsDelivery(deliveredStart,receivedAt:1201,boundary:900),"old cached GPS is not imported into current tracking")
+check(!AutomaticDetector.acceptsDelivery(deliveredStart,receivedAt:1080,boundary:1001),"delayed batches cannot cross account or tracking boundaries")
+check(!AutomaticDetector.acceptsDelivery(deliveredStart,receivedAt:999,boundary:900),"future GPS timestamps are rejected")
+var batchedDeparture=AutomaticDetector()
+var batchTrip:RecordedActivity?
+for (offset,latitude) in [(0.0,-33.0),(6.0,-32.9998),(14.0,-32.99955)] {
+    let sample=GPSPoint(latitude:latitude,longitude:151,timestamp:1000+offset,accuracy:5,altitude:0,speed:8)
+    check(AutomaticDetector.acceptsDelivery(sample,receivedAt:1080,boundary:900),"buffered drive fix accepted at delivery boundary")
+    if batchedDeparture.observe(sample,motion:carMotion,manualActive:false,now:sample.timestamp) == "depart" {
+        var trip=RecordedActivity(activity:"Driving",startedAt:batchedDeparture.candidate[0].timestamp,resumedAt:batchedDeparture.candidate[0].timestamp,title:"Batched drive")
+        trip.recordingMode="automatic"
+        for candidate in batchedDeparture.candidate {_ = trip.accept(candidate,now:candidate.timestamp)}
+        batchTrip=trip
+    }
+}
+check(batchTrip?.startedAt == 1000 && batchTrip?.points.count == 3,"delayed delivery preserves the actual departure instead of recording only the drive's tail")
+print("\(assertions) native recorder/auth assertions passed")
