@@ -284,4 +284,28 @@ for (offset,latitude) in [(0.0,-33.0),(6.0,-32.9998),(14.0,-32.99955)] {
     }
 }
 check(batchTrip?.startedAt == 1000 && batchTrip?.points.count == 3,"delayed delivery preserves the actual departure instead of recording only the drive's tail")
+
+// Diagnostics survive even when detection never creates a trip.
+var journal=RecorderDiagnosticJournal()
+journal.append(RecorderDiagnosticEvent(at:100,kind:"motion",message:"Driving delivered",context:["motionTypes":"Driving"]))
+journal.append(RecorderDiagnosticEvent(at:150,kind:"decision",message:"Probe expired",context:["candidateFixes":"2"]))
+journal.append(RecorderDiagnosticEvent(at:300,kind:"lifecycle",message:"Foreground",context:[:]))
+check(journal.window(start:120,end:200).map{$0.message} == ["Driving delivered","Probe expired"],"incident export retains pre-window state and detection decisions without any trip")
+check(journal.window(start:160,end:200).count == 1,"empty incident window only includes prior known state, never later events")
+let journalData=try JSONEncoder().encode(journal)
+try encrypted.writeData(journalData,name:"recorder-diagnostics.data")
+let diagnosticsCipher=try Data(contentsOf:encryptedDirectory.appendingPathComponent("recorder-diagnostics.data"))
+check(!String(decoding:diagnosticsCipher,as:UTF8.self).contains("Driving delivered"),"diagnostic history uses encrypted account storage")
+let restartedStore=try RecordingStorage(directory:encryptedDirectory,encryptionKey:Data(repeating:1,count:32))
+let restartedJournal=try JSONDecoder().decode(RecorderDiagnosticJournal.self,from:restartedStore.readData(name:"recorder-diagnostics.data"))
+check(restartedJournal.events.count == 3,"missed-detection evidence survives storage reopen and process restart")
+check(try! restartedStore.load().isEmpty,"diagnostic file never becomes a phantom activity")
+do{_ = try otherKey.readData(name:"recorder-diagnostics.data");fatalError("another account decrypted diagnostics")}catch{assertions+=1}
+journal.append(RecorderDiagnosticEvent(at:RecorderDiagnosticJournal.retention+301,kind:"lifecycle",message:"New week",context:[:]))
+check(journal.events.count == 1,"diagnostic events older than seven days are pruned")
+for index in 0...RecorderDiagnosticJournal.limit {
+    journal.append(RecorderDiagnosticEvent(at:RecorderDiagnosticJournal.retention+302+Double(index),kind:"observations",message:"Summary",context:[:]))
+}
+check(journal.events.count == RecorderDiagnosticJournal.limit,"busy diagnostic journal remains bounded")
+check(journal.events.last?.message == "Summary","retention preserves the newest evidence")
 print("\(assertions) native recorder/auth assertions passed")

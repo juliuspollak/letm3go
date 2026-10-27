@@ -439,3 +439,27 @@ enum TrackingPresentation {
         return available ? "Low-power standby: significant changes, visits, geofences and motion" : "Tracking off or permission unavailable"
     }
 }
+
+// A bounded recorder journal, separate from activities so failed detections survive
+// restart too. Context is explicitly selected by the recorder, never raw locations.
+struct RecorderDiagnosticEvent:Codable {
+    var at:Double
+    var kind:String
+    var message:String
+    var context:[String:String]
+}
+struct RecorderDiagnosticJournal:Codable {
+    static let retention:Double=7*24*3600
+    static let limit=2000
+    var events:[RecorderDiagnosticEvent]=[]
+    mutating func append(_ event:RecorderDiagnosticEvent){
+        events.append(event)
+        prune(now:event.at)
+    }
+    mutating func prune(now:Double){events=Array(events.filter{$0.at>=now-Self.retention}.suffix(Self.limit))}
+    func window(start:Double,end:Double)->[RecorderDiagnosticEvent]{
+        let ordered=events.sorted{$0.at<$1.at}
+        // Keep the last known state before the incident as well as events inside it.
+        return Array(ordered.filter{$0.at<start}.suffix(1))+ordered.filter{$0.at>=start && $0.at<=end}
+    }
+}

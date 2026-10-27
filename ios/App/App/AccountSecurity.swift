@@ -96,8 +96,10 @@ extension LocationRecorder {
         }
         trips.sort { $0.startedAt > $1.startedAt }
         storeOpened = true
+        loadRecorderDiagnostics()
     }
     func stopAccount() throws {
+        diagnosticSummary(force:true);recordDiagnostic("account","Recorder locked or signed out")
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling()
         uiUnlocked = false; accountSuspended = true; storeOpened = false

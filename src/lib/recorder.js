@@ -4,6 +4,7 @@ const native = registerPlugin('ManualRecorder');
 export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
 export const emptyRecorder = { active:null, trips:[], permission:'unavailable', automaticEnabled:false, automaticAvailable:false, automaticState:'idle', places:[], deletedIDs:[], backgroundEnabled:false, accuracy:null, version:'1.0', build:'web', error:'', recovery:'', storageReady:false };
 export const recorder = {
+ trackingReport:params=>native.trackingReport(params),
  getState:()=>recorderAvailable()?native.getState():Promise.resolve(emptyRecorder),
  configureLiveSharing:params=>recorderAvailable()?native.configureLiveSharing(params):Promise.resolve(),
  restoreActivity:activity=>native.restoreActivity({activity}),
