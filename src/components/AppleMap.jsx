@@ -2,9 +2,11 @@ import { Maximize2, Navigation } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable } from '../lib/appleMaps.js';
 
-export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true}){
+export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null}){
  const mapSurface=useRef(null);
  const embeddedOnce=useRef(false);
+ const fittedViewport=useRef(null);
+ const fittedContent=useRef({positions:false,focus:false});
  const openingFullscreen=useRef(false);
  const [reopenVersion,setReopenVersion]=useState(0);
  const [embedded,setEmbedded]=useState(false);
@@ -41,6 +43,9 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   if(!appleMapsAvailable()||picker)return;
   if(!embeddedEnabled){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;return;}
   let active=true;let previous='';
+  const content=JSON.parse(interactiveData);
+  const positions=content.routes.some(route=>route.length)||content.pins.length>0;
+  const focus=Boolean(content.focus);
   const mount=()=>{
    if(!active||openingFullscreen.current||!mapSurface.current)return;
    const surface=mapSurface.current;
@@ -56,8 +61,8 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
    if(box.width<=80||visibleHeight<=80||box.bottom<=0){if(embeddedOnce.current){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const geometry=[box.x,box.y,box.width,visibleHeight].map(n=>n.toFixed(1)).join(':');
    if(geometry===previous)return;
-   const preserveViewport=embeddedOnce.current;previous=geometry;
-   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{previous='';if(active)setEmbedded(false);});
+   const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus);previous=geometry;
+   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport}).then(()=>{embeddedOnce.current=true;fittedViewport.current=viewportKey;fittedContent.current={positions,focus};if(active)setEmbedded(true);}).catch(()=>{previous='';if(active)setEmbedded(false);});
   };
   // The detail page animates into place; ResizeObserver alone does not see
   // transforms. Follow its initial movement before leaving layout to observers.
@@ -72,7 +77,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   window.addEventListener('scroll',resized,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
- },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion]);
+ },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;

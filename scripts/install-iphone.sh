@@ -13,4 +13,4 @@ build_args=(-project ios/App/App.xcodeproj -scheme App -configuration Debug
 if [ "${ALLOW_PROVISIONING_UPDATES:-0}" = '1' ]; then build_args+=(-allowProvisioningUpdates); fi
 xcodebuild "${build_args[@]}" build
 xcrun devicectl device install app --device "$device_identifier" .build/device/Build/Products/Debug-iphoneos/App.app
-xcrun devicectl device process launch --device "$device_identifier" au.jpollak.journey
+xcrun devicectl device process launch --terminate-existing --device "$device_identifier" au.jpollak.journey

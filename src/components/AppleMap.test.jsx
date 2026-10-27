@@ -35,3 +35,20 @@ it('opens the same trimmed route in fullscreen that is shown in the embedded map
  fireEvent.click(getByRole('button',{name:'Open interactive Apple journey map'}));
  await waitFor(()=>expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({routes:[[[3,4],[5,6]]]})));
 });
+it('fits the first positions arriving after an empty startup and then preserves user navigation',async()=>{
+ const {rerender}=render(<AppleMap payload={{routes:[],pins:[]}}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ mocks.embed.mockClear();
+ rerender(<AppleMap payload={{routes:[],pins:[{point:[-34,151],kind:'location'}],focus:[-34,151]}}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:false,focus:[-34,151]})));
+ mocks.embed.mockClear();
+ rerender(<AppleMap payload={{routes:[],pins:[{point:[-34.001,151],kind:'location'}],focus:[-34.001,151]}}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:true})));
+});
+it('refits the viewport when an explicit map filter or locate action changes',async()=>{
+ const {rerender}=render(<AppleMap payload={payload} viewportKey="people:0"/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ mocks.embed.mockClear();
+ rerender(<AppleMap payload={payload} viewportKey="all:0"/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:false})));
+});

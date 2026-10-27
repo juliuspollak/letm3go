@@ -417,11 +417,25 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 /* Social-first map: compact, uncluttered controls and clear bottom-navigation clearance. */
 .map-social-explorer{position:relative;padding-bottom:calc(24px + env(safe-area-inset-bottom));}
-.map-compact-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;min-height:44px}
-.map-compact-label{font-size:13px;font-weight:700;color:var(--ink)}
-.map-layers-trigger{display:flex;align-items:center;gap:7px;min-height:42px;border:1px solid var(--line);border-radius:22px;background:var(--surface);padding:8px 14px;font-size:12px;font-weight:700;color:var(--ink)}
-.map-layer-popover{position:absolute;top:50px;right:0;width:min(225px,90%);display:grid;gap:3px;z-index:20;background:var(--surface);box-shadow:0 12px 35px #0002;border:1px solid var(--line);border-radius:18px;padding:7px}
-.map-layer-popover button{text-align:left;min-height:43px;padding:10px 14px;border-radius:10px;color:var(--ink);font-size:13px}.map-layer-popover button[aria-pressed=true]{background:var(--soft);color:var(--accent);font-weight:700}
+/* Keep filters in normal flow above the native map's rendering surface. */
+.map-filter-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-height:48px;margin:0 0 12px;min-width:0}
+.map-filter-summary{flex:1;min-width:0;font-size:12px;font-weight:600;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.map-filter-toolbar[data-open=true] .map-filter-summary{display:none}
+.map-filter-dock{display:flex;align-items:center;gap:0;max-width:100%;padding:4px;border:1px solid var(--line);border-radius:28px;background:var(--surface);box-shadow:0 3px 12px #00000008}
+.map-filter-toolbar[data-open=true] .map-filter-dock{gap:8px}
+.map-filter-reveal{max-width:0;opacity:0;overflow:hidden;transition:max-width .28s cubic-bezier(.2,.8,.2,1),opacity .2s ease}
+.map-filter-toolbar[data-open=true] .map-filter-reveal{max-width:194px;opacity:1}
+.map-filter-options{display:flex;gap:6px;width:194px}
+.map-filter-option,.map-filter-trigger{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px;padding:0;border-radius:50%;color:var(--muted);transition:background .18s ease,color .18s ease,transform .24s ease}
+.map-filter-option{transform:translateX(12px) scale(.92)}
+.map-filter-toolbar[data-open=true] .map-filter-option{transform:none;transition-delay:calc((3 - var(--filter-order))*25ms)}
+.map-filter-option[aria-pressed=true]{background:var(--accent);color:var(--on-accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 22%,transparent)}
+.map-filter-option:active{transform:scale(.92)}
+.map-filter-trigger{background:var(--soft);color:var(--ink)}
+.map-filter-trigger[aria-expanded=true]{background:var(--accent-soft);color:var(--accent)}
+.map-filter-indicator{position:absolute;right:8px;top:8px;width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.map-filter-indicator[data-active=false]{display:none}
+@media(prefers-reduced-motion:reduce){.map-filter-reveal,.map-filter-option,.map-filter-trigger{transition:none!important;transform:none!important}}
 @media(max-width:760px){.map-social-explorer .journey-map.large{height:min(52dvh,580px)}.map-social-explorer .apple-map-frame{margin-bottom:12px}}
 
 /* Household setup: inviting family should not feel like configuring a database. */

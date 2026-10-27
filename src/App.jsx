@@ -1,4 +1,7 @@
 import PersonAvatar from './components/PersonAvatar.jsx';
+import MapFilters from './components/MapFilters.jsx';
+import {mapLayerJourneys} from './lib/mapLayers.js';
+import {useMapLocation} from './lib/useMapLocation.js';
 import {usePeopleAvatars} from './lib/usePeopleAvatars.js';
 import Friends from './components/Friends.jsx';
 import FriendTrips from './components/FriendTrips.jsx';
@@ -86,7 +89,7 @@ function PrivateApp(){
  };
  const fleet=useFleetJourneys(session.user.id,true);
  const grouping=useJourneyGrouping({owner:session.user.id,activities:recording.state.ownerID&&recording.state.ownerID.toLowerCase()!==session.user.id.toLowerCase()?[]:recording.state.trips.filter(t=>t.source==='device').map(recordedJourney).concat(fleet.activities),telemetry:fleet.charges,places:recording.state.places||[],vehicles:auth.preferences.vehicles||[],serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences});
- const [currentPosition,setCurrentPosition]=useState(null);
+
  const vehicles=auth.preferences.vehicles||[];
  const setVehicles=vehicles=>auth.savePreferences({vehicles});
  const realJourneys=recording.state.trips.filter(t=>t.source==='device').map(recordedJourney);
@@ -203,14 +206,15 @@ function PrivateApp(){
  const [metricView,setMetricView]=useState(null);
  const [socialSection,setSocialSection]=useState('friends');
  const [pendingInvitation,setPendingInvitation]=useState(()=>{try{return JSON.parse(sessionStorage.getItem('letm3go:pending-invitation')||'null');}catch{return null;}});
- const [mapLayer,setMapLayer]=useState('people');
- const [mapLayersOpen,setMapLayersOpen]=useState(false);
+ const [mapLayers,setMapLayers]=useState(['people']);
+ const [mapCenterVersion,setMapCenterVersion]=useState(0);
  const [tripSearchOpen,setTripSearchOpen]=useState(false);
  const [tripFiltersOpen,setTripFiltersOpen]=useState(false);
  const [tripActionsOpen,setTripActionsOpen]=useState(false);
  const tripSearchRef=useRef(null);
 
  const [tab,setTab]=useState('Home'),[selected,setSelected]=useState(null),[sheet,setSheet]=useState(null),[query,setQuery]=useState(''),[filter,setFilter]=useState('All activities'),[dayFilter,setDayFilter]=useState('all'),[sortPreference,setSortPreference]=useState(()=>{const saved=localStorage.getItem('letm3go-trip-sort');return ['newest','distance','duration'].includes(saved)?saved:'newest';}),[favouritesOnly,setFavouritesOnly]=useState(false),[error,setError]=useState(''),[lightbox,setLightbox]=useState(null),[theme,setTheme]=useState(()=>localStorage.getItem('letm3go-theme')||'light');
+ const mapLocation=useMapLocation(session.user.id,tab==='Map',recording.state.permission);
  useEffect(()=>{
   const opened=event=>{const invite=event.detail;if(!invite||!['friend','household'].includes(invite.kind))return;setPendingInvitation(invite);setSocialSection(invite.kind==='household'?'household':'friends');setTab('Social');};
   window.addEventListener('letm3go:invitation-opened',opened);
@@ -246,6 +250,7 @@ function PrivateApp(){
  const selectedJourney=selected?.isGroupedJourney?visibleJourneys.find(j=>j.id===selected.id):null;
  const selectedActivity=selected&&!selected.isGroupedJourney?(visibleJourneys.find(j=>j.id===selected.id)||realJourneys.find(j=>j.id===selected.id)||selected):null;
  const today=new Date().toLocaleDateString('en-CA');
+ const mapJourneys=mapLayerJourneys(grouping.journeys,mapLayers,today,saved);
  const shiftDay=(day,offset)=>{const basis=day==='all'||day==='today'?new Date():new Date(day+'T12:00:00');basis.setDate(basis.getDate()+offset);return basis.toLocaleDateString('en-CA');};
  const chosenDay=dayFilter==='today'?today:dayFilter;
  const filtered=visibleJourneys.filter(t=>(showArchived?archivedTrips.includes(t.id):!archivedTrips.includes(t.id))&&(!favouritesOnly||saved.includes(t.id))&&((tripSearchOpen&&query.trim())||dayFilter==='all'||t.date===chosenDay||t.segments?.some(s=>s.date===chosenDay))&&(filter==='All activities'||t.activity===filter)&&`${t.searchIndex||''} ${t.title} ${t.location} ${t.date} ${t.collection||''} ${t.notes||''} ${t.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='duration'?b.durationSeconds-a.durationSeconds||b.startedAt-a.startedAt:sort==='distance'?b.distanceMeters-a.distanceMeters||b.startedAt-a.startedAt:b.startedAt-a.startedAt);
@@ -300,9 +305,8 @@ function PrivateApp(){
  {mergeSource&&mergeTarget&&<div className="modal-backdrop" role="presentation"><div className="notice" role="dialog" aria-modal="true" aria-label="Merge journeys" style={{maxWidth:440,margin:'auto',padding:24}}><h2>Merge these activities?</h2><p>Combine the two selected journeys into one timeline while retaining the original GPS recordings and stops. You can undo this later.</p><p className="muted small-copy">Only consecutive activities from the same account can be merged; overlapping recordings and incompatible vehicles are excluded.</p>{grouping.error&&<p role="alert" className="error">{grouping.error}</p>}<div className="detail-actions"><button className="secondary" onClick={()=>{setMergeTarget(null);setMergeSource(null);}}>Cancel</button><button className="primary" disabled={grouping.busy} onClick={confirmMerge}>{grouping.busy?'Merging…':'Yes, merge'}</button></div></div></div>}
  {tab==='Social'&&<div className="social-layout social-redesign"><div className="social-sections" role="group" aria-label="Social sections"><button type="button" aria-pressed={socialSection==='friends'} onClick={()=>setSocialSection('friends')}>Friends</button><button type="button" aria-pressed={socialSection==='household'} onClick={()=>setSocialSection('household')}>Household</button></div>{socialSection==='friends'?<><HouseholdPresence personPhotos={peopleAvatars.photos} householdLivePeople={presence.livePeople} householdLiveEnabled={presence.liveEnabled} selfAvatar={auth.preferences.avatar} selfName={auth.preferences.displayName||'You'} presence={presence} friendsLocation={friendsLocation} places={recording.state.places||[]} onSetHome={()=>setSheet('places')}/><Friends personPhotos={peopleAvatars.photos} invitationCode={pendingInvitation?.kind==='friend'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} onShareLive={()=>friendsLocation.setSharing(true)}/><FriendTrips activities={grouping.journeys}/></>:<><Household invitationCode={pendingInvitation?.kind==='household'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} personPhotos={peopleAvatars.photos} onMembershipChanged={peopleAvatars.refresh} onShareLive={()=>presence.setLiveSharing(true)} onStopLive={()=>presence.setLiveSharing(false)} liveEnabled={presence.liveEnabled} vehicles={vehicles} onSaveVehicles={setVehicles}/><HouseholdTrips activities={grouping.records}/></>}</div>}
  {tab==='Map'&&<div className="map-explorer map-social-explorer">
- <div className="map-compact-toolbar"><span className="map-compact-label">{mapLayer==='people'?'People & places':mapLayer==='today'?'Today’s activities':mapLayer==='pinned'?'Favourite activities':'All activities'}</span><button type="button" className="map-layers-trigger" aria-expanded={mapLayersOpen} aria-label="Choose map layers" onClick={()=>setMapLayersOpen(v=>!v)}><SlidersHorizontal size={18}/> Layers</button></div>
- {mapLayersOpen&&<div className="map-layer-popover" role="group" aria-label="Map layers">{[['people','People & places'],['today','Today’s activities'],['pinned','Favourite activities'],['all','All activities']].map(([id,label])=><button type="button" key={id} aria-pressed={mapLayer===id} onClick={()=>{setMapLayer(id);setMapLayersOpen(false);}}>{label}{mapLayer===id?' ✓':''}</button>)}</div>}
- <JourneyMap journeys={mapLayer==='people'?[]:mapLayer==='today'?grouping.journeys.filter(t=>t.date===today||t.segments?.some(seg=>seg.date===today)):mapLayer==='pinned'?grouping.journeys.filter(t=>saved.includes(t.id)||t.segmentIDs?.some(id=>saved.includes(id))):grouping.journeys} onPhoto={openPhoto} currentPosition={currentPosition} livePeople={[...friendsLocation.people.map(p=>({...p,source:'friend'})),...presence.livePeople.filter(p=>!friendsLocation.people.some(friend=>friend.user_id===p.user_id)).map(p=>({...p,source:'household'}))]} homePresence={(()=>{const home=recording.state.places?.find(p=>p.kind==='home');if(!home)return null;const names=[...(presence.self?.sharing_enabled&&presence.self?.activity_label==='At home'?['You']:[]),...presence.people.filter(p=>p.activity_label==='At home').map(p=>p.display_name)];return names.length?{latitude:home.latitude,longitude:home.longitude,count:names.length,names}:null;})()} large locating={recording.busy} onLocate={async()=>{const point=await recording.run('currentPosition');if(point){setCurrentPosition(point);setError('');}else setError('Current location is unavailable. Check permissions or try outdoors.');}}/>{realJourneys.length>50&&<p className="muted small-copy">Showing the 50 most recent routes.</p>}</div>}
+ <MapFilters value={mapLayers} onChange={setMapLayers}/>
+ <JourneyMap journeys={mapJourneys} viewportKey={`${mapLayers.join(':')}:${mapCenterVersion}`} focusPoint={mapLayers.every(layer=>layer==='people')?mapLocation.position:null} onPhoto={openPhoto} currentPosition={mapLocation.position} livePeople={mapLayers.includes('people')?[...friendsLocation.people.map(p=>({...p,source:'friend'})),...presence.livePeople.filter(p=>!friendsLocation.people.some(friend=>friend.user_id===p.user_id)).map(p=>({...p,source:'household'}))]:[]} homePresence={(()=>{if(!mapLayers.includes('people'))return null;const home=recording.state.places?.find(p=>p.kind==='home');if(!home)return null;const names=[...(presence.self?.sharing_enabled&&presence.self?.activity_label==='At home'?['You']:[]),...presence.people.filter(p=>p.activity_label==='At home').map(p=>p.display_name)];return names.length?{latitude:home.latitude,longitude:home.longitude,count:names.length,names}:null;})()} large locating={mapLocation.loading} onLocate={async()=>{if(await mapLocation.locate())setMapCenterVersion(value=>value+1);}}/>{mapLocation.error&&<p role="status" className="notice">{mapLocation.error}</p>}{mapJourneys.length>50&&<p className="muted small-copy">Showing the 50 most recent routes.</p>}</div>}
 
  <footer className="page-footer"><span>Go somewhere. Keep the feeling.</span><span><Lock size={12}/> Your routes stay private</span></footer></div>}
  </main><nav className="mobile-nav">{[[Home,'Home'],[Map,'Map'],[CircleDot,'Record'],[Route,'Trips'],[Users,'Social']].map(([Icon,name])=><button key={name} className={tab===name?'active':''} onClick={()=>{setTab(name);setSelected(null);}}><Icon size={21}/><span>{name}</span></button>)}</nav>

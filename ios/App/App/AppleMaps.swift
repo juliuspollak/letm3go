@@ -46,16 +46,19 @@ private func journalPhotoThumbnail(_ photoID:String, size:CGFloat=48)->UIImage? 
 private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let pins: [[String:Any]]
+    let focus:CLLocationCoordinate2D?
     init(_ options:[AnyHashable:Any]) {
+        focus=coordinate(options["focus"])
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { !$0.isEmpty }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
     }
     var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+pins.compactMap { coordinate($0["point"]) } }
     var rect:MKMapRect {
-        guard !coordinates.isEmpty else { return MKMapRect.world }
+        let fitting=focus.map{[$0]} ?? coordinates
+        guard !fitting.isEmpty else { return MKMapRect.world }
         var rect=MKMapRect.null
-        for c in coordinates { let p=MKMapPoint(c);rect=rect.union(MKMapRect(x:p.x,y:p.y,width:1,height:1)) }
-        let middle=coordinates[coordinates.count/2]
+        for c in fitting { let p=MKMapPoint(c);rect=rect.union(MKMapRect(x:p.x,y:p.y,width:1,height:1)) }
+        let middle=fitting[fitting.count/2]
         let minimum=1200*MKMapPointsPerMeterAtLatitude(middle.latitude)
         let width=max(rect.width*1.3,minimum),height=max(rect.height*1.3,minimum)
         return MKMapRect(x:rect.midX-width/2,y:rect.midY-height/2,width:width,height:height)
@@ -175,6 +178,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                   width>80,height>80 else {call.reject("Map layout unavailable");return}
             let content=MapContent(call.options)
             let scroll=webView.scrollView
+            let previousContent=self.embeddedContent[id]
             self.embeddedContent[id]=content
             let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
             map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
@@ -223,7 +227,12 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 map.addAnnotation(pin)
                 if let radius=metadata["radius"] as? Double,radius.isFinite,radius>0 {map.addOverlay(MKCircle(center:coordinate,radius:min(radius,100000)))}
             }
-            if !content.coordinates.isEmpty && call.getBool("preserveViewport") != true {
+            // The WebView may mount before account/location restoration finishes.
+            // Do not preserve an empty map's default country/world viewport when
+            // the first usable positions or the user's initial focus arrive.
+            let initialPositions=previousContent?.coordinates.isEmpty ?? true
+            let initialFocus=previousContent?.focus == nil && content.focus != nil
+            if !content.coordinates.isEmpty && (call.getBool("preserveViewport") != true || initialPositions || initialFocus) {
                 map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:false)
             }
             call.resolve()

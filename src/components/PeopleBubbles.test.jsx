@@ -28,3 +28,15 @@ it('shows a single live bubble for a person who is both a friend and household m
  render(<HouseholdPresence presence={{}} friendsLocation={{people:[person]}} householdLivePeople={[person]}/>);
  expect(screen.getAllByRole('img',{name:'Alex avatar'})).toHaveLength(1);
 });
+it('shows your profile while sharing settings and activity labels are still restoring',()=>{
+ render(<HouseholdPresence selfName="Julius" selfAvatar={photo} presence={{self:null}} friendsLocation={{people:[],enabled:false}}/>);
+ const avatar=screen.getByRole('img',{name:'Julius avatar'});
+ expect(avatar.querySelector('img')).toHaveAttribute('src',photo);
+ expect(screen.getByText('You')).toBeInTheDocument();
+ expect(screen.getByText('Live location off')).toBeInTheDocument();
+});
+it('shows your bubble when friend sharing is on without a household activity label',()=>{
+ render(<HouseholdPresence selfName="Julius" presence={{self:{sharing_enabled:false}}} friendsLocation={{people:[],enabled:true}}/>);
+ expect(screen.getByRole('img',{name:'Julius avatar'})).toBeInTheDocument();
+ expect(within(screen.getByRole('img',{name:'Julius avatar'}).closest('.person-bubble')).getByText('Live sharing on')).toBeInTheDocument();
+});
