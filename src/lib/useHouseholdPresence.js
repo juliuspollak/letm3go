@@ -2,10 +2,11 @@ import {useCallback,useEffect,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {config} from './config.js';
+import {sharedPosition} from './sharedPosition.js';
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[]){
  const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
- const [liveEnabled,setLiveEnabled]=useState(false),[livePeople,setLivePeople]=useState([]),[liveError,setLiveError]=useState('');
+ const [liveEnabled,setLiveEnabled]=useState(false),[livePeople,setLivePeople]=useState([]),[liveError,setLiveError]=useState(''),[liveReady,setLiveReady]=useState(false);
  const liveBusy=useRef(false),liveConsent=useRef(false);
  const refresh=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
@@ -61,15 +62,13 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
 
  const refreshLive=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
-  const [settings,others]=await Promise.all([
-   supabase.rpc('my_live_location_settings'),
-   supabase.rpc('my_household_live_locations')
-  ]);
-  if(settings.error||others.error){setLiveError('Precise family location is not available. Apply the live-location migration.');return;}
-  liveConsent.current=settings.data?.[0]?.enabled===true;
-  setLiveEnabled(liveConsent.current);
-  setLivePeople(others.data||[]);
-  setLiveError('');
+  try{
+   const [settings,others]=await Promise.all([supabase.rpc('my_live_location_settings'),supabase.rpc('my_household_live_locations')]);
+   if(settings.error||others.error)throw new Error('Location sharing could not be loaded. Check your connection and retry.');
+   liveConsent.current=settings.data?.[0]?.enabled===true;
+   setLiveEnabled(liveConsent.current);setLivePeople(others.data||[]);setLiveError('');setLiveReady(true);
+  }catch(err){setLiveError(err.message||'Location sharing could not be loaded.');}
+
  },[owner,online]);
  useEffect(()=>{
   if(!online)return;
@@ -104,11 +103,13 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  },[owner,online,liveEnabled]);
  const setLiveSharing=async enabled=>{
   if(!online||!supabase)throw new Error('Connect to change location sharing.');
-  const {error:failure}=await supabase.rpc('set_my_live_location',{p_enabled:enabled});
+  const fix=enabled?await sharedPosition():null;
+  const payload=enabled?{p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy,p_speed:Number.isFinite(fix.speed)&&fix.speed>=0?Math.min(250,fix.speed*3.6):null}:{p_enabled:false};
+  const {error:failure}=await supabase.rpc('set_my_live_location',payload);
   if(failure)throw new Error(failure.message||'Could not change location sharing.');
   liveConsent.current=enabled;
   if(!enabled)await recorder.configureLiveSharing({enabled:false}).catch(()=>{});
-  setLiveEnabled(enabled);
+  setLiveEnabled(enabled);setLiveReady(true);setLiveError('');
   if(enabled)lastPlaceSentAt.current=0;
   await refreshLive();
  };
@@ -150,5 +151,5 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    await refresh();
   }finally{setBusy(false);}
  };
- return {people,self,error,busy,refresh,update,liveEnabled,livePeople,liveError,setLiveSharing,refreshLive};
+ return {people,self,error,busy,refresh,update,liveEnabled,livePeople,liveError,liveReady,setLiveSharing,refreshLive};
 }

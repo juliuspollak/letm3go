@@ -7,7 +7,7 @@ export default function InviteSharingPrompt({kind='friend',onEnable,onClose,busy
   <h3>You're connected!</h3>
   <p>{kind==='household'?'Your household can now see you as a member.':"You are now connected as friends."}</p>
   <h4>Share your live location?</h4>
-  <p className="muted small-copy">Let connected people see where you are on the map. You can stop sharing at any time. Your previous trips remain private.</p>
+  <p className="muted small-copy">{kind==='household'?'Your household members':'Your accepted friends'} can see where you are on the map. You can stop sharing at any time. Your previous trips remain private.</p>
   <button type="button" className="primary full" disabled={busy} onClick={onEnable}>{busy?'Enabling…':'Share live location'}</button>
   <button type="button" className="secondary full" disabled={busy} onClick={onClose}>Not now</button>
   <small><ShieldCheck size={14}/> Location sharing is off until you choose it.</small>

@@ -1,27 +1,29 @@
 import BrandMark from './BrandMark.jsx';
-import { useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, ShieldCheck, User } from 'lucide-react';
-import { useAuth } from '../lib/AuthContext.jsx';
-import { useRecorder } from '../lib/useRecorder.js';
-import { supabase } from '../lib/supabase.js';
-import { saveProfileName } from '../lib/userProfile.js';
-import Places from './Places.jsx';
-import AutomaticTracking from './AutomaticTracking.jsx';
-import Garage from './Garage.jsx';
-import Household from './Household.jsx';
-import { profileImage } from '../lib/profileImage.js';
-const titles=['Make it yours.','A place to call Home.','Let life leave a trail.','Every way you go.','Your people, your choice.','You’re ready to go.'];
+import {useState} from 'react';
+import {ArrowRight,User} from 'lucide-react';
+import {useAuth} from '../lib/AuthContext.jsx';
+import {supabase} from '../lib/supabase.js';
+import {saveProfileName} from '../lib/userProfile.js';
+import {profileImage} from '../lib/profileImage.js';
+
 export default function Onboarding(){
- const auth=useAuth(),recording=useRecorder(auth.session.user.id);const [busy,setBusy]=useState(false),[error,setError]=useState('');
- const step=auth.preferences.onboardingStep||0;
- async function advance(){setBusy(true);setError('');try{const completed=step===5;const preferences=await auth.savePreferences({onboardingStep:completed?5:step+1,onboardingComplete:completed});if(supabase&&auth.status!=='offline'){const {error}=await supabase.auth.updateUser({data:{letm3go_onboarding_v1:{step:completed?5:step+1,complete:completed,display_name:preferences.displayName}}});if(error)setError('Saved on this device. Cloud onboarding progress will retry when connected.');}}catch(err){setError(err.message);}finally{setBusy(false);}}
- async function saveProfile(e){e.preventDefault();setBusy(true);setError('');try{const name=new FormData(e.currentTarget).get('displayName').trim();if(!name)throw new Error('Enter a display name.');await auth.savePreferences({displayName:name});if(auth.status!=='offline')await saveProfileName(supabase,auth.session.user,name);await advance();}catch(err){setError(err.message);}finally{setBusy(false);}}
- return <main className="onboarding"><header><span className="auth-wordmark">letm<span>3</span>go<BrandMark/></span><button className="text-button" onClick={()=>auth.signOut().catch(e=>setError(e.message))}>Sign out</button></header><div className="onboarding-progress" aria-label={`Setup step ${step+1} of 6`}>{titles.map((_,i)=><span key={i} className={i<=step?'complete':''}/>)}</div><div className="onboarding-content" key={step}><p className="eyebrow">A LITTLE SETUP. A LOT TO REMEMBER.</p><h1>{titles[step]}</h1>
- {step===0&&<><p className="muted">What should we call you? Your profile is separate from what you choose to share.</p><form onSubmit={saveProfile}><label>Display name<input name="displayName" required maxLength={100} defaultValue={auth.preferences.displayName||auth.session.user.user_metadata?.full_name||auth.session.user.user_metadata?.name||''} autoComplete="nickname"/></label><label className="avatar-upload">{auth.preferences.avatar?<img src={auth.preferences.avatar} alt="Your profile"/>:<User size={28}/>}<span>Add a profile photo (optional)</span><input aria-label="Profile photo" type="file" accept="image/*" onChange={async e=>{const file=e.target.files[0];if(!file)return;try{await auth.savePreferences({avatar:await profileImage(file)});}catch(err){setError(err.message);}}}/></label><button className="primary full" disabled={busy}>Continue <ArrowRight size={17}/></button></form></>}
- {step===1&&<><p className="muted">Home is optional. Save it privately to help recognise departure and arrival; adjust it any time.</p><Places defaultKind="home" places={recording.state.places||[]} run={recording.run} busy={recording.busy} error={recording.error}/></>}
- {step===2&&<><p className="muted">Letm3go can automatically recognise your walks, drives and journeys, even when you’re not actively using the app.</p><AutomaticTracking state={recording.state} run={recording.run} busy={recording.busy} error={recording.error}/><p className="notice">Enable location first while using the app, then choose Always for automatic background history. Motion helps classify journeys. You can decline and enable either permission later. iOS can interrupt tracking, including after force-quit.</p>{recording.state.permission==='notDetermined'&&<button className="secondary full" onClick={()=>recording.run('requestPermission',false)}>Allow location while using Letm3go</button>}</>}
- {step===3&&<Garage vehicles={auth.preferences.vehicles} onSave={vehicles=>auth.savePreferences({vehicles})}/>}
- {step===4&&<Household/>}
- {step===5&&<><div className="welcome-check"><Check size={40}/></div><p>Your account is ready. Your journeys stay private unless you explicitly share them.</p><div className="status-row"><ShieldCheck size={24}/><div><strong>Automatic history and family sharing are separate.</strong><p>Live location sharing is off. Automatic history is {recording.state.automaticAvailable?'available with current permissions':recording.state.automaticEnabled?'enabled but needs permissions or device support':'off'}.</p></div></div></>}
- {step>0&&<div className="onboarding-actions"><button className="secondary" disabled={busy} onClick={()=>auth.savePreferences({onboardingStep:step-1}).catch(e=>setError(e.message))}><ArrowLeft size={16}/> Back</button><button className="primary" disabled={busy} onClick={advance}>{step===5?'Start exploring':step===1||step===3||step===4?'Continue / skip for now':'Continue'}<ArrowRight size={16}/></button></div>}{error&&<p role="alert" className="error">{error}</p>}</div></main>;
+ const auth=useAuth();
+ const [busy,setBusy]=useState(false),[photoBusy,setPhotoBusy]=useState(false),[error,setError]=useState('');
+ async function finish(event){
+  event.preventDefault();setBusy(true);setError('');
+  try{
+   const name=new FormData(event.currentTarget).get('displayName').trim();
+   if(!name)throw new Error('Enter your name.');
+   if(supabase&&auth.status!=='offline')await saveProfileName(supabase,auth.session.user,name);
+   // Keep the existing completion marker compatible with returning installations.
+   try{sessionStorage.setItem('letm3go:family-setup',auth.session.user.id);}catch{/* The app can still open without session storage. */}
+   await auth.savePreferences({displayName:name,onboardingStep:5,onboardingComplete:true});
+   if(supabase&&auth.status!=='offline'){
+    // Account metadata is a best-effort cross-device hint; local completion is durable.
+    void supabase.auth.updateUser({data:{letm3go_onboarding_v1:{step:5,complete:true,display_name:name}}}).catch(()=>{});
+   }
+  }catch(err){setError(err.message||'Your profile could not be saved.');}
+  finally{setBusy(false);}
+ }
+ return <main className="onboarding"><header><span className="auth-wordmark">letm<span>3</span>go<BrandMark/></span><button className="text-button" onClick={()=>auth.signOut().catch(err=>setError(err.message))}>Sign out</button></header><div className="onboarding-content"><p className="eyebrow">LET’S GET YOU STARTED</p><h1>What should we call you?</h1><p className="muted">Add your name, then create or join your household. You can set up everything else later.</p><form onSubmit={finish}><label>Display name<input name="displayName" required maxLength={100} defaultValue={auth.preferences.displayName||auth.session.user.user_metadata?.full_name||auth.session.user.user_metadata?.name||''} autoComplete="nickname"/></label><label className="avatar-upload">{auth.preferences.avatar?<img src={auth.preferences.avatar} alt="Your profile"/>:<User size={28}/>}<span>Add a photo (optional)</span><input aria-label="Profile photo" type="file" accept="image/*" disabled={busy||photoBusy} onChange={async event=>{const file=event.target.files[0];if(!file)return;setPhotoBusy(true);setError('');try{await auth.savePreferences({avatar:await profileImage(file)});}catch(err){setError(err.message);}finally{setPhotoBusy(false);}}}/></label><button className="primary full" disabled={busy||photoBusy}>{busy?'Saving…':'Continue'}<ArrowRight size={17}/></button></form><p className="muted small-copy">Location sharing stays off until you choose to turn it on.</p>{error&&<p role="alert" className="error">{error}</p>}</div></main>;
 }
