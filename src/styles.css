@@ -156,7 +156,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 .presence-toggle{border-radius:50%;transition:background .2s,color .2s,box-shadow .2s}.presence-toggle.presence-hidden{background:var(--soft);color:var(--muted)}.presence-toggle.presence-visible{background:var(--accent-soft);color:var(--accent)}.presence-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.home-friends-avatar.home-presence-hidden{background:var(--soft);color:var(--muted);border:1px dashed var(--line)}
 
-.household-presence,.household-friends,.household-garage{margin-top:20px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.household-presence h2,.household-friends h2{display:flex;align-items:center;gap:8px;font-size:17px}.household-presence h3,.household-garage h3{font-size:15px;margin:16px 0 8px}.household-presence form label,.household-friends form label,.household-garage form label,.household-vehicle-link label{display:block;margin:12px 0;font-size:12px}.household-presence select,.household-presence input,.household-friends input,.household-garage input,.household-vehicle-link select{display:block;width:100%;border:1px solid var(--line);padding:12px;border-radius:9px;background:var(--bg);color:var(--ink);margin-top:6px;font-size:16px}.home-friend-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}.home-friend-row>span:nth-child(2){flex:1;min-width:0}.home-friend-row strong,.home-friend-row small{display:block;font-size:12px}.home-friend-row small{margin-top:4px;color:var(--muted)}.home-friend-row small svg{vertical-align:middle}.home-friends-avatar.friend-moving{outline:2px solid var(--accent);outline-offset:3px;animation:presence-pulse 2.5s ease-in-out infinite}@keyframes presence-pulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 7px var(--accent-soft)}}@media(prefers-reduced-motion:reduce){.home-friends-avatar.friend-moving{animation:none}}
+.household-presence,.household-friends,.household-garage{margin-top:20px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.household-presence h2,.household-friends h2{display:flex;align-items:center;gap:8px;font-size:17px}.household-presence h3,.household-garage h3{font-size:15px;margin:16px 0 8px}.household-presence form label,.household-friends form label,.household-garage form label,.household-vehicle-link label{display:block;margin:12px 0;font-size:12px}.household-presence select,.household-presence input,.household-friends input,.household-garage input,.household-vehicle-link select{display:block;width:100%;border:1px solid var(--line);padding:12px;border-radius:9px;background:var(--bg);color:var(--ink);margin-top:6px;font-size:16px}.home-friends-avatar.friend-moving{outline:2px solid var(--accent);outline-offset:3px;animation:presence-pulse 2.5s ease-in-out infinite}@keyframes presence-pulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 7px var(--accent-soft)}}@media(prefers-reduced-motion:reduce){.home-friends-avatar.friend-moving{animation:none}}
 
 /* Social page: consistent top-level cards, with subordinate household garage. */
 .social-layout{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:18px;margin:0 0 26px}
@@ -164,7 +164,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .social-panel>h2{display:flex;align-items:center;gap:9px;font-size:18px;line-height:1.3;margin:0 0 12px}
 .social-panel>.muted{font-size:12px;line-height:1.6}
 .social-panel .notice{margin:12px 0;padding:12px;border-radius:10px}
-.social-panel .home-friend-row:last-of-type{border-bottom:0}
+
 .social-panel .full{width:100%}
 .social-panel .household-garage{margin:20px 0 0;padding:18px;border:0;border-radius:12px;background:var(--bg);box-shadow:none}
 .social-panel .household-garage h3{margin:0 0 8px}
@@ -213,12 +213,14 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .profile-crop-preview:active{cursor:grabbing}
 .profile-crop input[type="range"]{width:100%;accent-color:var(--accent)}
 .profile-crop .detail-actions{display:flex;gap:10px;flex-wrap:wrap}
-.social-presence-bubbles{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}
-.social-person{display:flex;flex-direction:column;align-items:center;gap:6px;width:102px;min-width:0;text-align:center}
-.social-person .home-friends-avatar{width:60px;height:60px}
-.social-person strong{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.social-person small{font-size:11px;color:var(--muted);line-height:1.3}
-.social-person small svg{vertical-align:middle;margin-right:3px}
+/* All social person bubbles share one layout and avatar size. */
+.people-bubbles{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}
+.person-bubble{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;width:102px;min-width:0;text-align:center}
+.person-bubble>strong{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.person-bubble>small{font-size:11px;color:var(--muted);line-height:1.3}
+.person-bubble>small svg{vertical-align:middle;margin-right:3px;flex-shrink:0}
+.person-bubble-action{position:absolute;top:-12px;right:-6px}
+.person-bubble-action .icon-button{width:44px;height:44px;border-radius:50%;background:var(--surface);color:var(--muted)}
 .social-visibility-caption{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
 
 /* Trip search: visible matches and one-tap clear without horizontal overflow. */
@@ -443,14 +445,12 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .household-simple .household-garage{margin:0;padding:14px;border-radius:14px}
 .household-member-list{padding:12px 16px;border-radius:12px;background:var(--soft)}
 
-.household-people{padding:8px 0 2px}.household-people-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.household-people-heading h3{font-size:16px;margin:0}.household-people-grid{display:flex;flex-wrap:wrap;gap:18px}.household-person{width:72px;display:flex;align-items:center;flex-direction:column;gap:5px;text-align:center}.household-person-avatar{display:grid;place-items:center;width:59px;height:59px;border-radius:50%;background:var(--soft);color:var(--accent);font-size:22px;font-weight:750;border:3px solid var(--surface);box-shadow:0 0 0 1px var(--line)}.household-person strong{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.household-person small{font-size:10px;color:var(--muted)}
-
-.friend-self-avatar{overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:750;background:var(--soft);color:var(--accent)}.friend-self-avatar .friend-self-image{width:100%;height:100%;object-fit:cover;border-radius:50%;display:block}.social-person>small svg{flex-shrink:0}
+.household-people{padding:8px 0 2px}.household-people-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.household-people-heading h3{font-size:16px;margin:0}
 
 /* Two swipe actions after removing the redundant More menu. */
 .trip-swipe-actions .trip-action-pin,.trip-swipe-actions .trip-action-archive{width:66px;flex:0 0 66px}
 
-.household-person-avatar{overflow:hidden}.household-person-photo{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}
+
 
 /* Shared profile bubbles across the app; one image crop and initial fallback. */
 .person-avatar{display:inline-flex;align-items:center;justify-content:center;flex:none;overflow:hidden;width:40px;height:40px;border-radius:50%;background:var(--soft);color:var(--accent);font-weight:750;font-size:17px;border:2px solid var(--surface);box-shadow:0 0 0 1px var(--line)}
