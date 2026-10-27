@@ -10,7 +10,7 @@ export default function Friends({onShareLive,invitationCode=null,onInviteConsume
  const rpc=useCallback(async(name,params)=>{if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;},[]);
  const refresh=useCallback(async()=>{try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}},[rpc]);
  useEffect(()=>{const t=setTimeout(()=>void refresh(),0);return()=>clearTimeout(t);},[refresh]);
- useEffect(()=>{if(invitationCode)setCode(invitationCode);},[invitationCode]);
+ useEffect(()=>{if(invitationCode)queueMicrotask(()=>setCode(invitationCode));},[invitationCode]);
  const inviteText=invite?`Open my Letm3go invitation: ${invitationLink('friend',invite)}\n\nJoin me on letm3go! Open the app, go to Social → Friends, and paste this invitation code to add me:\n\n${invite}\n\nThis private invitation expires in 48 hours.`:'';
  async function shareInvite(){if(!invite)return;setError('');setFeedback('');try{if(navigator.share){await navigator.share({title:'Add me on letm3go',text:inviteText});}else{await navigator.clipboard.writeText(inviteText);setFeedback('Invitation copied. Paste it into a message.');}}catch(e){if(e.name!=='AbortError')setError('Sharing is unavailable. Try Copy invitation instead.');}}
  async function copyInvite(){if(!invite)return;setError('');try{await navigator.clipboard.writeText(inviteText);setFeedback('Invitation copied. Paste it into a message.');}catch{setError('Could not copy automatically. Select the invitation code below to copy it.');}}
