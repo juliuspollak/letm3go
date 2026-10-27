@@ -35,7 +35,7 @@ export default function JourneyTags({trip,grouping,run}){
     if(!place?.nearbyName&&!place?.categories?.length){
      try{
       // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
-      place=await recorder.recogniseTripPlace(null,0,point);
+      place=await recorder.recogniseTripPlace(null,0,point,true);
      }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
     }
     for(const name of [place?.nearbyName,...(place?.categories||[]),place?.locality].filter(Boolean)){
