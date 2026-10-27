@@ -1,3 +1,4 @@
+import {rankPlaceCandidates,placeTagPolicy} from '../lib/placeTagPolicy.js';
 import {useState} from 'react';
 import {recorder} from '../lib/recorder.js';
 import {placeKey} from '../lib/journeyGrouping.js';
@@ -18,7 +19,7 @@ export default function JourneyTags({trip,grouping,run}){
    const points=Array.isArray(segment.points)&&segment.points.length?segment.points:
     (segment.routeSegments||[]).flat().map(p=>Array.isArray(p)?{latitude:p[0],longitude:p[1]}:p);
    if(!points.length)continue;
-   const count=Math.min(10,points.length);
+   const count=Math.min(placeTagPolicy(trip.activity).route?10:3,points.length);
    for(let i=0;i<count;i++){
     const index=Math.round(i*(points.length-1)/Math.max(1,count-1));
     const point=points[index];
@@ -38,14 +39,14 @@ export default function JourneyTags({trip,grouping,run}){
       place=await recorder.recogniseTripPlace(null,0,point,true);
      }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
     }
-    for(const name of [place?.nearbyName,...(place?.categories||[]),place?.locality].filter(Boolean)){
+    for(const name of [place?.nearbyName,...(place?.categories||[]),...(place?.nearbyName?[]:[place?.locality])].filter(Boolean)){
      if(typeof name!=='string'||name.length>50||result.some(x=>x.tag.toLowerCase()===name.toLowerCase())||hidden.some(x=>x.toLowerCase()===name.toLowerCase()))continue;
-     result.push({tag:name,point:n,source:place?.source||'Apple Maps'});
+     result.push({tag:name,name,kind:n===samples.length-1?'destination':n===0?'start':'route',point:n,source:place?.source||'Apple Maps'});
     }
-    const visible=result.filter(x=>!trip.tags?.some(t=>t.toLowerCase()===x.tag.toLowerCase()));
+    const visible=rankPlaceCandidates(result,{activity:trip.activity,existing:trip.tags||[],hidden}).map(x=>({...x,tag:x.name}));
     setSuggestions([...visible]);
    }
-   const available=result.filter(x=>!trip.tags?.some(t=>t.toLowerCase()===x.tag.toLowerCase()));
+   const available=rankPlaceCandidates(result,{activity:trip.activity,existing:trip.tags||[],hidden}).map(x=>({...x,tag:x.name}));
    setNotice(available.length?`Found ${available.length} place suggestions. Review them below.`:errors.length===samples.length?'Place lookup could not run. Check your connection and try again on your iPhone.':errors.length?`No new places found; ${errors.length} lookups failed. Try again with a connection.`:'No additional named places found along this route. You can still add a place name manually.');
   }catch(error){setNotice(error?.message||'Place search failed. Please try again.');}
   finally{setScanning(false);}
