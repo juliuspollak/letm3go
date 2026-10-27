@@ -1,4 +1,4 @@
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { demoJourneys } from './test/fixtures/journeys.js';
@@ -90,3 +90,61 @@ it('shows one grouped journey and finds it through an intermediate locality sear
  expect(screen.getByRole('button',{name:'Open Driving to Gold Coast'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open a'})).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Open Driving to Gold Coast'}));expect(screen.getByRole('heading',{name:'Segments & stops'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Rename journey'})).toBeInTheDocument();expect(screen.getAllByText('Kew',{exact:true}).length).toBeGreaterThan(0);
 });
+
+it('assigns a vehicle from a trip card without leaving the activity list',async()=>{
+ signedIn();const now=Date.now()/1000;
+ identity.value.preferences.vehicles=[{id:'car-1',name:'Geely',category:'car'},{id:'bike-1',name:'Trek',category:'bicycle'}];
+ const raw=(id,title,equipment)=>({id,title,source:'device',activity:'Driving',state:'finished',recordingMode:'manual',startedAt:now-3600,endedAt:now-3000,durationSeconds:600,distanceMeters:24600,points:[],equipment,details:{}});
+ const run=vi.fn().mockResolvedValue({trips:[raw('geely','Geely drive',[{id:'car-1',name:'Geely'}])]});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('geely','Geely drive'),raw('kia','Kia drive',[{id:'car-1',name:'Geely'}])]},run,busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ expect(screen.getByRole('button',{name:'Equipment: Geely. Change equipment'})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Add equipment to Geely drive'}));
+ expect(screen.getByRole('heading',{name:'What did you use it with?'})).toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Use Trek'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Use Geely'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('assignEquipment',{id:'geely',ids:['car-1']}));
+});
+
+it('filters trips by equipment and clears the filter again',()=>{
+ signedIn();const now=Date.now()/1000;
+ identity.value.preferences.vehicles=[{id:'car-1',name:'Geely',category:'car'},{id:'bike-1',name:'Trek',category:'bicycle'}];
+ const raw=(id,title,equipment)=>({id,title,source:'device',activity:'Driving',state:'finished',recordingMode:'manual',startedAt:now-3600,endedAt:now-3000,durationSeconds:600,distanceMeters:1000,points:[],equipment,details:{}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('geely','Geely drive',[{id:'car-1',name:'Geely'}]),raw('kia','Unassigned drive')]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
+ fireEvent.change(screen.getByRole('combobox',{name:'Filter by equipment'}),{target:{value:'car-1'}});
+ expect(screen.getByRole('button',{name:'Open Geely drive'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Unassigned drive'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Remove equipment filter Geely'}));
+ expect(screen.getByRole('button',{name:'Open Unassigned drive'})).toBeInTheDocument();
+ fireEvent.change(screen.getByRole('combobox',{name:'Filter by equipment'}),{target:{value:'car-1'}});
+ fireEvent.change(screen.getByRole('combobox',{name:'Filter activities'}),{target:{value:'Cycling'}});
+ expect(screen.queryByRole('button',{name:'Open Geely drive'})).not.toBeInTheDocument();
+});
+
+it('keeps an archived drive searchable by the equipment it used',()=>{
+ signedIn();const now=Date.now()/1000;
+ localStorage.setItem('letm3go:archived-trips:owner',JSON.stringify(['geely']));
+ identity.value.preferences.vehicles=[{id:'car-1',name:'Geely',category:'car'}];
+ const raw=(id,title,equipment)=>({id,title,source:'device',activity:'Driving',state:'finished',recordingMode:'manual',startedAt:now-3600,endedAt:now-3000,durationSeconds:600,distanceMeters:1000,points:[],equipment,details:{}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('geely','Geely drive',[{id:'car-1',name:'Geely'}]),raw('kia','Other drive')]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
+ fireEvent.change(screen.getByRole('combobox',{name:'Filter by equipment'}),{target:{value:'car-1'}});
+ fireEvent.click(screen.getByRole('button',{name:'Archived activities (1)'}));
+ expect(screen.getByRole('button',{name:'Open Geely drive'})).toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Open Other drive'})).not.toBeInTheDocument();
+});
+
+it('opens the trips that used a Collection item with the filter applied',()=>{
+ signedIn();const now=Date.now()/1000;
+ identity.value.preferences.vehicles=[{id:'car-1',name:'Geely',category:'car'}];
+ const raw=(id,title)=>({id,title,source:'device',activity:'Driving',state:'finished',recordingMode:'manual',startedAt:now-3600,endedAt:now-3000,durationSeconds:600,distanceMeters:1000,points:[],equipment:[{id:'car-1',name:'Geely'}],details:{}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('one','First Geely drive'),raw('two','Second Geely drive')]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Open profile'}));fireEvent.click(screen.getByRole('button',{name:'My Collection'}));
+ fireEvent.click(screen.getByRole('button',{name:'View Geely'}));
+ fireEvent.click(screen.getByRole('button',{name:'View 2 activities'}));
+ expect(screen.getByRole('button',{name:'Open First Geely drive'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Remove equipment filter Geely'})).toBeInTheDocument();
+});
+

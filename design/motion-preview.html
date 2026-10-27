@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+ <head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>Letm3go · motion identity sheet</title>
+  <style>
+   /* Design-sheet chrome only; the application stylesheet does the real work. */
+   body{background:#eef1f8}
+   #root{max-width:430px;margin:0 auto;background:var(--bg);min-height:100dvh;box-shadow:0 0 0 1px #d8deeb}
+   .preview-card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:16px}
+   .preview-card h2{font-size:16px;margin-bottom:6px}
+   .preview-wordmarks{display:grid;gap:12px;margin:16px 0 4px}
+   .preview-wordmarks>div{display:flex;align-items:center;gap:16px;padding:10px 12px;border-radius:12px;background:var(--soft)}
+   .preview-wordmark{font-size:25px;font-weight:800;letter-spacing:-1.5px;line-height:1;display:inline-flex;align-items:center;min-width:150px}
+   .preview-wordmarks small{font-size:10px;color:var(--muted);margin:0}
+   .preview-glyphs{display:flex;gap:14px;margin-top:16px}
+   .preview-glyphs>div{display:grid;justify-items:center;gap:6px;flex:1;padding:10px 0;border-radius:12px;background:var(--soft);color:var(--accent)}
+   .preview-glyphs small{font-size:9px;color:var(--muted)}
+   .preview-records{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-top:14px}
+   .preview-records>div{display:grid;justify-items:center;gap:8px}
+   .preview-records small{font-size:10px;color:var(--muted)}
+   .preview-records .record-control--panel{width:76px;height:76px}
+  </style>
+ </head>
+ <body>
+  <div id="root"></div>
+  <script type="module" src="./motion-preview.jsx"></script>
+ </body>
+</html>

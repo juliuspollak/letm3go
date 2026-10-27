@@ -64,6 +64,11 @@ struct LocalVehicle: Codable {
     var model: String
     var category: String?
     var archived: Bool?
+    // Category-specific details (size, powertrain, year…) stay a flat string map
+    // so a new Collection category never needs a native change. Optional keys keep
+    // records written by earlier builds decodable.
+    var attributes: [String: String]?
+    var photo: String?
 }
 
 extension LocationRecorder {
@@ -86,9 +91,11 @@ extension LocationRecorder {
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         let records = try storage!.load()
-        trips = records.filter { $0.state == "finished" }
-        active = nil; automaticTrip = nil; settledAt = nil; detector.reset();departureEvidence.reset()
-        for var record in records where record.state != "finished" {
+        // A stopped journey is a published record, not an unfinished one: it is
+        // restored as a journey that may still be continued.
+        trips = records.filter { $0.state == "finished" || $0.isProvisional }
+        active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; detector.reset();departureEvidence.reset()
+        for var record in records where record.state != "finished" && !record.isProvisional {
             record.recoverAfterInterruption()
             if record.recordingMode == "automatic" { record.finish(at:record.points.last?.timestamp ?? record.startedAt); try storage!.save(record); trips.append(record) }
             else if active == nil { try storage!.save(record); active = record; recoveryMessage = "Recovered a paused activity. Resume when ready; interrupted time is excluded." }
@@ -97,6 +104,9 @@ extension LocationRecorder {
         trips.sort { $0.startedAt > $1.startedAt }
         storeOpened = true
         loadRecorderDiagnostics()
+        // Restore a stop that is still inside its continuation window, and close
+        // any provisional journey that can no longer be continued.
+        restoreSettledAutomaticJourney()
     }
     func stopAccount() throws {
         diagnosticSummary(force:true);recordDiagnostic("account","Recorder locked or signed out")
@@ -108,9 +118,9 @@ extension LocationRecorder {
         for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
         motion = MotionEvidence()
         if var trip = active { trip.pause(at:Date().timeIntervalSince1970); try storage?.save(trip); active = trip }
-        if automaticTrip != nil { try finishAutomatic() }
+        if automaticTrip != nil || settledTripID != nil { try finishAutomatic() }
         try AccountKeychain.set("active-account",data:nil)
-        uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; trips = []; places = []; automaticEnabled = false
+        uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
         preferences = AccountPreferences(); lastAutomaticFixAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -121,7 +131,15 @@ extension LocationRecorder {
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
               updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
               (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
-              updated.vehicles.allSatisfy({ ["manual","tesla"].contains($0.source ?? "manual") && ($0.teslaVehicleID?.count ?? 0)<=100 && UUID(uuidString:$0.id) != nil && !$0.name.isEmpty && $0.name.count <= 100 && $0.make.count <= 100 && $0.model.count <= 100 && ["car","motorcycle","bicycle","other"].contains($0.category ?? "car") }) else { throw failure("Account settings are invalid or too large.") }
+              updated.vehicles.allSatisfy({ vehicle in
+                let category = vehicle.category ?? "car"
+                let attributes = vehicle.attributes ?? [:]
+                return ["manual","tesla"].contains(vehicle.source ?? "manual") && (vehicle.teslaVehicleID?.count ?? 0)<=100 && UUID(uuidString:vehicle.id) != nil && !vehicle.name.isEmpty && vehicle.name.count <= 100 && vehicle.make.count <= 100 && vehicle.model.count <= 100
+                    && category.range(of:"^[a-z][a-z0-9_-]{0,31}$",options:.regularExpression) != nil
+                    && attributes.count <= 24
+                    && attributes.allSatisfy({ key,value in key.range(of:"^[a-z][a-z0-9_]{0,31}$",options:.regularExpression) != nil && value.count <= 120 })
+                    && (vehicle.photo == nil || (vehicle.photo!.hasPrefix("data:image/jpeg;base64,") && vehicle.photo!.utf8.count <= 180_000))
+              }) else { throw failure("Account settings are invalid or too large.") }
         if let value=updated.journeyGrouping {
             guard let data=value.data(using:.utf8),let meta=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],(meta["owner"] as? String)?.lowercased()==ownerID,(meta["version"] as? Int)==1 else {throw failure("Journey metadata belongs to another account or is invalid.")}
         }
@@ -213,7 +231,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                     r.uiUnlocked = true; r.accountSuspended = false
                     if r.accountDeleting {
                         r.automaticEnabled=false; r.accountSuspended=true
-                        if r.automaticTrip != nil { try r.finishAutomatic() }
+                        if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic() }
                         if r.active?.state == "recording" { try r.transition("pause") }
                         r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
@@ -235,7 +253,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard r.uiUnlocked, r.ownerID != nil else { call.reject("Sign in before deleting your account."); return }
         do {
             r.automaticEnabled = false; r.accountSuspended = true
-            if r.automaticTrip != nil { try r.finishAutomatic() }
+            if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic() }
             if r.active?.state == "recording" { try r.transition("pause") }
             r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
@@ -252,7 +270,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
-            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.trips=[]; r.places=[]; r.preferences=AccountPreferences(); r.automaticEnabled=false
+            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.preferences=AccountPreferences(); r.automaticEnabled=false
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
             UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }

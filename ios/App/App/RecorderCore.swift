@@ -18,6 +18,14 @@ struct GPSPoint: Codable {
     }
 }
 
+// A stable reference to one Collection item. The name is only a fallback label
+// for another device that has not restored the Collection yet; the app always
+// prefers the current Collection name while the id resolves.
+struct EquipmentRef: Codable, Equatable {
+    var id: String
+    var name: String
+}
+
 struct RecordedActivity: Codable {
     var id = UUID().uuidString
     var activity: String
@@ -35,6 +43,7 @@ struct RecordedActivity: Codable {
     var title: String
     var recordingMode: String?
     var details: ActivityDetails?
+    var equipment: [EquipmentRef]?
     var updatedAt: Double?
     mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
@@ -78,6 +87,79 @@ struct RecordedActivity: Codable {
         state = "finished"
         endedAt = now
     }
+    var isProvisional: Bool { details?.provisional == true }
+    // Route geometry limits per movement family. Automatic journeys start as
+    // Unknown, so the widest plausible limit applies until classification settles.
+    static func speedLimit(activity: String) -> Double {
+        switch activity {
+        case "Driving": return 85
+        case "Walking", "Hiking", "Running": return 12
+        case "Cycling", "MTB", "Road cycling": return 35
+        default: return 85
+        }
+    }
+    func priorImpliedSpeed(before previous: GPSPoint) -> Double {
+        guard points.count >= 2 else { return 0 }
+        let earlier = points[points.count - 2]
+        guard earlier.segment == previous.segment else { return 0 }
+        let dt = previous.timestamp - earlier.timestamp
+        return dt > 0 ? earlier.distance(to: previous) / dt : 0
+    }
+    mutating func updateDetails(_ change: (inout ActivityDetails) -> Void) {
+        var metadata = details ?? ActivityDetails()
+        change(&metadata)
+        details = metadata
+    }
+    // The first item is the primary assignment. `vehicle`/`vehicleID` stay in
+    // sync because household sharing, source reconciliation and older builds
+    // still read the single-vehicle fields.
+    mutating func assignEquipment(_ refs: [EquipmentRef]) {
+        var unique: [EquipmentRef] = []
+        for ref in refs where !ref.id.isEmpty {
+            guard !unique.contains(where: { $0.id == ref.id }) else { continue }
+            unique.append(EquipmentRef(id: ref.id, name: String(ref.name.prefix(100))))
+        }
+        let limited = Array(unique.prefix(8))
+        equipment = limited.isEmpty ? nil : limited
+        vehicle = limited.first?.name
+        vehicleID = limited.first?.id
+        updatedAt = Date().timeIntervalSince1970
+    }
+    // Publish a confirmed stop immediately. The journey keeps its identity and
+    // stays open for a continuation, so History never waits for the window.
+    mutating func publishStop(at end: Double, continuationEndsAt: Double?) {
+        pause(at: end)
+        endedAt = end
+        updateDetails { metadata in
+            metadata.provisional = true
+            metadata.continuationEndsAt = continuationEndsAt
+        }
+        updatedAt = Date().timeIntervalSince1970
+    }
+    // Reopen the published stop so nearby movement updates the same record
+    // instead of creating a second journey. The stop stays a segment break.
+    @discardableResult
+    mutating func continueAfterStop(at now: Double) -> Bool {
+        guard state != "recording", points.count >= 2 else { return false }
+        state = "recording"
+        resumedAt = now
+        endedAt = nil
+        updateDetails { metadata in
+            metadata.provisional = nil
+            metadata.continuationEndsAt = nil
+        }
+        updatedAt = Date().timeIntervalSince1970
+        return true
+    }
+    // The journey is complete: it keeps its recorded geometry and stops being a
+    // candidate for continuation.
+    mutating func completeProvisional() {
+        updateDetails { metadata in
+            metadata.provisional = nil
+            metadata.continuationEndsAt = nil
+        }
+        updatedAt = Date().timeIntervalSince1970
+    }
     // Do not connect pauses, long signal gaps, stale fixes, or implausible jumps.
     mutating func accept(_ sample: GPSPoint, now: Double) -> Bool {
         guard state == "recording", sample.accuracy >= 0, sample.accuracy <= 65,
@@ -91,8 +173,19 @@ struct RecordedActivity: Codable {
             guard dt > 0 else { return false }
             if previous.segment == segment && dt <= (recordingMode == "automatic" ? 180 : 30) {
                 let distance = previous.distance(to: point)
-                let maxSpeed: Double = recordingMode == "automatic" || activity == "Driving" ? 85 : activity == "Walking" || activity == "Hiking" ? 12 : 35
-                guard distance / dt <= maxSpeed else { return false }
+                let implied = distance / dt
+                let familyMax: Double = recordingMode == "automatic"
+                    ? Self.speedLimit(activity: activity)
+                    : (activity == "Driving" ? 85 : ["Walking","Hiking"].contains(activity) ? 12 : 35)
+                // A wild displacement with a low reported speed is a spike, not a
+                // journey. Doppler speed that agrees with the displacement is real
+                // evidence, and an already fast segment keeps its fixes even when
+                // iOS still reports the previous (on-foot) activity.
+                let corroborated = (point.speed >= familyMax * 0.6 && implied <= max(point.speed * 1.6, familyMax))
+                    || priorImpliedSpeed(before: previous) >= familyMax * 0.6
+                let maxSpeed = recordingMode == "automatic" && corroborated ? 90 : familyMax
+                guard implied <= maxSpeed else { return false }
+                if recordingMode == "automatic" { guard implied >= 0.35 else { return false } }
                 // Accuracy-aware jitter suppression, while retaining the first fix.
                 guard distance >= max(3, min(10, (previous.accuracy + point.accuracy) / 4)) else { return false }
                 distanceMeters += distance
@@ -131,6 +224,26 @@ enum RouteTrimming {
         trip.details?.endPlace = nil
         trip.details?.classificationDistances = nil
         return trip
+    }
+}
+
+// A confirmed change of movement type splits a journey at real fixes only: the old
+// journey keeps the fixes before the change and the next one starts at the change.
+// No segment is bridged or interpolated, so no distance is invented or counted
+// twice, and a journey that no longer has enough real movement is not published.
+enum JourneySplit {
+    static func distance(_ points: [GPSPoint]) -> Double {
+        zip(points,points.dropFirst()).reduce(0) { total,pair in
+            total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
+        }
+    }
+    static func kept(_ trip: RecordedActivity, before timestamp: Double) -> RecordedActivity? {
+        var kept = trip
+        kept.points = trip.points.filter { $0.timestamp < timestamp }
+        kept.distanceMeters = distance(kept.points)
+        guard kept.points.count >= 2, kept.distanceMeters >= 25, let last = kept.points.last else { return nil }
+        kept.finish(at: max(kept.startedAt,last.timestamp))
+        return kept
     }
 }
 
@@ -247,6 +360,12 @@ struct ActivityDetails: Codable {
     var endPlace: String?
     var coverPhotoID: String?
     var photos: [ActivityPhoto] = []
+    // A stopped journey is published as soon as the stop is confirmed so History
+    // shows it without waiting for the continuation window. `provisional` is
+    // cleared when the journey is finalised or continued. Both keys stay optional
+    // so records written by earlier builds still decode.
+    var provisional: Bool?
+    var continuationEndsAt: Double?
 }
 struct ActivityPhoto: Codable {
     var id: String
@@ -259,38 +378,192 @@ struct ActivityPhoto: Codable {
     var publicSelected = false
 }
 
-// Conservative transition from an on-foot activity to a vehicle journey.
-// Fresh Core Motion driving evidence is preferred, but iOS often delays or omits
-// the automotive classification (and reports overlapping flags such as
-// Driving + Stationary). Sustained GPS speed is accepted as corroboration then,
-// with a higher speed floor so a fast bicycle is not relabelled as a drive.
-struct DrivingTransition {
-    var candidates: [GPSPoint] = []
-    mutating func reset() { candidates.removeAll() }
-    mutating func observe(_ point: GPSPoint, motion: MotionEvidence, now: Double) -> Bool {
-        guard point.accuracy >= 0, point.accuracy <= 65,
-              abs(now-point.timestamp) <= 20 else { return false }
-        // Core Motion cannot distinguish a coasting car from a walk, so require a
-        // higher sustained speed when it does not confirm automotive movement.
-        // A fresh cycling classification is a strong e-bike signal, so only
-        // explicit automotive evidence may override it.
-        let automotive = AutomaticDetector.drivingMotion(motion,now:now)
-        let cycling = AutomaticDetector.cyclingMotion(motion,now:now)
-        guard automotive || !cycling, point.speed >= (automotive ? 4 : 6) else { return false }
-        if let last = candidates.last {
-            guard point.timestamp > last.timestamp else { return false }
-            let interval = point.timestamp-last.timestamp
-            // A long GPS gap cannot corroborate a continuous transition. Permit a
-            // tunnel-sized hole only when Core Motion confirms a vehicle.
-            guard interval <= (automotive ? 120 : 45) else { reset(); return false }
-            guard last.distance(to:point) / interval >= (automotive ? 3 : 4) else {
-                candidates = [point]; return false
-            }
+// One journey is one continuous activity of a particular movement type, so a walk
+// around a shopping centre is a separate journey from the drive that ended at the
+// car park. A change of type may only split a journey on sustained evidence:
+// at least three fixes spanning enough time and distance, with plausible segment
+// and average speeds. A red light, a GPS spike, one stale Core Motion label or a
+// few metres of jitter near a parked car must never create a false journey.
+// GPS speed is accepted when a vehicle label is late, but a fresh vehicle label
+// always wins: a car crawling in traffic is still a car.
+struct MovementTransition {
+    // Confidence-based evidence per candidate fix. A fresh, high-confidence Core
+    // Motion label for a family is much stronger evidence than GPS speed alone, so
+    // sustained walking earns a shorter confirmation window without lowering the
+    // floor that protects GPS-only movement from jitter.
+    enum MotionCorroboration: Int, Comparable {
+        case none = 0, labelled, confident
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+    struct Sample {
+        var point: GPSPoint
+        var corroboration: MotionCorroboration
+    }
+    private(set) var samples: [Sample] = []
+    private(set) var target: JourneyFamily?
+    var candidates: [GPSPoint] { samples.map(\.point) }
+    mutating func reset() { samples.removeAll(); target = nil }
+    // Returns the confirmed new movement family, or nil while evidence is still
+    // accumulating. `from` is the journey's own family; the same family is a
+    // continuation, never a transition.
+    mutating func observe(_ point: GPSPoint, motion: MotionEvidence, now: Double, from: JourneyFamily) -> JourneyFamily? {
+        guard from != .other else { reset(); return nil }
+        guard point.accuracy >= 0, point.accuracy <= 65, abs(now-point.timestamp) <= 20,
+              point.latitude.isFinite, point.longitude.isFinite else { return nil }
+        // An unusable fix never erases the evidence chain built from real movement.
+        guard let family = Self.candidate(point, motion: motion, now: now), family != from,
+              point.speed >= Self.minimumSpeed(family, motion: motion, now: now) else {
+            reset()
+            return nil
         }
-        candidates.append(point)
-        guard let first = candidates.first else { return false }
-        return candidates.count >= 3 && point.timestamp-first.timestamp >= 20 &&
-               first.distance(to:point) >= 100
+        let sample = Sample(point: point, corroboration: Self.corroboration(of: family, motion: motion, now: now))
+        if family != target { target = family; samples.removeAll() }
+        guard let last = samples.last else { samples = [sample]; return nil }
+        guard point.timestamp > last.point.timestamp else { return nil }
+        let interval = point.timestamp-last.point.timestamp
+        // A long GPS gap cannot corroborate continuous movement. A tunnel-sized hole
+        // is only permitted when Core Motion confirms the new movement type.
+        guard interval <= Self.maximumInterval(family, motion: motion, now: now) else { reset(); return nil }
+        let segment = last.point.distance(to: point) / interval
+        guard segment >= Self.minimumSegmentSpeed(family, motion: motion, now: now),
+              segment <= Self.maximumSpeed(family, motion: motion, now: now) else {
+            samples = [sample]
+            return nil
+        }
+        samples.append(sample)
+        guard let first = samples.first, samples.count >= 3 else { return nil }
+        let span = point.timestamp-first.point.timestamp
+        let distance = first.point.distance(to: point)
+        let average = span > 0 ? distance / span : 0
+        // A weaker chain needs longer, farther proof of the same movement.
+        let evidence = Self.evidence(samples.map(\.corroboration))
+        guard span >= Self.minimumSpan(family, evidence: evidence),
+              distance >= Self.minimumDistance(family, evidence: evidence),
+              average >= Self.minimumAverageSpeed(family, motion: motion, now: now),
+              average <= Self.maximumSpeed(family, motion: motion, now: now) else { return nil }
+        return family
+    }
+    // How well Core Motion confirms this family on a single fix. Only a fresh label
+    // counts, so a stale classification can never shorten a chain.
+    static func corroboration(of family: JourneyFamily, motion: MotionEvidence, now: Double) -> MotionCorroboration {
+        let labelled: Bool
+        switch family {
+        case .driving: labelled = AutomaticDetector.drivingMotion(motion,now:now)
+        case .cycling: labelled = AutomaticDetector.cyclingMotion(motion,now:now)
+        case .onFoot: labelled = AutomaticDetector.onFootMotion(motion,now:now)
+        case .other: return .none
+        }
+        guard labelled else { return .none }
+        return motion.confidence == "high" ? .confident : .labelled
+    }
+    // One late or stale label must not shorten a chain: the fix that confirms the
+    // change has to be labelled, most of the chain has to agree, and only a chain
+    // that is mostly high confidence earns the shortest thresholds.
+    static func evidence(_ samples: [MotionCorroboration]) -> MotionCorroboration {
+        guard let newest = samples.last, newest != .none else { return .none }
+        let labelled = samples.filter { $0 != .none }.count
+        guard labelled*3 >= samples.count*2 else { return .none }
+        let confident = samples.filter { $0 == .confident }.count
+        return confident*2 >= samples.count ? .confident : .labelled
+    }
+    // A fresh Core Motion label wins over GPS speed. Without one, only a clearly
+    // vehicle-sized speed may propose a vehicle, and only clearly walking-sized
+    // movement may propose an on-foot change, so a slow queue is never a walk and a
+    // fast bicycle is never a drive.
+    static func candidate(_ point: GPSPoint, motion: MotionEvidence, now: Double) -> JourneyFamily? {
+        if AutomaticDetector.drivingMotion(motion,now:now) { return .driving }
+        if AutomaticDetector.cyclingMotion(motion,now:now) { return .cycling }
+        if AutomaticDetector.onFootMotion(motion,now:now), point.speed >= 0.4,
+           point.speed <= maximumSpeed(.onFoot,motion:motion,now:now) { return .onFoot }
+        if motionAvailable(motion) {
+            // A stale on-foot or cycling label must never hide a vehicle at vehicle speed.
+            if point.speed >= 6 { return .driving }
+        } else if point.speed >= 8 {
+            // Core Motion is denied, so a vehicle may only be claimed well above
+            // cycling speed. Anything slower stays ambiguous and is not a transition.
+            return .driving
+        }
+        if point.speed >= 0.4, point.speed <= 2.6 { return .onFoot }
+        return nil
+    }
+    // True when Core Motion supplied any classification for the fix. A denied or
+    // restricted permission leaves every fix without motion evidence, and only
+    // unambiguous GPS shapes may propose a change then. Driving is never inferred
+    // from a speed a bicycle or e-scooter could also reach.
+    static func motionAvailable(_ motion: MotionEvidence) -> Bool { motion.timestamp > 0 && !motion.types.isEmpty }
+    static func minimumSpeed(_ family: JourneyFamily, motion: MotionEvidence, now: Double) -> Double {
+        switch family {
+        case .driving:
+            if AutomaticDetector.drivingMotion(motion,now:now) { return 4 }
+            return motionAvailable(motion) ? 6 : 8
+        case .cycling: return 2.5
+        case .onFoot: return 0.4
+        case .other: return .greatestFiniteMagnitude
+        }
+    }
+    static func minimumSegmentSpeed(_ family: JourneyFamily, motion: MotionEvidence, now: Double) -> Double {
+        switch family {
+        case .driving:
+            if AutomaticDetector.drivingMotion(motion,now:now) { return 3 }
+            return motionAvailable(motion) ? 4 : 6
+        case .cycling: return 1.5
+        case .onFoot: return 0.4
+        case .other: return .greatestFiniteMagnitude
+        }
+    }
+    // A long GPS gap cannot corroborate continuous movement. A tunnel-sized hole is
+    // only permitted when Core Motion confirms a vehicle.
+    static func maximumInterval(_ family: JourneyFamily, motion: MotionEvidence, now: Double) -> Double {
+        switch family {
+        case .driving: return AutomaticDetector.drivingMotion(motion,now:now) ? 120 : 45
+        case .cycling: return 60
+        case .onFoot: return 90
+        case .other: return 0
+        }
+    }
+    // Walking is harder to prove than driving: a stroll has to be clearly separated
+    // from the parked car before the drive is closed. Sustained walking that Core
+    // Motion confirms on most of the chain is strong evidence, so it confirms after a
+    // shorter span and distance; GPS-only walking keeps the conservative floor.
+    static func minimumSpan(_ family: JourneyFamily, evidence: MotionCorroboration = .none) -> Double {
+        guard family == .onFoot else { return 20 }
+        switch evidence {
+        case .confident: return 20
+        case .labelled: return 30
+        case .none: return 45
+        }
+    }
+    static func minimumDistance(_ family: JourneyFamily, evidence: MotionCorroboration = .none) -> Double {
+        switch family {
+        case .onFoot:
+            switch evidence {
+            case .confident: return 30
+            case .labelled: return 45
+            case .none: return 80
+            }
+        case .cycling: return 60
+        default: return 100
+        }
+    }
+    static func minimumAverageSpeed(_ family: JourneyFamily, motion: MotionEvidence, now: Double) -> Double {
+        switch family {
+        case .driving:
+            if AutomaticDetector.drivingMotion(motion,now:now) { return 2.5 }
+            return motionAvailable(motion) ? 4 : 6
+        case .cycling: return 1.5
+        case .onFoot: return 0.5
+        case .other: return .greatestFiniteMagnitude
+        }
+    }
+    static func maximumSpeed(_ family: JourneyFamily, motion: MotionEvidence, now: Double) -> Double {
+        switch family {
+        case .driving: return 90
+        case .cycling: return 20
+        case .onFoot:
+            return motion.confidence != "low" && now-motion.timestamp <= 30 &&
+                motion.types.contains("Running") ? 7 : 3.2
+        case .other: return 0
+        }
     }
 }
 
@@ -308,12 +581,88 @@ enum JourneyFamily: String {
         default: return .other
         }
     }
+    // A journey recorded without Core Motion keeps its "Unknown" label, but a split
+    // still needs to know what it was. Its own GPS speed profile decides that for the
+    // transition only; the stored activity is never renamed from GPS alone, and an
+    // ambiguous profile stays `.other` so the journey is never split.
+    static func detected(_ trip: RecordedActivity) -> JourneyFamily {
+        let named = of(trip.activity)
+        return named != .other ? named : profile(trip.points)
+    }
+    static func profile(_ points: [GPSPoint]) -> JourneyFamily {
+        var driving = 0.0, walking = 0.0, total = 0.0
+        for pair in zip(points,points.dropFirst()) where pair.0.segment == pair.1.segment {
+            let seconds = pair.1.timestamp-pair.0.timestamp
+            guard seconds > 0 else { continue }
+            let segment = pair.0.distance(to:pair.1)
+            let speed = segment/seconds
+            total += segment
+            if speed >= 8 { driving += segment }
+            else if speed >= 0.7, speed <= 2.6 { walking += segment }
+        }
+        // A bicycle, a scooter and stop-and-go traffic all sit between the two bands,
+        // and too little movement cannot type a journey at all.
+        guard total >= 100 else { return .other }
+        if driving >= total*0.7 { return .driving }
+        if walking >= total*0.7 { return .onFoot }
+        return .other
+    }
+}
+// A stop is published immediately; whether the next movement belongs to the same
+// journey is decided from where the stop happened, not from elapsed time alone.
+struct StopContext {
+    var family: JourneyFamily
+    var placeKind: String?
+    var placeName: String?
+    init(family: JourneyFamily, placeKind: String? = nil, placeName: String? = nil) {
+        self.family = family
+        self.placeKind = placeKind
+        self.placeName = placeName
+    }
 }
 struct JourneyContinuation {
-    // How long a stopped journey can still absorb a continuation, and how far
-    // from the stop the continuation may begin.
+    // What the stop should do with the movement that just arrived.
+    enum Decision: Equatable {
+        // The movement belongs to this journey: reopen and append real fixes.
+        case resume
+        // The movement does not belong to this journey, but the journey is not
+        // over: keep the published stop open and let the window decide.
+        case waiting
+        // The journey is over. The reason is written to its tracking notes.
+        case finish(reason: String)
+    }
+    // Absolute upper bound for any stop, and how far from the stop a continuation
+    // may begin. The effective window comes from `window(for:)`.
     static let window: Double = 45*60
     static let radius: Double = 300
+    // A saved place is a destination: leaving it starts a new journey. An unsaved
+    // stop is usually a pause (traffic lights, congestion, a quick shop), so it
+    // keeps the journey open long enough to absorb a continuation.
+    static let savedPlaceWindow: Double = 10*60
+    static let vehiclePauseWindow: Double = 20*60
+    static let onFootPauseWindow: Double = 15*60
+    static let fallbackWindow: Double = 15*60
+    static func window(for stop: StopContext) -> Double {
+        if stop.placeKind != nil { return savedPlaceWindow }
+        switch stop.family {
+        case .driving, .cycling: return vehiclePauseWindow
+        case .onFoot: return onFootPauseWindow
+        case .other: return fallbackWindow
+        }
+    }
+    static func stopSummary(_ stop: StopContext) -> String {
+        if let place = stop.placeName ?? stop.placeKind {
+            return "Arrived at a saved place (\(place)); a new journey starts after \(Int(savedPlaceWindow/60)) minutes"
+        }
+        switch stop.family {
+        case .driving, .cycling:
+            return "Stopped away from a saved place; movement within \(Int(vehiclePauseWindow/60)) minutes continues this journey"
+        case .onFoot:
+            return "Stopped on foot; movement within \(Int(onFootPauseWindow/60)) minutes continues this walk"
+        case .other:
+            return "Stopped; movement within \(Int(fallbackWindow/60)) minutes continues this activity"
+        }
+    }
     // Confident motion wins; otherwise GPS speed decides whether the person is
     // walking away from the stop or driving off.
     static func movement(_ motion: MotionEvidence, speed: Double, now: Double) -> JourneyFamily? {
@@ -326,17 +675,68 @@ struct JourneyContinuation {
         return nil
     }
     // A vehicle journey only continues with vehicle movement: walking away from
-    // a parked car is a new activity. On-foot journeys absorb anything, because
-    // the existing driving transition splits a genuine drive out of them.
+    // a parked car is never absorbed. That walking does not end the journey by
+    // itself, though — a driver who walks into a shop and drives home again is one
+    // outing, so the stop stays open until its window expires or the movement
+    // leaves the stop radius.
+    // A confirmed change of movement type wins over a continuation window: one
+    // journey is one continuous activity, so walking away from a parked car ends
+    // the drive and starts its own journey. Unconfirmed different-family movement
+    // stays `waiting`, so a single sample or a few metres of jitter can neither
+    // split nor absorb the journey.
+    static func decide(stoppedAt: Double, now: Double, distance: Double,
+                       family: JourneyFamily, movement: JourneyFamily?,
+                       change: JourneyFamily? = nil,
+                       window: Double = window, radius: Double = radius) -> Decision {
+        guard now >= stoppedAt, distance.isFinite else {
+            return .finish(reason: "Stopped journey ended: invalid movement evidence")
+        }
+        if now-stoppedAt > window { return .finish(reason: "Journey completed after the continuation window") }
+        if let change = change, change != .other, change != family {
+            return .finish(reason: changeReason(from: family, to: change))
+        }
+        if distance > radius { return .finish(reason: "Stopped journey ended: movement resumed away from the stop") }
+        switch family {
+        case .driving: return movement == nil || movement == .driving ? .resume : .waiting
+        case .cycling: return movement == .driving ? .waiting : .resume
+        default: return .resume
+        }
+    }
+    static func label(_ family: JourneyFamily) -> String {
+        switch family {
+        case .onFoot: return "walking"
+        case .driving: return "driving"
+        case .cycling: return "cycling"
+        case .other: return "unknown"
+        }
+    }
+    static func changeReason(from family: JourneyFamily, to change: JourneyFamily) -> String {
+        "Journey ended at a confirmed \(label(family)) to \(label(change)) movement change"
+    }
     static func canResume(stoppedAt: Double, now: Double, distance: Double,
                           family: JourneyFamily, movement: JourneyFamily?,
                           window: Double = window, radius: Double = radius) -> Bool {
-        guard now >= stoppedAt, now-stoppedAt <= window, distance.isFinite, distance <= radius else { return false }
-        switch family {
-        case .driving: return movement == nil || movement == .driving
-        case .cycling: return movement != .driving
-        default: return true
-        }
+        decide(stoppedAt: stoppedAt, now: now, distance: distance, family: family,
+               movement: movement, change: nil, window: window, radius: radius) == .resume
+    }
+}
+
+// A relaunch cannot trust in-memory state, so the recovery decision is derived
+// from the persisted records: at most one published stop can still be continued,
+// and every other provisional journey is complete.
+enum ProvisionalRecovery {
+    struct Plan: Equatable {
+        var resumed: String?
+        var closed: [String]
+    }
+    static func plan(_ trips: [RecordedActivity], now: Double, fallbackWindow: Double = JourneyContinuation.window) -> Plan {
+        let provisional = trips.filter { $0.isProvisional }.sorted { ($0.endedAt ?? 0) > ($1.endedAt ?? 0) }
+        guard let newest = provisional.first else { return Plan(resumed: nil, closed: []) }
+        let endsAt = newest.details?.continuationEndsAt ?? (newest.endedAt ?? 0) + fallbackWindow
+        let resumable = endsAt > now && newest.points.count >= 2
+        var closed = provisional.dropFirst().map { $0.id }
+        if !resumable { closed.append(newest.id) }
+        return Plan(resumed: resumable ? newest.id : nil, closed: closed)
     }
 }
 
@@ -372,6 +772,10 @@ struct AutomaticDetector {
     static func cyclingMotion(_ motion:MotionEvidence,now:Double)->Bool {
         motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 &&
         motion.types.contains("Cycling")
+    }
+    static func onFootMotion(_ motion:MotionEvidence,now:Double)->Bool {
+        motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 &&
+        motion.types.contains(where:{["Walking","Running"].contains($0)})
     }
     static func credibleMovement(_ motion:MotionEvidence,now:Double)->Bool {
         motion.confidence != "low" && now-motion.timestamp >= 0 && now-motion.timestamp <= 30 && motion.types.contains(where:{["Walking","Running","Cycling","Driving"].contains($0)})

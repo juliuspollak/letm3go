@@ -4,7 +4,7 @@ import PersonBubble from './PersonBubble.jsx';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
 import {Users,UserPlus,UserMinus,Share2,Copy,MessageCircle} from 'lucide-react';
-export default function Friends({personPhotos={},onShareLive,invitationCode=null,onInviteConsumed}){
+export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onShareLive,invitationCode=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  const [friends,setFriends]=useState([]),[invite,setInvite]=useState(''),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
  const rpc=useCallback(async(name,params)=>{if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;},[]);
@@ -17,7 +17,7 @@ export default function Friends({personPhotos={},onShareLive,invitationCode=null
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
  return <section className="social-panel household-friends"><h2><Users size={19}/> Friends</h2>
  <p className="muted small-copy">Friends are separate from household members. Adding a friend never shares vehicles, routes or private history. Only an explicitly shared, unexpired status may appear in their feed.</p>
- <div className="people-bubbles">{friends.map(f=><PersonBubble key={f.user_id} name={f.display_name} src={personPhotos[f.user_id]} status="Friend" action={<button type="button" className="icon-button" aria-label={`Remove friend ${f.display_name}`} disabled={busy} onClick={()=>action(async()=>{await rpc('remove_friend',{p_friend:f.user_id});await refresh();})}><UserMinus size={17}/></button>}/>)}</div>
+ <div className="people-bubbles">{friends.map(f=><PersonBubble key={f.user_id} userId={f.user_id} name={f.display_name} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} status="Friend" action={<button type="button" className="icon-button" aria-label={`Remove friend ${f.display_name}`} disabled={busy} onClick={()=>action(async()=>{await rpc('remove_friend',{p_friend:f.user_id});await refresh();})}><UserMinus size={17}/></button>}/>)}</div>
  {!friends.length&&<p className="muted small-copy">No friends added yet.</p>}
  {inviteAccepted&&<InviteSharingPrompt kind="friend" busy={shareBusy} error={shareError} onClose={()=>{setInviteAccepted(false);setShareError('');}} onEnable={async()=>{setShareBusy(true);setShareError('');try{if(!onShareLive)throw new Error('Location sharing is unavailable.');await onShareLive();setInviteAccepted(false);setFeedback('Live location sharing is on. You can turn it off whenever you like.');}catch(e){setShareError(e.message||'Could not enable sharing.');}finally{setShareBusy(false);}}}/>}
  <button type="button" className="secondary full" disabled={busy} onClick={()=>action(async()=>setInvite(await rpc('create_friend_invite')))}><UserPlus size={16}/> Generate invitation</button>

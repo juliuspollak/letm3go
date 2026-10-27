@@ -31,6 +31,22 @@ check(RouteTrimming.trimmed(trip,start:2,end:1) == nil,"inverted trimming is rej
 check(RouteTrimming.trimmed(trip,start:0,end:999) == nil,"out of bounds trimming is rejected")
 check(trip.duration(at:500)==90, "finish freezes elapsed active duration")
 check(!trip.accept(point(-32.97,251),now:251), "finished sample rejected")
+// Equipment assignment keeps one ordered list and mirrors the legacy fields.
+var geared = RecordedActivity(activity:"Driving", startedAt:100, resumedAt:100, title:"Geared")
+geared.assignEquipment([EquipmentRef(id:"car-1", name:"Geely"), EquipmentRef(id:"car-1", name:"Duplicate"), EquipmentRef(id:"bike-1", name:"Trek")])
+check(geared.equipment?.count == 2, "equipment assignment deduplicates ids")
+check(geared.vehicle == "Geely" && geared.vehicleID == "car-1", "first equipment item is the primary vehicle")
+let equipmentRoundTrip = try JSONDecoder().decode(RecordedActivity.self, from: JSONEncoder().encode(geared))
+check(equipmentRoundTrip.equipment == geared.equipment, "equipment survives durable encoding")
+geared.assignEquipment([])
+check(geared.equipment == nil && geared.vehicle == nil && geared.vehicleID == nil, "removing equipment clears the legacy vehicle fields")
+var capped = RecordedActivity(activity:"Kitesurfing", startedAt:100, resumedAt:100, title:"Many")
+capped.assignEquipment((0..<12).map { EquipmentRef(id:"id-\($0)", name:"Item \($0)") })
+check(capped.equipment?.count == 8, "at most eight equipment items are stored")
+var legacyEquipmentObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capped)) as? [String: Any] ?? [:]
+legacyEquipmentObject.removeValue(forKey: "equipment"); legacyEquipmentObject.removeValue(forKey: "vehicleID")
+let legacyRecord = try JSONDecoder().decode(RecordedActivity.self, from: JSONSerialization.data(withJSONObject: legacyEquipmentObject))
+check(legacyRecord.equipment == nil && legacyRecord.vehicleID == nil, "records written before equipment existed still decode")
 let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 defer { try? FileManager.default.removeItem(at:directory) }
 let storage = try RecordingStorage(directory:directory)
@@ -76,54 +92,55 @@ var corrected = interrupted
 corrected.recordingMode = "automatic"; corrected.activity = "Hiking"; corrected.details = ActivityDetails(); corrected.details?.userCorrected = true
 corrected.applyPrediction(Classification(predicted:"Driving",confidence:"high",evidence:["test"]))
 check(corrected.activity == "Hiking", "user correction survives prediction")
-var transition=DrivingTransition()
+var transition=MovementTransition()
 let vehicleMotion=MotionEvidence(types:["Driving"],confidence:"high",timestamp:100,continuous:true)
 func drivingFix(_ latitude: Double, _ time: Double, speed: Double = 12, accuracy: Double = 8) -> GPSPoint {
     GPSPoint(latitude:latitude,longitude:151,timestamp:time,accuracy:accuracy,altitude:0,speed:speed)
 }
-check(!transition.observe(drivingFix(-33,100),motion:vehicleMotion,now:100),"one driving fix cannot split walking")
-check(!transition.observe(drivingFix(-32.998,110),motion:vehicleMotion,now:110),"two driving fixes cannot split walking")
-check(!transition.observe(drivingFix(-32.996,160),motion:vehicleMotion,now:160),"stale motion cannot split walking")
+check(transition.observe(drivingFix(-33,100),motion:vehicleMotion,now:100,from:.onFoot) == nil,"one driving fix cannot split walking")
+check(transition.observe(drivingFix(-32.998,110),motion:vehicleMotion,now:110,from:.onFoot) == nil,"two driving fixes cannot split walking")
+check(transition.observe(drivingFix(-32.996,160),motion:vehicleMotion,now:160,from:.onFoot) == nil,"stale motion cannot split walking")
 check(transition.candidates.isEmpty,"stale motion clears driving transition")
 let freshDriving=MotionEvidence(types:["Driving"],confidence:"high",timestamp:200,continuous:true)
-check(!transition.observe(drivingFix(-33,200),motion:freshDriving,now:200),"fresh driving candidate begins")
-check(!transition.observe(drivingFix(-32.999,210),motion:freshDriving,now:210),"brief driving evidence is insufficient")
-check(transition.observe(drivingFix(-32.998,223),motion:freshDriving,now:223),"sustained driving confirms walking to driving transition")
+check(transition.observe(drivingFix(-33,200),motion:freshDriving,now:200,from:.onFoot) == nil,"fresh driving candidate begins")
+check(transition.observe(drivingFix(-32.999,210),motion:freshDriving,now:210,from:.onFoot) == nil,"brief driving evidence is insufficient")
+check(transition.observe(drivingFix(-32.998,223),motion:freshDriving,now:223,from:.onFoot) == .driving,"sustained driving confirms walking to driving transition")
 transition.reset()
-check(!transition.observe(drivingFix(-33,300),motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:300),now:300),"walking motion cannot trigger a vehicle transition")
+check(transition.observe(drivingFix(-33,300),motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:300),now:300,from:.onFoot) == nil,"walking motion cannot trigger a vehicle transition on one fix")
 
 // iOS reports overlapping flags (Driving + Stationary), medium confidence and
 // coarse fixes while driving. None of these may discard a real transition.
 transition.reset()
 let overlappingDriving=MotionEvidence(types:["Driving","Stationary"],confidence:"medium",timestamp:400)
-check(!transition.observe(drivingFix(-33,400,speed:9,accuracy:30),motion:overlappingDriving,now:400),"overlapping driving flags start a candidate")
-check(!transition.observe(drivingFix(-32.9988,412,speed:9,accuracy:30),motion:overlappingDriving,now:412),"two overlapping-flag fixes cannot split")
-check(transition.observe(drivingFix(-32.9976,426,speed:9,accuracy:30),motion:overlappingDriving,now:426),"medium-confidence overlapping driving motion still splits walking")
+check(transition.observe(drivingFix(-33,400,speed:9,accuracy:30),motion:overlappingDriving,now:400,from:.onFoot) == nil,"overlapping driving flags start a candidate")
+check(transition.observe(drivingFix(-32.9988,412,speed:9,accuracy:30),motion:overlappingDriving,now:412,from:.onFoot) == nil,"two overlapping-flag fixes cannot split")
+check(transition.observe(drivingFix(-32.9976,426,speed:9,accuracy:30),motion:overlappingDriving,now:426,from:.onFoot) == .driving,"medium-confidence overlapping driving motion still splits walking")
 transition.reset()
 let preciseDriving=MotionEvidence(types:["Driving"],confidence:"high",timestamp:500)
-check(!transition.observe(drivingFix(-33,500,accuracy:10),motion:preciseDriving,now:500),"precise driving chain starts")
-check(!transition.observe(drivingFix(-32.999,510,accuracy:120),motion:preciseDriving,now:510),"a single unusable fix is ignored")
+check(transition.observe(drivingFix(-33,500,accuracy:10),motion:preciseDriving,now:500,from:.onFoot) == nil,"precise driving chain starts")
+check(transition.observe(drivingFix(-32.999,510,accuracy:120),motion:preciseDriving,now:510,from:.onFoot) == nil,"a single unusable fix is ignored")
 check(transition.candidates.count == 1,"an unusable fix does not erase the driving candidate chain")
-check(!transition.observe(drivingFix(-32.9978,520),motion:preciseDriving,now:520),"chain resumes after an unusable fix")
-check(transition.observe(drivingFix(-32.9966,530),motion:preciseDriving,now:530),"sustained driving after a poor fix confirms the split")
+check(transition.observe(drivingFix(-32.9978,520),motion:preciseDriving,now:520,from:.onFoot) == nil,"chain resumes after an unusable fix")
+check(transition.observe(drivingFix(-32.9966,530),motion:preciseDriving,now:530,from:.onFoot) == .driving,"sustained driving after a poor fix confirms the split")
 transition.reset()
 let walkingAtWheel=MotionEvidence(types:["Walking"],confidence:"high",timestamp:600)
-check(!transition.observe(drivingFix(-33.01,600,speed:10),motion:walkingAtWheel,now:600),"GPS-only transition needs a full chain")
-check(!transition.observe(drivingFix(-33.0088,612,speed:10),motion:walkingAtWheel,now:612),"two GPS fixes cannot override walking motion")
-check(transition.observe(drivingFix(-33.0076,626,speed:10),motion:walkingAtWheel,now:626),"sustained GPS speed splits when Core Motion reports walking")
+check(transition.observe(drivingFix(-33.01,600,speed:10),motion:walkingAtWheel,now:600,from:.onFoot) == nil,"GPS-only transition needs a full chain")
+check(transition.observe(drivingFix(-33.0088,612,speed:10),motion:walkingAtWheel,now:612,from:.onFoot) == nil,"two GPS fixes cannot override walking motion")
+check(transition.observe(drivingFix(-33.0076,626,speed:10),motion:walkingAtWheel,now:626,from:.onFoot) == .driving,"sustained GPS speed splits when Core Motion reports walking")
 transition.reset()
 let slowUnconfirmed=MotionEvidence(types:["Walking"],confidence:"high",timestamp:700)
-check(!transition.observe(drivingFix(-33,700,speed:5),motion:slowUnconfirmed,now:700),"uncorroborated 5 m/s fix is rejected")
-check(!transition.observe(drivingFix(-32.9965,715,speed:5),motion:slowUnconfirmed,now:715),"uncorroborated slow movement stays pending")
-check(!transition.observe(drivingFix(-32.993,730,speed:5),motion:slowUnconfirmed,now:730),"5 m/s without automotive motion is not a drive")
+check(transition.observe(drivingFix(-33,700,speed:5),motion:slowUnconfirmed,now:700,from:.onFoot) == nil,"uncorroborated 5 m/s fix is rejected")
+check(transition.observe(drivingFix(-32.9965,715,speed:5),motion:slowUnconfirmed,now:715,from:.onFoot) == nil,"uncorroborated slow movement stays pending")
+check(transition.observe(drivingFix(-32.993,730,speed:5),motion:slowUnconfirmed,now:730,from:.onFoot) == nil,"5 m/s without automotive motion is not a drive")
 check(transition.candidates.isEmpty,"5 m/s without automotive motion is never buffered as driving")
-// A brisk e-bike reaches driving speeds; fresh cycling motion must win.
+// A brisk e-bike reaches driving speeds; fresh cycling motion must win, and the
+// ride is its own cycling journey rather than a drive.
 transition.reset()
 let eBike=MotionEvidence(types:["Cycling"],confidence:"high",timestamp:800)
-check(!transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800),"fresh cycling motion rejects a fast fix")
-check(!transition.observe(drivingFix(-32.9988,812,speed:8),motion:eBike,now:812),"fresh cycling motion rejects a fast chain")
-check(!transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826),"an e-bike at driving speed is not split into a drive")
-check(transition.candidates.isEmpty,"cycling motion is never buffered as a driving transition")
+check(transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800,from:.onFoot) == nil,"fresh cycling motion starts a cycling candidate")
+check(transition.observe(drivingFix(-32.9988,812,speed:8),motion:eBike,now:812,from:.onFoot) == nil,"two e-bike fixes cannot split walking")
+check(transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826,from:.onFoot) == .cycling,"an e-bike at driving speed splits as cycling, never as a drive")
+check(transition.candidates.count == 3,"cycling motion is never buffered as a driving transition")
 check(AutomaticDetector.cyclingMotion(eBike,now:801),"fresh cycling motion is credible")
 var detector = AutomaticDetector()
 check(detector.observe(point(-33,100),motion:motion,manualActive:false,now:100) == nil,"departure candidate")
@@ -227,6 +244,275 @@ check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:
 check(JourneyFamily.of("MTB") == .cycling && JourneyFamily.of("Hiking") == .onFoot,"activity families group manual types")
 check(JourneyContinuation.movement(MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),speed:0,now:1000) == .onFoot,"motion identifies on-foot movement")
 check(JourneyContinuation.movement(MotionEvidence(),speed:12,now:1000) == .driving,"GPS speed identifies driving without motion")
+// Walking away from a parked car is neither absorbed nor an end of the drive: the
+// driver may be walking into a shop. Only distance, family or the window decide.
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot) == .waiting,"walking into a shop keeps a parked drive open without absorbing the walk")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:JourneyContinuation.radius+1,family:.driving,movement:.onFoot) == .finish(reason:"Stopped journey ended: movement resumed away from the stop"),"walking away from the stop ends the drive")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1000+JourneyContinuation.vehiclePauseWindow+1,distance:50,family:.driving,movement:.driving,window:JourneyContinuation.vehiclePauseWindow) == .finish(reason:"Journey completed after the continuation window"),"an abandoned drive completes when its window ends")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.cycling,movement:.driving) == .waiting,"a bicycle is not continued by a drive but its stop stays open")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving) == .resume,"walking into a car continues the walk so the drive can be split out")
+// A stop is separated from a continuation by context, not by elapsed time alone.
+check(JourneyContinuation.window(for:StopContext(family:.driving)) == JourneyContinuation.vehiclePauseWindow,"an unsaved driving stop absorbs congestion and a quick shop")
+check(JourneyContinuation.window(for:StopContext(family:.onFoot)) == JourneyContinuation.onFootPauseWindow,"an on-foot pause has its own window")
+check(JourneyContinuation.window(for:StopContext(family:.driving,placeKind:"home",placeName:"Home")) == JourneyContinuation.savedPlaceWindow,"arrival at a saved place is a destination")
+check(JourneyContinuation.window(for:StopContext(family:.cycling,placeKind:"favourite",placeName:"Gym")) == JourneyContinuation.savedPlaceWindow,"a saved gym ends a bicycle journey too")
+check(JourneyContinuation.canResume(stoppedAt:1000,now:1000+300,distance:40,family:.driving,movement:.driving,window:JourneyContinuation.vehiclePauseWindow),"five minutes of congestion stays one drive")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1000+45*60,distance:40,family:.driving,movement:.driving,window:JourneyContinuation.vehiclePauseWindow),"a forty-five minute gym visit starts a new drive home")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1000+JourneyContinuation.savedPlaceWindow+1,distance:40,family:.driving,movement:.driving,window:JourneyContinuation.savedPlaceWindow),"leaving a saved place after the short window is a new journey")
+check(JourneyContinuation.stopSummary(StopContext(family:.driving,placeKind:"work",placeName:"Work")).contains("Work"),"the stop note names the saved place")
+// One journey is one continuous activity. Walking away from a parked car is its
+// own walking journey, so a confirmed change of type ends the drive instead of
+// being absorbed into it or being kept open by a continuation window.
+func footMotion(_ now: Double) -> MotionEvidence { MotionEvidence(types:["Walking"],confidence:"high",timestamp:now,continuous:true) }
+func carMotion(_ now: Double) -> MotionEvidence { MotionEvidence(types:["Driving"],confidence:"high",timestamp:now,continuous:true) }
+func metreFix(_ metres: Double, _ time: Double, speed: Double, accuracy: Double = 8) -> GPSPoint {
+    GPSPoint(latitude:-33 + metres/111_320, longitude:151, timestamp:time, accuracy:accuracy, altitude:0, speed:speed)
+}
+var parkedWalk=MovementTransition()
+check(parkedWalk.observe(metreFix(40,1010,speed:1.4),motion:footMotion(1010),now:1010,from:.driving) == nil,"a few metres from the parked car cannot end the drive")
+check(parkedWalk.observe(metreFix(75,1040,speed:1.4),motion:footMotion(1040),now:1040,from:.driving) == nil,"two walking fixes cannot end the drive")
+check(parkedWalk.candidates.count == 2 && parkedWalk.target == .onFoot,"a walk near the car stays only evidence")
+check(parkedWalk.observe(metreFix(110,1070,speed:1.4),motion:footMotion(1070),now:1070,from:.driving) == .onFoot,"a sustained, confidently walked errand ends the drive")
+// Walking that Core Motion confirms on most of the chain earns a shorter span and
+// distance. GPS-only walking keeps the conservative floor, so a short walk to a shop
+// door without motion evidence still cannot split a drive.
+var briefWalk=MovementTransition()
+check(briefWalk.observe(metreFix(0,2000,speed:1.5),motion:MotionEvidence(),now:2000,from:.driving) == nil,"GPS-only walking starts as evidence")
+check(briefWalk.observe(metreFix(30,2015,speed:1.5),motion:MotionEvidence(),now:2015,from:.driving) == nil,"two GPS-only walking fixes cannot end the drive")
+check(briefWalk.observe(metreFix(55,2030,speed:1.5),motion:MotionEvidence(),now:2030,from:.driving) == nil,"a short GPS-only walk is too brief to split")
+check(briefWalk.observe(metreFix(70,2045,speed:1.5),motion:MotionEvidence(),now:2045,from:.driving) == nil,"GPS-only walking still needs its full distance")
+check(briefWalk.observe(metreFix(95,2060,speed:1.5),motion:MotionEvidence(),now:2060,from:.driving) == .onFoot,"a sustained GPS-only walk still confirms")
+// Medium confidence earns less than high confidence: a longer chain is required.
+var cautiousWalk=MovementTransition()
+let tentativeMotion={ (now:Double) in MotionEvidence(types:["Walking"],confidence:"medium",timestamp:now,continuous:true) }
+check(cautiousWalk.observe(metreFix(0,2500,speed:1.3),motion:tentativeMotion(2500),now:2500,from:.driving) == nil,"medium-confidence walking starts as evidence")
+check(cautiousWalk.observe(metreFix(20,2510,speed:1.3),motion:tentativeMotion(2510),now:2510,from:.driving) == nil,"two medium-confidence fixes are not enough")
+check(cautiousWalk.observe(metreFix(35,2520,speed:1.3),motion:tentativeMotion(2520),now:2520,from:.driving) == nil,"a medium-confidence walk needs a longer span")
+check(cautiousWalk.observe(metreFix(50,2535,speed:1.3),motion:tentativeMotion(2535),now:2535,from:.driving) == .onFoot,"sustained medium-confidence walking confirms")
+// One late label must not shorten a chain that was unlabelled before it.
+var lateLabelWalk=MovementTransition()
+check(lateLabelWalk.observe(metreFix(0,3000,speed:1.5),motion:MotionEvidence(),now:3000,from:.driving) == nil,"an unlabelled fix starts the chain")
+check(lateLabelWalk.observe(metreFix(27,3012,speed:1.5),motion:MotionEvidence(),now:3012,from:.driving) == nil,"an unlabelled second fix is not enough")
+check(lateLabelWalk.observe(metreFix(55,3025,speed:1.5),motion:footMotion(3025),now:3025,from:.driving) == nil,"one late label cannot shorten the chain")
+check(lateLabelWalk.observe(metreFix(110,3055,speed:1.5),motion:footMotion(3055),now:3055,from:.driving) == .onFoot,"the chain confirms at the GPS-only floor")
+// Walking a loop beside the car never accumulates the displacement a journey needs.
+var carLoop=MovementTransition()
+for (index,distance) in [0.0,8.0,2.0,8.0,1.0,9.0].enumerated() {
+    let now=3100+Double(index)*10
+    check(carLoop.observe(metreFix(distance,now,speed:0.8),motion:footMotion(now),now:now,from:.driving) == nil,"walking around the parked car never splits the drive")
+}
+var parkedJitter=MovementTransition()
+for offset in 0...20 {
+    let now=1150+Double(offset)*10
+    _ = parkedJitter.observe(metreFix(Double(offset%2)*4,now,speed:0.3),motion:footMotion(now),now:now,from:.driving)
+}
+check(parkedJitter.candidates.isEmpty,"GPS jitter beside a parked car never splits the drive")
+var queueingCar=MovementTransition()
+for offset in 0...8 {
+    let now=1300+Double(offset)*15
+    check(queueingCar.observe(metreFix(Double(offset)*10,now,speed:2),motion:carMotion(now),now:now,from:.driving) == nil,"a car crawling in traffic keeps its journey")
+}
+check(queueingCar.candidates.isEmpty,"a fresh driving label is never turned into a walk by slow speed")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:200,family:.driving,movement:.onFoot) == .waiting,"unconfirmed walking keeps the drive open without absorbing it")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:200,family:.driving,movement:.onFoot,change:.onFoot) == .finish(reason:"Journey ended at a confirmed driving to walking movement change"),"a confirmed walk ends the drive")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot,change:.onFoot,window:JourneyContinuation.vehiclePauseWindow) == .finish(reason:"Journey ended at a confirmed driving to walking movement change"),"a confirmed change beats the continuation window")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.driving,change:.driving,window:JourneyContinuation.vehiclePauseWindow) == .resume,"the same movement type is a continuation, not a change")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot,change:.other) == .waiting,"an unknown change neither ends nor absorbs a journey")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.cycling,change:.cycling) == .finish(reason:"Journey ended at a confirmed walking to cycling movement change"),"a walk becomes a separate cycling journey")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot),"walking away from a parked car is never a continuation")
+check(MovementTransition.candidate(metreFix(100,1200,speed:0.2),motion:footMotion(1200),now:1200) == nil,"standing still proposes no movement type")
+check(MovementTransition.candidate(metreFix(100,1200,speed:12),motion:footMotion(1200),now:1200) == .driving,"vehicle speed overrides a stale on-foot label")
+check(MovementTransition.candidate(metreFix(100,1200,speed:4.2),motion:MotionEvidence(types:["Running"],confidence:"high",timestamp:1200),now:1200) == .onFoot,"a running label allows running speed on foot")
+check(MovementTransition.candidate(metreFix(100,1200,speed:8),motion:MotionEvidence(types:["Cycling"],confidence:"high",timestamp:1200),now:1200) == .cycling,"cycling motion beats vehicle speed")
+check(MovementTransition.candidate(metreFix(100,1200,speed:4.2),motion:footMotion(1200),now:1200) == nil,"walking speed limits stay in force for a walking label")
+// Core Motion denied: only unambiguous GPS shapes may propose a change, so driving
+// is never guessed against cycling, a scooter or a fast walk.
+check(!MovementTransition.motionAvailable(MotionEvidence()),"a denied motion permission leaves no motion evidence at all")
+check(MovementTransition.motionAvailable(MotionEvidence(types:["Stationary"],confidence:"high",timestamp:1200)),"a stationary label still counts as available motion evidence")
+check(MovementTransition.candidate(metreFix(0,4000,speed:3),motion:MotionEvidence(),now:4000) == nil,"jogging speed without Core Motion is ambiguous")
+check(MovementTransition.candidate(metreFix(0,4000,speed:5),motion:MotionEvidence(),now:4000) == nil,"bicycle speed without Core Motion is ambiguous")
+check(MovementTransition.candidate(metreFix(0,4000,speed:6),motion:MotionEvidence(),now:4000) == nil,"a slow car without Core Motion is ambiguous")
+check(MovementTransition.candidate(metreFix(0,4000,speed:8),motion:MotionEvidence(),now:4000) == .driving,"highway speed without Core Motion is a vehicle")
+check(MovementTransition.candidate(metreFix(0,4000,speed:7),motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),now:4000) == .driving,"a stale label on device still yields to vehicle speed")
+var gpsDrive=MovementTransition()
+check(gpsDrive.observe(metreFix(0,4000,speed:10),motion:MotionEvidence(),now:4000,from:.onFoot) == nil,"a strong GPS vehicle chain starts as evidence")
+check(gpsDrive.observe(metreFix(100,4010,speed:10),motion:MotionEvidence(),now:4010,from:.onFoot) == nil,"two GPS vehicle fixes cannot end the walk")
+check(gpsDrive.observe(metreFix(250,4025,speed:10),motion:MotionEvidence(),now:4025,from:.onFoot) == .driving,"sustained highway speed ends the walk without Core Motion")
+check(gpsDrive.candidates.count == 3 && gpsDrive.samples.allSatisfy { $0.corroboration == .none },"a GPS-only transition carries no motion corroboration")
+var gpsCrawl=MovementTransition()
+for (index,metres) in [0.0,30.0,60.0,90.0].enumerated() {
+    let now=4100+Double(index)*10
+    check(gpsCrawl.observe(metreFix(metres,now,speed:3),motion:MotionEvidence(),now:now,from:.onFoot) == nil,"a slow car without Core Motion never becomes a drive")
+}
+check(gpsCrawl.candidates.isEmpty,"ambiguous GPS speed is never a movement transition")
+// A journey recorded without Core Motion keeps "Unknown" in History, but its own
+// speed profile may still type it for the purpose of splitting.
+var unclassifiedDrive=RecordedActivity(activity:"Unknown",startedAt:0,resumedAt:0,title:"Journey")
+for point in [metreFix(0,0,speed:12),metreFix(120,10,speed:12),metreFix(240,20,speed:12)] { _ = unclassifiedDrive.accept(point,now:point.timestamp) }
+check(JourneyFamily.detected(unclassifiedDrive) == .driving,"an unclassified journey is typed from sustained GPS speed for splitting")
+check(unclassifiedDrive.activity == "Unknown","the stored activity of an unclassified journey is never renamed")
+var unclassifiedRide=RecordedActivity(activity:"Unknown",startedAt:0,resumedAt:0,title:"Journey")
+for point in [metreFix(0,0,speed:5),metreFix(50,10,speed:5),metreFix(100,20,speed:5)] { _ = unclassifiedRide.accept(point,now:point.timestamp) }
+check(JourneyFamily.detected(unclassifiedRide) == .other,"a bicycle-speed journey without Core Motion stays ambiguous")
+var unclassifiedWalk=RecordedActivity(activity:"Unknown",startedAt:0,resumedAt:0,title:"Journey")
+for point in [metreFix(0,0,speed:1.4),metreFix(28,20,speed:1.4),metreFix(56,40,speed:1.4),metreFix(84,60,speed:1.4),metreFix(112,80,speed:1.4)] { _ = unclassifiedWalk.accept(point,now:point.timestamp) }
+check(JourneyFamily.detected(unclassifiedWalk) == .onFoot,"a walking journey without Core Motion is typed from its speed profile")
+var shortUnknown=RecordedActivity(activity:"Unknown",startedAt:0,resumedAt:0,title:"Journey")
+_ = shortUnknown.accept(metreFix(0,0,speed:12),now:0)
+_ = shortUnknown.accept(metreFix(30,10,speed:12),now:10)
+check(JourneyFamily.detected(shortUnknown) == .other,"too little movement cannot type an unclassified journey")
+// The walk away from an unclassified drive is still its own journey.
+var unknownWalk=MovementTransition()
+check(unknownWalk.observe(metreFix(250,30,speed:1.4),motion:footMotion(30),now:30,from:JourneyFamily.detected(unclassifiedDrive)) == nil,"walking away from an unclassified drive starts as evidence")
+check(unknownWalk.observe(metreFix(280,45,speed:1.4),motion:footMotion(45),now:45,from:JourneyFamily.detected(unclassifiedDrive)) == nil,"two walking fixes cannot end an unclassified drive")
+check(unknownWalk.observe(metreFix(320,60,speed:1.4),motion:footMotion(60),now:60,from:JourneyFamily.detected(unclassifiedDrive)) == .onFoot,"a sustained walk ends an unclassified drive too")
+let keptUnknown=JourneySplit.kept(unclassifiedDrive,before:unknownWalk.candidates.first?.timestamp ?? 0)
+check(keptUnknown?.points.count == 3 && keptUnknown?.activity == "Unknown","the unclassified journey keeps its own fixes and label")
+check(keptUnknown?.endedAt == 20,"the unclassified journey ends at its last own fix")
+// The full driving → walking → driving sequence produces three accurate journeys
+// with no duplicated fixes and no invented distance.
+var homeToShops=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Home → Shops")
+homeToShops.recordingMode="automatic";homeToShops.details=ActivityDetails()
+for point in [metreFix(0,0,speed:12),metreFix(120,10,speed:12),metreFix(240,20,speed:12),metreFix(360,30,speed:12),metreFix(480,40,speed:12)] {
+    check(homeToShops.accept(point,now:point.timestamp),"drive fix is recorded")
+}
+// The walk starts while the drive is still active, exactly as it does on device.
+for point in [metreFix(490,60,speed:1.6),metreFix(540,90,speed:1.6),metreFix(600,120,speed:1.6)] {
+    check(homeToShops.accept(point,now:point.timestamp),"walk following the park is accepted by the active journey")
+}
+var walkAfterParking=MovementTransition()
+check(walkAfterParking.observe(metreFix(490,60,speed:1.6),motion:footMotion(60),now:60,from:.driving) == nil,"the walk after parking starts as evidence")
+check(walkAfterParking.observe(metreFix(540,90,speed:1.6),motion:footMotion(90),now:90,from:.driving) == nil,"two walking fixes cannot end the drive")
+check(walkAfterParking.observe(metreFix(600,120,speed:1.6),motion:footMotion(120),now:120,from:.driving) == .onFoot,"a sustained walk ends the drive")
+let firstWalkFix = walkAfterParking.candidates.first?.timestamp ?? 0
+let endedDrive = JourneySplit.kept(homeToShops,before:firstWalkFix)
+check(endedDrive?.points.count == 5,"the drive keeps only its own fixes")
+check(abs((endedDrive?.distanceMeters ?? 0) - 480) < 2,"the walk is not counted as drive distance")
+check(endedDrive?.endedAt == 40,"the drive ends at its last driving fix")
+check(JourneySplit.kept(homeToShops,before:10) == nil,"a journey without enough real movement is not published")
+var shopsWalk=RecordedActivity(activity:"Walking",startedAt:firstWalkFix,resumedAt:firstWalkFix,title:"Walking")
+shopsWalk.recordingMode="automatic";shopsWalk.details=ActivityDetails()
+for point in walkAfterParking.candidates { check(shopsWalk.accept(point,now:point.timestamp),"walking fix belongs to the walking journey") }
+check(shopsWalk.points.count == 3 && abs(shopsWalk.distanceMeters - 110) < 2,"the walking journey keeps its real fixes and distance")
+check(shopsWalk.startedAt == 60,"the walking journey starts at the first sustained walking fix")
+// The walk is still running when the driver returns to the car, so the drive home
+// splits away from it in the same way.
+for point in [metreFix(660,150,speed:1.5),metreFix(700,180,speed:1.5)] {
+    check(shopsWalk.accept(point,now:point.timestamp),"walking continues before returning to the car")
+}
+var driveHome=MovementTransition()
+check(driveHome.observe(metreFix(700,300,speed:9),motion:carMotion(300),now:300,from:.onFoot) == nil,"the drive home starts as evidence")
+check(driveHome.observe(metreFix(800,312,speed:9),motion:carMotion(312),now:312,from:.onFoot) == nil,"two driving fixes cannot end the walk")
+check(driveHome.observe(metreFix(900,326,speed:9),motion:carMotion(326),now:326,from:.onFoot) == .driving,"the drive home is its own journey")
+for point in driveHome.candidates { _ = shopsWalk.accept(point,now:point.timestamp) }
+let endedWalk = JourneySplit.kept(shopsWalk,before:driveHome.candidates.first?.timestamp ?? 0)
+check(endedWalk?.points.count == 5,"the walk keeps only its own fixes")
+check(abs((endedWalk?.distanceMeters ?? 0) - 210) < 3,"the drive home is not counted as walking distance")
+check(endedWalk?.endedAt == 180,"the walk ends at its last walking fix")
+var homeDrive=RecordedActivity(activity:"Driving",startedAt:300,resumedAt:300,title:"Shops → Home")
+homeDrive.recordingMode="automatic";homeDrive.details=ActivityDetails()
+for point in driveHome.candidates { check(homeDrive.accept(point,now:point.timestamp),"driving fix belongs to the drive home") }
+check(abs(homeDrive.distanceMeters - 200) < 2,"the drive home measures only its own fixes")
+check((endedDrive?.endedAt ?? 0) < shopsWalk.startedAt,"the walking journey starts after the drive ended")
+check((endedWalk?.endedAt ?? 0) < homeDrive.startedAt,"the drive home starts after the walk ended")
+let recordedTimes = (endedDrive?.points ?? []).map{$0.timestamp} + (endedWalk?.points ?? []).map{$0.timestamp} + homeDrive.points.map{$0.timestamp}
+check(Set(recordedTimes).count == recordedTimes.count,"no GPS fix is recorded in two journeys")
+
+
+// A split must also be safe for local persistence and relaunch: the ended record is
+// final and the new one is the only journey recovery may reopen.
+var splitDrive=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Drive")
+splitDrive.recordingMode="automatic";splitDrive.details=ActivityDetails()
+for point in [metreFix(0,0,speed:12),metreFix(120,10,speed:12),metreFix(240,20,speed:12),metreFix(360,30,speed:12)] {
+    check(splitDrive.accept(point,now:point.timestamp),"drive fix is recorded before the stop")
+}
+splitDrive.publishStop(at:40,continuationEndsAt:40+JourneyContinuation.vehiclePauseWindow)
+var splitWalkTransition=MovementTransition()
+_ = splitWalkTransition.observe(metreFix(370,60,speed:1.4),motion:footMotion(60),now:60,from:.driving)
+_ = splitWalkTransition.observe(metreFix(400,75,speed:1.4),motion:footMotion(75),now:75,from:.driving)
+check(splitWalkTransition.observe(metreFix(440,90,speed:1.4),motion:footMotion(90),now:90,from:.driving) == .onFoot,"the walk away from a published stop is confirmed")
+let splitBoundary = splitWalkTransition.candidates.first?.timestamp ?? 0
+guard var splitEnded = JourneySplit.kept(splitDrive,before:splitBoundary) else {
+    fatalError("the published drive must survive a split")
+}
+splitEnded.completeProvisional()
+var splitWalk=RecordedActivity(activity:"Walking",startedAt:splitBoundary,resumedAt:splitBoundary,title:"Walking")
+splitWalk.recordingMode="automatic";splitWalk.details=ActivityDetails()
+for point in splitWalkTransition.candidates { check(splitWalk.accept(point,now:point.timestamp),"walking fix belongs to the split journey") }
+splitWalk.publishStop(at:90,continuationEndsAt:90+JourneyContinuation.onFootPauseWindow)
+check(splitEnded.endedAt == 30,"the ended journey finishes at its last own fix")
+check(!splitEnded.isProvisional && splitEnded.details?.continuationEndsAt == nil,"a split journey is never reopened")
+check(splitWalk.startedAt == splitBoundary,"the new journey starts at its first confirmed fix")
+let splitTimestamps = splitEnded.points.map{$0.timestamp} + splitWalk.points.map{$0.timestamp}
+check(Set(splitTimestamps).count == splitTimestamps.count,"a split never stores the same fix twice")
+check(ProvisionalRecovery.plan([splitEnded,splitWalk],now:200) == ProvisionalRecovery.Plan(resumed:splitWalk.id,closed:[]),"after a split only the new journey can resume")
+check(ProvisionalRecovery.plan([splitEnded,splitWalk],now:90+JourneyContinuation.onFootPauseWindow+1) == ProvisionalRecovery.Plan(resumed:nil,closed:[splitWalk.id]),"the split journey completes after its own window")
+// A confirmed stop is published immediately, then finalised or continued in
+// place. History never waits for the window and no duplicate record is created.
+
+
+var published=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Drive")
+published.recordingMode="automatic";published.details=ActivityDetails()
+_ = published.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:10),now:0)
+_ = published.accept(GPSPoint(latitude:0,longitude:0.0003,timestamp:60,accuracy:5,altitude:0,speed:10),now:60)
+published.publishStop(at:60,continuationEndsAt:60+1200)
+check(published.isProvisional,"a confirmed stop is published as a provisional journey")
+check(published.endedAt == 60,"the published journey records its stop time")
+check(published.details?.continuationEndsAt == 1260,"the published journey records its continuation deadline")
+check(published.state == "paused" && published.segment == 1,"the published stop stays a segment break")
+check(published.duration(at:6000) == 60,"the stop is excluded from the published duration")
+let publishedDistance = published.distanceMeters
+check(published.continueAfterStop(at:300),"a published journey can be continued")
+check(!published.isProvisional && published.details?.continuationEndsAt == nil,"a continuation clears the provisional marker")
+check(published.endedAt == nil && published.state == "recording","a continued journey is open again")
+_ = published.accept(GPSPoint(latitude:0,longitude:0.0006,timestamp:360,accuracy:5,altitude:0,speed:10),now:360)
+check(published.distanceMeters == publishedDistance,"the first fix after a stop adds no distance across the gap")
+_ = published.accept(GPSPoint(latitude:0,longitude:0.0009,timestamp:420,accuracy:5,altitude:0,speed:10),now:420)
+check(published.distanceMeters > publishedDistance,"a continuation adds measured distance only")
+check(published.duration(at:420) == 180,"the stop remains excluded from a continued journey")
+check(published.points.last?.segment == 1,"a continued journey keeps one segment break for the stop")
+published.completeProvisional()
+check(!published.isProvisional && published.details?.continuationEndsAt == nil,"finalising clears the continuation marker")
+published.finish(at:420)
+check(published.state == "finished","a finalised journey is closed and is never revived")
+// A relaunch derives its recovery plan from persisted records only.
+var resumeStop=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Stop")
+resumeStop.recordingMode="automatic";resumeStop.details=ActivityDetails()
+_ = resumeStop.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:10),now:0)
+_ = resumeStop.accept(GPSPoint(latitude:0,longitude:0.0003,timestamp:60,accuracy:5,altitude:0,speed:10),now:60)
+resumeStop.publishStop(at:60,continuationEndsAt:1260)
+check(ProvisionalRecovery.plan([resumeStop],now:600) == ProvisionalRecovery.Plan(resumed:resumeStop.id,closed:[]),"a relaunch inside the window restores the published stop")
+check(ProvisionalRecovery.plan([resumeStop],now:1261) == ProvisionalRecovery.Plan(resumed:nil,closed:[resumeStop.id]),"a relaunch after the window completes the published stop")
+var earlierStop=resumeStop;earlierStop.id=UUID().uuidString;earlierStop.endedAt=10
+earlierStop.details?.continuationEndsAt=1210
+check(ProvisionalRecovery.plan([earlierStop,resumeStop],now:600) == ProvisionalRecovery.Plan(resumed:resumeStop.id,closed:[earlierStop.id]),"only the newest published stop can be continued")
+var finishedStop=resumeStop;finishedStop.id=UUID().uuidString;finishedStop.completeProvisional()
+check(ProvisionalRecovery.plan([finishedStop],now:600).resumed == nil,"a finalised journey is never revived")
+// Records written before provisional journeys existed must still decode.
+var legacyTrip=RecordedActivity(activity:"Walking",startedAt:10,resumedAt:10,title:"Legacy")
+legacyTrip.details=ActivityDetails();legacyTrip.finish(at:70)
+var legacyObject=try JSONSerialization.jsonObject(with:try JSONEncoder().encode(legacyTrip)) as! [String:Any]
+var legacyDetails=legacyObject["details"] as! [String:Any]
+legacyDetails.removeValue(forKey:"provisional");legacyDetails.removeValue(forKey:"continuationEndsAt")
+legacyObject["details"]=legacyDetails
+let legacyDecoded=try JSONDecoder().decode(RecordedActivity.self,from:try JSONSerialization.data(withJSONObject:legacyObject))
+check(legacyDecoded.details?.provisional == nil && !legacyDecoded.isProvisional,"records without provisional keys still decode")
+// GPS quality: a late movement classification keeps real driving fixes, a lone
+// spike cannot teleport a slow walk, and drift while parked adds no distance.
+var sustainedDrive=RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Late drive")
+sustainedDrive.recordingMode="automatic"
+check(sustainedDrive.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:11),now:0),"late drive first fix")
+check(sustainedDrive.accept(GPSPoint(latitude:0,longitude:0.001,timestamp:10,accuracy:5,altitude:0,speed:11),now:10),"late drive sustained speed")
+check(sustainedDrive.accept(GPSPoint(latitude:0,longitude:0.0035,timestamp:20,accuracy:5,altitude:0,speed:25),now:20),"an already fast segment keeps its fixes when classification lags")
+var spikeWalk=RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Spike")
+spikeWalk.recordingMode="automatic"
+check(spikeWalk.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:1.4),now:0),"walk first fix")
+check(spikeWalk.accept(GPSPoint(latitude:0,longitude:0.0001,timestamp:10,accuracy:5,altitude:0,speed:1.4),now:10),"walk slow fix")
+check(!spikeWalk.accept(GPSPoint(latitude:0,longitude:0.005,timestamp:20,accuracy:5,altitude:0,speed:1.4),now:20),"a wild displacement with a low reported speed is rejected as a spike")
+var parkedDrift=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Parked")
+parkedDrift.recordingMode="automatic"
+_ = parkedDrift.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:0),now:0)
+check(!parkedDrift.accept(GPSPoint(latitude:0,longitude:0.0001,timestamp:120,accuracy:5,altitude:0,speed:0),now:120),"GPS drift while parked is not recorded as distance")
 // A continuation appends real fixes only and keeps the stop out of the moving
 // duration and distance.
 var continued=RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walk")

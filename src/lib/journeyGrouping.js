@@ -9,6 +9,9 @@ export function metres(a,b){if(!point(a)||!point(b))return Infinity;const r=Math
 const edge=(a,b)=>JSON.stringify([a,b]);
 const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
+// A stopped journey that may still be continued is a provisional record. It is
+// not grouped, shared or backed up until the recorder finalises it.
+export const isProvisional=t=>t?.details?.provisional===true;
 export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{}};}
 export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{}};}catch{return emptyGrouping(owner);}}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
@@ -95,7 +98,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  if(metadata.owner!==owner)metadata=emptyGrouping(owner);
  const context={owner,metadata,places,vehicles,telemetry};
  const unique=new Map();
- for(const t of activities){if((t.ownerID||t.owner_id)&&(t.ownerID||t.owner_id)!==owner)continue;const old=unique.get(t.id);if(!old||(t.updatedAt||0)>(old.updatedAt||0))unique.set(t.id,t);}
+ for(const t of activities){if(isProvisional(t))continue;if((t.ownerID||t.owner_id)&&(t.ownerID||t.owner_id)!==owner)continue;const old=unique.get(t.id);if(!old||(t.updatedAt||0)>(old.updatedAt||0))unique.set(t.id,t);}
  const sorted=[...unique.values()].sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  const positions=new Map(sorted.map((s,i)=>[s.id,i]));
  const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[a,b]]:[];}catch{return [];}});

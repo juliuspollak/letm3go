@@ -19,9 +19,9 @@ instead of by waiting.
    Motion reports fresh, confident stillness without any movement flag). The trip
    is paused: the dwell itself is excluded from the moving duration and is left
    as a segment break in the route. GPS drops to the existing standby mode
-   (10 m / 25 m) and a 120 m exit region is monitored around the stop. The trip
-   is **not** published; it stays in `automaticTrip` and the recorder UI keeps
-   showing it, exactly as during the old dwell.
+   (10 m / 25 m) and a 120 m exit region is monitored around the stop.
+   Build 43 publishes the stop to History at this point and chooses the window
+   from the stop context; see `journey-provisional-build-43.md`.
 3. **Continued** — a fix that moves more than the fix uncertainty (35 m) from the
    stop, or reports speed ≥ 3 m/s, resumes the same trip when
    - the stop is at most 45 minutes old (`JourneyContinuation.window`), and
@@ -43,7 +43,7 @@ instead of by waiting.
 | --- | --- | --- |
 | `AutomaticDetector.stopDwell` | 180 s | a red light, a queue and a photo stop are shorter |
 | `AutomaticDetector.motionStopDwell` | 120 s | confirmed stillness is strong evidence |
-| `JourneyContinuation.window` | 45 min | covers a shop visit, a coffee or a short break |
+| `JourneyContinuation.window` | 45 min | absolute bound; build 43 uses `window(for:)` per stop context |
 | `JourneyContinuation.radius` | 300 m | "around the last finish"; larger moves are a new outing |
 
 A wrong stop is now cheap: it costs one segment break (and two minutes of standby

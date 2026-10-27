@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { recordedJourney, visibleRecorderJourneys, speedLabel, paceLabel } from './recorder.js';
+import { recordedJourney, visibleRecorderJourneys, provisionalJourney, speedLabel, paceLabel } from './recorder.js';
 it('preserves native provenance and pause gaps without fabricating route points',()=>{
  const trip=recordedJourney({id:'real',startedAt:1000,source:'device',title:'Walk',points:[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:1}],distanceMeters:1000,durationSeconds:600});
  expect(trip.source).toBe('device');
@@ -7,6 +7,28 @@ it('preserves native provenance and pause gaps without fabricating route points'
  expect(trip.cover).toBeNull();
  expect(trip.photos).toEqual([]);
  expect(trip.distance).toBe(1);
+});
+it('exposes a published stop and locates it for the recorder panel',()=>{
+ const stopped={id:'stopped',source:'device',recordingMode:'automatic',state:'paused',startedAt:1000,endedAt:1600,distanceMeters:1200,durationSeconds:600,points:[],details:{provisional:true,continuationEndsAt:2800}};
+ const journey=recordedJourney(stopped);
+ expect(journey.provisional).toBe(true);
+ expect(journey.continuationEndsAt).toBe(2800);
+ expect(provisionalJourney({trips:[{id:'done',details:{}},stopped]})).toMatchObject({id:'stopped'});
+ expect(provisionalJourney({trips:[{id:'done',details:{}}]})).toBeNull();
+ expect(provisionalJourney(undefined)).toBeNull();
+ expect(recordedJourney({...stopped,details:{}}).provisional).toBe(false);
+ expect(recordedJourney({...stopped,details:{}}).continuationEndsAt).toBeNull();
+});
+it('keeps a published stop visible in History while it is excluded from grouping',()=>{
+ const stopped={id:'stopped',source:'device',recordingMode:'automatic',state:'paused',startedAt:1000,endedAt:1600,distanceMeters:1200,durationSeconds:600,points:[],details:{provisional:true,continuationEndsAt:2800}};
+ const state={ownerID:'owner',trips:[stopped],automaticTrip:null};
+ const visible=visibleRecorderJourneys([],state,'owner');
+ expect(visible).toHaveLength(1);expect(visible[0]).toMatchObject({id:'stopped',provisional:true});
+ // The recorder keeps one record: a continued journey is not listed twice.
+ expect(visibleRecorderJourneys(visible,state,'owner')).toHaveLength(1);
+ expect(visibleRecorderJourneys([],{...state,trips:[stopped]},'other')).toEqual([]);
+ const finalised={...stopped,details:{}};
+ expect(visibleRecorderJourneys([],{...state,trips:[finalised]},'owner')).toEqual([]);
 });
 it('calculates speed and pace with safe zero-distance states',()=>{
  expect(speedLabel(1000,600)).toBe('6.0 km/h');

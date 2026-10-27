@@ -18,7 +18,7 @@ extension LocationRecorder {
         try storage.writeData(data,name:"places.data"); places = updated
         if automaticAvailable { configurePlaceRegions() }
     }
-    func updateActivity(id: String, title: String, activity: String, description: String, notes: String, tags: [String], collection: String, vehicle: String?) throws {
+    func updateActivity(id: String, title: String, activity: String, description: String, notes: String, tags: [String], collection: String, vehicle: String?, vehicleID: String? = nil) throws {
         guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
         var trip = trips[index]
         guard !title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, title.count <= 150,
@@ -28,11 +28,42 @@ extension LocationRecorder {
         metadata.description = String(description.prefix(4000)); metadata.notes = String(notes.prefix(4000))
         metadata.tags = Array(tags.prefix(20)).map { String($0.prefix(60)) }; metadata.collection = String(collection.prefix(100))
         metadata.visibility = "private"
-        let assigned=preferences.vehicles.filter{$0.name==vehicle}
-        if assigned.count==1 {trip.vehicleID=assigned[0].id}else if vehicle != trip.vehicle {trip.vehicleID=nil}
-        trip.title = title; trip.activity = activity; trip.vehicle = vehicle; trip.details = metadata
+        if let assigned=collectionItem(id: vehicleID, name: vehicle) {
+            trip.assignEquipment([EquipmentRef(id: assigned.id, name: assigned.name)])
+        } else {
+            // An unknown name keeps the historical label but cannot invent an id.
+            trip.equipment = nil; trip.vehicleID = nil; trip.vehicle = vehicle
+        }
+        trip.title = title; trip.activity = activity; trip.details = metadata
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip); trips[index] = trip
+    }
+    // The id wins over a name so renaming a Collection item never loses its link.
+    func collectionItem(id: String?, name: String?) -> LocalVehicle? {
+        if let id, let item=preferences.vehicles.first(where: { $0.id == id && $0.archived != true }) { return item }
+        guard let name, !name.isEmpty else { return nil }
+        let matches=preferences.vehicles.filter { $0.name == name && $0.archived != true }
+        return matches.count == 1 ? matches[0] : nil
+    }
+    // Explicit assignment from the equipment sheet. Archived items are accepted
+    // only while they remain assigned, so a trip never loses its history.
+    func assignEquipment(id: String, ids: [String]) throws {
+        guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
+        var trip = trips[index]
+        guard trip.recordingMode != "tesla" else { throw failure("Tesla journeys keep the vehicle recorded by the car itself.") }
+        guard ids.count <= 8 else { throw failure("Choose up to eight items of equipment.") }
+        let existing = Set(trip.equipment?.map(\.id) ?? [])
+        var refs: [EquipmentRef] = []
+        for identifier in ids {
+            guard let item=preferences.vehicles.first(where: { $0.id == identifier && ($0.archived != true || existing.contains($0.id)) }) else {
+                throw failure("That Collection item is no longer available.")
+            }
+            guard !refs.contains(where: { $0.id == item.id }) else { continue }
+            refs.append(EquipmentRef(id: item.id, name: item.name))
+        }
+        trip.assignEquipment(refs)
+        try storage.save(trip); trips[index] = trip
+        notifyJourneyChange()
     }
     func setRouteDisplay(id: String, start: Int, end: Int) throws {
         guard let index=trips.firstIndex(where:{$0.id==id}), let storage=storage else { throw failure("Activity not found.") }
@@ -60,16 +91,21 @@ extension LocationRecorder {
         try storage.delete(id)
         UserDefaults.standard.removeObject(forKey:"letm3go-photo-skips-\(id)")
         trips.removeAll { $0.id == id }
+        // A deleted stopped journey must not be continued or restored later.
+        if settledTripID == id { settleStateReset(); cleanupContinuationRegion(); departureEvidence.reset() }
+        notifyJourneyChange()
         for photo in photos { try? FileManager.default.removeItem(at:storage.directory.appendingPathComponent("media").appendingPathComponent(photo.filename)) }
     }
-    func historical(title: String, activity: String, startedAt: Double, seconds: Double, meters: Double, vehicle: String?) throws {
+    func historical(title: String, activity: String, startedAt: Double, seconds: Double, meters: Double, vehicle: String?, vehicleID: String? = nil) throws {
         guard let storage = storage, startedAt.isFinite, seconds.isFinite, meters.isFinite,
               startedAt > 0, startedAt <= Date().timeIntervalSince1970, seconds >= 0, seconds <= 604800, meters >= 0, meters <= 2_000_000 else { throw failure("Enter a valid past date, duration and distance.") }
         var trip = RecordedActivity(activity:activity,vehicle:vehicle,startedAt:startedAt,resumedAt:nil,title:String(title.prefix(150)))
         #if targetEnvironment(simulator)
         trip.source = "simulator"
         #endif
-        let assigned=preferences.vehicles.filter{$0.name==vehicle};trip.vehicleID=assigned.count==1 ? assigned[0].id : nil
+        if let assigned=collectionItem(id: vehicleID, name: vehicle) {
+            trip.assignEquipment([EquipmentRef(id: assigned.id, name: assigned.name)])
+        } else { trip.vehicleID = nil; trip.vehicle = vehicle }
         trip.recordingMode = "historical"; trip.state = "finished"; trip.endedAt = startedAt+seconds
         trip.accumulatedSeconds = seconds; trip.distanceMeters = meters; trip.details = ActivityDetails(); trip.details?.userCorrected = true
         guard !trip.title.isEmpty else { throw failure("Enter an activity title.") }
@@ -213,7 +249,12 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     }}
     @objc func editActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
-        do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+        do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle"),vehicleID:call.getString("vehicleID")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func assignEquipment(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let id=call.getString("id"), let ids=call.getArray("ids",String.self) else { call.reject("Choose equipment for this activity."); return }
+        do { try LocationRecorder.shared.assignEquipment(id:id,ids:ids); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func setRouteDisplay(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

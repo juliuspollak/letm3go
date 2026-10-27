@@ -10,7 +10,7 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
  const owner=auth.user.id;
  const local=await recorder.getState();
  if(local.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('The iPhone recorder is not unlocked for this account.');
- const {data:rows,error}=await supabase.from('activities').select('id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,vehicle,description,notes,tags,collection,classification,user_corrected,route_points,sync_fingerprint,revision').eq('owner_id',owner).eq('visibility','private').order('started_at',{ascending:true}).limit(1000);
+ const {data:rows,error}=await supabase.from('activities').select('id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,vehicle,description,notes,tags,collection,equipment,classification,user_corrected,route_points,sync_fingerprint,revision').eq('owner_id',owner).eq('visibility','private').order('started_at',{ascending:true}).limit(1000);
  if(error)throw new Error('Could not read private cloud activities. Check the database migration and RLS.');
  let restored=0,photosRestored=0;
  const receipts={};
@@ -20,7 +20,8 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
   const start=Date.parse(row.started_at)/1000,end=Date.parse(row.ended_at)/1000;
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<start)continue;
   if(!locallyKnown.has(row.id.toLowerCase())){
-   const activity={id:row.id,activity:row.activity,title:row.title,vehicle:row.vehicle||null,startedAt:start,endedAt:end,state:'finished',accumulatedSeconds:row.duration_seconds,resumedAt:null,segment:0,points:row.route_points,distanceMeters:row.distance_meters,source:'device',recordingMode:row.recording_mode,details:{description:row.description||'',notes:row.notes||'',tags:row.tags||[],collection:row.collection||'',classification:row.classification||{predicted:'Unknown',confidence:'low',evidence:[]},userCorrected:!!row.user_corrected}};
+   const restoredEquipment=(Array.isArray(row.equipment)?row.equipment:[]).filter(ref=>ref&&typeof ref.id==='string'&&ref.id).slice(0,8).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)}));
+   const activity={id:row.id,activity:row.activity,title:row.title,vehicle:row.vehicle||null,vehicleID:restoredEquipment[0]?.id||null,equipment:restoredEquipment,startedAt:start,endedAt:end,state:'finished',accumulatedSeconds:row.duration_seconds,resumedAt:null,segment:0,points:row.route_points,distanceMeters:row.distance_meters,source:'device',recordingMode:row.recording_mode,details:{description:row.description||'',notes:row.notes||'',tags:row.tags||[],collection:row.collection||'',classification:row.classification||{predicted:'Unknown',confidence:'low',evidence:[]},userCorrected:!!row.user_corrected}};
    const result=await recorder.restoreActivity(activity);
    if(result.restored){restored++;locallyKnown.add(row.id.toLowerCase());}
   }

@@ -27,11 +27,18 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var motion = MotionEvidence()
     var detector = AutomaticDetector()
     var automaticTrip: RecordedActivity?
-    // Set while a journey is stopped: the trip stays open (unpublished) so
-    // movement near the stop resumes the same activity instead of splitting it.
+    // A stopped journey is published to history immediately and stays open for a
+    // context-based window. `settledTripID` points at that published record so a
+    // continuation updates it in place instead of creating a second journey.
+    var settledTripID: String?
     var settledAt: Double?
+    var continuationEndsAt: Double?
     var automaticActivelyRecording: Bool { automaticTrip != nil && settledAt == nil }
-    var drivingTransition = DrivingTransition()
+    // Native journey changes are pushed to the WebView so History updates without
+    // polling or relaunching. Set by the Capacitor plugin.
+    var journeyChangeHandler: (() -> Void)?
+    func notifyJourneyChange() { journeyChangeHandler?() }
+    var movementTransition = MovementTransition()
     var automaticSampling = AutomaticSampling()
     var departureEvidence = DepartureEvidence()
     var automaticProbeTimer: Timer?
@@ -333,21 +340,23 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         @unknown default: return "unknown"
         }
     }
-    func start(activity: String, vehicle: String?) throws {
+    func start(activity: String, vehicle: String?, vehicleID: String? = nil) throws {
         guard storage != nil else { throw failure("Local storage is unavailable. Recording cannot start safely.") }
         guard active == nil else { throw failure("Finish the existing activity first.") }
         guard authorized, locationServicesAvailable else { throw failure("Enable location access before starting.") }
         let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
         guard allowed.contains(activity) else { throw failure("Choose a supported activity.") }
         if automaticTrip != nil { try finishAutomatic() }
+        if settledTripID != nil { try finishAutomatic(force: true) }
         detector.reset()
         let now = Date().timeIntervalSince1970
         var trip = RecordedActivity(activity: activity, vehicle: vehicle, startedAt: now, resumedAt: now, title: "\(activity) · \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short))")
         #if targetEnvironment(simulator)
         trip.source = "simulator"
         #endif
-        let assigned=preferences.vehicles.filter{$0.name==vehicle}
-        trip.vehicleID=assigned.count==1 ? assigned[0].id : nil
+        if let assigned=collectionItem(id: vehicleID, name: vehicle) {
+            trip.assignEquipment([EquipmentRef(id: assigned.id, name: assigned.name)])
+        } else { trip.vehicleID = nil; trip.vehicle = vehicle }
         trip.recordingMode = "manual"
         trip.details = ActivityDetails()
         try storage!.save(trip)
@@ -365,8 +374,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func transition(_ action: String) throws {
         if active == nil {
             // Automatic journeys live outside `active`, so the recorder UI must be
-            // able to end one that is still waiting for arrival confirmation.
-            guard action == "finish", automaticTrip != nil else { throw failure("There is no active activity.") }
+            // able to end one that is still recording or waiting for movement.
+            guard action == "finish", automaticTrip != nil || settledTripID != nil else { throw failure("There is no active activity.") }
             try finishAutomatic(force: true)
             return
         }
@@ -456,10 +465,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
         return ["ownerID":ownerID!, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
-                "automaticState": automaticTrip != nil ? (settledAt != nil ? "settled" : "recording") : detector.phase,
+                "automaticState": automaticTrip != nil ? "recording" : settledTripID != nil ? "settled" : detector.phase,
                 "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "locationStandby",
                 "automaticSettledAt": settledAt as Any? ?? NSNull(),
-                "automaticContinuationEndsAt": settledAt.map{$0+JourneyContinuation.window} as Any? ?? NSNull(),
+                "automaticContinuationEndsAt": continuationEndsAt as Any? ?? NSNull(),
+                "automaticSettledTripID": settledTripID as Any? ?? NSNull(),
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
@@ -509,6 +519,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "searchAddress", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "recogniseTripPlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "editActivity", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "assignEquipment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRouteDisplay", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteActivity", returnType: CAPPluginReturnPromise),
@@ -528,6 +539,14 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "transition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise)
     ]
+    // Push native journey changes into the WebView so History, the recorder panel
+    // and trip details refresh without a restart. Payloads stay empty: the JS
+    // listener re-reads the authoritative snapshot.
+    override public func load() {
+        LocationRecorder.shared.journeyChangeHandler = { [weak self] in
+            self?.notifyListeners("journeysChanged", data: [:])
+        }
+    }
     func requireAccount(_ call: CAPPluginCall) -> Bool {
         guard LocationRecorder.shared.uiUnlocked, LocationRecorder.shared.storeOpened, LocationRecorder.shared.ownerID != nil, !LocationRecorder.shared.accountDeleting else { call.reject("Sign in to access private device data."); return false }; return true
     }
@@ -637,7 +656,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func start(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }
-            do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle")); call.resolve(LocationRecorder.shared.snapshot()) }
+            do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID")); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }
     }

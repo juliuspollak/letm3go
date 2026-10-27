@@ -47,7 +47,33 @@ Use these result labels: Automated pass / Simulator pass / Real-device pass / Li
 | 28. Account switching | Record A data, sign out explicitly, sign in B; inspect maps/history/photos/vehicles/settings, then return A | No A data shown to B; A encrypted records return only for A. Tracking stops on explicit logout. Stale WebView sessions cannot bypass native logout marker. |
 | 29. Account deletion — staging only | After provider/R2 cleanup and account endpoint acceptance, use a disposable account, recent sign-in, type DELETE; retry interrupted cleanup | Confirm provider revocation, cloud Auth/profile/media deletion and native key erasure only after server acknowledgement. Never use the owner's real account for destructive acceptance. Requires explicit authorization for remote test data/deletion. |
 
-## Collecting useful failure evidence
+## Build 43 — provisional journeys and context stops
+
+Run these only on a physical iPhone with an unlocked device, Always location
+permission and automatic history enabled. Record the History row text, the
+Recorder panel state, the detail-screen notice and Diagnostics for each case.
+
+| Case | Procedure | Expected result |
+|---|---|---|
+| 43.A Traffic lights | Drive; stop for ~60 s at lights; continue | One driving activity; no stop is split out |
+| 43.B Congestion | Drive; remain stationary 4–5 min in traffic; continue | One driving activity; the stop is only a dashed segment break |
+| 43.C Quick stop (unsaved) | Drive to an unsaved shop; stay within a few metres of the car for ~2 min; drive home | One driving activity with a dashed segment break; the stop is absorbed because it is the same activity |
+| 43.D Saved place | Save Gym as Favourite; drive Home → Gym; stay ~45 min; drive home | Two driving activities; the first completes ~10 min after arrival, and the second starts when leaving |
+| 43.E Walking | Walk to a park, sit ~20 min, walk home | Two walking activities |
+| 43.F App suspended | After 43.C parking, lock the phone and wait past the window; reopen | The published journey is complete, with no duplicate and no "waiting" state left behind |
+| 43.G Force-quit | Force-quit during the window, relaunch within it, then move | The same journey continues if the movement matches its family and it is inside the window; otherwise it is complete |
+| 43.H History freshness | Without leaving the Record screen, trigger a settle by standing still | The Trips tab shows the new journey without a restart or tab reload |
+| 43.I Accuracy | Drive Home → Gym → Home on the same roads | Distances within a few percent of each other; no stationary drift added while parked |
+| 43.J Drive → walk → drive | Drive to a shopping centre, park, walk around inside for ~20 min, return to the car and drive home | **Three** activities in History: Driving (ends at the parking fix), Walking (starts at the first sustained walking fix), Driving (starts at the first sustained driving fix). No duplicate, no walking distance inside either drive, and the walk is not absorbed into the first drive |
+| 43.K Cycling transitions | Cycle to a shop, walk ~5 min to another shop, cycle home | Three activities: Cycling, Walking, Cycling; a fast e-bike is never recorded as Driving |
+| 43.L No false trip | Park, then walk a loop within ~25 m of the car for 3–4 min, then drive off | No walking activity is created; the drive stays one activity (the walk needs 30 m of displacement with a high-confidence label and 80 m without one) |
+| 43.M Short confident walk | Park, walk ~50 m to a shop door in ~30 s, then walk back and drive off | Three activities: Driving, Walking (~50 m), Driving. A short but genuinely sustained walk is its own journey |
+| 43.N Brief exit | Park, step out for ~10 s beside the car (pay-and-display, boot), get back in and drive off | One driving activity with a dashed segment break; no walking activity and no extra drive |
+| 43.O Motion denied | Disable Motion & Fitness for the app, restart it, then repeat 43.M, driving in and out of town | The drive stays `Unknown` – never mislabelled as Driving from ambiguous town speed. Walking away is still split out when the walk is sustained, and a ≥ ~30 km/h run before parking may split too. No walk is invented beside the car and nothing is relabelled from a 2.6–8 m/s speed |
+
+A failed case is a failure, not a simulator pass. Missing History entries, a
+duplicate activity for one stop, or a driving trip that absorbs a long on-foot
+walk must all be reported with the Diagnostics snapshot.
 
 For GPS: build/iOS, manual vs automatic, Always/Precise/Motion settings, native store status, active/detection state, recent fix time/accuracy, point/trip count, app lock/background/force-quit sequence, battery/elapsed time. Describe approximate movement instead of publishing exact Home coordinates. A map screenshot alone does not establish background recording.
 

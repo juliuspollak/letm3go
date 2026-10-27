@@ -13,6 +13,12 @@ it('groups Sydney → Kew → Coffs Harbour → Gold Coast with preserved origin
  const {activities,meta}=setup(),before=JSON.stringify(activities);const result=build(activities,meta);
  expect(result.journeys).toHaveLength(1);const j=result.journeys[0];expect(j.title).toBe('Driving to Gold Coast');expect(j.segmentIDs).toEqual(['a','b','c']);expect(j.stops.map(s=>s.name)).toEqual(['Kew','Coffs Harbour']);expect(j.stops[0].charging).toBe('possible');expect(j.distanceMeters).toBe(300000);expect(j.durationSeconds).toBe(10800);expect(j.searchIndex).toContain('kew');expect(j.tags).toContain('Kew');expect(j.routeSegments).toHaveLength(3);expect(JSON.stringify(activities)).toBe(before);expect(j.segments[0]).toBe(activities[0]);
 });
+it('keeps a published stop out of grouping until it is finalised',()=>{
+ const {activities,meta}=setup();
+ const stopped={...activities[0],details:{...activities[0].details,provisional:true,continuationEndsAt:activities[0].endedAt+1200}};
+ expect(build([stopped],meta).journeys).toHaveLength(0);
+ expect(build([{...stopped,details:{...stopped.details,provisional:undefined}}],meta).journeys).toHaveLength(1);
+});
 it('reprocessing, reordered input and duplicate sync deliveries are idempotent',()=>{
  const {activities,meta}=setup();const expected=build(activities,meta);expect(build([...activities].reverse(),meta)).toEqual(expected);expect(build([...activities,...activities],meta)).toEqual(expected);
  const earlier=build(activities.slice(0,2),meta).journeys[0];expect(expected.journeys[0].id).toBe(earlier.id);

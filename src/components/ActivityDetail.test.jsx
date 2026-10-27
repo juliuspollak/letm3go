@@ -11,6 +11,13 @@ it('shows an interactive Apple map directly on trip details',()=>{
  expect(screen.getByLabelText('Interactive Apple map')).toBeInTheDocument();
  expect(screen.queryByLabelText('Static map preview')).not.toBeInTheDocument();
 });
+it('explains that only the same activity continues a published stop',()=>{
+ render(<ActivityDetail trip={{...trip,provisional:true,continuationEndsAt:Date.now()/1000+600}}/>);
+ const notice=screen.getByRole('status');
+ expect(notice).toHaveTextContent('Stopped and saved to History');
+ expect(notice).toHaveTextContent('10 minutes remain for the same activity near here');
+ expect(notice).toHaveTextContent('A different activity (walking after parking, or driving after a walk) is saved as its own journey.');
+});
 it('lets an unfinished automatic drive be viewed without offering edits to a finished-only native record',()=>{
  render(<ActivityDetail trip={{...trip,state:'recording',endedAt:null}}/>);
  expect(screen.getByRole('status')).toHaveTextContent('Automatic recording in progress');

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { App as NativeApp } from '@capacitor/app';
-import { emptyRecorder, recorder, recorderAvailable } from './recorder.js';
+import { emptyRecorder, onJourneysChanged, recorder, recorderAvailable } from './recorder.js';
 export function useRecorder(ownerID){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
  useEffect(()=>{
@@ -24,9 +24,12 @@ export function useRecorder(ownerID){
   const visible=()=>{if(document.visibilityState!=='hidden')void refresh(true);};
   void refresh();const timer=setInterval(()=>void refresh(),2000);
   window.addEventListener('focus',visible);window.addEventListener('pageshow',visible);document.addEventListener('visibilitychange',visible);
-  let listener;
+  let listener,journeyListener;
   if(recorderAvailable())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)void refresh(true);}).then(handle=>{if(alive)listener=handle;else void handle.remove();}).catch(()=>{});
-  return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();};
+  // Native pushes settle/continue/finish events, so a journey appears in History
+  // as soon as it is published instead of on the next poll or app restart.
+  void onJourneysChanged(()=>void refresh(true)).then(handle=>{if(alive)journeyListener=handle;else void handle?.remove();}).catch(()=>{});
+  return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID]);
  const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(emptyRecorder);throw new Error('Private recorder account changed.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID]);
  return {state,run,busy,error};

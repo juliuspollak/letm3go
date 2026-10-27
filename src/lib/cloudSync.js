@@ -25,11 +25,15 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   const {error}=await client.from('saved_places').upsert(row);if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
  }
  const tombstones=new Set((state.deletedIDs||[]).map(id=>id.toLowerCase()));
+ // A stopped journey is published locally before it is complete. It is backed up
+ // only once finalised, so the cloud never receives a row that is still growing
+ // and no duplicate revision is required to correct it.
+ const finished=trip=>trip.source==='device'&&trip.details?.provisional!==true&&Number.isFinite(trip.endedAt)&&!tombstones.has(trip.id.toLowerCase());
  for(const trip of state.trips){
-  if(trip.source!=='device'||tombstones.has(trip.id.toLowerCase())||!Number.isFinite(trip.endedAt))continue;
+  if(!finished(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   const details=trip.details||{};
-  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:trip.recordingMode||'manual',started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',classification:details.classification||{predicted:'Unknown',confidence:'low',evidence:[]},user_corrected:!!details.userCorrected,route_points:trip.points};
+  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:trip.recordingMode||'manual',started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),classification:details.classification||{predicted:'Unknown',confidence:'low',evidence:[]},user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);if(previous?.fingerprint===fingerprint&&!previous.deleted)continue;
   const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
@@ -37,7 +41,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  }
  let photosUploaded=0;
  for(const trip of state.trips||[]){
-  if(trip.source!=='device'||!Number.isFinite(trip.endedAt)||tombstones.has(trip.id.toLowerCase()))continue;
+  if(!finished(trip))continue;
   for(const photo of trip.details?.photos||[]){
    const photoID=photo.id;
    if(!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(photoID||''))continue;

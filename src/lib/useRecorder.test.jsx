@@ -1,11 +1,15 @@
 import {act,cleanup,renderHook,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({getState:vi.fn(),addListener:vi.fn(),remove:vi.fn(),foreground:null}));
+const mocks=vi.hoisted(()=>({getState:vi.fn(),addListener:vi.fn(),onJourneysChanged:vi.fn(),remove:vi.fn(),foreground:null,journeysChanged:null}));
 vi.mock('@capacitor/app',()=>({App:{addListener:mocks.addListener}}));
-vi.mock('./recorder.js',()=>({emptyRecorder:{trips:[]},recorderAvailable:()=>true,recorder:{getState:mocks.getState}}));
+vi.mock('./recorder.js',()=>({emptyRecorder:{trips:[]},recorderAvailable:()=>true,onJourneysChanged:mocks.onJourneysChanged,recorder:{getState:mocks.getState}}));
 import {useRecorder} from './useRecorder.js';
 const snapshot=(trips=[])=>({ownerID:'owner',trips});
-beforeEach(()=>{mocks.getState.mockResolvedValue(snapshot());mocks.addListener.mockImplementation(async(event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};});});
+beforeEach(()=>{
+ mocks.getState.mockResolvedValue(snapshot());
+ mocks.addListener.mockImplementation(async(event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};});
+ mocks.onJourneysChanged.mockImplementation(async callback=>{mocks.journeysChanged=callback;return {remove:mocks.remove};});
+});
 afterEach(()=>{cleanup();vi.restoreAllMocks();});
 it('loads automatic activities recorded while the WebView was suspended on native foreground',async()=>{
  const {result}=renderHook(()=>useRecorder('owner'));
@@ -13,6 +17,14 @@ it('loads automatic activities recorded while the WebView was suspended on nativ
  mocks.getState.mockResolvedValue(snapshot([{id:'drive',recordingMode:'automatic'}]));
  await act(async()=>mocks.foreground({isActive:true}));
  expect(result.current.state.trips).toEqual([{id:'drive',recordingMode:'automatic'}]);
+});
+it('refreshes History as soon as native publishes a journey change',async()=>{
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.ownerID).toBe('owner'));
+ await waitFor(()=>expect(mocks.journeysChanged).toBeTypeOf('function'));
+ mocks.getState.mockResolvedValue(snapshot([{id:'stopped',state:'paused',details:{provisional:true}}]));
+ await act(async()=>mocks.journeysChanged());
+ expect(result.current.state.trips).toEqual([{id:'stopped',state:'paused',details:{provisional:true}}]);
 });
 it('replaces a stalled pre-suspension read and ignores its late stale response',async()=>{
  let complete;

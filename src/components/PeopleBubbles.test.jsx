@@ -23,6 +23,20 @@ it('preserves removing a friend after converting the row to a bubble',async()=>{
  fireEvent.click(await screen.findByRole('button',{name:'Remove friend Alex'}));
  await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('remove_friend',{p_friend:'person'}));
 });
+it('shows the organiser their own profile photo even before the shared photo list arrives',async()=>{
+ mock.rpc.mockImplementation(async name=>({data:name==='my_household'?[{id:'family',name:'Family',role:'owner'}]:name==='household_members'?[{user_id:'julius',display_name:'Julius',role:'owner'}]:null}));
+ render(<Household personPhotos={{}} selfId="julius" selfAvatar={photo}/>);
+ const avatar=await screen.findByRole('img',{name:'Julius avatar'});
+ expect(avatar.querySelector('img')).toHaveAttribute('src',photo);
+ expect(screen.getByText('Organiser')).toBeInTheDocument();
+});
+it('keeps every other member photo when only your own entry was missing',async()=>{
+ mock.rpc.mockImplementation(async name=>({data:name==='my_household'?[{id:'family',name:'Family',role:'owner'}]:name==='household_members'?[{user_id:'julius',display_name:'Julius',role:'owner'},{user_id:'person',display_name:'Alex',role:'member'}]:null}));
+ render(<Household personPhotos={{person:photo}} selfId="julius" selfAvatar={photo}/>);
+ expect((await screen.findByRole('img',{name:'Julius avatar'})).querySelector('img')).toHaveAttribute('src',photo);
+ expect(screen.getByRole('img',{name:'Alex avatar'}).querySelector('img')).toHaveAttribute('src',photo);
+});
+
 it('shows a single live bubble for a person who is both a friend and household member',()=>{
  const person={user_id:'person',display_name:'Alex',updated_at:'2026-10-27T00:00:00Z'};
  render(<HouseholdPresence presence={{}} friendsLocation={{people:[person]}} householdLivePeople={[person]}/>);

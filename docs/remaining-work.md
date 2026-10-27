@@ -40,12 +40,12 @@
 
 - Paginate native history and incremental bridge snapshots; current visible-page polling still serializes large histories. Map bounds/simplification improve display only. Add spatial/viewport clustering, offline tile strategy and provider attribution/usage review.
 - Durable extracted stop records and sync; SQL stops table exists but native arrival logic does not create a stop timeline.
-- Stable vehicle-ID associations across native/cloud activities, household vehicle permissions, cloud garage backup. Current historical association is a text label retained after rename/archive/removal.
+- Equipment associations are now id-keyed (`activities.equipment`, `RecordedActivity.equipment`, primary `vehicle`/`vehicleID` mirrored) and survive rename, archive and an explicit cloud restore. Still missing: a cloud-backed Collection itself (items remain device-local, so a new device must re-add or re-import them) and household permissions for editing a shared vehicle.
 - Complete profile/avatar and onboarding-preference synchronization/retry across devices, not just names/Auth progress metadata. Native pending GPS/photo stores remain primary.
 - Invite expiry/revocation UI and concurrency/abuse limits; privacy-preserving live location requires a separate consent/TTL/RLS/publication model.
 - Stronger route JSON structure/size validation, media upload quotas/idempotency, provider callback expiry/consent versioning and upload-vs-account-deletion load/race tests.
 - Cleanup worker with retry metrics and backoff; aged OAuth states/budgets/tombstones retention strategy; account-deletion reconciliation jobs. Do not remove tombstones while delayed imports can resurrect records.
-- Split the large web bundle and centralize activity categories/vehicle enums. Current production bundle has no demo routes/photos or server-secret markers; that static scan is not a full leak audit.
+- Split the large web bundle. Collection categories and equipment mapping are now centralized in `src/lib/collection.js`; activity categories and the remaining vehicle enums are still duplicated between the native validator and the UI. Current production bundle has no demo routes/photos or server-secret markers; that static scan is not a full leak audit.
 - Add served Edge HTTP authorization tests, a complete local Supabase stack when Docker is available, CI evidence and native hardware integration tests. Current Edge validation is type/helper tests, not executed provider endpoints.
 
 ## 5. App Store release requirements

@@ -231,6 +231,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-search-clear{display:grid;place-items:center;width:32px;height:32px;min-width:32px;border-radius:50%;color:var(--muted);background:var(--soft);padding:0}
 .trip-search-clear:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .trip-search-reason{display:flex!important;align-items:center;gap:5px;line-height:1.4;color:var(--accent)!important;white-space:normal;overflow-wrap:anywhere}
+.trip-provisional{display:block;line-height:1.4;color:var(--accent)!important;font-weight:600}
 .trip-search-reason strong{font-size:inherit!important;font-weight:600;white-space:normal!important;overflow-wrap:anywhere}
 .journey-custom-tags{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
 .journey-custom-tags h3{display:flex;gap:8px;align-items:center;font-size:16px;margin:0 0 8px}
@@ -241,35 +242,12 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .journey-custom-tags .manual-tag button{display:inline-flex;padding:2px;color:inherit}
 @media(max-width:760px){.trips-search-active{position:sticky;top:8px;background:var(--bg);padding:8px 0;margin-top:-8px;border-radius:12px;box-shadow:0 8px 15px #00000010}.trips-search-active .select-filter{display:none}.journey-custom-tags form{flex-wrap:wrap}.journey-custom-tags form button{min-height:40px}}
 
-/* Animated wordmark: consistent optical spacing across playful combinations. */
-.playful-wordmark .wordmark-motion{width:100%;gap:0;white-space:nowrap}
-.playful-wordmark .playful-part{display:inline-block;flex:0 0 auto;overflow:hidden;white-space:nowrap;max-width:0;opacity:0;transition:max-width .55s cubic-bezier(.22,1,.36,1),opacity .3s ease,transform .55s cubic-bezier(.22,1,.36,1);transform:translateY(-3px)}
-.playful-wordmark .playful-fixed{max-width:1.55em;opacity:1;transform:none}
-.playful-wordmark .playful-m.is-shown{max-width:.65em;opacity:1;transform:none}
-.playful-wordmark .playful-three{color:var(--accent)!important;text-align:center}
-.playful-wordmark .playful-three.is-shown{max-width:.55em;opacity:1;transform:none}
-.playful-wordmark .playful-go.is-shown{max-width:1.08em;opacity:1;transform:none}
-.playful-wordmark .playful-arrow{display:inline-flex;align-items:center}
-.playful-wordmark .playful-arrow.is-shown{max-width:1.05em;opacity:1;transform:none}
-.playful-wordmark .playful-arrow .brand-mark{margin-left:.12em}
-@media(prefers-reduced-motion:reduce){.playful-wordmark .playful-part{transition:none}}
-
 .distance-unit-setting{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
 .distance-unit-setting h3{font-size:16px;margin:0 0 7px}
 .distance-unit-setting label{display:block;font-size:12px;font-weight:600;margin-top:12px}
 .distance-unit-setting select{display:block;width:100%;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font-size:16px}
 
 /* Wordmark: original three-line collapse plus short playful spelling variations. */
-.playful-wordmark .playful-let{max-width:0;opacity:0}
-.playful-wordmark .playful-let.is-shown{max-width:1.55em;opacity:1;transform:none}
-.playful-wordmark .playful-core{display:inline-grid;place-items:center;width:0;max-width:0;opacity:0;position:relative;overflow:hidden;transition:width .55s cubic-bezier(.22,1,.36,1),opacity .3s ease;color:var(--accent)!important;flex:none}
-.playful-wordmark .playful-core.is-shown{width:.58em;max-width:.58em;opacity:1}
-.playful-wordmark .playful-core-digit{grid-area:1/1;opacity:0;transform:scale(.35);transition:opacity .35s,transform .45s;color:var(--accent)!important}
-.playful-wordmark .playful-core-digit.is-shown{opacity:1;transform:scale(1)}
-.playful-wordmark .playful-core-lines{grid-area:1/1;width:.75em;height:.75em;opacity:0;transform:scale(.4);transition:opacity .35s,transform .45s;color:var(--accent)!important}
-.playful-wordmark .playful-core-lines.is-shown{opacity:1;transform:scale(1)}
-.playful-wordmark .playful-arrow,.playful-wordmark .playful-arrow svg{color:var(--accent)!important}
-@media(prefers-reduced-motion:reduce){.playful-wordmark .playful-core,.playful-wordmark .playful-core-digit,.playful-wordmark .playful-core-lines{transition:none}}
 /* Always keep the photo viewer dismiss button clear of iPhone safe areas and above the image. */
 .lightbox{z-index:5000;padding-top:calc(65px + env(safe-area-inset-top));padding-bottom:calc(28px + env(safe-area-inset-bottom))}
 .lightbox>.close{position:absolute!important;top:calc(12px + env(safe-area-inset-top))!important;right:calc(14px + env(safe-area-inset-right))!important;left:auto!important;z-index:5010;display:flex;align-items:center;justify-content:center;width:48px;height:48px;min-height:48px;background:#ffffff26;color:white;border:1px solid #ffffff66;border-radius:50%;pointer-events:auto}
@@ -307,14 +285,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 
 /* Stable wordmark spacing and consistent accent on the digit and arrow. */
-.playful-wordmark .wordmark-motion{gap:0.035em;letter-spacing:0;min-width:0}
-.playful-wordmark .playful-core{overflow:visible!important;flex:0 0 auto}
-.playful-wordmark .playful-core.is-shown{width:.69em!important;max-width:.69em!important;margin-inline:.035em}
-.playful-wordmark .playful-m.is-shown{max-width:.82em!important}
-.playful-wordmark .playful-go.is-shown{max-width:1.3em!important}
-.playful-wordmark .playful-core-digit{color:var(--accent)!important}
-.playful-wordmark .playful-arrow.is-shown{max-width:1.3em!important}
-.playful-wordmark .playful-arrow .brand-mark{color:var(--accent)!important}
 /* Status is a fixed circular control even in narrow iPhone headers. */
 .top-actions .presence-toggle{display:grid;place-items:center;flex:0 0 36px;width:36px!important;height:36px!important;min-width:36px;min-height:36px;padding:0!important;aspect-ratio:1;border-radius:50%!important}
 .top-actions .presence-toggle svg{width:19px;height:19px}
@@ -337,17 +307,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 
 /* Dynamic Letm3go identity: one unbroken line of type, no width transitions. */
-.animated-wordmark.stable-wordmark{display:inline-flex!important;align-items:center;justify-content:flex-start;width:auto!important;min-width:0;max-width:100%;height:1.35em;letter-spacing:0!important;white-space:nowrap;color:var(--ink)!important}
-.stable-wordmark-inner{display:inline-flex;align-items:baseline;gap:0!important;white-space:nowrap;letter-spacing:-.045em;font-kerning:normal;animation:stable-wordmark-enter .3s ease-out both}
-.stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines){display:inline!important;width:auto!important;max-width:none!important;min-width:0!important;opacity:1!important;transform:none!important;flex:0 0 auto}
-.stable-wordmark-inner .stable-wordmark-accent{color:var(--accent)!important;-webkit-text-fill-color:var(--accent)!important}
-.stable-wordmark-inner .stable-wordmark-arrow{display:inline-flex;align-self:center;margin-left:.11em;color:var(--accent)!important;letter-spacing:0}
-.stable-wordmark-inner .stable-wordmark-arrow svg,.stable-wordmark-inner .stable-wordmark-arrow svg path{color:var(--accent)!important;stroke:var(--accent)!important}
-.stable-wordmark-inner .stable-wordmark-arrow svg{width:.92em;height:.92em;display:block}
-.stable-wordmark-lines{display:inline-flex;align-self:center;width:1em;height:1em;color:var(--accent)!important}
-.stable-wordmark-lines svg{width:100%;height:100%}
-@keyframes stable-wordmark-enter{from{opacity:.35;transform:translateY(2px)}to{opacity:1;transform:none}}
-@media(prefers-reduced-motion:reduce){.stable-wordmark-inner{animation:none}}
 
 /* Activity-first Trips journal */
 .trip-journal-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 15px}
@@ -374,16 +333,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-compact-navigation .trip-date-navigator input[type=date]{font-size:12px}
 .trip-results-heading{margin-bottom:10px}.trips-activity-list{margin-top:0}
 @media(max-width:600px){.trip-compact-navigation{flex-wrap:wrap;gap:9px}.trip-compact-navigation .trip-date-navigator{max-width:none;flex-basis:100%}.trip-compact-navigation .trip-period-filter{width:100%;justify-content:flex-start}.trip-journal-heading h1{font-size:27px}.trip-round-action{width:38px;height:38px}}
-
-/* Distinctive, smoothly changing wordmark without overlapping glyphs. */
-.mobile-brand .animated-wordmark.stable-wordmark,.desktop-rail .animated-wordmark.stable-wordmark{color:var(--ink)!important;-webkit-text-fill-color:var(--ink)!important}
-.mobile-brand .stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines):not(.stable-wordmark-accent),.desktop-rail .stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines):not(.stable-wordmark-accent){color:var(--ink)!important;-webkit-text-fill-color:var(--ink)!important}
-.mobile-brand .stable-wordmark-inner .stable-wordmark-accent,.desktop-rail .stable-wordmark-inner .stable-wordmark-accent{color:var(--accent)!important;-webkit-text-fill-color:var(--accent)!important}
-.mobile-brand .stable-wordmark-inner .stable-wordmark-arrow,.desktop-rail .stable-wordmark-inner .stable-wordmark-arrow{color:var(--accent)!important;-webkit-text-fill-color:var(--accent)!important}
-.stable-wordmark-inner{letter-spacing:0!important;gap:0!important;animation:stable-wordmark-switch .55s cubic-bezier(.2,.8,.2,1) both}
-.stable-wordmark-inner>span:not(.stable-wordmark-arrow):not(.stable-wordmark-lines){letter-spacing:-.045em;flex-shrink:0}
-@keyframes stable-wordmark-switch{from{opacity:.15;transform:translateY(5px);filter:blur(2px)}to{opacity:1;transform:translateY(0);filter:blur(0)}}
-@media(prefers-reduced-motion:reduce){.stable-wordmark-inner{animation:none}}
 
 .tag-review-tools{display:grid;gap:9px;margin:14px 0}.tag-suggestion{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:11px}.tag-suggestion span{display:grid;flex:1;gap:2px}.tag-suggestion small{color:var(--muted);font-size:11px}.tag-suggestion button{padding:7px 10px;border-radius:8px;background:var(--soft)}.tag-review-tools details{font-size:12px;color:var(--muted)}
 
@@ -477,3 +426,241 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .invite-sharing h3{margin:3px 0 0;font-size:24px}.invite-sharing h4{margin:10px 0 0;font-size:18px}.invite-sharing p{margin:0;max-width:340px}.invite-sharing .full{width:100%}.invite-sharing small{display:flex;align-items:center;justify-content:center;gap:6px;color:var(--muted);font-size:12px}
 .tracking-report{margin:24px 0;padding:20px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.tracking-report form{display:grid;gap:14px;margin-top:18px}.tracking-report label{display:grid;gap:7px;font-size:13px}.tracking-report input,.tracking-report select,.tracking-report textarea{width:100%;min-width:0;padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:inherit}.tracking-report textarea{font-family:monospace;font-size:11px;margin-top:12px;resize:vertical}.tracking-report ul{padding-left:20px;font-size:13px;line-height:1.6}.tracking-report details{margin-top:14px}.tracking-report [role=status]{margin:12px 0;font-size:13px}
 .location-sharing-control{width:100%;padding:18px;margin:18px 0;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.location-sharing-heading{display:flex;align-items:center;gap:10px;margin-bottom:16px}.location-sharing-heading>svg{color:var(--accent);flex:none}.location-sharing-heading>div{flex:1;min-width:0}.location-sharing-heading h3{font-size:17px;margin:0!important}.location-sharing-heading p{font-size:12px;color:var(--muted);margin-top:3px}.location-sharing-status{padding:5px 10px;border-radius:20px;background:var(--soft);font-size:12px;color:var(--muted);font-weight:600}.location-sharing-status.is-on{background:var(--accent-soft);color:var(--accent)}.location-sharing-control .notice{margin-bottom:0}.household-map-link{margin-bottom:18px}.social-location-actions{flex-wrap:wrap}.social-location-actions>.location-sharing-control{flex-basis:100%;margin:0 0 12px}
+
+
+/* ==========================================================================
+   Build 44 — motion identity
+   Decorative motion uses transforms and opacity only (never width/height/margin),
+   so the header, the navigation and the surrounding controls cannot shift while
+   anything animates. Every block honours prefers-reduced-motion.
+   ========================================================================== */
+
+/* --- Letm3go wordmark ----------------------------------------------------
+   Seven letters, one accent digit and the arrow always occupy their final slots.
+   Phases only hide, fold or draw them, which keeps optical spacing exact and
+   prevents the overlapping glyphs earlier attempts produced. */
+.wordmark{display:inline-flex;align-items:center;height:1.25em;line-height:1;color:var(--ink);font-weight:800;letter-spacing:-.055em;white-space:nowrap;vertical-align:middle}
+.wordmark-frame{position:relative;display:inline-flex;align-items:baseline;white-space:nowrap}
+.wordmark-word{display:inline-flex;align-items:baseline;white-space:nowrap}
+.wordmark .wordmark-letter{display:inline-block;flex:0 0 auto;transform-origin:50% 65%;transition:transform .52s cubic-bezier(.22,1.24,.36,1),opacity .34s ease,filter .34s ease;transition-delay:calc(var(--i,0) * 70ms);will-change:transform,opacity}
+/* Every part of the wordmark is ink; only the brand accents opt into accent
+   colour. Stated explicitly because the rail and header wrappers colour spans. */
+.wordmark,.wordmark span,.wordmark i{color:var(--ink)}
+.wordmark .wordmark-letter.is-accent,.wordmark .wordmark-arrow,.wordmark .wordmark-three-lines,.wordmark .wordmark-three-lines i{color:var(--accent)}
+
+.wordmark-three{position:relative}
+.wordmark-three-digit{display:inline-block;transition:opacity .26s ease,transform .38s cubic-bezier(.55,0,.75,0)}
+.wordmark-three-lines{position:absolute;left:50%;top:50%;display:flex;width:.44em;height:.72em;flex-direction:column;justify-content:space-between;transform:translate(-50%,-50%) scaleX(.45);opacity:0;pointer-events:none;transition:opacity .3s ease,transform .5s cubic-bezier(.22,1.24,.36,1)}
+.wordmark-three-lines i{display:block;height:.115em;border-radius:99px;background:var(--accent);transform:scaleX(0);transform-origin:0 50%;transition:transform .44s cubic-bezier(.22,1.24,.36,1)}
+.wordmark-three-lines i:nth-child(2){transition-delay:70ms}
+.wordmark-three-lines i:nth-child(3){transition-delay:140ms}
+.wordmark-arrow{display:inline-flex;align-self:center;margin-left:.12em;color:var(--accent);transition:opacity .4s ease,transform .5s cubic-bezier(.22,1.24,.36,1)}
+.wordmark-arrow .brand-mark{width:.88em;height:.88em;display:block}
+
+/* Assemble: letters rise into place one at a time, the arrow draws last. */
+.wordmark[data-phase="intro"] .wordmark-letter{opacity:0;transform:translateY(.36em) scale(.84);filter:blur(3px);transition-delay:calc(40ms + var(--i,0) * 88ms)}
+.wordmark[data-phase="intro"] .wordmark-arrow{opacity:0;transform:translateX(-.14em)}
+
+/* The 3 becomes the three accent lines. */
+.wordmark[data-phase="bars"] .wordmark-three-digit,
+.wordmark[data-phase="fold"] .wordmark-three-digit,
+.wordmark[data-phase="compact"] .wordmark-three-digit{opacity:0;transform:rotate(-18deg) scale(.62)}
+.wordmark[data-phase="bars"] .wordmark-three-lines,
+.wordmark[data-phase="fold"] .wordmark-three-lines,
+.wordmark[data-phase="compact"] .wordmark-three-lines{opacity:1;transform:translate(-50%,-50%) scaleX(1)}
+.wordmark[data-phase="bars"] .wordmark-three-lines i,
+.wordmark[data-phase="fold"] .wordmark-three-lines i,
+.wordmark[data-phase="compact"] .wordmark-three-lines i{transform:scaleX(1)}
+
+/* Fold: m, g and o sink away while the lines slide into the freed "m" slot, so
+   the word reads "let" plus the brand mark. Nothing crosses a visible glyph. */
+.wordmark[data-phase="fold"] .wordmark-letter[data-letter="m"],
+.wordmark[data-phase="fold"] .wordmark-letter[data-letter="g"],
+.wordmark[data-phase="fold"] .wordmark-letter[data-letter="o"],
+.wordmark[data-phase="compact"] .wordmark-letter[data-letter="m"],
+.wordmark[data-phase="compact"] .wordmark-letter[data-letter="g"],
+.wordmark[data-phase="compact"] .wordmark-letter[data-letter="o"]{opacity:0;transform:translateY(.32em) scale(.72);transition-delay:calc(var(--i,0) * 34ms)}
+.wordmark[data-phase="fold"] .wordmark-three-lines,
+.wordmark[data-phase="compact"] .wordmark-three-lines{transform:translate(calc(-50% - .67em),-50%) scaleX(1)}
+.wordmark[data-phase="fold"] .wordmark-arrow,
+.wordmark[data-phase="compact"] .wordmark-arrow{visibility:hidden;transform:translateY(.2em)}
+
+/* Rebuild: the lines return to the digit slot, the digit returns, then the word
+   reassembles from left to right. */
+.wordmark[data-phase="expand"] .wordmark-three-lines{opacity:0;transform:translate(-50%,-50%) scaleX(.6)}
+.wordmark[data-phase="expand"] .wordmark-three-digit{opacity:1;transform:none}
+
+/* Reduce Motion never reaches the accent phases: the component renders the rest
+   frame, so only the transitions need disabling here. */
+@media(prefers-reduced-motion:reduce){
+ .wordmark .wordmark-letter,.wordmark-three-digit,.wordmark-three-lines,.wordmark-three-lines i,.wordmark-arrow{transition:none!important}
+}
+
+
+/* --- Record control ------------------------------------------------------
+   One component powers the raised bottom-navigation button and the record panel.
+   The dot morphs into a stop square, the halo breathes only while recording, and
+   the shape never changes the control's footprint. */
+.record-control{position:relative;display:inline-grid;place-items:center;padding:0;border:0;border-radius:50%;background:none;isolation:isolate;min-height:0;-webkit-tap-highlight-color:transparent}
+.record-control--nav{width:58px;height:58px;margin-top:-16px}
+.record-control--panel{width:108px;height:108px}
+.record-control-halo{position:absolute;inset:1px;border-radius:50%;background:radial-gradient(circle at 34% 26%,color-mix(in srgb,var(--accent) 30%,transparent),transparent 70%);opacity:.5;transition:opacity .4s ease,transform .5s cubic-bezier(.22,1.24,.36,1)}
+.record-control-ring{position:absolute;inset:5px;border-radius:50%;border:1px solid color-mix(in srgb,var(--accent) 22%,transparent);transition:inset .3s ease,border-color .3s ease,opacity .3s ease}
+.record-control-core{position:relative;display:grid;place-items:center;width:100%;height:100%;border-radius:50%;background:linear-gradient(155deg,var(--surface),color-mix(in srgb,var(--accent) 14%,var(--surface)));border:1px solid color-mix(in srgb,var(--accent) 20%,transparent);box-shadow:0 8px 18px color-mix(in srgb,var(--accent) 24%,transparent),inset 0 1px 0 color-mix(in srgb,#fff 65%,transparent);transition:transform .18s cubic-bezier(.22,1.24,.36,1),box-shadow .3s ease,background .35s ease}
+.record-control-shape{display:block;width:19px;height:19px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 15%,transparent);transition:width .3s cubic-bezier(.34,1.56,.64,1),height .3s cubic-bezier(.34,1.56,.64,1),border-radius .3s ease,background .3s ease,opacity .25s ease}
+.record-control-spinner{position:absolute;width:44%;height:44%;border-radius:50%;border:2px solid color-mix(in srgb,var(--accent) 26%,transparent);border-top-color:var(--accent);animation:record-spin .9s linear infinite}
+.record-control.is-recording .record-control-core{background:linear-gradient(155deg,color-mix(in srgb,var(--accent) 92%,#fff),var(--accent));box-shadow:0 10px 22px color-mix(in srgb,var(--accent) 42%,transparent),inset 0 1px 0 color-mix(in srgb,#fff 35%,transparent)}
+.record-control.is-recording .record-control-shape{width:15px;height:15px;border-radius:4.5px;background:var(--on-accent);box-shadow:none}
+.record-control.is-recording .record-control-halo{animation:record-breathe 2.9s ease-in-out infinite}
+.record-control--panel.is-recording .record-control-ring{animation:record-ripple 2.9s ease-out infinite}
+.record-control.is-paused .record-control-shape{width:15px;height:15px;border-radius:4px;background:color-mix(in srgb,var(--accent) 70%,var(--ink))}
+.record-control.is-paused .record-control-core{background:linear-gradient(155deg,var(--surface),color-mix(in srgb,var(--accent) 22%,var(--surface)))}
+.record-control.is-auto .record-control-ring{border-color:color-mix(in srgb,var(--accent) 42%,transparent);animation:record-auto 3.4s ease-in-out infinite}
+.record-control.is-auto .record-control-shape{width:11px;height:11px}
+.record-control.is-starting .record-control-shape,.record-control.is-saving .record-control-shape{opacity:.2}
+.record-control:active .record-control-core{transform:scale(.94)}
+.record-control:disabled{opacity:1}
+.record-control:disabled .record-control-core{box-shadow:none;opacity:.5}
+.record-control:disabled .record-control-shape{background:color-mix(in srgb,var(--muted) 60%,transparent)}
+@keyframes record-breathe{0%,100%{transform:scale(.96);opacity:.4}50%{transform:scale(1.07);opacity:.85}}
+@keyframes record-ripple{0%{transform:scale(.92);opacity:.85}70%,100%{transform:scale(1.18);opacity:0}}
+@keyframes record-auto{0%,100%{opacity:.35}50%{opacity:.95}}
+
+/* Record panel launch: a large circular control with its label underneath. */
+.record-launch{display:grid;justify-items:center;gap:10px;margin:26px 0 8px}
+.record-launch-label{font-size:12px;font-weight:650;color:var(--ink)}
+.record-controls .record-control{min-width:0;min-height:0;align-self:center}
+
+/* --- Bottom navigation + shared nav glyphs ------------------------------- */
+.mobile-nav{align-items:flex-end}
+.mobile-nav-record{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:60px}
+.mobile-nav-label{font-size:9px;line-height:1.2;color:var(--muted)}
+.mobile-nav-record.is-current .mobile-nav-label{color:var(--ink);font-weight:700}
+.record-control.is-current .record-control-ring{inset:2px;border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.mobile-nav .record-control{display:grid;min-width:0;gap:0;color:inherit;margin:0}
+.nav-glyph{display:block;width:21px;height:21px;overflow:visible;transition:transform .32s cubic-bezier(.22,1.24,.36,1)}
+.mobile-nav .nav-glyph{width:22px;height:22px}
+.nav-glyph.is-active{transform:translateY(-1px)}
+.nav-glyph .glyph-roof,.nav-glyph .glyph-door,.nav-glyph .glyph-fold,.nav-glyph .glyph-pin,.nav-glyph .glyph-pin-dot,.nav-glyph .glyph-route,.nav-glyph .glyph-marker,.nav-glyph .glyph-start,.nav-glyph .glyph-friend,.nav-glyph .glyph-ring,.nav-glyph .glyph-core{transform-box:fill-box;transform-origin:50% 50%}
+.nav-glyph--home[data-animate="on"] .glyph-roof{animation:glyph-roof .62s cubic-bezier(.22,1.24,.36,1)}
+.nav-glyph--home[data-animate="on"] .glyph-door{animation:glyph-door .62s cubic-bezier(.22,1.24,.36,1)}
+.nav-glyph--map[data-animate="on"] .glyph-fold{animation:glyph-unfold .58s cubic-bezier(.22,1.24,.36,1)}
+.nav-glyph--map[data-animate="on"] .glyph-pin{animation:glyph-pin-drop .7s cubic-bezier(.3,1.36,.48,1)}
+.nav-glyph--map[data-animate="on"] .glyph-pin-dot{animation:glyph-pop .6s ease-out .18s}
+.nav-glyph--trips[data-animate="on"] .glyph-route{animation:glyph-draw .72s ease-in-out}
+.nav-glyph--trips[data-animate="on"] .glyph-marker{animation:glyph-travel .78s cubic-bezier(.4,0,.35,1)}
+.nav-glyph--trips[data-animate="on"] .glyph-start{animation:glyph-pop .5s ease-out}
+.nav-glyph--social[data-animate="on"] .glyph-friend{animation:glyph-connect .74s cubic-bezier(.3,1.4,.5,1)}
+.nav-glyph--record[data-animate="on"] .glyph-ring{animation:glyph-pop .6s ease-out}
+.nav-glyph--record[data-animate="on"] .glyph-core{animation:glyph-core .62s cubic-bezier(.3,1.4,.5,1)}
+@keyframes glyph-roof{0%{transform:translateY(1.4px) scale(.86)}60%{transform:translateY(-.6px) scale(1.04)}100%{transform:none}}
+@keyframes glyph-door{0%{transform:scaleY(.4)}100%{transform:scaleY(1)}}
+@keyframes glyph-unfold{0%{transform:scaleX(.52)}70%{transform:scaleX(1.06)}100%{transform:scaleX(1)}}
+@keyframes glyph-pin-drop{0%{transform:translateY(-4px) scale(.7);opacity:0}45%{opacity:1}72%{transform:translateY(.7px) scale(1.05)}100%{transform:none;opacity:1}}
+@keyframes glyph-pop{0%{transform:scale(.4);opacity:.2}65%{transform:scale(1.18);opacity:1}100%{transform:scale(1)}}
+@keyframes glyph-draw{0%{stroke-dasharray:26;stroke-dashoffset:26}100%{stroke-dasharray:26;stroke-dashoffset:0}}
+@keyframes glyph-travel{0%{transform:translate(-14.4px,14.6px) scale(.7);opacity:.2}35%{opacity:1}70%{transform:translate(-8.6px,7.6px) scale(1)}100%{transform:none;opacity:1}}
+@keyframes glyph-connect{0%{transform:translate(2.4px,-.7px) scale(.94)}55%{transform:translate(-.5px,0) scale(1.03)}100%{transform:none}}
+@keyframes glyph-core{0%{transform:scale(.5)}60%{transform:scale(1.22)}100%{transform:scale(1)}}
+
+@media(prefers-reduced-motion:reduce){
+ .nav-glyph,.nav-glyph *{animation:none!important}
+ .nav-glyph.is-active{transform:none}
+ .record-control-halo,.record-control-ring{animation:none!important}
+ .record-control-core,.record-control-shape{transition:none!important}
+}
+
+@keyframes record-spin{to{transform:rotate(1turn)}}
+
+
+/* --- Screen-reader-only text (motion status announcements) --------------- */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+
+/* --- Shared avatar presentation ------------------------------------------ */
+.person-avatar{transition:transform .25s cubic-bezier(.22,1.24,.36,1)}
+.person-avatar img{animation:avatar-in .38s cubic-bezier(.22,1.24,.36,1) both}
+@keyframes avatar-in{from{opacity:.2;transform:scale(1.06)}to{opacity:1;transform:none}}
+.topbar .header-avatar{display:inline-flex;align-items:center;justify-content:center;width:auto;height:auto;min-width:0;min-height:0;padding:0;border-radius:50%;background:none;box-shadow:none}
+.topbar .header-avatar .person-avatar{width:36px;height:36px;font-size:16px}
+.topbar .header-avatar:active .person-avatar{transform:scale(.94)}
+.record-controls .record-control--nav{width:54px;height:54px;margin-top:0}
+@media(max-width:760px){.topbar .header-avatar .person-avatar{width:31px;height:31px;font-size:14px}}
+@media(prefers-reduced-motion:reduce){.person-avatar,.person-avatar img{transition:none!important;animation:none!important}}
+
+/* ---------------------------------------------------------------- Collections
+   Category-first item editor, equipment chips and the assignment sheet. */
+.collection-editor form{margin-top:18px}
+.collection-category-fieldset{border:0;padding:0;margin:0 0 6px;min-width:0}
+.collection-category-fieldset legend{font-size:12px;font-weight:600;margin-bottom:10px;padding:0}
+.collection-category-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
+.collection-category{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;min-height:74px;padding:10px 4px;border:1px solid var(--line);border-radius:14px;background:var(--surface);font-size:11px;font-weight:600;color:var(--muted);text-align:center;transition:border-color .18s ease,background .18s ease,color .18s ease}
+.collection-category span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.collection-category[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.collection-category:active{transform:scale(.97)}
+.collection-fields{display:grid;gap:2px;margin-top:6px}
+.collection-field{margin-top:16px}
+.collection-label{display:block;font-size:12px;font-weight:600;margin-bottom:2px}
+.collection-choices{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.collection-choice{min-height:40px;padding:9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:12px;font-weight:600;color:var(--muted)}
+.collection-choice[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.collection-number{display:flex;align-items:center;gap:8px}
+.collection-number input{flex:1;min-width:0}
+.collection-number>span{font-size:13px;font-weight:600;color:var(--muted);min-width:26px}
+.collection-photo-field{margin-top:20px}
+.collection-photo-row{display:flex;align-items:center;gap:14px;margin-top:8px}
+.collection-photo{display:block;flex:none;width:64px;height:64px;border-radius:16px;object-fit:cover;background:var(--soft)}
+.collection-photo-empty{display:grid;place-items:center;color:var(--accent)}
+.collection-photo-actions{display:grid;gap:6px;min-width:0}
+.collection-photo-pick{position:relative;overflow:hidden;min-height:42px;padding:10px 16px;border-radius:10px;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:8px;background:var(--soft);color:var(--ink);cursor:pointer;justify-content:center}
+.collection-photo-pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.collection-photo-actions .text-button{min-height:36px;justify-content:flex-start}
+.collection-photo-actions small{font-size:11px}
+.collection-category-hint{margin-top:16px;padding:16px;border-radius:14px;background:var(--soft);text-align:center}
+.collection-category-change{margin-top:14px}
+.collection-category-change p{font-size:12px}
+.collection-item-actions{margin-top:8px;padding-top:18px;border-top:1px solid var(--line)}
+.collection-item-actions h3{font-size:16px;margin-bottom:4px}
+.garage-vehicle-photo{flex:none;width:38px;height:38px;border-radius:12px;object-fit:cover;background:var(--soft)}
+.garage-vehicle-copy{flex:1;min-width:0}
+
+
+
+/* A trip row keeps its open target and gains one compact trailing chip. */
+.trip-open-button{display:flex;align-items:center;gap:12px;flex:1;min-width:0;min-height:44px;padding:0;text-align:left;background:none;border:0}
+.trip-open-button:active{opacity:.72}
+.trip-equipment-chip{position:relative;display:inline-flex;align-items:center;gap:5px;flex:none;max-width:104px;min-height:34px;margin-right:4px;padding:6px 10px;border-radius:999px;background:var(--soft);color:var(--ink);font-size:11px;font-weight:650}
+.trip-equipment-chip::after{content:"";position:absolute;inset:-5px 0}
+.trip-equipment-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-equipment-chip:active{background:var(--accent-soft)}
+.trip-equipment-chip--empty{background:transparent;color:var(--accent);border:1px dashed var(--line);font-weight:600}
+.trip-equipment-chip--static{background:transparent;color:var(--muted);padding-right:2px}
+.activity-equipment-button{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;max-width:44vw;min-height:32px;padding:6px 11px;border-radius:999px;background:var(--soft);color:var(--ink);font-size:12px;font-weight:600}
+.activity-equipment-button span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-equipment-button--empty{background:transparent;border:1px dashed var(--line);color:var(--accent)}
+.activity-title-line .activity-equipment-button{margin-left:2px}
+.activity-detail-subtitle-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px}
+.activity-detail-subtitle-row .activity-detail-subtitle{margin:0}
+.trip-active-filters{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
+.trip-filter-chip{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:6px 11px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:650}
+.trip-expanded-filters label.wide{grid-column:1/-1}
+
+/* Equipment sheet: one tap assigns, the selected item is unmistakable. */
+.equipment-sheet h2{margin-top:2px}
+.equipment-options{display:grid;gap:8px;margin:18px 0}
+.equipment-option{display:flex;align-items:center;gap:12px;width:100%;min-height:62px;padding:11px 12px;border:1px solid var(--line);border-radius:14px;background:var(--surface);text-align:left}
+.equipment-option[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft)}
+.equipment-option[aria-pressed=true]>svg{color:var(--accent);flex-shrink:0}
+.equipment-option-photo{flex:none;width:40px;height:40px;border-radius:12px;object-fit:cover;background:var(--soft)}
+.equipment-option-icon{display:grid;place-items:center;flex:none;width:40px;height:40px;border-radius:12px;background:var(--soft);color:var(--ink)}
+.equipment-option-copy{flex:1;min-width:0}
+.equipment-option-copy strong{display:block;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.equipment-option-copy small{display:block;font-size:11px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.equipment-option-flag{color:var(--accent)!important;font-weight:600}
+.equipment-empty{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px;border-radius:14px;background:var(--soft)}
+.equipment-empty p{font-size:12px;color:var(--muted)}
+.equipment-actions{display:grid;gap:8px;margin-top:8px}
+.equipment-actions .text-button{justify-content:center;color:var(--danger);min-height:40px}
+@media(max-width:420px){
+ .trip-equipment-chip{max-width:84px;font-size:10px}
+ .collection-category-grid{grid-template-columns:repeat(auto-fill,minmax(74px,1fr))}
+}

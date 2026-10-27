@@ -6,7 +6,7 @@
 
 Automatic tracking is gated by Always permission, location services, the signed-in account and the user's enablement. When In Use alone cannot enable automatic recording. The connected phone's current authorisation was not extracted: inspect the live Tracking & Permissions screen for the actual value.
 
-GPS is requested during a bounded two-minute departure probe, a confirmed automatic trip, and explicit manual recording. Arrival confirmation waits three minutes without credible movement; GPS remains on during that window. Stationary idle stops continuous updates and retains significant changes, visits, geofences and motion. The existing native regressions cover probe expiry, cooldown, stationary/arrival and permission gating; they are not a real road or battery test.
+GPS is requested during a bounded two-minute departure probe, a confirmed automatic trip, and explicit manual recording. A confirmed stop is published within two to three minutes and GPS drops to standby immediately; the published journey stays open for a short, context-based continuation window (`journey-provisional-build-43.md`). Stationary idle stops continuous updates and retains significant changes, visits, geofences and motion. The existing native regressions cover probe expiry, cooldown, stationary/arrival and permission gating; they are not a real road or battery test.
 
 ## Changes
 

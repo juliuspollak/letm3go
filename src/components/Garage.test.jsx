@@ -14,25 +14,34 @@ it('opens with compact vehicle rows and no detail form or Tesla selection contro
  expect(screen.getByRole('button',{name:'Add item'})).toBeInTheDocument();
  await screen.findByText('Not connected');
 });
-it('shows a clean empty state and opens a separate manual add flow',async()=>{
+it('shows a clean empty state and opens a category-first add flow',async()=>{
  const onSave=vi.fn().mockResolvedValue();render(<Garage vehicles={[]} onSave={onSave}/>);
  expect(screen.getByText('Your collection is empty')).toBeInTheDocument();expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Add item'}));
- fireEvent.change(screen.getByLabelText('Vehicle name'),{target:{value:'My bike'}});fireEvent.change(screen.getByLabelText('Category'),{target:{value:'bicycle'}});
+ expect(screen.getByText('Select a category to see its details.')).toBeInTheDocument();expect(screen.queryByRole('textbox',{name:/Name/})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Bicycle'}));
+ fireEvent.change(screen.getByRole('textbox',{name:/Name/}),{target:{value:'My bike'}});
+ fireEvent.click(screen.getByRole('button',{name:'Type: Mountain'}));
  fireEvent.click(screen.getByRole('button',{name:'Add item',exact:true}));
- await waitFor(()=>expect(onSave).toHaveBeenCalledWith([expect.objectContaining({name:'My bike',category:'bicycle',source:'manual'})]));
- expect(await screen.findByRole('heading',{name:'My Collection',exact:true})).toBeInTheDocument();expect(screen.queryByLabelText('Vehicle name')).not.toBeInTheDocument();
+ await waitFor(()=>expect(onSave).toHaveBeenCalledWith([expect.objectContaining({name:'My bike',category:'bicycle',source:'manual',attributes:{style:'Mountain'}})]));
+ expect(await screen.findByRole('heading',{name:'My Collection',exact:true})).toBeInTheDocument();expect(screen.queryByRole('textbox',{name:/Name/})).not.toBeInTheDocument();
 });
-it('edits and archives only after opening vehicle details, preserving import metadata',async()=>{
+it('edits and archives only after opening item details, preserving import metadata',async()=>{
  const onSave=vi.fn().mockResolvedValue(),v={...manual,source:'tesla',teslaVehicleID:'provider-car'};
  const {rerender}=render(<Garage vehicles={[v]} onSave={onSave}/>);
- fireEvent.click(screen.getByRole('button',{name:'View Family car'}));fireEvent.change(screen.getByLabelText('Vehicle name'),{target:{value:'My Kia'}});fireEvent.click(screen.getByRole('button',{name:'Save item'}));
+ fireEvent.click(screen.getByRole('button',{name:'View Family car'}));fireEvent.change(screen.getByRole('textbox',{name:/Name/}),{target:{value:'My Kia'}});fireEvent.click(screen.getByRole('button',{name:'Save item'}));
  await waitFor(()=>expect(onSave).toHaveBeenCalledWith([expect.objectContaining({id:'car',name:'My Kia',category:'car',source:'tesla',teslaVehicleID:'provider-car'})]));
  await screen.findByRole('heading',{name:'My Collection',exact:true});rerender(<Garage vehicles={[v]} onSave={onSave}/>);fireEvent.click(screen.getByRole('button',{name:'View Family car'}));fireEvent.click(screen.getByRole('button',{name:'Archive Family car'}));await waitFor(()=>expect(onSave).toHaveBeenLastCalledWith([expect.objectContaining({archived:true})]));
 });
 it('keeps failed removals in detail view and never reports success',async()=>{
  const onSave=vi.fn().mockRejectedValue(new Error('Full'));render(<Garage vehicles={[manual]} onSave={onSave}/>);
- fireEvent.click(screen.getByRole('button',{name:'View Family car'}));fireEvent.click(screen.getByRole('button',{name:'Remove Family car'}));expect(onSave).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'Confirm removal'}));expect(await screen.findByRole('alert')).toHaveTextContent('could not be saved');expect(screen.getByLabelText('Vehicle name')).toHaveValue('Family car');
+ fireEvent.click(screen.getByRole('button',{name:'View Family car'}));fireEvent.click(screen.getByRole('button',{name:'Remove Family car'}));expect(onSave).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'Confirm removal'}));expect(await screen.findByRole('alert')).toHaveTextContent('could not be saved');expect(screen.getByRole('textbox',{name:/Name/})).toHaveValue('Family car');
+});
+it('links an item to the activities that used it',async()=>{
+ const onSave=vi.fn(),onViewTrips=vi.fn();render(<Garage vehicles={[manual]} onSave={onSave} tripCounts={{car:3}} onViewTrips={onViewTrips}/>);
+ fireEvent.click(screen.getByRole('button',{name:'View Family car'}));
+ fireEvent.click(screen.getByRole('button',{name:'View 3 activities'}));expect(onViewTrips).toHaveBeenCalledWith(expect.objectContaining({id:'car'}));
+ cleanup();render(<Garage vehicles={[manual]} onSave={onSave} tripCounts={{}}/>);fireEvent.click(screen.getByRole('button',{name:'View Family car'}));expect(screen.getByText('No activities use this item yet.')).toBeInTheDocument();expect(screen.queryByRole('button',{name:/View .* activit/})).not.toBeInTheDocument();
 });
 it('keeps connection setup errors in management while manual creation remains available',async()=>{
  render(<Garage vehicles={[]} onSave={vi.fn()}/>);await screen.findByText('Not connected');fireEvent.click(screen.getByRole('button',{name:'Connect Tesla'}));
