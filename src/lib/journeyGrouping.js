@@ -1,3 +1,4 @@
+import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
@@ -13,14 +14,26 @@ export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function visibleTags(tags,segments,metadata){const ids=segments.map(s=>s.id);const hidden=new Set(ids.flatMap(id=>metadata.hiddenTags?.[id]||[]).map(x=>x.toLowerCase()));return [...new Set(tags.filter(t=>typeof t==='string'&&t.trim()&&!hidden.has(t.toLowerCase())))];}
 function routeTags(activity,metadata){
+ const policy=placeTagPolicy(activity.activity);
+ if(!policy.route)return [];
  const points=activity.points||[];if(points.length<3)return [];
- const found=[];const skip=new Set([0,points.length-1]);
  const positions=[.2,.4,.6,.8].map(f=>Math.round((points.length-1)*f));
- for(const idx of positions){if(skip.has(idx))continue;const p=points[idx];const record=metadata.places[placeKey(p)];if(!record)continue;
-  const specific=[record.nearbyName,...(record.categories||[])].filter(Boolean);
-  for(const tag of specific){if(typeof tag==='string'&&tag.length<=50&&!found.some(s=>s.toLowerCase()===tag.toLowerCase()))found.push(tag);}
+ const candidates=[];
+ for(const index of positions){
+  const record=metadata.places[placeKey(points[index])];if(!record)continue;
+  for(const name of [record.nearbyName,...(record.categories||[])].filter(Boolean))candidates.push({name,kind:'route'});
  }
- return found.slice(0,3);
+ return rankPlaceCandidates(candidates,{activity:activity.activity}).map(x=>x.name);
+}
+function activityPlaceTags(activity,from,to,stops=[]){
+ const candidates=[];
+ if(from.nearbyName)candidates.push({name:from.nearbyName,kind:from.kind?'saved':'start'});
+ if(to.nearbyName)candidates.push({name:to.nearbyName,kind:to.kind?'saved':'destination'});
+ for(const stop of stops.filter(s=>s.meaningful)){
+  if(stop.nearbyName)candidates.push({name:stop.nearbyName,kind:stop.kind?'saved':'stop'});
+  else if(stop.name)candidates.push({name:stop.name,kind:'stop'});
+ }
+ return rankPlaceCandidates(candidates,{activity:activity.activity}).map(x=>x.name);
 }
 function geo(p,places,metadata){
  if(!point(p))return {name:'Unknown location',tags:[]};
@@ -116,13 +129,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
  const journeys=groups.map(segments=>{
-  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||((automaticTitle(s)||s.title===s.activity)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<700):s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...from.tags,...to.tags,...routeTags(s,metadata)],[s],metadata),recognisedStops:internalStops(s,context)};}
+  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||((automaticTitle(s)||s.title===s.activity)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<700):s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,internalStops(s,context)),...routeTags(s,metadata)],[s],metadata),recognisedStops:internalStops(s,context)};}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>internalStops(t,context));
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
   stops.sort((a,b)=>a.startedAt-b.startedAt);
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
-  const tags=visibleTags([...segments.flatMap(s=>s.tags||[]),...segments.flatMap(s=>metadata.manualTags?.[s.id]||[]),...start.tags,...end.tags,...segments.flatMap(s=>routeTags(s,metadata)),...stops.flatMap(s=>[s.name,...s.tags])],segments,metadata);
+  const tags=visibleTags([...segments.flatMap(s=>s.tags||[]),...segments.flatMap(s=>metadata.manualTags?.[s.id]||[]),...activityPlaceTags(first,start,end,stops),...segments.flatMap(s=>routeTags(s,metadata))],segments,metadata);
   const distanceMeters=segments.reduce((n,s)=>n+(s.distanceMeters||0),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
   return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||contextualJourneyTitle(metadata.types[first.id]||first.activity,start,end,metres(endpoint(first,false),endpoint(last,true))<700),titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
  });
