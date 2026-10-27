@@ -38,5 +38,12 @@ export function recordedJourney(trip) {
  const photos=(trip.localPhotos||[]).map(p=>({...p,url:p.privateURI,point:p.latitude!=null&&p.longitude!=null?[p.latitude,p.longitude]:null,caption:p.caption||'A moment along the way'}));
  return {...trip,visibleRouteStart:start,visibleRouteEnd:end,title:activityTitle(trip),titleIsAutomatic:automaticTitle(trip),location:details.startPlace&&details.endPlace?`${details.startPlace} → ${details.endPlace}`:trip.source==='simulator'?'Simulator recording':'Recorded on this iPhone',date:date.toLocaleDateString('en-CA'),distance:Math.round(trip.distanceMeters/100)/10,minutes:Math.floor(trip.durationSeconds/60),durationSeconds:trip.durationSeconds,elevation:0,description:details.description||'',notes:details.notes||'',collection:details.collection||'',classification:details.classification,corrected:details.userCorrected||false,visibility:details.visibility||'private',tags:details.tags||[],route:visiblePoints.map(p=>[p.latitude,p.longitude]),routeSegments:visiblePoints.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean),photos,cover:photos.find(p=>p.id===details.coverPhotoID)?.url||null};
 }
+// Arrival confirmation can outlast the drive. Present its saved GPS immediately,
+// without adding unfinished activities to grouping, cloud sync or sharing inputs.
+export function visibleRecorderJourneys(journeys,state,ownerID){
+ const trip=ownerID&&state.ownerID?.toLowerCase()===ownerID.toLowerCase()&&state.automaticTrip;
+ if(!trip||trip.source!=='device'||journeys.some(j=>j.id===trip.id||j.segmentIDs?.includes(trip.id)))return journeys;
+ return [recordedJourney(trip),...journeys];
+}
 export function speedLabel(meters,seconds){return seconds>0?`${(meters/seconds*3.6).toFixed(1)} km/h`:'—';}
 export function paceLabel(meters,seconds){if(meters<10||seconds<=0)return '—';const pace=seconds/(meters/1000);return `${Math.floor(pace/60)}:${String(Math.floor(pace%60)).padStart(2,'0')} /km`;}

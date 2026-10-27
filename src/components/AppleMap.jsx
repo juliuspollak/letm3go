@@ -38,27 +38,41 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   return {...payload,routes,pins};
  })():payload);
  useEffect(()=>{
-  if(!appleMapsAvailable()||picker||!embeddedEnabled)return;
+  if(!appleMapsAvailable()||picker)return;
+  if(!embeddedEnabled){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;return;}
   let active=true;let previous='';
   const mount=()=>{
    if(!active||openingFullscreen.current||!mapSurface.current)return;
-   const box=mapSurface.current.getBoundingClientRect();
+   const surface=mapSurface.current;
+   const dialog=document.querySelector('dialog[open], [aria-modal="true"], [role="dialog"], .lightbox');
+   if(document.visibilityState==='hidden'||(dialog&&!dialog.contains(surface))){
+    previous='';embeddedOnce.current=false;setEmbedded(false);
+    void appleMaps.unembed({mapID}).catch(()=>{});return;
+   }
+   const box=surface.getBoundingClientRect();
    const nav=document.querySelector('.mobile-nav');
    const navTop=nav&&getComputedStyle(nav).display!=='none'?nav.getBoundingClientRect().top:window.innerHeight;
    const visibleHeight=Math.min(box.height,Math.max(0,navTop-box.top-8));
-   if(box.width<80||visibleHeight<80){if(embeddedOnce.current){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
+   if(box.width<=80||visibleHeight<=80||box.bottom<=0){if(embeddedOnce.current){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const geometry=[box.x,box.y,box.width,visibleHeight].map(n=>n.toFixed(1)).join(':');
    if(geometry===previous)return;
    const preserveViewport=embeddedOnce.current;previous=geometry;
-   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{if(active)setEmbedded(false);});
+   void appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport}).then(()=>{embeddedOnce.current=true;if(active)setEmbedded(true);}).catch(()=>{previous='';if(active)setEmbedded(false);});
   };
-  const timer=setTimeout(mount,100);
+  // The detail page animates into place; ResizeObserver alone does not see
+  // transforms. Follow its initial movement before leaving layout to observers.
+  let frame;const until=performance.now()+500;
+  const settle=()=>{mount();if(active&&performance.now()<until)frame=requestAnimationFrame(settle);};
+  frame=requestAnimationFrame(settle);
+  const mutations=new MutationObserver(()=>mount());
+  mutations.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','aria-modal','role']});
   const observer=new ResizeObserver(mount);if(mapSurface.current)observer.observe(mapSurface.current);
   const resized=()=>{previous='';mount();};
   window.addEventListener('resize',resized);
-  window.addEventListener('scroll',resized,{passive:true});
-  return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized);};
- },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion]);
+  window.addEventListener('scroll',resized,{passive:true,capture:true});
+  document.addEventListener('visibilitychange',resized);
+  return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
+ },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
@@ -74,7 +88,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
    // overlays the Capacitor WebView. Release that view before presenting.
    await appleMaps.unembed({mapID}).catch(()=>{});
    setEmbedded(false);
-   const result=await appleMaps.open({...JSON.parse(data),picker,mapID});
+   const result=await appleMaps.open({...JSON.parse(interactiveData),picker,mapID});
    latest.current?.(result);
   }catch{
    setError('The interactive map could not open. The route preview remains available; please retry.');
@@ -85,5 +99,5 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
    setReopenVersion(v=>v+1);
   }
  }
- return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span><span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{onLocate&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{error&&<p role="status" className="notice">{error}</p>}</div>;
+ return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{onLocate&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{error&&<p role="status" className="notice">{error}</p>}</div>;
 }

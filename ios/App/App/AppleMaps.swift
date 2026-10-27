@@ -66,6 +66,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     private weak var presentedMap:AppleMapController?
     private var presentedID:String?
     private var embeddedMaps:[String:MKMapView]=[:]
+    private var embeddedContent:[String:MapContent]=[:]
     public let identifier="AppleMapsPlugin"
     public let jsName="AppleMaps"
     public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise)]
@@ -174,6 +175,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                   width>80,height>80 else {call.reject("Map layout unavailable");return}
             let content=MapContent(call.options)
             let scroll=webView.scrollView
+            self.embeddedContent[id]=content
             let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
             map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
             map.layer.cornerRadius=16;map.clipsToBounds=true
@@ -196,7 +198,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     // Hide the embedded MKMapView while fullscreen MapKit owns the screen.
                     // It otherwise competes for rendering and can leave a blank map.
                     map.isHidden=true
-                    let controller=AppleMapController(content:content,picker:false)
+                    let controller=AppleMapController(content:self.embeddedContent[id] ?? content,picker:false)
+                    self.presentedMap=controller;self.presentedID=id
                     controller.completion={ [weak self, weak map] result in
                         map?.isHidden=false
                         if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
@@ -229,6 +232,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func unembed(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             if let id=call.getString("mapID"),let map=self.embeddedMaps.removeValue(forKey:id) {
+                self.embeddedContent.removeValue(forKey:id)
                 map.delegate=nil;map.removeFromSuperview()
             }
             call.resolve()
