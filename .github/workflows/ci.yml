@@ -1,33 +1,19 @@
 name: Check
 
+# Run checks on demand instead of billing private-repository minutes for every commit.
+# TestFlight still runs its own comprehensive release verification.
 on:
-  push:
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'design/**'
-      - 'website/**'
-      - 'ios/App/App/Assets.xcassets/**'
-      - 'public/brand/**'
-  pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'design/**'
-      - 'website/**'
-      - 'ios/App/App/Assets.xcassets/**'
-      - 'public/brand/**'
   workflow_dispatch:
     inputs:
       checks:
         description: 'Which checks to run'
         required: true
-        default: 'all'
+        default: 'web'
         type: choice
         options:
-          - all
           - web
           - ios
+          - all
 
 permissions:
   contents: read
