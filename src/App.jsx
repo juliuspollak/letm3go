@@ -201,14 +201,6 @@ function PrivateApp(){
  const [metricView,setMetricView]=useState(null);
  const [socialSection,setSocialSection]=useState('friends');
  const [pendingInvitation,setPendingInvitation]=useState(()=>{try{return JSON.parse(sessionStorage.getItem('letm3go:pending-invitation')||'null');}catch{return null;}});
- useEffect(()=>{
-  const opened=event=>{const invite=event.detail;if(!invite||!['friend','household'].includes(invite.kind))return;setPendingInvitation(invite);setSocialSection(invite.kind==='household'?'household':'friends');setTab('Social');};
-  window.addEventListener('letm3go:invitation-opened',opened);
-  return()=>window.removeEventListener('letm3go:invitation-opened',opened);
- },[]);
- useEffect(()=>{if(pendingInvitation){queueMicrotask(()=>{setSocialSection(pendingInvitation.kind==='household'?'household':'friends');setTab('Social');});}},[pendingInvitation]);
- const consumeInvitation=()=>{setPendingInvitation(null);try{sessionStorage.removeItem('letm3go:pending-invitation');}catch{}};
-
  const [mapLayer,setMapLayer]=useState('people');
  const [mapLayersOpen,setMapLayersOpen]=useState(false);
  const [tripSearchOpen,setTripSearchOpen]=useState(false);
@@ -217,6 +209,14 @@ function PrivateApp(){
  const tripSearchRef=useRef(null);
 
  const [tab,setTab]=useState('Home'),[selected,setSelected]=useState(null),[sheet,setSheet]=useState(null),[query,setQuery]=useState(''),[filter,setFilter]=useState('All activities'),[dayFilter,setDayFilter]=useState('all'),[sortPreference,setSortPreference]=useState(()=>{const saved=localStorage.getItem('letm3go-trip-sort');return ['newest','distance','duration'].includes(saved)?saved:'newest';}),[favouritesOnly,setFavouritesOnly]=useState(false),[error,setError]=useState(''),[lightbox,setLightbox]=useState(null),[theme,setTheme]=useState(()=>localStorage.getItem('letm3go-theme')||'light');
+ useEffect(()=>{
+  const opened=event=>{const invite=event.detail;if(!invite||!['friend','household'].includes(invite.kind))return;setPendingInvitation(invite);setSocialSection(invite.kind==='household'?'household':'friends');setTab('Social');};
+  window.addEventListener('letm3go:invitation-opened',opened);
+  return()=>window.removeEventListener('letm3go:invitation-opened',opened);
+ },[]);
+ useEffect(()=>{if(pendingInvitation){queueMicrotask(()=>{setSocialSection(pendingInvitation.kind==='household'?'household':'friends');setTab('Social');});}},[pendingInvitation]);
+ const consumeInvitation=()=>{setPendingInvitation(null);try{sessionStorage.removeItem('letm3go:pending-invitation');}catch{/* Storage may be unavailable; in-memory invitation is cleared. */}};
+
  useEffect(()=>{if(tab==='Trips'&&tripSearchOpen)tripSearchRef.current?.focus();},[tab,tripSearchOpen]);
  useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('letm3go-theme',theme);void setNativeAppearance(theme).catch(()=>{});window.dispatchEvent(new Event('letm3go:theme-changed'));},[theme]);
  useEffect(()=>{
