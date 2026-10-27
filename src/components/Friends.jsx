@@ -1,3 +1,4 @@
+import PersonAvatar from './PersonAvatar.jsx';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
 import {Users,UserPlus,UserMinus,Share2,Copy,MessageCircle} from 'lucide-react';
@@ -12,7 +13,7 @@ export default function Friends(){
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
  return <section className="social-panel household-friends"><h2><Users size={19}/> Friends</h2>
  <p className="muted small-copy">Friends are separate from household members. Adding a friend never shares vehicles, routes or private history. Only an explicitly shared, unexpired status may appear in their feed.</p>
- {friends.map(f=><div key={f.user_id} className="home-friend-row"><span className="home-friends-avatar"><Users size={17}/></span><span><strong>{f.display_name}</strong></span><button type="button" className="icon-button" aria-label={`Remove friend ${f.display_name}`} disabled={busy} onClick={()=>action(async()=>{await rpc('remove_friend',{p_friend:f.user_id});await refresh();})}><UserMinus size={17}/></button></div>)}
+ {friends.map(f=><div key={f.user_id} className="home-friend-row"><PersonAvatar name={f.display_name}/><span><strong>{f.display_name}</strong></span><button type="button" className="icon-button" aria-label={`Remove friend ${f.display_name}`} disabled={busy} onClick={()=>action(async()=>{await rpc('remove_friend',{p_friend:f.user_id});await refresh();})}><UserMinus size={17}/></button></div>)}
  {!friends.length&&<p className="muted small-copy">No friends added yet.</p>}
  <button type="button" className="secondary full" disabled={busy} onClick={()=>action(async()=>setInvite(await rpc('create_friend_invite')))}><UserPlus size={16}/> Generate invitation</button>
  {invite&&<div className="friend-invite-actions"><p className="muted small-copy">Invite ready · expires in 48 hours. Send it by Messages, WhatsApp or another app.</p><button type="button" className="primary full" onClick={shareInvite}><Share2 size={17}/> Share invitation</button><button type="button" className="secondary full" onClick={copyInvite}><Copy size={16}/> Copy invitation</button><a className="secondary full friend-sms-link" href={`sms:&body=${encodeURIComponent(inviteText)}`}><MessageCircle size={16}/> Send via SMS</a><details><summary>Show invitation code</summary><code className="friend-invite-code">{invite}</code></details></div>}
