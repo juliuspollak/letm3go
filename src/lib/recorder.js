@@ -17,7 +17,7 @@ export const recorder = {
  removePlace:id=>native.removePlace({id}),
  currentPosition:()=>native.currentPosition(),
  searchAddress:query=>native.searchAddress({query}),
- recogniseTripPlace:(id,index,point)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude}),
+ recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
  editActivity:trip=>native.editActivity(trip),
  trimActivity:params=>native.trimActivity(params),
  setRouteDisplay:params=>native.setRouteDisplay(params),
