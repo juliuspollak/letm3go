@@ -32,7 +32,7 @@ export default function JourneyTags({trip,grouping,run}){
     setNotice(`Checking place ${n+1} of ${samples.length}…`);
     const {point}=samples[n],key=placeKey(point);
     let place=grouping.metadata.places?.[key];
-    if(!place?.locality&&!place?.nearbyName&&!place?.categories?.length){
+    if(!place?.nearbyName&&!place?.categories?.length){
      try{
       // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
       place=await recorder.recogniseTripPlace(null,0,point);
