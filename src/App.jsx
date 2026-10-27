@@ -206,7 +206,7 @@ function PrivateApp(){
   window.addEventListener('letm3go:invitation-opened',opened);
   return()=>window.removeEventListener('letm3go:invitation-opened',opened);
  },[]);
- useEffect(()=>{if(pendingInvitation){queueMicrotask(()=>{setSocialSection(pendingInvitation.kind==='household'?'household':'friends');setTab('Social');});}},[]);
+ useEffect(()=>{if(pendingInvitation){queueMicrotask(()=>{setSocialSection(pendingInvitation.kind==='household'?'household':'friends');setTab('Social');});}},[pendingInvitation]);
  const consumeInvitation=()=>{setPendingInvitation(null);try{sessionStorage.removeItem('letm3go:pending-invitation');}catch{}};
 
  const [mapLayer,setMapLayer]=useState('people');
