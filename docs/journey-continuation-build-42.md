@@ -30,7 +30,9 @@ instead of by waiting.
      vehicle journeys continue only with vehicle movement, so walking away from a
      parked car starts a new activity; on-foot journeys absorb any movement
      because `DrivingTransition` splits a genuine drive out of them.
-   Only real fixes are appended. No point is interpolated across the stop.
+   Only real fixes are appended. No point is interpolated across the stop. A
+   continuation is decided only on a fix accurate enough to record (≤ 65 m); a
+   coarse background wake merely promotes precise GPS for the decision.
 4. **Saved** — when the continuation window expires (30 s timer, app becoming
    active, or a new manual activity), or the resumption is too far away or of a
    different family. A user finish saves immediately and is never revived.

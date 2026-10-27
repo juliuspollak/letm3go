@@ -155,6 +155,14 @@ extension LocationRecorder {
                 guard departureEvidence.observe(sample,now:now,minimumDistance:40) else {
                     diagnosticReject("settledAwaitingContinuation");continue
                 }
+                // Only a fix good enough to become route geometry may decide a
+                // continuation. A coarse background wake just proves movement, so
+                // it promotes precise GPS and the decision waits for a real fix.
+                guard sample.accuracy <= 65 else {
+                    diagnosticReject("settledCoarseWake")
+                    beginAutomaticProbe(movementBegan:true)
+                    continue
+                }
                 do {
                     let continued = try resumeSettledAutomatic(sample:sample,now:now)
                     // A journey that cannot continue has already been saved; this
@@ -344,13 +352,16 @@ extension LocationRecorder {
     func resumeSettledAutomatic(sample: GPSPoint, now: Double) throws -> Bool {
         guard var trip = automaticTrip, let settled = settledAt, let last = trip.points.last, let storage = storage else { return false }
         let activity = trip.activity == "Unknown" ? (trip.details?.classification.predicted ?? "Unknown") : trip.activity
+        let distance = last.distance(to: sample)
         let continued = JourneyContinuation.canResume(
-            stoppedAt: settled, now: now, distance: last.distance(to: sample),
+            stoppedAt: settled, now: now, distance: distance,
             family: JourneyFamily.of(activity),
             movement: JourneyContinuation.movement(motion, speed: sample.speed, now: now)
         )
         guard continued else {
-            try finishAutomatic()
+            try finishAutomatic(reason: distance > JourneyContinuation.radius
+                ? "Stopped journey ended: movement resumed away from the stop"
+                : "Stopped journey ended: the movement belonged to a new activity")
             trackingEvent("Stopped journey ended; a new activity will be detected")
             return false
         }
@@ -387,7 +398,7 @@ extension LocationRecorder {
     func cleanupContinuationRegion() {
         for region in manager.monitoredRegions where region.identifier == "letm3go-place-continuation" { manager.stopMonitoring(for:region) }
     }
-    func finishAutomatic(force: Bool = false) throws {
+    func finishAutomatic(force: Bool = false, reason: String? = nil) throws {
         guard var trip = automaticTrip, let storage = storage else { detector.reset(); return }
         let settled = settledAt
         // Include a genuine accurate final approach fix near the last movement.
@@ -427,7 +438,7 @@ extension LocationRecorder {
         }
         let previousArrivalNotes=trip.details?.trackingNotes ?? []
         let endReason = force ? "Journey finished by user"
-            : settled != nil ? "Journey ended after the continuation window"
+            : settled != nil ? (reason ?? "Journey ended after the continuation window")
             : "Arrival detected"
         trip.details?.trackingNotes = Array((previousArrivalNotes + [endReason, "Movement end: \(Date(timeIntervalSince1970:lastMovement))", "Recorded fixes: \(trip.points.count)", "Final GPS coverage: \(Int(max(0,end - (trip.points.last?.timestamp ?? trip.startedAt)))) seconds before finish"]).suffix(24))
         trip.finish(at:end)

@@ -19,7 +19,7 @@ it('requires authentication before accessing any private screens or the native r
 });
 it('shows profile onboarding after first authentication rather than Home',()=>{
  signedIn();identity.value.preferences.onboardingComplete=false;render(<App/>);
- expect(screen.getByRole('heading',{name:'Make it yours.'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open profile'})).not.toBeInTheDocument();
+ expect(screen.getByRole('heading',{name:'What should we call you?'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open profile'})).not.toBeInTheDocument();
 });
 it('keeps demonstration routes and photos out of the real application',()=>{signedIn();render(<App/>);expect(screen.getByText('No device recordings yet.')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Browse labelled demo journeys'})).not.toBeInTheDocument();for(const fixture of demoJourneys)expect(screen.queryByText(fixture.title)).not.toBeInTheDocument();});
 it('restores returning users to Home and keeps browser GPS unavailable',()=>{
