@@ -2,7 +2,7 @@ import { Maximize2, Navigation } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable } from '../lib/appleMaps.js';
 
-export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null}){
+export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true}){
  const mapSurface=useRef(null);
  const embeddedOnce=useRef(false);
  const openingFullscreen=useRef(false);
@@ -38,7 +38,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   return {...payload,routes,pins};
  })():payload);
  useEffect(()=>{
-  if(!appleMapsAvailable()||picker)return;
+  if(!appleMapsAvailable()||picker||!embeddedEnabled)return;
   let active=true;let previous='';
   const mount=()=>{
    if(!active||openingFullscreen.current||!mapSurface.current)return;
@@ -58,7 +58,7 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
   window.addEventListener('resize',resized);
   window.addEventListener('scroll',resized,{passive:true});
   return()=>{active=false;clearTimeout(timer);observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized);};
- },[interactiveData,mapID,picker,reopenVersion]);
+ },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
