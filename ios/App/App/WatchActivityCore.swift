@@ -171,7 +171,12 @@ struct WatchRideMetrics: Equatable {
 // same code over a transferred payload. Because both sides use this type, the
 // displayed distance, moving time and elevation cannot drift apart.
 struct WatchTrackAnalyzer {
-    static let maximumInterval = 60.0
+    // A pair of fixes further apart than this is not a continuous observation. The
+    // recording path (`WatchRideDraft.ingest`) opens a new segment at exactly this
+    // threshold and the iPhone recorder applies the same 30 s rule, so a replayed
+    // restored draft, an imported payload, an older schema or any other code path is
+    // measured with the rule that produced the original numbers.
+    static let maximumInterval = WatchTransferLimits.outageGap
     static let elevationAccuracy = 30.0
     static let elevationNoise = 1.0
     static let movingNoise = 2.5
@@ -207,14 +212,23 @@ struct WatchTrackAnalyzer {
         let interval = point.timestamp - last.timestamp
         let step = last.distance(to: point)
         if point.segment == last.segment {
+            // A displacement faster than plausible movement is corrupt data whether or
+            // not the pair is continuous, so the speed test always applies.
             if step / interval > maximumSpeed { return .implausibleSpeed }
-            let noise = max(2, (last.accuracy + point.accuracy) / 4)
-            if step >= noise { metrics.distanceMeters += step }
-            if interval <= Self.maximumInterval && step >= Self.movingNoise { metrics.movingSeconds += interval }
-            if interval <= Self.maximumInterval, point.accuracy <= Self.elevationAccuracy, last.accuracy <= Self.elevationAccuracy {
-                let delta = point.altitude - last.altitude
-                if abs(delta) >= Self.elevationNoise {
-                    if delta > 0 { metrics.elevationGainMeters += delta } else { metrics.elevationLossMeters += -delta }
+            // Movement is credited only for continuous observation inside one segment.
+            // A longer interval inside a single segment cannot come from the recorder
+            // (it would have opened a new segment), so it is an unobserved gap in a
+            // restored or imported track: it must never add a straight line, moving
+            // time or elevation that was not actually ridden.
+            if interval <= Self.maximumInterval {
+                let noise = max(2, (last.accuracy + point.accuracy) / 4)
+                if step >= noise { metrics.distanceMeters += step }
+                if step >= Self.movingNoise { metrics.movingSeconds += interval }
+                if point.accuracy <= Self.elevationAccuracy && last.accuracy <= Self.elevationAccuracy {
+                    let delta = point.altitude - last.altitude
+                    if abs(delta) >= Self.elevationNoise {
+                        if delta > 0 { metrics.elevationGainMeters += delta } else { metrics.elevationLossMeters += -delta }
+                    }
                 }
             }
         }

@@ -844,12 +844,14 @@ var watchTransfer = WatchActivityTransfer(
     startedAt: 1_000,
     endedAt: 1_600,
     activeSeconds: 600,
+    // Realistic watch cadence (about one fix every 10 s at trail speed): the watch opens
+    // a new segment after a pause, so a single segment never spans a longer gap.
     points: [
         watchPoint(-33.0000, 151.0000, 1_000),
-        watchPoint(-33.0000, 151.0010, 1_100),
+        watchPoint(-33.0000, 151.0010, 1_010),
         // Pause between fixes: the gap must not be counted as ride distance.
-        watchPoint(-33.0000, 151.0010, 1_200, segment: 1),
-        watchPoint(-33.0000, 151.0020, 1_300, segment: 1)
+        watchPoint(-33.0000, 151.0010, 1_020, segment: 1),
+        watchPoint(-33.0000, 151.0020, 1_030, segment: 1)
     ],
     trailID: watchTrailID,
     trailName: "Old Duffy Descent",
@@ -980,6 +982,95 @@ _ = unfinishedRide.ingest(watchFix(-33.0000, 1_000), now: 1_000)
 check(unfinishedRide.transfer(now: 1_100, ownerID: nil, deviceID: nil) == nil, "an unfinished ride is never transferred")
 unfinishedRide.finish(at: 1_100)
 check(unfinishedRide.transfer(now: 1_100, ownerID: nil, deviceID: nil) == nil, "a ride without two fixes is never transferred")
+
+// MARK: Apple Watch track continuity
+//
+// Distance, moving time and elevation are only credited for continuous observation.
+// The recorder opens a new segment as soon as two fixes are more than 30 s apart, so a
+// single segment that jumps further than that can only come from a restored draft, an
+// imported payload or an older schema — and it must not invent a straight line that
+// was never ridden.
+func continuityPoint(_ latitude: Double, _ longitude: Double, _ timestamp: Double,
+                     segment: Int = 0, altitude: Double = 120) -> WatchPoint {
+    WatchPoint(latitude: latitude, longitude: longitude, timestamp: timestamp,
+               accuracy: 5, altitude: altitude, speed: 4, segment: segment)
+}
+
+// 0.0005° of longitude at this latitude is about 46.7 m, an easy step to reason about.
+var continuousAnalyzer = WatchTrackAnalyzer(activity: "MTB")
+for step in 0..<6 {
+    continuousAnalyzer.append(continuityPoint(-33.0, 151.0 + Double(step) * 0.0005,
+                                              1_000 + Double(step) * 5, altitude: 120 + Double(step) * 2))
+}
+check(continuousAnalyzer.points.count == 6, "normal fixes are all kept")
+check(abs(continuousAnalyzer.metrics.distanceMeters - 5 * 46.68) < 1.5, "continuous movement is counted in full")
+check(continuousAnalyzer.metrics.movingSeconds == 25, "continuous movement counts its moving time")
+check(continuousAnalyzer.metrics.elevationGainMeters == 10, "continuous elevation is counted in full")
+
+// A ten minute GPS outage inside one segment, as an older or foreign payload may hold.
+var outageAnalyzer = WatchTrackAnalyzer(activity: "MTB")
+outageAnalyzer.append(continuityPoint(-33.0, 151.0, 1_000))
+outageAnalyzer.append(continuityPoint(-33.0, 151.0005, 1_005))
+let beforeOutageGap = outageAnalyzer.metrics
+outageAnalyzer.append(continuityPoint(-33.02, 151.05, 1_605, altitude: 320))
+check(outageAnalyzer.points.count == 3, "the fix after an outage is kept as geometry")
+check(outageAnalyzer.metrics.distanceMeters == beforeOutageGap.distanceMeters, "an outage gap adds no distance")
+check(outageAnalyzer.metrics.movingSeconds == beforeOutageGap.movingSeconds, "an outage gap adds no moving time")
+check(outageAnalyzer.metrics.elevationGainMeters == beforeOutageGap.elevationGainMeters, "an outage gap adds no elevation")
+
+// An explicit segment transition is never bridged, even with adjacent fixes.
+var segmentAnalyzer = WatchTrackAnalyzer(activity: "MTB")
+segmentAnalyzer.append(continuityPoint(-33.0, 151.0, 1_000))
+segmentAnalyzer.append(continuityPoint(-33.0, 151.01, 1_005, segment: 1, altitude: 200))
+check(segmentAnalyzer.metrics == WatchRideMetrics(), "a segment transition adds no movement, time or elevation")
+
+// Pause and resume through the recorder: the resumed stint is a new segment and the
+// pause itself is never measured.
+var pauseAnalyzerRide = WatchRideDraft(activity: "MTB", startedAt: 1_000)
+_ = pauseAnalyzerRide.ingest(watchFix(-33.0000, 1_000), now: 1_000)
+_ = pauseAnalyzerRide.ingest(watchFix(-33.0001, 1_005), now: 1_005)
+let distanceBeforePause = pauseAnalyzerRide.metrics.distanceMeters
+pauseAnalyzerRide.pause(at: 1_010)
+pauseAnalyzerRide.resume(at: 2_000)
+check(pauseAnalyzerRide.ingest(watchFix(-33.1000, 2_005), now: 2_005) == .accepted(newSegment: true), "a fix after the pause opens a new segment")
+check(pauseAnalyzerRide.metrics.distanceMeters == distanceBeforePause, "resuming never bridges the pause")
+
+// A restored draft replays through the same rule. The third and fourth fixes are 690 s
+// apart in the same segment, which the recorder would never have produced.
+var legacyAnalyzerPoints = [
+    continuityPoint(-33.0, 151.0, 1_000),
+    continuityPoint(-33.0, 151.0005, 1_005),
+    continuityPoint(-33.0, 151.0010, 1_010),
+    continuityPoint(-33.03, 151.05, 1_700),
+    continuityPoint(-33.03, 151.0505, 1_705)
+]
+let legacyMetrics = WatchTrackAnalyzer(points: legacyAnalyzerPoints, activity: "MTB").metrics
+check(abs(legacyMetrics.distanceMeters - 140) < 2, "a legacy single-segment gap contributes no distance")
+check(legacyMetrics.movingSeconds == 15, "moving time is only counted inside a continuous stretch")
+
+// The phone measures an imported payload exactly the way the watch did.
+var legacyTransfer = watchTransfer
+legacyTransfer.points = legacyAnalyzerPoints
+legacyTransfer.startedAt = 1_000
+legacyTransfer.endedAt = 1_705
+legacyTransfer.activeSeconds = 705
+let importedLegacyRide = WatchActivityImport.activity(from: legacyTransfer, now: 2_000)
+check(importedLegacyRide != nil, "a payload with an unexpected gap still imports")
+check(importedLegacyRide?.distanceMeters == legacyMetrics.distanceMeters, "the imported ride keeps the analyser's distance")
+
+// Duplicate and out-of-order fixes can never move the counters.
+var orderedAnalyzer = WatchTrackAnalyzer(points: [continuityPoint(-33.0, 151.0, 1_000),
+                                                  continuityPoint(-33.0, 151.0005, 1_005)], activity: "MTB")
+let orderedMetrics = orderedAnalyzer.metrics
+check(orderedAnalyzer.append(continuityPoint(-33.0, 151.0005, 1_005)) == .duplicateTimestamp, "a repeated fix is refused")
+check(orderedAnalyzer.append(continuityPoint(-33.0, 151.0002, 1_003)) == .duplicateTimestamp, "an out-of-order fix is refused")
+check(orderedAnalyzer.points.count == 2, "a refused fix is not stored")
+check(orderedAnalyzer.metrics == orderedMetrics, "a refused fix cannot change the counters")
+
+// Replaying a recorded track reproduces the numbers the watch displayed, which is what
+// keeps the phone and the watch from disagreeing about the same ride.
+let replayedWatchRide = WatchTrackAnalyzer(points: watchRide.points, activity: watchRide.activity)
+check(replayedWatchRide.metrics == watchRide.metrics, "replaying a recorded track matches the watch's own metrics")
 
 // MARK: Apple Watch outbox
 let outboxDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
