@@ -108,6 +108,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // delivering, not when delivery is merely sparse.
     var lastAutomaticDeliveryAt: Double?
     var automaticGPSRecoveryAt: Double = 0
+    var sleptThroughLoggedFor: Double = 0
     // Main-thread execution heartbeat. Every timer tick and delegate callback
     // records that the process ran. A gap longer than the 30-second timer period
     // means iOS was not executing the recorder at all (suspended), which is a
@@ -247,11 +248,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             backgroundSessionState = action == .start ? "held" : "rejoined"
             recordDiagnostic("session", action == .start ? "Background location session started" : "Background location session rejoined", details: ["reason": reason])
         case .deferUntilForeground:
-            guard backgroundSessionState != "awaitingForeground" else { return }
+            // A user launch is inactive until didBecomeActive, which starts it.
+            guard backgroundSessionState != "awaitingForeground", UIApplication.shared.applicationState == .background else { return }
             backgroundSessionState = "awaitingForeground"
             recordDiagnostic("session", "Background location session needs the app in the foreground to start", details: ["reason": reason])
         case .none:
-            if backgroundActivitySession == nil, backgroundSessionState == "rejoined" { backgroundSessionState = "none" }
+            // Report what is actually held: no session and no need for one is
+            // "none", never a stale "awaitingForeground".
+            if backgroundActivitySession == nil { backgroundSessionState = backgroundSessionSupported ? "none" : "unsupported" }
         }
     }
     // End the session only for an explicit reason: tracking switched off, Always
@@ -418,12 +422,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let silentWhileExecuting=now-max(last,executingSince)
         let decision=StallPolicy.decide(now:now,lastDelivery:last,executingSince:executingSince,foreground:foreground,lastRecoveryAt:automaticGPSRecoveryAt)
         guard decision != .none else {return}
-        automaticGPSRecoveryAt=now
         guard decision == .restart else {
+            // Logged once per wake; not a recovery attempt, so the cooldown is untouched.
+            guard sleptThroughLoggedFor != executingSince else {return}
+            sleptThroughLoggedFor=executingSince
             recordDiagnostic("recovery","Automatic GPS silent for \(Int(now-last))s, of which the recorder was not executing for \(Int(max(0,executingSince-last)))s; location updates left running",
                 details:["silentSeconds":String(Int(now-last)),"silentWhileExecutingSeconds":String(Int(max(0,silentWhileExecuting)))])
             return
         }
+        automaticGPSRecoveryAt=now
         recordDiagnostic("recovery","Automatic GPS silent for \(Int(now-last))s with no qualifying automatic fix processed; restarting location updates",
             details:["silentSeconds":String(Int(now-last)),"silentWhileExecutingSeconds":String(Int(max(0,silentWhileExecuting))),"foreground":String(foreground),"backgroundSession":backgroundSessionState])
         stopContinuousLocation(reason:"Location updates restarted after \(Int(now-last))s without a fix")

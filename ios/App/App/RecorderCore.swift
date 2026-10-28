@@ -228,6 +228,25 @@ struct RecordedActivity: Codable {
         return true
     }
 
+    // Recompute distance with exactly the rule `accept` applies while recording, so
+    // publishing, finishing, splitting or trimming a journey never changes what
+    // counts as movement. Only consecutive fixes in one observed segment count, and
+    // for an automatic journey only real movement above the accuracy jitter floor
+    // (stationary drift and waits at a light are geometry, not distance). Manual
+    // recording already rejects jitter fixes, so every retained pair counts.
+    static func measuredDistance(_ points: [GPSPoint], automatic: Bool) -> Double {
+        zip(points, points.dropFirst()).reduce(0) { total, pair in
+            let (previous, point) = pair
+            let dt = point.timestamp - previous.timestamp
+            guard previous.segment == point.segment, dt > 0 else { return total }
+            let distance = previous.distance(to: point)
+            guard automatic else { return total + distance }
+            let jitterFloor = max(3, min(10, (previous.accuracy + point.accuracy) / 4))
+            return distance / dt >= 0.35 && distance >= jitterFloor ? total + distance : total
+        }
+    }
+    var measuredDistance: Double { Self.measuredDistance(points, automatic: recordingMode == "automatic") }
+
     // One definition of an unobserved automatic gap, shared by segmentation, the
     // tracking notes, route quality and the map. A silence longer than
     // `observedGapSeconds` with real displacement is a break: the straight line
@@ -287,9 +306,7 @@ enum RouteTrimming {
         trip.endedAt = last.timestamp
         trip.resumedAt = nil
         trip.accumulatedSeconds = last.timestamp-first.timestamp
-        trip.distanceMeters = zip(chosen,chosen.dropFirst()).reduce(0) { total, pair in
-            total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
+        trip.distanceMeters = trip.measuredDistance
         trip.updatedAt = Date().timeIntervalSince1970
         let trimmedQuality = trip.routeQualitySummary()
         trip.updateDetails { $0.routeQuality = trimmedQuality }
@@ -307,15 +324,10 @@ enum RouteTrimming {
 // No segment is bridged or interpolated, so no distance is invented or counted
 // twice, and a journey that no longer has enough real movement is not published.
 enum JourneySplit {
-    static func distance(_ points: [GPSPoint]) -> Double {
-        zip(points,points.dropFirst()).reduce(0) { total,pair in
-            total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
-    }
     static func kept(_ trip: RecordedActivity, before timestamp: Double) -> RecordedActivity? {
         var kept = trip
         kept.points = trip.points.filter { $0.timestamp < timestamp }
-        kept.distanceMeters = distance(kept.points)
+        kept.distanceMeters = kept.measuredDistance
         guard kept.points.count >= 2, kept.distanceMeters >= 25, let last = kept.points.last else { return nil }
         kept.finish(at: max(kept.startedAt,last.timestamp))
         return kept
@@ -976,13 +988,20 @@ struct ExecutionHeartbeat {
 // A stall is silence observed while the process is executing. Silence the process
 // slept through cannot be recovered by a restart from the background: iOS delivers
 // the queued updates when the app runs again, and the restart could discard them.
+// `sleptThrough` is logged but is not a recovery attempt, so it must not consume
+// the cooldown: a service still silent a minute after the wake is restarted then.
+// In the foreground, a restart waits a few seconds after a wake so the updates iOS
+// queued during the suspension are delivered first; stopping the service at the
+// moment of resume could discard them. A foreground start also restores the
+// documented allowsBackgroundLocationUpdates keep-alive on iOS 15 and 16.
 enum StallPolicy {
     enum Decision: Equatable { case none, sleptThrough, restart }
     static let silence: Double = 60
     static let cooldown: Double = 120
+    static let foregroundSettle: Double = 5
     static func decide(now: Double, lastDelivery: Double, executingSince: Double, foreground: Bool, lastRecoveryAt: Double) -> Decision {
         guard now - lastDelivery > silence, now - lastRecoveryAt > cooldown else { return .none }
-        if foreground || now - max(lastDelivery, executingSince) > silence { return .restart }
+        if (foreground && now - executingSince >= foregroundSettle) || now - max(lastDelivery, executingSince) > silence { return .restart }
         return .sleptThrough
     }
 }

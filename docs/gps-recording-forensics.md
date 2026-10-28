@@ -58,6 +58,10 @@ wakes). This is the strongest explanation, not yet proven on a device.
   records when the account was bound; it is cleared by sign-out, account change
   and local deletion. A relaunch no longer rejects the account's own queued
   updates for predating the launch.
+- **One distance rule**: publishing, finishing, splitting and trimming recompute
+  distance with the same rule as live recording (`measuredDistance`), so drift
+  while stopped never becomes distance after the fact. Appended fixes are saved
+  once per delivered batch, so a queued backlog is not re-encrypted per fix.
 - **One GPS configuration owner**: `reconcileAutomaticSampling` →
   `LocationConfiguration.automatic` → `applyLocationConfiguration`. An open
   journey (recording or interrupted) is always best/5 m; a drive keeps the
@@ -75,11 +79,31 @@ Build 46 fixes are unchanged: one gap definition, no distance across gaps,
 execution heartbeat, delayed-batch diagnostics, continuation region, interrupted
 state, `suspendInterface` for temporary sign-in failures.
 
+### Why the session is held all the time automatic tracking is on
+
+Departures begin with the phone in a pocket, i.e. in the background, and a new
+session can only be started in the foreground. A session released during standby
+could not be started again until the user next opens the app, so the next
+departure would run without it — the build 46 condition. Holding it is therefore
+required for automatic departure recording, not a convenience.
+
+- **Indicator**: iOS shows its background location indicator whenever the app
+  is in the background with the session held, including while parked for hours.
+  The Tracking & Permissions and Automatic history copy states this.
+- **Battery**: the session itself starts no GPS. The cost is the reduced-accuracy
+  standby location (10 m, 25 m filter) that has run since r3. With the session,
+  iOS is more likely to actually keep it running instead of suspending the app,
+  so measured standby drain may rise compared with build 46. Record overnight
+  battery drop in the device tests; do not trade reliability for it untested.
+- Released only by: automatic tracking off, Always permission removed, sign-out,
+  account change or deletion, or a manual recording ending with automatic off.
+
 ### Recovery behaviour
 
 | Situation | What happens |
 |---|---|
 | App executing, GPS silent | After 60 s of silence while running, updates are stopped and started once (rate limited to every 2 min), logged with the session state. |
+| App wakes after a suspension | The silence is logged once as "location updates left running"; that log does not use up the restart allowance. If no fix has arrived a minute after the wake, the service is restarted then (build 46 timeline: wake at 276 s, restart at ~366 s only if still silent). In the foreground the restart waits 5 s so queued updates arrive first. |
 | App suspended with updates requested | Nothing can run. With the session held, iOS is asked to keep the app in use; if it is suspended anyway, updates are queued by iOS. |
 | App resumes after silence | The heartbeat logs `Recorder was not executing for Ns` with the wake cause; the queued fixes are saved to the open journey; no restart. |
 | App relaunched by a location event | The session is rejoined first, the account and any recording journey are restored, then services restart; queued fixes for the same account are accepted. |
@@ -101,10 +125,24 @@ export the journey → **Copy report**, and note the real start and end times.
 | 5 | Temporary signal loss (tunnel or underground car park) | A dashed segment break across the outage, no distance across it; 0 `not executing` events (signal loss is not suspension) |
 | 6 | Arrival, then drive on within the continuation window | Stop published within 2–4 min of parking; continuation appends to the same journey; opening the app during the stop keeps the continuation region |
 
-Repeat 1–3 on at least three days (≥ 10 journeys). Record for each: max gap
-while moving, saved fixes per minute, unobserved seconds and metres, number of
-`not executing` events and their wake causes, and `Delayed location batch`
-events. **One `Recorder was not executing` event during a recording with the
+Repeat 1–3 on at least three days (≥ 10 journeys). For every drive record,
+from the copied journey report:
+
+| Field | Where in the report |
+|---|---|
+| Commit / build | First lines (`App build … · commit …`) |
+| Background session state | "What happened" (held throughout / not held) and Tracking & Permissions |
+| Max gap between saved fixes | Summary → Largest gap |
+| Fixes per minute while moving | GPS fixes ÷ (Duration − Unobserved) |
+| Execution gaps and wake cause | Timeline: `Recorder was not executing for Ns` (woken by …) |
+| Delayed fixes accepted / rejected | Timeline: `Delayed location batch delivered`; observation summaries `rejected: deliveryTooOld` |
+| Unobserved route | Summary → Unobserved (seconds · ≥ metres) |
+| Start / finish accuracy | Compare Started/Ended with your real departure and parking times |
+| Overnight battery drop | Settings → Battery, for test 3 |
+
+An execution gap (`Recorder was not executing`) is iOS not running the app; a
+dashed gap with no execution gap is missing GPS while the app ran (signal loss).
+Only the first is the build 46 failure. **One `Recorder was not executing` event during a recording with the
 session held is a failure**: send its report, including `backgroundSession`,
 `appState` and `wakeCause`.
 

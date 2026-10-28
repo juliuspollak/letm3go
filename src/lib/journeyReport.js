@@ -51,7 +51,8 @@ export function journeyFindings(report){
  const sessionStates=[...new Set(events.map(e=>e.context?.backgroundSession).filter(Boolean))];
  if(sessionStates.length){
   const missing=sessionStates.filter(state=>!['held','rejoined'].includes(state));
-  findings.push(missing.length?`No background location session was held for part of this journey (${missing.join(', ')}). Open the app once so it can start one.`:'A background location session was held throughout, so iOS was asked to keep the app running.');
+  if(missing.includes('unsupported'))findings.push('This iOS version has no background location session (iOS 17 or later is required).');
+  else findings.push(missing.length?`No background location session was held for part of this journey (${missing.join(', ')}). Open the app once so it can start one.`:'A background location session was held throughout, so iOS was asked to keep the app running.');
  }
  const restarts=count(events,e=>/restarting location updates/.test(e.message));
  const leftRunning=count(events,e=>/location updates left running/.test(e.message));

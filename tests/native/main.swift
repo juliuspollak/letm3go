@@ -1363,7 +1363,15 @@ check(foregroundWake.note("foreground",now:500)?.cause == "foreground","opening 
 // Recovery: restart only for silence observed while executing, or in the foreground.
 check(StallPolicy.decide(now:1000,lastDelivery:930,executingSince:0,foreground:false,lastRecoveryAt:0) == .restart,"Scenario A: executing with silent GPS restarts updates")
 check(StallPolicy.decide(now:1276,lastDelivery:1000,executingSince:1276,foreground:false,lastRecoveryAt:0) == .sleptThrough,"Scenario C: silence the app slept through is not restarted from the background")
-check(StallPolicy.decide(now:1276,lastDelivery:1000,executingSince:1276,foreground:true,lastRecoveryAt:0) == .restart,"returning to the foreground may restart a silent service")
+check(StallPolicy.decide(now:1276,lastDelivery:1000,executingSince:1276,foreground:true,lastRecoveryAt:0) == .sleptThrough,"a foreground wake first lets iOS deliver the updates it queued")
+check(StallPolicy.decide(now:1306,lastDelivery:1000,executingSince:1276,foreground:true,lastRecoveryAt:0) == .restart,"still silent after the foreground wake settles: restart in the foreground")
+// Build 46 timeline: last fix 06:36:28 (t=0), wake at 06:41:04 (t=276). The wake is
+// logged, not restarted; if GPS is still silent once the app has run for a minute,
+// it is restarted then, because logging the wake did not consume the cooldown.
+check(StallPolicy.decide(now:276,lastDelivery:0,executingSince:276,foreground:false,lastRecoveryAt:0) == .sleptThrough,"build 46: the 276 s silence at the wake is not restarted")
+check(StallPolicy.decide(now:306,lastDelivery:0,executingSince:276,foreground:false,lastRecoveryAt:0) == .sleptThrough,"build 46: 30 s after the wake is still the suspension")
+check(StallPolicy.decide(now:366,lastDelivery:0,executingSince:276,foreground:false,lastRecoveryAt:0) == .restart,"build 46: silence 90 s after the wake while executing is restarted")
+check(StallPolicy.decide(now:306,lastDelivery:300,executingSince:276,foreground:false,lastRecoveryAt:0) == .none,"build 46: queued fixes delivered at the wake end the silence")
 check(StallPolicy.decide(now:1340,lastDelivery:1000,executingSince:1276,foreground:false,lastRecoveryAt:0) == .restart,"silence continuing a minute after the wake is a real stall")
 check(StallPolicy.decide(now:1000,lastDelivery:930,executingSince:0,foreground:false,lastRecoveryAt:950) == .none,"recovery is rate limited")
 check(StallPolicy.decide(now:1000,lastDelivery:950,executingSince:0,foreground:false,lastRecoveryAt:0) == .none,"less than a minute of silence is not a stall")
@@ -1390,6 +1398,21 @@ check(backlogAccepted == 27,"every queued fix of the suspended stretch is saved"
 check(suspendedDrive.routeQualitySummary().gapCount == 0,"a delivered backlog leaves no gap in the route")
 check(suspendedDrive.distanceMeters > 3300 && suspendedDrive.distanceMeters < 3400,"the backlog contributes observed distance only")
 check(!suspendedDrive.accept(metreFix(240,20,speed:12),now:20),"a callback repeating a saved fix is rejected, so no duplicate geometry or journey")
+
+// Publishing, splitting or trimming recomputes distance with the recording rule, so
+// drift while waiting at a light never becomes distance after the fact.
+var waitingDrive=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Light")
+waitingDrive.recordingMode="automatic"
+for point in [metreFix(0,0,speed:12),metreFix(120,10,speed:12),metreFix(124,40,speed:0),metreFix(128,100,speed:0),metreFix(126,160,speed:0),metreFix(246,170,speed:12)] {
+    _ = waitingDrive.accept(point,now:point.timestamp)
+}
+check(waitingDrive.points.allSatisfy{$0.segment == 0},"a wait at a light keeps one segment")
+check(abs(waitingDrive.measuredDistance-waitingDrive.distanceMeters) < 0.001,"recomputed distance equals the distance recorded live")
+check(waitingDrive.distanceMeters > 235 && waitingDrive.distanceMeters < 245,"drift during the wait is not distance")
+check(abs(JourneySplit.kept(waitingDrive,before:1000)!.distanceMeters-waitingDrive.distanceMeters) < 0.001,"a split keeps the live distance")
+var trimmedWait=waitingDrive;trimmedWait.finish(at:170)
+check(abs(RouteTrimming.trimmed(trimmedWait,start:0,end:5)!.distanceMeters-waitingDrive.distanceMeters) < 0.001,"trimming keeps the live distance")
+check(abs(suspendedDrive.measuredDistance-suspendedDrive.distanceMeters) < 0.001,"a delivered backlog recomputes to the same distance")
 
 // A relaunch keeps the account's ownership boundary; sign-out starts a new one.
 check(TrackingBoundary.value(now:5000,restoredAutomatic:nil,boundSince:1000) == 1000,"a relaunch accepts updates queued for the same bound account")

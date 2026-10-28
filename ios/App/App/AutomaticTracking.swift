@@ -192,6 +192,20 @@ extension LocationRecorder {
         // every wake reconciles the wall clock before processing new fixes.
         if settledTripID != nil { finishExpiredContinuation(now:now) }
         if CMMotionActivityManager.authorizationStatus() != .authorized { motion = MotionEvidence() }
+        // Appended fixes are written once per delivery, not once per fix: a queued
+        // backlog of N fixes must not re-encrypt the whole journey N times on the
+        // main thread during a short wake. Settling, finishing and splitting still
+        // save immediately from the in-memory journey.
+        var unsavedTripID: String?
+        defer {
+            if let id = unsavedTripID, let trip = automaticTrip, trip.id == id {
+                do { try storage.save(trip) } catch {
+                    recordDiagnostic("error","Automatic activity could not be saved",details:["code":String((error as NSError).code)])
+                    lastError = "Automatic tracking could not save: \(error.localizedDescription)"
+                    stopContinuousLocation(reason:"automatic route saving failed")
+                }
+            }
+        }
         for location in locations.sorted(by:{$0.timestamp<$1.timestamp}) {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
             if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
@@ -336,7 +350,7 @@ extension LocationRecorder {
                             trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)
                         }
                         let classificationChanged=automaticTrip?.activity != trip.activity
-                        try storage.save(trip); automaticTrip = trip
+                        automaticTrip = trip; unsavedTripID = trip.id
                         if classificationChanged {recordDiagnostic("classification","Automatic activity classification changed",details:["predicted":trip.activity])}
                         diagnosticGPSAccepted+=1
                     }else{diagnosticReject("routeDuplicateJitterOrImplausibleMovement")}
@@ -489,9 +503,8 @@ extension LocationRecorder {
         let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
         let end = max(trip.startedAt, min(now, lastMovement))
         trip.points = trip.points.filter { $0.timestamp <= end }
-        trip.distanceMeters = zip(trip.points,trip.points.dropFirst()).reduce(0) { sum,pair in
-            sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
+        // The same distance rule as recording: drift while stopped is not movement.
+        trip.distanceMeters = trip.measuredDistance
         // Genuine movement is required before a journey is worth publishing.
         guard trip.points.count >= 2, trip.distanceMeters >= 25 else {
             automaticTrip = trip
@@ -758,9 +771,7 @@ extension LocationRecorder {
             : max(trip.startedAt,min(Date().timeIntervalSince1970,
                 min(approach?.timestamp ?? lastMovement,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
         trip.points = trip.points.filter { $0.timestamp <= end }
-        trip.distanceMeters = zip(trip.points,trip.points.dropFirst()).reduce(0) { sum,pair in
-            sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
+        trip.distanceMeters = trip.measuredDistance
         // A user-forced finish on a journey without genuine movement must not
         // create an empty activity in history.
         if force, trip.points.count < 2 || trip.distanceMeters < 25 {
