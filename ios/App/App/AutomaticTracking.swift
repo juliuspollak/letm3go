@@ -337,7 +337,7 @@ extension LocationRecorder {
                         // and the dashed map connector describe the same gaps.
                         if let last=previousFix,let added=trip.points.last,added.segment != last.segment {
                             let note="GPS resumed after \(Int(added.timestamp-last.timestamp))s without saved route samples; \(Int(last.distance(to:added)))m straight-line gap excluded from distance"
-                            trip.details?.trackingNotes=Array(((trip.details?.trackingNotes ?? [])+[note]).suffix(24))
+                            trip.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
                             recordDiagnostic("gap","Automatic route segment break",details:["gapSeconds":String(Int(added.timestamp-last.timestamp)),"gapMeters":String(Int(last.distance(to:added)))])
                         }
                         // An on-foot journey may refine its own subtype, but only the
