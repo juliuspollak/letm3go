@@ -716,3 +716,19 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
  .trip-equipment-chip{max-width:84px;font-size:10px}
  .collection-category-grid{grid-template-columns:repeat(auto-fill,minmax(74px,1fr))}
 }
+/* Journey diagnostic report: readable summary, copy button, collapsible detail. */
+.journey-report{background:var(--soft);border-radius:14px;padding:18px;margin:22px 0;display:grid;gap:12px}
+.journey-report-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.journey-report-head h3{margin:0}
+.journey-report .primary{display:flex;align-items:center;justify-content:center;gap:8px}
+.journey-report-summary{margin-top:0}
+.journey-report h4{margin:6px 0 0;font-size:13px}
+.journey-report-findings,.journey-report-notes{margin:0;padding-left:18px;font-size:12px;line-height:1.6}
+.journey-report details summary{cursor:pointer;font-size:12px;font-weight:600;padding:6px 0}
+.journey-report-timeline{list-style:none;margin:6px 0 0;padding:0;font-size:11px;line-height:1.5;max-height:420px;overflow:auto}
+.journey-report-timeline li{padding:7px 0;border-bottom:1px solid var(--line)}
+.journey-report-timeline li.warning span{color:var(--danger);font-weight:600}
+.journey-report-timeline time{font-variant-numeric:tabular-nums;color:var(--muted);margin-right:6px}
+.journey-report-timeline small{display:block;color:var(--muted);margin-top:2px}
+.journey-report-restart{display:block;font-weight:600;margin-bottom:4px}
+.journey-report textarea{width:100%;font-family:ui-monospace,Menlo,monospace;font-size:10px;box-sizing:border-box}
