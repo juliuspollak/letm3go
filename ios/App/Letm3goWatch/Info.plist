@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Letm3go saves your recorded rides as workouts in Health.</string>
 	<key>NSHealthUpdateUsageDescription</key>

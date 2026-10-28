@@ -33,6 +33,9 @@ with zipfile.ZipFile(ipa) as archive:
         require(watch_signed.get('application-identifier')=='8YP6PFWVZ9.au.jpollak.journey.watchkitapp','Signed Apple Watch application identifier mismatch')
         require(not watch_signed.get('get-task-allow'),'Debug entitlement in distribution Apple Watch app')
         require(watch_signed.get('com.apple.developer.healthkit') is True,'Signed Apple Watch HealthKit entitlement missing')
+        # App Store Connect rejects a watch app without a compiled asset-catalog icon (90391/90713).
+        watch_info=plistlib.loads((watch_apps[0]/'Info.plist').read_bytes())
+        require(watch_info.get('CFBundleIconName') and (watch_apps[0]/'Assets.car').exists(),'Apple Watch app icon missing')
         require(not e.get('get-task-allow') and not profile.get('ProvisionedDevices') and not profile.get('ProvisionsAllDevices'),'App Store distribution profile required')
         require(e.get('com.apple.developer.applesignin')==['Default'],'Apple Sign In missing')
         require(e.get('aps-environment')=='production','Production push profile entitlement missing')
