@@ -1,43 +1,62 @@
 import Foundation
 
-// Durable outbox for finished rides. Each ride is one JSON file, written before
-// any transfer is attempted and deleted only when the phone confirms it saved the
-// ride. Re-sending a file is safe: the phone deduplicates by ride id and
-// acknowledges duplicates too.
+// Durable outbox for finished rides. A ride is written here before any transfer is
+// attempted and removed only when the phone confirms a durable outcome, so a lost
+// link, a locked phone or a watch restart can never drop a ride. Re-sending is
+// safe: the phone deduplicates by ride id and acknowledges duplicates too.
+//
+// The queue rules (bounds, backoff, parking) live in WatchActivityCore.swift so the
+// watch and the phone share one definition of when a ride may be sent.
 final class WatchTransferQueue {
     static let shared = WatchTransferQueue()
-    let directory: URL
+
+    let outbox: WatchOutbox
+    var directory: URL { outbox.directory }
+
+    init(outbox: WatchOutbox) {
+        self.outbox = outbox
+    }
 
     private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        directory = base.appendingPathComponent("Letm3goWatch", isDirectory: true)
-            .appendingPathComponent("Outbox", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var url = directory
-        try? url.setResourceValues(values)
+        outbox = WatchOutbox(directory: WatchPaths.outboxDirectory)
     }
 
-    func enqueue(_ transfer: WatchActivityTransfer) throws {
+    func enqueue(_ transfer: WatchActivityTransfer, now: Double = Date().timeIntervalSince1970) throws {
         guard UUID(uuidString: transfer.id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
-        let data = try JSONEncoder().encode(transfer)
-        try data.write(to: fileURL(transfer.id), options: .atomic)
+        _ = try outbox.enqueue(transfer, now: now)
     }
 
-    func files() -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension == "json" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    func pendingCount() -> Int { outbox.counts().queued }
+    func parkedCount() -> Int { outbox.counts().parked }
+
+    // Entries the phone may be offered right now, oldest first.
+    func sendable(ownerID: String?, now: Double = Date().timeIntervalSince1970) -> [WatchOutboxEntry] {
+        outbox.pending(now: now, ownerID: ownerID)
     }
 
-    func pendingCount() -> Int { files().count }
-
-    func remove(id: String) {
-        guard UUID(uuidString: id) != nil else { return }
-        try? FileManager.default.removeItem(at: fileURL(id))
+    func transfer(_ id: String) -> WatchActivityTransfer? {
+        try? outbox.transfer(id)
     }
 
-    private func fileURL(_ id: String) -> URL { directory.appendingPathComponent("\(id).json") }
+    func fileURL(_ id: String) -> URL {
+        outbox.directory.appendingPathComponent("\(id).json")
+    }
+
+    // Records that a transfer has been handed to WatchConnectivity. The backoff
+    // timestamp stops the same ride being queued twice while the first attempt is
+    // still in flight, and a failing phone is retried slowly instead of constantly.
+    func noteAttempt(_ id: String, error: String?, now: Double = Date().timeIntervalSince1970) {
+        try? outbox.noteAttempt(id, error: error, now: now)
+    }
+
+    // The phone's durable answer. `saved`, `duplicate` and `rejected` retire the
+    // ride; `parked` keeps the payload but stops the retry timer.
+    @discardableResult
+    func noteDelivered(_ id: String, status: String, now: Double = Date().timeIntervalSince1970) -> Bool {
+        (try? outbox.noteDelivered(id, status: status, now: now)) ?? false
+    }
+
+    func discard(_ id: String) {
+        try? outbox.discard(id)
+    }
 }

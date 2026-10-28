@@ -8,18 +8,10 @@ import Combine
 // written to a durable outbox before it is offered to the phone. The phone
 // acknowledges a ride only after it has saved it, so a lost connection, a locked
 // phone or a watch restart never loses a ride.
-struct WatchRideDraft: Codable {
-    var id = UUID().uuidString
-    var activity: String
-    var startedAt: Double
-    var resumedAt: Double?
-    var activeSeconds: Double = 0
-    var state = "recording"
-    var segment = 0
-    var distanceMeters: Double = 0
-    var points: [WatchPoint] = []
-}
-
+//
+// The recording rules themselves (segments, pause/resume, duration, distance)
+// live in WatchActivityCore.swift so they can be tested without a watch, and so
+// the watch and the phone compute identical numbers for the same fixes.
 @MainActor
 final class WatchRecorder: NSObject, ObservableObject {
     @Published private(set) var state = "idle"
@@ -29,15 +21,25 @@ final class WatchRecorder: NSObject, ObservableObject {
     @Published private(set) var status = "Ready to ride"
     @Published private(set) var permission = "unknown"
     @Published private(set) var pendingCount = 0
-    @Published var activity = "MTB"
+    @Published var activity = "MTB" {
+        didSet { UserDefaults.standard.set(activity, forKey: Self.activityKey) }
+    }
+
+    static let activityKey = "watch.activity"
+    // Fixes are persisted at most this often, which bounds flash wear without
+    // risking more than a few seconds of a ride.
+    private static let persistInterval = 5.0
 
     private let manager = CLLocationManager()
     private let health = HKHealthStore()
+    private let store = WatchRideDraftStore(directory: WatchPaths.draftDirectory)
     private var workout: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
     private var draft: WatchRideDraft?
     private var ticker: Timer?
     private var finishing = false
+    private var lastPersistAt = 0.0
+    private var pendingStart = false
 
     override init() {
         super.init()
@@ -45,157 +47,181 @@ final class WatchRecorder: NSObject, ObservableObject {
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 3
         manager.activityType = .fitness
-        activity = UserDefaults.standard.string(forKey: "watch.activity") ?? "MTB"
+        activity = UserDefaults.standard.string(forKey: Self.activityKey) ?? "MTB"
         permission = Self.permissionLabel(manager.authorizationStatus)
         pendingCount = WatchTransferQueue.shared.pendingCount()
     }
 
-    var isRecording: Bool { draft?.state == "recording" }
+    var isRecording: Bool { draft?.isRecording == true }
     var hasRide: Bool { draft != nil }
     var canStart: Bool { draft == nil }
+    var isPaused: Bool { draft?.state == "paused" }
+
+// __APPEND__
+
+    // MARK: - Lifecycle
 
     func restore() {
-        guard draft == nil, let restored = WatchRideDraftStore.load() else { return }
-        // A ride interrupted by a crash or a watch restart is restored paused: the
-        // unobserved time is excluded and the user decides whether to continue.
-        var ride = restored
-        if ride.state == "recording" {
-            ride.activeSeconds += max(0, Date().timeIntervalSince1970 - (ride.resumedAt ?? ride.startedAt))
-            ride.resumedAt = nil
-            ride.state = "paused"
-            ride.segment += 1
+        guard draft == nil else { return }
+        let restored: WatchRideDraft?
+        do {
+            restored = try store.loadRestorable()
+        } catch {
+            // A draft that cannot be read stays on disk for diagnostics instead of
+            // being silently overwritten by a new ride.
+            status = "Could not read the unfinished ride"
+            return
         }
+        guard var ride = restored else {
+            pendingCount = WatchTransferQueue.shared.pendingCount()
+            WatchConnectivitySession.shared.sendPending()
+            return
+        }
+        // A ride interrupted by a crash or a watch restart is reopened paused: the
+        // time the app was not running is never credited to the ride.
+        ride.reopenPaused()
         adopt(ride)
-        status = "Restored an unfinished ride"
+        persist(force: true)
+        state = ride.state
+        status = ride.points.isEmpty ? "Restored an unfinished ride" : "Restored \(Self.clock(activeSeconds)) ride"
     }
 
     func start() {
         guard draft == nil else { return }
         switch manager.authorizationStatus {
         case .notDetermined:
+            // Wait for the delegate to report an authorised status: starting now
+            // would record nothing if the prompt is declined.
+            pendingStart = true
             manager.requestWhenInUseAuthorization()
+            return
         case .denied, .restricted:
-            status = "Allow location access in the Watch app settings"
+            status = "Allow location access in Settings › Privacy › Location"
             return
         default:
             break
         }
+        beginRide()
+    }
+
+    // Called when the app returns to the foreground: the link may have reconnected
+    // and the watch may be holding rides the phone has not acknowledged.
+    func refresh() {
+        pendingCount = WatchTransferQueue.shared.pendingCount()
+        WatchConnectivitySession.shared.sendPending()
+    }
+
+    private func beginRide() {
         requestHealthAccess()
         let now = Date().timeIntervalSince1970
-        var ride = WatchRideDraft(activity: activity, startedAt: now, resumedAt: now)
-        ride.state = "recording"
-        draft = ride
+        draft = WatchRideDraft(activity: activity, startedAt: now)
+        state = "recording"
+        status = "Recording · watch-only"
         distanceMeters = 0
         activeSeconds = 0
         pointCount = 0
-        status = "Recording"
-        WatchRideDraftStore.save(ride)
+        lastPersistAt = 0
+        persist(force: true)
         startLocation()
         startWorkout()
         startTicker()
     }
 
+    // MARK: - Ride control
+
     func pause() {
-        guard var ride = draft, ride.state == "recording" else { return }
-        let now = Date().timeIntervalSince1970
-        ride.activeSeconds += max(0, now - (ride.resumedAt ?? ride.startedAt))
-        ride.resumedAt = nil
-        ride.state = "paused"
-        ride.segment += 1
+        guard var ride = draft, ride.isRecording else { return }
+        ride.pause(at: Date().timeIntervalSince1970)
         draft = ride
-        activeSeconds = ride.activeSeconds
         state = "paused"
         status = "Paused"
-        WatchRideDraftStore.save(ride)
+        activeSeconds = ride.duration(at: Date().timeIntervalSince1970)
+        persist(force: true)
         manager.stopUpdatingLocation()
-        workout?.pause()
+        if workout?.state == .running { workout?.pause() }
     }
 
     func resume() {
         guard var ride = draft, ride.state == "paused" else { return }
-        let now = Date().timeIntervalSince1970
-        ride.state = "recording"
-        ride.resumedAt = now
-        ride.segment += 1
+        ride.resume(at: Date().timeIntervalSince1970)
         draft = ride
         state = "recording"
         status = "Recording"
-        WatchRideDraftStore.save(ride)
+        persist(force: true)
         startLocation()
-        workout?.resume()
+        if workout == nil {
+            requestHealthAccess()
+            startWorkout()
+        } else if workout?.state == .paused {
+            workout?.resume()
+        }
         startTicker()
-    }
-
-    func finish() {
-        guard var ride = draft, !finishing else { return }
-        finishing = true
-        ticker?.invalidate(); ticker = nil
-        let now = Date().timeIntervalSince1970
-        if ride.state == "recording" {
-            ride.activeSeconds += max(0, now - (ride.resumedAt ?? ride.startedAt))
-        }
-        ride.resumedAt = nil
-        ride.state = "finished"
-        manager.stopUpdatingLocation()
-        draft = nil
-        state = "idle"
-        distanceMeters = ride.distanceMeters
-        activeSeconds = ride.activeSeconds
-        pointCount = ride.points.count
-        let elapsed = max(0, now - ride.startedAt)
-        guard ride.points.count >= 2, elapsed > 0 else {
-            WatchRideDraftStore.clear()
-            status = "Ride too short to save"
-            finishing = false
-            return
-        }
-        let transfer = WatchActivityTransfer(
-            id: ride.id,
-            ownerID: WatchConnectivitySession.shared.ownerID,
-            activity: ride.activity,
-            startedAt: ride.startedAt,
-            endedAt: now,
-            activeSeconds: min(ride.activeSeconds, elapsed),
-            points: ride.points,
-            trailID: nil, trailName: nil, trailSegmentID: nil, trailDistanceMeters: nil,
-            workoutSaved: nil
-        )
-        // Queue before anything else can fail: once the ride is in the outbox it
-        // survives a failed workout save and a phone that is out of range.
-        do {
-            try WatchTransferQueue.shared.enqueue(transfer)
-            WatchRideDraftStore.clear()
-            status = "Ride saved on Watch"
-        } catch {
-            status = "Could not save this ride"
-            finishing = false
-            return
-        }
-        pendingCount = WatchTransferQueue.shared.pendingCount()
-        WatchConnectivitySession.shared.sendPending()
-        finishWorkout { [weak self] saved in
-            guard let self else { return }
-            if saved { self.status = "Ride saved · workout in Health" }
-            self.pendingCount = WatchTransferQueue.shared.pendingCount()
-            self.finishing = false
-        }
     }
 
     func discard() {
         ticker?.invalidate(); ticker = nil
         manager.stopUpdatingLocation()
-        workout?.end()
-        workout = nil; builder = nil
+        if workout != nil { finishWorkout { _ in } }
         draft = nil
-        WatchRideDraftStore.clear()
-        state = "idle"; status = "Ride discarded"; distanceMeters = 0; activeSeconds = 0; pointCount = 0
+        try? store.clear()
+        state = "idle"; status = "Ride discarded"
+        distanceMeters = 0; activeSeconds = 0; pointCount = 0
+        finishing = false
     }
 
     private func adopt(_ ride: WatchRideDraft) {
         draft = ride
         state = ride.state
-        distanceMeters = ride.distanceMeters
-        activeSeconds = ride.activeSeconds
+        distanceMeters = ride.metrics.distanceMeters
+        activeSeconds = ride.duration(at: Date().timeIntervalSince1970)
+        pointCount = ride.points.count
+    }
+
+    // MARK: - Persistence
+
+    // Returns false when the ride could not be written. Callers that delete data
+    // (finish, discard) must respect the result instead of assuming success.
+    @discardableResult
+    private func persist(force: Bool) -> Bool {
+        guard let ride = draft else { return true }
+        let now = Date().timeIntervalSince1970
+        guard force || now - lastPersistAt >= Self.persistInterval else { return true }
+        do {
+            try store.save(ride)
+            lastPersistAt = now
+            return true
+        } catch {
+            status = "Watch storage full · bring the iPhone closer"
+            return false
+        }
+    }
+
+    func ingest(_ samples: [CLLocation]) {
+        guard var ride = draft, ride.isRecording else { return }
+        let now = Date().timeIntervalSince1970
+        var accepted = false
+        for location in samples {
+            let fix = WatchRideFix(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                timestamp: location.timestamp.timeIntervalSince1970,
+                accuracy: location.horizontalAccuracy,
+                altitude: location.altitude,
+                speed: location.speed)
+            if case .accepted = ride.ingest(fix, now: now) { accepted = true }
+        }
+        guard accepted || ride.points.count != pointCount else { return }
+        // Folding the elapsed time in now means a crash costs milliseconds of
+        // duration, never the whole stretch since the last save.
+        ride.checkpoint(at: now)
+        apply(ride, now: now)
+        persist(force: false)
+    }
+
+    private func apply(_ ride: WatchRideDraft, now: Double) {
+        draft = ride
+        distanceMeters = ride.metrics.distanceMeters
+        activeSeconds = ride.duration(at: now)
         pointCount = ride.points.count
     }
 
@@ -205,14 +231,96 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     private func startTicker() {
         ticker?.invalidate()
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        timer.tolerance = 0.2
+        ticker = timer
     }
 
     private func tick() {
-        guard let ride = draft, ride.state == "recording" else { return }
-        activeSeconds = ride.activeSeconds + max(0, Date().timeIntervalSince1970 - (ride.resumedAt ?? ride.startedAt))
+        guard var ride = draft, ride.isRecording else { return }
+        let now = Date().timeIntervalSince1970
+        ride.checkpoint(at: now)
+        apply(ride, now: now)
+        persist(force: false)
+    }
+
+    // MARK: - Finish
+
+    // Ordering matters: the finished ride is written, then handed to the durable
+    // outbox, and only then is the draft removed. Every step before the hand-off
+    // keeps the ride on screen so a failure is retryable; no step can leave the
+    // watch with neither a draft nor a queued transfer.
+    func finish() {
+        guard let current = draft, !finishing else { return }
+        finishing = true
+        ticker?.invalidate(); ticker = nil
+        manager.stopUpdatingLocation()
+
+        let now = Date().timeIntervalSince1970
+        var ride = current
+        ride.finish(at: now)
+        apply(ride, now: now)
+
+        guard ride.points.count >= 2 else {
+            // A ride with fewer than two fixes cannot be imported; keeping it would
+            // block every later ride.
+            draft = nil
+            try? store.clear()
+            state = "idle"; activeSeconds = 0; distanceMeters = 0; pointCount = 0
+            finishing = false
+            status = "Ride discarded · no GPS"
+            finishWorkout { _ in }
+            return
+        }
+
+        do {
+            try store.save(ride)
+        } catch {
+            // The ride is still in memory and on screen; the user can free space and
+            // press finish again.
+            var retry = ride
+            retry.state = "paused"
+            retry.resumedAt = nil
+            apply(retry, now: now)
+            finishing = false
+            status = "Storage full · ride not saved yet"
+            return
+        }
+
+        let transfer = ride.transfer(now: now, ownerID: WatchConnectivitySession.shared.ownerID,
+                                     deviceID: WatchDevice.identifier, appVersion: WatchDevice.appVersion)
+        if let transfer {
+            do {
+                try WatchTransferQueue.shared.enqueue(transfer)
+            } catch {
+                var retry = ride
+                retry.state = "paused"
+                retry.resumedAt = nil
+                apply(retry, now: now)
+                finishing = false
+                status = "Storage full · ride not saved yet"
+                return
+            }
+        }
+
+        // The transfer is durable, so the draft is expendable. Even if clearing it
+        // fails the draft is marked queued and never restored or re-sent.
+        try? store.markQueued(ride)
+        try? store.clear()
+        draft = nil
+        state = "finished"
+        status = transfer == nil ? "Ride too short to import" : "Saved · waiting for iPhone"
+        pendingCount = WatchTransferQueue.shared.pendingCount()
+        WatchConnectivitySession.shared.sendPending()
+
+        finishWorkout { [weak self] saved in
+            guard let self else { return }
+            self.finishing = false
+            self.status = saved ? "Saved to Health · waiting for iPhone" : "Saved · waiting for iPhone"
+            self.pendingCount = WatchTransferQueue.shared.pendingCount()
+        }
     }
 
     nonisolated private static func permissionLabel(_ status: CLAuthorizationStatus) -> String {
@@ -224,12 +332,49 @@ final class WatchRecorder: NSObject, ObservableObject {
         @unknown default: return "unknown"
         }
     }
+
+    private static func clock(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    // Stable, install-scoped identity for the transfer payload. The phone only uses
+    // it for diagnostics, so a short random token is enough and avoids asking the
+    // watch for a device name.
+    enum WatchDevice {
+        private static let key = "watch.device"
+
+        static var identifier: String {
+            if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+            let value = String(UUID().uuidString.prefix(8)).lowercased()
+            UserDefaults.standard.set(value, forKey: key)
+            return value
+        }
+
+        static var appVersion: String? {
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        }
+    }
 }
 
 extension WatchRecorder: CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let label = Self.permissionLabel(manager.authorizationStatus)
-        Task { @MainActor in self.permission = label }
+        let status = manager.authorizationStatus
+        let label = Self.permissionLabel(status)
+        let authorised = status == .authorizedAlways || status == .authorizedWhenInUse
+        Task { @MainActor in
+            self.permission = label
+            // A start requested before the prompt was answered only proceeds once
+            // the user has actually granted access.
+            if self.pendingStart {
+                self.pendingStart = false
+                if authorised {
+                    self.beginRide()
+                } else {
+                    self.status = "Allow location access in Settings › Privacy › Location"
+                }
+            }
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -237,92 +382,26 @@ extension WatchRecorder: CLLocationManagerDelegate {
         Task { @MainActor in self.ingest(samples) }
     }
 
-    func ingest(_ samples: [CLLocation]) {
-        guard var ride = draft, ride.state == "recording" else { return }
-        for location in samples {
-            guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 30,
-                  location.timestamp.timeIntervalSinceNow > -20,
-                  location.timestamp.timeIntervalSince1970 > ride.startedAt - 5 else { continue }
-            var point = WatchPoint(latitude: location.coordinate.latitude,
-                                   longitude: location.coordinate.longitude,
-                                   timestamp: location.timestamp.timeIntervalSince1970,
-                                   accuracy: location.horizontalAccuracy,
-                                   altitude: location.altitude,
-                                   speed: max(0, location.speed),
-                                   segment: ride.segment)
-            if let last = ride.points.last {
-                guard point.timestamp > last.timestamp else { continue }
-                let seconds = point.timestamp - last.timestamp
-                if point.segment != last.segment { continue }
-                // Two fixes that are far apart in time are not a continuous ride:
-                // start a new segment instead of drawing a straight line through
-                // the gap (canyon, tunnel, watch off the wrist).
-                if seconds > 30 {
-                    ride.segment += 1
-                    point.segment = ride.segment
-                    ride.points.append(point)
-                    continue
-                }
-                let from = GPSPoint(latitude: last.latitude, longitude: last.longitude, timestamp: last.timestamp,
-                                    accuracy: last.accuracy, altitude: last.altitude, speed: last.speed, segment: last.segment)
-                let to = GPSPoint(latitude: point.latitude, longitude: point.longitude, timestamp: point.timestamp,
-                                  accuracy: point.accuracy, altitude: point.altitude, speed: point.speed, segment: point.segment)
-                let step = from.distance(to: to)
-                // Reject teleports and GPS spikes; ordinary MTB speed never exceeds
-                // this, even on a fast descent.
-                guard step / seconds <= 35 else { continue }
-                let noise = max(2, (last.accuracy + point.accuracy) / 4)
-                if step >= noise { ride.distanceMeters += step }
-            }
-            ride.points.append(point)
-            if ride.points.count > 50_000 { break }
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let message = error.localizedDescription
+        Task { @MainActor in
+            // A failed update is not fatal: the ride stays open and Core Location
+            // keeps delivering fixes.
+            if self.draft?.isRecording == true { self.status = "GPS: \(message)" }
         }
-        draft = ride
-        distanceMeters = ride.distanceMeters
-        pointCount = ride.points.count
-        WatchRideDraftStore.save(ride)
     }
 }
-
-// Unfinished rides are persisted so a crash, a low battery shutdown or a watch
-// restart cannot erase a ride that is already in progress.
-enum WatchRideDraftStore {
-    private static var url: URL? {
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        return base.appendingPathComponent("Letm3goWatch", isDirectory: true).appendingPathComponent("draft.json")
-    }
-
-    static func save(_ ride: WatchRideDraft) {
-        guard let url, let data = try? JSONEncoder().encode(ride) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
-    }
-
-    static func load() -> WatchRideDraft? {
-        guard let url, let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(WatchRideDraft.self, from: data)
-    }
-
-    static func clear() {
-        if let url { try? FileManager.default.removeItem(at: url) }
-    }
-}
-
 
 extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
     private func requestHealthAccess() {
-        guard HKHealthStore.isHealthDataAvailable() else {
-            status = "Health is unavailable; keep the app open while riding"
-            return
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        var read: Set<HKObjectType> = [HKObjectType.workoutType()]
+        for identifier: HKQuantityTypeIdentifier in [.activeEnergyBurned, .distanceCycling, .distanceWalkingRunning, .basalEnergyBurned] {
+            if let type = HKQuantityType.quantityType(forIdentifier: identifier) { read.insert(type) }
         }
-        health.requestAuthorization(toShare: [HKObjectType.workoutType()], read: []) { [weak self] ok, _ in
-            Task { @MainActor in
-                guard let self else { return }
-                if !ok && self.draft != nil {
-                    self.status = "Allow Health access to record with the wrist down"
-                }
-            }
-        }
+        // A declined HealthKit prompt must not block recording: the ride is saved
+        // regardless and only the workout needs the permission.
+        health.requestAuthorization(toShare: [HKObjectType.workoutType()], read: read) { _, _ in }
     }
 
     private func startWorkout() {
@@ -336,14 +415,14 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
             builder.dataSource = HKLiveWorkoutDataSource(healthStore: health, workoutConfiguration: configuration)
             session.delegate = self
             builder.delegate = self
-            self.workout = session
+            workout = session
             self.builder = builder
             let start = Date()
             session.startActivity(with: start)
             builder.beginCollection(withStart: start) { _, _ in }
         } catch {
-            // Recording still works in the foreground; only background recording
-            // depends on the workout session.
+            // Recording still works while the app is on screen; only background
+            // recording depends on the workout session.
             status = "Recording without a workout session"
         }
     }
@@ -363,29 +442,40 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         }
     }
 
-    nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState, from fromState: HKWorkoutSessionState, date: Date) {
-        guard toState == .ended else { return }
-        Task { @MainActor in
-            // The system can end a session (for example from the Watch workout
-            // controls). Keep the ride: the user can resume or finish it.
-            if self.draft != nil && self.finishing == false {
-                self.status = "Workout ended · finish to save this ride"
-                self.state = "paused"
-                if var ride = self.draft, ride.state == "recording" {
-                    ride.activeSeconds += max(0, date.timeIntervalSince1970 - (ride.resumedAt ?? ride.startedAt))
-                    ride.resumedAt = nil
-                    ride.state = "paused"
-                    ride.segment += 1
-                    self.draft = ride
-                    self.activeSeconds = ride.activeSeconds
-                    WatchRideDraftStore.save(ride)
-                }
-            }
+    nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
+                                    from fromState: HKWorkoutSessionState, date: Date) {
+        switch toState {
+        case .ended:
+            Task { @MainActor in self.systemEndedWorkout(at: date) }
+        case .paused:
+            // The rider paused from the workout controls: pause the ride with the
+            // same rules as the in-app button.
+            Task { @MainActor in if self.isRecording { self.pause() } }
+        case .running:
+            Task { @MainActor in if self.isPaused { self.resume() } }
+        default:
+            break
         }
     }
 
+    // The system can end a session (workout controls, low power, a crash). The ride
+    // is kept and paused at the moment the session ended, so the time the app was
+    // not observing is never credited to the ride.
+    private func systemEndedWorkout(at date: Date) {
+        guard !finishing, var ride = draft, ride.isRecording else { return }
+        let now = date.timeIntervalSince1970
+        ride.pause(at: now)
+        apply(ride, now: now)
+        state = ride.state
+        status = "Workout ended · finish to save this ride"
+        manager.stopUpdatingLocation()
+        ticker?.invalidate(); ticker = nil
+        persist(force: true)
+    }
+
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
-        Task { @MainActor in self.status = "Workout stopped: \(error.localizedDescription)" }
+        let message = error.localizedDescription
+        Task { @MainActor in self.status = "Workout stopped: \(message)" }
     }
 
     nonisolated func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {}
@@ -403,4 +493,3 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         }
     }
 }
-

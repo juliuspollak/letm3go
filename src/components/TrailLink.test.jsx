@@ -61,3 +61,43 @@ it('does not search when the ride has no GPS route', async () => {
   expect(await screen.findByRole('status')).toHaveTextContent('This ride has no GPS route to search near.');
   expect(mtbApi.fetchTrails).not.toHaveBeenCalled();
 });
+
+it('keeps a failed lookup retryable instead of showing an empty catalogue', async () => {
+  mtbApi.fetchTrails.mockReset();
+  mtbApi.fetchTrails.mockRejectedValueOnce(new Error('You appear to be offline.')).mockResolvedValueOnce([trail]);
+  render(<TrailLink trip={ride} perform={vi.fn()} busy={false} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Find nearby trails' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('You appear to be offline.');
+  expect(screen.queryByText('No community trails found near this ride yet.')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Fern Gully/ })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  expect(await screen.findByRole('button', { name: /Fern Gully/ })).toBeInTheDocument();
+  expect(mtbApi.fetchTrails).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+it('says so when a successful search finds no trails, without offering a pointless retry', async () => {
+  mtbApi.fetchTrails.mockReset();
+  mtbApi.fetchTrails.mockResolvedValue([]);
+  render(<TrailLink trip={ride} perform={vi.fn()} busy={false} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Find nearby trails' }));
+  expect(await screen.findByText('No community trails found near this ride yet.')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  // An empty result is still a result: reopening the list does not refetch.
+  fireEvent.click(screen.getByRole('button', { name: 'Find nearby trails' }));
+  expect(mtbApi.fetchTrails).toHaveBeenCalledTimes(1);
+});
+
+it('searches again for a different ride instead of reusing the previous list', async () => {
+  mtbApi.fetchTrails.mockReset();
+  mtbApi.fetchTrails.mockResolvedValue([trail]);
+  const perform = vi.fn().mockResolvedValue(true);
+  const { rerender } = render(<TrailLink trip={ride} perform={perform} busy={false} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Find nearby trails' }));
+  await screen.findByRole('button', { name: /Fern Gully/ });
+  rerender(<TrailLink trip={{ ...ride, id: 'ride-2' }} perform={perform} busy={false} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Find nearby trails' }));
+  await waitFor(() => expect(mtbApi.fetchTrails).toHaveBeenCalledTimes(2));
+  fireEvent.click(await screen.findByRole('button', { name: /Fern Gully/ }));
+  await waitFor(() => expect(perform).toHaveBeenCalledWith('assignTrail', expect.objectContaining({ id: 'ride-2', trailID: trail.id })));
+});

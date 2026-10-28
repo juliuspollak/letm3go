@@ -33,10 +33,20 @@ struct WatchContentView: View {
                         .foregroundStyle(.orange)
                         .multilineTextAlignment(.center)
                 }
+
+                // A ride recorded on a different account is kept but not retried; the
+                // rider resolves it on the iPhone.
+                if link.parked > 0 {
+                    Label("\(link.parked) ride\(link.parked == 1 ? "" : "s") saved to another account", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .padding(.horizontal, 2)
         }
         .navigationTitle("Ride")
+        .onAppear { recorder.refresh() }
     }
 
     private var metrics: some View {

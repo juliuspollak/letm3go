@@ -21,6 +21,7 @@
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		B20000000000000000000001 /* RecorderCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001; };
 		B20000000000000000000002 /* LocationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002; };
+		B20000000000000000000003 /* WatchActivityCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
 		B40000000000000000000001 /* AutomaticTracking.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001; };
 		B40000000000000000000002 /* ActivityServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002; };
 		B40000000000000000000003 /* PhotoSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000003; };
@@ -34,6 +35,7 @@
 		C20000000000000000000005 /* WatchConnectivitySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000005; };
 		C20000000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000006; };
 		C20000000000000000000007 /* RecorderCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001; };
+		C20000000000000000000009 /* WatchActivityCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
 		C20000000000000000000008 /* Letm3goWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -78,6 +80,7 @@
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		B10000000000000000000001 /* RecorderCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderCore.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* LocationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationRecorder.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* WatchActivityCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchActivityCore.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* AutomaticTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticTracking.swift; sourceTree = "<group>"; };
 		B30000000000000000000002 /* ActivityServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityServices.swift; sourceTree = "<group>"; };
 		B30000000000000000000003 /* PhotoSuggestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSuggestions.swift; sourceTree = "<group>"; };
@@ -138,6 +141,7 @@
 			children = (
 				B10000000000000000000001 /* RecorderCore.swift */,
 				B10000000000000000000002 /* LocationRecorder.swift */,
+				B10000000000000000000003 /* WatchActivityCore.swift */,
 				B30000000000000000000001 /* AutomaticTracking.swift */,
 				B30000000000000000000002 /* ActivityServices.swift */,
 				B30000000000000000000003 /* PhotoSuggestions.swift */,
@@ -294,6 +298,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				B20000000000000000000001 /* RecorderCore.swift in Sources */,
 				B20000000000000000000002 /* LocationRecorder.swift in Sources */,
+				B20000000000000000000003 /* WatchActivityCore.swift in Sources */,
 				B40000000000000000000001 /* AutomaticTracking.swift in Sources */,
 				B40000000000000000000002 /* ActivityServices.swift in Sources */,
 				B40000000000000000000003 /* PhotoSuggestions.swift in Sources */,
@@ -316,6 +321,7 @@
 				C20000000000000000000004 /* WatchTransferQueue.swift in Sources */,
 				C20000000000000000000005 /* WatchConnectivitySession.swift in Sources */,
 				C20000000000000000000007 /* RecorderCore.swift in Sources */,
+				C20000000000000000000009 /* WatchActivityCore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

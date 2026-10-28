@@ -3,28 +3,21 @@ import WatchConnectivity
 
 // Receives finished Apple Watch rides and hands them to the open account.
 //
-// The inbox is deliberately outside the account directory: a watch can finish a
-// ride while the phone is locked, suspended, or signed out, and the ride must
-// survive until an account can accept it. Payloads are file-protected, excluded
-// from backups, validated by WatchActivityImport before they touch the encrypted
-// journal, and only acknowledged once the journal has actually saved them.
+// The inbox lives outside the account directory: a watch can finish a ride while
+// the phone is locked, suspended or signed out, and the ride must survive until an
+// account can accept it. Every payload is persisted, then validated by
+// WatchActivityImport before it touches the encrypted journal, and the watch is
+// acknowledged only once both the journal and the inbox have saved the outcome. A
+// ride recorded on a different account is parked with its payload, so switching
+// back to that account imports it without another transfer.
 final class WatchSessionManager: NSObject, WCSessionDelegate {
     static let shared = WatchSessionManager()
 
-    private var pending: [WatchActivityTransfer] = []
+    private let store = WatchInboxStore(directory: WatchPaths.inboxDirectory)
+    private var state = WatchInboxState()
     private var loaded = false
     private var flushing = false
     private var ownerID: String?
-
-    private var inboxURL: URL? {
-        guard let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return nil }
-        let directory = support.appendingPathComponent("WatchInbox", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values = URLResourceValues(); values.isExcludedFromBackup = true
-        var mutable = directory
-        try? mutable.setResourceValues(values)
-        return directory.appendingPathComponent("pending.data")
-    }
 
     func start() {
         guard WCSession.isSupported() else { return }
@@ -38,8 +31,17 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     // not heard from the phone sends no owner, and the ride is accepted by whichever
     // account is open when it arrives.
     func updateOwner(_ id: String?) {
-        ownerID = id?.lowercased()
+        ownerID = WatchOwnership.normalize(id)
         start()
+        if let ownerID {
+            // Rides parked while another account was open become importable again.
+            var next = state
+            next.unparkOwner(ownerID, now: Date().timeIntervalSince1970)
+            if next != state {
+                state = next
+                persistInbox()
+            }
+        }
         sendOwnerContext()
         flush()
     }
@@ -47,77 +49,118 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private func sendOwnerContext() {
         let session = WCSession.default
         guard WCSession.isSupported(), session.activationState == .activated else { return }
-        try? session.updateApplicationContext(["ownerID": ownerID ?? "", "version": 1])
+        try? session.updateApplicationContext(["ownerID": ownerID ?? "", "version": 2])
     }
 
-    // A sign-out, account switch or account deletion must not leave another
-    // person's rides in a device-wide inbox. The watch keeps its own copy until it
-    // receives an acknowledgement, so it will resend once an account is open again.
+    // A sign-out, account switch or account deletion must not leave another person's
+    // rides in a device-wide inbox. Nothing is acknowledged: the watch keeps its own
+    // copy and re-offers it when an account is open again.
     func clearPending() {
-        pending = []
-        loaded = true
-        if let url = inboxURL { try? FileManager.default.removeItem(at: url) }
+        state = WatchInboxState()
+        persistInbox()
     }
 
     private func loadInbox() {
         guard !loaded else { return }
         loaded = true
-        guard let url = inboxURL, let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([WatchActivityTransfer].self, from: data) else { return }
-        pending = decoded
+        state = store.load()
     }
 
-    private func saveInbox() {
-        guard let url = inboxURL else { return }
-        guard !pending.isEmpty else { try? FileManager.default.removeItem(at: url); return }
-        guard let data = try? JSONEncoder().encode(pending) else { return }
-        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    // Returns false when the inbox could not be written; callers must not
+    // acknowledge a ride whose outcome is not durable.
+    @discardableResult
+    private func persistInbox() -> Bool {
+        do {
+            try store.save(state)
+            return true
+        } catch {
+            LocationRecorder.shared.recordDiagnostic("watch", "Could not save the watch inbox", details: ["reason": error.localizedDescription])
+            return false
+        }
+    }
+
+    // Delivers every ride the open account can accept. A ride that cannot be
+    // imported yet stays in the inbox, unacknowledged, so the watch retries it.
+    func flush() {
+        loadInbox()
+        guard !flushing else { return }
+        flushing = true
+        defer { flushing = false }
+        let now = Date().timeIntervalSince1970
+        var next = state
+        var acks: [(status: String, ids: [String])] = []
+        for entry in state.entries where !entry.isParked && entry.nextAttemptAt <= now {
+            let id = entry.transfer.id
+            switch LocationRecorder.shared.importWatchActivity(entry.transfer, claimedBy: entry.claimedBy) {
+            case .imported:
+                next.drop(id)
+                acks.append(("saved", [id]))
+            case .duplicate:
+                next.drop(id)
+                acks.append(("duplicate", [id]))
+            case .rejected(let reason):
+                LocationRecorder.shared.recordDiagnostic("watch", "Rejected an Apple Watch activity", details: ["reason": reason])
+                next.drop(id)
+                acks.append(("rejected", [id]))
+            case .foreignAccount:
+                // Keep the payload: the rider can switch back to the account that
+                // recorded it, and the ride is imported then.
+                next.park(id, reason: "owner-mismatch")
+                acks.append(("parked", [id]))
+            case .unclaimed, .deferred:
+                // Not a failure: the account is still opening or the journal is
+                // mid-write. Back off gently and retry with the payload intact.
+                next.noteAttempt(id, error: nil, now: now)
+            }
+        }
+        guard next != state else {
+            send(acks)
+            return
+        }
+        let previous = state
+        state = next
+        guard persistInbox() else {
+            // The inbox could not record the outcome, so nothing is acknowledged: the
+            // watch re-sends and the re-import is a no-op.
+            state = previous
+            return
+        }
+        send(acks)
+    }
+
+    // Acknowledgements are batched per status. Losing one is safe: the watch retries
+    // and a repeated import answers "duplicate".
+    private func send(_ acks: [(status: String, ids: [String])]) {
+        guard !acks.isEmpty else { return }
+        let session = WCSession.default
+        guard WCSession.isSupported(), session.activationState == .activated else { return }
+        let at = Date().timeIntervalSince1970
+        for group in acks {
+            session.transferUserInfo(["acks": group.ids, "status": group.status, "at": at])
+        }
     }
 
     private func enqueue(_ transfer: WatchActivityTransfer) {
         loadInbox()
-        guard !pending.contains(where: { $0.id.lowercased() == transfer.id.lowercased() }) else { return }
-        pending.append(transfer)
-        saveInbox()
+        // A corrupt payload is refused before it reaches the inbox: storing it would
+        // only make the watch retry a ride that can never be imported.
+        if let issue = WatchActivityImport.issue(with: transfer) {
+            LocationRecorder.shared.recordDiagnostic("watch", "Rejected an Apple Watch activity", details: ["reason": issue])
+            send([("rejected", [transfer.id])])
+            return
+        }
+        var next = state
+        next.receive(transfer, now: Date().timeIntervalSince1970)
+        let previous = state
+        state = next
+        guard persistInbox() else {
+            state = previous
+            return
+        }
         flush()
     }
 
-
-    // Delivers every ride the open account can accept. Anything else stays in the
-    // inbox without an acknowledgement, so the watch retries and nothing is lost.
-    func flush() {
-        loadInbox()
-        guard !flushing, !pending.isEmpty else { return }
-        flushing = true
-        defer { flushing = false }
-        var remaining: [WatchActivityTransfer] = []
-        var changed = false
-        for transfer in pending {
-            switch LocationRecorder.shared.importWatchActivity(transfer) {
-            case .imported, .duplicate:
-                acknowledge(transfer.id)
-                changed = true
-            case .deferred:
-                remaining.append(transfer)
-            case .rejected(let reason):
-                LocationRecorder.shared.recordDiagnostic("watch", "Rejected an Apple Watch activity", details: ["reason": reason])
-                acknowledge(transfer.id)
-                changed = true
-            }
-        }
-        if changed {
-            pending = remaining
-            saveInbox()
-        }
-    }
-
-    private func acknowledge(_ id: String) {
-        let session = WCSession.default
-        guard WCSession.isSupported(), session.activationState == .activated else { return }
-        session.transferUserInfo(["ack": id, "at": Date().timeIntervalSince1970])
-    }
-
-    // MARK: WCSessionDelegate
+    // MARK: - WCSessionDelegate
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
@@ -127,22 +170,20 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         }
     }
 
-    func session(_ session: WCSession, didReceive file: WCSessionFile) {
-        guard let data = try? Data(contentsOf: file.fileURL),
-              let transfer = try? JSONDecoder().decode(WatchActivityTransfer.self, from: data) else { return }
-        DispatchQueue.main.async { self.enqueue(transfer) }
-    }
-
-    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        // The phone only receives rides as files; a user-info payload is ignored
-        // rather than treated as a ride.
-    }
-
     #if os(iOS)
     func sessionDidBecomeInactive(_ session: WCSession) {}
 
     func sessionDidDeactivate(_ session: WCSession) {
+        // The watch switched pairing. Re-activate so the new watch can deliver.
         session.activate()
     }
     #endif
+
+    func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        // Read inside the callback: iOS deletes the received file as soon as this
+        // method returns, so the payload must be in memory before any hop.
+        guard let data = try? Data(contentsOf: file.fileURL),
+              let transfer = try? JSONDecoder().decode(WatchActivityTransfer.self, from: data) else { return }
+        DispatchQueue.main.async { self.enqueue(transfer) }
+    }
 }

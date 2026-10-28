@@ -182,10 +182,11 @@ extension LocationRecorder {
         try AccountKeychain.set("active-account",data:nil)
         uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
         // Rides that could not be attributed to this account must not be handed to
-        // the next one. The watch keeps its copy until it is acknowledged, so it
-        // resends once a different account signs in.
-        WatchSessionManager.shared.updateOwner(nil)
+        // the next one. The inbox is emptied first, then the watch is told that no
+        // account is open; nothing is acknowledged, so the watch keeps its copy and
+        // re-offers it once an account signs in again.
         WatchSessionManager.shared.clearPending()
+        WatchSessionManager.shared.updateOwner(nil)
         preferences = AccountPreferences(); lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()

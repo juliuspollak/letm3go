@@ -157,12 +157,20 @@ extension LocationRecorder {
         trips[index] = trip
         notifyJourneyChange()
     }
-    // An Apple Watch ride is imported exactly once. `deferred` means no account is
-    // open yet (or the payload belongs to another signed-in account), so the phone
-    // inbox keeps it and the watch is not acknowledged.
-    func importWatchActivity(_ transfer: WatchActivityTransfer) -> WatchImportOutcome {
+    // An Apple Watch ride is imported exactly once. `deferred` means the app is not
+    // ready to write yet (no store open, an account change in progress), so the
+    // phone inbox keeps it and the watch is not acknowledged. `foreignAccount` means
+    // the payload belongs to a different account: it is parked, never imported.
+    func importWatchActivity(_ transfer: WatchActivityTransfer, claimedBy: String? = nil) -> WatchImportOutcome {
         guard storage != nil, storeOpened, !accountSuspended, !accountDeleting, let ownerID = ownerID else { return .deferred }
-        if let hint = transfer.ownerID?.lowercased(), !hint.isEmpty, hint != ownerID { return .deferred }
+        switch WatchOwnership.decision(transferOwner: transfer.ownerID, claimedBy: claimedBy, currentOwner: ownerID) {
+        case .noAccountOpen:
+            return .deferred
+        case .foreignAccount:
+            return .foreignAccount
+        case .importable, .unclaimed:
+            break
+        }
         guard let activity = WatchActivityImport.activity(from: transfer) else { return .rejected("invalid-payload") }
         if trips.contains(where: { $0.id == activity.id }) { return .duplicate }
         // A deleted ride must not be resurrected by a late retry from the watch.
