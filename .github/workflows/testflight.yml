@@ -73,6 +73,7 @@ jobs:
           IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_APP_STORE_PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROFILE_BASE64 }}
+          APPLE_WATCH_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_WATCH_PROVISIONING_PROFILE_BASE64 }}
         run: bash scripts/ci-signing.sh
       - name: Package signed IPA (no upload)
         env:
@@ -96,9 +97,12 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/letm3go-signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/letm3go.p12" "$RUNNER_TEMP/letm3go.mobileprovision" "$RUNNER_TEMP/letm3go-profile.plist"
-          if [ -n "${PROFILE_UUID:-}" ]; then
-            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-          fi
+          rm -f "$RUNNER_TEMP/letm3go-watch.mobileprovision" "$RUNNER_TEMP/letm3go-watch-profile.plist"
+          for uuid in "${PROFILE_UUID:-}" "${WATCH_PROFILE_UUID:-}"; do
+            if [ -n "$uuid" ]; then
+              rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$uuid.mobileprovision"
+            fi
+          done
   upload:
     if: ${{ inputs.upload_approved }}
     needs: package

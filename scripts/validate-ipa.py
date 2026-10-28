@@ -26,6 +26,13 @@ with zipfile.ZipFile(ipa) as archive:
         require(signed.get('com.apple.developer.applesignin')==['Default'],'Signed Apple entitlement missing')
         require(signed.get('aps-environment')=='production','Signed production push entitlement missing')
         require(signed.get('application-identifier')=='8YP6PFWVZ9.au.jpollak.journey','Signed application identifier mismatch')
+        # The embedded Apple Watch app carries its own App Store signature.
+        watch_apps=sorted((app/'Watch').glob('*.app'))
+        require(len(watch_apps)==1,'Expected one embedded Apple Watch app')
+        watch_signed=plistlib.loads(subprocess.run(['codesign','-d','--entitlements',':-',str(watch_apps[0])],capture_output=True,check=True).stdout)
+        require(watch_signed.get('application-identifier')=='8YP6PFWVZ9.au.jpollak.journey.watchkitapp','Signed Apple Watch application identifier mismatch')
+        require(not watch_signed.get('get-task-allow'),'Debug entitlement in distribution Apple Watch app')
+        require(watch_signed.get('com.apple.developer.healthkit') is True,'Signed Apple Watch HealthKit entitlement missing')
         require(not e.get('get-task-allow') and not profile.get('ProvisionedDevices') and not profile.get('ProvisionsAllDevices'),'App Store distribution profile required')
         require(e.get('com.apple.developer.applesignin')==['Default'],'Apple Sign In missing')
         require(e.get('aps-environment')=='production','Production push profile entitlement missing')
