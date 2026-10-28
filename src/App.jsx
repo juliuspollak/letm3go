@@ -28,7 +28,7 @@ import PrivateImage from './components/PrivateImage.jsx';
 import EquipmentSheet from './components/EquipmentSheet.jsx';
 import {EquipmentChip} from './components/EquipmentChip.jsx';
 import {equipmentTripCount,equipmentUsage,itemTitle,tripEquipmentLabel,tripUsesEquipment} from './lib/collection.js';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {Archive, ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Footprints, Home, Map, MapPin, Mountain, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Bike, Car, Waves, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
 import JourneyMap from './components/JourneyMap.jsx';
 import RecorderPanel from './components/RecorderPanel.jsx';
@@ -66,7 +66,7 @@ function PrivateApp(){
  useEffect(()=>{try{sessionStorage.removeItem('letm3go:family-setup');}catch{/* Optional navigation hint. */}},[]);
  const peopleAvatars=usePeopleAvatars(session.user.id,auth.status==='authenticated',auth.preferences.avatar);
  const unit=auth.preferences.distanceUnit||'km';
- const saved=auth.preferences.bookmarks||[];
+ const saved=useMemo(()=>auth.preferences.bookmarks||[],[auth.preferences.bookmarks]);
  const recording=useRecorder(session.user.id);
  const liveTrip=recording.state.active?.state==='recording'?recording.state.active:recording.state.automaticTrip;
  const [motionClock,setMotionClock]=useState(()=>Date.now());
@@ -92,9 +92,16 @@ function PrivateApp(){
  const [photoZoom,setPhotoZoom]=useState(1);
  const photoPinch=useRef(null);
  const fleet=useFleetJourneys(session.user.id,true);
- const grouping=useJourneyGrouping({owner:session.user.id,activities:recording.state.ownerID&&recording.state.ownerID.toLowerCase()!==session.user.id.toLowerCase()?[]:recording.state.trips.filter(t=>t.source==='device'&&t.details?.provisional!==true).map(recordedJourney).concat(fleet.activities),telemetry:fleet.charges,places:recording.state.places||[],vehicles:auth.preferences.vehicles||[],serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences});
-
- const vehicles=auth.preferences.vehicles||[];
+ // `useRecorder` returns a stable snapshot between real changes, so memoising the
+ // grouping input and trip projections on their raw fields prevents
+ // `reconcileSources` + `buildJourneys` from re-running over every journey on each
+ // two-second recorder poll — the dominant cause of jank while scrolling lists.
+ const vehicles=useMemo(()=>auth.preferences.vehicles||[],[auth.preferences.vehicles]);
+ const groupingActivities=useMemo(()=>{
+  if(recording.state.ownerID&&recording.state.ownerID.toLowerCase()!==session.user.id.toLowerCase())return [];
+  return recording.state.trips.filter(t=>t.source==='device'&&t.details?.provisional!==true).map(recordedJourney).concat(fleet.activities);
+ },[recording.state.trips,fleet.activities,recording.state.ownerID,session.user.id]);
+ const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,telemetry:fleet.charges,places:recording.state.places||[],vehicles,serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences});
  // A removed Collection item leaves an explicit tombstone receipt so the cloud
  // copy is deleted on the next sync. Restore therefore cannot resurrect it.
  const setVehicles=async next=>{
@@ -105,7 +112,7 @@ function PrivateApp(){
   for(const item of removed)receipts[`collection:${item.id}`]={owner:session.user.id,deleted:true};
   return auth.savePreferences({vehicles:next,syncReceipts:receipts});
  };
- const realJourneys=recording.state.trips.filter(t=>t.source==='device').map(recordedJourney);
+ const realJourneys=useMemo(()=>recording.state.trips.filter(t=>t.source==='device').map(recordedJourney),[recording.state.trips]);
  const [draggingTrip,setDraggingTrip]=useState(null),[mergeSource,setMergeSource]=useState(null),[mergeTarget,setMergeTarget]=useState(null),[dropTarget,setDropTarget]=useState(null);
  const archiveKey='letm3go:archived-trips:'+session.user.id;
  // Archived trips belong to the account, not to one installation: they now live
@@ -276,13 +283,13 @@ function PrivateApp(){
  const openPhoto=useCallback((trip,id)=>{const index=trip.photos?.findIndex(p=>p.id===id)??-1;if(index>=0){setPhotoZoom(1);setLightbox({trip,index});}},[setLightbox]);
  async function bookmark(id){const next=saved.includes(id)?saved.filter(x=>x!==id):[...saved,id];try{await auth.savePreferences({bookmarks:next});}catch(err){setError(err.message||'Favourite could not be saved.');}}
  const sort=metricView==="Today's distance"?'distance':metricView==='Recorded time'?'duration':metricView==='Activities today'?'newest':sortPreference;
- const visibleJourneys=visibleRecorderJourneys(grouping.journeys,recording.state,session.user.id);
+ const visibleJourneys=useMemo(()=>visibleRecorderJourneys(grouping.journeys,recording.state,session.user.id),[grouping.journeys,recording.state,session.user.id]);
  // Equipment counts and filters come from the journeys already in memory, so a
  // Collection item and the Trips list can never disagree.
- const equipmentOptions=equipmentUsage(visibleJourneys,vehicles);
+ const equipmentOptions=useMemo(()=>equipmentUsage(visibleJourneys,vehicles),[visibleJourneys,vehicles]);
  const activeEquipmentFilter=equipmentOptions.some(option=>String(option.item.id)===equipmentFilter)?equipmentFilter:'';
  const activeEquipmentName=activeEquipmentFilter?itemTitle(equipmentOptions.find(option=>String(option.item.id)===activeEquipmentFilter)?.item||{}):'';
- const equipmentTripCounts=Object.fromEntries(vehicles.map(item=>[item.id,equipmentTripCount(visibleJourneys,vehicles,item.id)]));
+ const equipmentTripCounts=useMemo(()=>Object.fromEntries(vehicles.map(item=>[item.id,equipmentTripCount(visibleJourneys,vehicles,item.id)])),[visibleJourneys,vehicles]);
  function openEquipment(trip){setEquipmentTarget(trip);setSheet('equipment');}
  async function assignEquipment(ids){
   const trip=equipmentTarget;
@@ -296,10 +303,10 @@ function PrivateApp(){
  const selectedJourney=selected?.isGroupedJourney?visibleJourneys.find(j=>j.id===selected.id):null;
  const selectedActivity=selected&&!selected.isGroupedJourney?(visibleJourneys.find(j=>j.id===selected.id)||realJourneys.find(j=>j.id===selected.id)||selected):null;
  const today=new Date().toLocaleDateString('en-CA');
- const mapJourneys=mapLayerJourneys(grouping.journeys,mapLayers,today,saved);
+ const mapJourneys=useMemo(()=>mapLayerJourneys(grouping.journeys,mapLayers,today,saved),[grouping.journeys,mapLayers,today,saved]);
  const shiftDay=(day,offset)=>{const basis=day==='all'||day==='today'?new Date():new Date(day+'T12:00:00');basis.setDate(basis.getDate()+offset);return basis.toLocaleDateString('en-CA');};
  const chosenDay=dayFilter==='today'?today:dayFilter;
- const filtered=visibleJourneys.filter(t=>(showArchived?archivedTrips.includes(t.id):!archivedTrips.includes(t.id))&&(!favouritesOnly||saved.includes(t.id))&&((tripSearchOpen&&query.trim())||dayFilter==='all'||t.date===chosenDay||t.segments?.some(s=>s.date===chosenDay))&&(filter==='All activities'||t.activity===filter)&&(!activeEquipmentFilter||tripUsesEquipment(t,vehicles,activeEquipmentFilter))&&`${t.searchIndex||''} ${t.title} ${t.location} ${t.date} ${t.collection||''} ${t.notes||''} ${t.tags.join(' ')} ${tripEquipmentLabel(t,vehicles)}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='duration'?b.durationSeconds-a.durationSeconds||b.startedAt-a.startedAt:sort==='distance'?b.distanceMeters-a.distanceMeters||b.startedAt-a.startedAt:b.startedAt-a.startedAt);
+ const filtered=useMemo(()=>visibleJourneys.filter(t=>(showArchived?archivedTrips.includes(t.id):!archivedTrips.includes(t.id))&&(!favouritesOnly||saved.includes(t.id))&&((tripSearchOpen&&query.trim())||dayFilter==='all'||t.date===chosenDay||t.segments?.some(s=>s.date===chosenDay))&&(filter==='All activities'||t.activity===filter)&&(!activeEquipmentFilter||tripUsesEquipment(t,vehicles,activeEquipmentFilter))&&`${t.searchIndex||''} ${t.title} ${t.location} ${t.date} ${t.collection||''} ${t.notes||''} ${t.tags.join(' ')} ${tripEquipmentLabel(t,vehicles)}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='duration'?b.durationSeconds-a.durationSeconds||b.startedAt-a.startedAt:sort==='distance'?b.distanceMeters-a.distanceMeters||b.startedAt-a.startedAt:b.startedAt-a.startedAt),[visibleJourneys,showArchived,archivedTrips,favouritesOnly,saved,tripSearchOpen,query,dayFilter,chosenDay,filter,activeEquipmentFilter,vehicles,sort]);
  const matchReason=t=>{const q=query.trim().toLowerCase();if(!q)return null;const stops=t.stops||t.recognisedStops||[];const tags=(t.tags||[]).filter(tag=>tag.toLowerCase().includes(q));if(tags.length)return {label:'Matched tag',value:tags[0]};const equipment=tripEquipmentLabel(t,vehicles);if(equipment&&equipment.toLowerCase().includes(q))return {label:'Matched equipment',value:equipment};const stop=stops.find(x=>[x.name,...(x.tags||[])].some(v=>v?.toLowerCase().includes(q)));if(stop)return {label:'Matched stop',value:stop.name};for(const [label,value] of [['Title',t.title],['Location',t.location],['Notes',t.notes],['Collection',t.collection],['Date',t.date]])if(value?.toLowerCase().includes(q))return {label:'Matched '+label.toLowerCase(),value};return {label:'Matched trip details',value:q};};
  const canMergeRow=t=>!t.readOnly&&!t.provisional&&(t.isGroupedJourney||t.endedAt!=null&&t.state!=='recording')&&(t.isGroupedJourney||t.source==='device');
  const confirmMerge=async()=>{
@@ -309,9 +316,12 @@ function PrivateApp(){
   const success=await grouping.act({type:'merge',ids:pair});
   if(success){setMergeSource(null);setMergeTarget(null);setDropTarget(null);}
  };
- const todayJourneys=grouping.records.filter(t=>t.date===today);
- const total=todayJourneys.reduce((n,t)=>n+t.distance,0);
- const minutes=Math.floor(todayJourneys.reduce((n,t)=>n+t.durationSeconds,0)/60);
+ // Today's metrics come from the same journeys shown in Trips and "Last activity",
+ // so a provisional or still-recording journey is never counted on one surface and
+ // omitted on another. Shared household journeys (readOnly) belong to other members.
+ const todayJourneys=useMemo(()=>visibleJourneys.filter(t=>!t.readOnly&&t.date===today),[visibleJourneys,today]);
+ const total=todayJourneys.reduce((n,t)=>n+(t.distanceMeters||0),0)/1000;
+ const minutes=Math.floor(todayJourneys.reduce((n,t)=>n+(t.durationSeconds||0),0)/60);
  return <><AutoCloudSync state={recording.state}/><div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
  <main>{error&&<p role="alert" className="error">{error}</p>}{auth.status==='offline'&&<p className="notice">Offline · Private recordings stay on this device. Cloud actions require reconnection.</p>}<header className="topbar"><span className="mobile-brand"><AnimatedWordmark/></span><div className="breadcrumb">Your world, a little closer.</div><div className="top-actions"><button className="icon-button" aria-label="Toggle dark theme" onClick={()=>setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={20}/>:<Moon size={20}/>}</button><button type="button" className={`icon-button presence-toggle ${presenceHidden?'presence-hidden':'presence-visible'}`} aria-label="Location sharing" title="Location sharing" onClick={()=>{setSelected(null);setSheet(null);setTab('Social');setSocialSection('household');}}><MapPin size={20}/></button><button type="button" className="avatar header-avatar" aria-label="Open profile" onClick={()=>setSheet('profile')}><PersonAvatar name={auth.preferences.displayName||'You'} userId={session.user.id} selfId={session.user.id} selfAvatar={auth.preferences.avatar} photos={peopleAvatars.photos} size="sm"/></button></div></header>
  {recording.state.active&&<button type="button" className="active-recording-banner" onClick={()=>{setSelected(null);setSheet(null);setTab("Record");}} aria-label="Return to active recording"><span className="live-dot"/><strong>{recording.state.active.activity} · {recording.state.active.state==="recording"?"Recording": "Paused"}</strong><span>Continue exploring · tap to view recording</span><ArrowRight size={17}/></button>}

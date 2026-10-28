@@ -512,7 +512,8 @@ check(!spikeWalk.accept(GPSPoint(latitude:0,longitude:0.005,timestamp:20,accurac
 var parkedDrift=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Parked")
 parkedDrift.recordingMode="automatic"
 _ = parkedDrift.accept(GPSPoint(latitude:0,longitude:0,timestamp:0,accuracy:5,altitude:0,speed:0),now:0)
-check(!parkedDrift.accept(GPSPoint(latitude:0,longitude:0.0001,timestamp:120,accuracy:5,altitude:0,speed:0),now:120),"GPS drift while parked is not recorded as distance")
+check(parkedDrift.accept(GPSPoint(latitude:0,longitude:0.0001,timestamp:120,accuracy:5,altitude:0,speed:0),now:120),"parked drift is kept as route geometry")
+check(parkedDrift.distanceMeters == 0,"GPS drift while parked is not recorded as distance")
 // A continuation appends real fixes only and keeps the stop out of the moving
 // duration and distance.
 var continued=RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walk")
@@ -687,4 +688,42 @@ for index in 0...RecorderDiagnosticJournal.limit {
 }
 check(journal.events.count == RecorderDiagnosticJournal.limit,"busy diagnostic journal remains bounded")
 check(journal.events.last?.message == "Summary","retention preserves the newest evidence")
+// Build 44 regressions: intermittent GPS, slow traffic, gaps and batched delivery.
+var intermittent = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Intermittent drive")
+intermittent.recordingMode="automatic"
+_ = intermittent.accept(metreFix(0,0,speed:10),now:0)
+_ = intermittent.accept(metreFix(600,60,speed:10),now:60)
+_ = intermittent.accept(metreFix(1200,120,speed:10),now:120)
+_ = intermittent.accept(metreFix(1800,180,speed:10),now:180)
+check(intermittent.distanceMeters > 1700 && intermittent.distanceMeters < 1900,"30-120 second GPS gaps keep a drive in one observed segment")
+check(intermittent.points.allSatisfy{$0.segment == 0},"continuous intermittent fixes stay one segment")
+let intermittentBeforeGap = intermittent.distanceMeters
+_ = intermittent.accept(metreFix(2400,390,speed:10),now:390)
+check(intermittent.distanceMeters == intermittentBeforeGap,"a 210-second GPS gap does not invent distance")
+check(intermittent.points.last?.segment == 1,"a long gap opens a new route segment")
+let intermittentQuality = intermittent.routeQualitySummary()
+check(intermittentQuality.fixCount == 6,"route quality counts every kept fix")
+check(intermittentQuality.gapCount == 1,"route quality reports the one segment break")
+check(intermittentQuality.unobservedMeters > 500 && intermittentQuality.unobservedMeters < 700,"unobserved gap is recorded as straight-line, never added to distance")
+var stopStart = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Traffic")
+stopStart.recordingMode="automatic"
+_ = stopStart.accept(metreFix(0,0,speed:0),now:0)
+let stopStartDistance = stopStart.distanceMeters
+_ = stopStart.accept(metreFix(2,60,speed:0),now:60)
+check(stopStart.points.count == 2,"a slow crawl fix is kept for the route")
+check(stopStart.distanceMeters == stopStartDistance,"slow crawl adds no distance")
+var persistedQuality = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Quality")
+persistedQuality.recordingMode="automatic"
+_ = persistedQuality.accept(metreFix(0,0,speed:10),now:0)
+_ = persistedQuality.accept(metreFix(600,60,speed:10),now:60)
+let qualitySummary = persistedQuality.routeQualitySummary()
+persistedQuality.updateDetails{$0.routeQuality = qualitySummary}
+check(persistedQuality.details?.routeQuality?.fixCount == 2,"route quality persists into journey details")
+// A fix delivered late in a background batch still proves departure evidence.
+var batchedEvidence = DepartureEvidence()
+let shopAnchorFix = GPSPoint(latitude:-33,longitude:151,timestamp:1000,accuracy:5,altitude:0,speed:0)
+check(!batchedEvidence.observe(shopAnchorFix,now:1000),"stationary shop fix anchors departure")
+let batchedDriveFix = GPSPoint(latitude:-33.0005,longitude:151,timestamp:1120,accuracy:10,altitude:0,speed:9)
+check(batchedEvidence.observe(batchedDriveFix,now:1180),"a fix delivered 60 seconds late still proves departure")
+
 print("\(assertions) native recorder/auth assertions passed")

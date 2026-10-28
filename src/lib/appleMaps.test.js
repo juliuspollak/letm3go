@@ -15,6 +15,16 @@ it('rejects non-finite and out-of-range locations and includes current-location 
 it('provides a native photo-selection event subscription used by embedded maps',()=>{
  expect(typeof appleMaps.addListener).toBe('function');
 });
+it('emits dashed connectors between close consecutive segments',()=>{
+ const p=mapPayload([{id:'trip',routeSegments:[[[-33,151],[-33.001,151]],[[-33.002,151],[-33.003,151]],[[-34,152]]]}]);
+ expect(p.routes).toEqual([[[-33,151],[-33.001,151]],[[-33.002,151],[-33.003,151]],[[-34,152]]]); // segments preserved; native skips 1-point polylines
+ expect(p.gaps).toEqual([[[-33.001,151],[-33.002,151]]]); // close segments joined by a dashed connector
+ expect(p.pins.map(pin=>pin.kind)).toEqual(['start','finish']);
+});
+it('does not connect segments separated by a large gap, avoiding a direct-looking route',()=>{
+ const p=mapPayload([{id:'trip',routeSegments:[[[-33,151],[-33.001,151]],[[-33.03,151],[-33.031,151]]]}]); // ~3.3km apart
+ expect(p.gaps).toEqual([]);
+});
 it('marks opted-in friends separately from household members on the map',()=>{
  const p=mapPayload([],null,null,[{latitude:-34.6,longitude:150.87,display_name:'Friend',source:'friend'},{latitude:-34.7,longitude:150.8,display_name:'Family'}]);
  expect(p.pins.map(pin=>pin.kind)).toEqual(['friend-live','family-live']);

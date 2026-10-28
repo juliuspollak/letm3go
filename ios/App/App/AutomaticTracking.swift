@@ -99,7 +99,14 @@ extension LocationRecorder {
     }
     func reconcileAutomaticSampling() {
         let now=Date().timeIntervalSince1970
-        if automaticSampling.expire(now:now),automaticTrip == nil {detector.reset();trackingEvent("Departure check expired; returning to location standby")}
+        if automaticSampling.expire(now:now),automaticTrip == nil {
+            // Do not discard buffered departure fixes just because iOS delivered the
+            // next one a moment late. If movement is still being observed, grant one
+            // more bounded probe so sparse background delivery can confirm departure.
+            let observing = detector.phase == "candidate" && (detector.candidate.last.map{now-$0.timestamp<=120} ?? false)
+            if observing { automaticSampling.requestProbe(now:now,movementBegan:true) }
+            else { detector.reset();trackingEvent("Departure check expired; returning to location standby") }
+        }
         // A paused manual activity continues to take precedence over automation.
         if active != nil {return}
         switch automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now) {
@@ -429,6 +436,8 @@ extension LocationRecorder {
         let endsAt = end + window
         trip.publishStop(at:end,continuationEndsAt:endsAt)
         nameEndpoints(&trip)
+        let settleQuality = trip.routeQualitySummary()
+        trip.updateDetails { $0.routeQuality = settleQuality }
         trip.updateDetails { metadata in
             metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [
                 "Journey stopped after \(Int(max(0,now-lastMovement)))s without movement",
@@ -516,7 +525,10 @@ extension LocationRecorder {
             return .finish(reason: "Stopped journey could not be continued")
         }
         let previousDistance = trip.distanceMeters
-        if trip.accept(sample,now:now) {
+        // Process the continuation fix at its original timestamp (as the active
+        // journey path does), so a fix delivered late in a background batch is
+        // recorded as the movement it actually was, not rejected as stale.
+        if trip.accept(sample,now:sample.timestamp) {
             if let first = trip.points.first {
                 let prediction = SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now)
                 let onFoot = family == .onFoot && trip.details?.userCorrected != true
@@ -684,6 +696,8 @@ extension LocationRecorder {
         trip.finish(at:end)
         trip.completeProvisional()
         nameEndpoints(&trip)
+        let finishQuality = trip.routeQualitySummary()
+        trip.updateDetails { $0.routeQuality = finishQuality }
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip)
         trips.insert(trip,at:0); automaticTrip = nil; settleStateReset(); detector.reset(); movementTransition.reset();departureEvidence.reset()

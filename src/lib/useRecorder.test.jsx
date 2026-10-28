@@ -37,6 +37,15 @@ it('replaces a stalled pre-suspension read and ignores its late stale response',
  await act(async()=>complete(snapshot()));
  expect(result.current.state.trips).toEqual([{id:'new-drive'}]);
 });
+it('skips an identical poll so the state reference stays stable while idle',async()=>{
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.ownerID).toBe('owner'));
+ const first=result.current.state;
+ // A poll that only advances the debug trackingUsage counter must not re-render.
+ mocks.getState.mockResolvedValue({ownerID:'owner',trips:[],trackingUsage:{continuousSeconds:99}});
+ await act(async()=>mocks.foreground({isActive:true}));
+ expect(result.current.state).toBe(first);
+});
 it('does not expose another account recordings after foreground refresh',async()=>{
  const {result}=renderHook(()=>useRecorder('owner'));
  await waitFor(()=>expect(result.current.state.ownerID).toBe('owner'));

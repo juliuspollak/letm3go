@@ -184,11 +184,23 @@ struct RecordedActivity: Codable {
                 let corroborated = (point.speed >= familyMax * 0.6 && implied <= max(point.speed * 1.6, familyMax))
                     || priorImpliedSpeed(before: previous) >= familyMax * 0.6
                 let maxSpeed = recordingMode == "automatic" && corroborated ? 90 : familyMax
+                // A wild displacement is a GPS spike: drop it and keep the segment
+                // open so the next real fix continues the same observed stretch.
                 guard implied <= maxSpeed else { return false }
-                if recordingMode == "automatic" { guard implied >= 0.35 else { return false } }
                 // Accuracy-aware jitter suppression, while retaining the first fix.
-                guard distance >= max(3, min(10, (previous.accuracy + point.accuracy) / 4)) else { return false }
-                distanceMeters += distance
+                let jitterFloor = max(3, min(10, (previous.accuracy + point.accuracy) / 4))
+                if recordingMode == "automatic" {
+                    // Keep every plausible fix for the route. Stop-start traffic and
+                    // GPS drift are preserved as geometry but never counted as
+                    // distance, so a real observation is not discarded and does not
+                    // widen the next GPS gap into a segment break.
+                    if implied >= 0.35 && distance >= jitterFloor {
+                        distanceMeters += distance
+                    }
+                } else {
+                    guard distance >= jitterFloor else { return false }
+                    distanceMeters += distance
+                }
             } else if previous.segment == segment {
                 segment += 1
                 point.segment = segment
@@ -197,6 +209,34 @@ struct RecordedActivity: Codable {
         points.append(point)
         return true
     }
+
+    // Summarise how much of the recorded time is actually observed.
+    // `distanceMeters` counts only within-segment movement (the recorded distance).
+    // `unobservedMeters` is the straight-line displacement between the last fix of
+    // one segment and the first fix of the next — a lower bound on the geographical
+    // gap, NOT recorded distance and NOT an estimate of the road actually driven.
+    // `unobservedSeconds` is the time that elapsed across those gaps.
+    func routeQualitySummary() -> RouteQuality {
+        var gapCount = 0
+        var unobservedSeconds = 0.0
+        var unobservedMeters = 0.0
+        var largestGap = 0.0
+        for pair in zip(points, points.dropFirst()) {
+            let dt = pair.1.timestamp - pair.0.timestamp
+            guard dt > 0 else { continue }
+            largestGap = max(largestGap, dt)
+            if pair.0.segment != pair.1.segment {
+                gapCount += 1
+                unobservedSeconds += dt
+                unobservedMeters += pair.0.distance(to: pair.1)
+            }
+        }
+        return RouteQuality(fixCount: points.count, gapCount: gapCount,
+                            largestGapSeconds: largestGap,
+                            unobservedSeconds: unobservedSeconds,
+                            unobservedMeters: unobservedMeters)
+    }
+
 }
 
 // Trim by recorded point indices rather than coordinates. No interpolated route
@@ -218,6 +258,8 @@ enum RouteTrimming {
             total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
         }
         trip.updatedAt = Date().timeIntervalSince1970
+        let trimmedQuality = trip.routeQualitySummary()
+        trip.updateDetails { $0.routeQuality = trimmedQuality }
         // Named endpoints and classification weights reflect the untrimmed
         // route and must not be carried over as facts about the new endpoints.
         trip.details?.startPlace = nil
@@ -344,6 +386,17 @@ struct SmartClassifier {
         return Classification(predicted: type, confidence: motion.confidence, evidence: ["Core Motion: \(type) (\(motion.confidence))", "GPS displacement and duration corroborate movement"])
     }
 }
+struct RouteQuality: Codable, Equatable {
+    var fixCount: Int
+    var gapCount: Int
+    var largestGapSeconds: Double
+    // Time elapsed across segment breaks (unobserved, not recorded movement).
+    var unobservedSeconds: Double
+    // Straight-line displacement across segment breaks — a lower bound on the
+    // geographical gap, never recorded distance and never an estimated road length.
+    var unobservedMeters: Double
+}
+
 struct ActivityDetails: Codable {
     var description = ""
     var notes = ""
@@ -366,6 +419,7 @@ struct ActivityDetails: Codable {
     // so records written by earlier builds still decode.
     var provisional: Bool?
     var continuationEndsAt: Double?
+    var routeQuality: RouteQuality?
 }
 struct ActivityPhoto: Codable {
     var id: String
@@ -900,7 +954,7 @@ struct DepartureEvidence {
         guard point.latitude.isFinite,point.longitude.isFinite,
               abs(point.latitude)<=90,abs(point.longitude)<=180,
               point.accuracy>=0,point.accuracy<=150,
-              now-point.timestamp>=0,now-point.timestamp<=30 else {return false}
+              now-point.timestamp>=0,now-point.timestamp<=120 else {return false}
         if let old=anchor,point.timestamp<=old.timestamp {return false}
         if point.speed>=3 {anchor=point;lastMovementAt=point.timestamp;return true}
         guard let old=anchor else {anchor=point;return false}

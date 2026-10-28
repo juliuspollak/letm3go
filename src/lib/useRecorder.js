@@ -1,8 +1,41 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { App as NativeApp } from '@capacitor/app';
 import { emptyRecorder, onJourneysChanged, recorder, recorderAvailable } from './recorder.js';
+
+// A cheap, point-free fingerprint of the snapshot. It covers every field that
+// affects the rendered UI (journeys, places, permission, motion, sampling state,
+// live recording) but omits the debug-only live counters (`trackingUsage`,
+// `recorderDiagnostics`) that advance on every poll even when nothing changed.
+// This lets the poll skip `setState` — and therefore skip re-rendering the whole
+// app — while the recorder is idle.
+function tripKey(t){
+ if(!t)return '';
+ return [t.id,t.updatedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,(t.details?.photos||[]).length].join(':');
+}
+function snapshotKey(data){
+ if(!data)return '';
+ const svc=data.trackingServices||{};
+ return [
+  data.ownerID,data.permission,data.precise,data.storageReady,
+  data.automaticEnabled,data.automaticAvailable,data.automaticVerified,
+  data.automaticState,data.automaticSampling,data.automaticSettledTripID,
+  data.automaticSettledAt,data.automaticContinuationEndsAt,
+  data.motionAvailable,data.motionPermission,data.motionTypes?.join(','),data.motionConfidence,data.motionTimestamp,
+  data.backgroundEnabled,data.backgroundRecording,data.locationServices,data.applicationState,
+  data.gpsReason,data.indicatorRequested,data.lastTrackingEvent,data.lastTrackingEventAt,
+  data.error,data.recovery,data.accuracy,data.lastFixAt,data.currentSpeed,
+  tripKey(data.active),tripKey(data.automaticTrip),
+  (data.trips||[]).map(tripKey).join('|'),
+  (data.places||[]).map(p=>[p.id,p.name,p.kind,p.latitude,p.longitude,p.radius].join(':')).join('|'),
+  (data.deletedIDs||[]).join(','),
+  svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,
+  data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight
+ ].join('~');
+}
+
 export function useRecorder(ownerID){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const lastKey=useRef('');
  useEffect(()=>{
   let alive=true,pending=false,requestID=0,startedAt=0;
   async function refresh(force=false){
@@ -15,8 +48,13 @@ export function useRecorder(ownerID){
     const data=await recorder.getState();
     if(!alive||id!==requestID)return;
     if(recorderAvailable()&&ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
-     setState(emptyRecorder);throw new Error('Private recorder account does not match this sign-in. Reauthenticate.');
+     lastKey.current='';setState(emptyRecorder);throw new Error('Private recorder account does not match this sign-in. Reauthenticate.');
     }
+    // Skip an identical poll: keeps the state reference stable so memoised
+    // journey lists and maps do not recompute while nothing actually changed.
+    const key=snapshotKey(data);
+    if(key===lastKey.current)return;
+    lastKey.current=key;
     setState(data);
    }catch(err){if(alive&&id===requestID)setError(err.message||'Unable to read native recorder.');}
    finally{if(id===requestID)pending=false;}

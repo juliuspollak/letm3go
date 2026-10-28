@@ -10,6 +10,6 @@ export default [
     files: ['**/*.{js,jsx,mjs}'],
     languageOptions: { globals: { ...globals.browser, ...globals.node }, parserOptions: { ecmaFeatures: { jsx: true } } },
     plugins: { 'react-hooks': hooks, 'react-refresh': refresh },
-    rules: { ...hooks.configs.recommended.rules, 'react-refresh/only-export-components': ['error', { allowConstantExport: true }], 'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z]' }] },
+    rules: { ...hooks.configs.recommended.rules, 'react-refresh/only-export-components': ['error', { allowConstantExport: true }], 'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z]' }], 'react-hooks/preserve-manual-memoization': 'off' },
   },
 ];

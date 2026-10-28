@@ -46,6 +46,17 @@ it('announces recording state changes to assistive technology',()=>{
  expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 
+it('is icon-only on iPhone yet still announces every destination to VoiceOver',()=>{
+ render(<MobileNav tab="Home" onSelect={()=>{}}/>);
+ for(const name of ['Home','Map','Trips','Social']){
+  const button=screen.getByRole('button',{name});
+  expect(button).toHaveAttribute('aria-label',name);
+  expect(button.querySelector('.nav-label')).not.toBeNull();
+ }
+ // The old permanent text label under the record control is gone.
+ expect(document.querySelector('.mobile-nav-label')).toBeNull();
+});
+
 it('draws every destination with one fixed-size vector glyph',()=>{
  render(<MobileNav tab="Home" onSelect={()=>{}}/>);
  for(const name of ['Home','Map','Record','Trips','Social']){

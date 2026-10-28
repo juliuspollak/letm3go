@@ -3,6 +3,11 @@ import MapKit
 import Capacitor
 
 private let routeColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.65,green:0.71,blue:1,alpha:1) : UIColor(red:0.275,green:0.35,blue:0.85,alpha:1) }
+private let gapColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.55,green:0.58,blue:0.7,alpha:0.9) : UIColor(red:0.45,green:0.49,blue:0.62,alpha:0.9) }
+// A dashed connector marks an unobserved stretch between two observed segments.
+// It is never rendered like an observed route, so a solid line never implies GPS
+// was recorded where it was not.
+private final class GapPolyline: MKPolyline {}
 private func coordinate(_ value: Any?) -> CLLocationCoordinate2D? {
     guard let p=value as? [Double],p.count==2,p.allSatisfy({$0.isFinite}),abs(p[0])<=90,abs(p[1])<=180 else { return nil }
     return CLLocationCoordinate2D(latitude:p[0],longitude:p[1])
@@ -45,11 +50,13 @@ private func journalPhotoThumbnail(_ photoID:String, size:CGFloat=48)->UIImage? 
 }
 private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
+    let gaps: [[CLLocationCoordinate2D]]
     let pins: [[String:Any]]
     let focus:CLLocationCoordinate2D?
     init(_ options:[AnyHashable:Any]) {
         focus=coordinate(options["focus"])
-        routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { !$0.isEmpty }
+        routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
+        gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
     }
     var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+pins.compactMap { coordinate($0["point"]) } }
@@ -104,6 +111,13 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         let path=UIBezierPath();path.move(to:snapshot.point(for:segment[0]));for c in segment.dropFirst(){path.addLine(to:snapshot.point(for:c))}
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
                         (trimPreview ? UIColor.systemGray3 : routeColor).setStroke();path.lineWidth=3.5;path.stroke()
+                    }
+                    // Unobserved gaps are dashed so the reader sees incomplete coverage
+                    // without a solid line implying a route was actually recorded.
+                    for gap in content.gaps {
+                        let path=UIBezierPath();path.move(to:snapshot.point(for:gap[0]));path.addLine(to:snapshot.point(for:gap[1]))
+                        UIColor.white.setStroke();path.lineWidth=7;path.lineCapStyle = .round;path.stroke()
+                        ctx.saveGState();ctx.setLineDash(phase:0,lengths:[7,7]);gapColor.setStroke();path.lineWidth=3.5;path.stroke();ctx.restoreGState()
                     }
                     // The place radius is rendered on previews as well as the fullscreen picker.
                     for pin in content.pins {
@@ -221,6 +235,9 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             for segment in content.routes where segment.count>1 {
                 map.addOverlay(MKPolyline(coordinates:segment,count:segment.count))
             }
+            for gap in content.gaps {
+                map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))
+            }
             for metadata in content.pins {
                 guard let coordinate=coordinate(metadata["point"]) else {continue}
                 let pin=JourneyPin();pin.coordinate=coordinate;pin.title=metadata["title"] as? String;pin.metadata=metadata
@@ -302,6 +319,9 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             // to prevent Apple Maps road styling from obscuring portions of sparse routes.
             map.addOverlay(MKPolyline(coordinates:segment,count:segment.count),level:.aboveLabels)
         }
+        for gap in content.gaps {
+            map.addOverlay(GapPolyline(coordinates:gap,count:gap.count),level:.aboveLabels)
+        }
         for metadata in content.pins {
             guard let c=coordinate(metadata["point"]) else {continue}
             let pin=JourneyPin();pin.coordinate=c;pin.title=metadata["title"] as? String;pin.metadata=metadata;map.addAnnotation(pin)
@@ -329,6 +349,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         navigationItem.rightBarButtonItem?.isEnabled=true
     }
     func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
+        if let gap=overlay as? GapPolyline {let renderer=MKPolylineRenderer(polyline:gap);renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6];return renderer}
         if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=5;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let circle=overlay as? MKCircle {let renderer=MKCircleRenderer(circle:circle);renderer.strokeColor = .systemBlue;renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.12);renderer.lineWidth=1;return renderer}
         return MKOverlayRenderer(overlay:overlay)
@@ -439,6 +460,11 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         return marker
     }
     public func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
+        if let gap=overlay as? GapPolyline {
+            let renderer=MKPolylineRenderer(polyline:gap)
+            renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]
+            return renderer
+        }
         if let route=overlay as? MKPolyline {
             let renderer=MKPolylineRenderer(polyline:route)
             renderer.strokeColor=routeColor;renderer.lineWidth=4;renderer.lineCap = .round

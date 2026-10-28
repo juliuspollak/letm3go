@@ -533,6 +533,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "restoreActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "restorePhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trackingReport", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "exportJourneyDiagnostics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
@@ -643,7 +644,47 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "limitations":"A log gap means no diagnostic events were persisted. It cannot prove force-quit, suspension, crash, or the actual time movement began. No coordinates, routes, names, account identifiers, or credentials are included."])
         }catch{call.reject("The tracking report could not be prepared.")}
     }}
-    @objc func getState(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(LocationRecorder.shared.snapshot()) } }
+    @objc func exportJourneyDiagnostics(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let r = LocationRecorder.shared
+        let now = Date().timeIntervalSince1970
+        guard let tripID = call.getString("journeyID"),
+              let trip = r.trips.first(where: { $0.id == tripID }) ?? r.automaticTrip.flatMap({ $0.id == tripID ? $0 : nil }) else {
+            call.reject("Journey unavailable."); return
+        }
+        r.diagnosticSummary(force: true)
+        let quality = trip.details?.routeQuality ?? trip.routeQualitySummary()
+        let start = trip.startedAt
+        let end = trip.endedAt ?? now
+        let events = r.diagnosticJournal.window(start: start, end: end)
+        do {
+            let entries = try JSONSerialization.jsonObject(with: JSONEncoder().encode(events))
+            call.resolve([
+                "schemaVersion": 1,
+                "generatedAt": now,
+                "journeyID": trip.id,
+                "startedAt": start,
+                "endedAt": trip.endedAt as Any? ?? NSNull(),
+                "activity": trip.activity,
+                "state": trip.state,
+                "provisional": trip.isProvisional,
+                "recordedDistanceMeters": trip.distanceMeters,
+                "routeQuality": [
+                    "fixCount": quality.fixCount,
+                    "gapCount": quality.gapCount,
+                    "largestGapSeconds": quality.largestGapSeconds,
+                    "unobservedSeconds": quality.unobservedSeconds,
+                    "unobservedMeters": quality.unobservedMeters
+                ],
+                "trackingNotes": trip.details?.trackingNotes ?? [],
+                "events": entries,
+                "oldestAvailableAt": r.diagnosticJournal.events.first?.at ?? 0,
+                "storageError": r.diagnosticStorageError,
+                "current": r.diagnosticContext(),
+                "limitations": "This report explains how the recorder behaved around this journey. It contains no GPS coordinates, route geometry, photos, names, account identifiers or credentials. recordedDistanceMeters is observed (within-segment) movement only. routeQuality.unobservedMeters is the straight-line displacement across GPS gaps — a lower bound on missing coverage, not recorded distance and not an estimate of the road actually driven. No estimated road distance is computed."
+            ])
+        } catch { call.reject("The journey diagnostics could not be prepared.") }
+    } }
     @objc func requestPermission(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }

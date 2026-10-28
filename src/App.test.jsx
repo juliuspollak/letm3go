@@ -148,3 +148,14 @@ it('opens the trips that used a Collection item with the filter applied',()=>{
  expect(screen.getByRole('button',{name:'Remove equipment filter Geely'})).toBeInTheDocument();
 });
 
+it('counts a provisional journey in today totals and last activity',()=>{
+  signedIn();const now=Date.now()/1000;
+  const provisional={id:'prov',title:'Drive home',source:'device',activity:'Driving',state:'paused',recordingMode:'automatic',startedAt:now-3600,endedAt:now-3300,durationSeconds:600,distanceMeters:5900,ownerID:'owner',points:[{latitude:-33,longitude:151,timestamp:now-3600,segment:0},{latitude:-32.9,longitude:151,timestamp:now-3300,segment:0}],details:{provisional:true}};
+  recorderHook.mockReturnValue({state:{...emptyRecorder,ownerID:'owner',trips:[provisional],automaticEnabled:true},run:vi.fn(),busy:false,error:''});
+  render(<App/>);
+  expect(screen.getByRole('button',{name:/Today's distance: 5.9 km/})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:/Activities today: 1/})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:/Drive home/})).toBeInTheDocument();
+});
+
+
