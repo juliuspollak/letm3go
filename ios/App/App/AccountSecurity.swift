@@ -159,6 +159,9 @@ extension LocationRecorder {
         trackingBoundary = TrackingBoundary.value(now:openedAt,restoredAutomatic:automaticTrip)
         trips.sort { $0.startedAt > $1.startedAt }
         storeOpened = true
+        // Tell the watch which account owns the next ride, and deliver any rides
+        // that arrived while this account was locked or signed out.
+        WatchSessionManager.shared.updateOwner(ownerID)
         // Restore a stop that is still inside its continuation window, and close
         // any provisional journey that can no longer be continued.
         restoreSettledAutomaticJourney()
@@ -178,6 +181,11 @@ extension LocationRecorder {
         }
         try AccountKeychain.set("active-account",data:nil)
         uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
+        // Rides that could not be attributed to this account must not be handed to
+        // the next one. The watch keeps its copy until it is acknowledged, so it
+        // resends once a different account signs in.
+        WatchSessionManager.shared.updateOwner(nil)
+        WatchSessionManager.shared.clearPending()
         preferences = AccountPreferences(); lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()

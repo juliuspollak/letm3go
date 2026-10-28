@@ -9,6 +9,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Restore monitoring on location-triggered launches, before any web view is created.
         LocationRecorder.shared.recordDiagnostic("lifecycle",launchOptions?[.location] != nil ? "iOS launched the app for a location event" : "Application process launched")
+        // WatchConnectivity must be activated before iOS can deliver a ride the
+        // watch finished while this app was not running.
+        WatchSessionManager.shared.start()
         return true
     }
 

@@ -125,6 +125,21 @@ struct RecordedActivity: Codable {
         vehicleID = limited.first?.id
         updatedAt = Date().timeIntervalSince1970
     }
+    // Link a ride to a trail without touching its recorded geometry. Passing nil
+    // for the trail clears the link. Invalid identifiers are rejected rather than
+    // silently stored, because they would never resolve against the trail table.
+    mutating func assignTrail(trailID: String?, name: String?, segmentID: String?, distanceMeters: Double?) throws {
+        func valid(_ value: String?) -> Bool { value.map { UUID(uuidString: $0) != nil } ?? true }
+        guard valid(trailID), valid(segmentID) else { throw NSError(domain:"Letm3go",code:1,userInfo:[NSLocalizedDescriptionKey:"Trail reference is not valid."]) }
+        let trimmedName = name.map { String($0.prefix(120)) }
+        updateDetails { metadata in
+            metadata.mtbTrailID = trailID
+            metadata.mtbTrailName = trailID == nil ? nil : trimmedName
+            metadata.mtbSegmentID = trailID == nil ? nil : segmentID
+            metadata.mtbTrailDistanceMeters = trailID == nil ? nil : distanceMeters.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        }
+        updatedAt = Date().timeIntervalSince1970
+    }
     // Publish a confirmed stop immediately. The journey keeps its identity and
     // stays open for a continuation, so History never waits for the window.
     mutating func publishStop(at end: Double, continuationEndsAt: Double?) {
@@ -420,6 +435,12 @@ struct ActivityDetails: Codable {
     var provisional: Bool?
     var continuationEndsAt: Double?
     var routeQuality: RouteQuality?
+    // Optional MTB trail linkage. A ride can be recorded without a trail and
+    // linked later, so every one of these keys stays optional.
+    var mtbTrailID: String?
+    var mtbTrailName: String?
+    var mtbSegmentID: String?
+    var mtbTrailDistanceMeters: Double?
 }
 struct ActivityPhoto: Codable {
     var id: String
@@ -1117,5 +1138,134 @@ struct RecorderDiagnosticJournal:Codable {
         let ordered=events.sorted{$0.at<$1.at}
         // Keep the last known state before the incident as well as events inside it.
         return Array(ordered.filter{$0.at<start}.suffix(1))+ordered.filter{$0.at>=start && $0.at<=end}
+    }
+}
+
+// MARK: - Apple Watch transfer
+
+// The watch records independently of the phone, so a ride survives being out of
+// range, a phone restart, or a low battery. The payload is deliberately plain
+// Codable data with fixed keys: the watch target compiles this same file, which
+// keeps the two sides of the transfer in lockstep.
+struct WatchPoint: Codable {
+    var latitude: Double
+    var longitude: Double
+    var timestamp: Double
+    var accuracy: Double
+    var altitude: Double
+    var speed: Double
+    var segment: Int
+}
+
+// Result of offering a watch payload to the open account. `deferred` keeps the
+// payload in the phone inbox for a later attempt; `rejected` is a permanently
+// malformed ride and is acknowledged so the watch stops retrying it.
+enum WatchImportOutcome {
+    case imported
+    case duplicate
+    case deferred
+    case rejected(String)
+}
+
+struct WatchActivityTransfer: Codable {
+    var schema = 1
+    var id: String
+    var ownerID: String?
+    var activity: String
+    var startedAt: Double
+    var endedAt: Double
+    // Active (unpaused) seconds measured by the watch. The phone clamps it to the
+    // elapsed window rather than trusting it blindly.
+    var activeSeconds: Double
+    var points: [WatchPoint]
+    var trailID: String?
+    var trailName: String?
+    var trailSegmentID: String?
+    var trailDistanceMeters: Double?
+    var workoutSaved: Bool?
+}
+
+// Converts a watch transfer into the phone's durable activity format. All
+// validation lives here so it is unit-testable without WatchConnectivity, and so
+// a malformed or hostile payload can never enter the encrypted journal. Distance
+// is recomputed from the fixes: within-segment movement only, exactly like an
+// iPhone recording, and never bridged across a pause or GPS gap.
+enum WatchActivityImport {
+    static let maximumPoints = 50_000
+    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
+
+    static func activity(from transfer: WatchActivityTransfer, now: Double = Date().timeIntervalSince1970) -> RecordedActivity? {
+        guard transfer.schema == 1,
+              UUID(uuidString: transfer.id) != nil,
+              supported.contains(transfer.activity),
+              transfer.startedAt.isFinite, transfer.startedAt > 0,
+              transfer.endedAt.isFinite, transfer.endedAt > transfer.startedAt,
+              transfer.endedAt <= now + 300,
+              transfer.activeSeconds.isFinite,
+              transfer.points.count >= 2, transfer.points.count <= maximumPoints else { return nil }
+
+        var points: [GPSPoint] = []
+        points.reserveCapacity(transfer.points.count)
+        var previousTimestamp = -Double.greatestFiniteMagnitude
+        for point in transfer.points {
+            guard point.latitude.isFinite, point.longitude.isFinite,
+                  abs(point.latitude) <= 90, abs(point.longitude) <= 180,
+                  point.timestamp.isFinite,
+                  point.timestamp >= transfer.startedAt - 1, point.timestamp <= transfer.endedAt + 1,
+                  point.timestamp >= previousTimestamp,
+                  point.accuracy.isFinite, point.accuracy >= 0, point.accuracy <= 200,
+                  point.altitude.isFinite,
+                  point.speed.isFinite, point.speed >= 0, point.speed <= 120,
+                  point.segment >= 0 else { return nil }
+            previousTimestamp = point.timestamp
+            points.append(GPSPoint(latitude: point.latitude, longitude: point.longitude,
+                                   timestamp: point.timestamp, accuracy: point.accuracy,
+                                   altitude: point.altitude, speed: point.speed,
+                                   segment: point.segment))
+        }
+
+        var distance = 0.0
+        let maximumSpeed = RecordedActivity.speedLimit(activity: transfer.activity) * 1.5
+        for (earlier, later) in zip(points, points.dropFirst()) where earlier.segment == later.segment {
+            let interval = later.timestamp - earlier.timestamp
+            let step = earlier.distance(to: later)
+            // A jump faster than any plausible movement for this activity is a
+            // corrupt payload, not a ride. Zero-length intervals are duplicates and
+            // contribute no distance.
+            if interval > 0, step / interval > maximumSpeed { return nil }
+            if interval > 0 { distance += step }
+        }
+
+        var trip = RecordedActivity(activity: transfer.activity, vehicle: nil,
+                                    startedAt: transfer.startedAt, resumedAt: nil,
+                                    title: title(activity: transfer.activity, startedAt: transfer.startedAt))
+        trip.id = transfer.id.lowercased()
+        trip.source = "watch"
+        trip.recordingMode = "watch"
+        trip.state = "finished"
+        trip.endedAt = transfer.endedAt
+        trip.accumulatedSeconds = min(max(0, transfer.activeSeconds), max(0, transfer.endedAt - transfer.startedAt))
+        trip.distanceMeters = distance
+        trip.points = points
+        trip.segment = points.last?.segment ?? 0
+        var details = ActivityDetails()
+        if let trailID = transfer.trailID, UUID(uuidString: trailID) != nil {
+            details.mtbTrailID = trailID.lowercased()
+            details.mtbTrailName = String((transfer.trailName ?? "").prefix(120))
+            if let segmentID = transfer.trailSegmentID, UUID(uuidString: segmentID) != nil { details.mtbSegmentID = segmentID.lowercased() }
+            if let meters = transfer.trailDistanceMeters, meters.isFinite, meters >= 0 { details.mtbTrailDistanceMeters = meters }
+        }
+        details.trackingNotes = ["Recorded on Apple Watch and transferred to this iPhone"]
+        trip.details = details
+        trip.updatedAt = now
+        return trip
+    }
+
+    private static func title(activity: String, startedAt: Double) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_AU")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "\(activity) · \(formatter.string(from: Date(timeIntervalSince1970: startedAt)))"
     }
 }

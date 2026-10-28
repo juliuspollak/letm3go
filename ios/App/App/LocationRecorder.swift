@@ -346,7 +346,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         @unknown default: return "unknown"
         }
     }
-    func start(activity: String, vehicle: String?, vehicleID: String? = nil) throws {
+    func start(activity: String, vehicle: String?, vehicleID: String? = nil, trailID: String? = nil, trailName: String? = nil, trailSegmentID: String? = nil, trailDistanceMeters: Double? = nil) throws {
         guard storage != nil else { throw failure("Local storage is unavailable. Recording cannot start safely.") }
         guard active == nil else { throw failure("Finish the existing activity first.") }
         guard authorized, locationServicesAvailable else { throw failure("Enable location access before starting.") }
@@ -365,6 +365,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         } else { trip.vehicleID = nil; trip.vehicle = vehicle }
         trip.recordingMode = "manual"
         trip.details = ActivityDetails()
+        if trailID != nil {
+            // A trail link is optional, but a malformed one is rejected before the
+            // activity starts rather than stored as an unresolvable reference.
+            try trip.assignTrail(trailID: trailID, name: trailName, segmentID: trailSegmentID, distanceMeters: trailDistanceMeters)
+        }
         try storage!.save(trip)
         active = trip; lastError = ""; recoveryMessage = ""; accuracy = nil; lastFixAt = nil
         if CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
@@ -528,6 +533,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "recogniseTripPlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "editActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "assignEquipment", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "assignTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRouteDisplay", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteActivity", returnType: CAPPluginReturnPromise),
@@ -713,7 +719,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func start(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }
-            do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID")); call.resolve(LocationRecorder.shared.snapshot()) }
+            do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID"), trailID: call.getString("trailID"), trailName: call.getString("trailName"), trailSegmentID: call.getString("trailSegmentID"), trailDistanceMeters: call.getDouble("trailDistanceMeters")); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }
     }

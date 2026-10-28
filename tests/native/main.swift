@@ -828,4 +828,103 @@ check(finalisationDetails["finalisedBy"] == "arrivalTimer","finalisation details
 check(finalisationDetails["gpsSilentBeforeFinishSeconds"] == "290","finalisation details record GPS silence")
 check(finalisationDetails["savedFixes"] == "42" && finalisationDetails["recordedMeters"] == "1200","finalisation details record the saved coverage")
 
+// MARK: Apple Watch transfer
+
+// The phone recomputes distance and rejects malformed payloads, so a watch ride
+// cannot smuggle implausible geometry or a broken identifier into the journal.
+let watchTrailID = UUID().uuidString
+let watchSegmentID = UUID().uuidString
+func watchPoint(_ latitude: Double, _ longitude: Double, _ timestamp: Double, segment: Int = 0, accuracy: Double = 5, speed: Double = 4) -> WatchPoint {
+    WatchPoint(latitude: latitude, longitude: longitude, timestamp: timestamp, accuracy: accuracy, altitude: 120, speed: speed, segment: segment)
+}
+var watchTransfer = WatchActivityTransfer(
+    id: UUID().uuidString,
+    ownerID: nil,
+    activity: "MTB",
+    startedAt: 1_000,
+    endedAt: 1_600,
+    activeSeconds: 600,
+    points: [
+        watchPoint(-33.0000, 151.0000, 1_000),
+        watchPoint(-33.0000, 151.0010, 1_100),
+        // Pause between fixes: the gap must not be counted as ride distance.
+        watchPoint(-33.0000, 151.0010, 1_200, segment: 1),
+        watchPoint(-33.0000, 151.0020, 1_300, segment: 1)
+    ],
+    trailID: watchTrailID,
+    trailName: "Old Duffy Descent",
+    trailSegmentID: watchSegmentID,
+    trailDistanceMeters: 1_450
+)
+let importedWatchRide = WatchActivityImport.activity(from: watchTransfer, now: 2_000)
+check(importedWatchRide != nil, "a valid watch ride imports")
+check(importedWatchRide?.source == "watch", "watch rides are attributed to the watch")
+check(importedWatchRide?.recordingMode == "watch", "watch rides keep their recording mode")
+check(importedWatchRide?.state == "finished", "a transferred ride is complete")
+check(importedWatchRide?.points.count == 4, "every transferred fix is kept")
+check((importedWatchRide?.distanceMeters ?? 0) > 170 && (importedWatchRide?.distanceMeters ?? 0) < 190, "watch distance counts within-segment movement only")
+check(importedWatchRide?.id == watchTransfer.id.lowercased(), "transfer identity is stable and case-insensitive")
+check(importedWatchRide?.details?.mtbTrailID == watchTrailID.lowercased(), "trail link survives the transfer")
+check(importedWatchRide?.details?.mtbTrailName == "Old Duffy Descent", "trail name survives the transfer")
+check(importedWatchRide?.details?.mtbSegmentID == watchSegmentID.lowercased(), "segment link survives the transfer")
+check(importedWatchRide?.details?.mtbTrailDistanceMeters == 1_450, "published trail distance survives the transfer")
+
+var unsupportedWatchTransfer = watchTransfer
+unsupportedWatchTransfer.activity = "Paragliding"
+check(WatchActivityImport.activity(from: unsupportedWatchTransfer, now: 2_000) == nil, "unsupported activities are rejected")
+var singlePointTransfer = watchTransfer
+singlePointTransfer.points = [watchPoint(-33, 151, 1_000)]
+check(WatchActivityImport.activity(from: singlePointTransfer, now: 2_000) == nil, "a ride without two fixes is rejected")
+var badIDTransfer = watchTransfer
+badIDTransfer.id = "not-a-uuid"
+check(WatchActivityImport.activity(from: badIDTransfer, now: 2_000) == nil, "a malformed identity is rejected")
+var backwardsTransfer = watchTransfer
+backwardsTransfer.endedAt = 900
+check(WatchActivityImport.activity(from: backwardsTransfer, now: 2_000) == nil, "an inverted time window is rejected")
+var futureTransfer = watchTransfer
+futureTransfer.endedAt = 5_000
+futureTransfer.points[3].timestamp = 4_000
+check(WatchActivityImport.activity(from: futureTransfer, now: 2_000) == nil, "a future-dated ride is rejected")
+var poorAccuracyTransfer = watchTransfer
+poorAccuracyTransfer.points[1].accuracy = 500
+check(WatchActivityImport.activity(from: poorAccuracyTransfer, now: 2_000) == nil, "implausible accuracy is rejected")
+var teleportTransfer = watchTransfer
+teleportTransfer.points[1].longitude = 152
+check(WatchActivityImport.activity(from: teleportTransfer, now: 2_000) == nil, "implausible movement is rejected")
+var missingTrailTransfer = watchTransfer
+missingTrailTransfer.trailID = "unknown"
+check(WatchActivityImport.activity(from: missingTrailTransfer, now: 2_000)?.details?.mtbTrailID == nil, "an unusable trail id is dropped, not stored")
+
+// Recording without a trail stays valid, and a ride can be linked afterwards.
+var unlinkedWatchTransfer = watchTransfer
+unlinkedWatchTransfer.trailID = nil
+unlinkedWatchTransfer.trailName = nil
+unlinkedWatchTransfer.trailSegmentID = nil
+unlinkedWatchTransfer.trailDistanceMeters = nil
+check(WatchActivityImport.activity(from: unlinkedWatchTransfer, now: 2_000)?.details?.mtbTrailID == nil, "a ride without a trail imports")
+
+var trailRide = RecordedActivity(activity: "MTB", startedAt: 100, resumedAt: 100, title: "Ride")
+try trailRide.assignTrail(trailID: watchTrailID, name: "Old Duffy Descent", segmentID: watchSegmentID, distanceMeters: 1_450)
+check(trailRide.details?.mtbTrailID == watchTrailID, "a finished ride can be linked to a trail")
+let trailRideRoundTrip = try JSONDecoder().decode(RecordedActivity.self, from: JSONEncoder().encode(trailRide))
+check(trailRideRoundTrip.details?.mtbTrailName == "Old Duffy Descent", "trail linkage survives durable encoding")
+try trailRide.assignTrail(trailID: nil, name: nil, segmentID: nil, distanceMeters: nil)
+check(trailRide.details?.mtbTrailID == nil && trailRide.details?.mtbSegmentID == nil, "clearing the trail removes every trail field")
+var invalidTrailRide = trailRide
+do {
+    try invalidTrailRide.assignTrail(trailID: "nope", name: "Trail", segmentID: nil, distanceMeters: 100)
+    check(false, "an invalid trail id must be rejected")
+} catch {
+    check(true, "an invalid trail id is rejected")
+}
+
+// Records written before trails existed must keep decoding.
+let legacyRideJSON = """
+{"id":"11111111-1111-4111-8111-111111111111","activity":"MTB","startedAt":1,"state":"finished","accumulatedSeconds":0,"segment":0,"points":[],"distanceMeters":0,"source":"device","title":"Legacy ride","details":{"description":"","notes":"","tags":[],"collection":"","visibility":"private","userCorrected":false,"classification":{"predicted":"Unknown","confidence":"low","evidence":[]},"photos":[]}}
+"""
+let legacyRide = try JSONDecoder().decode(RecordedActivity.self, from: Data(legacyRideJSON.utf8))
+check(legacyRide.details?.mtbTrailID == nil, "older records decode without trail keys")
+
 print("\(assertions) native recorder/auth assertions passed")
+
+

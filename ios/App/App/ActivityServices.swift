@@ -145,6 +145,45 @@ extension LocationRecorder {
         do { try storage.save(trip); trips[index] = trip }
         catch { try? FileManager.default.removeItem(at:url); throw error }
     }
+    // Links a finished ride to a trail (or clears the link) without touching its
+    // recorded geometry. The JS layer uses this for "assign trail after the ride".
+    func assignTrail(id: String, trailID: String?, trailName: String?, trailSegmentID: String?, trailDistanceMeters: Double?) throws {
+        guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
+        guard trips[index].state == "finished" else { throw failure("Finish the activity before linking a trail.") }
+        guard trips[index].recordingMode != "automatic" else { throw failure("Automatic journeys cannot be linked to a trail.") }
+        var trip = trips[index]
+        try trip.assignTrail(trailID: trailID, name: trailName, segmentID: trailSegmentID, distanceMeters: trailDistanceMeters)
+        try storage.save(trip)
+        trips[index] = trip
+        notifyJourneyChange()
+    }
+    // An Apple Watch ride is imported exactly once. `deferred` means no account is
+    // open yet (or the payload belongs to another signed-in account), so the phone
+    // inbox keeps it and the watch is not acknowledged.
+    func importWatchActivity(_ transfer: WatchActivityTransfer) -> WatchImportOutcome {
+        guard storage != nil, storeOpened, !accountSuspended, !accountDeleting, let ownerID = ownerID else { return .deferred }
+        if let hint = transfer.ownerID?.lowercased(), !hint.isEmpty, hint != ownerID { return .deferred }
+        guard let activity = WatchActivityImport.activity(from: transfer) else { return .rejected("invalid-payload") }
+        if trips.contains(where: { $0.id == activity.id }) { return .duplicate }
+        // A deleted ride must not be resurrected by a late retry from the watch.
+        if (try? storage!.deletedIDs())?.contains(activity.id) == true { return .duplicate }
+        do {
+            try storage!.save(activity)
+            trips.insert(activity, at: 0)
+            trips.sort { $0.startedAt > $1.startedAt }
+            lastError = ""
+            recordDiagnostic("watch", "Imported an Apple Watch activity", details: [
+                "points": String(activity.points.count),
+                "trail": activity.details?.mtbTrailID == nil ? "none" : "linked",
+                "workoutSaved": transfer.workoutSaved == true ? "yes" : "no"
+            ])
+            notifyJourneyChange()
+            return .imported
+        } catch {
+            lastError = error.localizedDescription
+            return .deferred
+        }
+    }
 }
 
 final class PositionRequest: NSObject, CLLocationManagerDelegate {
@@ -255,6 +294,14 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         guard self.requireAccount(call) else { return }
         guard let id=call.getString("id"), let ids=call.getArray("ids",String.self) else { call.reject("Choose equipment for this activity."); return }
         do { try LocationRecorder.shared.assignEquipment(id:id,ids:ids); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func assignTrail(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let id=call.getString("id") else { call.reject("Choose an activity."); return }
+        do {
+            try LocationRecorder.shared.assignTrail(id:id,trailID:call.getString("trailID"),trailName:call.getString("trailName"),trailSegmentID:call.getString("trailSegmentID"),trailDistanceMeters:call.getDouble("trailDistanceMeters"))
+            call.resolve(LocationRecorder.shared.snapshot())
+        } catch { call.reject(error.localizedDescription) }
     } }
     @objc func setRouteDisplay(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
