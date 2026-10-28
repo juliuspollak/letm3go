@@ -37,7 +37,7 @@ function snapshotKey(data){
  ].join('~');
 }
 function lockedSnapshot(data){
- return {...emptyRecorder,version:data?.version||emptyRecorder.version,build:data?.build||emptyRecorder.build,permission:data?.permission||'locked',storageReady:false,error:data?.error||''};
+ return {...emptyRecorder,version:data?.version||emptyRecorder.version,build:data?.build||emptyRecorder.build,permission:data?.permission||'locked',storageReady:false,nativeBinding:data?.nativeBinding||null,error:data?.error||''};
 }
 
 export function useRecorder(ownerID,onBindingRequired){
