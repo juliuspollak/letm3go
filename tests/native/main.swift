@@ -1016,6 +1016,158 @@ check(restorableDraft == nil, "a queued ride is not reopened as an active draft"
 let clearedDraft = try draftStore.load()
 check(clearedDraft == nil, "and its queued draft is removed")
 
+// MARK: Apple Watch outbox acknowledgement durability
+//
+// Acknowledgement, deletion and startup repair are exercised with injected disk
+// failures: no crash window may drop the only copy of a ride, leave an entry that can
+// never be sent, or send the same ride forever.
+final class FailingWatchBackend: WatchFileBackend {
+    var failWrite: ((URL) -> Bool)?
+    var failRemove: ((URL) -> Bool)?
+    private let base = FileWatchBackend()
+
+    func read(_ url: URL) throws -> Data? { try base.read(url) }
+    func write(_ data: Data, to url: URL, protection: Bool) throws {
+        if failWrite?(url) == true { throw WatchStorageError.writeFailed(url.lastPathComponent) }
+        try base.write(data, to: url, protection: protection)
+    }
+    func append(_ data: Data, to url: URL) throws { try base.append(data, to: url) }
+    func remove(_ url: URL) throws {
+        if failRemove?(url) == true { throw WatchStorageError.writeFailed(url.lastPathComponent) }
+        try base.remove(url)
+    }
+    func exists(_ url: URL) -> Bool { base.exists(url) }
+    func size(_ url: URL) -> Int { base.size(url) }
+    func createDirectory(_ url: URL) throws { try base.createDirectory(url) }
+}
+
+let ackDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+defer { try? FileManager.default.removeItem(at: ackDirectory) }
+let ackBackend = FailingWatchBackend()
+let ackOutbox = WatchOutbox(directory: ackDirectory, backend: ackBackend)
+let ackID = restoredTransfer!.id
+let ackPayload = ackDirectory.appendingPathComponent("\(ackID).json")
+let ackIndex = ackDirectory.appendingPathComponent("index.json")
+
+// 1. The index cannot be written: the ride and its payload both survive.
+_ = try ackOutbox.enqueue(restoredTransfer!, now: 5_000)
+ackBackend.failWrite = { $0.lastPathComponent == "index.json" }
+var ackWriteFailed = false
+do { _ = try ackOutbox.noteDelivered(ackID, status: "saved", now: 5_010) } catch { ackWriteFailed = true }
+check(ackWriteFailed, "a failed index write aborts the acknowledgement")
+check(FileManager.default.fileExists(atPath: ackPayload.path), "the only copy of the ride survives a failed acknowledgement")
+check(ackOutbox.loadIndex().count == 1, "the ride stays queued when the index cannot be written")
+check(ackOutbox.pending(now: 9_000, ownerID: "owner-1").count == 1, "and it is offered to the phone again")
+ackBackend.failWrite = nil
+let retriedAck = try ackOutbox.noteDelivered(ackID, status: "duplicate", now: 5_020)
+check(retriedAck, "the retry retires the ride once the index can be written")
+check(!FileManager.default.fileExists(atPath: ackPayload.path), "the payload is removed only after the index is durable")
+
+// 2. The payload cannot be deleted after the entry left the index: the orphan is
+// adopted back, answered as a duplicate and then cleared, so nothing is lost and the
+// repeat cannot loop.
+_ = try ackOutbox.enqueue(restoredTransfer!, now: 5_100)
+ackBackend.failRemove = { $0.lastPathComponent == "\(ackID).json" }
+let deletedAck = try ackOutbox.noteDelivered(ackID, status: "saved", now: 5_110)
+check(deletedAck, "the entry leaves the index even when the delete fails")
+check(ackOutbox.loadIndex().isEmpty, "no entry is left behind")
+check(FileManager.default.fileExists(atPath: ackPayload.path), "a deletion that fails leaves the file on disk")
+ackBackend.failRemove = nil
+let orphanReport = ackOutbox.reconcile(now: 5_200)
+check(orphanReport.adopted == 1, "an orphaned payload is adopted back into the queue")
+check(ackOutbox.pending(now: 5_300, ownerID: "owner-1").count == 1, "the adopted ride is offered again")
+let duplicateAck = try ackOutbox.noteDelivered(ackID, status: "duplicate", now: 5_310)
+check(duplicateAck, "the phone's duplicate answer retires the adopted ride")
+check(ackOutbox.loadIndex().isEmpty && !FileManager.default.fileExists(atPath: ackPayload.path), "and the queue is empty again")
+
+// 3. Termination between the steps leaves an entry without a payload: it is parked and
+// reported, never silently dropped and never retried forever.
+_ = try ackOutbox.enqueue(restoredTransfer!, now: 5_400)
+try FileManager.default.removeItem(at: ackPayload)
+let missingReport = ackOutbox.reconcile(now: 5_500)
+check(missingReport.missingPayloads == 1, "a missing payload is reported, not dropped")
+let missingCounts = ackOutbox.counts()
+check(missingCounts.queued == 0 && missingCounts.unreadable == 1, "the ride is parked as unreadable")
+check(ackOutbox.pending(now: 9_000, ownerID: "owner-1").isEmpty, "an unreadable ride is never offered again")
+check(ackOutbox.reconcile(now: 5_600).missingPayloads == 0, "a later pass does not report the same ride twice")
+let clearedUnreadable = try ackOutbox.discardUnreadable()
+check(clearedUnreadable == 1 && ackOutbox.loadIndex().isEmpty, "the rider can clear the unusable entry")
+
+// 4. A repeated acknowledgement changes nothing and is not reported as a removal.
+_ = try ackOutbox.enqueue(restoredTransfer!, now: 5_700)
+let firstAck = try ackOutbox.noteDelivered(ackID, status: "saved", now: 5_710)
+let secondAck = try ackOutbox.noteDelivered(ackID, status: "saved", now: 5_720)
+check(firstAck && !secondAck, "a repeated acknowledgement is a no-op")
+check(ackOutbox.counts().queued == 0 && !FileManager.default.fileExists(atPath: ackPayload.path), "and leaves no file or entry behind")
+// 5. A lost acknowledgement plus a restart: the ride, its backoff and its payload all
+// survive, and it is retried when the backoff expires.
+_ = try ackOutbox.enqueue(restoredTransfer!, now: 5_800)
+try ackOutbox.noteAttempt(ackID, error: "unreachable", now: 5_800)
+let restartedOutbox = WatchOutbox(directory: ackDirectory)
+check(restartedOutbox.loadIndex().count == 1, "a restart keeps the unsynchronised ride")
+check(restartedOutbox.pending(now: 5_801, ownerID: "owner-1").isEmpty, "the backoff survives a restart")
+check(restartedOutbox.pending(now: 20_000, ownerID: "owner-1").count == 1, "and the ride is retried after it")
+check(restartedOutbox.payloadState(ackID) == .ready(restoredTransfer!), "with its payload intact")
+
+// 6. A corrupt payload is recognised, moved aside and reported instead of vanishing.
+try Data("not a transfer".utf8).write(to: ackPayload)
+check(ackOutbox.payloadState(ackID) == .corrupt, "an undecodable payload is recognised")
+let corruptReport = ackOutbox.reconcile(now: 6_000)
+check(corruptReport.corruptPayloads == 1, "a corrupt payload is reported")
+let quarantinedPayload = ackDirectory.appendingPathComponent("corrupt/\(ackID).json")
+check(FileManager.default.fileExists(atPath: quarantinedPayload.path), "the bytes are kept for investigation, not deleted")
+check(ackOutbox.counts().unreadable == 1, "the ride is parked as unreadable")
+check(ackOutbox.pending(now: 9_000, ownerID: "owner-1").isEmpty, "a corrupt ride is not retried")
+
+// 7. One broken entry never blocks another ride.
+var secondTransfer = restoredTransfer!
+secondTransfer.id = UUID().uuidString
+_ = try ackOutbox.enqueue(secondTransfer, now: 6_100)
+check(ackOutbox.pending(now: 9_000, ownerID: "owner-1").map(\.id) == [secondTransfer.id], "a broken ride does not block a valid one")
+
+// 8. A rejection archives its payload before the entry leaves the index, so an
+// interrupted index write is recognised as already answered.
+ackBackend.failWrite = { $0.lastPathComponent == "index.json" }
+var rejectWriteFailed = false
+do { _ = try ackOutbox.noteDelivered(secondTransfer.id, status: "rejected", now: 6_200) } catch { rejectWriteFailed = true }
+check(rejectWriteFailed, "an interrupted rejection fails instead of dropping the ride")
+ackBackend.failWrite = nil
+let rejectedArchive = ackDirectory.appendingPathComponent("rejected/\(secondTransfer.id).json")
+check(FileManager.default.fileExists(atPath: rejectedArchive.path), "the rejected payload is archived first")
+check(ackOutbox.counts().queued == 1, "the ride stays queued while the index write fails")
+check(ackOutbox.payloadState(secondTransfer.id) == .retired, "an archived payload is recognised as already answered")
+let retiredReport = ackOutbox.reconcile(now: 6_300)
+check(retiredReport.retired == 1, "a rejection whose index write failed is not reported as corruption")
+check(ackOutbox.counts().queued == 0 && !ackOutbox.loadIndex().contains { $0.id == secondTransfer.id }, "and its stale entry is cleared")
+check(FileManager.default.fileExists(atPath: rejectedArchive.path), "while the diagnostics copy is kept")
+
+// 9. A rejection that cannot be archived keeps the ride retryable: the only copy stays.
+let blockedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+defer { try? FileManager.default.removeItem(at: blockedDirectory) }
+try FileManager.default.createDirectory(at: blockedDirectory, withIntermediateDirectories: true)
+try Data("blocked".utf8).write(to: blockedDirectory.appendingPathComponent("rejected"))
+let blockedOutbox = WatchOutbox(directory: blockedDirectory)
+_ = try blockedOutbox.enqueue(secondTransfer, now: 6_400)
+var blockedAckFailed = false
+do { _ = try blockedOutbox.noteDelivered(secondTransfer.id, status: "rejected", now: 6_410) } catch { blockedAckFailed = true }
+check(blockedAckFailed, "a rejection that cannot be archived fails loudly")
+check(blockedOutbox.counts().queued == 1, "and the ride stays queued")
+check(blockedOutbox.payloadState(secondTransfer.id) == .ready(secondTransfer), "with its only copy untouched")
+
+// 10. Archived copies are bounded, and an archived rejection is never resurrected.
+try FileManager.default.createDirectory(at: ackDirectory.appendingPathComponent("rejected"), withIntermediateDirectories: true)
+for index in 0..<(WatchQueuePolicy.maximumArchive + 3) {
+    try Data("archived \(index)".utf8).write(to: ackDirectory.appendingPathComponent("rejected/archive-\(index).json"))
+}
+_ = ackOutbox.reconcile(now: 7_000)
+let archiveCount = (try? FileManager.default.contentsOfDirectory(atPath: ackDirectory.appendingPathComponent("rejected").path))?.count ?? 0
+check(archiveCount == WatchQueuePolicy.maximumArchive, "only the newest archived copies are kept")
+try FileManager.default.removeItem(at: ackIndex)
+check(ackOutbox.loadIndex().isEmpty, "an index rebuild never resurrects an archived rejection")
+
+
+
+
 // MARK: Apple Watch ownership and inbox
 check(WatchOwnership.normalize("  Owner-A  ") == "owner-a", "owner identifiers are compared case-insensitively")
 check(WatchOwnership.normalize("   ") == nil, "a blank owner identifier is ignored")

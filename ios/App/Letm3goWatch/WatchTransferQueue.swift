@@ -28,14 +28,42 @@ final class WatchTransferQueue {
 
     func pendingCount() -> Int { outbox.counts().queued }
     func parkedCount() -> Int { outbox.counts().parked }
+    func unreadableCount() -> Int { outbox.counts().unreadable }
+    func counts() -> (queued: Int, parked: Int, unreadable: Int) { outbox.counts() }
+
+    func contains(_ id: String) -> Bool {
+        outbox.loadIndex().contains { $0.id == id }
+    }
 
     // Entries the phone may be offered right now, oldest first.
     func sendable(ownerID: String?, now: Double = Date().timeIntervalSince1970) -> [WatchOutboxEntry] {
         outbox.pending(now: now, ownerID: ownerID)
     }
 
+    // Pressing send is a local decision, so the payload is inspected before the file is
+    // handed to WatchConnectivity: a ride whose file is missing or unreadable is parked
+    // and reported, never silently dropped.
+    func payloadState(_ id: String) -> WatchPayloadState {
+        outbox.payloadState(id)
+    }
+
+    // Startup repair: adopts payloads the index lost, parks entries whose payload is
+    // gone and bounds the archived copies.
+    func reconcile(now: Double = Date().timeIntervalSince1970) -> WatchOutboxReport {
+        outbox.reconcile(now: now)
+    }
+
+    func parkUnreadable(_ id: String, issue: WatchOutboxIssue, now: Double = Date().timeIntervalSince1970) {
+        try? outbox.parkUnreadable(id, issue: issue, now: now)
+    }
+
+    func discardUnreadable() {
+        _ = try? outbox.discardUnreadable()
+    }
+
     func transfer(_ id: String) -> WatchActivityTransfer? {
-        try? outbox.transfer(id)
+        if case .ready(let transfer) = outbox.payloadState(id) { return transfer }
+        return nil
     }
 
     func fileURL(_ id: String) -> URL {

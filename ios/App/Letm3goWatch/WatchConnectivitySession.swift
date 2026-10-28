@@ -18,6 +18,9 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     @Published private(set) var ownerID: String?
     @Published private(set) var pending = 0
     @Published private(set) var parked = 0
+    // Rides whose saved payload is gone or unreadable: nothing can be recovered, so the
+    // rider is told instead of the queue silently shrinking.
+    @Published private(set) var broken = 0
     @Published private(set) var lastMessage = ""
 
     private var inFlight: Set<String> = []
@@ -31,6 +34,9 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     }
 
     func activate() {
+        // Local repair first: it needs no WatchConnectivity session and it is what makes
+        // an interrupted acknowledgement or a lost file visible before anything is sent.
+        reconcileQueue()
         guard WCSession.isSupported() else {
             lastMessage = "WatchConnectivity is unavailable"
             return
@@ -49,31 +55,68 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         startRetryTimer()
     }
 
+    // Adopts payloads whose index entry was lost and parks entries whose payload is
+    // gone, so a crash can neither lose a ride nor leave one retrying forever.
+    private func reconcileQueue() {
+        let report = queue.reconcile()
+        if report.missingPayloads > 0 {
+            lastMessage = "A saved ride is missing its data"
+        } else if report.corruptPayloads > 0 {
+            lastMessage = "A saved ride could not be read"
+        }
+        refreshCounts()
+    }
+
     // Offers every ride the gate considers due. Safe to call often: rides in flight
     // and rides inside their backoff window are skipped.
     func sendPending() {
         guard WCSession.default.activationState == .activated else { return }
         let now = Date().timeIntervalSince1970
         for entry in queue.sendable(ownerID: ownerID, now: now) where !inFlight.contains(entry.id) {
-            let url = queue.fileURL(entry.id)
-            guard queue.transfer(entry.id) != nil, FileManager.default.fileExists(atPath: url.path) else {
-                // The index points at a payload that no longer exists; drop the
-                // entry instead of retrying it forever.
+            switch queue.payloadState(entry.id) {
+            case .ready:
+                break
+            case .retired:
+                // The phone already accepted this ride and only the local cleanup was
+                // interrupted, so the entry is finished instead of re-sent.
                 queue.discard(entry.id)
+                continue
+            case .missing:
+                // A ride is in the index only while its payload still has to be
+                // delivered, so a missing file is never an ordinary acknowledgement: it
+                // is a lost payload. It is kept and shown, never silently dropped, and
+                // it cannot block the other rides.
+                queue.parkUnreadable(entry.id, issue: .missingPayload, now: now)
+                lastMessage = "A saved ride is missing its data"
+                continue
+            case .corrupt:
+                queue.parkUnreadable(entry.id, issue: .corruptPayload, now: now)
+                lastMessage = "A saved ride could not be read"
                 continue
             }
             inFlight.insert(entry.id)
             // Recorded before the transfer starts so a failure cannot spin the retry
             // loop, and so the next attempt backs off.
             queue.noteAttempt(entry.id, error: nil, now: now)
-            WCSession.default.transferFile(url, metadata: ["id": entry.id])
+            WCSession.default.transferFile(queue.fileURL(entry.id), metadata: ["id": entry.id])
         }
         refreshCounts()
     }
 
+    // Discards the rides nothing can be recovered from, after the rider acknowledged the
+    // problem. Their payloads are already gone, so only the queue entries are removed.
+    func clearUnreadableRides() {
+        queue.discardUnreadable()
+        lastMessage = ""
+        refreshCounts()
+        sendPending()
+    }
+
     private func refreshCounts() {
-        pending = queue.pendingCount()
-        parked = queue.parkedCount()
+        let counts = queue.counts()
+        pending = counts.queued
+        parked = counts.parked
+        broken = counts.unreadable
     }
 
     private func startRetryTimer() {
@@ -105,14 +148,22 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     private func acknowledge(_ ids: [String], status: String) {
         guard !ids.isEmpty else { return }
         var removedAny = false
+        var clearFailed = false
         for id in ids {
             inFlight.remove(id)
-            if queue.noteDelivered(id, status: status) { removedAny = true }
+            if queue.noteDelivered(id, status: status) {
+                removedAny = true
+            } else if status != "parked", queue.contains(id) {
+                // The phone has the ride but the watch could not drop its copy. The
+                // retry is answered as a duplicate and the entry is retired then, so
+                // nothing is lost and nothing is sent forever.
+                clearFailed = true
+            }
         }
         switch status {
         case "parked": lastMessage = "This ride belongs to another account on the iPhone"
         case "rejected": lastMessage = "The iPhone could not read this ride"
-        default: lastMessage = "iPhone saved this ride"
+        default: lastMessage = clearFailed ? "Saved on iPhone · clearing the Watch copy failed" : "iPhone saved this ride"
         }
         refreshCounts()
         if removedAny { sendPending() }
@@ -125,6 +176,7 @@ extension WatchConnectivitySession: WCSessionDelegate {
         let errorText = error?.localizedDescription
         DispatchQueue.main.async {
             if let errorText { self.lastMessage = errorText }
+            self.reconcileQueue()
             self.receive(context)
         }
     }

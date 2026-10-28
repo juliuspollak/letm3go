@@ -42,6 +42,23 @@ struct WatchContentView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
+
+                // A ride whose saved data is gone cannot be recovered, so the problem is
+                // shown instead of the queue quietly shrinking. Clearing it only removes
+                // the unusable queue entry.
+                if link.broken > 0 {
+                    Label("\(link.broken) ride\(link.broken == 1 ? "" : "s") could not be synced", systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                    Button(role: .destructive) {
+                        link.clearUnreadableRides()
+                    } label: {
+                        Label("Clear", systemImage: "xmark")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .font(.caption2)
+                }
             }
             .padding(.horizontal, 2)
         }

@@ -748,10 +748,23 @@ final class WatchRideDraftStore {
 
 // MARK: - Transfer queue policy
 
+// Why a ride in the outbox can no longer be delivered. Both cases are unexpected: an
+// entry only exists while its payload still has to be sent, because an
+// acknowledgement retires the entry before the file is deleted. A ride is never
+// dropped for either reason — it is parked, counted and shown, so a lost file stays
+// visible and can never block other rides.
+enum WatchOutboxIssue: String, Codable {
+    case missingPayload = "payload-missing"
+    case corruptPayload = "payload-corrupt"
+}
+
 enum WatchQueuePolicy {
     // Bounded so a watch that has been offline for months cannot fill storage.
     static let maximumQueued = 25
     static let maximumParked = 25
+    // Retired and quarantined payloads are diagnostics, not a library: only the
+    // newest few are kept.
+    static let maximumArchive = 10
     // Exponential backoff, capped, so a phone that keeps failing is not hammered.
     static func delay(afterAttempts attempts: Int) -> Double {
         let exponent = Double(min(max(0, attempts), 6))
@@ -777,6 +790,34 @@ struct WatchOutboxEntry: Codable, Equatable {
     var lastError: String?
 
     var isParked: Bool { parkedReason != nil }
+    // Set when the payload behind the entry can no longer be read.
+    var issue: WatchOutboxIssue? { parkedReason.flatMap(WatchOutboxIssue.init(rawValue:)) }
+}
+
+// State of the payload file an outbox entry points at.
+enum WatchPayloadState: Equatable {
+    case ready(WatchActivityTransfer)
+    // No payload, but the files were archived as `rejected`: the phone already
+    // answered and only the local cleanup was interrupted.
+    case retired
+    case missing
+    case corrupt
+}
+
+// What a startup reconciliation had to repair.
+struct WatchOutboxReport: Equatable {
+    // Payloads on disk the index had forgotten: an enqueue whose index write failed,
+    // or a delete that failed after its acknowledgement. Adopted back into the queue,
+    // because the phone answers the repeat as a duplicate and nothing is counted twice.
+    var adopted = 0
+    // Entries whose payload is gone. Kept, parked and reported instead of dropped.
+    var missingPayloads = 0
+    // Payloads that could not be decoded. Moved aside, never deleted.
+    var corruptPayloads = 0
+    // Entries and leftover files retired by an acknowledgement that was interrupted.
+    var retired = 0
+
+    var needsAttention: Bool { missingPayloads > 0 || corruptPayloads > 0 }
 }
 
 // One rule decides whether a queued ride may be offered to the phone, used by
@@ -794,8 +835,12 @@ enum WatchTransferGate {
 // MARK: - Outbox (watch side)
 //
 // A finished ride is enqueued here before the draft is deleted, and the entry is
-// only removed once the phone confirms it. Payload and index are separate files
-// so a half-written index can always be rebuilt from the payloads.
+// only removed once the phone confirms it. Payload and index are separate files so a
+// half-written index can always be rebuilt from the payloads, and the order of every
+// transition is chosen so no crash window can strand a ride: a payload is written
+// before its entry, and an entry is removed before its payload is deleted. Files
+// that cannot be sent are parked and reported instead of being dropped, so a broken
+// entry is visible and never blocks the others.
 final class WatchOutbox {
     let directory: URL
     private let backend: WatchFileBackend
@@ -806,8 +851,12 @@ final class WatchOutbox {
     }
 
     private var indexPath: URL { directory.appendingPathComponent("index.json") }
+    // Payloads the phone refused, kept for diagnostics.
     private var rejectedDirectory: URL { directory.appendingPathComponent("rejected") }
+    // Payloads this build could not decode, kept so the bytes can be inspected.
+    private var quarantineDirectory: URL { directory.appendingPathComponent("corrupt") }
     private func payloadPath(_ id: String) -> URL { directory.appendingPathComponent("\(id).json") }
+    private func archivedPath(_ id: String) -> URL { rejectedDirectory.appendingPathComponent("\(id).json") }
 
     func enqueue(_ transfer: WatchActivityTransfer, now: Double) throws -> WatchOutboxEntry {
         try backend.createDirectory(directory)
@@ -862,6 +911,20 @@ final class WatchOutbox {
         return try JSONDecoder().decode(WatchActivityTransfer.self, from: data)
     }
 
+    // Distinguishes "no file" from "a file this build cannot read", and from the one
+    // benign absence: a payload archived by a `rejected` acknowledgement whose index
+    // cleanup was interrupted. The caller must treat the other two as unexpected,
+    // because an entry only exists while its payload still has to be delivered.
+    func payloadState(_ id: String) -> WatchPayloadState {
+        if backend.exists(payloadPath(id)) {
+            guard let data = try? backend.read(payloadPath(id)),
+                  let transfer = try? JSONDecoder().decode(WatchActivityTransfer.self, from: data) else { return .corrupt }
+            return .ready(transfer)
+        }
+        if backend.exists(archivedPath(id)) { return .retired }
+        return .missing
+    }
+
     func pending(now: Double, ownerID: String?) -> [WatchOutboxEntry] {
         loadIndex()
             .filter { WatchTransferGate.isSendable($0, now: now, ownerID: ownerID) }
@@ -902,8 +965,23 @@ final class WatchOutbox {
         try writeIndex(index)
     }
 
-    // Returns true when the ride left the queue. `rejected` keeps the payload for
-    // diagnostics but stops retrying it.
+    // Acknowledgement ordering.
+    //
+    // The entry is written out of the index *before* its payload is deleted, because
+    // deleting first left an index entry pointing at a file that no longer existed
+    // whenever the index write failed or the process died in between: a ride that
+    // could never be sent again and could never be cleared.
+    //
+    //  * index write fails    -> entry and payload both survive; the phone answers the
+    //    retry as a duplicate, so the ride is neither lost nor imported twice.
+    //  * payload delete fails -> an orphan file with no index entry, adopted back by
+    //    reconcile(); the phone answers duplicate and the next acknowledgement clears it.
+    //  * process dies between -> identical to a failed payload delete.
+    //
+    // `rejected` is the one status that keeps its bytes for diagnostics, so it is
+    // archived *first*: the copy exists before the entry leaves the index, a failed
+    // archive keeps the ride retryable, and a missing payload with an archived copy is
+    // recognised as `retired` instead of being reported as corruption.
     @discardableResult
     func noteDelivered(_ id: String, status: String, now: Double) throws -> Bool {
         if status == "parked" {
@@ -911,32 +989,173 @@ final class WatchOutbox {
             return false
         }
         guard WatchQueuePolicy.statusRemovesEntry(status) else { return false }
-        if status == "rejected" {
-            try? backend.createDirectory(rejectedDirectory)
-            let target = rejectedDirectory.appendingPathComponent("\(id).json")
-            if backend.exists(payloadPath(id)) {
-                try? backend.remove(target)
-                try? FileManager.default.moveItem(at: payloadPath(id), to: target)
-            }
-        } else {
-            try? backend.remove(payloadPath(id))
-        }
         var index = loadIndex()
+        // A repeated acknowledgement is a no-op: the ride has already left the queue,
+        // so nothing is rewritten and nothing is re-sent.
+        guard index.contains(where: { $0.id == id }) else { return false }
+
+        if status == "rejected" {
+            // Throws (leaving the ride queued) rather than dropping the only copy.
+            try archive(id)
+        }
+
         index.removeAll { $0.id == id }
         try writeIndex(index)
+        if status != "rejected" {
+            // Best effort: a leftover file is recovered by reconcile(), which sends it
+            // once more (answered as a duplicate) or quarantines it.
+            try? backend.remove(payloadPath(id))
+        }
         return true
     }
 
-    func discard(_ id: String) throws {
-        try? backend.remove(payloadPath(id))
+    // `rejected`: the payload is kept for diagnostics and stops being retried.
+    private func archive(_ id: String) throws {
+        guard backend.exists(payloadPath(id)) else { return }
+        try backend.createDirectory(rejectedDirectory)
+        if backend.exists(archivedPath(id)) { try backend.remove(archivedPath(id)) }
+        try FileManager.default.moveItem(at: payloadPath(id), to: archivedPath(id))
+    }
+
+    // A payload that cannot be read is never retried. It is parked with its reason so
+    // the rider can see it and clear it, and it cannot block any other ride. The reason
+    // and the ride metadata in the index are the durable diagnostic record: they carry
+    // no coordinates or route data, and the bytes themselves are preserved separately.
+    func parkUnreadable(_ id: String, issue: WatchOutboxIssue, now: Double) throws {
         var index = loadIndex()
-        index.removeAll { $0.id == id }
+        guard let position = index.firstIndex(where: { $0.id == id }) else { return }
+        index[position].parkedReason = issue.rawValue
+        index[position].lastError = issue.rawValue
+        index[position].nextAttemptAt = now
         try writeIndex(index)
     }
 
-    func counts() -> (queued: Int, parked: Int) {
+    // Removes the entries nothing can be recovered from. Their payloads are already
+    // gone, so only the index entry is deleted.
+    @discardableResult
+    func discardUnreadable() throws -> Int {
+        var index = loadIndex()
+        let count = index.filter { $0.issue != nil }.count
+        guard count > 0 else { return 0 }
+        index.removeAll { $0.issue != nil }
+        try writeIndex(index)
+        return count
+    }
+    // Startup repair, and the only place orphan payloads are adopted and archived
+    // copies are bounded. Every step is idempotent, so it is safe on a healthy queue.
+    @discardableResult
+    func reconcile(now: Double = Date().timeIntervalSince1970) -> WatchOutboxReport {
+        var report = WatchOutboxReport()
         let index = loadIndex()
-        return (index.filter { !$0.isParked }.count, index.filter { $0.isParked }.count)
+        var repaired: [WatchOutboxEntry] = []
+        var known: Set<String> = []
+        for var entry in index {
+            known.insert(entry.id)
+            switch payloadState(entry.id) {
+            case .ready:
+                repaired.append(entry)
+            case .retired:
+                // Acknowledged and archived: only the index cleanup was interrupted.
+                report.retired += 1
+            case .corrupt:
+                quarantine(payloadPath(entry.id))
+                if entry.issue == nil { report.corruptPayloads += 1 }
+                entry.parkedReason = WatchOutboxIssue.corruptPayload.rawValue
+                entry.lastError = WatchOutboxIssue.corruptPayload.rawValue
+                entry.nextAttemptAt = now
+                repaired.append(entry)
+            case .missing:
+                if entry.issue == nil { report.missingPayloads += 1 }
+                entry.parkedReason = WatchOutboxIssue.missingPayload.rawValue
+                entry.lastError = WatchOutboxIssue.missingPayload.rawValue
+                entry.nextAttemptAt = now
+                repaired.append(entry)
+            }
+        }
+        // Payloads are the source of truth, so a file the index forgot is a ride that
+        // was written but never acknowledged. Adopting it is safe: the phone
+        // deduplicates by ride id and acknowledges the repeat.
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) {
+            for name in names.sorted() where name.hasSuffix(".json") && name != "index.json" {
+                let url = directory.appendingPathComponent(name)
+                let id = String(name.dropLast(".json".count))
+                guard !known.contains(id) else { continue }
+                if backend.exists(archivedPath(id)) {
+                    // Already refused by the phone: the leftover copy is a failed
+                    // cleanup, not a ride to offer again.
+                    try? backend.remove(url)
+                    report.retired += 1
+                    continue
+                }
+                guard let data = try? backend.read(url),
+                      let transfer = try? JSONDecoder().decode(WatchActivityTransfer.self, from: data) else {
+                    quarantine(url)
+                    report.corruptPayloads += 1
+                    continue
+                }
+                known.insert(id)
+                known.insert(transfer.id)
+                repaired.append(WatchOutboxEntry(
+                    id: transfer.id, ownerID: transfer.ownerID, activity: transfer.activity,
+                    queuedAt: transfer.endedAt, startedAt: transfer.startedAt, endedAt: transfer.endedAt,
+                    pointCount: transfer.points.count, attempts: 0, nextAttemptAt: 0,
+                    parkedReason: nil, lastError: nil))
+                report.adopted += 1
+            }
+        }
+        if repaired != index { try? writeIndex(repaired) }
+        pruneArchives()
+        return report
+    }
+
+    // Bytes this build cannot decode are moved out of the index's way instead of being
+    // deleted, so a corrupted ride can still be investigated.
+    private func quarantine(_ url: URL) {
+        guard backend.exists(url) else { return }
+        let name = url.deletingPathExtension().lastPathComponent
+        try? backend.createDirectory(quarantineDirectory)
+        let target = quarantineDirectory.appendingPathComponent("\(name).json")
+        try? backend.remove(target)
+        try? FileManager.default.moveItem(at: url, to: target)
+    }
+
+    private func pruneArchives() {
+        prune(rejectedDirectory)
+        prune(quarantineDirectory)
+    }
+
+    private func prune(_ folder: URL) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        let files = names.filter { $0.hasSuffix(".json") }
+        guard files.count > WatchQueuePolicy.maximumArchive else { return }
+        let dated = files.compactMap { name -> (name: String, date: Date)? in
+            let url = folder.appendingPathComponent(name)
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let date = attributes[.modificationDate] as? Date else { return nil }
+            return (name, date)
+        }.sorted { $0.date > $1.date }
+        for file in dated.dropFirst(WatchQueuePolicy.maximumArchive) {
+            try? backend.remove(folder.appendingPathComponent(file.name))
+        }
+    }
+
+    func discard(_ id: String) throws {
+        var index = loadIndex()
+        guard index.contains(where: { $0.id == id }) else { return }
+        index.removeAll { $0.id == id }
+        // Index first, for the same reason as an acknowledgement: a failed write must
+        // leave the ride queued with its payload intact.
+        try writeIndex(index)
+        try? backend.remove(payloadPath(id))
+    }
+
+    // `unreadable` rides are parked too, but reported separately: nothing can be
+    // recovered from them, so they ask the rider for a decision instead of waiting.
+    func counts() -> (queued: Int, parked: Int, unreadable: Int) {
+        let index = loadIndex()
+        return (index.filter { !$0.isParked }.count,
+                index.filter { $0.isParked && $0.issue == nil }.count,
+                index.filter { $0.issue != nil }.count)
     }
 
     private func writeIndex(_ entries: [WatchOutboxEntry]) throws {
