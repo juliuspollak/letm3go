@@ -6,8 +6,10 @@ import { useState } from 'react';
 import { ArrowLeft, Pencil, Trash2, ImagePlus, MapPin, Camera } from 'lucide-react';
 import JourneyMap from './JourneyMap.jsx';
 import JourneyTags from './JourneyTags.jsx';
+import TrailLink from './TrailLink.jsx';
 import TripDiagnostics from './TripDiagnostics.jsx';
 import { sourceLabel } from '../lib/activityPrivacy.js';
+import { canLinkTrail } from '../lib/mtbLink.js';
 import { recordedJourney, speedLabel, paceLabel } from '../lib/recorder.js';
 import {EquipmentButton} from './EquipmentChip.jsx';
 export default function ActivityDetail({trip,places,vehicles=[],onEquipment,onBack,onEdit,onPhoto,run,onUpdated,onDeleted,busy,error,onSource,onStopChange,grouping,unit='km'}){
@@ -38,6 +40,7 @@ export default function ActivityDetail({trip,places,vehicles=[],onEquipment,onBa
  {trip.state==='recording'&&<p role="status" className="notice">Automatic recording in progress. This activity updates as GPS arrives and continues in the same journey if movement resumes near a stop.</p>}
  {trip.provisional&&<p role="status" className="notice">Stopped and saved to History{continuationMinutes?`; ${continuationMinutes} minute${continuationMinutes===1?'':'s'} remain for the same activity near here`:''}. A different activity (walking after parking, or driving after a walk) is saved as its own journey.</p>}
  {route.length?<JourneyMap journeys={[pointCount>=2?fullPreview:trip]} trimRange={local&&pointCount>=2?{start:trimStart,end:trimEnd,points}:null} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {canLinkTrail(trip)&&<TrailLink trip={trip} perform={perform} busy={busy}/>}
  {trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
   <h2>Route shown on map</h2>
   <p className="muted small-copy">Choose which part of this recording appears on the map. Original GPS points are kept. The map above updates as you drag.</p>

@@ -620,6 +620,16 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .mtb-detail dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:16px 0;font-size:13px}
 .mtb-detail dt{color:var(--muted)}
 .mtb-detail dd{margin:0}
+.trail-link{margin:22px 0;padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
+.trail-link .section-heading{margin-top:0;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.trail-link h2{display:flex;align-items:center;gap:8px;font-size:16px;margin:0}
+.trail-link-current strong{font-size:14px}
+.trail-link-current p{margin:6px 0}
+.trail-link-options{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.trail-link-option{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg);font-size:13px}
+.trail-link-option>span{flex:1}
+.trail-link-option small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+.trail-link-option[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
 
 @keyframes avatar-in{from{opacity:.2;transform:scale(1.06)}to{opacity:1;transform:none}}
 .topbar .header-avatar{display:inline-flex;align-items:center;justify-content:center;width:auto;height:auto;min-width:0;min-height:0;padding:0;border-radius:50%;background:none;box-shadow:none}

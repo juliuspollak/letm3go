@@ -1,4 +1,5 @@
 import { activityTitle, automaticTitle } from './activityTitle.js';
+import { trailLinkPayload, trailSummary } from './mtbLink.js';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 const native = registerPlugin('ManualRecorder');
 export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
@@ -12,7 +13,9 @@ export const recorder = {
  restoreActivity:activity=>native.restoreActivity({activity}),
  restorePhoto:params=>native.restorePhoto(params),
  requestPermission:always=>native.requestPermission({always}),
- start:(activity,vehicle,vehicleID)=>native.start({activity,vehicle:vehicle||undefined,vehicleID:vehicleID||undefined}),
+ // `trail` is optional and only used when starting a mountain-bike ride from a
+ // community trail, so the link survives offline and is saved with the activity.
+ start:(activity,vehicle,vehicleID,trail)=>native.start({activity,vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail)}),
  transition:action=>native.transition({action}),
  openSettings:()=>native.openSettings(),
  setAutomatic:enabled=>native.setAutomatic({enabled}),
@@ -23,6 +26,9 @@ export const recorder = {
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
  editActivity:trip=>native.editActivity(trip),
  assignEquipment:params=>native.assignEquipment(params),
+ // A trail link is stored on the local activity, so it works offline and never
+ // alters community trail data. Passing no trail reference removes the link.
+ assignTrail:params=>native.assignTrail(params),
  trimActivity:params=>native.trimActivity(params),
  setRouteDisplay:params=>native.setRouteDisplay(params),
  deleteActivity:id=>native.deleteActivity({id}),
@@ -33,6 +39,8 @@ export const recorder = {
  acceptSuggestion:params=>native.acceptSuggestion(params),
  skipSuggestion:params=>native.skipSuggestion(params),
 };
+// The stored trail link is exposed as a small object so UI never reads raw
+// native detail keys and a missing link is always `null`, never `undefined`.
 export function recordedJourney(trip) {
  const date=new Date(trip.startedAt*1000);
  const details=trip.details||{};
@@ -40,7 +48,7 @@ export function recordedJourney(trip) {
  const end=Math.max(start+1,Math.min(trip.points.length-1,details.visibleRouteEnd??(trip.points.length-1)));
  const visiblePoints=trip.points.slice(start,end+1);
  const photos=(trip.localPhotos||[]).map(p=>({...p,url:p.privateURI,point:p.latitude!=null&&p.longitude!=null?[p.latitude,p.longitude]:null,caption:p.caption||'A moment along the way'}));
- return {...trip,visibleRouteStart:start,visibleRouteEnd:end,provisional:details.provisional===true,continuationEndsAt:Number.isFinite(details.continuationEndsAt)?details.continuationEndsAt:null,title:activityTitle(trip),titleIsAutomatic:automaticTitle(trip),location:details.startPlace&&details.endPlace?`${details.startPlace} → ${details.endPlace}`:trip.source==='simulator'?'Simulator recording':'Recorded on this iPhone',date:date.toLocaleDateString('en-CA'),distance:Math.round(trip.distanceMeters/100)/10,minutes:Math.floor(trip.durationSeconds/60),durationSeconds:trip.durationSeconds,elevation:0,description:details.description||'',notes:details.notes||'',collection:details.collection||'',classification:details.classification,corrected:details.userCorrected||false,visibility:details.visibility||'private',tags:details.tags||[],route:visiblePoints.map(p=>[p.latitude,p.longitude]),routeSegments:visiblePoints.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean),photos,cover:photos.find(p=>p.id===details.coverPhotoID)?.url||null};
+ return {...trip,visibleRouteStart:start,visibleRouteEnd:end,provisional:details.provisional===true,trail:trailSummary(trip),continuationEndsAt:Number.isFinite(details.continuationEndsAt)?details.continuationEndsAt:null,title:activityTitle(trip),titleIsAutomatic:automaticTitle(trip),location:details.startPlace&&details.endPlace?`${details.startPlace} → ${details.endPlace}`:trip.source==='simulator'?'Simulator recording':'Recorded on this iPhone',date:date.toLocaleDateString('en-CA'),distance:Math.round(trip.distanceMeters/100)/10,minutes:Math.floor(trip.durationSeconds/60),durationSeconds:trip.durationSeconds,elevation:0,description:details.description||'',notes:details.notes||'',collection:details.collection||'',classification:details.classification,corrected:details.userCorrected||false,visibility:details.visibility||'private',tags:details.tags||[],route:visiblePoints.map(p=>[p.latitude,p.longitude]),routeSegments:visiblePoints.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean),photos,cover:photos.find(p=>p.id===details.coverPhotoID)?.url||null};
 }
 // Arrival confirmation can outlast the drive. Present its saved GPS immediately,
 // without adding unfinished activities to grouping, cloud sync or sharing inputs.

@@ -13,7 +13,7 @@ function fmtMeters(m) { return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Ma
 // The dedicated MTB map and community workflow. Trails and approved segments are
 // rendered over the same Apple Maps view as the rest of the app; a rider can draw
 // unmapped singletrack, save a draft and submit it for community approval.
-export default function MtbMap({ currentPosition }) {
+export default function MtbMap({ currentPosition, onRecordTrail }) {
   const { identity } = useAuth();
   const signedIn = identity.status === 'authenticated';
   const [layers, setLayers] = useState(['trails', 'segments']);
@@ -65,7 +65,7 @@ export default function MtbMap({ currentPosition }) {
   }
 
   if (creating) return <MtbEditor kind={creating} onCancel={() => setCreating(null)} onSave={saveDraft} saving={saving} />;
-  if (detail) return <MtbDetail item={detail} onBack={() => setDetail(null)} onSubmit={() => submitItem(detail)} />;
+  if (detail) return <MtbDetail item={detail} onBack={() => setDetail(null)} onSubmit={() => submitItem(detail)} onRecord={onRecordTrail ? () => onRecordTrail(detail) : null} />;
 
   return (
     <section className="mtb-map">
@@ -138,7 +138,7 @@ export default function MtbMap({ currentPosition }) {
   );
 }
 
-function MtbDetail({ item, onBack, onSubmit }) {
+function MtbDetail({ item, onBack, onSubmit, onRecord }) {
   return (
     <section className="mtb-detail">
       <header className="mtb-editor-head"><h2>{item.name}</h2><button type="button" className="icon-button" aria-label="Back" onClick={onBack}><X size={20} /></button></header>
@@ -151,6 +151,7 @@ function MtbDetail({ item, onBack, onSubmit }) {
         <dt>Status</dt><dd>{MTB_STATUS_LABELS[item.status] || item.status}</dd>
       </dl>
       {accessRestricted(item.access) && <p role="status" className="notice">Access is restricted. This trail is not publicly promoted.</p>}
+      {onRecord && item.kind === 'trail' && <><button type="button" className="primary" onClick={onRecord}><Mountain size={16} /> Record this trail</button><p className="muted small-copy">Starts a mountain-bike recording already linked to this trail. The link and your GPS stay private; nothing is published to the community.</p></>}
       {(item.status === 'draft' || item.status === 'changes_requested') && <button type="button" className="primary" onClick={onSubmit}>Submit for approval</button>}
     </section>
   );

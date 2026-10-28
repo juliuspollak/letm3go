@@ -3,6 +3,7 @@ import { recordedJourney, visibleRecorderJourneys, provisionalJourney, speedLabe
 it('preserves native provenance and pause gaps without fabricating route points',()=>{
  const trip=recordedJourney({id:'real',startedAt:1000,source:'device',title:'Walk',points:[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:1}],distanceMeters:1000,durationSeconds:600});
  expect(trip.source).toBe('device');
+ expect(trip.trail).toBeNull();
  expect(trip.routeSegments).toEqual([[[1,2]],[[3,4]]]);
  expect(trip.cover).toBeNull();
  expect(trip.photos).toEqual([]);
@@ -29,6 +30,10 @@ it('keeps a published stop visible in History while it is excluded from grouping
  expect(visibleRecorderJourneys([],{...state,trips:[stopped]},'other')).toEqual([]);
  const finalised={...stopped,details:{}};
  expect(visibleRecorderJourneys([],{...state,trips:[finalised]},'owner')).toEqual([]);
+});
+it('exposes a linked community trail on a recorded ride',()=>{
+ const linked=recordedJourney({id:'ride',source:'device',activity:'MTB',state:'finished',startedAt:1000,endedAt:2200,distanceMeters:5000,durationSeconds:1200,points:[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:0}],details:{mtbTrailID:'11111111-1111-4111-8111-111111111111',mtbTrailName:'Fern Gully',mtbTrailDistanceMeters:4200}});
+ expect(linked.trail).toEqual({id:'11111111-1111-4111-8111-111111111111',name:'Fern Gully',segmentID:null,distanceMeters:4200});
 });
 it('calculates speed and pace with safe zero-distance states',()=>{
  expect(speedLabel(1000,600)).toBe('6.0 km/h');

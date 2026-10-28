@@ -37,6 +37,12 @@ function haversine(a, b){
   return 6371000 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(Math.max(0, 1 - x)));
 }
 
+// Great-circle distance between two [lat, lon] points in metres. Also used by the
+// trail linker to measure how far a candidate trail starts from a recorded ride.
+export function distanceMeters(a, b){
+  return haversine(a, b);
+}
+
 export function geometryDistance(points){
   let total = 0;
   for(let i = 1; i < points.length; i++) total += haversine(points[i - 1], points[i]);

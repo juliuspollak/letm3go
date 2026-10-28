@@ -47,7 +47,7 @@ import Onboarding from './components/Onboarding.jsx';
 import AccountSettings from './components/AccountSettings.jsx';
 import Household from './components/Household.jsx';
 import { useRecorder } from './lib/useRecorder.js';
-import { recordedJourney, visibleRecorderJourneys } from './lib/recorder.js';
+import { recorderAvailable, recordedJourney, visibleRecorderJourneys } from './lib/recorder.js';
 const activities=['All activities','Unknown','Cycling','MTB','Hiking','Mountain biking','Walking','Running','Road cycling','Kitesurfing','Driving','Other'];
 export default function App(){
  useEffect(()=>{const theme=localStorage.getItem('letm3go-theme')==='dark'?'dark':'light';document.documentElement.dataset.theme=theme;void setNativeAppearance(theme).catch(()=>{});},[]);
@@ -219,6 +219,14 @@ function PrivateApp(){
   const result=await recording.run('assignEquipment',{id:trip.id,ids});
   return Boolean(result);
  }
+ // Starting from a community trail saves the link with the activity before any
+ // GPS arrives, so the ride can be recorded offline and linked later if needed.
+ async function recordTrail(trail){
+  if(!trail?.id)return false;
+  const result=await recording.run('start','MTB',undefined,undefined,{id:trail.id,name:trail.name,distanceMeters:trail.distance_meters});
+  if(result){setSheet(null);setSelected(null);setTab('Record');return true;}
+  return false;
+ }
  async function addCollectionItem(item){
   try{await setVehicles([...vehicles,item]);return true;}catch{return false;}
  }
@@ -274,7 +282,7 @@ function PrivateApp(){
  {tab==='Social'&&<div className="social-layout social-redesign"><div className="social-sections" role="group" aria-label="Social sections"><button type="button" aria-pressed={socialSection==='friends'} onClick={()=>setSocialSection('friends')}>Friends</button><button type="button" aria-pressed={socialSection==='household'} onClick={()=>setSocialSection('household')}>Household</button></div>{socialSection==='friends'?<><HouseholdPresence personPhotos={peopleAvatars.photos} householdLivePeople={presence.livePeople} householdLiveEnabled={presence.liveEnabled} selfId={session.user.id} selfAvatar={auth.preferences.avatar} selfName={auth.preferences.displayName||'You'} permission={recording.state.permission} precise={recording.state.precise} presence={presence} friendsLocation={friendsLocation} places={recording.state.places||[]} onSetHome={()=>setSheet('places')}/><Friends personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} invitationCode={pendingInvitation?.kind==='friend'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} onShareLive={()=>friendsLocation.setSharing(true)}/><FriendTrips activities={grouping.journeys}/></>:<><Household invitationCode={pendingInvitation?.kind==='household'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onMembershipChanged={refreshHousehold} onShareLive={()=>presence.setLiveSharing(true)} onStopLive={()=>presence.setLiveSharing(false)} liveEnabled={presence.liveEnabled} liveReady={presence.liveReady} liveError={presence.liveError} onRetrySharing={presence.refreshLive} permission={recording.state.permission} precise={recording.state.precise} onOpenMap={()=>{setSheet(null);setSelected(null);setMapLayers(['people']);setTab('Map');}} vehicles={vehicles} onSaveVehicles={setVehicles}/><HouseholdTrips activities={grouping.records}/></>}</div>}
  {tab==='Map'&&<div className="map-explorer map-social-explorer">
  <div className="map-mode-toggle"><button type="button" className={mapMode==='journeys'?'selected':''} onClick={()=>setMapMode('journeys')}><Map size={14}/> My routes</button><button type="button" className={mapMode==='mtb'?'selected':''} onClick={()=>setMapMode('mtb')}><Mountain size={14}/> Community trails</button></div>
- {mapMode==='mtb'?<MtbMap currentPosition={mapLocation.position}/>:<>
+ {mapMode==='mtb'?<MtbMap currentPosition={mapLocation.position} onRecordTrail={recorderAvailable()&&recording.state.storageReady?recordTrail:null}/>:<>
  <MapFilters value={mapLayers} onChange={setMapLayers}/>
  <JourneyMap journeys={mapJourneys} viewportKey={`${mapLayers.join(':')}:${mapCenterVersion}`} focusPoint={mapLayers.every(layer=>layer==='people')?mapLocation.position:null} onPhoto={openPhoto} currentPosition={mapLocation.position} livePeople={mapLayers.includes('people')?[...friendsLocation.people.map(p=>({...p,source:'friend'})),...presence.livePeople.filter(p=>!friendsLocation.people.some(friend=>friend.user_id===p.user_id)).map(p=>({...p,source:'household'}))]:[]} homePresence={(()=>{if(!mapLayers.includes('people'))return null;const home=recording.state.places?.find(p=>p.kind==='home');if(!home)return null;const names=[...(presence.self?.sharing_enabled&&presence.self?.activity_label==='At home'?['You']:[]),...presence.people.filter(p=>p.activity_label==='At home').map(p=>p.display_name)];return names.length?{latitude:home.latitude,longitude:home.longitude,count:names.length,names}:null;})()} large locating={mapLocation.loading} onLocate={async()=>{if(await mapLocation.locate())setMapCenterVersion(value=>value+1);}}/>{mapLocation.error&&<p role="status" className="notice">{mapLocation.error}</p>}{mapJourneys.length>50&&<p className="muted small-copy">Showing the 50 most recent routes.</p>}</>}</div>}
 
