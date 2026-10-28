@@ -38,7 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Record source
-        run: echo "Source ${GITHUB_REF_NAME} @ ${GITHUB_SHA} (candidate branch build: ${{ inputs.candidate_branch }})" | tee -a "$GITHUB_STEP_SUMMARY"
+        env:
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
+        run: |
+          echo "Source ${GITHUB_REF_NAME} @ ${GITHUB_SHA} (candidate branch build=${CANDIDATE_BRANCH})" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Validate Xcode and iPhoneOS SDK
         run: |
           xcodebuild -version
