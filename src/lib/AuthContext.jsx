@@ -17,7 +17,7 @@ export function AuthProvider({children}){
  const [accountDeletionNotice,setAccountDeletionNotice]=useState(null);
  const boundOwner=useRef(null);
  const generation=useRef(0),explicitLogout=useRef(false),latestSession=useRef(null);
- const recorderRebind=useRef(null);
+ const recorderRebind=useRef(null),lastRecorderRebind=useRef({owner:null,at:0});
  const invalidate=useCallback(()=>{generation.current+=1;},[]);
  const reconcile=useCallback(async(session)=>{
   const turn=++generation.current;latestSession.current=session;
@@ -147,6 +147,11 @@ export function AuthProvider({children}){
   const session=latestSession.current;
   if(explicitLogout.current||!session||ownerID?.toLowerCase()!==session.user.id.toLowerCase())return false;
   if(recorderRebind.current)return recorderRebind.current;
+  // A native recorder failure used to initiate full authentication every 2s.
+  // This remounted the private app repeatedly and concealed the original error.
+  const now=Date.now();
+  if(lastRecorderRebind.current.owner===session.user.id&&now-lastRecorderRebind.current.at<30000)return false;
+  lastRecorderRebind.current={owner:session.user.id,at:now};
   const operation=reconcile(session).then(()=>true).finally(()=>{if(recorderRebind.current===operation)recorderRebind.current=null;});
   recorderRebind.current=operation;return operation;
  },[reconcile]);
