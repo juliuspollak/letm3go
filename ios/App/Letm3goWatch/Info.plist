@@ -28,6 +28,8 @@
 	<string>Letm3go saves your recorded rides as workouts in Health.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Letm3go records the route of your ride.</string>
+	<key>WKApplication</key>
+	<true/>
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>workout-processing</string>
