@@ -532,8 +532,9 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .record-controls .record-control{min-width:0;min-height:0;align-self:center}
 
 /* --- Bottom navigation + shared nav glyphs ------------------------------- */
-/* The compact iPhone tab bar is icon-only; the visible label stays for the desktop rail. */
-.mobile-nav{display:none}
+/* The compact iPhone tab bar is icon-only; the visible label stays for the desktop rail.
+   The base stylesheet already hides the bar on desktop, while the max-width:760px
+   rule above displays it on phones. Do not override that mobile display here. */
 .mobile-nav .nav-label{display:none}
 .record-control.is-current .record-control-ring{inset:2px;border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
 .mobile-nav .record-control{display:grid;min-width:0;gap:0;color:inherit;margin:0}

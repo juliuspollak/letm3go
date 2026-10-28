@@ -25,6 +25,10 @@ it('keeps demonstration routes and photos out of the real application',()=>{sign
 it('restores returning users to Home and keeps browser GPS unavailable',()=>{
  signedIn();render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Start activity'}));expect(screen.getByRole('button',{name:'Start walking'})).toBeDisabled();
 });
+it('shows native recorder load failures instead of presenting an unexplained empty history',()=>{
+ signedIn();recorderHook.mockReturnValue({state:emptyRecorder,run:vi.fn(),busy:false,error:'Private activity storage could not be read.'});render(<App/>);
+ expect(screen.getByRole('alert')).toHaveTextContent('Private activity storage could not be read.');
+});
 it('keeps private screens locked while restoring or reauthenticating',()=>{
  identity.value.status='restoring';const {rerender}=render(<App/>);expect(screen.getByRole('status')).toHaveTextContent('Restoring');expect(recorderHook).not.toHaveBeenCalled();
  identity.value.status='reauth';rerender(<App/>);expect(screen.getByRole('heading',{name:'Welcome to Letm3go.'})).toBeInTheDocument();expect(recorderHook).not.toHaveBeenCalled();
