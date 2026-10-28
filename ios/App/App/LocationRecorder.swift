@@ -549,6 +549,14 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.notifyListeners("journeysChanged", data: [:])
         }
     }
+    // Expose the authoritative recorder snapshot to JavaScript, including the
+    // locked-state diagnostics. Do not require an unlocked account here: the
+    // web UI needs this read-only status to diagnose failed account binding.
+    @objc func getState(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            call.resolve(LocationRecorder.shared.snapshot())
+        }
+    }
     func requireAccount(_ call: CAPPluginCall) -> Bool {
         guard LocationRecorder.shared.uiUnlocked, LocationRecorder.shared.storeOpened, LocationRecorder.shared.ownerID != nil, !LocationRecorder.shared.accountDeleting else { call.reject("Sign in to access private device data."); return false }; return true
     }
