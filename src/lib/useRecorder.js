@@ -10,7 +10,11 @@ import { emptyRecorder, onJourneysChanged, recorder, recorderAvailable } from '.
 // app — while the recorder is idle.
 function tripKey(t){
  if(!t)return '';
- return [t.id,t.updatedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,(t.details?.photos||[]).length].join(':');
+ // Covers live changes that do not bump `updatedAt` (points.length, durationSeconds,
+ // distanceMeters, state) plus everything `updatedAt` reflects (edits, route trim,
+ // equipment, photos). The visible-route indices are listed explicitly as defence
+ // in case a future trim path forgets to advance `updatedAt`.
+ return [t.id,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length].join(':');
 }
 function snapshotKey(data){
  if(!data)return '';
@@ -70,5 +74,18 @@ export function useRecorder(ownerID){
   return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID]);
  const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(emptyRecorder);throw new Error('Private recorder account changed.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID]);
- return {state,run,busy,error};
+ // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the
+ // debug-only counters (trackingUsage, recorderDiagnostics) refresh on open even
+ // though they are excluded from routine polling.
+ const refresh=useCallback(async()=>{
+  if(!recorderAvailable())return;
+  try{
+   const data=await recorder.getState();
+   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(emptyRecorder);setError('Private recorder account does not match this sign-in. Reauthenticate.');return;}
+   lastKey.current=snapshotKey(data);
+   setState(data);
+  }catch(err){setError(err.message||'Unable to read native recorder.');}
+ },[ownerID]);
+
+ return {state,run,busy,error,refresh};
 }

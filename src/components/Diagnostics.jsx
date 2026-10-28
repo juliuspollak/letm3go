@@ -1,5 +1,5 @@
 import { recorderAvailable, recorder } from '../lib/recorder.js';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 // GPS quality is derived from the recorded positions; no routing or gap interpolation.
 function quality(trip){
@@ -20,8 +20,12 @@ function quality(trip){
 }
 function seconds(n){return n==null?'—':n>=60?`${Math.round(n/60)} min`:`${Math.round(n)} s`;}
 
-export default function Diagnostics({state,session,run,preferences={}}){
+export default function Diagnostics({state,session,run,preferences={},refresh}){
  const usage=state.trackingUsage||{};
+ // The recorder's snapshot-key optimisation skips debug counters (trackingUsage,
+ // recorderDiagnostics) during routine polling, so force one fresh read whenever
+ // the screen is opened.
+ useEffect(()=>{if(refresh)void refresh();},[refresh]);
  const [exported,setExported]=useState(null),[exporting,setExporting]=useState('');
  async function exportJourney(id){setExporting(id);setExported(null);try{const report=await recorder.exportJourneyDiagnostics(id);setExported(report);}catch{setExported({error:'This journey could not be exported on this build.'});}finally{setExporting('');}}
  const recent=[...(state.trips||[])].filter(t=>t.endedAt!=null&&t.points?.length).sort((a,b)=>b.startedAt-a.startedAt).slice(0,6);

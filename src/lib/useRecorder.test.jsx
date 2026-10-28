@@ -46,6 +46,19 @@ it('skips an identical poll so the state reference stays stable while idle',asyn
  await act(async()=>mocks.foreground({isActive:true}));
  expect(result.current.state).toBe(first);
 });
+it('does not skip when an active journey gains a GPS point, distance or duration',async()=>{
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.ownerID).toBe('owner'));
+ const drive=(pts,m,d)=>({id:'drive',state:'recording',points:pts,distanceMeters:m,durationSeconds:d});
+ mocks.getState.mockResolvedValue({ownerID:'owner',trips:[],automaticTrip:drive([{latitude:-33,longitude:151}],0,10)});
+ await act(async()=>mocks.foreground({isActive:true}));
+ expect(result.current.state.automaticTrip.points.length).toBe(1);
+ mocks.getState.mockResolvedValue({ownerID:'owner',trips:[],automaticTrip:drive([{latitude:-33,longitude:151},{latitude:-32.9,longitude:151}],500,20)});
+ await act(async()=>mocks.foreground({isActive:true}));
+ expect(result.current.state.automaticTrip.points.length).toBe(2);
+ expect(result.current.state.automaticTrip.distanceMeters).toBe(500);
+ expect(result.current.state.automaticTrip.durationSeconds).toBe(20);
+});
 it('does not expose another account recordings after foreground refresh',async()=>{
  const {result}=renderHook(()=>useRecorder('owner'));
  await waitFor(()=>expect(result.current.state.ownerID).toBe('owner'));
