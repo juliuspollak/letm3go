@@ -91,7 +91,7 @@ extension LocationRecorder {
         var values = URLResourceValues(); values.isExcludedFromBackup = true; try directory.setResourceValues(values)
         ownerID = id.lowercased()
         accountSuspended = false; trackingBoundary = Date().timeIntervalSince1970
-        lastError = ""; recoveryMessage = ""; lastAutomaticFixAt = nil; accuracy = nil; lastFixAt = nil; currentSpeed = 0
+        lastError = ""; recoveryMessage = ""; lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; currentSpeed = 0
         automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(ownerID!)")
         preferences = AccountPreferences()
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
@@ -101,16 +101,64 @@ extension LocationRecorder {
         // A stopped journey is a published record, not an unfinished one: it is
         // restored as a journey that may still be continued.
         trips = records.filter { $0.state == "finished" || $0.isProvisional }
-        active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; detector.reset();departureEvidence.reset()
+        active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil
+        detector.reset();departureEvidence.reset();movementTransition.reset()
+        let openedAt = Date().timeIntervalSince1970
+        // Load the journal before the recovery step so its decisions are recorded.
+        loadRecorderDiagnostics()
+        // A journey that was still recording when the recorder stopped is
+        // recovered, not finalised: it keeps its identity, its saved fixes and its
+        // start time, and the unobserved gap stays a segment break. Only one
+        // journey can be continued, so any further unfinished automatic record is
+        // closed at its own last fix instead of being left open forever.
+        let recovery = AutomaticRecovery.plan(records,now:openedAt)
         for var record in records where record.state != "finished" && !record.isProvisional {
-            record.recoverAfterInterruption()
-            if record.recordingMode == "automatic" { record.finish(at:record.points.last?.timestamp ?? record.startedAt); try storage!.save(record); trips.append(record) }
-            else if active == nil { try storage!.save(record); active = record; recoveryMessage = "Recovered a paused activity. Resume when ready; interrupted time is excluded." }
-            else { throw failure("More than one unfinished manual activity needs recovery.") }
+            let lastFix = record.points.last?.timestamp ?? record.startedAt
+            if record.recordingMode == "automatic" {
+                if record.id == recovery.tripID, recovery.action == .resume {
+                    record.recoverAfterInterruption()
+                    record.updateDetails { metadata in
+                        metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [
+                            "Recorder restarted while this journey was still recording; the journey and its saved GPS fixes were restored",
+                            "The unobserved gap stays a segment break and is excluded from distance and duration"
+                        ]).suffix(24))
+                    }
+                    try storage!.save(record)
+                    automaticTrip = record
+                    accuracy = record.points.last?.accuracy; lastFixAt = lastFix
+                    // Resume the same detector state as a live journey, otherwise the
+                    // next fix would be treated as a new departure and be buffered.
+                    detector.phase = "recording"; detector.lastValidFixAt = lastFix
+                    detector.lastMovementAt = lastFix; detector.anchor = record.points.last
+                    departureEvidence.anchor = record.points.last
+                    recoveryMessage = "Restored the automatic journey that was still recording when the recorder last stopped. Its unobserved gap is excluded from distance."
+                    recordDiagnostic("recovery","Interrupted automatic journey restored",details:["savedFixes":String(record.points.count),"gapSeconds":String(Int(max(0,openedAt-lastFix)))])
+                } else {
+                    let fixes = record.points.count
+                    let reason = (record.id == recovery.tripID ? recovery.action?.reason : nil)
+                        ?? "Journey ended: more than one unfinished automatic journey was found, so only the newest was kept open"
+                    record.finish(at:lastFix)
+                    record.updateDetails { metadata in
+                        metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [reason,"Recorded fixes: \(fixes)"]).suffix(24))
+                    }
+                    try storage!.save(record)
+                    trips.append(record)
+                    recordDiagnostic("recovery","Unfinished automatic journey closed at its last saved fix",details:["savedFixes":String(fixes),"gapSeconds":String(Int(max(0,openedAt-lastFix)))])
+                }
+            } else if active == nil {
+                record.recoverAfterInterruption()
+                try storage!.save(record)
+                active = record
+                recoveryMessage = "Recovered a paused activity. Resume when ready; interrupted time is excluded."
+            } else {
+                throw failure("More than one unfinished manual activity needs recovery.")
+            }
         }
+        // Only a fresh session is bounded to "now". A restored journey owns the
+        // fixes it already saved, including the batch iOS buffers across a restart.
+        trackingBoundary = TrackingBoundary.value(now:openedAt,restoredAutomatic:automaticTrip)
         trips.sort { $0.startedAt > $1.startedAt }
         storeOpened = true
-        loadRecorderDiagnostics()
         // Restore a stop that is still inside its continuation window, and close
         // any provisional journey that can no longer be continued.
         restoreSettledAutomaticJourney()
@@ -125,10 +173,12 @@ extension LocationRecorder {
         for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
         motion = MotionEvidence()
         if var trip = active { trip.pause(at:Date().timeIntervalSince1970); try storage?.save(trip); active = trip }
-        if automaticTrip != nil || settledTripID != nil { try finishAutomatic() }
+        if automaticTrip != nil || settledTripID != nil {
+            try finishAutomatic(reason:"Recording stopped: the recorder was locked or signed out",trigger:"stopAccount",event:"the recorder was locked or signed out")
+        }
         try AccountKeychain.set("active-account",data:nil)
         uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
-        preferences = AccountPreferences(); lastAutomaticFixAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
+        preferences = AccountPreferences(); lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
         for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
@@ -238,14 +288,18 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                 guard self.bindingGeneration == generation else { call.reject("Account changed during verification."); return }
                 let r = LocationRecorder.shared
                 do {
-                    if r.ownerID != id || !r.storeOpened { try r.stopAccount(); try r.openAccount(id) }
+                    // Rebinding the same account must not end a journey that is still
+                    // recording: only an actual account change (or an explicit
+                    // sign-out) closes it. A reopened store restores the journey.
+                    if r.ownerID != id, r.ownerID != nil { try r.stopAccount() }
+                    if r.ownerID != id || !r.storeOpened { try r.openAccount(id) }
                     try AccountKeychain.set("active-account",data:Data(id.utf8))
                     try AccountKeychain.set("signed-out",data:nil)
                     r.accountDeleting = (user?["app_metadata"] as? [String:Any])?["deletion_requested"] as? Bool ?? false
                     r.uiUnlocked = true; r.accountSuspended = false
                     if r.accountDeleting {
                         r.automaticEnabled=false; r.accountSuspended=true
-                        if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic() }
+                        if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
                         r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
@@ -267,7 +321,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard r.uiUnlocked, r.ownerID != nil else { call.reject("Sign in before deleting your account."); return }
         do {
             r.automaticEnabled = false; r.accountSuspended = true
-            if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic() }
+            if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: account deletion was prepared",trigger:"prepareDeletion",event:"the user prepared account deletion") }
             if r.active?.state == "recording" { try r.transition("pause") }
             r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }

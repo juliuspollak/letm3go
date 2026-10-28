@@ -99,6 +99,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var lastLocationUpdateAt: Double?
     var lastLocationAccuracy: Double?
     var lastAutomaticFixAt: Double?
+    // Wall-clock time of the last automatic location delivery, whatever its
+    // accuracy. The stalled-GPS watchdog must restart only when iOS stops
+    // delivering, not when delivery is merely sparse.
+    var lastAutomaticDeliveryAt: Double?
     var automaticGPSRecoveryAt: Double = 0
     var continuousStartedAt:Double?
     var continuousStoppedAt:Double?
@@ -139,7 +143,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "continuousLocationRequested":String(continuousLocationRequested),"pausedByIOS":String(locationUpdatesPaused),
             "desiredAccuracyMeters":String(manager.desiredAccuracy),"distanceFilterMeters":String(manager.distanceFilter),
             "probeUntil":String(automaticSampling.probeUntil ?? 0),"retryAfter":String(automaticSampling.retryAfter),
-            "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),
+            "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),"lastAutomaticDeliveryAt":String(lastAutomaticDeliveryAt ?? 0),"stalledGPSRestartAt":String(automaticGPSRecoveryAt),
             "lowPowerMode":String(ProcessInfo.processInfo.isLowPowerModeEnabled),"backgroundRefreshStatus":String(UIApplication.shared.backgroundRefreshStatus.rawValue)]
     }
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
@@ -215,7 +219,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             let now = Date().timeIntervalSince1970
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:now,activity:self.automaticTrip?.activity ?? "Driving") else { return }
-            self.settleAutomatic()
+            self.settleAutomatic(trigger:"arrivalTimer",event:"the arrival timer confirmed the stop")
         }
     }
     deinit {
@@ -304,22 +308,24 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
               !accountSuspended,let started=continuousStartedAt else {return}
         let precise=automaticSampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticActivelyRecording,now:now)
         guard precise||locationUpdatesPaused else {return}
-        let last=max(started,(precise ? lastAutomaticFixAt : lastLocationUpdateAt) ?? started)
+        // Only an absence of deliveries is a stall. Sparse or coarse fixes prove the
+        // service is running, and restarting it would drop the session state without
+        // producing a fix any sooner.
+        let lastFix = precise ? [lastAutomaticFixAt,lastAutomaticDeliveryAt].compactMap{$0}.max() : lastLocationUpdateAt
+        let last=max(started,lastFix ?? started)
         guard now-last>60,
               now-automaticGPSRecoveryAt>120 else {return}
         automaticGPSRecoveryAt=now
-        trackingEvent("Automatic GPS silent for \(Int(now-last))s; restarting location updates")
-        manager.stopUpdatingLocation()
-        continuousLocationRequested=false
-        locationUpdatesPaused=false
+        recordDiagnostic("recovery","Automatic GPS silent for \(Int(now-last))s with no fix delivery; restarting location updates")
+        stopContinuousLocation(reason:"Location updates restarted after \(Int(now-last))s without a fix")
         reconcileAutomaticSampling()
     }
     func startContinuousLocation(){
         updateIndicatorPolicy()
         if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingStartedAt=continuousStartedAt;gpsStartCount += 1;trackingEvent(gpsReason)}
     }
-    func stopContinuousLocation(){
-        if continuousLocationRequested {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;if let start=trackingStartedAt {continuousSeconds += max(0,continuousStoppedAt!-start)};trackingStartedAt=nil;trackingEvent("Continuous GPS stopped")}
+    func stopContinuousLocation(reason:String = "Continuous GPS stopped"){
+        if continuousLocationRequested {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;if let start=trackingStartedAt {continuousSeconds += max(0,continuousStoppedAt!-start)};trackingStartedAt=nil;trackingEvent(reason)}
         continuousLocationRequested=false;locationUpdatesPaused=false;updateIndicatorPolicy()
     }
     func startSignificantMonitoring(){manager.startMonitoringSignificantLocationChanges();significantLocationRequested=true}
@@ -346,8 +352,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard authorized, locationServicesAvailable else { throw failure("Enable location access before starting.") }
         let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
         guard allowed.contains(activity) else { throw failure("Choose a supported activity.") }
-        if automaticTrip != nil { try finishAutomatic() }
-        if settledTripID != nil { try finishAutomatic(force: true) }
+        if automaticTrip != nil { try finishAutomatic(reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started") }
+        if settledTripID != nil { try finishAutomatic(force: true,reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started") }
         detector.reset()
         let now = Date().timeIntervalSince1970
         var trip = RecordedActivity(activity: activity, vehicle: vehicle, startedAt: now, resumedAt: now, title: "\(activity) · \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short))")
@@ -376,7 +382,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             // Automatic journeys live outside `active`, so the recorder UI must be
             // able to end one that is still recording or waiting for movement.
             guard action == "finish", automaticTrip != nil || settledTripID != nil else { throw failure("There is no active activity.") }
-            try finishAutomatic(force: true)
+            try finishAutomatic(force: true,reason:"Journey finished by user",trigger:"transition",event:"the user tapped finish in the app")
             return
         }
         guard var trip = active, let storage = storage else { throw failure("There is no active activity.") }
@@ -438,7 +444,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         refreshLocationServicesAvailable()
         updateIndicatorPolicy()
         if !automaticAvailable, automaticTrip != nil {
-            do { try finishAutomatic() } catch { lastError = "Automatic recording could not finalize after permission changed: \(error.localizedDescription)" }
+            do { try finishAutomatic(reason:"Recording stopped: location permission was revoked",trigger:"updateIndicatorPolicy",event:"location permission was revoked") } catch { lastError = "Automatic recording could not finalize after permission changed: \(error.localizedDescription)" }
         }
         refreshAutomaticMonitoring()
         if !authorized, active?.state == "recording" {
@@ -483,6 +489,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "oneShotLocationRequests":PositionRequest.activeRequests.count,
                 "desiredAccuracyMeters":manager.desiredAccuracy,"distanceFilterMeters":manager.distanceFilter,
                 "lastLocationUpdateAt":lastLocationUpdateAt as Any? ?? NSNull(),"lastLocationAccuracy":lastLocationAccuracy as Any? ?? NSNull(),
+                "lastAutomaticDeliveryAt":lastAutomaticDeliveryAt as Any? ?? NSNull(),"stalledGPSRestartAt":automaticGPSRecoveryAt,
                 "probeEndsAt":automaticSampling.probeUntil as Any? ?? NSNull(),"stationarySince":detector.stationarySince as Any? ?? NSNull(),
                 "lastDetectedTrip":trips.first(where:{$0.recordingMode == "automatic"}).map{["activity":$0.activity,"startedAt":$0.startedAt,"endedAt":$0.endedAt ?? $0.startedAt] as [String:Any]} as Any? ?? NSNull(),
                 "motionAvailable": CMMotionActivityManager.isActivityAvailable(), "motionPermission": motionPermission,

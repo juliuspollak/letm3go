@@ -726,4 +726,106 @@ check(!batchedEvidence.observe(shopAnchorFix,now:1000),"stationary shop fix anch
 let batchedDriveFix = GPSPoint(latitude:-33.0005,longitude:151,timestamp:1120,accuracy:10,altitude:0,speed:9)
 check(batchedEvidence.observe(batchedDriveFix,now:1180),"a fix delivered 60 seconds late still proves departure")
 
+// An unconfirmed departure must not keep high-accuracy GPS alive forever. One
+// episode of at most six minutes is allowed, and only a genuinely new movement
+// transition earns the next episode.
+var budgetSampling = AutomaticSampling()
+check(budgetSampling.requestProbe(now:100,movementBegan:true),"a new movement starts a departure check")
+check(budgetSampling.probeUntil == 220,"a departure check lasts two minutes")
+check(budgetSampling.expire(now:220),"the first departure check expires")
+check(budgetSampling.extendProbe(now:220),"a still-observed departure extends inside its episode")
+check(budgetSampling.probeUntil == 340 && budgetSampling.probeStartedAt == 100,"an extension continues the same episode")
+check(budgetSampling.expire(now:340) && budgetSampling.extendProbe(now:340),"a sparse third delivery still extends the check")
+check(budgetSampling.expire(now:460),"the third departure check expires")
+check(!budgetSampling.extendProbe(now:460),"a departure check never outlives its six-minute budget")
+budgetSampling.endEpisode(now:460)
+check(budgetSampling.probeStartedAt == nil,"ending the episode releases the spent budget")
+check(budgetSampling.requestProbe(now:470,movementBegan:true),"a later genuine movement earns a fresh departure check")
+check(budgetSampling.probeUntil == 590,"the fresh departure check is bounded like the first")
+var spentSampling = AutomaticSampling()
+spentSampling.probeStartedAt = 100
+check(!spentSampling.requestProbe(now:500),"a fix in a spent episode cannot reopen a departure check")
+check(!spentSampling.extendProbe(now:500),"a spent episode cannot be extended either")
+spentSampling.endEpisode(now:500)
+check(!spentSampling.requestProbe(now:510),"ending an episode keeps the retry cooldown")
+
+// A confirmed stop ends the departure episode, so the next departure starts with a
+// fresh budget instead of inheriting one that an earlier probe had already spent.
+var stoppedSampling = AutomaticSampling()
+_ = stoppedSampling.requestProbe(now:100)
+stoppedSampling.stop(now:200)
+check(stoppedSampling.probeStartedAt == nil,"a confirmed stop ends the departure episode")
+check(stoppedSampling.requestProbe(now:210,movementBegan:true),"a new departure after a confirmed stop is not blocked by the earlier probe")
+check(stoppedSampling.probeStartedAt == 210,"the new departure is budgeted from its own start")
+
+// A recorder restart must continue a journey that was still recording instead of
+// ending it at its last saved fix.
+var restartedTrip = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Interrupted drive")
+restartedTrip.recordingMode="automatic"
+_ = restartedTrip.accept(metreFix(0,0,speed:10),now:0)
+_ = restartedTrip.accept(metreFix(600,60,speed:10),now:60)
+let restartedDistance = restartedTrip.distanceMeters
+let restartedIdentity = restartedTrip.id
+check(AutomaticRecovery.plan([restartedTrip],now:600) == AutomaticRecovery.Plan(tripID:restartedTrip.id,action:.resume,otherFinished:[]),"an interrupted drive is restored, not finalised")
+restartedTrip.recoverAfterInterruption()
+check(restartedTrip.state == "paused","a restored journey waits paused for its next fix")
+check(restartedTrip.id == restartedIdentity && restartedTrip.startedAt == 0,"restoration keeps the journey identity and start time")
+check(restartedTrip.duration(at:600) == 60,"the unobserved gap adds no elapsed time")
+restartedTrip.resume(at:600)
+_ = restartedTrip.accept(metreFix(1200,660,speed:10),now:660)
+check(restartedTrip.state == "recording","the next genuine fix reopens the restored journey")
+check(restartedTrip.duration(at:960) == 60 + 360,"elapsed time after the restart counts only observed movement")
+check(abs(restartedTrip.distanceMeters-restartedDistance) < 1,"the unobserved gap adds no distance")
+check(restartedTrip.points.last?.segment == 1,"the unobserved gap stays a segment break")
+var staleGap = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Stale drive")
+staleGap.recordingMode="automatic"
+_ = staleGap.accept(metreFix(0,0,speed:10),now:0)
+_ = staleGap.accept(metreFix(600,60,speed:10),now:60)
+let staleGapPlan = AutomaticRecovery.plan([staleGap],now:60+AutomaticRecovery.resumeWindow+1)
+check(staleGapPlan.action?.reason?.contains("last saved GPS fix") == true,"a restart beyond the recovery window closes the journey at its last saved fix")
+var singleton = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Single fix")
+singleton.recordingMode="automatic"
+_ = singleton.accept(metreFix(0,0,speed:10),now:0)
+check(AutomaticRecovery.plan([singleton],now:60).action?.reason?.contains("only saved GPS fix") == true,"one saved fix cannot describe movement")
+var newestUnfinished = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Newest")
+newestUnfinished.recordingMode="automatic"
+_ = newestUnfinished.accept(metreFix(0,0,speed:10),now:0)
+_ = newestUnfinished.accept(metreFix(600,600,speed:10),now:600)
+var olderUnfinished = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Older")
+olderUnfinished.recordingMode="automatic"
+_ = olderUnfinished.accept(metreFix(0,0,speed:10),now:0)
+_ = olderUnfinished.accept(metreFix(300,300,speed:10),now:300)
+let multiPlan = AutomaticRecovery.plan([olderUnfinished,newestUnfinished],now:660)
+check(multiPlan.tripID == newestUnfinished.id,"only the newest unfinished automatic journey is restored")
+check(multiPlan.otherFinished == [olderUnfinished.id],"older unfinished automatic journeys are closed at their own last fix")
+var finishedAutomatic = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Finished")
+finishedAutomatic.recordingMode="automatic";finishedAutomatic.finish(at:60)
+check(AutomaticRecovery.plan([finishedAutomatic],now:120).action == nil,"a finished journey is never recovered")
+var provisionalAutomatic = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Stopped")
+provisionalAutomatic.recordingMode="automatic"
+_ = provisionalAutomatic.accept(metreFix(0,0,speed:10),now:0)
+_ = provisionalAutomatic.accept(metreFix(600,60,speed:10),now:60)
+provisionalAutomatic.publishStop(at:60,continuationEndsAt:60+JourneyContinuation.vehiclePauseWindow)
+check(AutomaticRecovery.plan([provisionalAutomatic],now:120).action == nil,"a published stop is left to the continuation window")
+var manualUnfinished = RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Manual")
+_ = manualUnfinished.accept(metreFix(0,0,speed:1),now:0)
+check(AutomaticRecovery.plan([manualUnfinished],now:60).action == nil,"a manual activity is recovered by the manual path")
+
+// The account boundary must not reject a restored journey's own fixes, including
+// the batch iOS delivers after the recorder restarts.
+check(TrackingBoundary.value(now:1000,restoredAutomatic:nil) == 1000,"a fresh session is bounded to now")
+check(TrackingBoundary.value(now:1000,restoredAutomatic:restartedTrip) == 0,"a restored journey owns the fixes it already saved")
+let buffered = GPSPoint(latitude:0,longitude:0.001,timestamp:30,accuracy:5,altitude:0,speed:10)
+check(!AutomaticDetector.acceptsDelivery(buffered,receivedAt:1000,boundary:1000),"a pre-restart fix is rejected for a fresh session")
+check(AutomaticDetector.acceptsDelivery(buffered,receivedAt:60,boundary:TrackingBoundary.value(now:1000,restoredAutomatic:restartedTrip)),"the same fix belongs to the restored journey")
+
+// Every finalisation explains itself, so a saved journey shows what ended it.
+let finalisationEvidence = AutomaticFinalisation.Evidence(trigger:"arrivalTimer",event:"the arrival timer confirmed the stop",reason:"Journey completed after the continuation window",lastFixAt:100,gpsSilentSeconds:290,fixes:42,distanceMeters:1200)
+check(AutomaticFinalisation.note(finalisationEvidence).contains("arrivalTimer"),"the finalisation note names the trigger")
+check(AutomaticFinalisation.coverage(finalisationEvidence).contains("290s"),"the finalisation note records GPS silence")
+let finalisationDetails = AutomaticFinalisation.details(finalisationEvidence)
+check(finalisationDetails["finalisedBy"] == "arrivalTimer","finalisation details name the trigger")
+check(finalisationDetails["gpsSilentBeforeFinishSeconds"] == "290","finalisation details record GPS silence")
+check(finalisationDetails["savedFixes"] == "42" && finalisationDetails["recordedMeters"] == "1200","finalisation details record the saved coverage")
+
 print("\(assertions) native recorder/auth assertions passed")

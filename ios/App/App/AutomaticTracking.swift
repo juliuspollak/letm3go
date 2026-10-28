@@ -39,11 +39,14 @@ extension LocationRecorder {
     }
     func setAutomatic(_ enabled: Bool) throws {
         guard storage != nil else { throw failure("Recording storage is unavailable.") }
-        if !enabled, automaticTrip != nil || settledTripID != nil { try finishAutomatic() }
+        if !enabled, automaticTrip != nil || settledTripID != nil {
+            try finishAutomatic(reason:"Recording stopped: automatic tracking was switched off",trigger:"setAutomatic",event:"automatic tracking was switched off")
+        }
         departureEvidence.reset()
         automaticEnabled = enabled
         recordDiagnostic("preference",enabled ? "Automatic tracking enabled" : "Automatic tracking disabled")
         lastAutomaticFixAt = nil
+        lastAutomaticDeliveryAt = nil
         UserDefaults.standard.set(enabled,forKey:"letm3go-automatic-\(ownerID ?? "locked")")
         if enabled { startMotionUpdates() } else { stopMotionUpdates(); motion = MotionEvidence(); detector.reset() }
         refreshAutomaticMonitoring()
@@ -86,9 +89,11 @@ extension LocationRecorder {
         let now=Date().timeIntervalSince1970
         if automaticTrip == nil || settledAt != nil {
             let wasIdle=(automaticSampling.probeUntil ?? 0)<=now
-            automaticSampling.requestProbe(now:now,movementBegan:movementBegan)
-            if wasIdle,automaticSampling.probeUntil == nil {recordDiagnostic("decision","Departure probe blocked by retry cooldown")}
-            if wasIdle,automaticSampling.probeUntil != nil {trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")}
+            let granted=automaticSampling.requestProbe(now:now,movementBegan:movementBegan)
+            if wasIdle,!granted {
+                recordDiagnostic("decision",automaticSampling.probeStartedAt != nil ? "Departure probe blocked: this departure check has spent its time budget" : "Departure probe blocked by retry cooldown")
+            }
+            if granted {trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")}
         }
         reconcileAutomaticSampling()
         if let end=automaticSampling.probeUntil,automaticProbeTimer == nil {
@@ -103,9 +108,17 @@ extension LocationRecorder {
             // Do not discard buffered departure fixes just because iOS delivered the
             // next one a moment late. If movement is still being observed, grant one
             // more bounded probe so sparse background delivery can confirm departure.
+            // The episode budget is capped, so a stalled delivery loop cannot keep
+            // precise GPS alive: once it is spent the recorder returns to standby and
+            // only fresh evidence (a real movement transition) may probe again.
             let observing = detector.phase == "candidate" && (detector.candidate.last.map{now-$0.timestamp<=120} ?? false)
-            if observing { automaticSampling.requestProbe(now:now,movementBegan:true) }
-            else { detector.reset();trackingEvent("Departure check expired; returning to location standby") }
+            if observing, automaticSampling.extendProbe(now:now) {
+                trackingEvent("Departure check extended: movement is still being observed")
+            } else {
+                detector.reset()
+                automaticSampling.endEpisode(now:now)
+                trackingEvent(observing ? "Departure check budget spent; returning to location standby until the next movement" : "Departure check expired; returning to location standby")
+            }
         }
         // A paused manual activity continues to take precedence over automation.
         if active != nil {return}
@@ -157,6 +170,10 @@ extension LocationRecorder {
         for location in locations.sorted(by:{$0.timestamp<$1.timestamp}) {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
             if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
+            // Delivery of any automatic fix proves the location service is alive. A
+            // sparse or coarse delivery rate is not a stalled manager, so it must not
+            // trigger a restart.
+            if sample.accuracy >= 0, abs(now-sample.timestamp) <= 120 { lastAutomaticDeliveryAt = now }
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
@@ -231,6 +248,22 @@ extension LocationRecorder {
             } else {
                 movementTransition.reset()
             }
+            // A journey restored after a recorder restart keeps its identity and its
+            // saved fixes. Its first accepted fix reopens it as a new segment, so the
+            // unobserved gap is never counted as movement or as elapsed moving time.
+            if var trip = automaticTrip, trip.state != "recording" {
+                let gap = max(0,sample.timestamp-(trip.points.last?.timestamp ?? sample.timestamp))
+                let fixes = trip.points.count
+                trip.resume(at:sample.timestamp)
+                automaticTrip = trip
+                // The gap is unobserved, so it is neither movement nor stillness.
+                // Restart the arrival dwell clock at this observation, otherwise the
+                // restored journey would be published as stopped by its first fix.
+                detector.phase = "recording"; detector.stationarySince = nil
+                detector.lastMovementAt = sample.timestamp; detector.lastValidFixAt = sample.timestamp
+                detector.anchor = sample
+                recordDiagnostic("recovery","Restored automatic journey reopened by a new GPS fix",details:["gapSeconds":String(Int(gap)),"savedFixes":String(fixes)])
+            }
             let event = detector.observe(sample,motion:motion,manualActive:false,now:observedAt,activity:automaticTrip?.activity ?? "Driving")
             do {
                 if event == "depart", let first = detector.candidate.first {
@@ -282,15 +315,20 @@ extension LocationRecorder {
                 }
                 if automaticTrip != nil {
                     accuracy = sample.accuracy; lastFixAt = sample.timestamp; currentSpeed = sample.speed
-                    if event == "arrive" || (automaticTrip?.points.count ?? 0) >= 50_000 { 
-                        if event == "arrive", (automaticTrip?.points.count ?? 0) < 50_000 { settleAutomatic() }
-                        else { try finishAutomatic() }
+                    if event == "arrive" || (automaticTrip?.points.count ?? 0) >= 50_000 {
+                        if event == "arrive", (automaticTrip?.points.count ?? 0) < 50_000 {
+                            settleAutomatic(trigger:"processAutomatic",event:"GPS arrival was confirmed")
+                        }
+                        else { try finishAutomatic(reason:"Recording stopped: the 50,000-fix limit was reached",trigger:"processAutomatic",event:"the 50,000-fix limit was reached") }
                     }
                 }
             } catch {
                 recordDiagnostic("error","Automatic activity could not be saved",details:["code":String((error as NSError).code)])
                 lastError = "Automatic tracking could not save: \(error.localizedDescription)"
-                stopContinuousLocation(); return
+                // Storing failed, so the journey cannot be extended safely. Stop the
+                // service with a recorded reason instead of leaving it running.
+                stopContinuousLocation(reason:"automatic route saving failed")
+                return
             }
         }
     }
@@ -415,7 +453,7 @@ extension LocationRecorder {
     // pause, so it is excluded from the moving duration and stays a segment break.
     // The published record remains open for a context-based window, so nearby
     // movement updates the same activity instead of creating a second one.
-    func settleAutomatic() {
+    func settleAutomatic(trigger: String = "settleAutomatic", event: String = "the journey stopped moving") {
         guard var trip = automaticTrip, let storage = storage else { detector.reset(); return }
         let now = Date().timeIntervalSince1970
         let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
@@ -427,7 +465,7 @@ extension LocationRecorder {
         // Genuine movement is required before a journey is worth publishing.
         guard trip.points.count >= 2, trip.distanceMeters >= 25 else {
             automaticTrip = trip
-            try? finishAutomatic(force:true)
+            try? finishAutomatic(force:true,reason:"Recording stopped: the journey never recorded enough movement",trigger:trigger,event:event)
             return
         }
         let family = JourneyFamily.detected(trip)
@@ -441,6 +479,7 @@ extension LocationRecorder {
         trip.updateDetails { metadata in
             metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [
                 "Journey stopped after \(Int(max(0,now-lastMovement)))s without movement",
+                "Stop confirmed by \(trigger) (\(event))",
                 JourneyContinuation.stopSummary(stop),
                 "Published to history immediately; GPS is now in low-power standby"
             ]).suffix(24))
@@ -513,7 +552,7 @@ extension LocationRecorder {
                 // become the next journey's beginning without being counted twice.
                 try endSettledJourney(reason, starting: change)
             } else {
-                try finalizeSettledAutomatic(reason: reason)
+                try finalizeSettledAutomatic(reason: reason,trigger:"processAutomatic",event:"later GPS fixes showed the movement had not continued")
                 trackingEvent("Stopped journey ended; a new activity will be detected")
             }
             return decision
@@ -521,7 +560,7 @@ extension LocationRecorder {
             break
         }
         guard trip.continueAfterStop(at:max(settled,sample.timestamp)) else {
-            try finalizeSettledAutomatic(reason: "Stopped journey could not be continued")
+            try finalizeSettledAutomatic(reason: "Stopped journey could not be continued",trigger:"processAutomatic",event:"the published stop could not accept the continuation fix")
             return .finish(reason: "Stopped journey could not be continued")
         }
         let previousDistance = trip.distanceMeters
@@ -568,34 +607,40 @@ extension LocationRecorder {
         guard settledTripID != nil else { return }
         guard let endsAt = continuationEndsAt ?? settledAt.map({ $0 + JourneyContinuation.window }) else { return }
         guard now >= endsAt else { return }
-        do { try finalizeSettledAutomatic() } catch { lastError = error.localizedDescription }
+        do { try finalizeSettledAutomatic(trigger:"finishExpiredContinuation",event:"the continuation window ended") } catch { lastError = error.localizedDescription }
     }
     // A published stop ends when sustained movement proves a different activity.
     // The journey is finalised first (its route never changes), then the next one
     // starts from the same sustained fixes so no distance is invented between them.
     func endSettledJourney(_ reason: String, starting family: JourneyFamily) throws {
         let confirmed = movementTransition.candidates
-        try finalizeSettledAutomatic(reason: reason)
+        try finalizeSettledAutomatic(reason: reason,trigger:"endSettledJourney",event:"sustained movement proved a different activity")
         guard family != .other else { return }
         recordDiagnostic("detection","Stopped journey ended at a confirmed movement change",details:["to":family.rawValue])
         try startAutomaticJourney(family, from: confirmed, note: reason)
     }
     // Clear the continuation marker on the published journey in place. Its record,
     // route and position in history do not change, so nothing is duplicated.
-    func finalizeSettledAutomatic(force: Bool = false, reason: String? = nil) throws {
+    func finalizeSettledAutomatic(force: Bool = false, reason: String? = nil, trigger: String = "finalizeSettledAutomatic", event: String = "the journey was already published as stopped") throws {
         guard let id = settledTripID, let storage = storage,
               var trip = trips.first(where: { $0.id == id }) else {
             settleStateReset(); cleanupContinuationRegion(); return
         }
         let note = reason ?? (force ? "Journey finished by user" : "Journey completed after the continuation window")
+        let lastFix = trip.points.last?.timestamp
+        let evidence = AutomaticFinalisation.Evidence(trigger:trigger,event:event,reason:note,
+            lastFixAt:lastFix,
+            gpsSilentSeconds:max(0,(trip.endedAt ?? lastFix ?? 0)-(lastFix ?? 0)),
+            fixes:trip.points.count,distanceMeters:trip.distanceMeters)
         trip.completeProvisional()
         trip.updateDetails { metadata in
-            metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [note, "Continuation: none"]).suffix(24))
+            metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [note, "Continuation: none", AutomaticFinalisation.note(evidence)]).suffix(24))
         }
         nameEndpoints(&trip)
         try storage.save(trip)
         trips.removeAll { $0.id == trip.id }
         trips.insert(trip,at:0)
+        recordDiagnostic("finalisation","Published stop finalised",details:AutomaticFinalisation.details(evidence))
         settleStateReset()
         // The journey is over: the next real movement starts a fresh departure
         // candidate rather than resuming the finished detector phase.
@@ -607,16 +652,24 @@ extension LocationRecorder {
         automaticSampling.stop(now:Date().timeIntervalSince1970)
         reconcileAutomaticSampling()
     }
-    // Close a provisional journey that can no longer be continued.
-    func finalizeProvisional(_ id: String, note: String) {
+    // Close a provisional journey that can no longer be continued. The closing
+    // decision is recorded as evidence, so a stop that ended while the app was
+    // closed is distinguishable from one the user finished.
+    func finalizeProvisional(_ id: String, note: String, trigger: String = "finalizeProvisional", event: String = "the published stop could no longer be continued") {
         guard let index = trips.firstIndex(where: { $0.id == id }) else { return }
         var trip = trips[index]
+        let lastFix = trip.points.last?.timestamp
+        let evidence = AutomaticFinalisation.Evidence(trigger:trigger,event:event,reason:note,
+            lastFixAt:lastFix,
+            gpsSilentSeconds:max(0,(trip.endedAt ?? lastFix ?? 0)-(lastFix ?? 0)),
+            fixes:trip.points.count,distanceMeters:trip.distanceMeters)
         trip.completeProvisional()
         trip.updateDetails { metadata in
-            metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [note]).suffix(24))
+            metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [note, AutomaticFinalisation.note(evidence)]).suffix(24))
         }
         do { try storage?.save(trip) } catch { lastError = error.localizedDescription }
         trips[index] = trip
+        recordDiagnostic("finalisation","Published stop closed without continuation",details:AutomaticFinalisation.details(evidence))
         if settledTripID == id { settleStateReset(); detector.reset(); movementTransition.reset(); cleanupContinuationRegion() }
         notifyJourneyChange()
     }
@@ -625,7 +678,7 @@ extension LocationRecorder {
     func restoreSettledAutomaticJourney() {
         let now = Date().timeIntervalSince1970
         let plan = ProvisionalRecovery.plan(trips,now:now)
-        for id in plan.closed { finalizeProvisional(id,note:"Journey completed while the app was closed") }
+        for id in plan.closed { finalizeProvisional(id,note:"Journey completed while the app was closed",trigger:"restoreSettledAutomaticJourney",event:"the continuation window ended while the app was closed") }
         guard let id = plan.resumed, automaticTrip == nil, active == nil,
               let trip = trips.first(where: { $0.id == id }) else { return }
         settledTripID = trip.id
@@ -652,10 +705,10 @@ extension LocationRecorder {
     func cleanupContinuationRegion() {
         for region in manager.monitoredRegions where region.identifier == "letm3go-place-continuation" { manager.stopMonitoring(for:region) }
     }
-    func finishAutomatic(force: Bool = false, reason: String? = nil) throws {
+    func finishAutomatic(force: Bool = false, reason: String? = nil, trigger: String = "finishAutomatic", event: String = "the automatic journey was ended") throws {
         // A published stop is finalised in place; its geometry is already recorded.
         guard var trip = automaticTrip, let storage = storage else {
-            if settledTripID != nil { try finalizeSettledAutomatic(force:force,reason:reason) }
+            if settledTripID != nil { try finalizeSettledAutomatic(force:force,reason:reason,trigger:trigger,event:event) }
             else { detector.reset() }
             return
         }
@@ -690,9 +743,14 @@ extension LocationRecorder {
             return
         }
         let previousArrivalNotes=trip.details?.trackingNotes ?? []
-        let endReason = force ? "Journey finished by user"
-            : (reason ?? "Journey ended after the continuation window")
-        trip.details?.trackingNotes = Array((previousArrivalNotes + [endReason, "Movement end: \(Date(timeIntervalSince1970:lastMovement))", "Recorded fixes: \(trip.points.count)", "Final GPS coverage: \(Int(max(0,end - (trip.points.last?.timestamp ?? trip.startedAt)))) seconds before finish"]).suffix(24))
+        let endReason = reason ?? (force ? "Journey finished by user" : "Journey ended after the continuation window")
+        // Record why, and on what evidence, the journey ended. The note distinguishes a
+        // user finish from a recorder-side finalisation after GPS went silent.
+        let lastFix = trip.points.last?.timestamp ?? trip.startedAt
+        let evidence = AutomaticFinalisation.Evidence(trigger:trigger,event:event,reason:endReason,
+            lastFixAt:trip.points.last?.timestamp,gpsSilentSeconds:max(0,end-lastFix),
+            fixes:trip.points.count,distanceMeters:trip.distanceMeters)
+        trip.details?.trackingNotes = Array((previousArrivalNotes + [endReason, "Movement end: \(Date(timeIntervalSince1970:lastMovement))", "Recorded fixes: \(trip.points.count)", AutomaticFinalisation.coverage(evidence), AutomaticFinalisation.note(evidence)]).suffix(24))
         trip.finish(at:end)
         trip.completeProvisional()
         nameEndpoints(&trip)
@@ -700,6 +758,7 @@ extension LocationRecorder {
         trip.updateDetails { $0.routeQuality = finishQuality }
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip)
+        recordDiagnostic("finalisation",force ? "Automatic journey finished" : "Automatic journey finalised",details:AutomaticFinalisation.details(evidence))
         trips.insert(trip,at:0); automaticTrip = nil; settleStateReset(); detector.reset(); movementTransition.reset();departureEvidence.reset()
         notifyJourneyChange()
         trackingEvent(force ? "Automatic journey finished by user" : "Automatic journey saved")
@@ -726,7 +785,7 @@ extension LocationRecorder {
         let now = Date().timeIntervalSince1970
         if visit.departureDate == .distantFuture {
             finishExpiredContinuation(now:now)
-            if automaticTrip != nil, detector.shouldArrive(now:now,activity:automaticTrip?.activity ?? "Driving") { settleAutomatic() }
+            if automaticTrip != nil, detector.shouldArrive(now:now,activity:automaticTrip?.activity ?? "Driving") { settleAutomatic(trigger:"didVisit",event:"a visit began at the current location") }
             return
         }
         guard automaticAvailable, active == nil else { return }

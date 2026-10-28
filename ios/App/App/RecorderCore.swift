@@ -793,6 +793,83 @@ enum ProvisionalRecovery {
         return Plan(resumed: resumable ? newest.id : nil, closed: closed)
     }
 }
+// A recorder restart must not silently end a journey that was still recording.
+// The decision is derived only from the persisted record: a gap the process slept
+// through is not evidence that the movement stopped, so the journey is reopened as
+// a new segment instead of being closed at its last saved fix.
+enum AutomaticRecovery {
+    // Beyond this the missing time cannot be attributed to the same movement, so
+    // the journey is closed at its last saved fix rather than extended.
+    static let resumeWindow: Double = 30*60
+    enum Action: Equatable {
+        case resume
+        case finish(reason: String)
+        var reason: String? { if case .finish(let reason) = self { return reason }; return nil }
+    }
+    struct Plan: Equatable {
+        var tripID: String?
+        var action: Action?
+        var otherFinished: [String] = []
+    }
+    static func plan(_ trips: [RecordedActivity], now: Double, resumeWindow: Double = resumeWindow) -> Plan {
+        // Published stops (`isProvisional`) are handled by `ProvisionalRecovery`:
+        // they already have an end and a continuation window.
+        let unfinished = trips.filter { $0.state != "finished" && !$0.isProvisional && $0.recordingMode == "automatic" }
+            .sorted { ($0.points.last?.timestamp ?? $0.startedAt) > ($1.points.last?.timestamp ?? $1.startedAt) }
+        guard let newest = unfinished.first else { return Plan() }
+        var closed = unfinished.dropFirst().map { $0.id }
+        let lastFix = newest.points.last?.timestamp ?? newest.startedAt
+        let action: Action
+        if newest.points.count < 2 {
+            action = .finish(reason: "Journey ended at its only saved GPS fix: a restart with fewer than two fixes cannot describe movement")
+        } else if now-lastFix > resumeWindow {
+            action = .finish(reason: "Journey ended at its last saved GPS fix: the recorder restarted \(Int(max(0,now-lastFix)))s later, beyond the \(Int(resumeWindow/60))-minute recovery window")
+        } else {
+            action = .resume
+        }
+        if case .finish = action { closed.append(newest.id) }
+        return Plan(tripID: newest.id, action: action, otherFinished: closed)
+    }
+}
+
+// The account boundary exists so a fix delivered for another account or session
+// can never become this account's automatic geometry. A journey that was already
+// recording when the recorder restarted is its own boundary: its saved fixes and
+// the batch iOS delivers after relaunch belong to it even though they predate the
+// restart. A fresh session keeps the plain "now" boundary.
+enum TrackingBoundary {
+    static func value(now: Double, restoredAutomatic: RecordedActivity?) -> Double {
+        guard let trip = restoredAutomatic else { return now }
+        return min(now, trip.startedAt)
+    }
+}
+
+// Every finalisation records which code path ended the journey and on what
+// evidence, so the saved journey explains itself without the incident export.
+// This is what separates "the user finished it" from "the recorder finalised it
+// while GPS was silent".
+enum AutomaticFinalisation {
+    struct Evidence: Equatable {
+        var trigger: String
+        var event: String
+        var reason: String
+        var lastFixAt: Double?
+        var gpsSilentSeconds: Double
+        var fixes: Int
+        var distanceMeters: Double
+    }
+    static func note(_ evidence: Evidence) -> String {
+        "Finalised by \(evidence.trigger) (\(evidence.event)): \(evidence.reason)"
+    }
+    static func coverage(_ evidence: Evidence) -> String {
+        "GPS coverage at finalisation: \(Int(max(0,evidence.gpsSilentSeconds)))s since the last saved fix, \(evidence.fixes) saved fixes, \(Int(max(0,evidence.distanceMeters)))m recorded"
+    }
+    static func details(_ evidence: Evidence) -> [String: String] {
+        ["finalisedBy":evidence.trigger,"finalisationEvent":evidence.event,"finalisationReason":evidence.reason,
+         "lastFixAt":String(Int(evidence.lastFixAt ?? 0)),"gpsSilentBeforeFinishSeconds":String(Int(max(0,evidence.gpsSilentSeconds))),
+         "savedFixes":String(evidence.fixes),"recordedMeters":String(Int(max(0,evidence.distanceMeters)))]
+    }
+}
 
 struct AutomaticDetector {
     static func acceptsDelivery(_ point:GPSPoint,receivedAt:Double,boundary:Double)->Bool {
@@ -923,15 +1000,47 @@ func matchedPhotoPoint(captureTime: Double?, trip: RecordedActivity) -> GPSPoint
 struct AutomaticSampling {
     var probeUntil: Double?
     var retryAfter: Double = 0
-    mutating func requestProbe(now: Double, movementBegan:Bool = false) {
-        guard probeUntil == nil, movementBegan || now >= retryAfter else { return }
-        probeUntil=now+120
+    // Start of the current departure episode. A late or partial background fix can
+    // justify one more bounded probe, but a stream of sparse fixes must not keep
+    // high-accuracy GPS alive for a journey that was never confirmed. Without this
+    // cap a stalled delivery loop extends the check forever.
+    var probeStartedAt: Double?
+    static let probeDuration: Double = 120
+    static let probeCooldown: Double = 60
+    static let probeBudget: Double = 360
+    @discardableResult
+    mutating func requestProbe(now: Double, movementBegan:Bool = false) -> Bool {
+        guard probeUntil == nil, movementBegan || now >= retryAfter else { return false }
+        if let started=probeStartedAt, now-started >= Self.probeBudget {
+            // A spent episode stays spent for the same movement: only a genuinely new
+            // movement transition earns a fresh budget, so a stream of sparse fixes
+            // cannot keep high-accuracy GPS alive indefinitely.
+            guard movementBegan else { return false }
+            probeStartedAt=now
+        }
+        if probeStartedAt == nil { probeStartedAt=now }
+        probeUntil=now+Self.probeDuration
+        return true
     }
+    // Extend a running check only while this episode still has budget left. The
+    // caller ends the episode when this returns false, so an unconfirmed departure
+    // cannot hold precise GPS indefinitely. An extension continues the same episode,
+    // so it is never blocked by the cooldown that the expiry just started.
+    @discardableResult
+    mutating func extendProbe(now: Double) -> Bool {
+        guard probeUntil == nil, let started=probeStartedAt, now-started < Self.probeBudget else { return false }
+        probeUntil=now+Self.probeDuration
+        return true
+    }
+    @discardableResult
     mutating func expire(now: Double) -> Bool {
         guard let end=probeUntil,now>=end else { return false }
-        probeUntil=nil;retryAfter=now+60;return true
+        probeUntil=nil;retryAfter=now+Self.probeCooldown;return true
     }
-    mutating func stop(now: Double) {probeUntil=nil;retryAfter=now+60}
+    // A confirmed stop or a spent budget ends the episode, so the next genuine
+    // movement earns a fresh bounded budget instead of inheriting an exhausted one.
+    mutating func stop(now: Double) {probeUntil=nil;retryAfter=now+Self.probeCooldown;probeStartedAt=nil}
+    mutating func endEpisode(now: Double) {stop(now:now)}
     func needsGPS(automaticAvailable:Bool,manualRecording:Bool,automaticRecording:Bool,now:Double)->Bool {
         manualRecording || (automaticAvailable && (automaticRecording || (probeUntil ?? 0)>now))
     }
