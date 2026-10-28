@@ -584,6 +584,40 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 /* --- Shared avatar presentation ------------------------------------------ */
 .person-avatar{transition:transform .25s cubic-bezier(.22,1.24,.36,1)}
 .person-avatar img{animation:avatar-in .38s cubic-bezier(.22,1.24,.36,1) both}
+/* MTB community trails (Milestone B) */
+.map-mode-toggle{display:flex;gap:8px;margin-bottom:12px}
+.map-mode-toggle button{display:flex;align-items:center;gap:7px;padding:9px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:12px}
+.map-mode-toggle button.selected{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.mtb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:14px 0}
+.mtb-head h2{display:flex;align-items:center;gap:9px;font-size:18px;margin:0}
+.mtb-tabs{display:flex;gap:6px}
+.mtb-tabs button{padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px}
+.mtb-tabs button.selected{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.mtb-layer-toggles{display:flex;gap:8px;margin-bottom:10px}
+.mtb-layer-toggles button{padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px}
+.mtb-layer-toggles button.selected{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.mtb-create{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.mtb-toolbar{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;align-items:center}
+.mtb-import{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px;cursor:pointer}
+.mtb-editor-head{display:flex;align-items:center;justify-content:space-between;margin:8px 0 14px}
+.mtb-editor-head h2{font-size:19px;margin:0}
+.mtb-form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.mtb-vertex-list{list-style:none;padding:0;margin:12px 0}
+.mtb-vertex-list li{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;font-size:12px}
+.mtb-vertex-list li span{flex:1}
+.mtb-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.mtb-actions button{min-width:120px}
+.mtb-list{list-style:none;padding:0;margin:12px 0}
+.mtb-list li button{width:100%;text-align:left;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13px;margin-bottom:6px}
+.mtb-row{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;flex-wrap:wrap}
+.mtb-row>div{flex:1;min-width:160px}
+.mtb-row-main{flex:1;text-align:left;border:none;background:none;padding:0;cursor:pointer}
+.mtb-row-main strong{font-size:13px}
+.mtb-row-main p{margin:2px 0 0}
+.mtb-detail dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:16px 0;font-size:13px}
+.mtb-detail dt{color:var(--muted)}
+.mtb-detail dd{margin:0}
+
 @keyframes avatar-in{from{opacity:.2;transform:scale(1.06)}to{opacity:1;transform:none}}
 .topbar .header-avatar{display:inline-flex;align-items:center;justify-content:center;width:auto;height:auto;min-width:0;min-height:0;padding:0;border-radius:50%;background:none;box-shadow:none}
 .topbar .header-avatar .person-avatar{width:36px;height:36px;font-size:16px}
