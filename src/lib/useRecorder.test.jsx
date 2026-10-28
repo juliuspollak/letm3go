@@ -75,3 +75,20 @@ it('requests a controlled account rebind when native storage is locked',async()=
  expect(rebind).toHaveBeenCalledWith('owner');
  expect(result.current.state).toMatchObject({version:'1.0',build:'57',permission:'locked',storageReady:false,trips:[]});
 });
+
+it('only requests one rebind for repeated locked native snapshots',async()=>{
+ const rebind=vi.fn().mockResolvedValue(false);
+ mocks.getState.mockResolvedValue({trips:[],permission:'locked',storageReady:false,version:'1.0',build:'57'});
+ const {result}=renderHook(()=>useRecorder('owner',rebind));
+ await waitFor(()=>expect(rebind).toHaveBeenCalledTimes(1));
+ await act(async()=>mocks.foreground({isActive:true}));
+ await act(async()=>mocks.foreground({isActive:true}));
+ expect(rebind).toHaveBeenCalledTimes(1);
+ expect(result.current.state.trips).toEqual([]);
+ expect(result.current.error).toContain('locked');
+});
+it('exposes native bridge errors instead of claiming there are no recorded journeys',async()=>{
+ mocks.getState.mockRejectedValue(new Error('ManualRecorder bridge unavailable'));
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.error).toContain('ManualRecorder bridge unavailable'));
+});

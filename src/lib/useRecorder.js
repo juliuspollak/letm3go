@@ -43,6 +43,14 @@ function lockedSnapshot(data){
 export function useRecorder(ownerID,onBindingRequired){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const lastKey=useRef('');
+ const rebindAttempt=useRef(null);
+ const requestRebind=useCallback(actualOwner=>{
+  if(!ownerID||!onBindingRequired)return;
+  const key=`${ownerID.toLowerCase()}:${String(actualOwner||'unbound').toLowerCase()}`;
+  if(rebindAttempt.current===key)return;
+  rebindAttempt.current=key;
+  void Promise.resolve().then(()=>onBindingRequired(ownerID)).catch(err=>setError(err?.message||'Unable to reopen private activity storage.'));
+ },[ownerID,onBindingRequired]);
  useEffect(()=>{
   let alive=true,pending=false,requestID=0,startedAt=0;
   async function refresh(force=false){
@@ -55,8 +63,10 @@ export function useRecorder(ownerID,onBindingRequired){
     const data=await recorder.getState();
     if(!alive||id!==requestID)return;
     if(recorderAvailable()&&ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
-     lastKey.current='';setState(lockedSnapshot(data));void onBindingRequired?.(ownerID);throw new Error(data.ownerID?'Private recorder account does not match this sign-in. Reauthenticating.':'Private recorder is locked. Reauthenticating.');
+     lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);throw new Error(data.ownerID?'Private recorder account does not match this sign-in. Activity storage remains locked.':'Native activity storage is locked / not bound to this sign-in. Existing recordings were not cleared.');
     }
+    rebindAttempt.current=null;
+    setError('');
     // Skip an identical poll: keeps the state reference stable so memoised
     // journey lists and maps do not recompute while nothing actually changed.
     const key=snapshotKey(data);
@@ -75,8 +85,8 @@ export function useRecorder(ownerID,onBindingRequired){
   // as soon as it is published instead of on the next poll or app restart.
   void onJourneysChanged(()=>void refresh(true)).then(handle=>{if(alive)journeyListener=handle;else void handle?.remove();}).catch(()=>{});
   return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
- },[ownerID,onBindingRequired]);
- const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(lockedSnapshot(result));void onBindingRequired?.(ownerID);throw new Error('Private recorder account changed. Reauthenticating.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID,onBindingRequired]);
+ },[ownerID,requestRebind]);
+ const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(lockedSnapshot(result));requestRebind(result.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID,requestRebind]);
  // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the
  // debug-only counters (trackingUsage, recorderDiagnostics) refresh on open even
  // though they are excluded from routine polling.
@@ -84,11 +94,13 @@ export function useRecorder(ownerID,onBindingRequired){
   if(!recorderAvailable())return;
   try{
    const data=await recorder.getState();
-   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(lockedSnapshot(data));void onBindingRequired?.(ownerID);setError(data.ownerID?'Private recorder account does not match this sign-in. Reauthenticating.':'Private recorder is locked. Reauthenticating.');return;}
+   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);setError(data.ownerID?'Private recorder account does not match this sign-in. Activity storage remains locked.':'Native activity storage is locked / not bound to this sign-in. Existing recordings were not cleared.');return;}
+   rebindAttempt.current=null;
+   setError('');
    lastKey.current=snapshotKey(data);
    setState(data);
   }catch(err){setError(err.message||'Unable to read native recorder.');}
- },[ownerID,onBindingRequired]);
+ },[ownerID,requestRebind]);
 
  return {state,run,busy,error,refresh};
 }
