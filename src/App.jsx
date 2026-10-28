@@ -14,6 +14,8 @@ import {useJourneyGrouping} from './lib/useJourneyGrouping.js';
 import JourneyGroupingPanel from './components/JourneyGroupingPanel.jsx';
 import GroupedJourneyDetail from './components/GroupedJourneyDetail.jsx';
 import AnimatedWordmark from './components/AnimatedWordmark.jsx';
+import ActivityIcon from './components/ActivityIcon.jsx';
+import TripsList from './components/TripsList.jsx';
 import MobileNav from './components/MobileNav.jsx';
 import NavButton from './components/NavButton.jsx';
 import {NAV_ITEMS} from './lib/navigation.js';
@@ -29,7 +31,7 @@ import EquipmentSheet from './components/EquipmentSheet.jsx';
 import {EquipmentChip} from './components/EquipmentChip.jsx';
 import {equipmentTripCount,equipmentUsage,itemTitle,tripEquipmentLabel,tripUsesEquipment} from './lib/collection.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {Archive, ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Footprints, Home, Map, MapPin, Mountain, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Bike, Car, Waves, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
+import { ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Home, Map, MapPin, Mountain, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
 import JourneyMap from './components/JourneyMap.jsx';
 import MtbMap from './components/MtbMap.jsx';
 import RecorderPanel from './components/RecorderPanel.jsx';
@@ -47,7 +49,6 @@ import Household from './components/Household.jsx';
 import { useRecorder } from './lib/useRecorder.js';
 import { recordedJourney, visibleRecorderJourneys } from './lib/recorder.js';
 const activities=['All activities','Unknown','Cycling','MTB','Hiking','Mountain biking','Walking','Running','Road cycling','Kitesurfing','Driving','Other'];
-function ActivityIcon({activity,...props}) { const Icon=activity?.toLowerCase().includes('biking')||activity?.toLowerCase().includes('cycling')||activity==='MTB'?Bike:activity==='Driving'?Car:activity==='Kitesurfing'?Waves:activity==='Hiking'?Mountain:Footprints;return <Icon {...props}/>; }
 export default function App(){
  useEffect(()=>{const theme=localStorage.getItem('letm3go-theme')==='dark'?'dark':'light';document.documentElement.dataset.theme=theme;void setNativeAppearance(theme).catch(()=>{});},[]);
  const token=new URLSearchParams(window.location.search).get('journey');
@@ -114,7 +115,7 @@ function PrivateApp(){
   return auth.savePreferences({vehicles:next,syncReceipts:receipts});
  };
  const realJourneys=useMemo(()=>recording.state.trips.filter(t=>t.source==='device').map(recordedJourney),[recording.state.trips]);
- const [draggingTrip,setDraggingTrip]=useState(null),[mergeSource,setMergeSource]=useState(null),[mergeTarget,setMergeTarget]=useState(null),[dropTarget,setDropTarget]=useState(null);
+ const [mergeSource,setMergeSource]=useState(null),[mergeTarget,setMergeTarget]=useState(null);
  const archiveKey='letm3go:archived-trips:'+session.user.id;
  // Archived trips belong to the account, not to one installation: they now live
  // in the encrypted preferences file (and in the settings backup) so a restored
@@ -132,113 +133,28 @@ function PrivateApp(){
  },[]);
  const [showArchived,setShowArchived]=useState(false);
  const [lastArchived,setLastArchived]=useState(null);
- const [swipedTrip,setSwipedTrip]=useState(null);
  const [deleteTrip,setDeleteTrip]=useState(null);
- const swipeTouch=useRef(null);
- const touchMerge=useRef(null);
- const touchDropTarget=useRef(null);
- const touchTimer=useRef(null);
- const suppressTripClick=useRef(false);
- const [floatingTrip,setFloatingTrip]=useState(null);
- const [touchPoint,setTouchPoint]=useState(null);
- const cancelTouchMerge=()=>{
-  touchDropTarget.current=null;
-  clearTimeout(touchTimer.current);touchTimer.current=null;touchMerge.current=null;
-  setFloatingTrip(null);setTouchPoint(null);setDropTarget(null);
- };
- useEffect(()=>()=>clearTimeout(touchTimer.current),[]);
- useEffect(()=>{
-  if(!floatingTrip)return;
-  const blockScroll=e=>{if(e.cancelable)e.preventDefault();};
-  document.addEventListener("touchmove",blockScroll,{passive:false});
-  return ()=>document.removeEventListener("touchmove",blockScroll);
- },[floatingTrip]);
  const archiveTrip=trip=>{
   void auth.savePreferences({archivedTrips:[...new Set([...archivedTrips,trip.id])]}).catch(err=>setError(err.message||'Archive could not be saved.'));
-  setLastArchived(trip);setSwipedTrip(null);
+  setLastArchived(trip);
  };
  const restoreTrip=id=>{
   void auth.savePreferences({archivedTrips:archivedTrips.filter(x=>x!==id)}).catch(err=>setError(err.message||'Archive could not be saved.'));
-  setLastArchived(null);setSwipedTrip(null);setShowArchived(false);
+  setLastArchived(null);setShowArchived(false);
  };
- const startRowTouch=(e,t)=>{
-  if(e.touches.length!==1)return;
-  const p=e.touches[0];swipeTouch.current={id:t.id,x:p.clientX,y:p.clientY,dx:0,axis:null};
-  touchStartMerge(e,t);
- };
- const moveRowTouch=e=>{
-  const gesture=swipeTouch.current;
-  if(!gesture||e.touches.length!==1){touchMoveMerge(e);return;}
-  const p=e.touches[0],dx=p.clientX-gesture.x,dy=p.clientY-gesture.y;
-  if(!gesture.axis&&Math.max(Math.abs(dx),Math.abs(dy))>10)gesture.axis=Math.abs(dx)>Math.abs(dy)*1.25?'horizontal':'vertical';
-  if(gesture.axis==='horizontal'){
-   gesture.dx=dx;
-   cancelTouchMerge();
-   if(e.cancelable)e.preventDefault();
-   // Realtime row translation is applied directly to the active swipe surface.
-   const surface=e.currentTarget.querySelector('.trip-swipe-surface');
-   if(surface)surface.style.transform=`translateX(${Math.max(-285,Math.min(0,dx-(swipedTrip===gesture.id?132:0)))}px)`;
-   return;
-  }
-  touchMoveMerge(e);
- };
- const endRowTouch=e=>{
-  const gesture=swipeTouch.current;swipeTouch.current=null;
-  const surface=e.currentTarget.querySelector('.trip-swipe-surface');
-  if(surface)surface.style.transform='';
-  if(gesture?.axis==='horizontal'){
-   suppressTripClick.current=true;
-   const selectedTrip=visibleJourneys.find(t=>t.id===gesture.id);
-   const full=gesture.dx< -Math.min(window.innerWidth*0.55,260);
-   if(full&&selectedTrip){archiveTrip(selectedTrip);}
-   else if(gesture.dx< -55)setSwipedTrip(gesture.id);
-   else if(gesture.dx>45)setSwipedTrip(null);
-   setTimeout(()=>{suppressTripClick.current=false;},350);
-   return;
-  }
-  touchEndMerge();
- };
+ // Trip rows are memoised so a recorder poll cannot re-render them, which means the
+ // callbacks they receive must keep a stable identity even though they close over
+ // this render's favourites, archive list and preferences saver. The ref always
+ // points at the newest closure; the function handed to the list never changes.
+ const latestActions=useRef({});
+ const bookmarkRow=useCallback(id=>void latestActions.current.bookmark(id),[]);
+ const archiveRow=useCallback(trip=>latestActions.current.archiveTrip(trip),[]);
+ const restoreRow=useCallback(id=>latestActions.current.restoreTrip(id),[]);
  async function confirmTripDelete(){
   if(!deleteTrip||recording.busy||!['device','simulator'].includes(deleteTrip.source)||deleteTrip.isGroupedJourney)return;
   const result=await recording.run('deleteActivity',deleteTrip.id);
-  if(result){setDeleteTrip(null);setSwipedTrip(null);setSelected(null);}
+  if(result){setDeleteTrip(null);setSelected(null);}
  }
- const touchStartMerge=(event,trip)=>{
-  if(!canMergeRow(trip)||event.touches.length!==1||mergeTarget)return;
-  // A press on the equipment chip belongs to the chip, not to a merge gesture.
-  if(event.target.closest?.('.trip-equipment-chip'))return;
-  const t=event.touches[0],origin={x:t.clientX,y:t.clientY};
-  clearTimeout(touchTimer.current);
-  touchMerge.current={id:trip.id,origin,active:false};
-  touchTimer.current=setTimeout(()=>{
-   if(!touchMerge.current||touchMerge.current.id!==trip.id)return;
-   touchMerge.current.active=true;
-   suppressTripClick.current=true;
-   setFloatingTrip({id:trip.id,title:trip.title,activity:trip.activity,distance:trip.distance});
-   setTouchPoint(origin);
-   setMergeSource(trip.id);
-  },360);
- };
- const touchMoveMerge=event=>{
-  const m=touchMerge.current;if(!m||event.touches.length!==1)return;
-  const t=event.touches[0],x=t.clientX,y=t.clientY;
-  if(!m.active){
-   if(Math.hypot(x-m.origin.x,y-m.origin.y)>9)cancelTouchMerge();
-   return;
-  }
-  event.preventDefault();
-  setTouchPoint({x,y});
-  const row=document.elementFromPoint(x,y)?.closest('[data-merge-id]');
-  const id=row?.dataset.mergeId;
-  touchDropTarget.current=id&&id!==m.id?id:null;
-  setDropTarget(touchDropTarget.current);
- };
- const touchEndMerge=()=>{
-  const m=touchMerge.current, target=touchDropTarget.current;
-  if(m?.active&&target&&target!==m.id){setMergeSource(m.id);setMergeTarget(target);}
-  cancelTouchMerge();
-  if(m?.active)setTimeout(()=>{suppressTripClick.current=false;},400);
- };
  const [metricView,setMetricView]=useState(null);
  const [socialSection,setSocialSection]=useState('household');
  const [pendingInvitation,setPendingInvitation]=useState(()=>{try{return JSON.parse(sessionStorage.getItem('letm3go:pending-invitation')||'null');}catch{return null;}});
@@ -285,6 +201,9 @@ function PrivateApp(){
  },[sheet,lightbox]);
  const openPhoto=useCallback((trip,id)=>{const index=trip.photos?.findIndex(p=>p.id===id)??-1;if(index>=0){setPhotoZoom(1);setLightbox({trip,index});}},[setLightbox]);
  async function bookmark(id){const next=saved.includes(id)?saved.filter(x=>x!==id):[...saved,id];try{await auth.savePreferences({bookmarks:next});}catch(err){setError(err.message||'Favourite could not be saved.');}}
+ // Declared after every action it wraps so the ref assignment never reads a value
+ // before it is declared; it runs on each commit, exposing the newest closures.
+ useEffect(()=>{latestActions.current={bookmark,archiveTrip,restoreTrip};});
  const sort=metricView==="Today's distance"?'distance':metricView==='Recorded time'?'duration':metricView==='Activities today'?'newest':sortPreference;
  const visibleJourneys=useMemo(()=>visibleRecorderJourneys(grouping.journeys,recording.state,session.user.id),[grouping.journeys,recording.state,session.user.id]);
  // Equipment counts and filters come from the journeys already in memory, so a
@@ -310,14 +229,12 @@ function PrivateApp(){
  const shiftDay=(day,offset)=>{const basis=day==='all'||day==='today'?new Date():new Date(day+'T12:00:00');basis.setDate(basis.getDate()+offset);return basis.toLocaleDateString('en-CA');};
  const chosenDay=dayFilter==='today'?today:dayFilter;
  const filtered=useMemo(()=>visibleJourneys.filter(t=>(showArchived?archivedTrips.includes(t.id):!archivedTrips.includes(t.id))&&(!favouritesOnly||saved.includes(t.id))&&((tripSearchOpen&&query.trim())||dayFilter==='all'||t.date===chosenDay||t.segments?.some(s=>s.date===chosenDay))&&(filter==='All activities'||t.activity===filter)&&(!activeEquipmentFilter||tripUsesEquipment(t,vehicles,activeEquipmentFilter))&&`${t.searchIndex||''} ${t.title} ${t.location} ${t.date} ${t.collection||''} ${t.notes||''} ${t.tags.join(' ')} ${tripEquipmentLabel(t,vehicles)}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='duration'?b.durationSeconds-a.durationSeconds||b.startedAt-a.startedAt:sort==='distance'?b.distanceMeters-a.distanceMeters||b.startedAt-a.startedAt:b.startedAt-a.startedAt),[visibleJourneys,showArchived,archivedTrips,favouritesOnly,saved,tripSearchOpen,query,dayFilter,chosenDay,filter,activeEquipmentFilter,vehicles,sort]);
- const matchReason=t=>{const q=query.trim().toLowerCase();if(!q)return null;const stops=t.stops||t.recognisedStops||[];const tags=(t.tags||[]).filter(tag=>tag.toLowerCase().includes(q));if(tags.length)return {label:'Matched tag',value:tags[0]};const equipment=tripEquipmentLabel(t,vehicles);if(equipment&&equipment.toLowerCase().includes(q))return {label:'Matched equipment',value:equipment};const stop=stops.find(x=>[x.name,...(x.tags||[])].some(v=>v?.toLowerCase().includes(q)));if(stop)return {label:'Matched stop',value:stop.name};for(const [label,value] of [['Title',t.title],['Location',t.location],['Notes',t.notes],['Collection',t.collection],['Date',t.date]])if(value?.toLowerCase().includes(q))return {label:'Matched '+label.toLowerCase(),value};return {label:'Matched trip details',value:q};};
- const canMergeRow=t=>!t.readOnly&&!t.provisional&&(t.isGroupedJourney||t.endedAt!=null&&t.state!=='recording')&&(t.isGroupedJourney||t.source==='device');
  const confirmMerge=async()=>{
   if(!mergeSource||!mergeTarget)return;
   const expand=id=>{const trip=grouping.journeys.find(t=>t.id===id);return trip?.isGroupedJourney?trip.segmentIDs:[id];};
   const pair=[...new Set([...expand(mergeSource),...expand(mergeTarget)])];
   const success=await grouping.act({type:'merge',ids:pair});
-  if(success){setMergeSource(null);setMergeTarget(null);setDropTarget(null);}
+  if(success){setMergeSource(null);setMergeTarget(null);}
  };
  // Today's metrics come from the same journeys shown in Trips and "Last activity",
  // so a provisional or still-recording journey is never counted on one surface and
@@ -344,24 +261,15 @@ function PrivateApp(){
  {tab==='Record'&&<RecorderPanel state={recording.state} run={recording.run} busy={recording.busy} error={recording.error} vehicles={vehicles} onFinished={trip=>{setSelected(trip);setTab('Trips');}}/>}
  {tab==='Trips'&&<>{fleet.error&&vehicles.some(v=>v.source==='tesla')&&<p role="status" className="notice">{fleet.error}</p>}{fleet.more&&<button className="text-button" disabled={fleet.loadingMore} onClick={fleet.loadMore}>{fleet.loadingMore?'Loading…':'Load older Tesla journeys'}</button>}{tripActionsOpen&&<div className="trip-popover" role="group" aria-label="Activity actions"><button type="button" onClick={()=>{setSheet('historical');setTripActionsOpen(false);}}><Plus size={17}/> Add past activity</button><button type="button" onClick={()=>{setSheet('grouping');setTripActionsOpen(false);}}><GitMerge size={17}/> Manage merged journeys</button>{grouping.metadata.history?.length>0&&<button type="button" disabled={grouping.busy} onClick={()=>{grouping.act({type:'undo'});setTripActionsOpen(false);}}>Undo last grouping change</button>}</div>}
 {lastArchived&&<div className="trip-archive-toast" role="status"><span>Archived “{lastArchived.title}”</span><button type="button" onClick={()=>restoreTrip(lastArchived.id)}>Undo</button></div>}
-{(archivedTrips.length>0||showArchived)&&<button type="button" className="trip-archived-toggle" onClick={()=>{setShowArchived(v=>!v);setSwipedTrip(null);setLastArchived(null);}}>{showArchived?'Back to activities':`Archived activities (${archivedTrips.length})`}</button>}
+{(archivedTrips.length>0||showArchived)&&<button type="button" className="trip-archived-toggle" onClick={()=>{setShowArchived(v=>!v);setLastArchived(null);}}>{showArchived?'Back to activities':`Archived activities (${archivedTrips.length})`}</button>}
 {tripSearchOpen&&<div className="trip-expanded-search"><Search size={19}/><input ref={tripSearchRef} type="search" aria-label="Search all activity history" placeholder="Search places, activities, tags, dates…" value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button type="button" aria-label="Clear search" onClick={()=>setQuery('')}><X size={18}/></button>}</div>}
 {tripFiltersOpen&&<div className="trip-expanded-filters"><label>Activity type<select aria-label="Filter activities" value={filter} onChange={e=>setFilter(e.target.value)}>{activities.map(a=><option key={a}>{a}</option>)}</select></label><label>Sort by<select aria-label="Sort trips" value={sort} onChange={event=>{setSortPreference(event.target.value);localStorage.setItem('letm3go-trip-sort',event.target.value);setMetricView(null);}}><option value="newest">Newest</option><option value="distance">Distance</option><option value="duration">Duration</option></select></label>{equipmentOptions.length>0&&<label className="wide">Equipment<select aria-label="Filter by equipment" value={activeEquipmentFilter} onChange={event=>setEquipmentFilter(event.target.value)}><option value="">Any equipment</option>{equipmentOptions.map(({item,count})=><option key={item.id} value={item.id}>{itemTitle(item)} ({count})</option>)}</select></label>}</div>}
 {activeEquipmentFilter&&<div className="trip-active-filters"><button type="button" className="trip-filter-chip" aria-label={`Remove equipment filter ${activeEquipmentName}`} onClick={()=>setEquipmentFilter('')}>Using {activeEquipmentName}<X size={14} aria-hidden="true"/></button></div>}
 {mergeSource&&<div className="trip-merge-hint">Select a second drive to merge. <button type="button" className="text-button" onClick={()=>{setMergeSource(null);setMergeTarget(null);}}>Cancel</button></div>}
 <div className="trip-compact-navigation"><div className="trip-period-filter" role="group" aria-label="Activity date"><button type="button" aria-pressed={dayFilter==='all'} onClick={()=>setDayFilter('all')}>All</button><button type="button" aria-pressed={dayFilter==='today'} onClick={()=>setDayFilter('today')}>Today</button><button type="button" aria-pressed={favouritesOnly} onClick={()=>setFavouritesOnly(value=>!value)}><Star size={14} aria-hidden="true"/> Favourites</button></div><div className="trip-date-navigator" role="group" aria-label="Browse journey dates"><button type="button" aria-label="Previous day" onClick={()=>setDayFilter(shiftDay(chosenDay,-1))}><ChevronRight className="trip-prev-icon" size={18}/></button><label><input type="date" aria-label="Choose journey date" value={chosenDay==='all'?today:chosenDay} max={today} onChange={e=>{if(e.target.value)setDayFilter(e.target.value);}}/></label><button type="button" aria-label="Next day" disabled={chosenDay==='all'||chosenDay>=today} onClick={()=>setDayFilter(shiftDay(chosenDay,1))}><ChevronRight size={18}/></button></div></div>
-<div className="section-heading trip-results-heading"><div><h2>{filtered.length} {filtered.length===1?'activity':'activities'}</h2><p className="muted small-copy">{dayFilter==='today'?'Today · ':dayFilter!=='all'?`${new Date(chosenDay+'T12:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})} · `:''}{sort==='duration'?`${Math.floor(filtered.reduce((sum,t)=>sum+t.durationSeconds,0)/60)} min recorded · Longest first`:sort==='distance'?`${distanceText(filtered.reduce((sum,t)=>sum+t.distanceMeters,0)/1000,unit)} total · Longest first`:'Newest first'}</p></div></div><div className="recent-activities trips-activity-list">{filtered.map(t=><div data-merge-id={canMergeRow(t)?t.id:undefined} onTouchStart={e=>startRowTouch(e,t)} onTouchMove={moveRowTouch} onTouchEnd={endRowTouch} onTouchCancel={()=>{swipeTouch.current=null;cancelTouchMerge();}} className={`trip-list-row ${dropTarget===t.id?'merge-drop-target':''} ${draggingTrip===t.id?'merge-dragging':''} ${swipedTrip===t.id?'trip-swiped':''}`} key={t.id}
- draggable={canMergeRow(t)&&!grouping.busy}
- onDragStart={e=>{if(!canMergeRow(t))return;e.dataTransfer.setData('text/plain',t.id);e.dataTransfer.effectAllowed='move';setMergeSource(t.id);setDraggingTrip(t.id);}}
- onDragOver={e=>{if(canMergeRow(t)&&mergeSource&&mergeSource!==t.id){e.preventDefault();e.dataTransfer.dropEffect='move';setDropTarget(t.id);}}}
- onDragLeave={()=>{if(dropTarget===t.id)setDropTarget(null);}}
- onDrop={e=>{e.preventDefault();const source=e.dataTransfer.getData('text/plain')||mergeSource;setDropTarget(null);setDraggingTrip(null);if(source&&source!==t.id&&canMergeRow(t)){setMergeSource(source);setMergeTarget(t.id);}}}
- onDragEnd={()=>{setDropTarget(null);setDraggingTrip(null);}}><div className="trip-swipe-actions">
- 
- <button type="button" className="trip-action-pin" onClick={()=>void bookmark(t.id)} aria-label={saved.includes(t.id)?`Unpin ${t.title}`:`Pin ${t.title}`}><Star size={20} fill={saved.includes(t.id)?'white':'none'}/><small>{saved.includes(t.id)?'Unpin':'Pin'}</small></button>
- <button type="button" className="trip-action-archive" onClick={()=>showArchived?restoreTrip(t.id):archiveTrip(t)}><Archive size={20}/><small>{showArchived?'Restore':'Archive'}</small></button>
- </div><div className="trip-swipe-surface" style={{transform:swipedTrip===t.id?'translateX(-132px)':undefined}}><div className="recent-activity-row"><button type="button" className="trip-open-button" onClick={()=>{if(suppressTripClick.current){suppressTripClick.current=false;return;}setSelected(t);}} aria-label={`Open ${t.title}`}><span className="recent-activity-icon"><ActivityIcon activity={t.activity} size={19}/></span><span className="recent-activity-info"><strong>{t.title}</strong><small>{t.isGroupedJourney?`${t.segmentIDs.length} activities · ${t.stops.length} stops`:t.activity} · {new Date(`${t.date}T12:00:00`).toLocaleDateString('en-AU',{day:'numeric',month:'short'})}</small>{t.provisional&&<small className="trip-provisional">Stopped · saved, may continue</small>}{query.trim()&&matchReason(t)&&<small className="trip-search-reason"><Search size={12}/>{matchReason(t).label}: <strong>{matchReason(t).value}</strong></small>}<small>{new Date(t.startedAt*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'})} – {t.endedAt!=null?new Date(t.endedAt*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'}):'Recording'}</small></span><span className="recent-activity-distance">{sort==='duration'?<>{Math.floor(t.durationSeconds/60)} <small>min</small><small className="trip-time-distance">{distanceText(t.distance,unit)}</small></>:<>{distanceValue(t.distance,unit)} <small>{distanceUnitLabel(unit)}</small></>}</span></button><EquipmentChip trip={t} items={vehicles} onOpen={openEquipment} fallback={<ChevronRight size={16} aria-hidden="true"/>}/></div><button type="button" className="icon-button trip-row-bookmark" aria-pressed={saved.includes(t.id)} title={saved.includes(t.id)?'Remove from favourites':'Add to favourites'} aria-label={`${saved.includes(t.id)?'Remove from':'Add to'} favourites: ${t.title}`} onClick={()=>bookmark(t.id)}><Star size={17} fill={saved.includes(t.id)?'currentColor':'none'}/></button>{canMergeRow(t)&&<button type="button" className="text-button trip-merge-button" disabled={grouping.busy} onClick={()=>{if(mergeSource&&mergeSource!==t.id){setMergeTarget(t.id);}else{setMergeSource(t.id);setMergeTarget(null);}}} aria-label={mergeSource&&mergeSource!==t.id?`Merge with ${t.title}`:`Select ${t.title} to merge`} title={mergeSource&&mergeSource!==t.id?'Merge with this drive':mergeSource===t.id?'Selected for merging':'Merge with another drive'}><GitMerge size={17} aria-hidden="true"/></button>}</div></div>)}</div>{deleteTrip&&<div className="trip-delete-confirm" role="dialog" aria-label="Delete activity"><strong>Delete {deleteTrip.title}?</strong><p>This permanently removes the local activity and its saved route. Original photos in your library remain.</p><div className="detail-actions"><button type="button" className="secondary" onClick={()=>setDeleteTrip(null)}>Cancel</button><button type="button" className="primary" disabled={recording.busy} onClick={()=>void confirmTripDelete()}>Delete activity</button></div></div>}{!filtered.length&&<div className="empty"><Search/><h2>No journeys found</h2><p>Try a different place, date or activity.</p><button className="secondary" onClick={()=>{setQuery('');setFilter('All activities');setDayFilter('all');setFavouritesOnly(false);setEquipmentFilter('');}}>Clear filters</button></div>}</>}
- {floatingTrip&&touchPoint&&<div className="merge-floating-card" style={{left:touchPoint.x,top:touchPoint.y}} aria-hidden="true"><span className="merge-floating-icon"><ActivityIcon activity={floatingTrip.activity} size={20}/></span><span className="merge-floating-copy"><strong>{floatingTrip.title}</strong><small>{distanceText(floatingTrip.distance,unit)} · Drop on another drive</small></span></div>}
+<div className="section-heading trip-results-heading"><div><h2>{filtered.length} {filtered.length===1?'activity':'activities'}</h2><p className="muted small-copy">{dayFilter==='today'?'Today · ':dayFilter!=='all'?`${new Date(chosenDay+'T12:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})} · `:''}{sort==='duration'?`${Math.floor(filtered.reduce((sum,t)=>sum+t.durationSeconds,0)/60)} min recorded · Longest first`:sort==='distance'?`${distanceText(filtered.reduce((sum,t)=>sum+t.distanceMeters,0)/1000,unit)} total · Longest first`:'Newest first'}</p></div></div>
+{filtered.length?<TripsList key={`${filter}|${dayFilter}|${favouritesOnly}|${activeEquipmentFilter}|${sort}|${showArchived}`} journeys={filtered} unit={unit} sort={sort} query={query} favourites={saved} vehicles={vehicles} busy={grouping.busy} showArchived={showArchived} mergeSource={mergeSource} mergeTarget={mergeTarget} onOpen={setSelected} onBookmark={bookmarkRow} onEquipment={openEquipment} onArchive={archiveRow} onRestore={restoreRow} onMergeSelect={setMergeSource} onMergeTarget={setMergeTarget}/>:<div className="empty"><Search/><h2>No journeys found</h2><p>Try a different place, date or activity.</p><button className="secondary" onClick={()=>{setQuery('');setFilter('All activities');setDayFilter('all');setFavouritesOnly(false);setEquipmentFilter('');}}>Clear filters</button></div>}</>}
+{deleteTrip&&<div className="trip-delete-confirm" role="dialog" aria-label="Delete activity"><strong>Delete {deleteTrip.title}?</strong><p>This permanently removes the local activity and its saved route. Original photos in your library remain.</p><div className="detail-actions"><button type="button" className="secondary" onClick={()=>setDeleteTrip(null)}>Cancel</button><button type="button" className="primary" disabled={recording.busy} onClick={()=>void confirmTripDelete()}>Delete activity</button></div></div>}
  {mergeSource&&mergeTarget&&<div className="modal-backdrop" role="presentation"><div className="notice" role="dialog" aria-modal="true" aria-label="Merge journeys" style={{maxWidth:440,margin:'auto',padding:24}}><h2>Merge these activities?</h2><p>Combine the two selected journeys into one timeline while retaining the original GPS recordings and stops. You can undo this later.</p><p className="muted small-copy">Only consecutive activities from the same account can be merged; overlapping recordings and incompatible vehicles are excluded.</p>{grouping.error&&<p role="alert" className="error">{grouping.error}</p>}<div className="detail-actions"><button className="secondary" onClick={()=>{setMergeTarget(null);setMergeSource(null);}}>Cancel</button><button className="primary" disabled={grouping.busy} onClick={confirmMerge}>{grouping.busy?'Merging…':'Yes, merge'}</button></div></div></div>}
  {tab==='Social'&&<div className="social-layout social-redesign"><div className="social-sections" role="group" aria-label="Social sections"><button type="button" aria-pressed={socialSection==='friends'} onClick={()=>setSocialSection('friends')}>Friends</button><button type="button" aria-pressed={socialSection==='household'} onClick={()=>setSocialSection('household')}>Household</button></div>{socialSection==='friends'?<><HouseholdPresence personPhotos={peopleAvatars.photos} householdLivePeople={presence.livePeople} householdLiveEnabled={presence.liveEnabled} selfId={session.user.id} selfAvatar={auth.preferences.avatar} selfName={auth.preferences.displayName||'You'} permission={recording.state.permission} precise={recording.state.precise} presence={presence} friendsLocation={friendsLocation} places={recording.state.places||[]} onSetHome={()=>setSheet('places')}/><Friends personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} invitationCode={pendingInvitation?.kind==='friend'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} onShareLive={()=>friendsLocation.setSharing(true)}/><FriendTrips activities={grouping.journeys}/></>:<><Household invitationCode={pendingInvitation?.kind==='household'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onMembershipChanged={refreshHousehold} onShareLive={()=>presence.setLiveSharing(true)} onStopLive={()=>presence.setLiveSharing(false)} liveEnabled={presence.liveEnabled} liveReady={presence.liveReady} liveError={presence.liveError} onRetrySharing={presence.refreshLive} permission={recording.state.permission} precise={recording.state.precise} onOpenMap={()=>{setSheet(null);setSelected(null);setMapLayers(['people']);setTab('Map');}} vehicles={vehicles} onSaveVehicles={setVehicles}/><HouseholdTrips activities={grouping.records}/></>}</div>}
  {tab==='Map'&&<div className="map-explorer map-social-explorer">
