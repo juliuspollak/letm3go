@@ -68,10 +68,10 @@ it('does not expose another account recordings after foreground refresh',async()
  expect(result.current.error).toContain('does not match');
 });
 it('requests a controlled account rebind when native storage is locked',async()=>{
- const rebind=vi.fn();window.addEventListener('letm3go:recorder-binding-required',rebind);
- mocks.getState.mockResolvedValue({trips:[],permission:'locked',storageReady:false});
- const {result}=renderHook(()=>useRecorder('owner'));
+ const rebind=vi.fn();
+ mocks.getState.mockResolvedValue({trips:[],permission:'locked',storageReady:false,version:'1.0',build:'57'});
+ const {result}=renderHook(()=>useRecorder('owner',rebind));
  await waitFor(()=>expect(result.current.error).toContain('locked'));
- expect(rebind).toHaveBeenCalledOnce();expect(rebind.mock.calls[0][0].detail).toEqual({ownerID:'owner'});
- window.removeEventListener('letm3go:recorder-binding-required',rebind);
+ expect(rebind).toHaveBeenCalledWith('owner');
+ expect(result.current.state).toMatchObject({version:'1.0',build:'57',permission:'locked',storageReady:false,trips:[]});
 });

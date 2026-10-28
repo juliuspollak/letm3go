@@ -17,6 +17,7 @@ export function AuthProvider({children}){
  const [accountDeletionNotice,setAccountDeletionNotice]=useState(null);
  const boundOwner=useRef(null);
  const generation=useRef(0),explicitLogout=useRef(false),latestSession=useRef(null);
+ const recorderRebind=useRef(null);
  const invalidate=useCallback(()=>{generation.current+=1;},[]);
  const reconcile=useCallback(async(session)=>{
   const turn=++generation.current;latestSession.current=session;
@@ -85,20 +86,13 @@ export function AuthProvider({children}){
   const visible=()=>{if(document.visibilityState==='visible'&&!explicitLogout.current)void restore();};
   const warn=event=>{if(event.detail?.ownerID===latestSession.current?.user.id)setIntegrationWarning(event.detail.message);};
   const completed=event=>{if(event.detail?.session){explicitLogout.current=false;void reconcile(event.detail.session);}};
-  let lastBindingRetry=0;
-  const bindingRequired=event=>{
-   const session=latestSession.current;
-   if(explicitLogout.current||!session||event.detail?.ownerID?.toLowerCase()!==session.user.id.toLowerCase()||Date.now()-lastBindingRetry<2000)return;
-   lastBindingRetry=Date.now();void reconcile(session);
-  };
   const accountWarning=event=>{if(event.detail?.ownerID&&event.detail.ownerID===latestSession.current?.user.id)setAccountDeletionNotice({ownerID:event.detail.ownerID,message:event.detail.message});};
   window.addEventListener('letm3go:account-service-warning',accountWarning);
   window.addEventListener('letm3go:auth-completed',completed);
-  window.addEventListener('letm3go:recorder-binding-required',bindingRequired);
   window.addEventListener('letm3go:integration-warning',warn);
   document.addEventListener('visibilitychange',visible);
   if(Capacitor.isNativePlatform())NativeApp.addListener('appStateChange',({isActive})=>{if(isActive){supabase.auth.startAutoRefresh();void restore();}else supabase.auth.stopAutoRefresh();}).then(handle=>{if(alive)stopApp=handle;else void handle.remove();}).catch(report);
-  return()=>{alive=false;clearTimeout(restoreRetry);invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:account-service-warning',accountWarning);window.removeEventListener('letm3go:auth-completed',completed);window.removeEventListener('letm3go:recorder-binding-required',bindingRequired);};
+  return()=>{alive=false;clearTimeout(restoreRetry);invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:account-service-warning',accountWarning);window.removeEventListener('letm3go:auth-completed',completed);};
  },[reconcile,invalidate]);
  useEffect(()=>{
   const owner=identity.session?.user.id;
@@ -149,7 +143,14 @@ export function AuthProvider({children}){
  }
  const beginSignIn=async()=>{supabase?.auth.stopAutoRefresh();await accountStore.beginSignIn();explicitLogout.current=false;setError('');supabase?.auth.startAutoRefresh();};
  async function updatePassword(password){const {error}=await supabase.auth.updateUser({password});if(error)throw error;setRecovery(false);window.history.replaceState({},'',window.location.pathname);await reconcile(latestSession.current);}
- return <Context.Provider value={{...identity,error,integrationWarning,accountDeletionNotice:accountDeletionNotice&&accountDeletionNotice.ownerID===identity.session?.user.id?accountDeletionNotice.message:'',recovery,setError,beginSignIn,cancelRecovery:()=>{setRecovery(false);window.history.replaceState({},'',window.location.pathname);},signOut,deleteAccount,savePreferences,updatePassword,retry:()=>reconcile(latestSession.current),redirect:authRedirect}}>{children}</Context.Provider>;
+ const rebindRecorder=useCallback(async ownerID=>{
+  const session=latestSession.current;
+  if(explicitLogout.current||!session||ownerID?.toLowerCase()!==session.user.id.toLowerCase())return false;
+  if(recorderRebind.current)return recorderRebind.current;
+  const operation=reconcile(session).then(()=>true).finally(()=>{if(recorderRebind.current===operation)recorderRebind.current=null;});
+  recorderRebind.current=operation;return operation;
+ },[reconcile]);
+ return <Context.Provider value={{...identity,error,integrationWarning,accountDeletionNotice:accountDeletionNotice&&accountDeletionNotice.ownerID===identity.session?.user.id?accountDeletionNotice.message:'',recovery,setError,beginSignIn,cancelRecovery:()=>{setRecovery(false);window.history.replaceState({},'',window.location.pathname);},signOut,deleteAccount,savePreferences,updatePassword,rebindRecorder,retry:()=>reconcile(latestSession.current),redirect:authRedirect}}>{children}</Context.Provider>;
 }
 // One provider/session manager for the entire private application.
 // eslint-disable-next-line react-refresh/only-export-components

@@ -10,7 +10,7 @@ vi.mock('./config.js',()=>({config:{key:'test-public-key'}}));
 vi.mock('./auth.js',()=>({listenForNativeAuth:async()=>()=>{},authRedirect:()=>''}));
 vi.mock('./pushAccount.js',()=>({stopAccountPush:mocks.stopPush,resumeAccountPush:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>false},registerPlugin:()=>({})}));
-function Probe(){const value=useAuth();return <><p role="status">{value.status}:{value.session?.user.id||'none'}</p><p data-testid="auth-error">{value.error}</p><p data-testid="account-notice">{value.accountDeletionNotice}</p><p data-testid="integration-banner">{value.integrationWarning}</p><button onClick={()=>void value.signOut()}>Logout</button><button onClick={()=>void value.savePreferences({displayName:'Changed'})}>Save name</button></>;}
+function Probe(){const value=useAuth();return <><p role="status">{value.status}:{value.session?.user.id||'none'}</p><p data-testid="auth-error">{value.error}</p><p data-testid="account-notice">{value.accountDeletionNotice}</p><p data-testid="integration-banner">{value.integrationWarning}</p><button onClick={()=>void value.signOut()}>Logout</button><button onClick={()=>void value.savePreferences({displayName:'Changed'})}>Save name</button><button onClick={()=>void value.rebindRecorder('owner-a')}>Rebind recorder</button></>;}
 beforeEach(()=>{
  mocks.user={id:'owner-a',email_confirmed_at:'2026-10-24'};mocks.session={access_token:'test',user:mocks.user};
  mocks.auth.getSession.mockImplementation(async()=>({data:{session:mocks.session}}));mocks.auth.getUser.mockImplementation(async()=>({data:{user:mocks.user}}));mocks.auth.onAuthStateChange.mockImplementation(callback=>{mocks.callback=callback;return {data:{subscription:{unsubscribe:vi.fn()}}};});mocks.auth.signOut.mockResolvedValue({error:null});
@@ -30,7 +30,7 @@ it('completes local sign-out when auxiliary secure-session cleanup rejects a key
 });
 it('rebinds the verified session when the recorder reports that native storage became locked',async()=>{
  render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');
- const before=mocks.store.bind.mock.calls.length;act(()=>window.dispatchEvent(new CustomEvent('letm3go:recorder-binding-required',{detail:{ownerID:'owner-a'}})));
+ const before=mocks.store.bind.mock.calls.length;fireEvent.click(screen.getByRole('button',{name:'Rebind recorder'}));
  await waitFor(()=>expect(mocks.store.bind.mock.calls.length).toBeGreaterThan(before));expect(screen.getByRole('status')).toHaveTextContent('authenticated:owner-a');
 });
 it('switches the native account binding before exposing another account',async()=>{

@@ -68,7 +68,7 @@ function PrivateApp(){
  const peopleAvatars=usePeopleAvatars(session.user.id,auth.status==='authenticated',auth.preferences.avatar);
  const unit=auth.preferences.distanceUnit||'km';
  const saved=useMemo(()=>auth.preferences.bookmarks||[],[auth.preferences.bookmarks]);
- const recording=useRecorder(session.user.id);
+ const recording=useRecorder(session.user.id,auth.rebindRecorder);
  const liveTrip=recording.state.active?.state==='recording'?recording.state.active:recording.state.automaticTrip;
  const [motionClock,setMotionClock]=useState(()=>Date.now());
  useEffect(()=>{
