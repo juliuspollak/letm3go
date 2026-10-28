@@ -85,13 +85,20 @@ export function AuthProvider({children}){
   const visible=()=>{if(document.visibilityState==='visible'&&!explicitLogout.current)void restore();};
   const warn=event=>{if(event.detail?.ownerID===latestSession.current?.user.id)setIntegrationWarning(event.detail.message);};
   const completed=event=>{if(event.detail?.session){explicitLogout.current=false;void reconcile(event.detail.session);}};
+  let lastBindingRetry=0;
+  const bindingRequired=event=>{
+   const session=latestSession.current;
+   if(explicitLogout.current||!session||event.detail?.ownerID?.toLowerCase()!==session.user.id.toLowerCase()||Date.now()-lastBindingRetry<2000)return;
+   lastBindingRetry=Date.now();void reconcile(session);
+  };
   const accountWarning=event=>{if(event.detail?.ownerID&&event.detail.ownerID===latestSession.current?.user.id)setAccountDeletionNotice({ownerID:event.detail.ownerID,message:event.detail.message});};
   window.addEventListener('letm3go:account-service-warning',accountWarning);
   window.addEventListener('letm3go:auth-completed',completed);
+  window.addEventListener('letm3go:recorder-binding-required',bindingRequired);
   window.addEventListener('letm3go:integration-warning',warn);
   document.addEventListener('visibilitychange',visible);
   if(Capacitor.isNativePlatform())NativeApp.addListener('appStateChange',({isActive})=>{if(isActive){supabase.auth.startAutoRefresh();void restore();}else supabase.auth.stopAutoRefresh();}).then(handle=>{if(alive)stopApp=handle;else void handle.remove();}).catch(report);
-  return()=>{alive=false;clearTimeout(restoreRetry);invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:account-service-warning',accountWarning);window.removeEventListener('letm3go:auth-completed',completed);};
+  return()=>{alive=false;clearTimeout(restoreRetry);invalidate();listener.subscription.unsubscribe();stopNative?.();void stopApp?.remove();document.removeEventListener('visibilitychange',visible);window.removeEventListener('letm3go:integration-warning',warn);window.removeEventListener('letm3go:account-service-warning',accountWarning);window.removeEventListener('letm3go:auth-completed',completed);window.removeEventListener('letm3go:recorder-binding-required',bindingRequired);};
  },[reconcile,invalidate]);
  useEffect(()=>{
   const owner=identity.session?.user.id;
@@ -101,13 +108,19 @@ export function AuthProvider({children}){
  },[identity.session?.user.id,identity.status,identity.preferences?.notificationsEnabled]);
  async function signOut(){
   explicitLogout.current=true;++generation.current;setPrivateMediaOwner(null);
-  try{await accountStore.lock();await stopAccountPush();supabase?.auth.stopAutoRefresh();
-   const result=await supabase?.auth.signOut({scope:'local'});
-   // Local sign-out still completes if the network cannot revoke the server session.
-   if(result?.error)setIntegrationWarning('Signed out locally. Server-session revocation could not be confirmed.');
-   await authStorage.removeItem(AUTH_STORAGE_KEY);await authStorage.removeItem(`${AUTH_STORAGE_KEY}-code-verifier`);await authStorage.removeItem(`${AUTH_STORAGE_KEY}-user`);await authStorage.removeItem('letm3go-oauth-pending');
-   latestSession.current=null;boundOwner.current=null;setIdentity({status:'signedOut',session:null,preferences:defaultPreferences()});setRecovery(false);setError('');
-  }catch(err){explicitLogout.current=false;setError(err.message);throw err;}
+  try{await accountStore.lock();}
+  catch(err){explicitLogout.current=false;setError(err.message);throw err;}
+  // Once the native recorder is safely locked, auxiliary token/push cleanup must
+  // not leave the UI apparently signed in. A later sign-in replaces these values.
+  let cleanupFailed=false;
+  try{await stopAccountPush();}catch{cleanupFailed=true;}
+  supabase?.auth.stopAutoRefresh();
+  try{const result=await supabase?.auth.signOut({scope:'local'});if(result?.error)cleanupFailed=true;}catch{cleanupFailed=true;}
+  for(const key of [AUTH_STORAGE_KEY,`${AUTH_STORAGE_KEY}-code-verifier`,`${AUTH_STORAGE_KEY}-user`,'letm3go-oauth-pending']){
+   try{await authStorage.removeItem(key);}catch{cleanupFailed=true;}
+  }
+  if(cleanupFailed)setIntegrationWarning('Signed out locally. Some session cleanup could not be confirmed.');
+  latestSession.current=null;boundOwner.current=null;setIdentity({status:'signedOut',session:null,preferences:defaultPreferences()});setRecovery(false);setError('');
  }
  async function savePreferences(patch){
   const owner=identity.session?.user.id;

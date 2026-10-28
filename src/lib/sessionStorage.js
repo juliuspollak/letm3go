@@ -27,7 +27,11 @@ export const accountStore={
   if(Object.keys(values).length){await secure.preserveLegacy({value:JSON.stringify(values)});keys.forEach(key=>localStorage.removeItem(key));}
  },
  async bind(session,apiKey,{offline=false}={}){
-  if(Capacitor.isNativePlatform())return secure.bindAccount({ownerID:session.user.id,accessToken:session.access_token,apiKey});
+  if(Capacitor.isNativePlatform()){
+   const result=await secure.bindAccount({ownerID:session.user.id,accessToken:session.access_token,apiKey});
+   if(result?.ownerID?.toLowerCase()!==session.user.id.toLowerCase()||result.storageReady!==true)throw new Error('Private activity storage did not open for this account.');
+   return result;
+  }
   const id=session.user.id;if(offline&&localStorage.getItem('letm3go-verified-user')!==id)throw new Error('Connect to verify this account before opening private data.');webOwner=id;localStorage.removeItem('letm3go-signed-out');localStorage.setItem('letm3go-verified-user',id);
   let preferences;try{preferences=JSON.parse(localStorage.getItem(`letm3go-account-${id}`));}catch{ /* Use safe defaults. */ }
   return {ownerID:id,preferences:{...defaults(),...preferences}};

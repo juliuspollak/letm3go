@@ -23,6 +23,16 @@ it('restores an authenticated returning user without resetting onboarding',async
 it('locks native tracking and clears stored session on explicit sign-out',async()=>{
  render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');fireEvent.click(screen.getByRole('button',{name:'Logout'}));await screen.findByText('signedOut:none');expect(mocks.store.lock).toHaveBeenCalled();expect(mocks.stopPush).toHaveBeenCalled();expect(mocks.storage.removeItem).toHaveBeenCalledWith('letm3go-auth');
 });
+it('completes local sign-out when auxiliary secure-session cleanup rejects a key',async()=>{
+ mocks.storage.removeItem.mockRejectedValue(new Error('Unsupported session key.'));
+ render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');fireEvent.click(screen.getByRole('button',{name:'Logout'}));
+ await screen.findByText('signedOut:none');expect(mocks.store.lock).toHaveBeenCalled();expect(screen.getByTestId('integration-banner')).toHaveTextContent('Signed out locally');
+});
+it('rebinds the verified session when the recorder reports that native storage became locked',async()=>{
+ render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');
+ const before=mocks.store.bind.mock.calls.length;act(()=>window.dispatchEvent(new CustomEvent('letm3go:recorder-binding-required',{detail:{ownerID:'owner-a'}})));
+ await waitFor(()=>expect(mocks.store.bind.mock.calls.length).toBeGreaterThan(before));expect(screen.getByRole('status')).toHaveTextContent('authenticated:owner-a');
+});
 it('switches the native account binding before exposing another account',async()=>{
  render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');mocks.user={id:'owner-b',email_confirmed_at:'2026-10-24'};mocks.session={access_token:'other',user:mocks.user};mocks.callback('SIGNED_IN',mocks.session);await screen.findByText('authenticated:owner-b');expect(mocks.store.bind).toHaveBeenLastCalledWith(mocks.session,'test-public-key',{offline:false});
 });

@@ -187,7 +187,14 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     var bindingGeneration = 0
     public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","savePreferences","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
     func storageKey(_ call: CAPPluginCall) -> String? {
-        guard let key = call.getString("key"), ["letm3go-auth","letm3go-auth-code-verifier","letm3go-auth-user","letm3go-oauth-pending"].contains(key) else { call.reject("Unsupported session key."); return nil }; return "auth-\(key)"
+        // Supabase may add bounded suffixes for PKCE/session bookkeeping between
+        // client releases. Keep the bridge confined to Letm3go's auth namespace,
+        // but do not strand sign-out when a newer client introduces one.
+        guard let key = call.getString("key"), key.count <= 100,
+              key == "letm3go-auth" || key == "letm3go-oauth-pending" ||
+              key.range(of:"^letm3go-auth-[a-z0-9-]+$",options:.regularExpression) != nil
+        else { call.reject("Unsupported session key."); return nil }
+        return "auth-\(key)"
     }
     @objc func beginSignIn(_ call: CAPPluginCall) { DispatchQueue.main.async {
         do {

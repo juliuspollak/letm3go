@@ -36,6 +36,9 @@ function snapshotKey(data){
   data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight
  ].join('~');
 }
+function requestAccountRebind(ownerID){
+ if(typeof window!=='undefined'&&ownerID)window.dispatchEvent(new CustomEvent('letm3go:recorder-binding-required',{detail:{ownerID}}));
+}
 
 export function useRecorder(ownerID){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
@@ -52,7 +55,7 @@ export function useRecorder(ownerID){
     const data=await recorder.getState();
     if(!alive||id!==requestID)return;
     if(recorderAvailable()&&ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
-     lastKey.current='';setState(emptyRecorder);throw new Error('Private recorder account does not match this sign-in. Reauthenticate.');
+     lastKey.current='';setState(emptyRecorder);requestAccountRebind(ownerID);throw new Error(data.ownerID?'Private recorder account does not match this sign-in. Reauthenticating.':'Private recorder is locked. Reauthenticating.');
     }
     // Skip an identical poll: keeps the state reference stable so memoised
     // journey lists and maps do not recompute while nothing actually changed.
@@ -73,7 +76,7 @@ export function useRecorder(ownerID){
   void onJourneysChanged(()=>void refresh(true)).then(handle=>{if(alive)journeyListener=handle;else void handle?.remove();}).catch(()=>{});
   return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID]);
- const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(emptyRecorder);throw new Error('Private recorder account changed.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID]);
+ const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(emptyRecorder);requestAccountRebind(ownerID);throw new Error('Private recorder account changed. Reauthenticating.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID]);
  // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the
  // debug-only counters (trackingUsage, recorderDiagnostics) refresh on open even
  // though they are excluded from routine polling.
@@ -81,7 +84,7 @@ export function useRecorder(ownerID){
   if(!recorderAvailable())return;
   try{
    const data=await recorder.getState();
-   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(emptyRecorder);setError('Private recorder account does not match this sign-in. Reauthenticate.');return;}
+   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(emptyRecorder);requestAccountRebind(ownerID);setError(data.ownerID?'Private recorder account does not match this sign-in. Reauthenticating.':'Private recorder is locked. Reauthenticating.');return;}
    lastKey.current=snapshotKey(data);
    setState(data);
   }catch(err){setError(err.message||'Unable to read native recorder.');}
