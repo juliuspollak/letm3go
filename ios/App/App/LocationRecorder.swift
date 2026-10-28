@@ -461,9 +461,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func snapshot() -> [String: Any] {
         let info = Bundle.main.infoDictionary ?? [:]
-        guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
+        let bindingDiagnostics: [String: Any] = ["ownerPresent":ownerID != nil,"uiUnlocked":uiUnlocked,"storeOpened":storeOpened,"storageHandlePresent":storage != nil,"accountSuspended":accountSuspended,"accountDeleting":accountDeleting]
+        guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"nativeBinding":bindingDiagnostics,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
         let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
-        return ["ownerID":ownerID!, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
+        return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticTrip != nil ? "recording" : settledTripID != nil ? "settled" : detector.phase,
                 "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "locationStandby",
