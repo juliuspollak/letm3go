@@ -34,7 +34,9 @@ with zipfile.ZipFile(ipa) as archive:
     require(config.get('appId')=='au.jpollak.journey' and not config.get('server'),'Development server is forbidden in IPA')
     require(prefix+'public/index.html' in archive.namelist(),'Bundled web app missing')
     require('location' in info.get('UIBackgroundModes',[]),'Background location capability missing')
-report={'bundleID':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest()}
+    commit=info.get('Letm3goCommit','')
+    require(commit and not commit.startswith('$('),'Build commit identifier missing: build through the fastlane package lane')
+report={'bundleID':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'commit':commit,'sha256':hashlib.sha256(ipa.read_bytes()).hexdigest()}
 manifest=ipa.with_suffix('.manifest.json')
 if manifest.exists(): require(json.loads(manifest.read_text())==report,'IPA no longer matches its reviewed manifest')
 else: manifest.write_text(json.dumps(report,indent=2))

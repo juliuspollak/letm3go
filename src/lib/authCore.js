@@ -1,4 +1,7 @@
 export const isTransientAuthError=error=>!error?.status||error.status===429||error.status>=500||error.name==='AuthRetryableFetchError';
+// Revoked or mismatched identity: the account must be signed out of the recorder.
+// Anything else (offline, timeout, native bridge failure) only locks the interface.
+export const definitiveIdentityFailure=error=>error?.status===401||error?.status===403||/mismatch|did not match/i.test(error?.message||'');
 export async function resolveIdentity({client,session,store,apiKey,isCurrent=()=>true,offlineOnly=false}){
  if(!session?.user?.id||!session.access_token)return {status:'signedOut',session:null};
  let user,offline=false;

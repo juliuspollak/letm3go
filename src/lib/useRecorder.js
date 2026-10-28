@@ -32,7 +32,7 @@ function snapshotKey(data){
   (data.trips||[]).map(tripKey).join('|'),
   (data.places||[]).map(p=>[p.id,p.name,p.kind,p.latitude,p.longitude,p.radius].join(':')).join('|'),
   (data.deletedIDs||[]).join(','),
-  svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,
+  svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,svc.automaticPauseEnabled,svc.lastExecutionGapSeconds,
   data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight
  ].join('~');
 }

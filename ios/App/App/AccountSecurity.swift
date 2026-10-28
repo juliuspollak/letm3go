@@ -88,6 +88,10 @@ extension LocationRecorder {
         let root = try applicationSupport().appendingPathComponent("Letm3goAccounts",isDirectory:true)
         var directory = root.appendingPathComponent(id.lowercased(),isDirectory:true)
         storage = try RecordingStorage(directory:directory,encryptionKey:AccountKeychain.accountKey(id.lowercased()))
+        // When this account was bound on this device; cleared only by sign-out or
+        // an account change, so a relaunch keeps the same ownership boundary.
+        let boundKey = Self.boundSinceKey(id.lowercased())
+        if UserDefaults.standard.double(forKey: boundKey) <= 0 { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: boundKey) }
         var values = URLResourceValues(); values.isExcludedFromBackup = true; try directory.setResourceValues(values)
         ownerID = id.lowercased()
         accountSuspended = false; trackingBoundary = Date().timeIntervalSince1970
@@ -156,7 +160,8 @@ extension LocationRecorder {
         }
         // Only a fresh session is bounded to "now". A restored journey owns the
         // fixes it already saved, including the batch iOS buffers across a restart.
-        trackingBoundary = TrackingBoundary.value(now:openedAt,restoredAutomatic:automaticTrip)
+        let boundSince = UserDefaults.standard.double(forKey: Self.boundSinceKey(ownerID!))
+        trackingBoundary = TrackingBoundary.value(now:openedAt,restoredAutomatic:automaticTrip,boundSince:boundSince > 0 ? boundSince : nil)
         trips.sort { $0.startedAt > $1.startedAt }
         storeOpened = true
         // Tell the watch which account owns the next ride, and deliver any rides
@@ -166,8 +171,13 @@ extension LocationRecorder {
         // any provisional journey that can no longer be continued.
         restoreSettledAutomaticJourney()
     }
+    static func boundSinceKey(_ id: String) -> String { "letm3go-bound-since-\(id)" }
     func stopAccount() throws {
         diagnosticSummary(force:true);recordDiagnostic("account","Recorder locked or signed out")
+        // Sign-out and account changes end background capability and the account's
+        // ownership boundary; the next account starts its own.
+        endBackgroundSession("the recorder was locked or signed out")
+        if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling()
         uiUnlocked = false; accountSuspended = true; storeOpened = false
@@ -244,7 +254,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     var appleState: String?
     var appleController: ASAuthorizationController?
     var bindingGeneration = 0
-    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","savePreferences","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
+    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
     func storageKey(_ call: CAPPluginCall) -> String? {
         // Supabase may add bounded suffixes for PKCE/session bookkeeping between
         // client releases. Keep the bridge confined to Letm3go's auth namespace,
@@ -310,7 +320,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         r.automaticEnabled=false; r.accountSuspended=true
                         if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
-                        r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
+                        r.endBackgroundSession("the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
@@ -321,6 +331,18 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         }.resume()
     } }
     @objc func lockAccount(_ call: CAPPluginCall) { DispatchQueue.main.async { self.bindingGeneration += 1; do { try AccountKeychain.set("signed-out",data:Data("1".utf8)); try LocationRecorder.shared.stopAccount(); call.resolve() } catch { call.reject("Tracking stopped, but pending data could not be saved. Free device storage before signing out.") } } }
+    // A failed identity check in the web layer (offline, a timeout, a bridge
+    // error) hides private data until the session is verified again, but it is
+    // not a sign-out: the recorder stays bound to the same account and keeps
+    // recording, so a journey is not ended and wake-ups are not torn down. A
+    // successful bindAccount for the same account unlocks the interface again.
+    @objc func suspendInterface(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        self.bindingGeneration += 1
+        let r = LocationRecorder.shared
+        r.uiUnlocked = false
+        r.recordDiagnostic("account","Private interface locked; recorder kept running")
+        call.resolve()
+    } }
     @objc func savePreferences(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID, let object = call.getObject("preferences") else { call.reject("Missing settings."); return }
         do { let data = try JSONSerialization.data(withJSONObject:object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
@@ -332,7 +354,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             r.automaticEnabled = false; r.accountSuspended = true
             if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: account deletion was prepared",trigger:"prepareDeletion",event:"the user prepared account deletion") }
             if r.active?.state == "recording" { try r.transition("pause") }
-            r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
+            r.endBackgroundSession("account deletion was prepared"); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
             try AccountKeychain.set("active-account",data:nil); call.resolve()
         } catch { call.reject("Pending recording could not be saved. Free device storage before deleting your account.") }
@@ -343,13 +365,13 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard r.uiUnlocked, let id = r.ownerID, call.getString("confirmation") == "DELETE" else { call.reject("Sign in and confirm deletion."); return }
         do {
             let directory = r.storage?.directory
-            r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
+            r.endBackgroundSession("the local account was deleted"); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.preferences=AccountPreferences(); r.automaticEnabled=false
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
-            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); call.resolve()
+            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
     } }
 }

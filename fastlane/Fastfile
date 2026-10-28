@@ -22,6 +22,13 @@ platform :ios do
     number = override.empty? ? [latest + 1, get_build_number(xcodeproj: 'ios/App/App.xcodeproj').to_i].max : override.to_i
     UI.user_error!('Build number must exceed the latest TestFlight build') if number <= latest
     sh('npm run release:check')
+    # The commit is stamped into Info.plist (Letm3goCommit) so every diagnostic
+    # export names the exact source a field test ran, not just the build number.
+    commit = Dir.chdir(REPOSITORY_ROOT) do
+      head = `git rev-parse --short=12 HEAD`.strip
+      UI.user_error!('Unable to read the git commit for the build') if head.empty?
+      `git status --porcelain`.strip.empty? ? head : "#{head}-dirty"
+    end
     original_project = File.binread(PROJECT_FILE)
     begin
     update_code_signing_settings(
@@ -33,7 +40,7 @@ platform :ios do
     FileUtils.rm_f(File.join(REPOSITORY_ROOT, '.build/release/Letm3go.manifest.json'))
     build_app(
       project: 'ios/App/App.xcodeproj', scheme: 'App', configuration: 'Release',
-      export_method: 'app-store', xcargs: "CURRENT_PROJECT_VERSION=#{number}", output_directory: '.build/release', output_name: 'Letm3go.ipa',
+      export_method: 'app-store', xcargs: "CURRENT_PROJECT_VERSION=#{number} LETM3GO_COMMIT=#{commit}", output_directory: '.build/release', output_name: 'Letm3go.ipa',
       archive_path: '.build/release/Letm3go.xcarchive',
       export_options: {method: 'app-store-connect', signingStyle: 'manual', teamID: ENV.fetch('APPLE_TEAM_ID'), provisioningProfiles: {APP_IDENTIFIER => ENV.fetch('PROFILE_UUID')}}
     )

@@ -36,6 +36,9 @@ export const accountStore={
   let preferences;try{preferences=JSON.parse(localStorage.getItem(`letm3go-account-${id}`));}catch{ /* Use safe defaults. */ }
   return {ownerID:id,preferences:{...defaults(),...preferences}};
  },
+ // Hide private data after a failed verification without signing out: the native
+ // recorder stays bound and keeps recording until the session is verified again.
+ async suspend(){if(Capacitor.isNativePlatform())await secure.suspendInterface();webOwner=null;},
  async lock(){if(Capacitor.isNativePlatform())await secure.lockAccount();localStorage.setItem('letm3go-signed-out','1');webOwner=null;localStorage.removeItem('letm3go-verified-user');},
  async save(preferences,ownerID){
   if(Capacitor.isNativePlatform())return secure.savePreferences({preferences,ownerID});
