@@ -63,7 +63,7 @@ export function useRecorder(ownerID,onBindingRequired){
     const data=await recorder.getState();
     if(!alive||id!==requestID)return;
     if(recorderAvailable()&&ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
-     lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);throw new Error(data.ownerID?'Private recorder belongs to another account. Activity storage remains locked.':'Native activity storage is not bound to this sign-in. Existing recordings were not cleared.');
+     lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);throw new Error(data.ownerID?'Private recorder account does not match this sign-in. Activity storage remains locked.':'Native activity storage is locked / not bound to this sign-in. Existing recordings were not cleared.');
     }
     rebindAttempt.current=null;
     setError('');
@@ -94,7 +94,7 @@ export function useRecorder(ownerID,onBindingRequired){
   if(!recorderAvailable())return;
   try{
    const data=await recorder.getState();
-   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);setError(data.ownerID?'Private recorder belongs to another account. Activity storage remains locked.':'Native activity storage is not bound to this sign-in. Existing recordings were not cleared.');return;}
+   if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);setError(data.ownerID?'Private recorder account does not match this sign-in. Activity storage remains locked.':'Native activity storage is locked / not bound to this sign-in. Existing recordings were not cleared.');return;}
    rebindAttempt.current=null;
    setError('');
    lastKey.current=snapshotKey(data);
