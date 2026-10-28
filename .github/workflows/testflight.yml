@@ -12,6 +12,10 @@ on:
       release_notes:
         description: 'What to Test notes for App Store Connect'
         type: string
+      candidate_branch:
+        description: 'Allow a non-main branch as a TestFlight test candidate (internal testers only; never merges)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -19,7 +23,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   package:
-    if: github.ref == 'refs/heads/main'
+    # Releases come from main; any other branch must be explicitly marked a candidate.
+    if: github.ref == 'refs/heads/main' || inputs.candidate_branch
     runs-on: macos-26
     timeout-minutes: 60
     environment: ios-signing
@@ -32,6 +37,8 @@ jobs:
       VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Record source
+        run: echo "Source ${GITHUB_REF_NAME} @ ${GITHUB_SHA} (candidate branch build: ${{ inputs.candidate_branch }})" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Validate Xcode and iPhoneOS SDK
         run: |
           xcodebuild -version
@@ -68,6 +75,11 @@ jobs:
         env:
           BUILD_NUMBER_OVERRIDE: ${{ inputs.build_number }}
         run: bundle exec fastlane ios package
+      - name: Record validated IPA identity
+        run: |
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat .build/release/Letm3go.manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: letm3go-ipa-${{ github.run_id }}

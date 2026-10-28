@@ -27,7 +27,9 @@ platform :ios do
     commit = Dir.chdir(REPOSITORY_ROOT) do
       head = `git rev-parse --short=12 HEAD`.strip
       UI.user_error!('Unable to read the git commit for the build') if head.empty?
-      `git status --porcelain`.strip.empty? ? head : "#{head}-dirty"
+      # Bundler's vendor/bundle and .bundle (written by CI's Ruby setup) are tool
+      # output, not source; any other change still marks the build dirty.
+      `git status --porcelain -- . ':(exclude)vendor' ':(exclude).bundle'`.strip.empty? ? head : "#{head}-dirty"
     end
     original_project = File.binread(PROJECT_FILE)
     begin
