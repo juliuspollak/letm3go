@@ -118,7 +118,9 @@ private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoin
     let pillFont=UIFont.systemFont(ofSize:12,weight:.semibold)
     let ink:UIColor=kind=="stale" ? .darkGray : markerInk
     let attributes:[NSAttributedString.Key:Any]=[.font:pillFont,.foregroundColor:ink]
-    let symbol=labelSymbol(kind).flatMap{UIImage(systemName:$0,withConfiguration:UIImage.SymbolConfiguration(pointSize:10,weight:.bold))?.withTintColor(kind=="home" ? .systemBlue : ink,renderingMode:.alwaysOriginal)}
+    let symbol:UIImage? = kind=="home"
+        ? (UIImage(named:"Letm3goHome") ?? UIImage(systemName:"house.fill"))
+        : labelSymbol(kind).flatMap{UIImage(systemName:$0,withConfiguration:UIImage.SymbolConfiguration(pointSize:10,weight:.bold))?.withTintColor(ink,renderingMode:.alwaysOriginal)}
     let textWidth=text.map{($0 as NSString).size(withAttributes:attributes).width} ?? 0
     let pillWidth=text==nil ? 0 : textWidth+(symbol==nil ? 0 : 15)+18
     let width=max(stackWidth,pillWidth)+6
@@ -135,7 +137,7 @@ private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoin
             ctx.restoreGState()
             var x=pill.minX+9
             if let symbol=symbol {
-                symbol.draw(in:CGRect(x:x,y:pill.midY-6,width:12,height:12).insetBy(dx:(12-min(12,symbol.size.width))/2,dy:(12-min(12,symbol.size.height))/2))
+                symbol.draw(in:CGRect(x:x-1,y:pill.midY-8,width:16,height:16))
                 x+=15
             }
             let s=(text as NSString).size(withAttributes:attributes)
@@ -162,7 +164,47 @@ private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoin
 }
 private func configurePeopleView(_ view:MKAnnotationView,_ pin:JourneyPin) {
     let marker=peopleMarker(pin.metadata)
+    // A reused annotation must never retain the previous person's activity animation.
+    for child in view.subviews where child.accessibilityIdentifier=="letm3go-driving-car" {child.layer.removeAllAnimations();child.removeFromSuperview()}
     view.image=marker.image;view.centerOffset=marker.offset
+    view.clipsToBounds=false
+    let members=pin.metadata["members"] as? [[String:Any]] ?? []
+    // Grouped bubbles represent multiple people; do not imply that everyone is driving.
+    if members.count==1,let member=members.first,
+       member["state"] as? String == "live",
+       member["activity"] as? String == "driving",
+       let artwork=UIImage(named:"Letm3goCar") {
+        let car=UIView(frame:CGRect(x:0,y:0,width:24,height:15))
+        car.accessibilityIdentifier="letm3go-driving-car"
+        car.isUserInteractionEnabled=false
+        let picture=UIImageView(image:artwork)
+        picture.frame=car.bounds;picture.contentMode = .scaleAspectFit
+        car.addSubview(picture)
+        view.addSubview(car)
+        // The car runs directly along the 44-point portrait border.
+        let top:CGFloat=(pin.metadata["label"] as? String)?.isEmpty == false ? 27 : ((pin.metadata["home"] as? Bool == true) ? 27 : 0)
+        let centre=CGPoint(x:marker.image.size.width/2,y:top+25)
+        let radius:CGFloat=22
+        let orbit=CAKeyframeAnimation(keyPath:"position")
+        orbit.path=UIBezierPath(ovalIn:CGRect(x:centre.x-radius,y:centre.y-radius,width:radius*2,height:radius*2)).cgPath
+        orbit.rotationMode = .rotateAuto
+        orbit.duration=6
+        orbit.repeatCount = .infinity
+        orbit.calculationMode = .paced
+        orbit.isRemovedOnCompletion=false
+        car.layer.position=CGPoint(x:centre.x+radius,y:centre.y)
+        car.layer.add(orbit,forKey:"letm3go-orbit")
+        let suspension=CAKeyframeAnimation(keyPath:"transform.translation.y")
+        suspension.values=[0,-1.2,0,0.6,0]
+        suspension.keyTimes=[0,0.25,0.5,0.75,1] as [NSNumber]
+        suspension.duration=0.42
+        suspension.repeatCount = .infinity
+        picture.layer.add(suspension,forKey:"letm3go-suspension")
+        if UIAccessibility.isReduceMotionEnabled {
+            car.layer.removeAllAnimations()
+            picture.layer.removeAllAnimations()
+        }
+    }
     view.canShowCallout=true
     view.displayPriority = .required
     view.zPriority = .max
@@ -727,7 +769,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                             let bounds=CGRect(x:p.x-21,y:p.y-21,width:42,height:42)
                             UIColor.systemPurple.setFill();ctx.fillEllipse(in:bounds)
                             UIColor.white.setStroke();ctx.setLineWidth(3);ctx.strokeEllipse(in:bounds)
-                            let text=("⌂ " + String(count)) as NSString
+                            if let home=UIImage(named:"Letm3goHome") {home.draw(in:bounds.insetBy(dx:5,dy:5));continue}
+                             let text=("⌂ " + String(count)) as NSString
                             text.draw(at:CGPoint(x:p.x-14,y:p.y-10),withAttributes:[.font:UIFont.boldSystemFont(ofSize:14),.foregroundColor:UIColor.white])
                             continue
                         }
@@ -983,11 +1026,11 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             return marker
         }
         if kind=="home-presence" {
-            let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
-            marker.markerTintColor = .systemPurple
-            marker.glyphImage=UIImage(systemName:"house.fill")
-            marker.canShowCallout=true
-            return marker
+            let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+            view.image=UIImage(named:"Letm3goHome") ?? UIImage(systemName:"house.fill")
+            view.centerOffset=CGPoint(x:0,y:-18)
+            view.canShowCallout=true
+            return view
         }
         if kind=="photo",let photoID=pin.metadata["photoID"] as? String,
            let thumbnail=journalPhotoThumbnail(photoID,size:52) {
@@ -1071,8 +1114,11 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             marker.markerTintColor = .systemOrange
             marker.glyphImage=UIImage(systemName:"photo")
         } else if kind=="home-presence" {
-            marker.markerTintColor = .systemPurple
-            marker.glyphImage=UIImage(systemName:"house.fill")
+            let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+            view.image=UIImage(named:"Letm3goHome") ?? UIImage(systemName:"house.fill")
+            view.centerOffset=CGPoint(x:0,y:-18)
+            view.canShowCallout=true
+            return view
         } else {
             marker.markerTintColor = .systemBlue
         }
