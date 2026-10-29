@@ -42,8 +42,9 @@ These states are layered on the existing recorder rather than forming a second s
 A walk that starts inside the current place is a journey when any of these hold:
 
 1. **It left:** two fixes beyond the departure distance, measured from the centre less half each fix's accuracy, so coarse fixes cannot fake it.
-2. **A sustained walk:** ≥1.2 km, ≥12 min, moving ≥0.9 m/s, stopped ≤30 % of the time, reaching ≥150 m from where it began.
-3. **A sustained run:** ≥800 m, ≥4 min, moving ≥2 m/s, with the same stop and extent limits.
+2. **A steady departure:** the stretch since the walk last stood inside the place, or last paused for a minute, is at least 70 % accurate fixes (≤20 m), at least 200 m long, at least 60 % straight, moving at least 90 s and stopped no more than 35 % of the time, and ends at least 150 m beyond the place. This covers a shopping centre to a station 250 m away. Indoor fixes and stop-start shopping never qualify.
+3. **A sustained walk:** ≥1.2 km, ≥12 min, moving ≥0.9 m/s, stopped ≤30 % of the time, reaching ≥150 m from where it began.
+4. **A sustained run:** ≥800 m, ≥4 min, moving ≥2 m/s, with the same stop and extent limits.
 
 The path is measured between anchors that move further than both fixes' uncertainty, so indoor jitter adds nothing.
 
@@ -59,12 +60,15 @@ Driving, cycling (by motion or three fixes faster than 3.5 m/s) and manual activ
 
 - Household publishing runs for every location delivery before any journey logic, so the map bubble stays live while local walking is not recorded.
 - Resting (100 m accuracy, 50 m filter) now applies at any settled place, not only a saved Home. Walking motion returns it to 10 m standby so a departure appears in the fixes.
+- An accurate fix (≤30 m) more than 25 m outside the occupied area starts one departure check per exit, whatever the walking-motion cooldown says. Staying outside the place for 10 minutes makes that the new place.
+- When a stop is finalised, the place geofences are rebuilt, so the place the person is still at keeps an exit wake-up.
 - Inside a settled place, walking-only motion may start a precise-GPS departure check once per 10 minutes. GPS displacement, region exits, visit departures, driving and cycling are never gated.
 - The background session is untouched: no place, stop or rest ever ends it.
 - A pending walk keeps precise GPS until it stops, because stop detection needs live fixes. This costs battery during long indoor walking bouts.
 
 ## Known limits
 
-- Walking from a car park to somewhere within ~400 m and stopping there is treated as local movement unless it qualifies as a sustained walk.
+- A walk shorter than about 200 m from an unsaved place (for example 150 m to a shop) is not recorded. An outdoor walk of 200 m or more that goes steadily away from a car park, such as across open school grounds, can be recorded.
+- A pending walk interrupted by a restart resumes if the app relaunches within 30 minutes. If it relaunches later, the saved fixes decide and nothing is added for the time the app was not running.
 - A genuine walk to a café, followed by moving around inside it within 15 minutes, can still be absorbed into the walk by the existing continuation rule.
 - Venue sizes are inferred, not known.
