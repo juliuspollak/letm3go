@@ -162,3 +162,15 @@ it('updates inline native filters on the same live map without hiding or releasi
  handlers.layersTapped({mapID});expect(onLayers).toHaveBeenCalledTimes(1);
  expect(mocks.hide).not.toHaveBeenCalled();expect(mocks.unembed).not.toHaveBeenCalled();expect(container.querySelector('.apple-map-freeze')).toBeNull();
 });
+
+it('renders the location action natively and routes it to the current position request',async()=>{
+ const handlers={};mocks.addListener.mockImplementation((name,callback)=>{handlers[name]=callback;return Promise.resolve({remove:vi.fn()});});
+ const onLocate=vi.fn();
+ const {container}=render(<AppleMap payload={payload} onLocate={onLocate}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({locate:true})));
+ const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
+ await waitFor(()=>expect(handlers.layersTapped).toBeDefined());
+ handlers.layersTapped({mapID:'other',action:'locate'});expect(onLocate).not.toHaveBeenCalled();
+ handlers.layersTapped({mapID,action:'locate'});expect(onLocate).toHaveBeenCalledTimes(1);
+ await waitFor(()=>expect(container.querySelector('.map-locate-button')).toBeNull());
+});

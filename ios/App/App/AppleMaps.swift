@@ -3,6 +3,13 @@ import MapKit
 import ImageIO
 import Capacitor
 
+// Empty space between option buttons belongs to the live map.
+private final class MapFilterOptions:UIView {
+    override func point(inside point:CGPoint,with event:UIEvent?)->Bool {
+        subviews.contains{!$0.isHidden && $0.isUserInteractionEnabled && $0.frame.contains(point)}
+    }
+}
+
 private let routeColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.65,green:0.71,blue:1,alpha:1) : UIColor(red:0.275,green:0.35,blue:0.85,alpha:1) }
 private let gapColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.55,green:0.58,blue:0.7,alpha:0.9) : UIColor(red:0.45,green:0.49,blue:0.62,alpha:0.9) }
 // A dashed connector marks an unobserved stretch between two observed segments.
@@ -613,7 +620,9 @@ private struct MapContent {
     // The number of active layers when the map shows the Map layers button.
     let layersActive:Int?
     let toolbar:[String:Any]?
+    let showsLocate:Bool
     init(_ options:[AnyHashable:Any]) {
+        showsLocate=options["locate"] as? Bool == true
         focus=coordinate(options["focus"])
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
@@ -734,6 +743,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
     private var layersButton:UIButton?
+    private var locationButton:UIButton?
     private var filterViews:[UIView]=[]
     private var filterToolbarKey:Data?
     var onToolbarAction:((String)->Void)?
@@ -802,6 +812,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         for (id,pin) in pins where !seen.contains(id) {map.removeAnnotation(pin);pins.removeValue(forKey:id);pinData.removeValue(forKey:id)}
         applyOverview(next.overview)
+        updateLocationButton(next.showsLocate && showsLayers)
         updateLayersButton(next.layersActive)
         updateFilterToolbar(next.toolbar)
         if isPeopleMap {installControls();applyIntent();plan();layoutIndicators()}
@@ -970,6 +981,25 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         map.bringSubviewToFront(button)
     }
 
+    private func updateLocationButton(_ visible:Bool) {
+        guard let map=map else {return}
+        guard visible else {locationButton?.removeFromSuperview();locationButton=nil;return}
+        let button=locationButton ?? {
+            let button=UIButton(type:.system)
+            button.backgroundColor = .secondarySystemBackground
+            button.tintColor = .systemBlue
+            button.layer.cornerRadius=22
+            button.layer.shadowOpacity=0.15;button.layer.shadowRadius=4
+            button.setImage(UIImage(systemName:"location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
+            button.accessibilityLabel="Show my location"
+            button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?("locate")},for:.touchUpInside)
+            map.addSubview(button);locationButton=button
+            return button
+        }()
+        button.frame=CGRect(x:map.bounds.width-56,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-64),width:44,height:44)
+        map.bringSubviewToFront(button)
+    }
+
     // Direct MapKit subviews: only the buttons and scrolling option strips
     // intercept touches. No full-map container, modal, snapshot or web z-index.
     private func updateFilterToolbar(_ toolbar:[String:Any]?) {
@@ -1009,30 +1039,37 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?(id)},for:.touchUpInside)
             return button
         }
-        for (index,row) in rows.enumerated() {
-            let y=top+52+CGFloat(index)*50
+        var y=top+52
+        for row in rows {
             let id=row["id"] as? String
             let options=row["options"] as? [[String:Any]]
             let button=control(row,expanded:options == nil ? nil : category==id)
             button.frame=CGRect(x:12,y:y,width:44,height:44)
             map.addSubview(button);filterViews.append(button)
             if category==id,let options=options {
-                let strip=UIScrollView(frame:CGRect(x:62,y:y,width:max(44,map.bounds.width-124),height:46))
-                strip.showsHorizontalScrollIndicator=true
+                // Full-width wrapped options: every choice is visible, without
+                // clipped edge buttons or an undiscoverable horizontal scroll.
+                let available=max(44,map.bounds.width-24)
+                let strip=MapFilterOptions(frame:.zero)
                 strip.accessibilityLabel=row["label"] as? String
                 var x:CGFloat=0
+                var optionY:CGFloat=3
                 for item in options {
                     let option=control(item)
-                    let width:CGFloat=item["text"] == nil ? 44 : max(76,option.sizeThatFits(CGSize(width:180,height:44)).width+16)
-                    option.frame=CGRect(x:x,y:0,width:width,height:44)
+                    let desired:CGFloat=item["text"] == nil ? 44 : max(76,option.sizeThatFits(CGSize(width:180,height:44)).width+16)
+                    let width=min(available,desired)
+                    if x>0 && x+width>available {x=0;optionY+=50}
+                    option.frame=CGRect(x:x,y:optionY,width:width,height:44)
                     strip.addSubview(option);x+=width+6
                 }
-                strip.contentSize=CGSize(width:x,height:44)
+                let height=optionY+47
+                strip.frame=CGRect(x:12,y:y+48,width:available,height:height)
                 map.addSubview(strip);filterViews.append(strip)
+                y+=height+48
                 if !UIAccessibility.isReduceMotionEnabled {
                     strip.alpha=0;UIView.animate(withDuration:0.18){strip.alpha=1}
                 }
-            }
+            } else {y+=50}
         }
     }
 
@@ -1286,8 +1323,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         recognizers.removeAll()
         for button in indicators.values {button.removeFromSuperview()}
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
-        ([recenter,chip,compass,card,layersButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
-        recenter=nil;chip=nil;compass=nil;card=nil;layersButton=nil
+        ([recenter,chip,compass,card,layersButton,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
+        recenter=nil;chip=nil;compass=nil;card=nil;layersButton=nil;locationButton=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
         filterViews.forEach{$0.removeFromSuperview()};filterViews=[];filterToolbarKey=nil
         onModeChange=nil;onPhotoAction=nil;onLayers=nil;onToolbarAction=nil
