@@ -240,7 +240,15 @@ The audit found these defects. Each is fixed, and a regression test fails under 
 - adaptive services while disabled;
 - a background session without an owner.
 
-## 11. Scenarios
+## 11. Runtime review (final)
+
+- **Region replacement:** Apple documents that registering an identifier that is already monitored replaces the old region (`startMonitoring(for:)`). That makes moving between places correct. The controller still removes the old region first, so a refused registration never leaves the previous place's region behind. A refused place is not retried until the place changes.
+- **First movement:** a stationary report without a coordinate left the gate with no reference, so the first moving fix only became one and the departure check started one report later. The gate now falls back to the recorder's settled position (the last standby or low-power fix). Coordinate-less diagnostic reports still never start precise GPS, and jitter rejection is unchanged.
+- **A coarse first fix clearly beyond the place's departure distance** now counts as outside the place.
+- **Testable runtime:** `AdaptiveController` makes every runtime decision and drives Core Location only through `AdaptiveHost`. The native tests drive this production controller with a recording host through real sequences: entering standby, one stream, stationary reports, movement leading to one check, cancellation and late updates, failures and back-off, relaunch, switching off mid-callback, manual recording, permission revoked, account switch, and region replacement. They assert the native calls made and their order.
+- **Still not covered by tests:** the `CLLocationUpdate` task itself, real background delivery, and how quickly delivery resumes.
+
+## 12. Scenarios
 
 | # | Scenario | Automated | Needs an iPhone |
 |---|---|---|---|
