@@ -7,12 +7,15 @@ import {sharedPosition} from './sharedPosition.js';
 // Only friends see location, only after explicit consent. Locations are visible for up to 30 minutes with timestamps.
 export function useFriendLocations(owner,online){
  const [people,setPeople]=useState([]),[enabled,setEnabled]=useState(false),[error,setError]=useState('');
+ // True once the server has answered, so the switch never shows Off before the
+ // real setting is known. Display only; sharing itself is unchanged.
+ const [ready,setReady]=useState(false);
  const refresh=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
   try{
    const [setting,locations]=await Promise.all([supabase.rpc('my_friend_location_setting'),supabase.rpc('my_friend_locations')]);
    if(setting.error||locations.error)throw Error('Friend locations are unavailable until the database migration is applied.');
-   setEnabled(setting.data===true);setPeople(locations.data||[]);setError('');
+   setEnabled(setting.data===true);setPeople(locations.data||[]);setError('');setReady(true);
   }catch(e){setError(e.message);setPeople([]);}
  },[owner,online]);
  useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
@@ -57,5 +60,5 @@ export function useFriendLocations(owner,online){
   } else {const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:false});if(e)throw e;}
   setEnabled(next);await refresh();
  };
- return {people,enabled,error,setSharing,refresh};
+ return {people,enabled,ready,error,setSharing,refresh};
 }

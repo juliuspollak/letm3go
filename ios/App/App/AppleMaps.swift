@@ -157,6 +157,7 @@ private final class PhotoAnnotationView:MKAnnotationView {
     static let reuse="overview-photo"
     override init(annotation:MKAnnotation?,reuseIdentifier:String?) {
         super.init(annotation:annotation,reuseIdentifier:reuseIdentifier)
+        clusteringIdentifier="overview-photos"
         canShowCallout=false
         collisionMode = .circle
         displayPriority = .defaultHigh
