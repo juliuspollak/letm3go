@@ -180,7 +180,7 @@ extension LocationRecorder {
         if mode != locationMode {
             if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
             else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
-            else if locationMode == .resting || locationMode == .stationary { trackingEvent("Left (locationMode == .stationary ? "low-power standby" : "Home rest"): (mode.rawValue) location") }
+            else if locationMode == .resting || locationMode == .stationary { trackingEvent("Left \(locationMode == .stationary ? "low-power standby" : "Home rest"): \(mode.rawValue) location") }
             locationMode=mode
         }
         guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
