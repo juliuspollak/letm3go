@@ -164,6 +164,9 @@ extension LocationRecorder {
         trackingBoundary = TrackingBoundary.value(now:openedAt,restoredAutomatic:automaticTrip,boundSince:boundSince > 0 ? boundSince : nil)
         trips.sort { $0.startedAt > $1.startedAt }
         storeOpened = true
+        // Household location sharing continues after a relaunch without waiting
+        // for the web view: its device credential is in this account's Keychain.
+        restoreHouseholdPublisher()
         // Tell the watch which account owns the next ride, and deliver any rides
         // that arrived while this account was locked or signed out.
         WatchSessionManager.shared.updateOwner(ownerID)
@@ -177,6 +180,7 @@ extension LocationRecorder {
         // Sign-out and account changes end background capability and the account's
         // ownership boundary; the next account starts its own.
         endBackgroundSession("the recorder was locked or signed out")
+        disableHouseholdLiveSharing(forget: true)
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling()
@@ -320,7 +324,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         r.automaticEnabled=false; r.accountSuspended=true
                         if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
-                        r.endBackgroundSession("the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
+                        r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
@@ -354,7 +358,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             r.automaticEnabled = false; r.accountSuspended = true
             if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: account deletion was prepared",trigger:"prepareDeletion",event:"the user prepared account deletion") }
             if r.active?.state == "recording" { try r.transition("pause") }
-            r.endBackgroundSession("account deletion was prepared"); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
+            r.endBackgroundSession("account deletion was prepared"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
             try AccountKeychain.set("active-account",data:nil); call.resolve()
         } catch { call.reject("Pending recording could not be saved. Free device storage before deleting your account.") }
@@ -365,7 +369,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard r.uiUnlocked, let id = r.ownerID, call.getString("confirmation") == "DELETE" else { call.reject("Sign in and confirm deletion."); return }
         do {
             let directory = r.storage?.directory
-            r.endBackgroundSession("the local account was deleted"); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
+            r.endBackgroundSession("the local account was deleted"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.

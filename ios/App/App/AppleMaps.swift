@@ -48,6 +48,105 @@ private func journalPhotoThumbnail(_ photoID:String, size:CGFloat=48)->UIImage? 
         let ring=UIBezierPath(ovalIn:bounds.insetBy(dx:2,dy:2));ring.lineWidth=3;ring.stroke()
     }
 }
+// People on the map. Everyone at one place (grouped by the web layer) is a single
+// marker: an overlapping stack of avatars so nobody hides behind anyone else, a
+// blue ring for the signed-in user, a status dot (green: live, clock: stale) and a
+// compact Home pill above the stack when everyone there is at Home.
+private let avatarCache=NSCache<NSString,UIImage>()
+private func avatarImage(_ source:String?)->UIImage? {
+    guard let source=source,source.hasPrefix("data:image/"),let comma=source.firstIndex(of:",") else {return nil}
+    let key=NSString(string:"\(source.count):\(source.suffix(80))")
+    if let cached=avatarCache.object(forKey:key) {return cached}
+    guard let data=Data(base64Encoded:String(source[source.index(after:comma)...])),let image=UIImage(data:data) else {return nil}
+    avatarCache.setObject(image,forKey:key)
+    return image
+}
+private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoint) {
+    let members=metadata["members"] as? [[String:Any]] ?? []
+    let shown=Array(members.prefix(members.count>3 ? 2 : 3))
+    let extra=members.count-shown.count
+    let size:CGFloat=46,step:CGFloat=30,pillHeight:CGFloat=22
+    let home=metadata["home"] as? Bool == true
+    let slots=max(1,shown.count+(extra>0 ? 1 : 0))
+    let stackWidth=size+CGFloat(slots-1)*step
+    let pillFont=UIFont.systemFont(ofSize:12,weight:.semibold)
+    let pillText="⌂ Home" as NSString
+    let pillWidth=home ? pillText.size(withAttributes:[.font:pillFont]).width+20 : 0
+    let width=max(stackWidth,pillWidth)+6
+    let top:CGFloat=home ? pillHeight+5 : 0
+    let height=top+size+6
+    let image=UIGraphicsImageRenderer(size:CGSize(width:width,height:height)).image { context in
+        let ctx=context.cgContext
+        if home {
+            let pill=CGRect(x:(width-pillWidth)/2,y:1,width:pillWidth,height:pillHeight)
+            ctx.saveGState()
+            ctx.setShadow(offset:CGSize(width:0,height:1),blur:3,color:UIColor.black.withAlphaComponent(0.25).cgColor)
+            UIColor(white:1,alpha:0.96).setFill()
+            UIBezierPath(roundedRect:pill,cornerRadius:pillHeight/2).fill()
+            ctx.restoreGState()
+            let attributes:[NSAttributedString.Key:Any]=[.font:pillFont,.foregroundColor:UIColor(red:0.13,green:0.15,blue:0.22,alpha:1)]
+            let text=pillText.size(withAttributes:attributes)
+            pillText.draw(at:CGPoint(x:pill.midX-text.width/2,y:pill.midY-text.height/2),withAttributes:attributes)
+        }
+        let originX=(width-stackWidth)/2
+        for (index,member) in shown.enumerated() {
+            let rect=CGRect(x:originX+CGFloat(index)*step,y:top+3,width:size,height:size)
+            let isSelf=member["self"] as? Bool == true
+            ctx.saveGState()
+            ctx.setShadow(offset:CGSize(width:0,height:1),blur:3,color:UIColor.black.withAlphaComponent(0.3).cgColor)
+            (isSelf ? UIColor.systemBlue : UIColor.white).setFill()
+            ctx.fillEllipse(in:rect)
+            ctx.restoreGState()
+            let inner=rect.insetBy(dx:3,dy:3)
+            ctx.saveGState()
+            UIBezierPath(ovalIn:inner).addClip()
+            if let photo=avatarImage(member["avatar"] as? String) {
+                let ratio=max(inner.width/photo.size.width,inner.height/photo.size.height)
+                let w=photo.size.width*ratio,h=photo.size.height*ratio
+                photo.draw(in:CGRect(x:inner.midX-w/2,y:inner.midY-h/2,width:w,height:h))
+            } else {
+                (isSelf ? UIColor.systemBlue : UIColor.systemIndigo).setFill();ctx.fill(inner)
+                let initial=((member["initial"] as? String) ?? "?") as NSString
+                let attributes:[NSAttributedString.Key:Any]=[.font:UIFont.systemFont(ofSize:size*0.4,weight:.bold),.foregroundColor:UIColor.white]
+                let s=initial.size(withAttributes:attributes)
+                initial.draw(at:CGPoint(x:inner.midX-s.width/2,y:inner.midY-s.height/2),withAttributes:attributes)
+            }
+            ctx.restoreGState()
+            // A dot never claims a live position that has not been received.
+            let state=member["state"] as? String ?? ""
+            if state=="live" || state=="stale" {
+                let dot=CGRect(x:rect.maxX-15,y:rect.maxY-15,width:15,height:15)
+                UIColor.white.setFill();ctx.fillEllipse(in:dot)
+                (state=="live" ? UIColor.systemGreen : UIColor.systemGray).setFill();ctx.fillEllipse(in:dot.insetBy(dx:2.5,dy:2.5))
+                if state=="stale",let clock=UIImage(systemName:"clock.fill")?.withTintColor(.white,renderingMode:.alwaysOriginal) {
+                    clock.draw(in:dot.insetBy(dx:4,dy:4))
+                }
+            }
+        }
+        if extra>0 {
+            let rect=CGRect(x:originX+CGFloat(shown.count)*step,y:top+3,width:size,height:size)
+            UIColor.white.setFill();ctx.fillEllipse(in:rect)
+            UIColor.systemGray2.setFill();ctx.fillEllipse(in:rect.insetBy(dx:3,dy:3))
+            let label="+\(extra)" as NSString
+            let attributes:[NSAttributedString.Key:Any]=[.font:UIFont.systemFont(ofSize:15,weight:.bold),.foregroundColor:UIColor.white]
+            let s=label.size(withAttributes:attributes)
+            label.draw(at:CGPoint(x:rect.midX-s.width/2,y:rect.midY-s.height/2),withAttributes:attributes)
+        }
+    }
+    // The avatar centres sit on the coordinate; the Home pill floats above them.
+    return (image,CGPoint(x:0,y:-top/2))
+}
+private func peopleAnnotationView(_ pin:MKAnnotation,_ metadata:[String:Any])->MKAnnotationView {
+    let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+    let marker=peopleMarker(metadata)
+    view.image=marker.image;view.centerOffset=marker.offset
+    view.canShowCallout=true
+    view.displayPriority = .required
+    view.zPriority = .max
+    view.accessibilityLabel=[pin.title ?? nil,pin.subtitle ?? nil].compactMap{$0}.joined(separator:". ")
+    return view
+}
+
 private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let gaps: [[CLLocationCoordinate2D]]
@@ -140,6 +239,11 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     // Draw normal pins first; full-size photo thumbnails must sit above them.
                     for pin in content.pins where (pin["kind"] as? String) != "photo" {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
+                        if (pin["kind"] as? String)=="people" {
+                            let marker=peopleMarker(pin)
+                            marker.image.draw(at:CGPoint(x:p.x-marker.image.size.width/2+marker.offset.x,y:p.y-marker.image.size.height/2+marker.offset.y))
+                            continue
+                        }
                         if (pin["kind"] as? String)=="family-live" {
                             let bounds=CGRect(x:p.x-12,y:p.y-12,width:24,height:24)
                             UIColor.systemPurple.setFill();ctx.fillEllipse(in:bounds)
@@ -240,7 +344,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             for metadata in content.pins {
                 guard let coordinate=coordinate(metadata["point"]) else {continue}
-                let pin=JourneyPin();pin.coordinate=coordinate;pin.title=metadata["title"] as? String;pin.metadata=metadata
+                let pin=JourneyPin();pin.coordinate=coordinate;pin.title=metadata["title"] as? String;pin.subtitle=metadata["subtitle"] as? String;pin.metadata=metadata
                 map.addAnnotation(pin)
                 if let radius=metadata["radius"] as? Double,radius.isFinite,radius>0 {map.addOverlay(MKCircle(center:coordinate,radius:min(radius,100000)))}
             }
@@ -324,7 +428,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         }
         for metadata in content.pins {
             guard let c=coordinate(metadata["point"]) else {continue}
-            let pin=JourneyPin();pin.coordinate=c;pin.title=metadata["title"] as? String;pin.metadata=metadata;map.addAnnotation(pin)
+            let pin=JourneyPin();pin.coordinate=c;pin.title=metadata["title"] as? String;pin.subtitle=metadata["subtitle"] as? String;pin.metadata=metadata;map.addAnnotation(pin)
             if let r=metadata["radius"] as? Double,r.isFinite,r>0 {map.addOverlay(MKCircle(center:c,radius:min(r,100000)))}
             if picker {selected=c;navigationItem.rightBarButtonItem?.isEnabled=true}
         }
@@ -357,6 +461,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
+        if kind=="people" {return peopleAnnotationView(pin,pin.metadata)}
         if kind=="friend-live" {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
             view.image=friendInitialBubble((pin.title ?? "F").components(separatedBy:" · ").first ?? "F")
@@ -424,6 +529,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
     public func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String ?? ""
+        if kind=="people" {return peopleAnnotationView(pin,pin.metadata)}
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
         marker.canShowCallout=true
         if kind=="friend-live" {
@@ -468,6 +574,12 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         if let route=overlay as? MKPolyline {
             let renderer=MKPolylineRenderer(polyline:route)
             renderer.strokeColor=routeColor;renderer.lineWidth=4;renderer.lineCap = .round
+            return renderer
+        }
+        // Accuracy of the signed-in user's position (and saved-place radii).
+        if let circle=overlay as? MKCircle {
+            let renderer=MKCircleRenderer(circle:circle)
+            renderer.strokeColor=UIColor.systemBlue.withAlphaComponent(0.6);renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.1);renderer.lineWidth=1
             return renderer
         }
         return MKOverlayRenderer(overlay:overlay)

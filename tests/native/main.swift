@@ -1420,6 +1420,24 @@ check(TrackingBoundary.value(now:5000,restoredAutomatic:nil,boundSince:9000) == 
 check(TrackingBoundary.value(now:5000,restoredAutomatic:restartedTrip,boundSince:1000) == 0,"a restored journey still owns its saved fixes")
 check(TrackingBoundary.value(now:5000,restoredAutomatic:nil,boundSince:nil) == 5000,"a newly bound account starts at now")
 
+// MARK: Household location publishing
+// The device credential publishes only through the dedicated RPC over HTTPS.
+check(HouseholdPublisher.validToken(String(repeating:"a",count:64)),"a 64-character lowercase hex credential is accepted")
+check(!HouseholdPublisher.validToken(String(repeating:"A",count:64)),"an uppercase credential is rejected")
+check(!HouseholdPublisher.validToken("abc123"),"a short credential is rejected")
+check(!HouseholdPublisher.validToken(String(repeating:"g",count:64)),"a non-hex credential is rejected")
+check(HouseholdPublisher.validEndpoint(URL(string:"https://example.supabase.co/rest/v1/rpc/publish_live_location")!),"the publish RPC endpoint is accepted")
+check(!HouseholdPublisher.validEndpoint(URL(string:"http://example.supabase.co/rest/v1/rpc/publish_live_location")!),"plain HTTP is rejected")
+check(!HouseholdPublisher.validEndpoint(URL(string:"https://example.supabase.co/rest/v1/rpc/set_my_live_location")!),"a credential is never sent to another RPC")
+// A stationary phone keeps its household position current only while its
+// location service has demonstrably run since the last real fix.
+check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:500),"a phone parked at Home re-confirms its last fix while location keeps running")
+check(!HouseholdPublisher.canConfirm(continuousRunning:false,resuming:false,fixAt:1000,executingSince:500),"no confirmation without continuous location")
+check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:1200),"after a suspension a new real fix is required before anything is confirmed")
+check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:true,fixAt:1000,executingSince:500),"no confirmation while a wake is still being attributed")
+check(HouseholdPublisher.movingInterval == 25 && HouseholdPublisher.confirmationInterval == 300,"moving phones publish every 25 s, parked phones confirm every 5 minutes")
+check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation still keeps a present member inside the 10-minute live window")
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

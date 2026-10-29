@@ -899,6 +899,26 @@ enum TrackingBoundary {
     }
 }
 
+// Household location publishing rules. A moving phone publishes at most every
+// 25 s from real Core Location fixes. A phone that is not moving produces no fixes,
+// so its last fix is re-confirmed every 5 minutes, but only while the continuous
+// location service has run without interruption since that fix: with a distance
+// filter active, no callback then means the phone has not moved beyond it. After
+// any suspension a new real fix is required before anything is confirmed again.
+enum HouseholdPublisher {
+    static let movingInterval: Double = 25
+    static let confirmationInterval: Double = 300
+    static func validToken(_ token: String) -> Bool {
+        token.count == 64 && token.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+    static func validEndpoint(_ url: URL) -> Bool {
+        url.scheme == "https" && url.path.hasSuffix("/rest/v1/rpc/publish_live_location")
+    }
+    static func canConfirm(continuousRunning: Bool, resuming: Bool, fixAt: Double, executingSince: Double) -> Bool {
+        continuousRunning && !resuming && fixAt >= executingSince
+    }
+}
+
 // MARK: Location service lifecycle
 //
 // Apple documents that with allowsBackgroundLocationUpdates, updates started while

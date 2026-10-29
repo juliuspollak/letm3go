@@ -61,7 +61,7 @@ extension LocationRecorder {
         let now=Date().timeIntervalSince1970
         let backgroundSharingArmed=(liveShareToken != nil && now<liveShareTokenExpiresAt-60) ||
             (friendShareToken != nil && now<friendShareTokenExpiresAt-60)
-        if !automaticAvailable && backgroundSharingArmed && uiUnlocked && !accountSuspended &&
+        if !automaticAvailable && backgroundSharingArmed && storeOpened && !accountSuspended &&
            manager.authorizationStatus == .authorizedAlways {
             // Low-power significant-change callbacks can wake a suspended app
             // without keeping continuous GPS active for family presence.
