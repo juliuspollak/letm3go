@@ -106,10 +106,16 @@ private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoin
                 photo.draw(in:CGRect(x:inner.midX-w/2,y:inner.midY-h/2,width:w,height:h))
             } else {
                 (isSelf ? UIColor.systemBlue : UIColor.systemIndigo).setFill();ctx.fill(inner)
-                let initial=((member["initial"] as? String) ?? "?") as NSString
-                let attributes:[NSAttributedString.Key:Any]=[.font:UIFont.systemFont(ofSize:size*0.4,weight:.bold),.foregroundColor:UIColor.white]
-                let s=initial.size(withAttributes:attributes)
-                initial.draw(at:CGPoint(x:inner.midX-s.width/2,y:inner.midY-s.height/2),withAttributes:attributes)
+                // No photo and no real name: a neutral silhouette, never a made-up initial.
+                if ((member["initial"] as? String) ?? "").isEmpty,
+                   let person=UIImage(systemName:"person.fill")?.withTintColor(.white,renderingMode:.alwaysOriginal) {
+                    person.draw(in:inner.insetBy(dx:inner.width*0.22,dy:inner.height*0.22))
+                } else {
+                    let initial=((member["initial"] as? String) ?? "?") as NSString
+                    let attributes:[NSAttributedString.Key:Any]=[.font:UIFont.systemFont(ofSize:size*0.4,weight:.bold),.foregroundColor:UIColor.white]
+                    let s=initial.size(withAttributes:attributes)
+                    initial.draw(at:CGPoint(x:inner.midX-s.width/2,y:inner.midY-s.height/2),withAttributes:attributes)
+                }
             }
             ctx.restoreGState()
             // A dot never claims a live position that has not been received.

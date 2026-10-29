@@ -40,6 +40,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func notifyJourneyChange() { journeyChangeHandler?() }
     var movementTransition = MovementTransition()
     var automaticSampling = AutomaticSampling()
+    var homeRest = HomeRest()
+    var locationMode: AutomaticLocationMode = .off
+    var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
+    // No journey, published stop or departure check is open.
+    var automaticIdle: Bool { automaticTrip == nil && settledTripID == nil && (automaticSampling.probeUntil ?? 0) <= Date().timeIntervalSince1970 }
     var departureEvidence = DepartureEvidence()
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
@@ -290,7 +295,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
     }
     func updateIndicatorPolicy(){manager.showsBackgroundLocationIndicator=TrackingPresentation.indicator(always:manager.authorizationStatus == .authorizedAlways,manual:active?.state == "recording")}
-    var gpsReason:String {TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,settled:settledAt != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable)}
+    var gpsReason:String {TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,settled:settledAt != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable,resting:locationMode == .resting)}
+    var locationIndicator:(expected:Bool,reason:String) {LocationIndicator.explain(continuous:continuousLocationRequested,mode:locationMode,manual:active?.state == "recording",sessionHeld:backgroundActivitySession != nil)}
     var motionPermission: String { String(describing:CMMotionActivityManager.authorizationStatus()) }
 
     override init() {
@@ -404,13 +410,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         publishFriendPosition(location)
         guard location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
               abs(location.timestamp.timeIntervalSince1970-Date().timeIntervalSince1970) < 25 else {return}
+        if HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
         lastShareFix=location
         sendHouseholdLocation(location,confirmation:false)
+    }
+    func sharePoint(_ location: CLLocation) -> GPSPoint {
+        GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,
+                 accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
     }
     // A phone that is not moving produces no Core Location callbacks, so it would
     // otherwise stop publishing and look absent. While the continuous location
     // service has run without interruption since the last fix, no callback means
-    // the phone is still within its distance filter (5 m recording, 25 m standby),
+    // the phone is still within its distance filter (5 m recording, 25 m standby,
+    // 50 m resting at Home),
     // so that fix is re-confirmed every 5 minutes. After any suspension the next
     // real fix is required first. Called from the existing 30-second timer.
     func confirmHouseholdLocation() {
@@ -673,7 +685,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
-                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "locationStandby",
+                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .resting ? "restingAtHome" : "locationStandby",
+                "locationMode":locationMode.rawValue,"homeRestSince":homeRest.insideSince as Any? ?? NSNull(),
+                "locationIndicator":["expected":locationIndicator.expected,"reason":locationIndicator.reason],
                 "automaticSettledAt": settledAt as Any? ?? NSNull(),
                 "automaticContinuationEndsAt": continuationEndsAt as Any? ?? NSNull(),
                 "automaticSettledTripID": settledTripID as Any? ?? NSNull(),

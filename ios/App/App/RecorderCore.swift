@@ -917,6 +917,14 @@ enum HouseholdPublisher {
     static func canConfirm(continuousRunning: Bool, resuming: Bool, fixAt: Double, executingSince: Double) -> Bool {
         continuousRunning && !resuming && fixAt >= executingSince
     }
+    // A coarser fix consistent with the last shared one adds no information, so
+    // the precise position keeps being shared (and confirmed) instead of being
+    // replaced by a Wi-Fi estimate while resting at Home.
+    static func keepsPrevious(_ previous: GPSPoint?, candidate: GPSPoint, executingSince: Double) -> Bool {
+        guard let previous = previous, previous.timestamp >= executingSince,
+              previous.accuracy >= 0, candidate.accuracy > previous.accuracy else { return false }
+        return previous.distance(to: candidate) <= candidate.accuracy
+    }
 }
 
 // MARK: Location service lifecycle
@@ -958,7 +966,7 @@ enum BackgroundSessionPolicy {
 // One configuration owner for the automatic recorder. Values are applied only when
 // they change, and an open journey that is known to be a drive keeps the
 // automotive profile even while Core Motion briefly reports something else.
-enum LocationAccuracyLevel: String { case best, tenMetres }
+enum LocationAccuracyLevel: String { case best, tenMetres, hundredMetres }
 enum LocationProfile: String { case automotive, other }
 struct LocationConfiguration: Equatable {
     var accuracy: LocationAccuracyLevel
@@ -970,6 +978,10 @@ struct LocationConfiguration: Equatable {
         switch mode {
         case .off: return nil
         case .standby: return LocationConfiguration(accuracy: .tenMetres, distanceFilter: 25, profile: .other)
+        // Settled at Home: the service keeps running (so the app keeps executing,
+        // Core Motion and the Home exit still arrive, and the background session
+        // keeps its purpose) but asks only for Wi-Fi/cell-level accuracy.
+        case .resting: return LocationConfiguration(accuracy: .hundredMetres, distanceFilter: 50, profile: .other)
         case .precise:
             let automotive = journeyActivity == "Driving" || drivingMotion || (journeyOpen && currentProfile == .automotive)
             return LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: automotive ? .automotive : .other)
@@ -1232,13 +1244,68 @@ struct AutomaticSampling {
     func needsGPS(automaticAvailable:Bool,manualRecording:Bool,automaticRecording:Bool,now:Double)->Bool {
         manualRecording || (automaticAvailable && (automaticRecording || (probeUntil ?? 0)>now))
     }
-    func locationMode(available:Bool,manualActive:Bool,automaticRecording:Bool,now:Double)->AutomaticLocationMode {
+    // `resting` only lowers standby. A departure check or an open journey is
+    // always precise, so resting can never delay a confirmed departure.
+    func locationMode(available:Bool,manualActive:Bool,automaticRecording:Bool,now:Double,resting:Bool=false)->AutomaticLocationMode {
         guard available,!manualActive else {return .off}
-        return needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticRecording,now:now) ? .precise : .standby
+        if needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticRecording,now:now) {return .precise}
+        return resting ? .resting : .standby
     }
 }
 
-enum AutomaticLocationMode {case off,standby,precise}
+enum AutomaticLocationMode: String {case off,resting,standby,precise}
+
+// Settled at the saved Home place. Not a separate tracker: it only tells the one
+// sampling owner that standby may use a coarser configuration. Entering needs a
+// fix inside Home; leaving needs a fix clearly outside it (hysteresis, so Wi-Fi
+// drift around the house never flips it) or the Home region exit. Resting starts
+// only after `confirmSeconds` inside Home with no journey, stop or departure
+// check open.
+struct HomeRest {
+    static let confirmSeconds: Double = 600
+    private(set) var insideSince: Double?
+    // Identity and geometry: an edited or moved Home starts a new confirmation.
+    private(set) var homeKey: String?
+    static func exitMargin(_ radius: Double) -> Double { max(25, radius*0.2) }
+    mutating func observe(_ point: GPSPoint, home: SavedPlace?, now: Double) {
+        guard let home = home else { reset(); return }
+        let key = "\(home.id)|\(home.latitude)|\(home.longitude)|\(home.radius)"
+        if homeKey != key { insideSince = nil; homeKey = key }
+        guard point.latitude.isFinite, point.longitude.isFinite, point.accuracy >= 0, point.accuracy <= 100,
+              now - point.timestamp <= 120, now - point.timestamp >= -5 else { return }
+        let distance = point.distance(to: GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: 0, accuracy: 0, altitude: 0, speed: 0))
+        if insideSince == nil {
+            if distance <= home.radius { insideSince = point.timestamp }
+        } else if distance - point.accuracy/2 > home.radius + Self.exitMargin(home.radius) {
+            insideSince = nil
+        }
+    }
+    mutating func leave() { insideSince = nil }
+    mutating func reset() { insideSince = nil; homeKey = nil }
+    func resting(now: Double, idle: Bool) -> Bool {
+        idle && (insideSince.map { now - $0 >= Self.confirmSeconds } ?? false)
+    }
+}
+
+// Why iOS shows its location arrow for this app. Core Location has no getter for
+// the indicator, so this reports what the app holds: a running location service
+// or a held CLBackgroundActivitySession is expected to show it.
+enum LocationIndicator {
+    static func explain(continuous: Bool, mode: AutomaticLocationMode, manual: Bool, sessionHeld: Bool) -> (expected: Bool, reason: String) {
+        let session = sessionHeld ? "; background session held" : ""
+        if manual { return (true, "Manual recording is using precise GPS") }
+        if continuous {
+            switch mode {
+            case .precise: return (true, "Precise GPS: a journey is open or a departure is being checked")
+            case .resting: return (true, "Resting at Home: low-power location keeps departure detection ready; no journey is recording" + session)
+            case .standby: return (true, "Departure standby: reduced-accuracy location keeps departure detection ready; no journey is recording" + session)
+            case .off: return (true, "Location updates are stopping" + session)
+            }
+        }
+        if sessionHeld { return (true, "Background location session held so a later departure can be recorded; no continuous location requested") }
+        return (false, "No continuous location and no background session")
+    }
+}
 
 // Coarse standby observations may start GPS, but never become route geometry.
 // Speed or displacement must exceed the uncertainty of the location fixes.
@@ -1271,12 +1338,13 @@ struct DepartureEvidence {
 // keeps the prominent indicator; When In Use presentation remains controlled by iOS.
 enum TrackingPresentation {
     static func indicator(always:Bool,manual:Bool)->Bool {manual || !always}
-    static func reason(continuous:Bool,manual:Bool,automatic:Bool,settled:Bool=false,stationary:Bool,probing:Bool,available:Bool)->String {
+    static func reason(continuous:Bool,manual:Bool,automatic:Bool,settled:Bool=false,stationary:Bool,probing:Bool,available:Bool,resting:Bool=false)->String {
         if continuous {
             if manual {return "Manual recording"}
             if settled {return "Journey stopped; watching for a continuation"}
             if automatic {return stationary ? "Confirming stop (up to 3 minutes)" : "Recording automatic journey"}
             if probing {return "Bounded departure check (up to 2 minutes)"}
+            if resting && available {return "Resting at Home: low-power location (Wi-Fi/cell), watching for departure"}
             if available {return "Departure standby: lower-accuracy background location"}
             return "Stopping continuous location service"
         }

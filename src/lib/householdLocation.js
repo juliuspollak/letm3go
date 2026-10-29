@@ -83,6 +83,11 @@ export function groupPeople(people,metres=SAME_PLACE_METRES){
  return groups;
 }
 
+// A placeholder label is for text only; it never becomes an avatar initial.
+export function personName(member){
+ return member.display_name?.trim()||(member.source==='friend'?'Friend':'Household member');
+}
+
 // Map pins for people. The signed-in user is drawn first and anchors their own
 // group; Home and freshness travel with each person, so a stale position is never
 // tagged Home and a shared Home shows everyone who is there.
@@ -90,7 +95,7 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
  const people=[];
  if(self&&validPoint(self.latitude,self.longitude))people.push({...self,isSelf:true});
  for(const member of members)if(member.position&&['live','stale'].includes(member.state))
-  people.push({userId:member.user_id,name:member.display_name||'Family member',latitude:member.position.latitude,longitude:member.position.longitude,
+  people.push({userId:member.user_id,name:personName(member),named:Boolean(member.display_name?.trim()),latitude:member.position.latitude,longitude:member.position.longitude,
    accuracy:member.position.accuracy,state:member.state,ageSeconds:member.ageSeconds,home:member.home&&member.state==='live',source:member.source||'household'});
  return groupPeople(people).map(({anchor,members:group})=>{
   const everyoneHome=group.every(p=>p.home);
@@ -104,8 +109,11 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
    home:everyoneHome,
    ...(self&&Number.isFinite(self.accuracy)&&self.accuracy>0?{radius:Math.min(self.accuracy,100)}:{}),
    members:group.map(p=>{
+    // The photo comes from the same id-keyed set as Household and Friends. Without
+    // one, the initial comes only from a real name; a member with no name gets a
+    // neutral silhouette (empty initial), never the initial of a placeholder.
     const avatar=resolveAvatar({userId:p.isSelf?selfId:p.userId,selfId,photos,selfAvatar,name:p.isSelf?(p.name||'You'):p.name});
-    return {name:p.isSelf?'You':p.name,initial:avatar.initial,avatar:avatar.src&&avatar.src.startsWith('data:image/')?avatar.src:null,
+    return {name:p.isSelf?'You':p.name,initial:p.isSelf||p.named?avatar.initial:'',avatar:avatar.src&&avatar.src.startsWith('data:image/')?avatar.src:null,
      self:Boolean(p.isSelf),state:p.isSelf?'live':p.state,home:Boolean(p.home)};
    })
   };

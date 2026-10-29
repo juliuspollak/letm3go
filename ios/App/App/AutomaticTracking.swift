@@ -54,7 +54,7 @@ extension LocationRecorder {
     }
     func refreshAutomaticMonitoring() {
         updateIndicatorPolicy()
-        guard storage != nil else { stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();return }
+        guard storage != nil else { stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once
         // held, it covers departures that begin with the phone locked.
         reconcileBackgroundSession("monitoring refresh")
@@ -68,6 +68,7 @@ extension LocationRecorder {
             stopContinuousLocation()
             stopVisitMonitoring()
             startSignificantMonitoring()
+            homeRest.reset();locationMode = .off
             return
         }
         if automaticAvailable {
@@ -80,7 +81,7 @@ extension LocationRecorder {
             }
         } else {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
-            automaticSampling=AutomaticSampling();departureEvidence.reset()
+            automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off
             if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
@@ -137,12 +138,20 @@ extension LocationRecorder {
             }
         }
         // A paused manual activity continues to take precedence over automation.
-        if active != nil {return}
+        if active != nil {locationMode = .off;return}
         // This is the single owner of the automatic recorder's GPS configuration.
         // An open journey (recording or interrupted) is always precise; standby is
         // only for when no journey is open. Motion callbacks cannot wake a
         // suspended app, so standby keeps reduced-accuracy location running.
-        let mode=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now)
+        // Settled at Home only lowers standby accuracy. The service, the background
+        // session, regions, visits and motion all keep running for the next departure.
+        let resting=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now)
+        let mode=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:resting)
+        if mode != locationMode {
+            if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
+            else if locationMode == .resting { trackingEvent("Left Home rest: \(mode.rawValue) location") }
+            locationMode=mode
+        }
         guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
             drivingMotion:motion.types.contains("Driving"),currentProfile:manager.activityType == .automotiveNavigation ? .automotive : .other) else {
             departureEvidence.reset()
@@ -155,7 +164,12 @@ extension LocationRecorder {
     // Assign only what changed, so a 30-second reconcile never re-applies the same
     // values to a running session, and every real change is in the journal.
     func applyLocationConfiguration(_ configuration: LocationConfiguration) {
-        let accuracy = configuration.accuracy == .best ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        let accuracy: CLLocationAccuracy
+        switch configuration.accuracy {
+        case .best: accuracy = kCLLocationAccuracyBest
+        case .tenMetres: accuracy = kCLLocationAccuracyNearestTenMeters
+        case .hundredMetres: accuracy = kCLLocationAccuracyHundredMeters
+        }
         let type: CLActivityType = configuration.profile == .automotive ? .automotiveNavigation : .other
         guard manager.desiredAccuracy != accuracy || manager.distanceFilter != configuration.distanceFilter ||
               manager.activityType != type || manager.pausesLocationUpdatesAutomatically else { return }
@@ -214,6 +228,7 @@ extension LocationRecorder {
             // trigger a restart.
             // A queued backlog delivered now proves the same, whatever its age.
             if sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
+            homeRest.observe(sample,home:homePlace,now:now)
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
@@ -811,6 +826,7 @@ extension LocationRecorder {
     }
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         noteExecution("regionExit")
+        if let home=homePlace, region.identifier == "letm3go-place-\(home.id)" { homeRest.leave() }
         guard automaticAvailable, active == nil, region.identifier.hasPrefix("letm3go-place-") else { return }
         // An open journey already has precise GPS; a place exit is not a departure.
         guard automaticTrip == nil || settledAt != nil else { recordDiagnostic("region","Place exit during an open journey");return }
