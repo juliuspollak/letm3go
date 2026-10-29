@@ -1564,8 +1564,8 @@ var keptHome = savedHome
 keptHome.absorb(garden + cafe)
 check(keptHome.radius == 50,"a saved place keeps the boundary the person chose")
 // 5. 300-500 m of walking inside a large venue is not a journey.
-let venue = walkPath([(0,0),(300,0),(250,60),(150,40)],start:0,speed:0.9,pauses:[0,90,90,0])
-check(LocalWalk.metrics(venue,from:carPark).path >= 300,"the venue walk covers several hundred metres")
+let venue = walkPath([(0,0),(300,0),(250,60),(150,40)],start:0,speed:0.9,pauses:[0,90,90,0],accuracy:30)
+check(LocalWalk.metrics(venue,from:carPark).path >= 250,"the indoor venue walk covers several hundred metres")
 check(isLocal(LocalWalk.assess(venue,from:carPark,ending:true)),"crossing a large venue does not count as leaving it")
 // 6. Walking through the venue on to a station is a journey, from its start.
 let station = walkPath([(0,0),(300,0),(900,0)],start:0)
@@ -1656,6 +1656,71 @@ let legacyPlaceDetails = try! JSONDecoder().decode(ActivityDetails.self,from:Dat
 check(legacyPlaceDetails.localWalkOrigin == nil && legacyPlaceDetails.stops == nil,"journeys saved by earlier builds still load and are never treated as pending walks")
 check(DwellArea.visit(latitude:-33,longitude:151,accuracy:900,at:0).radius == DwellArea.maximumRadius && DwellArea.visit(latitude:-33,longitude:151,accuracy:10,at:0).radius == DwellArea.minimumRadius,"a visit's uncertainty sets its area within the bounds")
 check(carPark.summary["placeRadiusMeters"] == "60" && carPark.summary.values.allSatisfy { !$0.contains("-33") && !$0.contains("151") },"diagnostics describe a place without its coordinates")
+
+// MARK: Review: short departures, restarts, exits and stops
+// Shorter genuine departures are proved by how they were walked.
+let mallInside = walkPath([(0,0),(60,20),(100,30)],start:0,speed:1.0,pauses:[0,120,120],accuracy:35)
+let toStation = Array(walkPath([(100,30),(120,0),(370,0)],start:mallInside.last!.timestamp,speed:1.3,accuracy:6).dropFirst())
+let mallToStation = mallInside + toStation
+check(LocalWalk.metrics(mallToStation,from:carPark).fixesBeyond == 0,"the station lies inside the venue-sized margin, so distance alone would have suppressed it")
+check(isGenuine(LocalWalk.assess(mallToStation,from:carPark,ending:true)),"leaving a shopping centre on foot for a station 250 m away is a journey")
+check(isGenuine(LocalWalk.assess(mallToStation.filter { $0.latitude <= -33 + 330/111_320 },from:carPark,ending:false)),"it is confirmed while walking, before reaching the station")
+check(mallToStation.first?.timestamp == 0,"its record keeps the walk's real first fix")
+let desk = DwellArea.arrival(at:placeFix(0,0,0,speed:0),source:.inferred)
+let officeIndoors = walkPath([(0,0),(25,10)],start:0,speed:1.0,accuracy:30)
+let officeToCafe = officeIndoors + Array(walkPath([(25,10),(40,40),(300,60)],start:officeIndoors.last!.timestamp,speed:1.3,accuracy:5).dropFirst())
+check(isGenuine(LocalWalk.assess(officeToCafe,from:desk,ending:true)),"walking from the office to a café 300 m away is a journey")
+let promenade = walkPath([(0,0),(100,0),(200,0),(300,0)],start:0,speed:1.1,pauses:[0,120,120,120],accuracy:8)
+check(isLocal(LocalWalk.assess(promenade,from:carPark,ending:true)),"an outdoor shopping strip, stopping at shop after shop, stays local")
+let toClassroom = walkPath([(0,0),(200,0)],start:0,speed:1.2,pauses:[0,600],accuracy:6)
+check(isLocal(LocalWalk.assess(toClassroom,from:carPark,ending:true)) && LocalWalk.assess(Array(toClassroom.prefix(40)),from:carPark,ending:false) == .pending,"walking 200 m from the car park to a classroom stays local")
+check(isLocal(LocalWalk.assess(walkPath([(0,0),(150,0)],start:0,accuracy:6),from:desk,ending:true)),"documented limit: a 150 m walk from an inferred place is not recorded")
+check(LocalWalk.assess(neighbourhood,from:savedHome,ending:true) == .genuine("Walk left the saved area") && LocalWalk.assess(parkWalk,from:carPark,ending:true) == .genuine("Sustained walk within the arrival area"),"circular walks and exercise loops are unchanged")
+
+// A pending walk survives a restart in the account's own storage: within the
+// recovery window it resumes with its fixes and origin; later, its saved fixes
+// decide, and nothing is added for the time the app was not running.
+var pendingWalk = RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walking")
+pendingWalk.recordingMode = "automatic"
+pendingWalk.details = ActivityDetails()
+pendingWalk.details?.localWalkOrigin = carPark
+for fix in mallToStation { _ = pendingWalk.accept(fix,now:fix.timestamp) }
+let restoredWalk = try! JSONDecoder().decode(RecordedActivity.self,from:JSONEncoder().encode(pendingWalk))
+let pendingLastFix = restoredWalk.points.last!.timestamp
+check(restoredWalk.details?.localWalkOrigin == carPark && restoredWalk.points.count == pendingWalk.points.count && restoredWalk.points.first?.timestamp == 0,"a pending walk is stored with its origin and every saved fix")
+check(AutomaticRecovery.plan([restoredWalk],now:pendingLastFix+600) == AutomaticRecovery.Plan(tripID:restoredWalk.id,action:.resume,otherFinished:[]),"a relaunch within 30 minutes resumes the pending walk")
+check(AutomaticRecovery.plan([restoredWalk],now:pendingLastFix+3600).action != .resume,"after a longer stop the walk is closed at its last saved fix")
+check(isGenuine(LocalWalk.assess(restoredWalk.points,from:carPark,ending:true)),"a walk whose saved fixes already prove a departure is kept after a long restart")
+var interruptedLocal = RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walking")
+interruptedLocal.recordingMode = "automatic"
+for fix in promenade { _ = interruptedLocal.accept(fix,now:fix.timestamp) }
+check(isLocal(LocalWalk.assess(interruptedLocal.points,from:carPark,ending:true)),"local walking interrupted by a restart is still not published")
+
+// Leaving on foot is not held back by the walking-motion cooldown.
+check(carPark.steppedOut(placeFix(100,0,0,accuracy:10)),"an accurate fix beyond the occupied area starts a departure check")
+check(!carPark.steppedOut(placeFix(100,0,0,accuracy:40)) && !carPark.steppedOut(placeFix(50,0,0,accuracy:10)),"coarse indoor fixes and movement inside the area do not")
+let firstOutside = toStation.first(where: carPark.steppedOut)
+check(firstOutside != nil && firstOutside!.timestamp - toStation.first!.timestamp <= 30,"the walk to the station is checked within 30 s of stepping out, not after a 10-minute cooldown")
+var spentCheck = AutomaticSampling()
+spentCheck.requestProbe(now:0,movementBegan:true)
+_ = spentCheck.extendProbe(now:120);_ = spentCheck.expire(now:400)
+check(spentCheck.requestProbe(now:420,movementBegan:true),"stepping out earns a fresh check even after an indoor check spent its budget")
+
+// The 29 October walk: stopped, published, continued 507 s later.
+var october29 = RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walk")
+october29.recordingMode = "automatic"
+for i in 0...60 { _ = october29.accept(placeFix(Double(i)*6.5,0,Double(i)*5),now:Double(i)*5) }
+october29.publishStop(at:300,continuationEndsAt:300+JourneyContinuation.onFootPauseWindow)
+check(october29.continueAfterStop(at:807),"the published walk continues after 507 s")
+for i in 0...20 { let t=807+Double(i)*5; _ = october29.accept(placeFix(400+Double(i)*6.5,0,t),now:t) }
+let october29Quality = october29.routeQualitySummary()
+check(october29Quality.stopCount == 1 && october29Quality.stoppedSeconds == 507 && october29Quality.gapCount == 0 && october29Quality.unobservedSeconds == 0,"the 8 min 27 s stop is reported as a stop, not as GPS loss")
+var asBefore = october29
+asBefore.details?.stops = nil
+check(asBefore.routeQualitySummary().gapCount == 1 && asBefore.routeQualitySummary().unobservedSeconds == 507,"without the stop record (earlier builds) it was reported as a 507 s gap")
+_ = october29.accept(placeFix(900,0,1100),now:1100)
+let silenced = october29.routeQualitySummary()
+check(silenced.stopCount == 1 && silenced.gapCount == 1 && silenced.unobservedSeconds == 193,"a real GPS silence while walking stays visible as a gap")
 
 print("\(assertions) native recorder/auth assertions passed")
 

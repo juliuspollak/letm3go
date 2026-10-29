@@ -1338,6 +1338,9 @@ struct DwellArea: Codable, Equatable {
     static let minimumRadius: Double = 50
     static let maximumRadius: Double = 250
     static let savedMaximumRadius: Double = 400
+    // An accurate fix this far beyond the occupied area is worth one departure check.
+    static let exitMargin: Double = 25
+    func steppedOut(_ point: GPSPoint) -> Bool { point.accuracy >= 0 && point.accuracy <= 30 && reach(point) > radius + Self.exitMargin }
     static func saved(_ place: SavedPlace, now: Double) -> DwellArea {
         DwellArea(source: .saved, placeKind: place.kind, latitude: place.latitude, longitude: place.longitude,
                   radius: min(savedMaximumRadius, max(minimumRadius, place.radius)), since: now)
@@ -1464,9 +1467,65 @@ enum LocalWalk {
         if AutomaticDetector.drivingMotion(motion, now: now) || AutomaticDetector.cyclingMotion(motion, now: now) { return true }
         return candidate.count >= 3 && candidate.suffix(3).allSatisfy { $0.speed >= 3.5 }
     }
+    // A shorter departure (a shopping centre to a station 250 m away, an office to
+    // a café) is proved by how it was walked, not only by how far: the leg since
+    // the walk last stood inside the area must be outdoors-accurate, steadily in
+    // one direction, rarely stopped, and must end clearly beyond the area. Indoor
+    // fixes are rarely this accurate, and milling around turns and stops, so
+    // neither qualifies.
+    struct OutwardLeg: Equatable {
+        var path: Double
+        var net: Double
+        var movingSeconds: Double
+        var duration: Double
+        var accurateFraction: Double
+        var endReach: Double
+    }
+    static let legAccuracy: Double = 20
+    static let legMinimumAccurate: Double = 0.7
+    static let legMinimumPath: Double = 200
+    static let legStraightness: Double = 0.6
+    static let legMinimumMoving: Double = 90
+    static let legMaximumStopped: Double = 0.35
+    static let legEndMargin: Double = 150
+    static func outwardLeg(_ points: [GPSPoint], from area: DwellArea) -> OutwardLeg? {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
+        // The leg starts where the walk last stood inside the area or last paused
+        // for a minute (a shop on the way out): only the current, uninterrupted
+        // stretch of walking is judged. A walk that began at the area's edge and
+        // never paused is judged whole.
+        var start = 0
+        var stillSince: Double?
+        for (index, point) in usable.enumerated() {
+            if area.contains(point) { start = index; stillSince = nil; continue }
+            if index > 0, point.timestamp - usable[index-1].timestamp >= 60, usable[index-1].distance(to: point) < 20 { start = index }
+            if point.speed < 0.3 {
+                let since = stillSince ?? point.timestamp
+                stillSince = since
+                if point.timestamp - since >= 60 { start = index }
+            } else {
+                stillSince = nil
+            }
+        }
+        let leg = Array(usable[start...])
+        guard let first = leg.first, let last = leg.last, leg.count >= 3 else { return nil }
+        let legMetrics = metrics(leg, from: area)
+        return OutwardLeg(path: legMetrics.path, net: first.distance(to: last), movingSeconds: legMetrics.movingSeconds,
+                          duration: legMetrics.duration,
+                          accurateFraction: Double(leg.filter { $0.accuracy <= legAccuracy }.count) / Double(leg.count),
+                          endReach: area.reach(last))
+    }
+    static func steadyDeparture(_ leg: OutwardLeg, from area: DwellArea) -> Bool {
+        leg.endReach >= area.radius + legEndMargin && leg.path >= legMinimumPath &&
+        leg.net >= leg.path * legStraightness && leg.accurateFraction >= legMinimumAccurate &&
+        leg.movingSeconds >= legMinimumMoving && (leg.duration <= 0 || leg.movingSeconds / leg.duration >= 1 - legMaximumStopped)
+    }
     static func assess(_ points: [GPSPoint], from area: DwellArea, ending: Bool) -> Verdict {
         let m = metrics(points, from: area)
         if m.fixesBeyond >= 2 { return .genuine("Walk left the \(area.source.rawValue) area") }
+        if let leg = outwardLeg(points, from: area), steadyDeparture(leg, from: area) {
+            return .genuine("Walked steadily away from the \(area.source.rawValue) area")
+        }
         if m.stoppedFraction <= maximumStoppedFraction, m.extent >= minimumLoopExtent {
             if m.path >= runPath && m.duration >= runSeconds && m.movingSpeed >= runSpeed {
                 return .genuine("Sustained run within the \(area.source.rawValue) area")

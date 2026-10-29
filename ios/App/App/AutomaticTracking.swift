@@ -641,6 +641,7 @@ extension LocationRecorder {
         let previous = dwell
         dwell = area
         motionProbeGate.reset()
+        leftAreaProbed = false
         if area == nil { dwellInference.reset() }
         persistDwell()
         if let area = area {
@@ -670,7 +671,27 @@ extension LocationRecorder {
             return
         }
         if let area = dwell, area.clearlyLeft(sample) { setDwell(nil,reason:"a fix placed the phone well outside the area") }
-        if dwell == nil, let inferred = dwellInference.observe(sample,now:now) { setDwell(inferred,reason:"stayed in one small area for 10 minutes") }
+        guard let area = dwell else {
+            if let inferred = dwellInference.observe(sample,now:now) { setDwell(inferred,reason:"stayed in one small area for 10 minutes") }
+            return
+        }
+        if area.contains(sample) {
+            dwellInference.reset()
+            leftAreaProbed = false
+            return
+        }
+        // Stepping out of the occupied area on a fix good enough to place it is GPS
+        // evidence of a possible departure: check once per exit, whatever the
+        // walking-motion cooldown says, so a walk to a nearby station starts at
+        // the edge of the place instead of after a further displacement.
+        if !leftAreaProbed, now - sample.timestamp <= 30, area.steppedOut(sample) {
+            leftAreaProbed = true
+            trackingEvent("Left the current place's occupied area; checking for a departure")
+            beginAutomaticProbe(movementBegan:true)
+        }
+        // Staying put outside it for ten minutes (the café across the road) makes
+        // that the current place.
+        if let inferred = dwellInference.observe(sample,now:now) { setDwell(inferred,reason:"stayed outside the previous place for 10 minutes") }
     }
     // Called from the 30-second timer: a phone that has not moved sends no fixes.
     func checkDwellInference(now: Double) {
@@ -862,6 +883,10 @@ extension LocationRecorder {
         detector.reset()
         movementTransition.reset()
         cleanupContinuationRegion()
+        // The stop's own geofence just ended. Rebuild the place regions now, so the
+        // place the person is still at keeps an exit wake-up ("last stop") even if
+        // the app stays in the background for hours.
+        if automaticAvailable { configurePlaceRegions() }
         notifyJourneyChange()
         trackingEvent("Journey saved to history")
         automaticSampling.stop(now:Date().timeIntervalSince1970)

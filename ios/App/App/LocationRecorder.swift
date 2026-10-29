@@ -47,6 +47,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var dwell: DwellArea?
     var dwellInference = DwellInference()
     var motionProbeGate = MotionProbeGate()
+    var leftAreaProbed = false
     var lastPlaceDecision = ""
     var dwellSettled: Bool { dwell.map { Date().timeIntervalSince1970 - $0.since >= DwellInference.settleSeconds } ?? false }
     // Low-power resting applies at the current dwell area, or at a saved Home
