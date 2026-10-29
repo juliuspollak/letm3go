@@ -1440,22 +1440,22 @@ check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation st
 
 // Arriving Home and resting there. 0.0001° of latitude is about 11 m.
 let restHome=SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:100)
-var walkHome=HomeRest()
-for (index,latitude) in [-33.004,-33.003,-33.002,-33.0012].enumerated() { walkHome.observe(point(latitude,Double(900+index*30)),home:restHome,now:Double(900+index*30)) }
-check(walkHome.insideSince == nil,"a walk approaching Home is not inside Home yet")
-walkHome.observe(point(-33.0004,1000),home:restHome,now:1000)
-check(walkHome.insideSince == 1000,"the first fix inside Home starts the stationary confirmation")
-check(!walkHome.resting(now:1000+HomeRest.confirmSeconds,idle:false),"a walk still open or awaiting continuation never rests")
-check(!walkHome.resting(now:1599,idle:true),"resting needs ten minutes inside Home")
-check(walkHome.resting(now:1600,idle:true),"ten idle minutes at Home after the walk is finalised allow resting")
-var driveHome=HomeRest()
-for (index,latitude) in [-33.02,-33.01,-33.003,-33.0002].enumerated() { driveHome.observe(drivingFix(latitude,Double(2000+index*20)),home:restHome,now:Double(2000+index*20)) }
-check(driveHome.insideSince == 2060,"a drive arriving Home starts the confirmation at the first fix inside")
-check(driveHome.resting(now:2060+HomeRest.confirmSeconds,idle:true),"after the drive is finalised the phone rests at Home")
-for (index,latitude) in [-33.0011,-32.9990,-33.0008,-33.0012].enumerated() { driveHome.observe(point(latitude,Double(2700+index*60),accuracy:65),home:restHome,now:Double(2700+index*60)) }
-check(driveHome.insideSince == 2060,"Wi-Fi drift around the house (±65 m, up to 130 m out) never ends Home rest")
-driveHome.observe(point(-33.0020,3000,accuracy:5),home:restHome,now:3000)
-check(driveHome.insideSince == nil,"a precise fix 220 m out leaves Home")
+var walkedHomeRest=HomeRest()
+for (index,latitude) in [-33.004,-33.003,-33.002,-33.0012].enumerated() { walkedHomeRest.observe(point(latitude,Double(900+index*30)),home:restHome,now:Double(900+index*30)) }
+check(walkedHomeRest.insideSince == nil,"a walk approaching Home is not inside Home yet")
+walkedHomeRest.observe(point(-33.0004,1000),home:restHome,now:1000)
+check(walkedHomeRest.insideSince == 1000,"the first fix inside Home starts the stationary confirmation")
+check(!walkedHomeRest.resting(now:1000+HomeRest.confirmSeconds,idle:false),"a walk still open or awaiting continuation never rests")
+check(!walkedHomeRest.resting(now:1599,idle:true),"resting needs ten minutes inside Home")
+check(walkedHomeRest.resting(now:1600,idle:true),"ten idle minutes at Home after the walk is finalised allow resting")
+var drivenHomeRest=HomeRest()
+for (index,latitude) in [-33.02,-33.01,-33.003,-33.0002].enumerated() { drivenHomeRest.observe(drivingFix(latitude,Double(2000+index*20)),home:restHome,now:Double(2000+index*20)) }
+check(drivenHomeRest.insideSince == 2060,"a drive arriving Home starts the confirmation at the first fix inside")
+check(drivenHomeRest.resting(now:2060+HomeRest.confirmSeconds,idle:true),"after the drive is finalised the phone rests at Home")
+for (index,latitude) in [-33.0011,-32.9990,-33.0008,-33.0012].enumerated() { drivenHomeRest.observe(point(latitude,Double(2700+index*60),accuracy:65),home:restHome,now:Double(2700+index*60)) }
+check(drivenHomeRest.insideSince == 2060,"Wi-Fi drift around the house (±65 m, up to 130 m out) never ends Home rest")
+drivenHomeRest.observe(point(-33.0020,3000,accuracy:5),home:restHome,now:3000)
+check(drivenHomeRest.insideSince == nil,"a precise fix 220 m out leaves Home")
 var staleRest=HomeRest()
 staleRest.observe(point(-33,1000),home:restHome,now:1200)
 check(staleRest.insideSince == nil,"a stale queued fix cannot start Home rest")
