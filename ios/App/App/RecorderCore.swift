@@ -156,6 +156,9 @@ struct RecordedActivity: Codable {
     @discardableResult
     mutating func continueAfterStop(at now: Double) -> Bool {
         guard state != "recording", points.count >= 2 else { return false }
+        if let stoppedAt = endedAt, now > stoppedAt {
+            updateDetails { $0.stops = Array((($0.stops ?? []) + [StopInterval(start: stoppedAt, end: now)]).suffix(50)) }
+        }
         state = "recording"
         resumedAt = now
         endedAt = nil
@@ -273,20 +276,31 @@ struct RecordedActivity: Codable {
         var unobservedSeconds = 0.0
         var unobservedMeters = 0.0
         var largestGap = 0.0
+        var stopCount = 0
+        var stoppedSeconds = 0.0
+        let stops = details?.stops ?? []
         for pair in zip(points, points.dropFirst()) {
             let dt = pair.1.timestamp - pair.0.timestamp
             guard dt > 0 else { continue }
-            largestGap = max(largestGap, dt)
             if pair.0.segment != pair.1.segment {
+                // The break that a published stop opened: its last fix is at or
+                // before the stop and its next fix is the continuation.
+                if stops.contains(where: { $0.start >= pair.0.timestamp - 1 && $0.start <= pair.1.timestamp + 1 }) {
+                    stopCount += 1
+                    stoppedSeconds += dt
+                    continue
+                }
                 gapCount += 1
                 unobservedSeconds += dt
                 unobservedMeters += pair.0.distance(to: pair.1)
             }
+            largestGap = max(largestGap, dt)
         }
         return RouteQuality(fixCount: points.count, gapCount: gapCount,
                             largestGapSeconds: largestGap,
                             unobservedSeconds: unobservedSeconds,
-                            unobservedMeters: unobservedMeters)
+                            unobservedMeters: unobservedMeters,
+                            stopCount: stopCount, stoppedSeconds: stoppedSeconds)
     }
 
 }
@@ -440,6 +454,18 @@ struct RouteQuality: Codable, Equatable {
     // Straight-line displacement across segment breaks — a lower bound on the
     // geographical gap, never recorded distance and never an estimated road length.
     var unobservedMeters: Double
+    // Deliberate stops the journey was continued after. They are segment breaks
+    // too, but a published stop is known time spent stopped, not missing GPS, so it
+    // is reported here and never counted as a gap. Optional for older records.
+    var stopCount: Int?
+    var stoppedSeconds: Double?
+}
+
+// A confirmed stop that the journey later continued from. Times only: a stop
+// never adds distance or route geometry.
+struct StopInterval: Codable, Equatable {
+    var start: Double
+    var end: Double
 }
 
 struct ActivityDetails: Codable {
@@ -465,6 +491,11 @@ struct ActivityDetails: Codable {
     var provisional: Bool?
     var continuationEndsAt: Double?
     var routeQuality: RouteQuality?
+    var stops: [StopInterval]?
+    // Set while an automatic walk that began inside a dwell area is not yet known
+    // to be a journey. Such a walk is never shown or published; it is either
+    // confirmed (and this is cleared) or discarded as local movement.
+    var localWalkOrigin: DwellArea?
     // Optional MTB trail linkage. A ride can be recorded without a trail and
     // linked later, so every one of these keys stays optional.
     var mtbTrailID: String?
@@ -1284,6 +1315,183 @@ struct HomeRest {
     mutating func reset() { insideSince = nil; homeKey = nil }
     func resting(now: Double, idle: Bool) -> Bool {
         idle && (insideSince.map { now - $0 >= Self.confirmSeconds } ?? false)
+    }
+}
+
+// MARK: Place awareness
+//
+// Where the person is staying, separate from whether a journey is recording. A
+// dwell area is the likely occupied area of a place: a saved place, a Core
+// Location visit, the stop a journey arrived at, or an area inferred from ten
+// minutes of staying put. It only changes how an automatic *walk* that begins
+// inside it is confirmed; vehicles, cycling and manual activities are unaffected.
+// The area never grows beyond `maximumRadius`, so it cannot swallow a
+// neighbourhood, and it is cleared as soon as a journey is confirmed.
+struct DwellArea: Codable, Equatable {
+    enum Source: String, Codable { case saved, visit, arrival, inferred }
+    var source: Source
+    var placeKind: String?
+    var latitude: Double
+    var longitude: Double
+    var radius: Double
+    var since: Double
+    static let minimumRadius: Double = 50
+    static let maximumRadius: Double = 250
+    static let savedMaximumRadius: Double = 400
+    static func saved(_ place: SavedPlace, now: Double) -> DwellArea {
+        DwellArea(source: .saved, placeKind: place.kind, latitude: place.latitude, longitude: place.longitude,
+                  radius: min(savedMaximumRadius, max(minimumRadius, place.radius)), since: now)
+    }
+    static func arrival(at point: GPSPoint, source: Source = .arrival) -> DwellArea {
+        DwellArea(source: source, placeKind: nil, latitude: point.latitude, longitude: point.longitude,
+                  radius: min(maximumRadius, max(minimumRadius + 10, point.accuracy * 1.5)), since: point.timestamp)
+    }
+    // CLVisit reports its own coordinate uncertainty.
+    static func visit(latitude: Double, longitude: Double, accuracy: Double, at time: Double) -> DwellArea {
+        DwellArea(source: .visit, placeKind: nil, latitude: latitude, longitude: longitude,
+                  radius: min(maximumRadius, max(minimumRadius, accuracy.isFinite && accuracy > 0 ? accuracy : 100)), since: time)
+    }
+    var centre: GPSPoint { GPSPoint(latitude: latitude, longitude: longitude, timestamp: since, accuracy: 0, altitude: 0, speed: 0) }
+    // Distance from the area's centre, less half the fix's uncertainty: a coarse
+    // fix is never taken as further away than it can be shown to be.
+    func reach(_ point: GPSPoint) -> Double { centre.distance(to: point) - max(0, point.accuracy) / 2 }
+    func contains(_ point: GPSPoint) -> Bool { reach(point) <= radius }
+    // How far beyond the area an on-foot movement must go to be a departure. A
+    // saved place has a known boundary; a visit, an arrival or an inferred place
+    // may be a venue of unknown size (a school, a shopping centre), so walking
+    // across it must not count as leaving it.
+    var departureMargin: Double {
+        switch source {
+        case .saved: return max(100, radius * 0.5)
+        case .visit: return max(200, radius)
+        case .arrival, .inferred: return 350
+        }
+    }
+    var departureDistance: Double { radius + departureMargin }
+    // Clearly somewhere else: a fix with usable accuracy beyond the departure
+    // distance. Used to drop a stale area, never to start a journey on its own.
+    func clearlyLeft(_ point: GPSPoint) -> Bool { point.accuracy >= 0 && point.accuracy <= 65 && reach(point) > departureDistance }
+    // Local movement that was suppressed widens the area it covered, within the
+    // cap. A saved place keeps the boundary the person chose.
+    mutating func absorb(_ points: [GPSPoint]) {
+        guard source != .saved else { return }
+        let farthest = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }.map(reach).max() ?? 0
+        radius = min(Self.maximumRadius, max(radius, farthest))
+    }
+    // Shareable diagnostics: never coordinates, radius rounded to 10 m.
+    var summary: [String: String] {
+        ["placeSource": source.rawValue, "placeKind": placeKind ?? "none", "placeRadiusMeters": String(Int((radius/10).rounded())*10)]
+    }
+}
+
+// Ten minutes without leaving a small area (no fix beyond it) infers a dwell
+// area where nothing was saved and no visit was reported. A stationary phone
+// sends no fixes through a distance filter, so the timer may conclude it, but
+// only while the recorder has run without suspension since the anchor fix.
+struct DwellInference {
+    static let settleSeconds: Double = 600
+    static let spread: Double = 75
+    private(set) var anchor: GPSPoint?
+    mutating func reset() { anchor = nil }
+    mutating func observe(_ point: GPSPoint, now: Double) -> DwellArea? {
+        guard point.accuracy >= 0, point.accuracy <= 65, now - point.timestamp <= 120, now - point.timestamp >= -5 else { return nil }
+        guard let anchor = anchor, anchor.distance(to: point) - point.accuracy / 2 <= Self.spread else {
+            self.anchor = point
+            return nil
+        }
+        return check(now: point.timestamp, executingSince: anchor.timestamp)
+    }
+    func check(now: Double, executingSince: Double) -> DwellArea? {
+        guard let anchor = anchor, anchor.timestamp >= executingSince, now - anchor.timestamp >= Self.settleSeconds else { return nil }
+        return DwellArea.arrival(at: anchor, source: .inferred)
+    }
+}
+
+// Whether an automatic walk that began inside a dwell area is a journey. Three
+// kinds of evidence confirm it, and none of them is distance from the arrival
+// coordinate alone:
+//  * leaving: at least two fixes beyond the area's departure distance;
+//  * a sustained purposeful walk or run (the park loop, a walk around the
+//    neighbourhood that returns home): long, steady, rarely stopping;
+//  * vehicle movement (handled by the caller: vehicles are never suppressed).
+// Milling around a house, a school or a shopping centre is slow, stop-start and
+// stays inside the area, so it never qualifies. Until one of these is met the
+// walk is pending; when it ends without one, it was local movement.
+enum LocalWalk {
+    enum Verdict: Equatable { case pending, genuine(String), local(String) }
+    struct Metrics: Equatable {
+        var farthest: Double
+        var fixesBeyond: Int
+        var path: Double
+        var duration: Double
+        var movingSeconds: Double
+        var extent: Double
+        var stoppedFraction: Double { duration > 0 ? max(0, 1 - movingSeconds / duration) : 1 }
+        var movingSpeed: Double { movingSeconds > 0 ? path / movingSeconds : 0 }
+    }
+    static let walkPath: Double = 1200, walkSeconds: Double = 12*60, walkSpeed: Double = 0.9
+    static let runPath: Double = 800, runSeconds: Double = 4*60, runSpeed: Double = 2.0
+    static let maximumStoppedFraction: Double = 0.3
+    // A loop must reach well away from where it began; drift never does.
+    static let minimumLoopExtent: Double = 150
+    // Path is measured between anchors that move by more than both fixes'
+    // uncertainty (and at least 15 m), so indoor jitter that hops back and forth
+    // adds nothing, while a real walk adds its distance in short steps.
+    static func metrics(_ points: [GPSPoint], from area: DwellArea) -> Metrics {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
+        var path = 0.0, moving = 0.0
+        var anchor = usable.first
+        for point in usable.dropFirst() {
+            guard let from = anchor, point.timestamp > from.timestamp else { continue }
+            let step = from.distance(to: point)
+            guard step >= max(15, from.accuracy + point.accuracy) else { continue }
+            let dt = point.timestamp - from.timestamp
+            path += step
+            if dt <= 60, step / dt >= 0.5 { moving += dt }
+            anchor = point
+        }
+        let start = usable.first
+        return Metrics(farthest: usable.map(area.reach).max() ?? 0,
+                       fixesBeyond: usable.filter { area.reach($0) >= area.departureDistance }.count,
+                       path: path,
+                       duration: max(0, (usable.last?.timestamp ?? 0) - (start?.timestamp ?? 0)),
+                       movingSeconds: moving,
+                       extent: start.map { first in usable.map { first.distance(to: $0) }.max() ?? 0 } ?? 0)
+    }
+    // Driving or cycling is never held back as possible local movement: fresh
+    // vehicle motion, or the last three fixes all faster than a brisk walk.
+    static func vehicleDeparture(_ candidate: [GPSPoint], motion: MotionEvidence, now: Double) -> Bool {
+        if AutomaticDetector.drivingMotion(motion, now: now) || AutomaticDetector.cyclingMotion(motion, now: now) { return true }
+        return candidate.count >= 3 && candidate.suffix(3).allSatisfy { $0.speed >= 3.5 }
+    }
+    static func assess(_ points: [GPSPoint], from area: DwellArea, ending: Bool) -> Verdict {
+        let m = metrics(points, from: area)
+        if m.fixesBeyond >= 2 { return .genuine("Walk left the \(area.source.rawValue) area") }
+        if m.stoppedFraction <= maximumStoppedFraction, m.extent >= minimumLoopExtent {
+            if m.path >= runPath && m.duration >= runSeconds && m.movingSpeed >= runSpeed {
+                return .genuine("Sustained run within the \(area.source.rawValue) area")
+            }
+            if m.path >= walkPath && m.duration >= walkSeconds && m.movingSpeed >= walkSpeed {
+                return .genuine("Sustained walk within the \(area.source.rawValue) area")
+            }
+        }
+        guard ending else { return .pending }
+        return .local("Local walking within the \(area.source.rawValue) area: \(Int(m.path)) m over \(Int(m.duration)) s, never beyond the area")
+    }
+}
+
+// Ordinary movement indoors keeps producing Core Motion walking transitions. In a
+// settled dwell area, a motion-only departure check is allowed once per cooldown;
+// GPS displacement, a region exit and a visit departure are never gated, and
+// driving or cycling motion is never gated.
+struct MotionProbeGate {
+    static let cooldown: Double = 600
+    private(set) var lastMotionProbeAt: Double?
+    mutating func reset() { lastMotionProbeAt = nil }
+    mutating func noteMotionProbe(now: Double) { lastMotionProbeAt = now }
+    func allows(onFootOnly: Bool, dwellSettled: Bool, now: Double) -> Bool {
+        guard onFootOnly, dwellSettled, let last = lastMotionProbeAt else { return true }
+        return now - last >= Self.cooldown
     }
 }
 

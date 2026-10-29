@@ -107,6 +107,8 @@ extension LocationRecorder {
         trips = records.filter { $0.state == "finished" || $0.isProvisional }
         active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil
         detector.reset();departureEvidence.reset();movementTransition.reset()
+        dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
+        restoreDwell()
         let openedAt = Date().timeIntervalSince1970
         // Load the journal before the recovery step so its decisions are recorded.
         loadRecorderDiagnostics()
@@ -138,6 +140,16 @@ extension LocationRecorder {
                     recoveryMessage = "Restored the automatic journey that was still recording when the recorder last stopped. Its unobserved gap is excluded from distance."
                     recordDiagnostic("recovery","Interrupted automatic journey restored",details:["savedFixes":String(record.points.count),"gapSeconds":String(Int(max(0,openedAt-lastFix)))])
                 } else {
+                    // A walk that was still being checked when the app stopped is
+                    // decided on its saved fixes; local movement is not published.
+                    if let origin = record.details?.localWalkOrigin {
+                        if case .local(let reason) = LocalWalk.assess(record.points, from: origin, ending: true) {
+                            try storage!.delete(record.id)
+                            recordDiagnostic("place","Local walking not recorded",details:["reason":reason,"savedFixes":String(record.points.count),"trigger":"relaunch"])
+                            continue
+                        }
+                        record.updateDetails { $0.localWalkOrigin = nil }
+                    }
                     let fixes = record.points.count
                     let reason = (record.id == recovery.tripID ? recovery.action?.reason : nil)
                         ?? "Journey ended: more than one unfinished automatic journey was found, so only the newest was kept open"
@@ -183,7 +195,7 @@ extension LocationRecorder {
         disableHouseholdLiveSharing(forget: true)
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
-        automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset()
+        automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -373,7 +385,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
-            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.preferences=AccountPreferences(); r.automaticEnabled=false
+            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
             UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
