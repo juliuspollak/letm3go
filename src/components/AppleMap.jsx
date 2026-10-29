@@ -6,8 +6,8 @@ import { MapLayersButton } from './MapLayers.jsx';
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
 // sent to the native map once per key and the payload names only the key.
 // `onLayers` adds the Map layers button (drawn natively once the map is embedded).
-export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,onLayers=null,layersActive=0}){
- const payload=onLayers?{...basePayload,layers:{active:layersActive}}:basePayload;
+export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,onLayers=null,layersActive=0,toolbar=null,onToolbarAction=null}){
+ const payload=onLayers?{...basePayload,layers:{active:layersActive,toolbar}}:basePayload;
  const overviewData=useRef(overview);
  useEffect(()=>{overviewData.current=overview;},[overview]);
  const overviewKey=overview?.key||null;
@@ -32,12 +32,13 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const [themeVersion,setThemeVersion]=useState(0);
  useEffect(()=>{const changed=()=>setThemeVersion(v=>v+1);window.addEventListener('letm3go:theme-changed',changed);return()=>window.removeEventListener('letm3go:theme-changed',changed);},[]);
  const [mapID]=useState(()=>crypto.randomUUID());
+ const toolbarHandler=useRef(onToolbarAction);useEffect(()=>{toolbarHandler.current=onToolbarAction;},[onToolbarAction]);
  const layersHandler=useRef(onLayers);useEffect(()=>{layersHandler.current=onLayers;},[onLayers]);
  const hasLayers=Boolean(onLayers);
  useEffect(()=>{
   if(!appleMapsAvailable()||!hasLayers)return;
   let disposed=false;let listener;
-  void appleMaps.addListener('layersTapped',event=>{if(!disposed&&event?.mapID===mapID)layersHandler.current?.();})
+  void appleMaps.addListener('layersTapped',event=>{if(!disposed&&event?.mapID===mapID)(event.action?toolbarHandler.current?.(event.action):layersHandler.current?.());})
    .then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
  },[mapID,hasLayers]);
@@ -113,7 +114,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    if(box.width<=80||visibleHeight<=80||box.bottom<=0){if(embeddedOnce.current){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const geometry=[box.x,box.y,box.width,visibleHeight].map(n=>n.toFixed(1)).join(':');
    if(geometry===previous)return;
-   const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus);previous=geometry;
+   const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(hasLayers||((!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus)));previous=geometry;
    frozenHeight.current=visibleHeight;
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
@@ -149,7 +150,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   window.addEventListener('scroll',resized,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
- },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt]);
+ },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;

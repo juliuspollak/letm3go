@@ -13,7 +13,7 @@ function fmtMeters(m) { return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Ma
 // The dedicated MTB map and community workflow. Trails and approved segments are
 // rendered over the same Apple Maps view as the rest of the app; a rider can draw
 // unmapped singletrack, save a draft and submit it for community approval.
-export default function MtbMap({ currentPosition, onRecordTrail, onLayers = null, layersActive = 0 }) {
+export default function MtbMap({ currentPosition, onRecordTrail, onLayers = null, layersActive = 0, toolbar = null, onToolbarAction = null }) {
   // The auth context spreads the identity (status, session, preferences) into its value.
   const { status } = useAuth();
   const signedIn = status === 'authenticated';
@@ -94,7 +94,7 @@ export default function MtbMap({ currentPosition, onRecordTrail, onLayers = null
           </div>
           {!signedIn && <p className="muted small-copy">Sign in to draw and submit trails.</p>}
 
-          <AppleMap large payload={payload} onLayers={onLayers} layersActive={layersActive} />
+          <AppleMap large payload={payload} onLayers={onLayers} layersActive={layersActive} toolbar={toolbar} onToolbarAction={onToolbarAction} />
           {loading && <p className="muted small-copy" role="status">Loading trails…</p>}
           {error && <p role="alert" className="error">{error}</p>}
           {!currentPosition && <p className="muted small-copy">Share your location to load nearby trails.</p>}

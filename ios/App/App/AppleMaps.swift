@@ -612,6 +612,7 @@ private struct MapContent {
     var overview:OverviewData?
     // The number of active layers when the map shows the Map layers button.
     let layersActive:Int?
+    let toolbar:[String:Any]?
     init(_ options:[AnyHashable:Any]) {
         focus=coordinate(options["focus"])
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
@@ -619,6 +620,7 @@ private struct MapContent {
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
         camera=CameraIntent(options["camera"])
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
+        toolbar=(options["layers"] as? [String:Any])?["toolbar"] as? [String:Any]
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
@@ -732,6 +734,9 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
     private var layersButton:UIButton?
+    private var filterViews:[UIView]=[]
+    private var filterToolbarKey:Data?
+    var onToolbarAction:((String)->Void)?
     private let showsLayers:Bool
     // action ("journey" or "photo"), photo id, journey id
     var onPhotoAction:((String,String,String)->Void)?
@@ -798,6 +803,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         for (id,pin) in pins where !seen.contains(id) {map.removeAnnotation(pin);pins.removeValue(forKey:id);pinData.removeValue(forKey:id)}
         applyOverview(next.overview)
         updateLayersButton(next.layersActive)
+        updateFilterToolbar(next.toolbar)
         if isPeopleMap {installControls();applyIntent();plan();layoutIndicators()}
     }
 
@@ -958,9 +964,76 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             layersButton=created
             return created
         }()
+        button.frame.origin.y=max(12,map.safeAreaInsets.top)
         button.viewWithTag(7)?.isHidden=active==0
         button.accessibilityLabel=active>0 ? "Map layers, \(active) active" : "Map layers"
         map.bringSubviewToFront(button)
+    }
+
+    // Direct MapKit subviews: only the buttons and scrolling option strips
+    // intercept touches. No full-map container, modal, snapshot or web z-index.
+    private func updateFilterToolbar(_ toolbar:[String:Any]?) {
+        guard showsLayers,let map=map else {return}
+        let key=try? JSONSerialization.data(withJSONObject:["toolbar":toolbar ?? [:],"width":map.bounds.width,"height":map.bounds.height,"safeTop":map.safeAreaInsets.top],options:[.sortedKeys])
+        guard key != filterToolbarKey else {return}
+        filterToolbarKey=key
+        filterViews.forEach{$0.removeFromSuperview()};filterViews=[]
+        guard let toolbar=toolbar,toolbar["open"] as? Bool == true else {return}
+        let rows=toolbar["rows"] as? [[String:Any]] ?? []
+        let category=toolbar["category"] as? String
+        let top=max(12,map.safeAreaInsets.top)
+        layersButton?.frame.origin.y=top
+        func control(_ item:[String:Any],expanded:Bool?=nil)->UIButton {
+            let button=UIButton(type:.system)
+            let selected=item["selected"] as? Bool == true
+            button.backgroundColor=selected ? brandAccent : .secondarySystemBackground
+            button.tintColor=selected ? .white : .label
+            button.setTitleColor(selected ? .white : .label,for:.normal)
+            button.layer.cornerRadius=22
+            button.layer.borderWidth=0.5;button.layer.borderColor=UIColor.separator.cgColor
+            button.layer.shadowColor=UIColor.black.cgColor;button.layer.shadowOpacity=0.12
+            button.layer.shadowRadius=4;button.layer.shadowOffset=CGSize(width:0,height:2)
+            button.accessibilityLabel=item["label"] as? String
+            if selected {button.accessibilityTraits.insert(.selected)}
+            if let expanded=expanded {button.accessibilityValue=expanded ? "Expanded" : "Collapsed"}
+            button.isEnabled=item["disabled"] as? Bool != true
+            if let text=item["text"] as? String {
+                button.setTitle(text,for:.normal)
+                button.titleLabel?.font=UIFont.preferredFont(forTextStyle:.caption1)
+                button.titleLabel?.adjustsFontForContentSizeCategory=true
+            } else {
+                let icon=UIImage(systemName:item["symbol"] as? String ?? "line.3.horizontal.decrease",withConfiguration:UIImage.SymbolConfiguration(pointSize:19)) ?? UIImage(systemName:"figure.walk")
+                button.setImage(icon,for:.normal)
+            }
+            let id=item["id"] as? String ?? ""
+            button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?(id)},for:.touchUpInside)
+            return button
+        }
+        for (index,row) in rows.enumerated() {
+            let y=top+52+CGFloat(index)*50
+            let id=row["id"] as? String
+            let options=row["options"] as? [[String:Any]]
+            let button=control(row,expanded:options == nil ? nil : category==id)
+            button.frame=CGRect(x:12,y:y,width:44,height:44)
+            map.addSubview(button);filterViews.append(button)
+            if category==id,let options=options {
+                let strip=UIScrollView(frame:CGRect(x:62,y:y,width:max(44,map.bounds.width-124),height:46))
+                strip.showsHorizontalScrollIndicator=true
+                strip.accessibilityLabel=row["label"] as? String
+                var x:CGFloat=0
+                for item in options {
+                    let option=control(item)
+                    let width:CGFloat=item["text"] == nil ? 44 : max(76,option.sizeThatFits(CGSize(width:180,height:44)).width+16)
+                    option.frame=CGRect(x:x,y:0,width:width,height:44)
+                    strip.addSubview(option);x+=width+6
+                }
+                strip.contentSize=CGSize(width:x,height:44)
+                map.addSubview(strip);filterViews.append(strip)
+                if !UIAccessibility.isReduceMotionEnabled {
+                    strip.alpha=0;UIView.animate(withDuration:0.18){strip.alpha=1}
+                }
+            }
+        }
     }
 
     // MARK: Camera
@@ -1111,7 +1184,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let right=map.bounds.width-16
         recenter.frame=CGRect(x:right-36,y:controlTop,width:36,height:36)
         compass?.frame=CGRect(x:right-38,y:controlTop+44,width:40,height:40)
-        if let chip=chip,!chip.isHidden {chip.frame.origin=CGPoint(x:12,y:controlTop)}
+        if let chip=chip,!chip.isHidden {
+            chip.frame.origin=CGPoint(x:showsLayers ? 64 : 12,y:showsLayers ? 12 : controlTop)
+            if showsLayers {chip.frame.size.width=min(chip.frame.width,max(44,map.bounds.width-128))}
+        }
     }
     private func updateControls() {
         guard let map=map,let recenter=recenter else {return}
@@ -1151,7 +1227,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             items.append((id,point))
         }
         let size:CGFloat=40
-        var blocked=[recenter,chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
+        var blocked=filterViews.map{$0.frame.insetBy(dx:-4,dy:-4)}
+        blocked += [recenter,chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
         if let compass=compass,compass.alpha>0.01,!compass.isHidden {blocked.append(compass.frame.insetBy(dx:-4,dy:-4))}
         for view in map.subviews where view is UIButton && !(view is EdgeAvatarButton) && !view.isHidden {blocked.append(view.frame.insetBy(dx:-4,dy:-4))}
         // MapKit's Apple Maps logo and Legal link sit at the bottom left (above the
@@ -1212,7 +1289,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         ([recenter,chip,compass,card,layersButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
         recenter=nil;chip=nil;compass=nil;card=nil;layersButton=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
-        onModeChange=nil;onPhotoAction=nil;onLayers=nil
+        filterViews.forEach{$0.removeFromSuperview()};filterViews=[];filterToolbarKey=nil
+        onModeChange=nil;onPhotoAction=nil;onLayers=nil;onToolbarAction=nil
     }
 }
 
@@ -1480,6 +1558,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 created.onPhotoAction={ [weak self] action,photoID,journeyID in
                     self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":action])
                 }
+                created.onToolbarAction={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
                 created.onLayers={ [weak self] in self?.notifyListeners("layersTapped",data:["mapID":id]) }
                 self.coordinators[id]=created
                 return created
@@ -1491,8 +1570,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 // The WebView may mount before account/location restoration finishes.
                 // Do not preserve an empty map's default country/world viewport when
                 // the first usable positions or the user's initial focus arrive.
-                let initialPositions=previousContent?.coordinates.isEmpty ?? true
-                let initialFocus=previousContent?.focus == nil && content.focus != nil
+                let initialPositions=content.layersActive != nil ? previousContent == nil : (previousContent?.coordinates.isEmpty ?? true)
+                let initialFocus=content.layersActive == nil && previousContent?.focus == nil && content.focus != nil
                 if !content.coordinates.isEmpty && (call.getBool("preserveViewport") != true || initialPositions || initialFocus) {
                     map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:false)
                 }

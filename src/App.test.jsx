@@ -185,13 +185,15 @@ it('opens the Map showing everyone, map first, rather than centring on the signe
  expect(mapProps.value.camera).toMatchObject({mode:'free',command});
  // Routes are drawn as a density overview, never as Start/Finish pins per journey.
  act(()=>mapProps.value.onLayers());
- const sheet=screen.getByRole('dialog',{name:'Map layers'});
+ const sheet=screen.getByRole('toolbar',{name:'Map filters'});
+ fireEvent.click(within(sheet).getByRole('button',{name:'Routes',exact:true}));
  fireEvent.click(within(sheet).getByRole('button',{name:'All routes'}));
  expect(within(sheet).getByRole('button',{name:'All routes'})).toHaveAttribute('aria-pressed','true');
- expect(within(sheet).getByRole('switch',{name:'People & places'})).toHaveAttribute('aria-checked','true');
+ expect(within(sheet).getByRole('button',{name:'People & places'})).toHaveAttribute('aria-pressed','true');
  expect(mapProps.value.camera).toMatchObject({includeRoutes:mapProps.value.overview!==null});
- // Choosing the other map closes the sheet; Community trails has no people camera.
- fireEvent.click(within(sheet).getByRole('radio',{name:'Community trails'}));
+ // Choosing the other map keeps filters inline; Community trails has no people camera.
+ fireEvent.click(within(sheet).getByRole('button',{name:'Map type'}));
+ fireEvent.click(within(sheet).getByRole('button',{name:'Community trails'}));
  expect(screen.queryByRole('dialog',{name:'Map layers'})).not.toBeInTheDocument();
  expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
  // The choice is kept across tabs.

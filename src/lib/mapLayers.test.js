@@ -71,3 +71,22 @@ describe('persistence',()=>{
   expect(normaliseMapView(null)).toEqual(DEFAULT_MAP_VIEW);
  });
 });
+
+describe('selected calendar day',()=>{
+ it('loads old rolling preferences unchanged and validates new dates per account',()=>{
+  localStorage.setItem('letm3go:map-view:old',JSON.stringify({routes:'pinned',range:'30d',activity:'Walking'}));
+  expect(loadMapView('old')).toEqual(view({routes:'pinned',range:'30d',activity:'Walking'}));
+  saveMapView('new',view({routes:'all',day:'2026-10-26',range:'7d'}));
+  expect(loadMapView('new')).toEqual(view({routes:'all',day:'2026-10-26',range:'7d'}));
+  expect(loadMapView('old').day).toBeNull();
+  expect(normaliseMapView({day:'2026-02-30'}).day).toBeNull();
+ });
+ it('matches midnight crossings but not unobserved days between segments',()=>{
+  const seconds=text=>new Date(text).getTime()/1000;
+  const crossing={id:'night',startedAt:seconds('2026-10-25T23:30:00'),endedAt:seconds('2026-10-26T00:30:00')};
+  const grouped={id:'group',segments:[{date:'2026-10-24'},{date:'2026-10-27'}]};
+  const ending={id:'boundary',startedAt:seconds('2026-10-25T23:00:00'),endedAt:seconds('2026-10-26T00:00:00')};
+  expect(mapViewJourneys([crossing,grouped,ending],view({routes:'all',day:'2026-10-26',range:'7d'}),'2026-10-30',[],now)).toEqual([crossing]);
+  expect(mapViewJourneys([crossing],view({routes:'all',day:'2026-10-25'}),'2026-10-30')).toEqual([crossing]);
+ });
+});
