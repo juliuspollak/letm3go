@@ -42,7 +42,7 @@ it('locates a member with a position on the map, and offers nothing for one with
  const show=vi.fn();
  render(<Household selfId="julius" memberLocations={memberLocations} selfLocation={{state:'off',text:'Location sharing off'}} onShowMember={show}/>);
  fireEvent.click(within(await bubble('Anna')).getByRole('button',{name:'Show Anna on the map'}));
- expect(show).toHaveBeenCalledWith({latitude:-33.87,longitude:151.21,accuracy:10});
+ expect(show).toHaveBeenCalledWith({latitude:-33.87,longitude:151.21,accuracy:10},'anna');
  expect(within(await bubble('Sam')).queryByRole('button',{name:/on the map/})).toBeNull();
  expect(within(await bubble('Julius')).queryByRole('button',{name:/on the map/})).toBeNull();
 });

@@ -1722,6 +1722,133 @@ _ = october29.accept(placeFix(900,0,1100),now:1100)
 let silenced = october29.routeQualitySummary()
 check(silenced.stopCount == 1 && silenced.gapCount == 1 && silenced.unobservedSeconds == 193,"a real GPS silence while walking stays visible as a gap")
 
+// MARK: People map camera and edge indicators
+func person(_ id: String, _ latitude: Double, _ longitude: Double, fit: Bool = true) -> CameraTarget {
+    CameraTarget(id: "people:\(id)", members: [id], point: MapWorld.point(latitude: latitude, longitude: longitude), latitude: latitude, fit: fit)
+}
+// What MapKit would show after a fit: the requested box widened to the view's shape.
+func shown(_ move: CameraMove?, aspect: Double = 0.75) -> MapBox {
+    guard case .fit(let box, _)? = move else { fatalError("expected a fit, got \(String(describing: move))") }
+    let width = max(box.width, box.height * aspect), height = max(box.height, box.width / aspect)
+    return MapBox.centred(box.centre, width: width, height: height)
+}
+func fitted(_ move: CameraMove?) -> Bool { if case .fit? = move { return true }; return false }
+let me = person("self", -33.8700, 151.2100), anna = person("anna", -33.8760, 151.2050), sam = person("sam", -33.8650, 151.2180)
+let world = MapBox(minX: 0, minY: 0, width: MapWorld.width, height: MapWorld.width)
+
+var planner = CameraPlanner()
+check(planner.mode == .all && planner.pending, "the people map opens showing everyone")
+check(planner.plan(targets: [], visible: world, now: 0) == nil && planner.pending, "nothing to fit before the first position: the request waits")
+let lateFirst = planner.plan(targets: [me], visible: world, now: 1)
+check(fitted(lateFirst) && !planner.pending, "the first valid position, arriving late, is fitted")
+check(shown(lateFirst).width >= CameraPlanner.minimumSpanMeters * MapWorld.pointsPerMeter(latitude: -33.87) * 0.99, "a single person is shown with a useful minimum span, not at street level")
+planner.showAll()
+var view = shown(planner.plan(targets: [me, anna, sam], visible: world, now: 2))
+check([me, anna, sam].allSatisfy { view.inset(by: CameraPlanner.comfortInset).contains($0.point) }, "the signed-in user and two household members are all inside the comfortable area")
+check(![me, anna, sam].contains { !view.inset(by: 0.15).contains($0.point) }, "everyone is clear of the edges, where avatars and labels would be clipped")
+// GPS jitter: a few metres back and forth for ten minutes never moves the camera.
+var moves = 0
+for i in 0..<120 {
+    let wobble = (i % 2 == 0 ? 1.0 : -1.0) * 0.00012
+    let jittery = [person("self", -33.8700 + wobble, 151.2100), person("anna", -33.8760, 151.2050 - wobble), sam]
+    if planner.plan(targets: jittery, visible: view, now: 3 + Double(i) * 5) != nil { moves += 1 }
+}
+check(moves == 0, "GPS jitter does not move the camera")
+// Anna drives 6 km away: the map zooms out once to keep her in view.
+let annaAway = person("anna", -33.9200, 151.2050)
+let zoomOut = planner.plan(targets: [me, annaAway, sam], visible: view, now: 700)
+check(fitted(zoomOut), "a person leaving the comfortable area reframes the camera")
+view = shown(zoomOut)
+check(view.inset(by: CameraPlanner.comfortInset).contains(annaAway.point), "after reframing she is comfortably inside")
+check(planner.plan(targets: [me, annaAway, sam], visible: view, now: 701) == nil, "and the same positions do not reframe again")
+// She drives back: zoom in only once everyone has stayed in the small area for a while.
+check(planner.plan(targets: [me, anna, sam], visible: view, now: 800) == nil, "no immediate zoom in when she returns")
+check(planner.plan(targets: [me, anna, sam], visible: view, now: 810) == nil, "still waiting for the positions to be stable")
+let zoomIn = planner.plan(targets: [me, anna, sam], visible: view, now: 800 + CameraPlanner.zoomInDelay)
+check(fitted(zoomIn), "zooms back in when it has been stable and useful")
+view = shown(zoomIn)
+check(planner.plan(targets: [me, anna, sam], visible: view, now: 900) == nil, "and settles there without oscillating")
+// Far apart: Sydney and Melbourne still fit in one view.
+let melbourne = person("sam", -37.8136, 144.9631)
+view = shown(planner.plan(targets: [me, melbourne], visible: view, now: 1000))
+check(view.contains(me.point) && view.contains(melbourne.point) && view.width > 100 * MapWorld.pointsPerMeter(latitude: -35) * 1000, "people hundreds of kilometres apart are fitted together")
+// Stale people far away are shown but not fitted; with nobody live they are.
+let staleFar = person("kim", 51.5072, -0.1276, fit: false)
+view = shown({ var p = CameraPlanner(); return p.plan(targets: [me, anna, staleFar], visible: world, now: 0) }())
+check(view.contains(anna.point) && !view.contains(staleFar.point), "a stale position on another continent does not shrink the live overview")
+check(shown({ var p = CameraPlanner(); return p.plan(targets: [staleFar], visible: world, now: 0) }()).contains(staleFar.point), "with nobody live, the last known position is shown")
+// Across the date line: Fiji and Samoa are a short hop, not the whole world.
+let fiji = person("a", -17.7, 179.9), samoa = person("b", -13.8, -171.8)
+let pacific = shown({ var p = CameraPlanner(); return p.plan(targets: [fiji, samoa], visible: world, now: 0) }())
+check(pacific.width < MapWorld.width / 10 && pacific.contains(fiji.point) && pacific.contains(samoa.point), "people either side of the 180th meridian are fitted across it")
+
+// Gestures, programmatic movement, recentre, follow.
+var gestures = CameraPlanner()
+view = shown(gestures.plan(targets: [me, anna], visible: world, now: 0))
+check(gestures.userMoved() && gestures.mode == .free, "a manual pan or pinch switches to free exploring")
+check(gestures.plan(targets: [me, annaAway], visible: view, now: 10) == nil, "free exploring never recentres, even when someone leaves the view")
+check(!gestures.userMoved(), "further gestures report no change")
+gestures.showAll()
+check(fitted(gestures.plan(targets: [me, annaAway], visible: view, now: 20)) && gestures.mode == .all, "Show everyone returns to following everyone and refits")
+var programmatic = CameraPlanner()
+view = shown(programmatic.plan(targets: [me, anna], visible: world, now: 0))
+_ = programmatic.plan(targets: [me, annaAway], visible: view, now: 5)
+check(programmatic.mode == .all, "the planner's own camera moves never switch it to free exploring")
+var follow = CameraPlanner()
+_ = follow.plan(targets: [me, anna], visible: world, now: 0)
+follow.follow("anna")
+if case .centre(let p, let width?, true)? = follow.plan(targets: [me, anna], visible: world, now: 1) {
+    check(p == anna.point && width <= CameraPlanner.personSpanMeters * MapWorld.pointsPerMeter(latitude: -33.876) + 1, "selecting a member centres on them at a street-level span")
+} else { check(false, "selecting a member centres on them") }
+let around = MapBox.centred(anna.point, width: 10_000, height: 13_000)
+check(follow.plan(targets: [me, person("anna", -33.8762, 151.2051)], visible: around, now: 2) == nil, "small movements of the followed person do not move the camera")
+let moved = MapXY(x: anna.point.x + 4_000, y: anna.point.y)
+check(follow.plan(targets: [me, CameraTarget(id: "people:anna", members: ["anna"], point: moved, latitude: -33.876, fit: true)], visible: around, now: 3) == .centre(moved, width: nil, animated: true), "the camera follows when she nears the edge, keeping the zoom")
+check(follow.mode == .person("anna"), "following continues")
+_ = follow.plan(targets: [me], visible: around, now: 4)
+check(follow.mode == .all, "when the followed person stops sharing, the map shows everyone instead")
+var grouped = CameraPlanner()
+grouped.follow("anna")
+let atHome = CameraTarget(id: "people:anna,self", members: ["self", "anna"], point: me.point, latitude: -33.87, fit: true)
+check(grouped.plan(targets: [atHome], visible: world, now: 0) != nil && grouped.mode == .person("anna"), "a followed person grouped with others at Home is still found")
+var resumed = CameraPlanner()
+resumed.resume(.free)
+check(resumed.plan(targets: [me, annaAway], visible: around, now: 0) == nil && resumed.mode == .free, "a remounted map keeps free exploring and its viewport")
+check(FollowMode(name: "person", person: "anna") == .person("anna") && FollowMode(name: "person", person: "") == .all && FollowMode(name: nil, person: nil) == .all, "modes from JavaScript are validated")
+
+// Projection, including rotation and the 180th meridian.
+let centrePoint = MapWorld.point(latitude: -33.87, longitude: 151.21)
+let perPoint = 20.0
+let north = ScreenProjection(centre: centrePoint, screenCentre: CGPoint(x: 200, y: 300), alongX: MapXY(x: centrePoint.x + 100 * perPoint, y: centrePoint.y), alongY: MapXY(x: centrePoint.x, y: centrePoint.y + 100 * perPoint), distance: 100)
+check(north.screenPoint(MapXY(x: centrePoint.x + 2000, y: centrePoint.y))! == CGPoint(x: 300, y: 300), "east of the centre projects to the right")
+let rotated = ScreenProjection(centre: centrePoint, screenCentre: CGPoint(x: 200, y: 300), alongX: MapXY(x: centrePoint.x, y: centrePoint.y + 100 * perPoint), alongY: MapXY(x: centrePoint.x - 100 * perPoint, y: centrePoint.y), distance: 100)
+let east = rotated.screenPoint(MapXY(x: centrePoint.x + 2000, y: centrePoint.y))!
+check(abs(east.x - 200) < 0.001 && abs(east.y - 200) < 0.001, "with the map rotated 90°, east projects upwards")
+let dateLine = MapWorld.point(latitude: -17.7, longitude: 179.99)
+let acrossProjection = ScreenProjection(centre: dateLine, screenCentre: CGPoint(x: 200, y: 300), alongX: MapXY(x: dateLine.x + 100 * perPoint, y: dateLine.y), alongY: MapXY(x: dateLine.x, y: dateLine.y + 100 * perPoint), distance: 100)
+check(acrossProjection.screenPoint(MapWorld.point(latitude: -17.7, longitude: -179.99))!.x > 200, "a person just across the 180th meridian projects to the east, not the far west")
+
+// Edge indicators.
+let mapView = CGRect(x: 0, y: 0, width: 390, height: 600)
+let controls = CGRect(x: 338, y: 0, width: 52, height: 110)
+let rail = mapView.insetBy(dx: 30, dy: 30)
+func layout(_ items: [(id: String, point: CGPoint)]) -> [String: CGPoint] {
+    Dictionary(uniqueKeysWithValues: EdgeIndicatorLayout.place(items, bounds: mapView, rail: rail, exclusions: [controls], size: 40, spacing: 44).map { ($0.id, $0.centre) })
+}
+var placed = layout([("visible", CGPoint(x: 200, y: 300)), ("north", CGPoint(x: 195, y: -900)), ("east", CGPoint(x: 2000, y: 305)), ("southwest", CGPoint(x: -300, y: 1700)), ("west", CGPoint(x: -500, y: 300))])
+check(placed["visible"] == nil, "a person whose marker is visible gets no edge avatar")
+check(placed["north"]!.y == rail.minY && abs(placed["north"]!.x - 195) < 3, "a person to the north sits on the top edge, towards them")
+check(placed["east"]!.x == rail.maxX && abs(placed["east"]!.y - 300) < 3, "a person to the east sits on the right edge")
+check(placed["west"]!.x == rail.minX, "a person to the west sits on the left edge")
+check(placed["southwest"]!.y == rail.maxY && placed["southwest"]!.x < 195, "a person to the south-west sits on the bottom edge, left of centre")
+placed = layout([("ne", CGPoint(x: 1200, y: -1500))])
+let ne = placed["ne"]!
+check(!controls.intersects(CGRect(x: ne.x - 20, y: ne.y - 20, width: 40, height: 40)), "an edge avatar never covers the map controls")
+placed = layout([("a", CGPoint(x: 100, y: -900)), ("b", CGPoint(x: 104, y: -905)), ("c", CGPoint(x: 108, y: -910))])
+let row = placed.values.sorted { $0.x < $1.x }
+check(row.count == 3 && zip(row, row.dropFirst()).allSatisfy { hypot($1.x - $0.x, $1.y - $0.y) >= 44 - 0.01 }, "people in the same direction get separate, non-overlapping avatars")
+check(layout([("far", CGPoint(x: 195, y: 1e9)), ("nan", CGPoint(x: CGFloat.nan, y: 0))])["far"] != nil, "a very distant person is still placed and an invalid point is ignored")
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

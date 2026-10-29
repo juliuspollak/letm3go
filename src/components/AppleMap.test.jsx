@@ -1,5 +1,5 @@
 import {act,cleanup,fireEvent,render,waitFor} from '@testing-library/react';
-import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 const mocks=vi.hoisted(()=>({embed:vi.fn(),unembed:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn()}));
 vi.mock('../lib/appleMaps.js',()=>({appleMaps:mocks,appleMapsAvailable:()=>true}));
 import AppleMap from './AppleMap.jsx';
@@ -51,4 +51,45 @@ it('refits the viewport when an explicit map filter or locate action changes',as
  mocks.embed.mockClear();
  rerender(<AppleMap payload={payload} viewportKey="all:0"/>);
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:false})));
+});
+
+describe('people map camera',()=>{
+ const people=(ids)=>({routes:[],pins:ids.map((id,i)=>({id:`people:${id}`,kind:'people',point:[-33.87+i*0.01,151.21],members:[{id,name:id}],fit:true})),camera:{key:'people:owner',mode:'all',personId:null,command:2,includeRoutes:false}});
+ let handlers;
+ beforeEach(()=>{handlers={};mocks.addListener.mockImplementation((event,callback)=>{handlers[event]=callback;return Promise.resolve({remove:vi.fn()});});});
+ it('sends the camera intent with the people and reports native mode changes for this map only',async()=>{
+  const onCamera=vi.fn();
+  render(<AppleMap payload={people(['self','anna','sam'])} onCamera={onCamera}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({camera:expect.objectContaining({mode:'all',command:2}),pins:expect.arrayContaining([expect.objectContaining({id:'people:anna'})])})));
+  const mapID=mocks.embed.mock.calls[0][0].mapID;
+  await waitFor(()=>expect(handlers.cameraChanged).toBeDefined());
+  handlers.cameraChanged({mapID:'another-map',mode:'free',command:2});
+  expect(onCamera).not.toHaveBeenCalled();
+  handlers.cameraChanged({mapID,mode:'free',command:2});
+  expect(onCamera).toHaveBeenCalledWith({mapID,mode:'free',command:2});
+ });
+ it('removes a person from the native map as soon as their sharing is revoked',async()=>{
+  const {rerender}=render(<AppleMap payload={people(['self','anna'])}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  mocks.embed.mockClear();
+  rerender(<AppleMap payload={people(['self'])}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  expect(mocks.embed.mock.calls.at(-1)[0].pins.map(pin=>pin.id)).toEqual(['people:self']);
+ });
+ it('releases the native map on tab change and re-embeds the same camera on return',async()=>{
+  const {unmount}=render(<AppleMap payload={people(['self','anna'])}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  const first=mocks.embed.mock.calls[0][0];
+  unmount();
+  expect(mocks.unembed).toHaveBeenCalledWith({mapID:first.mapID});
+  mocks.embed.mockClear();
+  render(<AppleMap payload={people(['self','anna'])}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  expect(mocks.embed.mock.calls[0][0].camera).toEqual(first.camera);
+ });
+ it('does not listen for camera changes on route maps',async()=>{
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  expect(handlers.cameraChanged).toBeUndefined();
+ });
 });

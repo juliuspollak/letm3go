@@ -1,14 +1,14 @@
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { demoJourneys } from './test/fixtures/journeys.js';
 import { emptyRecorder } from './lib/recorder.js';
-const { identity, recorderHook }=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn()}));
+const { identity, recorderHook, mapProps }=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapProps:{value:null}}));
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
 vi.mock('./lib/useRecorder.js',()=>({useRecorder:recorderHook}));
-vi.mock('./components/JourneyMap.jsx',()=>({default:()=> <div aria-label="Interactive journey route map"/>}));
+vi.mock('./components/JourneyMap.jsx',()=>({default:props=>{mapProps.value=props;return <div aria-label="Interactive journey route map"/>;}}));
 beforeEach(()=>{identity.value={status:'signedOut',session:null,preferences:{displayName:'',vehicles:[],onboardingStep:0,onboardingComplete:false},savePreferences:vi.fn(async patch=>({...identity.value.preferences,...patch})),beginSignIn:vi.fn(),signOut:vi.fn(),retry:vi.fn()};recorderHook.mockReturnValue({state:emptyRecorder,run:vi.fn(),busy:false,error:''});});
 afterEach(()=>{cleanup();localStorage.clear();window.history.replaceState({},'','/');});
 function signedIn(){identity.value={...identity.value,status:'authenticated',session:{user:{id:'owner',email:'owner@example.com'}},preferences:{...identity.value.preferences,onboardingComplete:true}};}
@@ -163,3 +163,24 @@ it('counts a provisional journey in today totals and last activity',()=>{
 });
 
 
+it('opens the Map showing everyone, map first, rather than centring on the signed-in user',()=>{
+ signedIn();render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();
+ expect(mapProps.value.camera).toMatchObject({key:'people:owner',mode:'all',personId:null});
+ expect(mapProps.value.focusPoint).toBeUndefined();
+ expect(screen.queryByText('Your world, mapped.')).not.toBeInTheDocument();
+ expect(screen.queryByText('Go somewhere. Keep the feeling.')).not.toBeInTheDocument();
+ expect(screen.getByRole('button',{name:/My routes/})).toHaveAttribute('aria-pressed','true');
+ expect(screen.getByRole('button',{name:'Map filters'})).toBeInTheDocument();
+ // A gesture reported by the native map is kept when the tab is left and reopened.
+ const command=mapProps.value.camera.command;
+ act(()=>mapProps.value.onCamera({mode:'free',personId:null,command}));
+ expect(mapProps.value.camera).toMatchObject({mode:'free',command});
+ fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(mapProps.value.camera).toMatchObject({mode:'free',command});
+ // Community trails has no people camera.
+ fireEvent.click(screen.getByRole('button',{name:/Community trails/}));
+ expect(screen.queryByRole('button',{name:'Map filters'})).not.toBeInTheDocument();
+});

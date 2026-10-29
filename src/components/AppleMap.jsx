@@ -2,7 +2,7 @@ import { Maximize2, Navigation } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable } from '../lib/appleMaps.js';
 
-export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null}){
+export default function AppleMap({payload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null,onCamera=null}){
  const mapSurface=useRef(null);
  const embeddedOnce=useRef(false);
  const fittedViewport=useRef(null);
@@ -17,6 +17,17 @@ export default function AppleMap({payload,onResult,large=false,picker=false,onLo
  const [mapID]=useState(()=>crypto.randomUUID());
  useEffect(()=>()=>{if(appleMapsAvailable()){void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
+ // The people map reports its own camera changes (a gesture, an edge avatar, its
+ // Show everyone button) so the requested mode survives a remount.
+ const cameraHandler=useRef(onCamera);useEffect(()=>{cameraHandler.current=onCamera;},[onCamera]);
+ const hasCamera=Boolean(payload.camera);
+ useEffect(()=>{
+  if(!appleMapsAvailable()||!hasCamera)return;
+  let disposed=false;let listener;
+  void appleMaps.addListener('cameraChanged',event=>{if(!disposed&&event?.mapID===mapID)cameraHandler.current?.(event);})
+   .then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
+  return()=>{disposed=true;void listener?.remove();};
+ },[mapID,hasCamera]);
  const photoPins=JSON.stringify(payload.pins);
  useEffect(()=>{
   if(!appleMapsAvailable())return;

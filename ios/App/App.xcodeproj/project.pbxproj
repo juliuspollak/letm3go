@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		BB0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002; };
 		BA0000000000000000000001 /* AppleMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA0000000000000000000002; };
+		BD0000000000000000000001 /* MapCameraCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000002; };
 		B80000000000000000000002 /* AppleAuthCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000002; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
@@ -66,6 +67,7 @@
 /* Begin PBXFileReference section */
 		BB0000000000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BA0000000000000000000002 /* AppleMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMaps.swift; sourceTree = "<group>"; };
+		BD0000000000000000000002 /* MapCameraCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapCameraCore.swift; sourceTree = "<group>"; };
 		B70000000000000000000002 /* AppleAuthCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAuthCore.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 				B30000000000000000000003 /* PhotoSuggestions.swift */,
 				B50000000000000000000001 /* AccountSecurity.swift */,
 				BA0000000000000000000002 /* AppleMaps.swift */,
+				BD0000000000000000000002 /* MapCameraCore.swift */,
 				B70000000000000000000001 /* AppleAuthentication.swift */,
 				B70000000000000000000002 /* AppleAuthCore.swift */,
 				B90000000000000000000001 /* WatchSessionManager.swift */,
@@ -304,6 +307,7 @@
 				B40000000000000000000003 /* PhotoSuggestions.swift in Sources */,
 				B60000000000000000000001 /* AccountSecurity.swift in Sources */,
 				BA0000000000000000000001 /* AppleMaps.swift in Sources */,
+				BD0000000000000000000001 /* MapCameraCore.swift in Sources */,
 				B80000000000000000000001 /* AppleAuthentication.swift in Sources */,
 				B80000000000000000000002 /* AppleAuthCore.swift in Sources */,
 				B90000000000000000000002 /* WatchSessionManager.swift in Sources */,

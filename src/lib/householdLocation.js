@@ -2,6 +2,7 @@
 // implementation for the Household screen, People on the map and the map pins,
 // so a member can never look "live" in one place and missing in another.
 import {resolveAvatar} from './avatar.js';
+import {cameraFit,personActivity,personLabel,savedPlaceName,secondsAtPlace} from './peopleMap.js';
 
 // Freshness policy (documented in docs/household-location-sharing.md):
 // - live:        a position confirmed within the last 10 minutes. A phone
@@ -91,30 +92,53 @@ export function personName(member){
 // Map pins for people. The signed-in user is drawn first and anchors their own
 // group; Home and freshness travel with each person, so a stale position is never
 // tagged Home and a shared Home shows everyone who is there.
-export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvatar=null}){
+//
+// Each pin has a stable id made of the user ids at that place (never names or
+// coordinates), so the native map moves the existing marker instead of replacing
+// it. `fit` says whether the camera keeps it in view (see cameraFit), and the
+// label says where the person is and for how long, only when that is known.
+// `places` are the viewer's own saved places; `activities` the coarse status
+// members already share (user id → label).
+export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvatar=null,places=[],activities={}}){
  const people=[];
- if(self&&validPoint(self.latitude,self.longitude))people.push({...self,isSelf:true});
+ if(self&&validPoint(self.latitude,self.longitude))people.push({...self,id:'self',isSelf:true,state:'live',seconds:self.seconds??null,activity:self.activity??null});
  for(const member of members)if(member.position&&['live','stale'].includes(member.state))
-  people.push({userId:member.user_id,name:personName(member),named:Boolean(member.display_name?.trim()),latitude:member.position.latitude,longitude:member.position.longitude,
-   accuracy:member.position.accuracy,state:member.state,ageSeconds:member.ageSeconds,home:member.home&&member.state==='live',source:member.source||'household'});
+  people.push({id:member.user_id,userId:member.user_id,name:personName(member),named:Boolean(member.display_name?.trim()),latitude:member.position.latitude,longitude:member.position.longitude,
+   accuracy:member.position.accuracy,state:member.state,ageSeconds:member.ageSeconds,home:member.home&&member.state==='live',source:member.source||'household',
+   seconds:secondsAtPlace(member),activity:activities[member.user_id]??null});
+ for(const p of people){
+  const place=p.home||p.state!=='live'?null:savedPlaceName(p,places);
+  p.label=personLabel({state:p.state,ageSeconds:p.isSelf?null:p.ageSeconds,home:p.home,place,seconds:p.seconds});
+  p.movement=personActivity({state:p.state,home:p.home,seconds:p.seconds,shared:p.activity});
+ }
+ const fit=cameraFit(people);
  return groupPeople(people).map(({anchor,members:group})=>{
   const everyoneHome=group.every(p=>p.home);
   const names=group.map(p=>p.isSelf?'You':p.name);
   const self=group.find(p=>p.isSelf);
+  // One person: their own label. Several: "Home" when everyone there is at Home;
+  // each person's own time is in the callout.
+  const label=group.length===1?group[0].label:everyoneHome?{short:'Home',kind:'home'}:{short:null,kind:'none'};
+  const status=p=>p.isSelf?(p.label.kind==='live'?'your location':p.label.text):
+   p.state==='live'&&p.label.kind!=='live'?`${p.label.text} · ${locationStatusText(p).replace('Sharing location · ','')}`:locationStatusText(p);
   return {
+   id:'people:'+group.map(p=>p.id).sort().join(','),
    point:self?[self.latitude,self.longitude]:[anchor.latitude,anchor.longitude],
    kind:'people',
    title:names.length>1?`${names.slice(0,-1).join(', ')} & ${names.at(-1)}`:names[0],
-   subtitle:[everyoneHome?'Home':null,...group.map(p=>`${p.isSelf?'You':p.name}: ${p.isSelf?'your location':locationStatusText(p)}`)].filter(Boolean).join(' · '),
+   subtitle:[everyoneHome?'Home':null,...group.map(p=>`${p.isSelf?'You':p.name}: ${status(p)}`)].filter(Boolean).join(' · '),
    home:everyoneHome,
+   fit:group.some(p=>fit[p.id]),
+   ...(label.short?{label:label.short,labelKind:label.kind}:{}),
    ...(self&&Number.isFinite(self.accuracy)&&self.accuracy>0?{radius:Math.min(self.accuracy,100)}:{}),
    members:group.map(p=>{
     // The photo comes from the same id-keyed set as Household and Friends. Without
     // one, the initial comes only from a real name; a member with no name gets a
     // neutral silhouette (empty initial), never the initial of a placeholder.
     const avatar=resolveAvatar({userId:p.isSelf?selfId:p.userId,selfId,photos,selfAvatar,name:p.isSelf?(p.name||'You'):p.name});
-    return {name:p.isSelf?'You':p.name,initial:p.isSelf||p.named?avatar.initial:'',avatar:avatar.src&&avatar.src.startsWith('data:image/')?avatar.src:null,
-     self:Boolean(p.isSelf),state:p.isSelf?'live':p.state,home:Boolean(p.home)};
+    return {id:p.id,name:p.isSelf?'You':p.name,initial:p.isSelf||p.named?avatar.initial:'',avatar:avatar.src&&avatar.src.startsWith('data:image/')?avatar.src:null,
+     self:Boolean(p.isSelf),state:p.isSelf?'live':p.state,home:Boolean(p.home),label:p.label.text,activity:p.movement,
+     ...(p.seconds!=null?{secondsAtPlace:p.seconds}:{})};
    })
   };
  });

@@ -14,8 +14,9 @@ function fmtMeters(m) { return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Ma
 // rendered over the same Apple Maps view as the rest of the app; a rider can draw
 // unmapped singletrack, save a draft and submit it for community approval.
 export default function MtbMap({ currentPosition, onRecordTrail }) {
-  const { identity } = useAuth();
-  const signedIn = identity.status === 'authenticated';
+  // The auth context spreads the identity (status, session, preferences) into its value.
+  const { status } = useAuth();
+  const signedIn = status === 'authenticated';
   const [layers, setLayers] = useState(['trails', 'segments']);
   const [view, setView] = useState('map');
   const [creating, setCreating] = useState(null);

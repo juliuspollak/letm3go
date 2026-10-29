@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import MtbMap from './MtbMap.jsx';
 
-vi.mock('../lib/AuthContext.jsx', () => ({ useAuth: () => ({ identity: { status: 'authenticated' } }) }));
+// Same shape as the real AuthContext value: identity fields at the top level.
+vi.mock('../lib/AuthContext.jsx', () => ({ useAuth: () => ({ status: 'authenticated', session: { user: { id: 'owner' } } }) }));
 vi.mock('../lib/supabase.js', () => ({ supabase: null }));
 vi.mock('../lib/mtbApi.js', () => ({ mySubmissions: vi.fn().mockResolvedValue([]), moderationQueue: vi.fn().mockResolvedValue([]) }));
 vi.mock('./AppleMap.jsx', () => ({ default: () => <div aria-label="Apple Map" /> }));

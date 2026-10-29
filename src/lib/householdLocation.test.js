@@ -56,7 +56,7 @@ describe('map pins for people',()=>{
   expect(pins[0]).toMatchObject({kind:'people',home:true,title:'You & Anna',point:[-33.87001,151.21001],radius:8});
   expect(pins[0].members.map(m=>[m.name,m.self,m.state,m.home,Boolean(m.avatar)])).toEqual([['You',true,'live',true,true],['Anna',false,'live',true,true]]);
   expect(pins[0].subtitle).toContain('Home');
-  expect(pins[0].subtitle).toContain('Anna: Sharing location · updated 2 min ago');
+  expect(pins[0].subtitle).toContain('Anna: At Home · updated 2 min ago');
  });
  it("shows my wife's marker when she shares and I am viewing, even with no self position",()=>{
   const pins=peoplePins({members:[{...anna,...memberLocationState(anna)}],photos:{anna:photo}});

@@ -17,10 +17,21 @@ export async function loadHouseholdLocations(){
  const now=new Date().toISOString();
  return (legacy.data||[]).map(row=>({...row,sharing_enabled:true,location_at:row.updated_at,server_now:now}));
 }
+// The caller's own arrival time. Optional: before the 20261106 migration, or on
+// any failure, the map simply shows no duration for you.
+export async function loadOwnArrival(){
+ try{
+  const result=await supabase.rpc('my_live_location_arrival');
+  const row=result.error?null:result.data?.[0];
+  return row?.arrived_at?{arrived_at:row.arrived_at,location_at:row.location_at,server_now:row.server_now}:null;
+ }catch{return null;}
+}
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[]){
  const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const [liveEnabled,setLiveEnabled]=useState(false),[liveMembers,setLiveMembers]=useState([]),[liveError,setLiveError]=useState(''),[liveReady,setLiveReady]=useState(false);
+ // When you arrived where you are, as your household sees it (null when unknown).
+ const [selfArrival,setSelfArrival]=useState(null);
  // Members with an authorised position (live or stale); every member is in liveMembers.
  const livePeople=useMemo(()=>liveMembers.filter(m=>m.sharing_enabled&&Number.isFinite(m.latitude)&&Number.isFinite(m.longitude)),[liveMembers]);
  const liveBusy=useRef(false),liveConsent=useRef(false);
@@ -85,10 +96,10 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  const refreshLive=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
   try{
-   const [settings,members]=await Promise.all([supabase.rpc('my_live_location_settings'),loadHouseholdLocations()]);
+   const [settings,members,arrival]=await Promise.all([supabase.rpc('my_live_location_settings'),loadHouseholdLocations(),loadOwnArrival()]);
    if(settings.error)throw new Error('Location sharing could not be loaded. Check your connection and retry.');
    liveConsent.current=settings.data?.[0]?.enabled===true;
-   setLiveEnabled(liveConsent.current);setLiveMembers(members);setLiveError('');setLiveReady(true);
+   setLiveEnabled(liveConsent.current);setLiveMembers(members);setSelfArrival(liveConsent.current?arrival:null);setLiveError('');setLiveReady(true);
   }catch(err){setLiveError(err.message||'Location sharing could not be loaded.');}
  },[owner,online]);
  useEffect(()=>{
@@ -194,5 +205,5 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    await refresh();
   }finally{setBusy(false);}
  };
- return {people,self,error,busy,refresh,update,liveEnabled,liveMembers,livePeople,lastPublishedAt,liveError,liveReady,setLiveSharing,refreshLive};
+ return {people,self,error,busy,refresh,update,liveEnabled,liveMembers,livePeople,lastPublishedAt,liveError,liveReady,setLiveSharing,refreshLive,selfArrival};
 }
