@@ -287,7 +287,6 @@ private final class EdgeAvatarButton:UIButton {
         pointer.shadowColor=UIColor.black.cgColor;pointer.shadowOpacity=0.25;pointer.shadowRadius=1.5;pointer.shadowOffset=CGSize(width:0,height:0.5)
         pointer.frame=bounds
         layer.insertSublayer(pointer,at:0)
-        adjustsImageWhenHighlighted=true
     }
     required init?(coder:NSCoder){fatalError("init(coder:) unavailable")}
     // A 44 pt touch target around the 40 pt avatar.
@@ -505,14 +504,18 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let compass=MKCompassButton(mapView:map)
         compass.compassVisibility = .adaptive
         map.addSubview(compass);self.compass=compass
-        let chip=UIButton(type:.system)
-        chip.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
-        chip.layer.cornerRadius=16
-        chip.titleLabel?.font = .systemFont(ofSize:13,weight:.semibold)
-        chip.setImage(UIImage(systemName:"xmark.circle.fill",withConfiguration:UIImage.SymbolConfiguration(pointSize:13)),for:.normal)
-        chip.semanticContentAttribute = .forceRightToLeft
-        chip.contentEdgeInsets=UIEdgeInsets(top:0,left:12,bottom:0,right:10)
-        chip.imageEdgeInsets=UIEdgeInsets(top:0,left:6,bottom:0,right:-6)
+        var style=UIButton.Configuration.filled()
+        style.baseBackgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
+        style.baseForegroundColor = .label
+        style.cornerStyle = .capsule
+        style.image=UIImage(systemName:"xmark.circle.fill",withConfiguration:UIImage.SymbolConfiguration(pointSize:13))
+        style.imagePlacement = .trailing
+        style.imagePadding=6
+        style.contentInsets=NSDirectionalEdgeInsets(top:0,leading:12,bottom:0,trailing:10)
+        style.titleTextAttributesTransformer=UIConfigurationTextAttributesTransformer { attributes in
+            var updated=attributes;updated.font=UIFont.systemFont(ofSize:13,weight:.semibold);return updated
+        }
+        let chip=UIButton(configuration:style)
         chip.isHidden=true
         chip.addAction(UIAction{[weak self] _ in self?.showEveryone()},for:.touchUpInside)
         map.addSubview(chip);self.chip=chip
@@ -545,10 +548,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         recenter.accessibilityHint=following ? nil : "Moves the map to show everyone sharing their location"
         if let chip=chip {
             if let id=planner.mode.personID {
-                chip.setTitle("Following \(name(of:id))",for:.normal)
+                chip.configuration?.title="Following \(name(of:id))"
                 chip.accessibilityLabel="Following \(name(of:id)). Show everyone"
-                chip.sizeToFit()
-                chip.frame=CGRect(x:12,y:controlTop,width:min(chip.frame.width+22,map.bounds.width-90),height:32)
+                let fitted=chip.sizeThatFits(CGSize(width:map.bounds.width-90,height:32))
+                chip.frame=CGRect(x:12,y:controlTop,width:min(fitted.width,map.bounds.width-90),height:32)
                 chip.isHidden=false
             } else {chip.isHidden=true}
         }
