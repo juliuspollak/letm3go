@@ -101,6 +101,14 @@ private func statusDot(_ state:String,at dot:CGRect,context ctx:CGContext) {
         clock.draw(in:dot.insetBy(dx:dot.width*0.26,dy:dot.height*0.26))
     }
 }
+// Native image sets contain high-resolution artwork; downsample the annotation
+// to map-marker points so a 256 px source does not become a 256 pt marker.
+private func homeMarkerArtwork(size:CGFloat=42)->UIImage? {
+    guard let source=UIImage(named:"Letm3goHome") else{return nil}
+    return UIGraphicsImageRenderer(size:CGSize(width:size,height:size)).image { _ in
+        source.draw(in:CGRect(x:0,y:0,width:size,height:size))
+    }
+}
 private func labelSymbol(_ kind:String)->String? {
     switch kind {case "home":return "house.fill";case "place":return "mappin";case "stale":return "clock";default:return nil}
 }
@@ -1027,7 +1035,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         }
         if kind=="home-presence" {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
-            view.image=UIImage(named:"Letm3goHome") ?? UIImage(systemName:"house.fill")
+            view.image=homeMarkerArtwork() ?? UIImage(systemName:"house.fill")
             view.centerOffset=CGPoint(x:0,y:-18)
             view.canShowCallout=true
             return view
@@ -1115,7 +1123,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             marker.glyphImage=UIImage(systemName:"photo")
         } else if kind=="home-presence" {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
-            view.image=UIImage(named:"Letm3goHome") ?? UIImage(systemName:"house.fill")
+            view.image=homeMarkerArtwork() ?? UIImage(systemName:"house.fill")
             view.centerOffset=CGPoint(x:0,y:-18)
             view.canShowCallout=true
             return view
