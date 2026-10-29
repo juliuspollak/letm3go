@@ -41,6 +41,8 @@ export const appleMaps={snapshot:options=>native.snapshot(options),open:options=
 // the bridge once per key; every embed afterwards names the key only. The native
 // side keeps the last few keys, more than this side remembers.
 const sentOverviews=new Map();
+// Forget that a key was sent (the native side reported it missing, or a retry).
+export function forgetOverview(key){sentOverviews.delete(key);}
 export function sendOverview(data){
  if(!data?.key||!appleMapsAvailable())return Promise.resolve();
  if(!sentOverviews.has(data.key)){

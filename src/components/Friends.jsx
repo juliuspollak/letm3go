@@ -15,7 +15,9 @@ import {Copy,House,MessageCircle,Share2,UserMinus,UserPlus,X} from 'lucide-react
 //
 // `locations` maps a friend's user id to their location state (from the friend
 // location rows). A friend without a row has no recent position; that is never
-// shown as "sharing off", because this viewer cannot know it.
+// shown as "sharing off", because this viewer cannot know it. `self.state` is
+// what friends actually received from you (live, stale or waiting), never just
+// the sharing setting.
 export default function Friends({personPhotos={},selfId=null,selfAvatar=null,selfName='You',self=null,sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  const [friends,setFriends]=useState([]),[invite,setInvite]=useState(''),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
@@ -29,7 +31,7 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,sel
  async function copyInvite(){if(!invite)return;setError('');try{await navigator.clipboard.writeText(inviteText);setFeedback('Invitation copied. Paste it into a message.');}catch{setError('Could not copy automatically. Select the invitation code below to copy it.');}}
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
  const closeAdding=()=>setAdding(false);
- const you={id:'self',userId:selfId,name:selfName,self:true,status:selfStatus({enabled:Boolean(sharing?.enabled),state:sharing?.error?'waiting':'live',home:self?.home,activity:self?.activity,permission,precise})};
+ const you={id:'self',userId:selfId,name:selfName,self:true,status:selfStatus({enabled:Boolean(sharing?.enabled),state:self?.state,ageSeconds:self?.ageSeconds,home:self?.home,activity:self?.activity,permission,precise})};
  const people=[you,...friends.map(f=>{
   const location=locations[f.user_id]||null;
   return {id:f.user_id,userId:f.user_id,name:f.display_name,status:personStatus(location||{state:'unknown'}),onSelect:location?.position&&onShowPerson?()=>onShowPerson(location.position,f.user_id):null};

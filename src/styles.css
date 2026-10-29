@@ -851,3 +851,5 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 @media(prefers-reduced-motion:reduce){.switch,.switch-thumb,.grouped-chevron,.social-action{transition:none!important}.social-action:active{transform:none}}
 @media(max-width:760px){.social-screen{padding:16px;border-radius:18px}.people-grid{grid-template-columns:repeat(auto-fill,minmax(78px,1fr))}}
 @media(max-width:350px){.social-actions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.map-overview-error{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}
+.map-overview-error .text-button,.map-page .notice .text-button{min-height:44px;font-size:13px;font-weight:650;color:var(--accent)}

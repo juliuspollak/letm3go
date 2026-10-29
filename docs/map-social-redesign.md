@@ -63,10 +63,37 @@ The algorithm is `src/lib/routeDensity.js`, tested in `routeDensity.test.js`.
 
 **Performance**
 
-- Per-journey edges are cached by id, start time and point count, so changing a filter recomputes only the counts.
+- Per-journey edges are cached by id, start time and a hash of the route content (`routeSignature`).
+  - The hash is computed once per route array, so re-renders cost nothing.
+  - A moved point, a trim or any other route edit always produces new edges and new highlight geometry. Counting points alone would miss an edit that keeps the same number of points.
+- Invalid samples (missing, NaN, out of range, 0,0) end a stretch. The valid points on either side are never joined across one, nor across separate recorded segments. Sparse but valid recordings (fixes up to 2 km apart) stay continuous.
+- Cells and edges are numeric keys. Chains continue through junctions, so a dense network becomes a few long lines.
+- The calculation runs in a Web Worker (`useMapOverview`, `mapOverview.worker.js`).
+  - Routes cross to it as one transferable `Float64Array`.
+  - One calculation runs at a time; during rapid filter changes only the latest request waits.
+  - The map never shows the previous filter's routes while the new ones are prepared ("Drawing routes…").
+  - The last four results are reused by key.
+  - Without worker support the calculation runs directly, outside render.
 - Processing is capped at 400,000 route points, newest journeys first.
 - When older journeys do not fit, the map says so: "Route density from your N most recent of M journeys". Otherwise every eligible journey is included; the old cap of 50 does not apply to the overview.
 - The overview data (density, photo pins, highlight routes) crosses the bridge once per key (`setOverview`) and is parsed off the main thread. Every later embed (every location update, every scroll) sends only the key.
+  - `setOverview` returns its parse time and overlay, line and photo counts.
+  - If the transfer fails, the embed leaves the overview out and the map shows "Routes could not be drawn on the map" with Retry. It is never an empty heatmap.
+  - If the native side reports a key it no longer holds (`missingOverview`), the data is sent again once, then the failure is reported.
+  - A map keeps the overview it shows even if the shared native store has let it go. Looking a key up marks it in use, so it is not evicted.
+- Measured on desktop Node.js (synthetic 300 journeys, 390,000 points; a phone will be slower):
+
+  | | Before | After |
+  |---|---|---|
+  | First calculation | 2.4 s, in render on the main thread | 1.2 s, in the worker |
+  | Main-thread work per change | 0.6 s | about 30 ms to pack, 2 ms to key |
+  | Recalculation after a filter change | 0.2–0.6 s | 0.1–0.2 s, in the worker |
+  | Payload to Swift | 2.7 MB | 1.7 MB (density 1.0 MB, highlight routes 0.7 MB) |
+  | 100 m lines | 20,470 | 5,056 |
+  | Worker heap | | about 60 MB |
+
+  For this dataset the 25 m grid exceeds 60,000 edges and is dropped, so street zoom shows the 100 m grid.
+- Not measured: native rendering time, and bridge time on a device.
 - The native map shows one zoom band at a time (`DensityLevels.choose`: the finest grid whose cells are at least 2.5 pt wide). A zoom change swaps at most five overlays.
 - Colours run from the app accent, thin and translucent, through violet to a warm coral-orange for the most travelled paths. They work on standard, dark and satellite maps.
 

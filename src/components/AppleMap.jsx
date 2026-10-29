@@ -1,6 +1,6 @@
 import { Maximize2, Navigation } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { appleMaps, appleMapsAvailable, sendOverview } from '../lib/appleMaps.js';
+import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
 import { MapLayersButton } from './MapLayers.jsx';
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
@@ -23,6 +23,11 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // While a sheet or the photo viewer is open the native map is hidden (never
  // removed, so its camera and selection survive) and this still image stands in.
  const [frozen,setFrozen]=useState(null);
+ // The overview could not reach the native map. The map still shows everything
+ // else; the routes are never silently missing: a notice offers a retry.
+ const [overviewFailed,setOverviewFailed]=useState(null);
+ const [overviewAttempt,setOverviewAttempt]=useState(0);
+ const resent=useRef(new Set());
  const [projection,setProjection]=useState([]);
  const [themeVersion,setThemeVersion]=useState(0);
  useEffect(()=>{const changed=()=>setThemeVersion(v=>v+1);window.addEventListener('letm3go:theme-changed',changed);return()=>window.removeEventListener('letm3go:theme-changed',changed);},[]);
@@ -79,7 +84,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   if(!embeddedEnabled){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;return;}
   let active=true;let previous='';
   // The overview data must reach the native side before a payload names it.
-  const ready=overviewKey?sendOverview(overviewData.current).catch(()=>{}):Promise.resolve();
+  // false: the overview did not arrive, so it is left out of this embed rather
+  // than named and drawn empty.
+  const ready=overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true);
   const content=JSON.parse(interactiveData);
   const positions=content.routes.some(route=>route.length)||content.pins.length>0;
   const focus=Boolean(content.focus);
@@ -108,7 +115,26 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    if(geometry===previous)return;
    const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus);previous=geometry;
    frozenHeight.current=visibleHeight;
-   void ready.then(()=>appleMaps.embed({...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport})).then(()=>{embeddedOnce.current=true;fittedViewport.current=viewportKey;fittedContent.current={positions,focus};if(active){setEmbedded(true);setFrozen(null);}}).catch(()=>{previous='';if(active)setEmbedded(false);});
+   void ready.then(arrived=>{
+    // A newer payload (filter change, unmount) supersedes this one.
+    if(!active)return null;
+    const request={...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport};
+    if(!arrived)delete request.overview;
+    return appleMaps.embed(request).then(result=>({arrived,result}));
+   }).then(outcome=>{
+    if(!outcome||!active)return;
+    embeddedOnce.current=true;fittedViewport.current=viewportKey;fittedContent.current={positions,focus};
+    setEmbedded(true);setFrozen(null);
+    // The native side no longer has this overview (it keeps a few): send it
+    // again once, then report it.
+    if(outcome.result?.missingOverview&&overviewKey){
+     forgetOverview(overviewKey);
+     if(!resent.current.has(overviewKey)){resent.current.add(overviewKey);previous='';setOverviewAttempt(value=>value+1);return;}
+    }
+    setOverviewFailed(overviewKey&&(!outcome.arrived||outcome.result?.missingOverview)?overviewKey:null);
+    // A sheet may have opened while this embed was in flight.
+    mount();
+   }).catch(()=>{previous='';if(active){setEmbedded(false);setFrozen(null);}});
   };
   // The detail page animates into place; ResizeObserver alone does not see
   // transforms. Follow its initial movement before leaving layout to observers.
@@ -123,13 +149,13 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   window.addEventListener('scroll',resized,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
- },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey]);
+ },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
  const endIndex=trimRange&&projected.length>1?Math.max(startIndex+1,Math.min(projected.length-1,Math.round(trimRange.end/(trimRange.points.length-1)*(projected.length-1)))):0;
  const selected=trimRange&&projected.length>1?projected.slice(startIndex,endIndex+1):[];
- useEffect(()=>{let alive=true;if(!appleMapsAvailable())return;(overviewKey?sendOverview(overviewData.current).catch(()=>{}):Promise.resolve()).then(()=>appleMaps.snapshot({...JSON.parse(data),trimPreview:isTrimPreview,width:700,height:large?600:350})).then(result=>{if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[data,large,themeVersion,isTrimPreview,overviewKey]);
+ useEffect(()=>{let alive=true;if(!appleMapsAvailable())return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...JSON.parse(data),trimPreview:isTrimPreview,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[data,large,themeVersion,isTrimPreview,overviewKey,overviewAttempt]);
  async function open(){
   if(busy)return;
   setBusy(true);setError('');
@@ -139,8 +165,10 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    // overlays the Capacitor WebView. Release that view before presenting.
    await appleMaps.unembed({mapID}).catch(()=>{});
    setEmbedded(false);
-   if(overviewKey)await sendOverview(overviewData.current);
-   const result=await appleMaps.open({...JSON.parse(interactiveData),picker,mapID});
+   const arrived=overviewKey?await sendOverview(overviewData.current).then(()=>true,()=>false):true;
+   const request={...JSON.parse(interactiveData),picker,mapID};
+   if(!arrived){delete request.overview;setOverviewFailed(overviewKey);}
+   const result=await appleMaps.open(request);
    latest.current?.(result);
   }catch{
    setError('The interactive map could not open. The route preview remains available; please retry.');
@@ -151,5 +179,5 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    setReopenVersion(v=>v+1);
   }
  }
- return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{onLayers&&!embedded&&<MapLayersButton active={layersActive} onClick={onLayers}/>}{onLocate&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{error&&<p role="status" className="notice">{error}</p>}</div>;
+ return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{onLayers&&!embedded&&<MapLayersButton active={layersActive} onClick={onLayers}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{error&&<p role="status" className="notice">{error}</p>}</div>;
 }

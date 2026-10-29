@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {DENSITY_CELLS,densityBucket,densityKey,journeyEdges,routeDensity} from './routeDensity.js';
+import {DENSITY_CELLS,densityBucket,densityKey,edgePoints,journeyEdges,routeDensity,routeSignature} from './routeDensity.js';
 import {highlightRoutes,mapOverview,overviewPhotos} from './mapOverview.js';
 import {mapPayload} from './appleMaps.js';
 
@@ -53,13 +53,11 @@ describe('route density',()=>{
  });
  it('never draws a straight line across a GPS gap',()=>{
   const gap=[[-33.86,151.2],[-33.861,151.2],[-34.2,151.2],[-34.201,151.2]];
-  const edges=[...journeyEdges([gap],25)];
-  const rows=edges.flatMap(edge=>edge.split('|').map(cell=>Number(cell.split(':')[0])));
+  const lats=[...journeyEdges([gap],25)].flatMap(edge=>edgePoints(edge,25).map(p=>p[0]));
   // Both 110 m halves are drawn; nothing in the 37 km between them.
-  const row=lat=>Math.floor(lat/(25/111320));
-  expect(rows.length).toBeGreaterThan(0);
-  expect(rows.filter(r=>r<row(-33.87)&&r>row(-34.19))).toEqual([]);
-  expect(rows).toContain(row(-34.2));
+  expect(lats.some(lat=>lat>-33.862)).toBe(true);
+  expect(lats.some(lat=>lat<-34.199)).toBe(true);
+  expect(lats.filter(lat=>lat<-33.87&&lat>-34.19)).toEqual([]);
  });
  it('handles empty routes, missing and invalid points without inventing anything',()=>{
   const density=routeDensity([{id:'empty'},journey('nulls',[[NaN,1],[0,0],[200,1],null,[1]]),journey('single',[[-33.86,151.2]])]);
@@ -110,7 +108,7 @@ describe('overview photos and highlight routes',()=>{
   const photos=overviewPhotos([trip,noRoute]);
   const routes=highlightRoutes([trip,noRoute],photos);
   expect(Object.keys(routes)).toEqual(['trip-1']);
-  expect(routes['trip-1']).toEqual([street()]);
+  expect(routes['trip-1']).toEqual([street().map(([lat,lon])=>[Math.round(lat*1e5)/1e5,Math.round(lon*1e5)/1e5])]);
  });
  it('changes its key when a journey is renamed or gets a photo',()=>{
   const key=mapOverview([trip]).key;
@@ -125,5 +123,65 @@ describe('overview photos and highlight routes',()=>{
   const detail=mapPayload([trip]);
   expect(detail.pins.map(p=>p.kind)).toEqual(['start','finish','photo','photo']);
   expect(detail.routes).toHaveLength(1);
+ });
+});
+
+describe('cache invalidation',()=>{
+ const photos=[{id:'p',point:[-33.86,151.2]}];
+ it('never reuses edges or highlight geometry when points move but their count does not',()=>{
+  const before={id:'j',startedAt:1,routeSegments:[street()],photos};
+  const after={id:'j',startedAt:1,routeSegments:[street(0,0.00018,40,151.3)],photos};
+  expect(densityKey([after])).not.toBe(densityKey([before]));
+  expect(routeDensity([after]).levels[0]).not.toEqual(routeDensity([before]).levels[0]);
+  const first=mapOverview([before]),second=mapOverview([after]);
+  expect(second.key).not.toBe(first.key);
+  expect(second.routes.j[0][0][1]).toBeCloseTo(151.3,4);
+ });
+ it('notices a single moved point, and a trimmed (visible range) change',()=>{
+  const route=street();
+  const moved=route.map((p,i)=>i===20?[p[0],p[1]+0.001]:p);
+  expect(routeSignature({routeSegments:[moved]})).not.toBe(routeSignature({routeSegments:[route]}));
+  expect(routeSignature({routeSegments:[route.slice(1)]})).not.toBe(routeSignature({routeSegments:[route]}));
+  // The same route content gives the same key, so nothing is resent.
+  expect(routeSignature({routeSegments:[route.map(p=>[...p])]})).toBe(routeSignature({routeSegments:[route]}));
+ });
+ it('hashes a route once per route array, not on every render',()=>{
+  const segments=[street()];
+  const journey={id:'j',routeSegments:segments};
+  const first=routeSignature(journey);
+  segments[0][3]=[0,0]; // mutation is not how journeys change; the cached value stands
+  expect(routeSignature(journey)).toBe(first);
+ });
+});
+
+describe('invalid samples and gaps',()=>{
+ const A=[-33.86,151.2],B=[-33.8605,151.2],C=[-33.8695,151.2],D=[-33.87,151.2];
+ const lats=(segments,size=25)=>[...journeyEdges(segments,size)].flatMap(edge=>edgePoints(edge,size).map(p=>p[0]));
+ for(const [name,bad] of [['NaN',[NaN,151.2]],['null',null],['missing longitude',[-33.865]],['0,0',[0,0]],['out of range',[-133,151.2]],['strings',['x','y']]]){
+  it(`never joins valid points across a ${name} sample`,()=>{
+   const crossed=lats([[A,B,bad,C,D]]);
+   // Both short stretches are kept; nothing between them is invented.
+   expect(crossed.some(lat=>lat>-33.8606)).toBe(true);
+   expect(crossed.some(lat=>lat<-33.8694)).toBe(true);
+   expect(crossed.filter(lat=>lat<-33.8612&&lat>-33.8688)).toEqual([]);
+  });
+ }
+ it('never joins separate recorded segments',()=>{
+  const separate=lats([[A,B],[C,D]]);
+  expect(separate.filter(lat=>lat<-33.8612&&lat>-33.8688)).toEqual([]);
+ });
+ it('keeps a legitimately sparse recording continuous',()=>{
+  // A drive sampled every ~1.1 km (fast, infrequent fixes) is one line.
+  const sparse=Array.from({length:6},(_,i)=>[-33.86-i*0.01,151.2]);
+  const density=routeDensity([{id:'drive',routeSegments:[sparse]}]);
+  const line=density.levels.find(l=>l.cell===100).buckets.flatMap(b=>b.lines);
+  expect(line).toHaveLength(1);
+  expect(Math.abs(line[0][0][0]-line[0].at(-1)[0])).toBeGreaterThan(0.049);
+ });
+ it('highlights a route only where it was valid',()=>{
+  const trip={id:'t',routeSegments:[[A,B,null,C,D]],photos:[{id:'p',point:A}]};
+  expect(highlightRoutes([trip],overviewPhotos([trip])).t).toEqual([[A,B],[C,D]]);
+  const lonely={id:'u',routeSegments:[[A,null,D]],photos:[{id:'q',point:A}]};
+  expect(highlightRoutes([lonely],overviewPhotos([lonely]))).toEqual({});
  });
 });

@@ -148,3 +148,40 @@ describe('Household',()=>{
   expect(within(sheet).getAllByText('Organiser').length).toBeGreaterThan(0);
  });
 });
+
+describe('sharing setting versus delivery',()=>{
+ const you=()=>screen.getByRole('img',{name:'Julius avatar'}).closest('.person-tile');
+ const friends=(props)=><Friends selfName="Julius" selfId="me" sharing={{enabled:true,ready:true,onChange:vi.fn()}} {...props}/>;
+ it('does not call the setting alone "Sharing": it needs a position friends received',async()=>{
+  const {rerender}=render(friends({self:{state:'waiting'}}));
+  expect(within(you()).getByText('Sharing · waiting to send')).toBeInTheDocument();
+  rerender(friends({self:{state:'live',ageSeconds:20}}));
+  expect(within(you()).getByText('Sharing')).toBeInTheDocument();
+  rerender(friends({self:{state:'stale',ageSeconds:1500}}));
+  expect(within(you()).getByText('Last sent 25 min ago')).toBeInTheDocument();
+  rerender(friends({self:{state:'live',ageSeconds:20},sharing:{enabled:false,ready:true,onChange:vi.fn()}}));
+  expect(within(you()).getByText('Not sharing')).toBeInTheDocument();
+  // The switch itself still shows the confirmed setting.
+  expect(screen.getByRole('switch',{name:'Share my location with friends'})).toHaveAttribute('aria-checked','false');
+  await screen.findByText(/No friends yet/);
+ });
+ it('flags denied or imprecise location while sharing is on, and clears it once iOS settings change',async()=>{
+  const {rerender}=render(friends({self:{state:'live'},permission:'denied'}));
+  expect(within(you()).getByText('Location access needed')).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Turn on Location and Precise Location');
+  rerender(friends({self:{state:'live'},permission:'always',precise:false}));
+  expect(within(you()).getByText('Location access needed')).toBeInTheDocument();
+  // Returning from iOS Settings with access restored (the recorder state refreshes on resume).
+  rerender(friends({self:{state:'live'},permission:'always',precise:true}));
+  expect(screen.queryByRole('status')).toBeNull();
+  expect(within(you()).getByText('Sharing')).toBeInTheDocument();
+  rerender(friends({self:{state:'live'},permission:'whenInUse',precise:true}));
+  expect(screen.getByRole('status')).toHaveTextContent('Set Location to Always');
+  await screen.findByText(/No friends yet/);
+ });
+ it('keeps the household self status on confirmed sends as well',async()=>{
+  render(<Household selfId="me" liveEnabled selfLocation={{state:'waiting'}}/>);
+  const tile=(await screen.findByRole('img',{name:'Julius avatar'})).closest('.person-tile');
+  expect(within(tile).getByText('Sharing · waiting to send')).toBeInTheDocument();
+ });
+});

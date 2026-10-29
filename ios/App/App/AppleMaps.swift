@@ -94,6 +94,13 @@ private final class OverviewData {
 }
 private var overviewStore:[String:OverviewData]=[:]
 private var overviewOrder:[String]=[]
+// Looking an overview up marks it in use, so the overview a map is showing is
+// never the one evicted when newer filters are sent.
+private func overviewData(_ key:String)->OverviewData? {
+    guard let data=overviewStore[key] else {return nil}
+    overviewOrder.removeAll{$0==key};overviewOrder.append(key)
+    return data
+}
 private func storeOverview(_ data:OverviewData) {
     overviewStore[data.key]=data
     overviewOrder.removeAll{$0==data.key};overviewOrder.append(data.key)
@@ -553,7 +560,7 @@ private struct MapContent {
     let focus:CLLocationCoordinate2D?
     let camera:CameraIntent?
     // The Map overview's density and photos (sent earlier under this key).
-    let overview:OverviewData?
+    var overview:OverviewData?
     // The number of active layers when the map shows the Map layers button.
     let layersActive:Int?
     init(_ options:[AnyHashable:Any]) {
@@ -562,7 +569,7 @@ private struct MapContent {
         gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
         camera=CameraIntent(options["camera"])
-        overview=(options["overview"] as? String).flatMap{overviewStore[$0]}
+        overview=(options["overview"] as? String).flatMap{overviewData($0)}
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
@@ -668,6 +675,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var photoPins:[String:JourneyPin]=[:]
     private var highlight:[HighlightLine]=[]
     private(set) var selectedPhoto:JourneyPin?
+    // What MapKit has selected for the preview: the photo itself, or the cluster
+    // it was opened from. A tap on the bare map deselects it, which closes the
+    // preview either way.
+    private var selectedMarker:MKAnnotation?
     private(set) var densityDimmed=false
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
@@ -784,9 +795,9 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
     // First tap on a photo: highlight exactly its journey (when its route is
     // known; nothing is invented otherwise), dim the density and preview it.
-    func select(photo pin:JourneyPin) {
+    func select(photo pin:JourneyPin,from marker:MKAnnotation?=nil) {
         guard let map=map,pin.isOverviewPhoto else {return}
-        selectedPhoto=pin
+        selectedPhoto=pin;selectedMarker=marker ?? pin
         map.removeOverlays(highlight);highlight=[]
         let journeyID=pin.metadata["journeyID"] as? String ?? ""
         var rect=MKMapRect.null
@@ -810,29 +821,30 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     // MapKit deselects on a tap on the bare map. Selecting another photo also
     // deselects first, so wait a turn before treating it as a dismissal.
     func deselected(_ annotation:MKAnnotation?) {
-        guard let pin=annotation as? JourneyPin,pin===selectedPhoto else {return}
+        guard let marker=annotation,marker===selectedMarker else {return}
         DispatchQueue.main.async { [weak self] in
-            guard let self=self,self.selectedPhoto===pin,self.map?.selectedAnnotations.contains(where:{$0===pin}) != true else {return}
+            guard let self=self,self.selectedMarker===marker,self.map?.selectedAnnotations.contains(where:{$0===marker}) != true else {return}
             self.clearSelection(animated:true)
         }
     }
     // A cluster zooms in to its photos; photos too close to separate preview the first.
     func open(cluster:MKClusterAnnotation) {
         guard let map=map else {return}
-        map.deselectAnnotation(cluster,animated:false)
         let members=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}
-        guard let first=members.first else {return}
+        guard let first=members.first else {map.deselectAnnotation(cluster,animated:false);return}
         var rect=MKMapRect.null
         for member in members {let p=MKMapPoint(member.coordinate);rect=rect.union(MKMapRect(x:p.x,y:p.y,width:1,height:1))}
         let spread=max(rect.width,rect.height)/MKMapPointsPerMeterAtLatitude(first.coordinate.latitude)
-        if spread<40 || map.camera.centerCoordinateDistance<500 {select(photo:first);return}
+        // The cluster stays selected while its first photo is previewed.
+        if spread<40 || map.camera.centerCoordinateDistance<500 {select(photo:first,from:cluster);return}
+        map.deselectAnnotation(cluster,animated:false)
         if isPeopleMap,planner.userMoved() {modeChanged()}
         map.setVisibleMapRect(rect,edgePadding:UIEdgeInsets(top:80,left:60,bottom:80,right:60),animated:!UIAccessibility.isReduceMotionEnabled)
     }
     func clearSelection(animated:Bool) {
         guard selectedPhoto != nil || card != nil || !highlight.isEmpty else {return}
-        if let pin=selectedPhoto {map?.deselectAnnotation(pin,animated:animated)}
-        selectedPhoto=nil
+        if let marker=selectedMarker {map?.deselectAnnotation(marker,animated:animated)}
+        selectedPhoto=nil;selectedMarker=nil
         map?.removeOverlays(highlight);highlight=[]
         setDensityDimmed(false)
         hideCard(animated:animated)
@@ -1150,7 +1162,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
         ([recenter,chip,compass,card,layersButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
         recenter=nil;chip=nil;compass=nil;card=nil;layersButton=nil
-        selectedPhoto=nil;highlight=[]
+        selectedPhoto=nil;selectedMarker=nil;highlight=[]
         onModeChange=nil;onPhotoAction=nil;onLayers=nil
     }
 }
@@ -1170,8 +1182,13 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func setOverview(_ call:CAPPluginCall) {
         let options=call.options ?? [:]
         DispatchQueue.global(qos:.userInitiated).async {
+            let started=CFAbsoluteTimeGetCurrent()
             guard let data=OverviewData(options) else {call.reject("Map overview unavailable");return}
-            DispatchQueue.main.async {storeOverview(data);call.resolve()}
+            // Reported for diagnostics: how long parsing took and what was built.
+            let stats:[String:Any]=["parseMs":Int((CFAbsoluteTimeGetCurrent()-started)*1000),"levels":data.levels.count,
+                "overlays":data.levels.reduce(0){$0+$1.count},"lines":data.levels.reduce(0){$0+$1.reduce(0){$0+$1.polylines.count}},
+                "photos":data.photos.count,"highlightRoutes":data.routes.count]
+            DispatchQueue.main.async {storeOverview(data);call.resolve(stats)}
         }
     }
     // MapKit draws above the web view, so a web sheet over the map would be
@@ -1352,9 +1369,16 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                   let x=call.getDouble("x"),let y=call.getDouble("y"),
                   let width=call.getDouble("width"),let height=call.getDouble("height"),
                   width>80,height>80 else {call.reject("Map layout unavailable");return}
-            let content=MapContent(call.options)
+            var content=MapContent(call.options)
             let scroll=webView.scrollView
             let previousContent=self.embeddedContent[id]
+            // The overview this map already shows stays valid for its key even if
+            // the shared store has since let it go. Anything else that is named but
+            // not here is reported, so the web layer resends it instead of the map
+            // silently showing no routes.
+            let requestedOverview=call.getString("overview")
+            if content.overview==nil,let key=requestedOverview,let kept=previousContent?.overview,kept.key==key {content.overview=kept}
+            let missingOverview=requestedOverview != nil && content.overview==nil
             self.embeddedContent[id]=content
             let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
             map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
@@ -1424,7 +1448,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:false)
                 }
             }
-            call.resolve()
+            call.resolve(missingOverview ? ["missingOverview":true] : [:])
         }
     }
     @objc func unembed(_ call:CAPPluginCall) {

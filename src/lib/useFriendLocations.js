@@ -10,6 +10,9 @@ export function useFriendLocations(owner,online){
  // True once the server has answered, so the switch never shows Off before the
  // real setting is known. Display only; sharing itself is unchanged.
  const [ready,setReady]=useState(false);
+ // When a position was last accepted by the server from this app, so the UI
+ // never treats the sharing setting alone as live delivery. Display only.
+ const [lastSentAt,setLastSentAt]=useState(0);
  const refresh=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
   try{
@@ -25,7 +28,7 @@ export function useFriendLocations(owner,online){
    const fix=await recorder.currentPosition();
    if(!Number.isFinite(fix?.latitude)||!Number.isFinite(fix?.longitude)||!Number.isFinite(fix?.accuracy)||fix.accuracy>100||Math.abs(Date.now()/1000-fix.timestamp)>30)return;
    const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy});
-   if(e)throw e;setError('');
+   if(e)throw e;setError('');setLastSentAt(Date.now());
   }catch{setError('Could not update friend location. Check location permission and connection.');}
  },[enabled,online]);
  useEffect(()=>{if(!enabled||!online)return;const initial=setTimeout(()=>void send(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void send();},30000);const visible=()=>{if(document.visibilityState==='visible')void send();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[enabled,online,send]);
@@ -57,8 +60,9 @@ export function useFriendLocations(owner,online){
   if(!supabase||!online)throw Error('Connect to change friend sharing.');
   if(next){const fix=await sharedPosition();
    const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy});if(e)throw e;
-  } else {const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:false});if(e)throw e;}
+   setLastSentAt(Date.now());
+  } else {const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:false});if(e)throw e;setLastSentAt(0);}
   setEnabled(next);await refresh();
  };
- return {people,enabled,ready,error,setSharing,refresh};
+ return {people,enabled,ready,lastSentAt,error,setSharing,refresh};
 }

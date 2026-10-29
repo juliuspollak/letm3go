@@ -4,7 +4,7 @@
 // each journey that has photos, so selecting a photo can highlight exactly that
 // journey without another round trip.
 import {displaySegments} from './mapGeometry.js';
-import {densityKey,routeDensity} from './routeDensity.js';
+import {densityKey,routeDensity,validRuns} from './routeDensity.js';
 import {distanceText} from './distanceUnits.js';
 
 export const OVERVIEW_PHOTO_LIMIT=3000;
@@ -36,26 +36,43 @@ export function overviewPhotos(journeys,unit='km'){
  return photos;
 }
 
-// The exact (display-simplified) route of each journey with a photo. A journey
-// without at least two valid points is left out: its photo still opens a
-// preview, but no route is invented for it.
+// The exact (display-simplified) route of each journey with a photo, split at
+// invalid samples. A journey without at least two valid points in a row is left
+// out: its photo still opens a preview, but no route is invented for it.
 export function highlightRoutes(journeys,photos){
  const wanted=new Set(photos.map(p=>p.journeyID));
  const routes={};
  for(const journey of journeys){
   const id=String(journey.id);
   if(!wanted.has(id))continue;
-  const segments=displaySegments(journey,HIGHLIGHT_POINTS).map(s=>s.filter(valid)).filter(s=>s.length>1);
+  // About a metre of precision is plenty for a highlighted line and halves the
+  // data sent to the native map.
+  const segments=validRuns(displaySegments(journey,HIGHLIGHT_POINTS)).map(run=>run.map(p=>[Math.round(p[0]*1e5)/1e5,Math.round(p[1]*1e5)/1e5]));
   if(segments.length)routes[id]=segments;
  }
  return routes;
 }
 
+// The key covers every journey's route content (routeSignature), titles,
+// distances and photos, so any edit produces new data for the native map.
+export function overviewKey(journeys,unit='km'){
+ const extra=`${unit}|${journeys.map(j=>`${j.id}:${j.title||''}:${j.activity||''}:${j.distance||j.distanceMeters||''}:${(j.photos||[]).map(p=>`${p.id}/${p.caption||''}/${p.point}`).join(';')}`).sort().join(',')}`;
+ return densityKey(journeys,extra);
+}
+
+// The last few overviews, by key: switching filters back and forth reuses them.
+const results=new Map();
 export function mapOverview(journeys,{unit='km'}={}){
+ const key=overviewKey(journeys,unit);
+ const cached=results.get(key);
+ if(cached)return cached;
+ const started=typeof performance!=='undefined'?performance.now():Date.now();
  const photos=overviewPhotos(journeys,unit);
  const density=routeDensity(journeys);
- // Titles and photos are part of the key, so a renamed journey or a new photo
- // reaches the preview card.
- const extra=`${unit}|${photos.map(p=>`${p.photoID}:${p.journeyID}:${p.title}:${p.journeyTitle}:${p.journeyDistance||''}`).join(',')}`;
- return {key:densityKey(journeys,extra),...density,photos,routes:highlightRoutes(journeys,photos)};
+ const overview={key,...density,photos,routes:highlightRoutes(journeys,photos)};
+ overview.stats={ms:Math.round((typeof performance!=='undefined'?performance.now():Date.now())-started),points:density.points,
+  lines:density.levels.reduce((n,l)=>n+l.buckets.reduce((k,b)=>k+b.lines.length,0),0)};
+ results.set(key,overview);
+ while(results.size>4)results.delete(results.keys().next().value);
+ return overview;
 }
