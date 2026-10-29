@@ -226,6 +226,11 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
 }
 
 extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
+    // Internal: the adaptive location engine for controlled evaluation.
+    @objc func setAdaptiveLocation(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        do { try LocationRecorder.shared.setAdaptive(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
     @objc func setAutomatic(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setAutomatic(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }

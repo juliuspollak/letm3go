@@ -3,6 +3,19 @@ import { trailLinkPayload, trailSummary } from './mtbLink.js';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 const native = registerPlugin('ManualRecorder');
 export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
+// One position for every foreground caller. Household sharing, friend sharing
+// and the map each ask for a fix every 30 seconds while the app is open; one
+// native request now serves concurrent callers, and a fix up to 20 seconds old is
+// reused, so the publishers never trigger separate precise requests. Only real
+// Core Location fixes are returned, with their own timestamps.
+export const POSITION_REUSE_SECONDS=20;
+let pendingPosition=null,lastPosition=null;
+export function sharedCurrentPosition(nowSeconds=Date.now()/1000){
+ if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=POSITION_REUSE_SECONDS&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
+ if(!pendingPosition)pendingPosition=native.currentPosition().then(fix=>{lastPosition=fix;return fix;}).finally(()=>{pendingPosition=null;});
+ return pendingPosition;
+}
+export function forgetSharedPosition(){lastPosition=null;}
 export const emptyRecorder = { active:null, trips:[], permission:'unavailable', automaticEnabled:false, automaticAvailable:false, automaticState:'idle', automaticSettledTripID:null, places:[], deletedIDs:[], backgroundEnabled:false, accuracy:null, version:'1.0', build:'web', error:'', recovery:'', storageReady:false };
 export const recorder = {
  trackingReport:params=>native.trackingReport(params),
@@ -21,7 +34,9 @@ export const recorder = {
  setAutomatic:enabled=>native.setAutomatic({enabled}),
  savePlace:place=>native.savePlace(place),
  removePlace:id=>native.removePlace({id}),
- currentPosition:()=>native.currentPosition(),
+ currentPosition:()=>sharedCurrentPosition(),
+ // Internal: the adaptive location engine, for controlled evaluation.
+ setAdaptiveLocation:enabled=>native.setAdaptiveLocation({enabled}),
  searchAddress:query=>native.searchAddress({query}),
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
  editActivity:trip=>native.editActivity(trip),

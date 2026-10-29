@@ -66,7 +66,7 @@ extension LocationRecorder {
     }
     func refreshAutomaticMonitoring() {
         updateIndicatorPolicy()
-        guard storage != nil else { stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
+        guard storage != nil else { stopLiveUpdates(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once
         // held, it covers departures that begin with the phone locked.
         reconcileBackgroundSession("monitoring refresh")
@@ -77,6 +77,8 @@ extension LocationRecorder {
            manager.authorizationStatus == .authorizedAlways {
             // Low-power significant-change callbacks can wake a suspended app
             // without keeping continuous GPS active for family presence.
+            stopLiveUpdates(reason:"automatic tracking unavailable")
+            reconcilePlaceRegion(wanted:false)
             stopContinuousLocation()
             stopVisitMonitoring()
             startSignificantMonitoring()
@@ -94,6 +96,8 @@ extension LocationRecorder {
         } else {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
             automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off
+            stopLiveUpdates(reason:"automatic tracking unavailable");reconcilePlaceRegion(wanted:false)
+            adaptiveState = .off;adaptivePlan = .established
             if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
@@ -113,7 +117,7 @@ extension LocationRecorder {
             if active?.state != "recording" { stopContinuousLocation(reason:"Continuous GPS stopped: automatic tracking unavailable") }
         }
     }
-    func beginAutomaticProbe(movementBegan:Bool = false) {
+    func beginAutomaticProbe(movementBegan:Bool = false, cause:String = "movement") {
         guard automaticAvailable,active == nil else { return }
         let now=Date().timeIntervalSince1970
         if automaticTrip == nil || settledAt != nil {
@@ -122,7 +126,11 @@ extension LocationRecorder {
             if wasIdle,!granted {
                 recordDiagnostic("decision",automaticSampling.probeStartedAt != nil ? "Departure probe blocked: this departure check has spent its time budget" : "Departure probe blocked by retry cooldown")
             }
-            if granted {trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")}
+            if granted {
+                trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")
+                // Departure latency is measured from here, for either engine.
+                if wasIdle, automaticTrip == nil { noteDepartureEvidence(cause, now:now) }
+            }
         }
         reconcileAutomaticSampling()
         if let end=automaticSampling.probeUntil,automaticProbeTimer == nil {
@@ -146,9 +154,16 @@ extension LocationRecorder {
             } else {
                 detector.reset()
                 automaticSampling.endEpisode(now:now)
+                departureLatency.reset()
                 trackingEvent(observing ? "Departure check budget spent; returning to location standby until the next movement" : "Departure check expired; returning to location standby")
             }
         }
+        // The adaptive engine (when switched on) may replace standby with
+        // low-power standby; it never changes a journey or a departure check.
+        let restingNow=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now) &&
+            !AutomaticDetector.credibleMovement(motion,now:now)
+        let established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow)
+        let adapted=reconcileAdaptive(now:now,mode:established)
         // A paused manual activity continues to take precedence over automation.
         if active != nil {locationMode = .off;return}
         // This is the single owner of the automatic recorder's GPS configuration.
@@ -159,18 +174,19 @@ extension LocationRecorder {
         // session, regions, visits and motion all keep running for the next departure.
         // Walking motion, even when it does not justify precise GPS, returns to the
         // 10 m standby so that a real departure shows up in the fixes.
-        let resting=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now) &&
-            !AutomaticDetector.credibleMovement(motion,now:now)
-        let mode=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:resting)
+        let mode=adapted
         if mode != locationMode {
             if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
-            else if locationMode == .resting { trackingEvent("Left Home rest: \(mode.rawValue) location") }
+            else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
+            else if locationMode == .resting || locationMode == .stationary { trackingEvent("Left \(locationMode == .stationary ? "low-power standby" : "Home rest"): \(mode.rawValue) location") }
             locationMode=mode
         }
         guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
             drivingMotion:motion.types.contains("Driving"),currentProfile:manager.activityType == .automotiveNavigation ? .automotive : .other) else {
-            departureEvidence.reset()
-            stopContinuousLocation()
+            // Low-power standby keeps its departure evidence: a later wake-up fix
+            // is compared with the last one.
+            if mode != .stationary { departureEvidence.reset() }
+            stopContinuousLocation(reason:mode == .stationary ? "Continuous GPS stopped: low-power standby" : "Continuous GPS stopped")
             return
         }
         applyLocationConfiguration(configuration)
@@ -198,9 +214,12 @@ extension LocationRecorder {
     func configurePlaceRegions() {
         // The continuation region belongs to the published stop, not to saved
         // places; rebuilding place regions must not remove its wake-up.
-        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") && region.identifier != Self.continuationRegionID { manager.stopMonitoring(for:region) }
+        // The adaptive engine's current-place region is managed separately.
+        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") && region.identifier != Self.continuationRegionID && region.identifier != Self.placeRegionID { manager.stopMonitoring(for:region) }
         guard CLLocationManager.isMonitoringAvailable(for:CLCircularRegion.self) else { return }
-        for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(18) {
+        // iOS monitors at most 20 regions: saved places, the last stop, the
+        // continuation region and, with the adaptive engine, the current place.
+        for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(adaptiveEnabled ? 17 : 18) {
             let region = CLCircularRegion(center:CLLocationCoordinate2D(latitude:place.latitude,longitude:place.longitude),radius:min(place.radius,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-\(place.id)")
             region.notifyOnEntry = true; region.notifyOnExit = true
             manager.startMonitoring(for:region)
@@ -364,6 +383,7 @@ extension LocationRecorder {
                     recordDiagnostic("detection",trip.details?.localWalkOrigin != nil ? "Possible walk from the current place; checking before recording" : "Automatic departure confirmed",
                         details:["firstFixAt":String(first.timestamp),"confirmationDelaySeconds":String(now-first.timestamp),"bufferedFixes":String(trip.points.count)].merging(dwell?.summary ?? [:]){a,_ in a})
                     trackingEvent("Automatic departure confirmed")
+                    noteDepartureConfirmed(firstFixAt:first.timestamp,now:now)
                     if trip.details?.localWalkOrigin == nil { setDwell(nil,reason:"a journey started") }
                     else { evaluatePendingWalk() }
                     // Keep the departure's buffered, genuine fixes and retain precise
@@ -1030,7 +1050,7 @@ extension LocationRecorder {
         // woken long after the window has passed.
         finishExpiredContinuation(now:Date().timeIntervalSince1970)
         trackingEvent("Place exit triggered departure check")
-        beginAutomaticProbe(movementBegan:true)
+        beginAutomaticProbe(movementBegan:true,cause:region.identifier == Self.placeRegionID ? "current place region exit" : "place region exit")
     }
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         noteExecution("regionEnter")
@@ -1062,6 +1082,6 @@ extension LocationRecorder {
         guard automaticAvailable, active == nil else { return }
         finishExpiredContinuation(now:now)
         trackingEvent("Visit departure triggered departure check")
-        beginAutomaticProbe(movementBegan:true)
+        beginAutomaticProbe(movementBegan:true,cause:"visit departure")
     }
 }

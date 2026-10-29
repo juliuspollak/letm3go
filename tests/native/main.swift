@@ -1875,6 +1875,115 @@ do {
     check(across.width <= 1000 + 1e-6, "a route just across the 180th meridian is reached by a short pan, not a world-wide zoom")
 }
 
+// MARK: Adaptive location engine: state machine, low-power wake-ups, loops and recovery
+do {
+    func inputs(_ now: Double, enabled: Bool = true, supported: Bool = true, available: Bool = true, manual: Bool = false,
+                journey: Bool = false, probing: Bool = false, continuation: Bool = false, settled: Bool = true,
+                movement: Bool = false, moving: Bool = false) -> AdaptiveInputs {
+        AdaptiveInputs(enabled: enabled, supported: supported, automaticAvailable: available, manualRecording: manual,
+                       journeyRecording: journey, probing: probing, continuationOpen: continuation, placeSettled: settled,
+                       recentMovement: movement, motionMoving: moving, now: now)
+    }
+    // 1, 2, 3, 20: settled anywhere (Home, an unsaved place, a shopping centre without
+    // Wi-Fi, no saved Home at all) is low-power standby; nothing else is needed.
+    var night = AdaptivePolicy(now: 0)
+    check(night.decide(inputs(0)) == .stationaryStandby, "a settled place goes straight to low-power standby")
+    check(night.plan(inputs(0)) == .lowPower, "low-power standby stops standard updates and uses liveUpdates and a place region")
+    for hour in 1...8 { check(night.decide(inputs(Double(hour) * 3600)) == .stationaryStandby, "an overnight stay at hour \(hour) stays in low-power standby") }
+    check(night.timeInState(now: 8 * 3600)["stationaryStandby"] == 8 * 3600, "eight hours are accounted as low-power standby")
+    check(night.wakesTotal == 0 && night.loopsBlocked == 0, "a still night has no wake-ups and no loops")
+    // Not yet settled (fewer than ten quiet minutes, no visit, no saved place): standard standby.
+    var arriving = AdaptivePolicy(now: 0)
+    check(arriving.decide(inputs(0, settled: false)) == .settling, "an unsettled stop keeps the established standby")
+    check(arriving.plan(inputs(0, settled: false)) == .established, "settling keeps standard updates running")
+    // One stationary callback is not enough: movement evidence of any kind keeps settling.
+    check(arriving.decide(inputs(700, movement: true)) == .settling, "recent GPS displacement prevents low-power standby")
+    check(arriving.decide(inputs(710, moving: true)) == .settling, "credible walking or driving prevents low-power standby")
+    check(arriving.decide(inputs(720)) == .stationaryStandby, "settled and still enters low-power standby")
+    // 19: manual recording and open journeys always use the established engine.
+    var manual = AdaptivePolicy(now: 0)
+    check(manual.decide(inputs(0, manual: true)) == .activeJourney && manual.plan(inputs(0, manual: true)) == .established, "manual recording is an active journey on the established engine")
+    check(manual.decide(inputs(10, available: false, manual: true)) == .activeJourney, "manual recording continues without automatic tracking")
+    check(manual.decide(inputs(20, journey: true)) == .activeJourney, "an open automatic journey is active")
+    // A stopped journey keeps the established watch so continuations are unchanged.
+    check(manual.decide(inputs(30, continuation: true)) == .settling, "a continuation window keeps the established standby")
+    // 14: permission withdrawn.
+    check(manual.decide(inputs(40, available: false)) == .off, "without automatic tracking or recording the engine is off")
+    // Switch off, or iOS 15/16: the established engine decides standby.
+    var legacy = AdaptivePolicy(now: 0)
+    check(legacy.decide(inputs(0, enabled: false)) == .stationaryStandby && legacy.plan(inputs(0, enabled: false)) == .established, "with the switch off settled standby stays on the established engine")
+    check(legacy.plan(inputs(0, supported: false)) == .established, "without liveUpdates (iOS 15/16) the established engine is used")
+
+    // 7, 8, 9: a wake-up starts a departure check; a departure becomes a journey.
+    var leave = AdaptivePolicy(now: 0)
+    _ = leave.decide(inputs(0))
+    leave.noteWake(now: 3600)
+    check(leave.decide(inputs(3600, probing: true)) == .departureProbe, "a wake-up runs a departure check on the established engine")
+    check(leave.plan(inputs(3600, probing: true)) == .established, "a departure check never uses low-power standby")
+    check(leave.decide(inputs(3700, journey: true)) == .activeJourney, "a confirmed departure records with precise GPS")
+    leave.noteJourneyStarted()
+    check(leave.recentWakes(3700).isEmpty, "a genuine departure is not counted towards the loop limit")
+    // 10: a check without a departure (returning to the same stop) settles again only after a short watch.
+    var back = AdaptivePolicy(now: 0)
+    _ = back.decide(inputs(0)); back.noteWake(now: 100)
+    _ = back.decide(inputs(100, probing: true))
+    check(back.decide(inputs(220)) == .settling, "after an unconfirmed check the established standby watches first")
+    check(back.decide(inputs(220 + AdaptivePolicy.settleAfterProbe)) == .stationaryStandby, "then low-power standby resumes")
+    // No indefinite probe loops: too many unconfirmed wake-ups keep the established standby for the hour.
+    var loop = AdaptivePolicy(now: 0)
+    var clock: Double = 0
+    for _ in 0..<AdaptivePolicy.wakeLimit {
+        _ = loop.decide(inputs(clock)); loop.noteWake(now: clock)
+        _ = loop.decide(inputs(clock, probing: true)); clock += 400
+    }
+    check(loop.decide(inputs(clock)) == .settling, "repeated wake-ups without a journey stop using low-power standby")
+    check(loop.loopsBlocked >= 1, "a blocked wake-up loop is counted for diagnostics")
+    check(loop.decide(inputs(AdaptivePolicy.wakeWindow + 2000)) == .stationaryStandby, "low-power standby returns once the hour has passed")
+    // Recovery: the low-power service ending repeatedly falls back for a while, without a restart loop.
+    var broken = AdaptivePolicy(now: 0)
+    _ = broken.decide(inputs(0))
+    broken.noteServiceFailure(now: 10); broken.noteServiceFailure(now: 20)
+    check(broken.decide(inputs(30)) == .stationaryStandby, "one or two failures retry low-power standby")
+    broken.noteServiceFailure(now: 40)
+    check(broken.decide(inputs(50)) == .recovery && broken.plan(inputs(50)) == .established, "repeated failures fall back to the established standby")
+    check(broken.decide(inputs(40 + AdaptivePolicy.recoveryBackoff + 1)) == .stationaryStandby, "low-power standby is retried after the back-off")
+    var plainLegacy = AdaptivePolicy(now: 0)
+    plainLegacy.noteServiceFailure(now: 1); plainLegacy.noteServiceFailure(now: 2); plainLegacy.noteServiceFailure(now: 3)
+    check(plainLegacy.decide(inputs(4, enabled: false)) == .stationaryStandby, "recovery only applies to the low-power engine")
+
+    // Core Location's stationary reports.
+    var gate = LiveUpdateGate()
+    let here = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 1000, accuracy: 12, altitude: 0, speed: 0)
+    check(gate.observe(stationary: false, point: here, outsidePlace: false, now: 1000) == .none, "the first report after starting is not movement")
+    check(gate.observe(stationary: true, point: here, outsidePlace: false, now: 1010) == .stationary, "a stationary report arms the gate")
+    // 6: indoor GPS jitter while Core Location says stationary is not movement.
+    check(gate.observe(stationary: true, point: GPSPoint(latitude: -33.86003, longitude: 151.20002, timestamp: 1020, accuracy: 40, altitude: 0, speed: 0), outsidePlace: false, now: 1020) == .stationary, "jitter while stationary is not movement")
+    check(gate.confirms(here), "a household fix taken where Core Location says the phone is still may be re-confirmed")
+    check(!gate.confirms(GPSPoint(latitude: -33.87, longitude: 151.2, timestamp: 1000, accuracy: 12, altitude: 0, speed: 0)), "a fix elsewhere is never re-confirmed")
+    check(!gate.confirms(GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 5000, accuracy: 12, altitude: 0, speed: 0)), "a fix taken after the stationary report is not confirmed by it")
+    if case .movement = gate.observe(stationary: false, point: here, outsidePlace: false, now: 1100) {} else { check(false, "movement after a stationary report wakes the recorder") }
+    check(!gate.confirms(here), "after movement nothing is re-confirmed")
+    var outside = LiveUpdateGate()
+    if case .movement = outside.observe(stationary: false, point: here, outsidePlace: true, now: 5) {} else { check(false, "a position outside the place is movement even before arming") }
+
+    check(PlaceRegion.radius(placeRadius: 50, anchorAccuracy: 10) == PlaceRegion.minimumRadius, "a small place gets at least a 100 m region")
+    check(PlaceRegion.radius(placeRadius: 80, anchorAccuracy: 90) == 180, "an imprecise indoor anchor widens the region")
+    check(PlaceRegion.radius(placeRadius: 400, anchorAccuracy: 10) == PlaceRegion.maximumRadius, "a large place is capped at 300 m")
+    check(PlaceRegion.radius(placeRadius: 120, anchorAccuracy: .nan) == 130, "an unknown accuracy is treated as 65 m")
+
+    var latency = DepartureLatency()
+    check(latency.measure(firstFixAt: 10, confirmedAt: 20) == nil, "no latency without departure evidence")
+    latency.noteEvidence("lowPower: Core Location reported movement", engine: "lowPower", now: 100)
+    latency.noteEvidence("later", engine: "established", now: 150)
+    let measured = latency.measure(firstFixAt: 112, confirmedAt: 160)!
+    check(measured.toFirstFix == 12 && measured.toConfirmation == 60 && latency.cause.hasPrefix("lowPower"), "latency is measured from the first evidence")
+
+    check(LocationConfiguration.automatic(.stationary, journeyOpen: false, journeyActivity: nil, drivingMotion: false, currentProfile: .other) == nil, "low-power standby requests no standard continuous updates")
+    check(LocationIndicator.explain(continuous: false, mode: .stationary, manual: false, sessionHeld: true).reason.contains("continuous location stopped"), "the indicator explanation says continuous location is stopped")
+    // Every state is reachable and named for diagnostics.
+    check(AdaptiveState.allCases.count == 6, "six adaptive states")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

@@ -42,6 +42,24 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
     var locationMode: AutomaticLocationMode = .off
+    // Adaptive location engine (AdaptiveLocationCore.swift): an internal switch
+    // per account, off by default; iOS 15/16 always use the established engine.
+    var adaptiveEnabled = false
+    var adaptivePolicy = AdaptivePolicy(now: Date().timeIntervalSince1970)
+    var adaptiveState: AdaptiveState = .off
+    var adaptivePlan: AdaptivePlan = .established
+    var liveGate = LiveUpdateGate()
+    var liveUpdatesTask: Task<Void, Never>?
+    var liveUpdatesToken = 0
+    var liveUpdatesStartedAt: Double?
+    var liveUpdatesSeconds: Double = 0
+    var liveUpdatesActivations = 0
+    var liveUpdatesFailures = 0
+    var placeRegionKey: String?
+    var departureLatency = DepartureLatency()
+    var lastDepartureLatency: [String: String] = [:]
+    var liveUpdatesSupported: Bool { if #available(iOS 17.0, *) { return true }; return false }
+    static func adaptiveKey(_ owner: String) -> String { "letm3go-adaptive-location-\(owner)" }
     var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
     // Place awareness (see DwellArea). Kept in this account's encrypted storage.
     var dwell: DwellArea?
@@ -195,7 +213,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "desiredAccuracyMeters":String(manager.desiredAccuracy),"distanceFilterMeters":String(manager.distanceFilter),
             "probeUntil":String(automaticSampling.probeUntil ?? 0),"retryAfter":String(automaticSampling.retryAfter),
             "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),"lastAutomaticDeliveryAt":String(lastAutomaticDeliveryAt ?? 0),"stalledGPSRestartAt":String(automaticGPSRecoveryAt),
-            "lowPowerMode":String(ProcessInfo.processInfo.isLowPowerModeEnabled),"backgroundRefreshStatus":String(UIApplication.shared.backgroundRefreshStatus.rawValue)]
+            "lowPowerMode":String(ProcessInfo.processInfo.isLowPowerModeEnabled),"backgroundRefreshStatus":String(UIApplication.shared.backgroundRefreshStatus.rawValue),
+            "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(liveUpdatesTask != nil),"locationMode":locationMode.rawValue]
     }
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
         guard ownerID != nil,let storage=storage else {return}
@@ -307,7 +326,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
     }
     func updateIndicatorPolicy(){manager.showsBackgroundLocationIndicator=TrackingPresentation.indicator(always:manager.authorizationStatus == .authorizedAlways,manual:active?.state == "recording")}
-    var gpsReason:String {TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,settled:settledAt != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable,resting:locationMode == .resting)}
+    var gpsReason:String {locationMode == .stationary ? "Low-power standby: continuous location stopped; Core Location resumes updates when the phone moves" : TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,settled:settledAt != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable,resting:locationMode == .resting)}
     var locationIndicator:(expected:Bool,reason:String) {LocationIndicator.explain(continuous:continuousLocationRequested,mode:locationMode,manual:active?.state == "recording",sessionHeld:backgroundActivitySession != nil)}
     var motionPermission: String { String(describing:CMMotionActivityManager.authorizationStatus()) }
 
@@ -438,9 +457,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // 50 m resting at Home),
     // so that fix is re-confirmed every 5 minutes. After any suspension the next
     // real fix is required first. Called from the existing 30-second timer.
+    // In the adaptive engine's low-power standby there is no continuous service;
+    // the fix is re-confirmed only while Core Location itself reports that the
+    // phone has not moved since it was taken (and the app is running). Otherwise
+    // the household sees the honest last-updated time.
     func confirmHouseholdLocation() {
-        guard let fix=lastShareFix, HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
-              resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince) else {return}
+        guard let fix=lastShareFix else {return}
+        let continuous=HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
+              resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince)
+        let stationary=liveUpdatesTask != nil && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
+        guard continuous || stationary else {return}
         sendHouseholdLocation(fix,confirmation:true)
     }
     func sendHouseholdLocation(_ location: CLLocation, confirmation: Bool) {
@@ -699,7 +725,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
-                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .resting ? "restingAtHome" : "locationStandby",
+                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .resting ? "restingAtHome" : "locationStandby",
+                "adaptive":adaptiveSnapshot,
                 "locationMode":locationMode.rawValue,"homeRestSince":homeRest.insideSince as Any? ?? NSNull(),
                 "locationIndicator":["expected":locationIndicator.expected,"reason":locationIndicator.reason],
                 "automaticSettledAt": settledAt as Any? ?? NSNull(),
@@ -756,6 +783,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "configureLiveSharing", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "savePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "currentPosition", returnType: CAPPluginReturnPromise),

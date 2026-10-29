@@ -1007,7 +1007,9 @@ struct LocationConfiguration: Equatable {
     static func automatic(_ mode: AutomaticLocationMode, journeyOpen: Bool, journeyActivity: String?,
                           drivingMotion: Bool, currentProfile: LocationProfile) -> LocationConfiguration? {
         switch mode {
-        case .off: return nil
+        // Adaptive low-power standby: no standard continuous updates at all
+        // (CLLocationUpdate.liveUpdates and wake-up services take over).
+        case .off, .stationary: return nil
         case .standby: return LocationConfiguration(accuracy: .tenMetres, distanceFilter: 25, profile: .other)
         // Settled at Home: the service keeps running (so the app keeps executing,
         // Core Motion and the Home exit still arrive, and the background session
@@ -1284,7 +1286,7 @@ struct AutomaticSampling {
     }
 }
 
-enum AutomaticLocationMode: String {case off,resting,standby,precise}
+enum AutomaticLocationMode: String {case off,resting,standby,precise,stationary}
 
 // Settled at the saved Home place. Not a separate tracker: it only tells the one
 // sampling owner that standby may use a coarser configuration. Entering needs a
@@ -1566,9 +1568,10 @@ enum LocationIndicator {
             case .precise: return (true, "Precise GPS: a journey is open or a departure is being checked")
             case .resting: return (true, "Resting at Home: low-power location keeps departure detection ready; no journey is recording" + session)
             case .standby: return (true, "Departure standby: reduced-accuracy location keeps departure detection ready; no journey is recording" + session)
-            case .off: return (true, "Location updates are stopping" + session)
+            case .off, .stationary: return (true, "Location updates are stopping" + session)
             }
         }
+        if mode == .stationary { return (sessionHeld, sessionHeld ? "Low-power standby: continuous location stopped; Core Location resumes updates when the phone moves (background session held so a departure can be recorded)" : "Low-power standby: continuous location stopped") }
         if sessionHeld { return (true, "Background location session held so a later departure can be recorded; no continuous location requested") }
         return (false, "No continuous location and no background session")
     }

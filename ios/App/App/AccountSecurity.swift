@@ -97,6 +97,7 @@ extension LocationRecorder {
         accountSuspended = false; trackingBoundary = Date().timeIntervalSince1970
         lastError = ""; recoveryMessage = ""; lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; currentSpeed = 0
         automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(ownerID!)")
+        adaptiveEnabled = UserDefaults.standard.bool(forKey:Self.adaptiveKey(ownerID!))
         preferences = AccountPreferences()
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
         places = []
@@ -196,6 +197,7 @@ extension LocationRecorder {
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
+        stopLiveUpdates(reason:"the recorder was locked or signed out");adaptiveEnabled=false;adaptivePolicy=AdaptivePolicy(now:Date().timeIntervalSince1970);adaptiveState = .off;adaptivePlan = .established;placeRegionKey=nil;departureLatency.reset();lastDepartureLatency=[:]
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -215,6 +217,7 @@ extension LocationRecorder {
         WatchSessionManager.shared.updateOwner(nil)
         preferences = AccountPreferences(); lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
+        stopLiveUpdates(reason:"the recorder was locked or signed out"); adaptiveEnabled = false
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
         for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
     }
@@ -336,12 +339,12 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         r.automaticEnabled=false; r.accountSuspended=true
                         if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
-                        r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
+                        r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.stopLiveUpdates(reason:"the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
-                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
+                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
                 } catch { r.uiUnlocked = false; call.reject("Unable to open this account’s private storage. Local data is preserved.") }
             }
         }.resume()
@@ -387,7 +390,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
-            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
+            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
     } }
 }
