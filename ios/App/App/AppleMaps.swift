@@ -172,26 +172,33 @@ private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoin
 }
 private func configurePeopleView(_ view:MKAnnotationView,_ pin:JourneyPin) {
     let marker=peopleMarker(pin.metadata)
-    // A reused annotation must never retain the previous person's activity animation.
-    for child in view.subviews where child.accessibilityIdentifier=="letm3go-driving-car" {child.layer.removeAllAnimations();child.removeFromSuperview()}
     view.image=marker.image;view.centerOffset=marker.offset
     view.clipsToBounds=false
     let members=pin.metadata["members"] as? [[String:Any]] ?? []
+    // The car runs directly along the 44-point portrait border; the avatar sits
+    // 3 pt below the label pill (see peopleMarker).
+    let top:CGFloat=(pin.metadata["label"] as? String)?.isEmpty == false ? 27 : ((pin.metadata["home"] as? Bool == true) ? 27 : 0)
+    let centre=CGPoint(x:marker.image.size.width/2,y:top+25)
+    let orbitKey="\(members.first?["id"] as? String ?? ""):\(centre.x),\(centre.y)"
     // Grouped bubbles represent multiple people; do not imply that everyone is driving.
-    if members.count==1,let member=members.first,
-       member["state"] as? String == "live",
-       member["activity"] as? String == "driving",
-       let artwork=UIImage(named:"Letm3goCar") {
+    let driving=members.count==1 && members[0]["state"] as? String == "live" && members[0]["activity"] as? String == "driving"
+    // Every location update redraws the marker; a car still circling the same
+    // person in the same place keeps going instead of jumping back to its start.
+    // A reused annotation never retains the previous person's car.
+    var kept=false
+    for child in view.subviews where child.accessibilityIdentifier=="letm3go-driving-car" {
+        if driving && !kept && child.accessibilityValue==orbitKey {kept=true;continue}
+        child.layer.removeAllAnimations();child.removeFromSuperview()
+    }
+    if driving,!kept,let artwork=UIImage(named:"Letm3goCar") {
         let car=UIView(frame:CGRect(x:0,y:0,width:24,height:15))
         car.accessibilityIdentifier="letm3go-driving-car"
+        car.accessibilityValue=orbitKey
         car.isUserInteractionEnabled=false
         let picture=UIImageView(image:artwork)
         picture.frame=car.bounds;picture.contentMode = .scaleAspectFit
         car.addSubview(picture)
         view.addSubview(car)
-        // The car runs directly along the 44-point portrait border.
-        let top:CGFloat=(pin.metadata["label"] as? String)?.isEmpty == false ? 27 : ((pin.metadata["home"] as? Bool == true) ? 27 : 0)
-        let centre=CGPoint(x:marker.image.size.width/2,y:top+25)
         let radius:CGFloat=22
         let orbit=CAKeyframeAnimation(keyPath:"position")
         orbit.path=UIBezierPath(ovalIn:CGRect(x:centre.x-radius,y:centre.y-radius,width:radius*2,height:radius*2)).cgPath
@@ -207,6 +214,7 @@ private func configurePeopleView(_ view:MKAnnotationView,_ pin:JourneyPin) {
         suspension.keyTimes=[0,0.25,0.5,0.75,1] as [NSNumber]
         suspension.duration=0.42
         suspension.repeatCount = .infinity
+        suspension.isRemovedOnCompletion=false
         picture.layer.add(suspension,forKey:"letm3go-suspension")
         if UIAccessibility.isReduceMotionEnabled {
             car.layer.removeAllAnimations()
@@ -777,8 +785,21 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                             let bounds=CGRect(x:p.x-21,y:p.y-21,width:42,height:42)
                             UIColor.systemPurple.setFill();ctx.fillEllipse(in:bounds)
                             UIColor.white.setStroke();ctx.setLineWidth(3);ctx.strokeEllipse(in:bounds)
-                            if let home=UIImage(named:"Letm3goHome") {home.draw(in:bounds.insetBy(dx:5,dy:5));continue}
-                             let text=("⌂ " + String(count)) as NSString
+                            if let home=UIImage(named:"Letm3goHome") {
+                                home.draw(in:bounds.insetBy(dx:5,dy:5))
+                                // Keep saying how many people are at Home.
+                                if count>1 {
+                                    let badge=CGRect(x:bounds.maxX-15,y:bounds.minY-3,width:18,height:18)
+                                    UIColor.white.setFill();ctx.fillEllipse(in:badge)
+                                    UIColor.systemPurple.setFill();ctx.fillEllipse(in:badge.insetBy(dx:1.5,dy:1.5))
+                                    let number=String(count) as NSString
+                                    let attributes:[NSAttributedString.Key:Any]=[.font:UIFont.boldSystemFont(ofSize:10),.foregroundColor:UIColor.white]
+                                    let s=number.size(withAttributes:attributes)
+                                    number.draw(at:CGPoint(x:badge.midX-s.width/2,y:badge.midY-s.height/2),withAttributes:attributes)
+                                }
+                                continue
+                            }
+                            let text=("⌂ " + String(count)) as NSString
                             text.draw(at:CGPoint(x:p.x-14,y:p.y-10),withAttributes:[.font:UIFont.boldSystemFont(ofSize:14),.foregroundColor:UIColor.white])
                             continue
                         }
