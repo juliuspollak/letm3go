@@ -1,5 +1,6 @@
 import UIKit
 import MapKit
+import ImageIO
 import Capacitor
 
 private let routeColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.65,green:0.71,blue:1,alpha:1) : UIColor(red:0.275,green:0.35,blue:0.85,alpha:1) }
@@ -111,29 +112,63 @@ private func storeOverview(_ data:OverviewData) {
 // signed-in owner (the same checks as before); the cache is keyed by owner so
 // another account never sees them.
 private let photoImageCache=NSCache<NSString,UIImage>()
-private func journalPhotoImage(_ photoID:String,size:CGFloat,circle:Bool)->UIImage? {
+// Photos are read, decrypted and decoded here, never on the main thread, so a
+// map full of photo markers does not stall scrolling.
+private let photoQueue=DispatchQueue(label:"letm3go.map-photos",qos:.userInitiated,attributes:.concurrent)
+private struct JournalPhotoFile {let key:NSString;let storage:RecordingStorage;let name:String}
+// Main thread: where the photo is, if it may be shown now (the recorder's
+// state lives on the main thread).
+private func journalPhotoFile(_ photoID:String,size:CGFloat,circle:Bool)->JournalPhotoFile? {
+    let recorder=LocationRecorder.shared
+    guard recorder.uiUnlocked,let owner=recorder.ownerID,let storage=recorder.storage,
+          let trip=recorder.trips.first(where:{$0.details?.photos.contains(where:{$0.id==photoID}) == true}),
+          let photo=trip.details?.photos.first(where:{$0.id==photoID}) else {return nil}
+    return JournalPhotoFile(key:NSString(string:"\(owner)|\(photoID)|\(size)|\(circle)"),storage:storage,name:"media/\(photo.filename)")
+}
+private func cachedJournalPhoto(_ photoID:String,size:CGFloat,circle:Bool)->UIImage? {
     let recorder=LocationRecorder.shared
     guard recorder.uiUnlocked,let owner=recorder.ownerID else {return nil}
-    let key=NSString(string:"\(owner)|\(photoID)|\(size)|\(circle)")
-    if let cached=photoImageCache.object(forKey:key) {return cached}
-    guard let storage=recorder.storage,
-          let trip=recorder.trips.first(where:{$0.details?.photos.contains(where:{$0.id==photoID}) == true}),
-          let photo=trip.details?.photos.first(where:{$0.id==photoID}),
-          let data=try? storage.readData(name:"media/\(photo.filename)"),
-          let source=UIImage(data:data) else {return nil}
-    let image=UIGraphicsImageRenderer(size:CGSize(width:size,height:size)).image { _ in
+    return photoImageCache.object(forKey:NSString(string:"\(owner)|\(photoID)|\(size)|\(circle)"))
+}
+// Any thread. ImageIO downsamples to the size shown instead of decoding the
+// whole photo.
+private func renderJournalPhoto(_ file:JournalPhotoFile,size:CGFloat,circle:Bool,scale:CGFloat)->UIImage? {
+    guard let data=try? file.storage.readData(name:file.name),let source=CGImageSourceCreateWithData(data as CFData,nil) else {return nil}
+    let options:[CFString:Any]=[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceCreateThumbnailWithTransform:true,
+        kCGImageSourceShouldCacheImmediately:true,kCGImageSourceThumbnailMaxPixelSize:max(1,size*scale*1.5)]
+    guard let cgImage=CGImageSourceCreateThumbnailAtIndex(source,0,options as CFDictionary) else {return nil}
+    let picture=UIImage(cgImage:cgImage)
+    let format=UIGraphicsImageRendererFormat();format.scale=scale
+    let image=UIGraphicsImageRenderer(size:CGSize(width:size,height:size),format:format).image { _ in
         let bounds=CGRect(x:0,y:0,width:size,height:size)
         (circle ? UIBezierPath(ovalIn:bounds) : UIBezierPath(roundedRect:bounds,cornerRadius:size*0.18)).addClip()
-        let ratio=max(size/source.size.width,size/source.size.height)
-        let width=source.size.width*ratio,height=source.size.height*ratio
-        source.draw(in:CGRect(x:(size-width)/2,y:(size-height)/2,width:width,height:height))
+        let ratio=max(size/picture.size.width,size/picture.size.height)
+        let width=picture.size.width*ratio,height=picture.size.height*ratio
+        picture.draw(in:CGRect(x:(size-width)/2,y:(size-height)/2,width:width,height:height))
     }
-    photoImageCache.setObject(image,forKey:key)
+    photoImageCache.setObject(image,forKey:file.key)
     return image
+}
+// Now, for one photo (the preview card, a snapshot).
+private func journalPhotoImage(_ photoID:String,size:CGFloat,circle:Bool)->UIImage? {
+    if let cached=cachedJournalPhoto(photoID,size:size,circle:circle) {return cached}
+    guard let file=journalPhotoFile(photoID,size:size,circle:circle) else {return nil}
+    return renderJournalPhoto(file,size:size,circle:circle,scale:UIScreen.main.scale)
+}
+// In the background, for markers: `done` runs on the main thread once it is ready.
+private func loadJournalPhoto(_ photoID:String,size:CGFloat,circle:Bool,done:@escaping()->Void) {
+    guard let file=journalPhotoFile(photoID,size:size,circle:circle) else {return}
+    let scale=UIScreen.main.scale
+    photoQueue.async {
+        guard renderJournalPhoto(file,size:size,circle:circle,scale:scale) != nil else {return}
+        DispatchQueue.main.async(execute:done)
+    }
 }
 // A photo on the overview: a small circular thumbnail with a white ring and a
 // soft shadow; a photo glyph when the image is not on this device.
-private func overviewPhotoMarker(_ photoID:String?,size:CGFloat=40,count:Int=0)->UIImage {
+// With load false, only an already decoded thumbnail is used (markers load
+// theirs in the background); otherwise it is read now.
+private func overviewPhotoMarker(_ photoID:String?,size:CGFloat=40,count:Int=0,load:Bool=true)->UIImage {
     let pad:CGFloat=4
     return UIGraphicsImageRenderer(size:CGSize(width:size+pad*2,height:size+pad*2)).image { context in
         let ctx=context.cgContext
@@ -143,7 +178,7 @@ private func overviewPhotoMarker(_ photoID:String?,size:CGFloat=40,count:Int=0)-
         UIColor.white.setFill();ctx.fillEllipse(in:bounds)
         ctx.restoreGState()
         let inner=bounds.insetBy(dx:2.5,dy:2.5)
-        if let photoID=photoID,let thumbnail=journalPhotoImage(photoID,size:inner.width,circle:true) {
+        if let photoID=photoID,let thumbnail=load ? journalPhotoImage(photoID,size:inner.width,circle:true) : cachedJournalPhoto(photoID,size:inner.width,circle:true) {
             thumbnail.draw(in:inner)
         } else {
             brandAccent.setFill();ctx.fillEllipse(in:inner)
@@ -177,7 +212,14 @@ private final class PhotoAnnotationView:MKAnnotationView {
         super.prepareForDisplay()
         clusteringIdentifier="overview-photos"
         guard let pin=annotation as? JourneyPin else {return}
-        image=overviewPhotoMarker(pin.metadata["photoID"] as? String)
+        let photoID=pin.metadata["photoID"] as? String
+        image=overviewPhotoMarker(photoID,load:false)
+        if let photoID=photoID,cachedJournalPhoto(photoID,size:35,circle:true)==nil {
+            loadJournalPhoto(photoID,size:35,circle:true) { [weak self, weak pin] in
+                guard let self=self,let pin=pin,self.annotation===pin else {return}
+                self.image=overviewPhotoMarker(photoID,load:false)
+            }
+        }
         let journey=(pin.metadata["journeyTitle"] as? String).flatMap{$0.isEmpty ? nil : $0}
         accessibilityLabel=["Photo",journey,pin.metadata["journeyDate"] as? String].compactMap{$0}.joined(separator:", ")
         accessibilityHint="Shows its journey"
@@ -204,7 +246,14 @@ private final class PhotoClusterView:MKAnnotationView {
         super.prepareForDisplay()
         guard let cluster=annotation as? MKClusterAnnotation else {return}
         let members=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}
-        image=overviewPhotoMarker(members.first?.metadata["photoID"] as? String,size:46,count:members.count)
+        let photoID=members.first?.metadata["photoID"] as? String
+        image=overviewPhotoMarker(photoID,size:46,count:members.count,load:false)
+        if let photoID=photoID,cachedJournalPhoto(photoID,size:41,circle:true)==nil {
+            loadJournalPhoto(photoID,size:41,circle:true) { [weak self, weak cluster] in
+                guard let self=self,let cluster=cluster,self.annotation===cluster else {return}
+                self.image=overviewPhotoMarker(photoID,size:46,count:members.count,load:false)
+            }
+        }
         accessibilityLabel="\(members.count) photos"
         accessibilityHint="Zooms in to the photos"
     }

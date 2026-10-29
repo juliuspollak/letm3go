@@ -93,6 +93,7 @@ The algorithm is `src/lib/routeDensity.js`, tested in `routeDensity.test.js`.
   | Worker heap | | about 60 MB |
 
   For this dataset the 25 m grid exceeds 60,000 edges and is dropped, so street zoom shows the 100 m grid.
+- Photo markers are read, decrypted and downsampled with ImageIO on a background queue. They appear as a photo glyph until the thumbnail is ready, so a map full of photos never decodes full-size images on the main thread. The preview card and snapshots read one thumbnail directly.
 - Not measured: native rendering time, and bridge time on a device.
 - The native map shows one zoom band at a time (`DensityLevels.choose`: the finest grid whose cells are at least 2.5 pt wide). A zoom change swaps at most five overlays.
 - Colours run from the app accent, thin and translucent, through violet to a warm coral-orange for the most travelled paths. They work on standard, dark and satellite maps.
