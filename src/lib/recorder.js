@@ -10,8 +10,12 @@ export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
 // Core Location fixes are returned, with their own timestamps.
 export const POSITION_REUSE_SECONDS=20;
 let pendingPosition=null,lastPosition=null;
-export function sharedCurrentPosition(nowSeconds=Date.now()/1000){
+// `allowStationary`: a periodic refresh that only needs to know whether anything
+// changed may get {stationary:true} (no coordinates) while the adaptive engine
+// holds Core Location's stationary report, instead of waking precise GPS.
+export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false}={}){
  if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=POSITION_REUSE_SECONDS&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
+ if(allowStationary&&!pendingPosition)return native.currentPosition({allowStationary:true}).then(result=>{if(!result?.stationary)lastPosition=result;return result;});
  if(!pendingPosition)pendingPosition=native.currentPosition().then(fix=>{lastPosition=fix;return fix;}).finally(()=>{pendingPosition=null;});
  return pendingPosition;
 }
@@ -34,7 +38,7 @@ export const recorder = {
  setAutomatic:enabled=>native.setAutomatic({enabled}),
  savePlace:place=>native.savePlace(place),
  removePlace:id=>native.removePlace({id}),
- currentPosition:()=>sharedCurrentPosition(),
+ currentPosition:(options={})=>sharedCurrentPosition(Date.now()/1000,options),
  // Internal: the adaptive location engine, for controlled evaluation.
  setAdaptiveLocation:enabled=>native.setAdaptiveLocation({enabled}),
  searchAddress:query=>native.searchAddress({query}),

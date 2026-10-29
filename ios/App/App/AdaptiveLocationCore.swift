@@ -125,6 +125,11 @@ struct AdaptivePolicy {
     mutating func noteJourneyStarted() { wakes.removeAll() }
     // The low-power service ended without being asked to. After a few in a row
     // the established standby is used for `recoveryBackoff`.
+    // A back-off still running when the app was relaunched (it is persisted).
+    mutating func restoreRecovery(until: Double?, now: Double) {
+        guard let until = until, until > now, until - now <= Self.recoveryBackoff else { return }
+        recoveryUntil = until
+    }
     mutating func noteServiceFailure(now: Double) {
         failures = failures.filter { now - $0 < Self.recoveryBackoff } + [now]
         if failures.count >= Self.failureLimit { recoveryUntil = now + Self.recoveryBackoff; failures.removeAll() }
@@ -137,28 +142,66 @@ struct AdaptivePolicy {
     }
 }
 
-// Whether a liveUpdates delivery in low-power standby is a reason to check for a
-// departure. On start the stream reports the current position before Core
-// Location has decided the device is stationary, so that first report is not
-// movement. After the stream has said "stationary" once, any non-stationary
-// report means Core Location saw movement. A position clearly outside the place
-// is movement whatever the stream says.
+// What a CLLocationUpdate.liveUpdates report in low-power standby means.
+//
+// Apple (WWDC23 "Discover streamlined location updates"): once the device has
+// been stationary "for a sufficient amount of time" Core Location sends one
+// update with a non-nil location and isStationary true and pauses; when the
+// device "becomes non-stationary" delivery resumes with isStationary false.
+// iOS 18 adds diagnostic updates (location unavailable, authorisation denied...)
+// that carry no location and are not stationary.
+//
+// So a non-stationary report is permission to look, not proof of a departure.
+// A departure check (precise GPS) is requested only for a usable position that
+// has moved: beyond the place, or from this stream's own reference fix by more
+// than its uncertainty (at least 35 m, the established standby's own rule), or
+// at vehicle speed. A report without a position, a stale or imprecise one, or an
+// implausible jump never starts precise GPS. While a departure check cannot start
+// (cooldown or budget), the same movement is signalled at most once a minute.
 struct LiveUpdateGate {
+    static let minimumDisplacement: Double = 35
+    static let maximumAccuracy: Double = 100
+    static let maximumAge: Double = 60
+    static let vehicleSpeed: Double = 3
+    static let implausibleSpeed: Double = 85
+    static let signalInterval: Double = 60
     private(set) var armed = false
     private(set) var stationarySince: Double?
     private(set) var stationaryAt: GPSPoint?
-    mutating func reset() { armed = false; stationarySince = nil; stationaryAt = nil }
-    enum Verdict: Equatable { case none, stationary, movement(String) }
+    private(set) var reference: GPSPoint?
+    private(set) var lastSignalAt: Double?
+    mutating func reset() { armed = false; stationarySince = nil; stationaryAt = nil; reference = nil; lastSignalAt = nil }
+    enum Verdict: Equatable { case none, stationary, movement(String), ignored(String) }
+    static func usable(_ point: GPSPoint?, now: Double) -> GPSPoint? {
+        guard let point = point, point.latitude.isFinite, point.longitude.isFinite, abs(point.latitude) <= 90, abs(point.longitude) <= 180,
+              point.accuracy >= 0, point.accuracy <= maximumAccuracy,
+              now - point.timestamp <= maximumAge, now - point.timestamp >= -5 else { return nil }
+        return point
+    }
     mutating func observe(stationary: Bool, point: GPSPoint?, outsidePlace: Bool, now: Double) -> Verdict {
-        if outsidePlace { stationarySince = nil; return .movement("position outside the current place") }
+        let fix = Self.usable(point, now: now)
         if stationary {
             armed = true
             if stationarySince == nil { stationarySince = now }
-            if let point = point { stationaryAt = point }
+            if let fix = fix { stationaryAt = fix; reference = fix }
             return .stationary
         }
+        // Any non-stationary report ends Core Location's stationary attestation.
         stationarySince = nil
-        return armed ? .movement("Core Location reported movement") : .none
+        guard let fix = fix else { return .ignored(point == nil ? "no position" : "stale or imprecise position") }
+        if outsidePlace { return signal("position outside the current place", now: now) }
+        guard let anchor = reference else { reference = fix; return .none }
+        let distance = anchor.distance(to: fix)
+        let seconds = fix.timestamp - anchor.timestamp
+        if seconds > 0, distance / seconds > Self.implausibleSpeed { return .ignored("implausible jump") }
+        if distance >= max(Self.minimumDisplacement, anchor.accuracy + fix.accuracy) { return signal("Core Location reported movement", now: now) }
+        if fix.speed >= Self.vehicleSpeed, fix.accuracy <= 65 { return signal("Core Location reported vehicle speed", now: now) }
+        return .none
+    }
+    private mutating func signal(_ reason: String, now: Double) -> Verdict {
+        if let last = lastSignalAt, now - last >= 0, now - last < Self.signalInterval { return .none }
+        lastSignalAt = now
+        return .movement(reason)
     }
     // A household position may be re-confirmed while Core Location says the
     // device has not moved since it was taken.
@@ -168,15 +211,77 @@ struct LiveUpdateGate {
     }
 }
 
+// Generations of the low-power stream. Starting or stopping changes the
+// generation, so a stopped (cancelled) stream's late updates and its own ending
+// are ignored, and only the running generation ending by itself is a failure.
+struct LowPowerStream: Equatable {
+    private(set) var generation = 0
+    private(set) var running = false
+    mutating func start() -> Int { generation += 1; running = true; return generation }
+    mutating func stop() { guard running else { return }; generation += 1; running = false }
+    func accepts(_ token: Int) -> Bool { running && token == generation }
+    // True when this ending is a failure of the current stream.
+    mutating func ended(_ token: Int) -> Bool {
+        guard accepts(token) else { return false }
+        running = false
+        return true
+    }
+}
+
+// The services one reconcile asks for, in the order they must change: what is
+// no longer wanted stops before anything new starts, so a handover never runs
+// standard updates and the low-power stream together.
+struct AdaptiveServices: Equatable {
+    var standardMode: AutomaticLocationMode
+    var lowPowerStream: Bool
+    // `established`: the mode AutomaticSampling chose (precise, standby, resting, off).
+    static func decide(established: AutomaticLocationMode, plan: AdaptivePlan) -> AdaptiveServices {
+        let lowPower = !plan.standardStandby && plan.liveUpdates && (established == .standby || established == .resting)
+        return AdaptiveServices(standardMode: lowPower ? .stationary : established, lowPowerStream: lowPower)
+    }
+}
+
+// Contradictions between what the policy wants and what the recorder actually
+// holds. Reported (privacy-safe) by the runtime and checked by the tests.
+struct AdaptiveObservedServices: Equatable {
+    var state: AdaptiveState
+    var adaptiveEnabled: Bool
+    var locationMode: AutomaticLocationMode
+    var continuousRunning: Bool
+    var lowPowerRunning: Bool
+    var lowPowerWanted: Bool
+    var placeRegionRegistered: Bool
+    var journeyRecording: Bool
+    var sessionHeld: Bool
+    var sessionNeeded: Bool
+}
+enum AdaptiveInvariants {
+    static func violations(_ s: AdaptiveObservedServices) -> [String] {
+        var found: [String] = []
+        if s.locationMode == .stationary && s.continuousRunning { found.append("stationaryWithContinuousGPS") }
+        if s.lowPowerRunning && s.continuousRunning { found.append("lowPowerAndContinuousTogether") }
+        if s.journeyRecording && !s.continuousRunning { found.append("journeyWithoutPreciseGPS") }
+        if s.lowPowerWanted && !s.lowPowerRunning && !s.continuousRunning { found.append("noLocationServiceInStandby") }
+        if !s.adaptiveEnabled && (s.lowPowerRunning || s.placeRegionRegistered) { found.append("adaptiveServicesWhileDisabled") }
+        if s.sessionHeld && !s.sessionNeeded { found.append("backgroundSessionWithoutOwner") }
+        return found
+    }
+}
+
 // A region around the place the person settled at: any place, not only Home.
 // Sized from the place and the fix that established it, so an inaccurate indoor
 // anchor never draws a region the person is already outside of.
 enum PlaceRegion {
     static let minimumRadius: Double = 100
     static let maximumRadius: Double = 300
+    static func valid(latitude: Double, longitude: Double, radius: Double) -> Bool {
+        latitude.isFinite && longitude.isFinite && abs(latitude) <= 90 && abs(longitude) <= 180 && !(latitude == 0 && longitude == 0) &&
+            radius.isFinite && radius >= minimumRadius && radius <= maximumRadius
+    }
     static func radius(placeRadius: Double, anchorAccuracy: Double) -> Double {
         let accuracy = anchorAccuracy.isFinite && anchorAccuracy >= 0 ? anchorAccuracy : 65
-        return min(maximumRadius, max(minimumRadius, placeRadius, accuracy * 2))
+        let place = placeRadius.isFinite && placeRadius > 0 ? placeRadius : minimumRadius
+        return min(maximumRadius, max(minimumRadius, place, accuracy * 2))
     }
 }
 

@@ -1287,6 +1287,9 @@ struct AutomaticSampling {
 }
 
 enum AutomaticLocationMode: String {case off,resting,standby,precise,stationary}
+// Where a location observation came from: the standard manager, or the adaptive
+// engine's low-power stream (CLLocationUpdate.liveUpdates).
+enum ObservationSource: String {case standard,lowPower}
 
 // Settled at the saved Home place. Not a separate tracker: it only tells the one
 // sampling owner that standby may use a coarser configuration. Entering needs a

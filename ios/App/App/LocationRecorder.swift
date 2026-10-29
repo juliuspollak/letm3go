@@ -50,12 +50,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var adaptivePlan: AdaptivePlan = .established
     var liveGate = LiveUpdateGate()
     var liveUpdatesTask: Task<Void, Never>?
-    var liveUpdatesToken = 0
+    var lowPowerStream = LowPowerStream()
     var liveUpdatesStartedAt: Double?
     var liveUpdatesSeconds: Double = 0
     var liveUpdatesActivations = 0
     var liveUpdatesFailures = 0
     var placeRegionKey: String?
+    var placeRegionFailedKey: String?
+    var lastLowPowerFixAt: Double?
+    var adaptiveViolationsLogged = Set<String>()
+    var adaptiveViolationCount = 0
     var departureLatency = DepartureLatency()
     var lastDepartureLatency: [String: String] = [:]
     var liveUpdatesSupported: Bool { if #available(iOS 17.0, *) { return true }; return false }
@@ -608,6 +612,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         beginUpdates()
     }
     func beginUpdates() {
+        // Manual recording owns standard updates; the low-power stream stops first.
+        stopLiveUpdates(reason: "manual recording")
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
@@ -641,14 +647,33 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring(); releaseBackgroundSessionIfUnneeded("manual recording \(action == "finish" ? "finished" : "paused")") }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        noteExecution("location")
+        handleObservations(locations, source: .standard)
+    }
+    func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        recordDiagnostic("region", "Region monitoring failed", details: ["code": String((error as NSError).code)])
+        placeRegionFailed(region)
+    }
+    // Every location observation, from the standard manager or from the
+    // adaptive engine's low-power stream. Both feed sharing, place awareness and
+    // departure detection; only standard deliveries count as proof that the
+    // standard service is delivering (stall watchdog, "last location callback"),
+    // and low-power observations are accepted only while low-power standby holds
+    // the stream (never into a manual or open journey).
+    func handleObservations(_ locations: [CLLocation], source: ObservationSource) {
+        if source == .lowPower {
+            guard liveUpdatesTask != nil, active == nil, !automaticActivelyRecording else { diagnosticReject("lowPowerOutsideStandby"); return }
+            noteExecution("liveUpdate")
+            lastLowPowerFixAt = locations.last?.timestamp.timeIntervalSince1970
+        } else {
+            noteExecution("location")
+        }
         diagnosticGPSReceived += locations.count
         diagnosticLastDeliveryAt=Date().timeIntervalSince1970
         for location in locations {
             diagnosticMaxDeliveryDelay=max(diagnosticMaxDeliveryDelay,max(0,diagnosticLastDeliveryAt-location.timestamp.timeIntervalSince1970))
             if location.horizontalAccuracy>=0 {diagnosticWorstAccuracy=max(diagnosticWorstAccuracy,location.horizontalAccuracy)}
         }
-        if let last=locations.last {lastLocationUpdateAt=last.timestamp.timeIntervalSince1970;lastLocationAccuracy=last.horizontalAccuracy>=0 ? last.horizontalAccuracy : nil}
+        if source == .standard, let last=locations.last {lastLocationUpdateAt=last.timestamp.timeIntervalSince1970;lastLocationAccuracy=last.horizontalAccuracy>=0 ? last.horizontalAccuracy : nil}
         // A backlog delivered on wake is evidence of what happened while the app
         // was not running; record its shape (never coordinates).
         if let oldest=locations.map({$0.timestamp.timeIntervalSince1970}).min(),diagnosticLastDeliveryAt-oldest>30 {
@@ -658,7 +683,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         guard !accountSuspended else { return }
         if let last=locations.last {publishLivePosition(last)}
-        if active == nil { processAutomatic(locations);diagnosticSummary(); return }
+        if active == nil { processAutomatic(locations,source:source);diagnosticSummary(); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970
         if CMMotionActivityManager.authorizationStatus() != .authorized { motion = MotionEvidence() }

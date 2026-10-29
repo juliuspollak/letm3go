@@ -29,6 +29,9 @@ export function adaptiveRows(state){
   ['Adaptive engine',adaptive.enabled?(adaptive.supported?'On (testing)':'On · needs iOS 17; established engine in use'):'Off · established engine'],
   ['Location state',`${ADAPTIVE_STATE_LABELS[adaptive.state]||adaptive.state} · ${duration(adaptive.secondsInState)}`],
   ['Standby engine',lowPower?'Low-power: continuous location stopped':'Established: continuous standby location'],
+  // What is actually held, and any contradiction with what the policy wants.
+  ['Services held',[adaptive.continuousRunning?'continuous location':null,adaptive.liveUpdatesRunning?'low-power updates':null].filter(Boolean).join(' + ')||'none'],
+  ['Service contradictions',adaptive.invariantViolations?.length?adaptive.invariantViolations.join(', '):adaptive.invariantViolationCount?`none now (${adaptive.invariantViolationCount} logged)`:'None'],
   ['Core Location low-power updates',adaptive.liveUpdatesRunning?(adaptive.coreLocationStationary?'Running · phone reported stationary':'Running'):'Not running'],
   ['Current place exit region',adaptive.placeRegionMonitored?'Monitored':'Not monitored'],
   ['Time stationary (this session)',duration(times.stationaryStandby??0)],

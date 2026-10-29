@@ -96,7 +96,7 @@ Rules:
 | API | Decision |
 |---|---|
 | Standard updates | Kept for journeys, checks and settling, unchanged |
-| `CLLocationUpdate.liveUpdates` (iOS 17) | Used only in stationary standby. Core Location pauses delivery while the device is stationary and resumes it, waking the app, on movement, without the app holding standard updates. The first report after starting is not treated as movement (`LiveUpdateGate`). iOS 18's `stationary` is read where available, `isStationary` before. |
+| `CLLocationUpdate.liveUpdates` (iOS 17) | Used only in stationary standby. A non-stationary report starts a departure check only with a usable, moved position (`LiveUpdateGate`). iOS 18's `stationary` is read where available, `isStationary` before. See "What Apple documents" below. |
 | `CLMonitor` | Not used. `CLCircularRegion` monitoring already exists and works on iOS 15. Moving all regions to `CLMonitor` would change the established engine. |
 | Region monitoring | Added: one exit region around the current place, at any place, sized 100–300 m from the place and its anchor accuracy. With the engine on, saved places use 17 slots instead of 18, keeping within iOS's 20-region limit. |
 | Significant changes, visits | Unchanged, and kept on as further wake-ups |
@@ -109,6 +109,30 @@ Rules:
 - Significant changes need about 500 m and are not suited to short departures.
 - Visits are often reported many minutes late.
 - **No short departure is guaranteed to be detected immediately in low-power standby.** If `liveUpdates` does not resume promptly on a phone, the departure check may start later than with the established engine. The start of a short walk or drive may then be missing from the route, or a very short walk may not be recorded. Nothing is reconstructed in either case.
+
+### What Apple documents, and what it does not
+
+Sources: WWDC23 "Discover streamlined location updates" (session 10180), and an Apple engineer's answer on the developer forums (thread 810433).
+
+**Documented:**
+- Once the device has been stationary "for a sufficient amount of time", Core Location triggers an automatic pause and sends one update with a non-nil location and `isStationary` true.
+- When the device becomes non-stationary, delivery resumes automatically with `isStationary` false.
+- The app may be suspended during a pause, and is unsuspended when updates resume.
+- After termination, iOS can relaunch the app in the background, provided the app immediately recreates `liveUpdates` and its `CLBackgroundActivitySession` at launch. The recorder does this from `didFinishLaunching` → `LocationRecorder.shared` → open account → reconcile.
+- The session needs `location` in `UIBackgroundModes`, can only be started in the foreground, and uses the blue background location indicator.
+- Apple's engineer: "When the stationary property is set, you will stop getting updates until the device moves again", and stopping updates risks the app never being relaunched once the device moves. They also advise against fighting the indicator.
+
+**Not documented:**
+- How long "sufficient" is before the pause.
+- How quickly delivery resumes once movement begins.
+- What power the paused state saves compared with a standard 100 m standby.
+
+**What follows from that:**
+- The engine never claims a departure from a report alone.
+- It never stops the stream while relying on it (it hands over to standard updates instead).
+- It keeps the session.
+- Short-walk latency and energy must be measured on a phone.
+- iOS 18 also delivers diagnostic updates (location unavailable, authorisation denied) with no location. These are not stationary, so they must never be read as movement.
 
 ## 4. Saved and unsaved places
 
@@ -189,7 +213,34 @@ Battery impact needs Xcode Organizer energy logs, the Settings → Battery per-a
    - Settings → Battery for Letm3go.
 3. Report savings only from those measurements.
 
-## 10. Scenarios
+## 10. Correctness audit (follow-up)
+
+The audit found these defects. Each is fixed, and a regression test fails under the original code.
+
+| Defect | Root cause | Fix |
+|---|---|---|
+| Any non-stationary report woke precise GPS | `LiveUpdateGate` treated every non-stationary update after the first stationary one as movement. That included iOS 18 diagnostic updates without a location, stale or imprecise positions, and jumps. | Movement needs a usable position (fresh, accurate to 100 m) that moved beyond its uncertainty (at least 35 m, the established standby's own rule), or vehicle speed, or a position outside the place. Implausible jumps are ignored. Signals are limited to one a minute. |
+| Low-power fixes masqueraded as standard GPS | They went through the standard delegate, which set the stall watchdog's "delivered" times and the last-callback time. They were also accepted while a manual recording had started (the stream was not stopped until the next 30-second reconcile). | One observation path with an explicit source. Low-power fixes never update the standard-service proofs, and are accepted only while stationary standby holds the stream. Manual recording stops the stream before starting standard updates. |
+| Start-before-stop handover | The stream was started inside `reconcileAdaptive` before standard updates were stopped. | `AdaptiveServices`: what is no longer wanted stops first, and the stream starts only after standard updates have stopped. |
+| Stream generations | A token and a nil check in several places. | `LowPowerStream`: cancellation is never a failure, late updates are ignored, and only the current generation counts. |
+| Orphaned region after relaunch | Removal relied on an in-memory key that a relaunch clears, while Core Location keeps regions across launches. Registration failures were never handled. | Reconciled against `manager.monitoredRegions`. `monitoringDidFailFor` marks the key as failed (no retry loop). Invalid coordinates and radii are rejected. |
+| Back-off lost on relaunch | It was only held in memory. | Persisted per account, and ignored if expired or implausible. |
+| Settling after an unconfirmed check skipped | Already fixed in the first commit: the check's end was noted after the decision. | Covered by a test. |
+| Household and Home-presence refreshes woke precise GPS while still | A foreground timer requested a new precise fix every 30 s. | A periodic refresh may get "still stationary" (no coordinates) while Core Location attests it. The native publisher re-confirms the shared position on that evidence. |
+
+**Checked and not defects:**
+- Duplicate observations at a handover: the detector, departure evidence and route filter all drop non-increasing timestamps.
+- A low-power report racing a probe: the probe is idempotent, and the stream is stopped before standard updates run.
+
+**Invariants:** they are checked after every reconcile and logged once per kind as `invariant` events, with no coordinates. Tracking & Permissions shows them as "Service contradictions".
+- stationary standby with continuous GPS;
+- low-power and continuous together;
+- a journey without precise GPS;
+- standby with no location service;
+- adaptive services while disabled;
+- a background session without an owner.
+
+## 11. Scenarios
 
 | # | Scenario | Automated | Needs an iPhone |
 |---|---|---|---|

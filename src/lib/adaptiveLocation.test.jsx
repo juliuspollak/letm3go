@@ -30,6 +30,16 @@ describe('one position for household, friends and the map',()=>{
   expect(await sharedCurrentPosition(taken+POSITION_REUSE_SECONDS+1)).toEqual(fix(taken+30));
   expect(native.currentPosition).toHaveBeenCalledTimes(2);
  });
+ it('lets periodic refreshes accept the stationary report from Core Location instead of a new fix, without caching it as a position',async()=>{
+  native.currentPosition.mockResolvedValueOnce({stationary:true,stationarySince:1}).mockResolvedValueOnce(fix(Date.now()/1000));
+  const still=await recorder.currentPosition({allowStationary:true});
+  expect(still).toEqual({stationary:true,stationarySince:1});
+  expect(native.currentPosition).toHaveBeenLastCalledWith({allowStationary:true});
+  expect(still).not.toHaveProperty('latitude');
+  // A caller that needs a position (the map, turning sharing on) always gets a real fix.
+  await expect(recorder.currentPosition()).resolves.toMatchObject({accuracy:8});
+  expect(native.currentPosition).toHaveBeenLastCalledWith();
+ });
  it('never caches a failure',async()=>{
   native.currentPosition.mockRejectedValueOnce(new Error('No recent location fix')).mockResolvedValueOnce(fix(Date.now()/1000));
   await expect(recorder.currentPosition()).rejects.toThrow('No recent location fix');

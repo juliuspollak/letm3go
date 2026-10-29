@@ -163,7 +163,8 @@ extension LocationRecorder {
         let restingNow=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now) &&
             !AutomaticDetector.credibleMovement(motion,now:now)
         let established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow)
-        let adapted=reconcileAdaptive(now:now,mode:established)
+        let services=reconcileAdaptive(now:now,mode:established)
+        defer { checkAdaptiveInvariants() }
         // A paused manual activity continues to take precedence over automation.
         if active != nil {locationMode = .off;return}
         // This is the single owner of the automatic recorder's GPS configuration.
@@ -174,7 +175,7 @@ extension LocationRecorder {
         // session, regions, visits and motion all keep running for the next departure.
         // Walking motion, even when it does not justify precise GPS, returns to the
         // 10 m standby so that a real departure shows up in the fixes.
-        let mode=adapted
+        let mode=services.standardMode
         if mode != locationMode {
             if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
             else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
@@ -187,6 +188,8 @@ extension LocationRecorder {
             // is compared with the last one.
             if mode != .stationary { departureEvidence.reset() }
             stopContinuousLocation(reason:mode == .stationary ? "Continuous GPS stopped: low-power standby" : "Continuous GPS stopped")
+            // Handover: standard updates are stopped before the stream starts.
+            startLowPowerIfPlanned(services)
             return
         }
         applyLocationConfiguration(configuration)
@@ -233,7 +236,7 @@ extension LocationRecorder {
             manager.startMonitoring(for:region)
         }
     }
-    func processAutomatic(_ locations: [CLLocation]) {
+    func processAutomatic(_ locations: [CLLocation], source: ObservationSource = .standard) {
         guard automaticAvailable, active == nil, let storage = storage else {diagnosticRejections["rejected.automaticUnavailable",default:0]+=locations.count;return}
         let now = Date().timeIntervalSince1970
         // iOS does not wake a suspended app to expire a continuation window, so
@@ -256,12 +259,13 @@ extension LocationRecorder {
         }
         for location in locations.sorted(by:{$0.timestamp<$1.timestamp}) {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
-            if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
+            // Only standard deliveries prove the standard service is alive.
+            if source == .standard, sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
             // Delivery of any automatic fix proves the location service is alive. A
             // sparse or coarse delivery rate is not a stalled manager, so it must not
             // trigger a restart.
             // A queued backlog delivered now proves the same, whatever its age.
-            if sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
+            if source == .standard, sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
             homeRest.observe(sample,home:restPlace,now:now)
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}

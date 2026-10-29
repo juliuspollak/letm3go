@@ -98,6 +98,7 @@ extension LocationRecorder {
         lastError = ""; recoveryMessage = ""; lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; currentSpeed = 0
         automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(ownerID!)")
         adaptiveEnabled = UserDefaults.standard.bool(forKey:Self.adaptiveKey(ownerID!))
+        restoreAdaptiveRecovery()
         preferences = AccountPreferences()
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
         places = []
@@ -197,7 +198,7 @@ extension LocationRecorder {
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
-        stopLiveUpdates(reason:"the recorder was locked or signed out");adaptiveEnabled=false;adaptivePolicy=AdaptivePolicy(now:Date().timeIntervalSince1970);adaptiveState = .off;adaptivePlan = .established;placeRegionKey=nil;departureLatency.reset();lastDepartureLatency=[:]
+        stopLiveUpdates(reason:"the recorder was locked or signed out");adaptiveEnabled=false;adaptivePolicy=AdaptivePolicy(now:Date().timeIntervalSince1970);adaptiveState = .off;adaptivePlan = .established;placeRegionKey=nil;placeRegionFailedKey=nil;lastLowPowerFixAt=nil;adaptiveViolationsLogged=[];departureLatency.reset();lastDepartureLatency=[:]
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -344,7 +345,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
-                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
+                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
                 } catch { r.uiUnlocked = false; call.reject("Unable to open this account’s private storage. Local data is preserved.") }
             }
         }.resume()
@@ -390,7 +391,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
-            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
+            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveRecoveryKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
     } }
 }

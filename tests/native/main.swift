@@ -1884,92 +1884,225 @@ do {
                        journeyRecording: journey, probing: probing, continuationOpen: continuation, placeSettled: settled,
                        recentMovement: movement, motionMoving: moving, now: now)
     }
-    // 1, 2, 3, 20: settled anywhere (Home, an unsaved place, a shopping centre without
-    // Wi-Fi, no saved Home at all) is low-power standby; nothing else is needed.
+    // Settled anywhere (Home, an unsaved place, a shopping centre without Wi-Fi,
+    // no saved Home at all) is stationary standby; nothing else is needed.
     var night = AdaptivePolicy(now: 0)
-    check(night.decide(inputs(0)) == .stationaryStandby, "a settled place goes straight to low-power standby")
-    check(night.plan(inputs(0)) == .lowPower, "low-power standby stops standard updates and uses liveUpdates and a place region")
-    for hour in 1...8 { check(night.decide(inputs(Double(hour) * 3600)) == .stationaryStandby, "an overnight stay at hour \(hour) stays in low-power standby") }
-    check(night.timeInState(now: 8 * 3600)["stationaryStandby"] == 8 * 3600, "eight hours are accounted as low-power standby")
-    check(night.wakesTotal == 0 && night.loopsBlocked == 0, "a still night has no wake-ups and no loops")
-    // Not yet settled (fewer than ten quiet minutes, no visit, no saved place): standard standby.
+    check(night.decide(inputs(0)) == .stationaryStandby, "a settled place goes straight to stationary standby")
+    check(night.plan(inputs(0)) == .lowPower, "stationary standby stops standard updates and uses the low-power stream and a place region")
+    for hour in 1...8 { check(night.decide(inputs(Double(hour) * 3600)) == .stationaryStandby, "an overnight stay at hour \(hour) stays in stationary standby") }
+    check(night.timeInState(now: 8 * 3600)["stationaryStandby"] == 8 * 3600, "eight hours are accounted as stationary standby")
     var arriving = AdaptivePolicy(now: 0)
     check(arriving.decide(inputs(0, settled: false)) == .settling, "an unsettled stop keeps the established standby")
-    check(arriving.plan(inputs(0, settled: false)) == .established, "settling keeps standard updates running")
-    // One stationary callback is not enough: movement evidence of any kind keeps settling.
-    check(arriving.decide(inputs(700, movement: true)) == .settling, "recent GPS displacement prevents low-power standby")
-    check(arriving.decide(inputs(710, moving: true)) == .settling, "credible walking or driving prevents low-power standby")
-    check(arriving.decide(inputs(720)) == .stationaryStandby, "settled and still enters low-power standby")
-    // 19: manual recording and open journeys always use the established engine.
+    check(arriving.decide(inputs(700, movement: true)) == .settling, "recent GPS displacement prevents stationary standby")
+    check(arriving.decide(inputs(710, moving: true)) == .settling, "credible walking or driving prevents stationary standby")
+    check(arriving.decide(inputs(720)) == .stationaryStandby, "settled and still enters stationary standby")
+    // Invariant 1: an active journey never enters stationary standby, whatever else is true.
+    var journeyPolicy = AdaptivePolicy(now: 0)
+    for flags in [(true, false), (false, true), (true, true)] {
+        let i = inputs(10, manual: flags.0, journey: flags.1, probing: true, continuation: true, settled: true)
+        check(journeyPolicy.decide(i) == .activeJourney && journeyPolicy.plan(i) == .established, "an open journey is always active on the established engine")
+    }
     var manual = AdaptivePolicy(now: 0)
-    check(manual.decide(inputs(0, manual: true)) == .activeJourney && manual.plan(inputs(0, manual: true)) == .established, "manual recording is an active journey on the established engine")
     check(manual.decide(inputs(10, available: false, manual: true)) == .activeJourney, "manual recording continues without automatic tracking")
-    check(manual.decide(inputs(20, journey: true)) == .activeJourney, "an open automatic journey is active")
-    // A stopped journey keeps the established watch so continuations are unchanged.
-    check(manual.decide(inputs(30, continuation: true)) == .settling, "a continuation window keeps the established standby")
-    // 14: permission withdrawn.
-    check(manual.decide(inputs(40, available: false)) == .off, "without automatic tracking or recording the engine is off")
-    // Switch off, or iOS 15/16: the established engine decides standby.
+    // Invariant 3: a continuation window keeps the established watch.
+    check(manual.decide(inputs(30, continuation: true)) == .settling && manual.plan(inputs(30, continuation: true)) == .established, "a continuation window keeps the established standby")
+    // Invariants 7, 8: tracking off or permission withdrawn.
+    check(manual.decide(inputs(40, available: false)) == .off && manual.plan(inputs(40, available: false)) == .established, "without automatic tracking the engine is off and asks for nothing low-power")
     var legacy = AdaptivePolicy(now: 0)
-    check(legacy.decide(inputs(0, enabled: false)) == .stationaryStandby && legacy.plan(inputs(0, enabled: false)) == .established, "with the switch off settled standby stays on the established engine")
+    check(legacy.decide(inputs(0, enabled: false)) == .stationaryStandby && legacy.plan(inputs(0, enabled: false)) == .established, "with the switch off stationary standby stays on the established engine")
     check(legacy.plan(inputs(0, supported: false)) == .established, "without liveUpdates (iOS 15/16) the established engine is used")
 
-    // 7, 8, 9: a wake-up starts a departure check; a departure becomes a journey.
+    // Departures and returns.
     var leave = AdaptivePolicy(now: 0)
-    _ = leave.decide(inputs(0))
-    leave.noteWake(now: 3600)
-    check(leave.decide(inputs(3600, probing: true)) == .departureProbe, "a wake-up runs a departure check on the established engine")
-    check(leave.plan(inputs(3600, probing: true)) == .established, "a departure check never uses low-power standby")
+    _ = leave.decide(inputs(0)); leave.noteWake(now: 3600)
+    check(leave.decide(inputs(3600, probing: true)) == .departureProbe && leave.plan(inputs(3600, probing: true)) == .established, "a wake-up runs a departure check on the established engine")
     check(leave.decide(inputs(3700, journey: true)) == .activeJourney, "a confirmed departure records with precise GPS")
     leave.noteJourneyStarted()
     check(leave.recentWakes(3700).isEmpty, "a genuine departure is not counted towards the loop limit")
-    // 10: a check without a departure (returning to the same stop) settles again only after a short watch.
     var back = AdaptivePolicy(now: 0)
     _ = back.decide(inputs(0)); back.noteWake(now: 100)
     _ = back.decide(inputs(100, probing: true))
+    // Fails under the original ordering, which noted the check's end only after deciding.
     check(back.decide(inputs(220)) == .settling, "after an unconfirmed check the established standby watches first")
-    check(back.decide(inputs(220 + AdaptivePolicy.settleAfterProbe)) == .stationaryStandby, "then low-power standby resumes")
-    // No indefinite probe loops: too many unconfirmed wake-ups keep the established standby for the hour.
+    check(back.decide(inputs(220 + AdaptivePolicy.settleAfterProbe)) == .stationaryStandby, "then stationary standby resumes")
+    // No indefinite wake-up loops.
     var loop = AdaptivePolicy(now: 0)
     var clock: Double = 0
     for _ in 0..<AdaptivePolicy.wakeLimit {
         _ = loop.decide(inputs(clock)); loop.noteWake(now: clock)
         _ = loop.decide(inputs(clock, probing: true)); clock += 400
     }
-    check(loop.decide(inputs(clock)) == .settling, "repeated wake-ups without a journey stop using low-power standby")
-    check(loop.loopsBlocked >= 1, "a blocked wake-up loop is counted for diagnostics")
-    check(loop.decide(inputs(AdaptivePolicy.wakeWindow + 2000)) == .stationaryStandby, "low-power standby returns once the hour has passed")
-    // Recovery: the low-power service ending repeatedly falls back for a while, without a restart loop.
+    check(loop.decide(inputs(clock)) == .settling && loop.loopsBlocked >= 1, "repeated unconfirmed wake-ups keep the established standby and are counted")
+    check(loop.decide(inputs(AdaptivePolicy.wakeWindow + 2000)) == .stationaryStandby, "stationary standby returns once the hour has passed")
+    // Recovery (invariant 5).
     var broken = AdaptivePolicy(now: 0)
     _ = broken.decide(inputs(0))
     broken.noteServiceFailure(now: 10); broken.noteServiceFailure(now: 20)
-    check(broken.decide(inputs(30)) == .stationaryStandby, "one or two failures retry low-power standby")
+    check(broken.decide(inputs(30)) == .stationaryStandby, "one or two failures retry the low-power stream")
     broken.noteServiceFailure(now: 40)
-    check(broken.decide(inputs(50)) == .recovery && broken.plan(inputs(50)) == .established, "repeated failures fall back to the established standby")
-    check(broken.decide(inputs(40 + AdaptivePolicy.recoveryBackoff + 1)) == .stationaryStandby, "low-power standby is retried after the back-off")
-    var plainLegacy = AdaptivePolicy(now: 0)
-    plainLegacy.noteServiceFailure(now: 1); plainLegacy.noteServiceFailure(now: 2); plainLegacy.noteServiceFailure(now: 3)
-    check(plainLegacy.decide(inputs(4, enabled: false)) == .stationaryStandby, "recovery only applies to the low-power engine")
+    check(broken.decide(inputs(41)) == .recovery && broken.plan(inputs(41)) == .established, "the third failure falls back to the established standby at once")
+    check(broken.decide(inputs(40 + AdaptivePolicy.recoveryBackoff + 1)) == .stationaryStandby, "the low-power stream is retried after the back-off")
+    var relaunched = AdaptivePolicy(now: 100)
+    relaunched.restoreRecovery(until: 1000, now: 100)
+    check(relaunched.decide(inputs(100)) == .recovery, "a back-off persisted before a relaunch still applies")
+    var stale = AdaptivePolicy(now: 100)
+    stale.restoreRecovery(until: 50, now: 100); stale.restoreRecovery(until: 100 + AdaptivePolicy.recoveryBackoff * 10, now: 100)
+    check(stale.decide(inputs(100)) == .stationaryStandby, "an expired or implausible persisted back-off is ignored")
 
-    // Core Location's stationary reports.
+    // Stream generations: cancellation is not failure; late callbacks are ignored.
+    var stream = LowPowerStream()
+    let first = stream.start()
+    check(stream.accepts(first), "the running stream's updates are accepted")
+    stream.stop()
+    check(!stream.accepts(first), "a stopped stream's late update is ignored")
+    check(!stream.ended(first), "a cancelled stream ending is not a failure")
+    let second = stream.start()
+    check(!stream.accepts(first) && stream.accepts(second), "only the current generation may act")
+    check(stream.ended(second) && !stream.running, "the current stream ending by itself is a failure")
+    check(!stream.ended(second), "the same ending is counted once")
+    var quiet = LowPowerStream(); quiet.stop()
+    check(quiet.generation == 0, "stopping a stream that is not running changes nothing")
+
+    // Service plan: stop before start, never both at once.
+    check(AdaptiveServices.decide(established: .resting, plan: .lowPower) == AdaptiveServices(standardMode: .stationary, lowPowerStream: true), "settled standby becomes low-power standby")
+    check(AdaptiveServices.decide(established: .standby, plan: .lowPower).lowPowerStream, "standby also becomes low-power standby")
+    check(AdaptiveServices.decide(established: .precise, plan: .lowPower) == AdaptiveServices(standardMode: .precise, lowPowerStream: false), "a departure check or journey is never low-power")
+    check(AdaptiveServices.decide(established: .off, plan: .lowPower) == AdaptiveServices(standardMode: .off, lowPowerStream: false), "manual recording or tracking off never runs the stream")
+    check(AdaptiveServices.decide(established: .resting, plan: .established) == AdaptiveServices(standardMode: .resting, lowPowerStream: false), "the established plan keeps established standby")
+
+    // Invariant detection.
+    let clean = AdaptiveObservedServices(state: .stationaryStandby, adaptiveEnabled: true, locationMode: .stationary, continuousRunning: false,
+        lowPowerRunning: true, lowPowerWanted: true, placeRegionRegistered: true, journeyRecording: false, sessionHeld: true, sessionNeeded: true)
+    check(AdaptiveInvariants.violations(clean).isEmpty, "consistent low-power standby has no violations")
+    var contradiction = clean; contradiction.continuousRunning = true
+    check(Set(AdaptiveInvariants.violations(contradiction)) == ["stationaryWithContinuousGPS", "lowPowerAndContinuousTogether"], "continuous GPS in stationary standby is reported")
+    var orphan = clean; orphan.adaptiveEnabled = false
+    check(AdaptiveInvariants.violations(orphan) == ["adaptiveServicesWhileDisabled"], "adaptive services left running after switching off are reported")
+    var lost = clean; lost.lowPowerRunning = false
+    check(AdaptiveInvariants.violations(lost) == ["noLocationServiceInStandby"], "standby without any location service is reported")
+    var bare = clean; bare.journeyRecording = true; bare.lowPowerRunning = false; bare.lowPowerWanted = false; bare.locationMode = .precise
+    check(AdaptiveInvariants.violations(bare) == ["journeyWithoutPreciseGPS"], "a journey without precise GPS is reported")
+    var session = clean; session.sessionNeeded = false
+    check(AdaptiveInvariants.violations(session) == ["backgroundSessionWithoutOwner"], "a session without an owner is reported")
+
+    // The low-power gate: permission to look, not proof of a departure.
+    let origin = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 1000, accuracy: 10, altitude: 0, speed: 0)
+    func north(_ metres: Double, at t: Double, accuracy: Double = 10, speed: Double = 0) -> GPSPoint {
+        GPSPoint(latitude: -33.86 + metres / 111_195, longitude: 151.2, timestamp: t, accuracy: accuracy, altitude: 0, speed: speed)
+    }
     var gate = LiveUpdateGate()
-    let here = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 1000, accuracy: 12, altitude: 0, speed: 0)
-    check(gate.observe(stationary: false, point: here, outsidePlace: false, now: 1000) == .none, "the first report after starting is not movement")
-    check(gate.observe(stationary: true, point: here, outsidePlace: false, now: 1010) == .stationary, "a stationary report arms the gate")
-    // 6: indoor GPS jitter while Core Location says stationary is not movement.
-    check(gate.observe(stationary: true, point: GPSPoint(latitude: -33.86003, longitude: 151.20002, timestamp: 1020, accuracy: 40, altitude: 0, speed: 0), outsidePlace: false, now: 1020) == .stationary, "jitter while stationary is not movement")
-    check(gate.confirms(here), "a household fix taken where Core Location says the phone is still may be re-confirmed")
-    check(!gate.confirms(GPSPoint(latitude: -33.87, longitude: 151.2, timestamp: 1000, accuracy: 12, altitude: 0, speed: 0)), "a fix elsewhere is never re-confirmed")
-    check(!gate.confirms(GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 5000, accuracy: 12, altitude: 0, speed: 0)), "a fix taken after the stationary report is not confirmed by it")
-    if case .movement = gate.observe(stationary: false, point: here, outsidePlace: false, now: 1100) {} else { check(false, "movement after a stationary report wakes the recorder") }
-    check(!gate.confirms(here), "after movement nothing is re-confirmed")
+    check(gate.observe(stationary: true, point: origin, outsidePlace: false, now: 1000) == .stationary, "a stationary report arms the gate")
+    // Each of these fails under the original gate, which woke precise GPS for any non-stationary report.
+    check(gate.observe(stationary: false, point: nil, outsidePlace: false, now: 1010) == .ignored("no position"), "a report without a position never starts precise GPS")
+    check(gate.observe(stationary: false, point: north(200, at: 900), outsidePlace: false, now: 1010) == .ignored("stale or imprecise position"), "a stale position never starts precise GPS")
+    check(gate.observe(stationary: false, point: north(200, at: 1010, accuracy: 300), outsidePlace: false, now: 1010) == .ignored("stale or imprecise position"), "an imprecise position never starts precise GPS")
+    check(gate.observe(stationary: false, point: north(8, at: 1011), outsidePlace: false, now: 1011) == .none, "a non-stationary report without displacement is not movement")
+    check(gate.observe(stationary: false, point: north(5000, at: 1012), outsidePlace: false, now: 1012) == .ignored("implausible jump"), "a large GPS jump is not movement")
+    check(gate.observe(stationary: false, point: north(40, at: 1030), outsidePlace: false, now: 1030) == .movement("Core Location reported movement"), "displacement beyond its uncertainty is movement")
+    check(gate.observe(stationary: false, point: north(80, at: 1040), outsidePlace: false, now: 1040) == .none, "the same movement is signalled at most once a minute")
+    check(gate.observe(stationary: false, point: north(140, at: 1100), outsidePlace: false, now: 1100) == .movement("Core Location reported movement"), "a minute later it may signal again")
+    var fresh = LiveUpdateGate()
+    check(fresh.observe(stationary: false, point: origin, outsidePlace: false, now: 1000) == .none, "a new stream's first position is its reference, not movement")
+    check(fresh.observe(stationary: false, point: north(45, at: 1030), outsidePlace: false, now: 1030) == .movement("Core Location reported movement"), "moving away before any stationary report is still movement")
     var outside = LiveUpdateGate()
-    if case .movement = outside.observe(stationary: false, point: here, outsidePlace: true, now: 5) {} else { check(false, "a position outside the place is movement even before arming") }
+    check(outside.observe(stationary: false, point: origin, outsidePlace: true, now: 1000) == .movement("position outside the current place"), "a position outside the place is movement")
+    var vehicle = LiveUpdateGate()
+    _ = vehicle.observe(stationary: true, point: origin, outsidePlace: false, now: 1000)
+    check(vehicle.observe(stationary: false, point: north(12, at: 1005, speed: 9), outsidePlace: false, now: 1005) == .movement("Core Location reported vehicle speed"), "vehicle speed is movement at once")
+    var attest = LiveUpdateGate()
+    _ = attest.observe(stationary: true, point: origin, outsidePlace: false, now: 1010)
+    check(attest.confirms(origin), "a household fix where Core Location says the phone is still may be re-confirmed")
+    check(!attest.confirms(north(1000, at: 1000)), "a fix elsewhere is never re-confirmed")
+    check(!attest.confirms(north(0, at: 5000)), "a fix taken after the stationary report is not confirmed by it")
+    _ = attest.observe(stationary: false, point: nil, outsidePlace: false, now: 1020)
+    check(!attest.confirms(origin), "any non-stationary report ends the stationary attestation")
+
+    // Indoor jitter for an hour: imprecise positions wandering inside the house never start precise GPS.
+    var indoor = LiveUpdateGate()
+    _ = indoor.observe(stationary: true, point: north(0, at: 0, accuracy: 30), outsidePlace: false, now: 0)
+    var jitterSignals = 0
+    for second in stride(from: 5.0, through: 3600, by: 5) {
+        let wobble = (second.truncatingRemainder(dividingBy: 40)) - 20
+        if case .movement = indoor.observe(stationary: false, point: north(wobble, at: second, accuracy: 30), outsidePlace: false, now: second) { jitterSignals += 1 }
+    }
+    check(jitterSignals == 0, "an hour of indoor jitter never wakes precise GPS")
+
+    // Overnight: eight hours of 30-second reconciles while Core Location reports
+    // stationary. The plan never asks for standard updates, the stream is
+    // requested once and never restarted, and nothing wakes.
+    var overnight = AdaptivePolicy(now: 0)
+    var nightGate = LiveUpdateGate()
+    var streamStarts = 0, wanted = false, standardRequests = 0
+    for tick in stride(from: 0.0, through: 8 * 3600, by: 30) {
+        _ = overnight.decide(inputs(tick))
+        let services = AdaptiveServices.decide(established: .resting, plan: overnight.plan(inputs(tick)))
+        if services.lowPowerStream && !wanted { streamStarts += 1 }
+        wanted = services.lowPowerStream
+        if services.standardMode != .stationary { standardRequests += 1 }
+        if tick.truncatingRemainder(dividingBy: 3600) == 0 {
+            if case .movement = nightGate.observe(stationary: true, point: origin, outsidePlace: false, now: tick) { check(false, "a stationary report is never movement") }
+        }
+    }
+    check(streamStarts == 1 && standardRequests == 0 && overnight.wakesTotal == 0, "a still night requests the stream once, never standard updates, and never wakes")
+
+    // Short journeys: when to start precise GPS, compared with the established
+    // standby (25 m distance filter, 10 m accuracy), assuming Core Location
+    // resumes reports as movement begins (Apple documents resumption, not its
+    // latency, which must be measured on a phone).
+    func lowPowerTrigger(speed: Double, rate: Double = 1) -> (distance: Double, seconds: Double)? {
+        var g = LiveUpdateGate()
+        _ = g.observe(stationary: true, point: north(0, at: 0), outsidePlace: false, now: 0)
+        for second in stride(from: rate, through: 600, by: rate) {
+            let p = north(speed * second, at: second, speed: speed)
+            if case .movement = g.observe(stationary: false, point: p, outsidePlace: false, now: second) { return (speed * second, second) }
+        }
+        return nil
+    }
+    func establishedTrigger(speed: Double) -> (distance: Double, seconds: Double)? {
+        var evidence = DepartureEvidence()
+        _ = evidence.observe(north(0, at: 0), now: 0)
+        var delivered: Double = 0
+        for second in stride(from: 1.0, through: 600, by: 1) {
+            let metres = speed * second
+            guard metres - delivered >= 25 else { continue }   // distance filter
+            delivered = metres
+            if evidence.observe(north(metres, at: second, speed: speed), now: second) { return (metres, second) }
+        }
+        return nil
+    }
+    for (label, speed) in [("walk", 1.4), ("cycle", 5.0), ("drive", 10.0)] {
+        let low = lowPowerTrigger(speed: speed)!, established = establishedTrigger(speed: speed)!
+        check(low.distance <= established.distance + 0.5, "a \(label) starts its departure check no later than with established standby once Core Location reports movement")
+        check(low.distance <= 45, "a \(label) is checked within 45 m of where it began")
+    }
+    // A 200 m walk: from the low-power trigger, the existing detector (unchanged
+    // thresholds) confirms the departure well before the walk ends, and the
+    // journey starts at the triggering fix, not at an invented point.
+    let walk = lowPowerTrigger(speed: 1.4)!
+    var walkDetector = AutomaticDetector()
+    let walking = MotionEvidence(types: ["Walking"], confidence: "high", timestamp: walk.seconds, continuous: true)
+    var departedAt: Double?
+    var firstCandidate: Double?
+    for second in stride(from: walk.seconds, through: walk.seconds + 200, by: 1) {
+        let p = north(1.4 * second, at: second, speed: 1.4)
+        let event = walkDetector.observe(p, motion: MotionEvidence(types: walking.types, confidence: "high", timestamp: second, continuous: true), manualActive: false, now: second, activity: "Walking")
+        if firstCandidate == nil { firstCandidate = 1.4 * second }
+        if event == "depart" { departedAt = 1.4 * second; break }
+    }
+    check(departedAt != nil && departedAt! < 200, "a 200 m walk is confirmed before it ends")
+    check((firstCandidate ?? 999) <= 45 && abs((walkDetector.candidate.first.map { $0.distance(to: north(0, at: 0)) } ?? 999) - walk.distance) < 1, "the walk's route begins at the first real low-power fix")
+    // Delayed or batched reports are never taken as current movement.
+    var late = LiveUpdateGate()
+    _ = late.observe(stationary: true, point: origin, outsidePlace: false, now: 1000)
+    check(late.observe(stationary: false, point: north(300, at: 1000), outsidePlace: false, now: 1200) == .ignored("stale or imprecise position"), "a batched old report does not start precise GPS")
 
     check(PlaceRegion.radius(placeRadius: 50, anchorAccuracy: 10) == PlaceRegion.minimumRadius, "a small place gets at least a 100 m region")
     check(PlaceRegion.radius(placeRadius: 80, anchorAccuracy: 90) == 180, "an imprecise indoor anchor widens the region")
     check(PlaceRegion.radius(placeRadius: 400, anchorAccuracy: 10) == PlaceRegion.maximumRadius, "a large place is capped at 300 m")
-    check(PlaceRegion.radius(placeRadius: 120, anchorAccuracy: .nan) == 130, "an unknown accuracy is treated as 65 m")
+    check(PlaceRegion.radius(placeRadius: .nan, anchorAccuracy: .nan) == 130, "invalid inputs fall back to safe values")
+    check(PlaceRegion.valid(latitude: -33.86, longitude: 151.2, radius: 150), "a real place is a valid region")
+    check(!PlaceRegion.valid(latitude: 0, longitude: 0, radius: 150) && !PlaceRegion.valid(latitude: 95, longitude: 0, radius: 150) && !PlaceRegion.valid(latitude: -33.86, longitude: 151.2, radius: 20),
+          "an invalid coordinate or radius is never registered")
 
     var latency = DepartureLatency()
     check(latency.measure(firstFixAt: 10, confirmedAt: 20) == nil, "no latency without departure evidence")
@@ -1980,7 +2113,6 @@ do {
 
     check(LocationConfiguration.automatic(.stationary, journeyOpen: false, journeyActivity: nil, drivingMotion: false, currentProfile: .other) == nil, "low-power standby requests no standard continuous updates")
     check(LocationIndicator.explain(continuous: false, mode: .stationary, manual: false, sessionHeld: true).reason.contains("continuous location stopped"), "the indicator explanation says continuous location is stopped")
-    // Every state is reachable and named for diagnostics.
     check(AdaptiveState.allCases.count == 6, "six adaptive states")
 }
 

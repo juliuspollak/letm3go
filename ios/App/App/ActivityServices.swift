@@ -246,6 +246,15 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     } }
     @objc func currentPosition(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
+        // Periodic refreshes (household publishing, Home presence) may accept
+        // "still stationary" instead of a new precise fix while the adaptive
+        // engine holds Core Location's own stationary report. No coordinates are
+        // returned in that case, so nothing old is presented as new; the native
+        // publisher re-confirms the shared position on that same evidence.
+        let recorder = LocationRecorder.shared
+        if call.getBool("allowStationary") == true, recorder.liveUpdatesTask != nil, let since = recorder.liveGate.stationarySince {
+            call.resolve(["stationary": true, "stationarySince": since]); return
+        }
         let request = PositionRequest(call:call); self.positionRequest = request; request.begin()
     } }
     @objc func searchAddress(_ call: CAPPluginCall) { DispatchQueue.main.async {

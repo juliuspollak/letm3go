@@ -69,7 +69,9 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    if(!alive||document.visibilityState==='hidden'||locationBusy.current||automaticActivity)return;
    locationBusy.current=true;
    try {
-    const point=await recorder.currentPosition();
+    const point=await recorder.currentPosition({allowStationary:true});
+    // Still where the last check found the phone: nothing to update.
+    if(point?.stationary)return;
     if(!alive||!point||!Number.isFinite(point.latitude)||!Number.isFinite(point.longitude)||point.accuracy>100)return;
     const radians=Math.PI/180,dlat=(point.latitude-homeLatitude)*radians,dlon=(point.longitude-homeLongitude)*radians;
     const a=Math.sin(dlat/2)**2+Math.cos(point.latitude*radians)*Math.cos(homeLatitude*radians)*Math.sin(dlon/2)**2;
@@ -173,7 +175,10 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    if(!alive||document.visibilityState==='hidden'||liveBusy.current)return;
    liveBusy.current=true;
    try{
-    const position=await recorder.currentPosition();
+    const position=await recorder.currentPosition({allowStationary:true});
+    // Core Location reports the phone has not moved: the native publisher
+    // re-confirms the shared position, so no precise fix is requested here.
+    if(position?.stationary)return;
     if(!alive||!liveConsent.current||!position||!Number.isFinite(position.latitude)||!Number.isFinite(position.longitude)||
       !Number.isFinite(position.accuracy)||position.accuracy<0||position.accuracy>100)return;
     // Speed and time come from Core Location; never send stale or inferred fixes.
