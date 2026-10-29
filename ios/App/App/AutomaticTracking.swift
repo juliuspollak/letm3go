@@ -50,14 +50,18 @@ extension LocationRecorder {
         UserDefaults.standard.set(enabled,forKey:"letm3go-automatic-\(ownerID ?? "locked")")
         if enabled { startMotionUpdates() } else { stopMotionUpdates(); motion = MotionEvidence(); detector.reset() }
         refreshAutomaticMonitoring()
+        if !enabled { releaseBackgroundSessionIfUnneeded("automatic tracking was switched off") }
     }
     func refreshAutomaticMonitoring() {
         updateIndicatorPolicy()
         guard storage != nil else { stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();return }
+        // Start the background session while the app is in the foreground; once
+        // held, it covers departures that begin with the phone locked.
+        reconcileBackgroundSession("monitoring refresh")
         let now=Date().timeIntervalSince1970
         let backgroundSharingArmed=(liveShareToken != nil && now<liveShareTokenExpiresAt-60) ||
             (friendShareToken != nil && now<friendShareTokenExpiresAt-60)
-        if !automaticAvailable && backgroundSharingArmed && uiUnlocked && !accountSuspended &&
+        if !automaticAvailable && backgroundSharingArmed && storeOpened && !accountSuspended &&
            manager.authorizationStatus == .authorizedAlways {
             // Low-power significant-change callbacks can wake a suspended app
             // without keeping continuous GPS active for family presence.
@@ -81,7 +85,19 @@ extension LocationRecorder {
             stopSignificantMonitoring()
             stopVisitMonitoring()
             for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { manager.stopMonitoring(for:region) }
-            if active?.state != "recording" { stopContinuousLocation() }
+            // GPS is about to stop, so an open journey must not keep reporting that
+            // it is recording. Interrupt it at its last fix: the next accepted fix
+            // reopens it as a new segment once tracking is available again.
+            if var trip = automaticTrip, trip.state == "recording" {
+                trip.recoverAfterInterruption()
+                trip.updateDetails { metadata in
+                    metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + ["Recording interrupted: automatic tracking became unavailable"]).suffix(24))
+                }
+                do { try storage?.save(trip) } catch { lastError = "Interrupted automatic journey could not be saved: \(error.localizedDescription)" }
+                automaticTrip = trip
+                recordDiagnostic("recovery","Automatic journey interrupted: automatic tracking became unavailable",details:["savedFixes":String(trip.points.count)])
+            }
+            if active?.state != "recording" { stopContinuousLocation(reason:"Continuous GPS stopped: automatic tracking unavailable") }
         }
     }
     func beginAutomaticProbe(movementBegan:Bool = false) {
@@ -122,29 +138,38 @@ extension LocationRecorder {
         }
         // A paused manual activity continues to take precedence over automation.
         if active != nil {return}
-        switch automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now) {
-        case .precise:
-            manager.desiredAccuracy=kCLLocationAccuracyBest
-            manager.distanceFilter=5
-            manager.pausesLocationUpdatesAutomatically=false
-            manager.activityType = automaticTrip?.activity == "Driving" || motion.types.contains("Driving") ? .automotiveNavigation : .other
-            startContinuousLocation()
-        case .standby:
-            // Motion callbacks cannot wake a suspended app. Keep standard location
-            // running at reduced accuracy so the next departure can promote GPS.
-            manager.desiredAccuracy=kCLLocationAccuracyNearestTenMeters
-            manager.distanceFilter=25
-            manager.pausesLocationUpdatesAutomatically=false
-            manager.activityType = .other
-            startContinuousLocation()
-        case .off:
+        // This is the single owner of the automatic recorder's GPS configuration.
+        // An open journey (recording or interrupted) is always precise; standby is
+        // only for when no journey is open. Motion callbacks cannot wake a
+        // suspended app, so standby keeps reduced-accuracy location running.
+        let mode=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now)
+        guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
+            drivingMotion:motion.types.contains("Driving"),currentProfile:manager.activityType == .automotiveNavigation ? .automotive : .other) else {
             departureEvidence.reset()
             stopContinuousLocation()
+            return
         }
+        applyLocationConfiguration(configuration)
+        startContinuousLocation()
+    }
+    // Assign only what changed, so a 30-second reconcile never re-applies the same
+    // values to a running session, and every real change is in the journal.
+    func applyLocationConfiguration(_ configuration: LocationConfiguration) {
+        let accuracy = configuration.accuracy == .best ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        let type: CLActivityType = configuration.profile == .automotive ? .automotiveNavigation : .other
+        guard manager.desiredAccuracy != accuracy || manager.distanceFilter != configuration.distanceFilter ||
+              manager.activityType != type || manager.pausesLocationUpdatesAutomatically else { return }
+        manager.desiredAccuracy = accuracy
+        manager.distanceFilter = configuration.distanceFilter
+        manager.pausesLocationUpdatesAutomatically = false
+        manager.activityType = type
+        recordDiagnostic("service","Location configuration changed",details:["configuration":configuration.label,"continuousRunning":String(continuousLocationRequested)])
     }
 
     func configurePlaceRegions() {
-        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { manager.stopMonitoring(for:region) }
+        // The continuation region belongs to the published stop, not to saved
+        // places; rebuilding place regions must not remove its wake-up.
+        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") && region.identifier != Self.continuationRegionID { manager.stopMonitoring(for:region) }
         guard CLLocationManager.isMonitoringAvailable(for:CLCircularRegion.self) else { return }
         for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(18) {
             let region = CLCircularRegion(center:CLLocationCoordinate2D(latitude:place.latitude,longitude:place.longitude),radius:min(place.radius,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-\(place.id)")
@@ -167,13 +192,28 @@ extension LocationRecorder {
         // every wake reconciles the wall clock before processing new fixes.
         if settledTripID != nil { finishExpiredContinuation(now:now) }
         if CMMotionActivityManager.authorizationStatus() != .authorized { motion = MotionEvidence() }
+        // Appended fixes are written once per delivery, not once per fix: a queued
+        // backlog of N fixes must not re-encrypt the whole journey N times on the
+        // main thread during a short wake. Settling, finishing and splitting still
+        // save immediately from the in-memory journey.
+        var unsavedTripID: String?
+        defer {
+            if let id = unsavedTripID, let trip = automaticTrip, trip.id == id {
+                do { try storage.save(trip) } catch {
+                    recordDiagnostic("error","Automatic activity could not be saved",details:["code":String((error as NSError).code)])
+                    lastError = "Automatic tracking could not save: \(error.localizedDescription)"
+                    stopContinuousLocation(reason:"automatic route saving failed")
+                }
+            }
+        }
         for location in locations.sorted(by:{$0.timestamp<$1.timestamp}) {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
             if sample.accuracy >= 0, sample.accuracy <= 65, abs(now-sample.timestamp)<20 { lastAutomaticFixAt = sample.timestamp }
             // Delivery of any automatic fix proves the location service is alive. A
             // sparse or coarse delivery rate is not a stalled manager, so it must not
             // trigger a restart.
-            if sample.accuracy >= 0, abs(now-sample.timestamp) <= 120 { lastAutomaticDeliveryAt = now }
+            // A queued backlog delivered now proves the same, whatever its age.
+            if sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
@@ -216,7 +256,9 @@ extension LocationRecorder {
             if automaticTrip == nil,departureEvidence.observe(sample,now:now) {
                 beginAutomaticProbe(movementBegan:true)
             }
-            guard AutomaticDetector.acceptsDelivery(sample,receivedAt:now,boundary:trackingBoundary) else {
+            // iOS queues updates while the app is suspended. A queued fix newer than
+            // the open journey's last saved fix is real route, however late.
+            guard AutomaticDetector.acceptsDelivery(sample,receivedAt:now,boundary:trackingBoundary,openJourneyLastFix:automaticTrip?.points.last?.timestamp) else {
                 diagnosticReject(sample.accuracy<0||sample.accuracy>65 ? "accuracy" : now-sample.timestamp>120 ? "deliveryTooOld" : "invalidTimestampOrCoordinate")
                 if automaticTrip == nil && now-(lastTrackingEventAt ?? 0)>45 {
                     trackingEvent("GPS rejected: accuracy or timestamp outside reliable recording limits")
@@ -284,20 +326,20 @@ extension LocationRecorder {
                     diagnosticGPSAccepted+=trip.points.count
                     recordDiagnostic("detection","Automatic departure confirmed",details:["firstFixAt":String(first.timestamp),"confirmationDelaySeconds":String(now-first.timestamp),"bufferedFixes":String(trip.points.count)])
                     trackingEvent("Automatic departure confirmed")
-                    // Keep the departure's buffered, genuine fixes and retain precise GPS throughout the drive.
-                    manager.desiredAccuracy = kCLLocationAccuracyBest; manager.distanceFilter = 5; manager.pausesLocationUpdatesAutomatically = false
-                    manager.activityType = motion.types.contains("Driving") ? .automotiveNavigation : .other
+                    // Keep the departure's buffered, genuine fixes and retain precise
+                    // GPS throughout the drive, through the one configuration owner.
+                    reconcileAutomaticSampling()
                 } else if var trip = automaticTrip {
-                    if let last=trip.points.last,sample.timestamp-last.timestamp>45 {
-                        let gap=Int(sample.timestamp-last.timestamp)
-                        let note="GPS resumed after \(gap)s without saved route samples; distance within gap excluded"
-                        let previousNotes=trip.details?.trackingNotes ?? []
-                        if previousNotes.last != note {
-                            trip.details?.trackingNotes=Array((previousNotes+[note]).suffix(24))
-                        }
-                    }
                     let previousDistance=trip.distanceMeters
+                    let previousFix=trip.points.last
                     if trip.accept(sample,now:observedAt), let first = trip.points.first {
+                        // Note only a real segment break, so the notes, route quality
+                        // and the dashed map connector describe the same gaps.
+                        if let last=previousFix,let added=trip.points.last,added.segment != last.segment {
+                            let note="GPS resumed after \(Int(added.timestamp-last.timestamp))s without saved route samples; \(Int(last.distance(to:added)))m straight-line gap excluded from distance"
+                            trip.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
+                            recordDiagnostic("gap","Automatic route segment break",details:["gapSeconds":String(Int(added.timestamp-last.timestamp)),"gapMeters":String(Int(last.distance(to:added)))])
+                        }
                         // An on-foot journey may refine its own subtype, but only the
                         // sustained movement transition may relabel it as a vehicle.
                         // A late or stale Core Motion classification must not turn a
@@ -308,7 +350,7 @@ extension LocationRecorder {
                             trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)
                         }
                         let classificationChanged=automaticTrip?.activity != trip.activity
-                        try storage.save(trip); automaticTrip = trip
+                        automaticTrip = trip; unsavedTripID = trip.id
                         if classificationChanged {recordDiagnostic("classification","Automatic activity classification changed",details:["predicted":trip.activity])}
                         diagnosticGPSAccepted+=1
                     }else{diagnosticReject("routeDuplicateJitterOrImplausibleMovement")}
@@ -368,6 +410,8 @@ extension LocationRecorder {
         }
         ended.updatedAt = Date().timeIntervalSince1970
         ended.title = previousName
+        let endedQuality = ended.routeQualitySummary()
+        ended.updateDetails { $0.routeQuality = endedQuality }
         guard var next = makeAutomaticJourney(family, from: confirmed) else { return }
         next.details?.trackingNotes = [
             "\(previousName) to \(next.activity) transition confirmed using sustained GPS, speed and motion evidence",
@@ -459,9 +503,8 @@ extension LocationRecorder {
         let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
         let end = max(trip.startedAt, min(now, lastMovement))
         trip.points = trip.points.filter { $0.timestamp <= end }
-        trip.distanceMeters = zip(trip.points,trip.points.dropFirst()).reduce(0) { sum,pair in
-            sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
+        // The same distance rule as recording: drift while stopped is not movement.
+        trip.distanceMeters = trip.measuredDistance
         // Genuine movement is required before a journey is worth publishing.
         guard trip.points.count >= 2, trip.distanceMeters >= 25 else {
             automaticTrip = trip
@@ -698,13 +741,14 @@ extension LocationRecorder {
         cleanupContinuationRegion()
         let region = CLCircularRegion(center:CLLocationCoordinate2D(latitude:last.latitude,longitude:last.longitude),
             radius:min(max(120,last.accuracy*3),manager.maximumRegionMonitoringDistance),
-            identifier:"letm3go-place-continuation")
+            identifier:Self.continuationRegionID)
         region.notifyOnEntry = false; region.notifyOnExit = true
         manager.startMonitoring(for:region)
     }
     func cleanupContinuationRegion() {
-        for region in manager.monitoredRegions where region.identifier == "letm3go-place-continuation" { manager.stopMonitoring(for:region) }
+        for region in manager.monitoredRegions where region.identifier == Self.continuationRegionID { manager.stopMonitoring(for:region) }
     }
+    static let continuationRegionID = "letm3go-place-continuation"
     func finishAutomatic(force: Bool = false, reason: String? = nil, trigger: String = "finishAutomatic", event: String = "the automatic journey was ended") throws {
         // A published stop is finalised in place; its geometry is already recorded.
         guard var trip = automaticTrip, let storage = storage else {
@@ -727,9 +771,7 @@ extension LocationRecorder {
             : max(trip.startedAt,min(Date().timeIntervalSince1970,
                 min(approach?.timestamp ?? lastMovement,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
         trip.points = trip.points.filter { $0.timestamp <= end }
-        trip.distanceMeters = zip(trip.points,trip.points.dropFirst()).reduce(0) { sum,pair in
-            sum + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
+        trip.distanceMeters = trip.measuredDistance
         // A user-forced finish on a journey without genuine movement must not
         // create an empty activity in history.
         if force, trip.points.count < 2 || trip.distanceMeters < 25 {
@@ -768,7 +810,10 @@ extension LocationRecorder {
         refreshAutomaticMonitoring()
     }
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        noteExecution("regionExit")
         guard automaticAvailable, active == nil, region.identifier.hasPrefix("letm3go-place-") else { return }
+        // An open journey already has precise GPS; a place exit is not a departure.
+        guard automaticTrip == nil || settledAt != nil else { recordDiagnostic("region","Place exit during an open journey");return }
         // Leaving a monitored stop or a saved place is real movement evidence.
         // Expire the window on the wall clock first: a suspended app is often
         // woken long after the window has passed.
@@ -777,12 +822,19 @@ extension LocationRecorder {
         beginAutomaticProbe(movementBegan:true)
     }
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+        noteExecution("regionEnter")
         guard automaticAvailable, active == nil else { return }
         finishExpiredContinuation(now:Date().timeIntervalSince1970)
+        // A one-shot request on the manager that is already running continuous
+        // updates adds nothing and its effect on that session is not guaranteed.
+        guard !continuousLocationRequested else { recordDiagnostic("region","Place entry while continuous location is running");return }
+        recordDiagnostic("region","Place entry requested a one-time location")
         manager.requestLocation()
     }
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+        noteExecution("visit")
         let now = Date().timeIntervalSince1970
+        recordDiagnostic("region",visit.departureDate == .distantFuture ? "Visit arrival reported" : "Visit departure reported")
         if visit.departureDate == .distantFuture {
             finishExpiredContinuation(now:now)
             if automaticTrip != nil, detector.shouldArrive(now:now,activity:automaticTrip?.activity ?? "Driving") { settleAutomatic(trigger:"didVisit",event:"a visit began at the current location") }

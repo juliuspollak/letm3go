@@ -5,7 +5,7 @@ import { Capacitor } from '@capacitor/core';
 import { supabase } from './supabase.js';
 import { config } from './config.js';
 import { authStorage, AUTH_STORAGE_KEY, accountStore, defaultPreferences } from './sessionStorage.js';
-import { resolveIdentity, isTransientAuthError } from './authCore.js';
+import { resolveIdentity, isTransientAuthError, definitiveIdentityFailure } from './authCore.js';
 import { listenForNativeAuth, authRedirect } from './auth.js';
 import { setPrivateMediaOwner } from './privateMedia.js';
 import { stopAccountPush, resumeAccountPush } from './pushAccount.js';
@@ -49,7 +49,11 @@ export function AuthProvider({children}){
    boundOwner.current=next.session?.user.id||null;
    preferencesRef.current=next.preferences||defaultPreferences();
    setPrivateMediaOwner(['authenticated','offline'].includes(next.status)?next.session.user.id:null);setIdentity(next);setError('');
-  }catch(err){if(turn!==generation.current||isDiscardedRefresh(err))return;await accountStore.lock().catch(()=>{});if(turn!==generation.current)return;setError(err.message||'Sign in again to unlock your private data.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}
+  }catch(err){if(turn!==generation.current||isDiscardedRefresh(err))return;
+   // Only a definitive identity failure signs the recorder out. A network,
+   // timeout or bridge failure hides private data but must not end a journey
+   // that native tracking is still recording.
+   await (definitiveIdentityFailure(err)?accountStore.lock():(accountStore.suspend?.()??accountStore.lock())).catch(()=>{});if(turn!==generation.current)return;setError(err.message||'Sign in again to unlock your private data.');setIdentity({status:'reauth',session:null,preferences:defaultPreferences()});}
  },[]);
  useEffect(()=>{
   if(!supabase){const timer=setTimeout(()=>void reconcile(null),0);return()=>clearTimeout(timer);}

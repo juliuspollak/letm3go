@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 umask 077
-: "${RUNNER_TEMP:?}" "${IOS_DISTRIBUTION_CERTIFICATE_BASE64:?}" "${IOS_APP_STORE_PROFILE_BASE64:?}" "${IOS_DISTRIBUTION_CERTIFICATE_PASSWORD:?}"
+: "${RUNNER_TEMP:?}" "${IOS_DISTRIBUTION_CERTIFICATE_BASE64:?}" "${IOS_APP_STORE_PROFILE_BASE64:?}" "${IOS_DISTRIBUTION_CERTIFICATE_PASSWORD:?}" "${APPLE_WATCH_PROVISIONING_PROFILE_BASE64:?}"
 LETM3GO_KEYCHAIN="$RUNNER_TEMP/letm3go-signing.keychain-db"
 export LETM3GO_KEYCHAIN
 printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/letm3go.p12"
@@ -18,3 +18,10 @@ python3 scripts/validate-profile.py "$RUNNER_TEMP/letm3go-profile.plist"
 profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/letm3go-profile.plist")
 mkdir -p "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
 cp "$RUNNER_TEMP/letm3go.mobileprovision" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$profile_uuid.mobileprovision"
+# The embedded Apple Watch app (au.jpollak.journey.watchkitapp) is signed with
+# its own App Store profile, issued for the same distribution certificate.
+printf '%s' "$APPLE_WATCH_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/letm3go-watch.mobileprovision"
+security cms -D -i "$RUNNER_TEMP/letm3go-watch.mobileprovision" > "$RUNNER_TEMP/letm3go-watch-profile.plist"
+python3 scripts/validate-profile.py "$RUNNER_TEMP/letm3go-watch-profile.plist" watch
+watch_profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/letm3go-watch-profile.plist")
+cp "$RUNNER_TEMP/letm3go-watch.mobileprovision" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$watch_profile_uuid.mobileprovision"

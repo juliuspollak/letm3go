@@ -25,15 +25,15 @@ function snapshotKey(data){
   data.automaticState,data.automaticSampling,data.automaticSettledTripID,
   data.automaticSettledAt,data.automaticContinuationEndsAt,
   data.motionAvailable,data.motionPermission,data.motionTypes?.join(','),data.motionConfidence,data.motionTimestamp,
-  data.backgroundEnabled,data.backgroundRecording,data.locationServices,data.applicationState,
+  data.backgroundEnabled,data.backgroundRecording,data.locationServices,data.applicationState,data.backgroundSession,data.commit,
   data.gpsReason,data.indicatorRequested,data.lastTrackingEvent,data.lastTrackingEventAt,
   data.error,data.recovery,data.accuracy,data.lastFixAt,data.currentSpeed,
   tripKey(data.active),tripKey(data.automaticTrip),
   (data.trips||[]).map(tripKey).join('|'),
   (data.places||[]).map(p=>[p.id,p.name,p.kind,p.latitude,p.longitude,p.radius].join(':')).join('|'),
   (data.deletedIDs||[]).join(','),
-  svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,
-  data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight
+  svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,svc.automaticPauseEnabled,svc.lastExecutionGapSeconds,
+  data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight,data.nativeFamilySharing?.mode,data.nativeFamilySharing?.lastUploadOkAt,data.nativeFamilySharing?.status
  ].join('~');
 }
 function lockedSnapshot(data){

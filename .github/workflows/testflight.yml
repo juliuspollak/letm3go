@@ -12,6 +12,10 @@ on:
       release_notes:
         description: 'What to Test notes for App Store Connect'
         type: string
+      candidate_branch:
+        description: 'Allow a non-main branch as a TestFlight test candidate (internal testers only; never merges)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -19,7 +23,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   package:
-    if: github.ref == 'refs/heads/main'
+    # Releases come from main; any other branch must be explicitly marked a candidate.
+    if: github.ref == 'refs/heads/main' || inputs.candidate_branch
     runs-on: macos-26
     timeout-minutes: 60
     environment: ios-signing
@@ -32,6 +37,11 @@ jobs:
       VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Record source
+        env:
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
+        run: |
+          echo "Source ${GITHUB_REF_NAME} @ ${GITHUB_SHA} (candidate branch build=${CANDIDATE_BRANCH})" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Validate Xcode and iPhoneOS SDK
         run: |
           xcodebuild -version
@@ -63,11 +73,17 @@ jobs:
           IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_APP_STORE_PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROFILE_BASE64 }}
+          APPLE_WATCH_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_WATCH_PROVISIONING_PROFILE_BASE64 }}
         run: bash scripts/ci-signing.sh
       - name: Package signed IPA (no upload)
         env:
           BUILD_NUMBER_OVERRIDE: ${{ inputs.build_number }}
         run: bundle exec fastlane ios package
+      - name: Record validated IPA identity
+        run: |
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat .build/release/Letm3go.manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: letm3go-ipa-${{ github.run_id }}
@@ -81,9 +97,12 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/letm3go-signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/letm3go.p12" "$RUNNER_TEMP/letm3go.mobileprovision" "$RUNNER_TEMP/letm3go-profile.plist"
-          if [ -n "${PROFILE_UUID:-}" ]; then
-            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-          fi
+          rm -f "$RUNNER_TEMP/letm3go-watch.mobileprovision" "$RUNNER_TEMP/letm3go-watch-profile.plist"
+          for uuid in "${PROFILE_UUID:-}" "${WATCH_PROFILE_UUID:-}"; do
+            if [ -n "$uuid" ]; then
+              rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$uuid.mobileprovision"
+            fi
+          done
   upload:
     if: ${{ inputs.upload_approved }}
     needs: package

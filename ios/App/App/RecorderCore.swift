@@ -186,7 +186,10 @@ struct RecordedActivity: Codable {
         if let previous = points.last {
             let dt = point.timestamp - previous.timestamp
             guard dt > 0 else { return false }
-            if previous.segment == segment && dt <= (recordingMode == "automatic" ? 180 : 30) {
+            let observed = recordingMode == "automatic"
+                ? !Self.unobservedGap(from: previous, to: point)
+                : dt <= 30
+            if previous.segment == segment && observed {
                 let distance = previous.distance(to: point)
                 let implied = distance / dt
                 let familyMax: Double = recordingMode == "automatic"
@@ -223,6 +226,40 @@ struct RecordedActivity: Codable {
         }
         points.append(point)
         return true
+    }
+
+    // Recompute distance with exactly the rule `accept` applies while recording, so
+    // publishing, finishing, splitting or trimming a journey never changes what
+    // counts as movement. Only consecutive fixes in one observed segment count, and
+    // for an automatic journey only real movement above the accuracy jitter floor
+    // (stationary drift and waits at a light are geometry, not distance). Manual
+    // recording already rejects jitter fixes, so every retained pair counts.
+    static func measuredDistance(_ points: [GPSPoint], automatic: Bool) -> Double {
+        zip(points, points.dropFirst()).reduce(0) { total, pair in
+            let (previous, point) = pair
+            let dt = point.timestamp - previous.timestamp
+            guard previous.segment == point.segment, dt > 0 else { return total }
+            let distance = previous.distance(to: point)
+            guard automatic else { return total + distance }
+            let jitterFloor = max(3, min(10, (previous.accuracy + point.accuracy) / 4))
+            return distance / dt >= 0.35 && distance >= jitterFloor ? total + distance : total
+        }
+    }
+    var measuredDistance: Double { Self.measuredDistance(points, automatic: recordingMode == "automatic") }
+
+    // One definition of an unobserved automatic gap, shared by segmentation, the
+    // tracking notes, route quality and the map. A silence longer than
+    // `observedGapSeconds` with real displacement is a break: the straight line
+    // across it is neither drawn as route nor counted as distance. A long silence
+    // with no displacement is a stop (a distance filter delivers nothing while
+    // parked at a light), so it stays one segment and adds no distance.
+    static let observedGapSeconds: Double = 45
+    static let stationaryGapSeconds: Double = 180
+    static func unobservedGap(from previous: GPSPoint, to point: GPSPoint) -> Bool {
+        let dt = point.timestamp - previous.timestamp
+        guard dt > observedGapSeconds else { return false }
+        guard dt <= stationaryGapSeconds else { return true }
+        return previous.distance(to: point) > max(50, previous.accuracy + point.accuracy)
     }
 
     // Summarise how much of the recorded time is actually observed.
@@ -269,9 +306,7 @@ enum RouteTrimming {
         trip.endedAt = last.timestamp
         trip.resumedAt = nil
         trip.accumulatedSeconds = last.timestamp-first.timestamp
-        trip.distanceMeters = zip(chosen,chosen.dropFirst()).reduce(0) { total, pair in
-            total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
+        trip.distanceMeters = trip.measuredDistance
         trip.updatedAt = Date().timeIntervalSince1970
         let trimmedQuality = trip.routeQualitySummary()
         trip.updateDetails { $0.routeQuality = trimmedQuality }
@@ -289,15 +324,10 @@ enum RouteTrimming {
 // No segment is bridged or interpolated, so no distance is invented or counted
 // twice, and a journey that no longer has enough real movement is not published.
 enum JourneySplit {
-    static func distance(_ points: [GPSPoint]) -> Double {
-        zip(points,points.dropFirst()).reduce(0) { total,pair in
-            total + (pair.0.segment == pair.1.segment ? pair.0.distance(to:pair.1) : 0)
-        }
-    }
     static func kept(_ trip: RecordedActivity, before timestamp: Double) -> RecordedActivity? {
         var kept = trip
         kept.points = trip.points.filter { $0.timestamp < timestamp }
-        kept.distanceMeters = distance(kept.points)
+        kept.distanceMeters = kept.measuredDistance
         guard kept.points.count >= 2, kept.distanceMeters >= 25, let last = kept.points.last else { return nil }
         kept.finish(at: max(kept.startedAt,last.timestamp))
         return kept
@@ -858,10 +888,141 @@ enum AutomaticRecovery {
 // recording when the recorder restarted is its own boundary: its saved fixes and
 // the batch iOS delivers after relaunch belong to it even though they predate the
 // restart. A fresh session keeps the plain "now" boundary.
+// `boundSince` is when this account was bound on this device and not signed out
+// since. A relaunch keeps that boundary, so updates iOS queued for the same account
+// while the app was not running are not rejected merely for predating the launch.
 enum TrackingBoundary {
-    static func value(now: Double, restoredAutomatic: RecordedActivity?) -> Double {
-        guard let trip = restoredAutomatic else { return now }
-        return min(now, trip.startedAt)
+    static func value(now: Double, restoredAutomatic: RecordedActivity?, boundSince: Double? = nil) -> Double {
+        let base = boundSince.map { min(now, $0) } ?? now
+        guard let trip = restoredAutomatic else { return base }
+        return min(base, trip.startedAt)
+    }
+}
+
+// Household location publishing rules. A moving phone publishes at most every
+// 25 s from real Core Location fixes. A phone that is not moving produces no fixes,
+// so its last fix is re-confirmed every 5 minutes, but only while the continuous
+// location service has run without interruption since that fix: with a distance
+// filter active, no callback then means the phone has not moved beyond it. After
+// any suspension a new real fix is required before anything is confirmed again.
+enum HouseholdPublisher {
+    static let movingInterval: Double = 25
+    static let confirmationInterval: Double = 300
+    static func validToken(_ token: String) -> Bool {
+        token.count == 64 && token.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+    static func validEndpoint(_ url: URL) -> Bool {
+        url.scheme == "https" && url.path.hasSuffix("/rest/v1/rpc/publish_live_location")
+    }
+    static func canConfirm(continuousRunning: Bool, resuming: Bool, fixAt: Double, executingSince: Double) -> Bool {
+        continuousRunning && !resuming && fixAt >= executingSince
+    }
+}
+
+// MARK: Location service lifecycle
+//
+// Apple documents that with allowsBackgroundLocationUpdates, updates started while
+// the app is in the foreground keep the app running in the background. Updates
+// started after iOS relaunched the app in the background carry no such guarantee.
+// A CLBackgroundActivitySession (iOS 17+) keeps the app in use in the background;
+// a new one can only be started in the foreground, and after a background relaunch
+// the app may only rejoin one that was never invalidated. The session is therefore
+// started in the foreground whenever tracking may need it, rejoined at launch
+// before any location service starts, and ended only for an explicit reason.
+enum BackgroundSessionPolicy {
+    enum Action: Equatable { case none, start, rejoin, deferUntilForeground }
+    static func wanted(automaticAvailable: Bool, manualRecording: Bool) -> Bool {
+        automaticAvailable || manualRecording
+    }
+    // Launch: rejoin immediately when a session was held before termination, before
+    // any location service is restarted.
+    static func onLaunch(previouslyHeld: Bool, supported: Bool) -> Action {
+        supported && previouslyHeld ? .rejoin : .none
+    }
+    static func decide(wanted: Bool, held: Bool, foreground: Bool, previouslyHeld: Bool, supported: Bool) -> Action {
+        guard supported, wanted, !held else { return .none }
+        if foreground { return .start }
+        return previouslyHeld ? .rejoin : .deferUntilForeground
+    }
+    // Only an explicit end of the need releases the session: a transient
+    // unavailability (an account not yet open at launch, a services check in
+    // flight) must not throw away background capability that only the foreground
+    // can restore.
+    // Sign-out and account changes end the session explicitly. `accountKnown` is
+    // false until the account's store is open, when the preference cannot be read.
+    static func shouldRelease(accountKnown: Bool, automaticEnabled: Bool, alwaysAuthorized: Bool, manualRecording: Bool) -> Bool {
+        accountKnown && !manualRecording && (!automaticEnabled || !alwaysAuthorized)
+    }
+}
+
+// One configuration owner for the automatic recorder. Values are applied only when
+// they change, and an open journey that is known to be a drive keeps the
+// automotive profile even while Core Motion briefly reports something else.
+enum LocationAccuracyLevel: String { case best, tenMetres }
+enum LocationProfile: String { case automotive, other }
+struct LocationConfiguration: Equatable {
+    var accuracy: LocationAccuracyLevel
+    var distanceFilter: Double
+    var profile: LocationProfile
+    var label: String { "\(accuracy.rawValue)/\(Int(distanceFilter))m/\(profile.rawValue)" }
+    static func automatic(_ mode: AutomaticLocationMode, journeyOpen: Bool, journeyActivity: String?,
+                          drivingMotion: Bool, currentProfile: LocationProfile) -> LocationConfiguration? {
+        switch mode {
+        case .off: return nil
+        case .standby: return LocationConfiguration(accuracy: .tenMetres, distanceFilter: 25, profile: .other)
+        case .precise:
+            let automotive = journeyActivity == "Driving" || drivingMotion || (journeyOpen && currentProfile == .automotive)
+            return LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: automotive ? .automotive : .other)
+        }
+    }
+}
+
+// Main-thread execution heartbeat. The recorder's 30-second timer and every
+// delegate callback note that the process ran. A longer gap means iOS did not run
+// the app at all. The wake is attributed to the first non-timer callback, because
+// an overdue timer fires on resume whatever woke the app.
+struct ExecutionHeartbeat {
+    static let maximumInterval: Double = 45
+    static let attributionWindow: Double = 10
+    struct Wake: Equatable { var gapSeconds: Double; var cause: String }
+    private(set) var lastExecutionAt: Double?
+    private(set) var executingSince: Double
+    private(set) var lastGapSeconds: Double = 0
+    private var pendingGap: Double?
+    private var pendingAt: Double = 0
+    init(now: Double) { executingSince = now }
+    // Returns a wake to record once its cause is known.
+    mutating func note(_ cause: String, now: Double) -> Wake? {
+        if let last = lastExecutionAt, now - last > Self.maximumInterval {
+            pendingGap = now - last; pendingAt = now; executingSince = now; lastGapSeconds = now - last
+        }
+        lastExecutionAt = now
+        guard let gap = pendingGap, cause != "timer" || now - pendingAt >= Self.attributionWindow else { return nil }
+        pendingGap = nil
+        return Wake(gapSeconds: gap, cause: cause == "timer" ? "unknown: no location, region, visit or foreground event within 10s" : cause)
+    }
+    // True while a detected gap has not yet been attributed to a wake cause.
+    var resuming: Bool { pendingGap != nil }
+}
+
+// A stall is silence observed while the process is executing. Silence the process
+// slept through cannot be recovered by a restart from the background: iOS delivers
+// the queued updates when the app runs again, and the restart could discard them.
+// `sleptThrough` is logged but is not a recovery attempt, so it must not consume
+// the cooldown: a service still silent a minute after the wake is restarted then.
+// In the foreground, a restart waits a few seconds after a wake so the updates iOS
+// queued during the suspension are delivered first; stopping the service at the
+// moment of resume could discard them. A foreground start also restores the
+// documented allowsBackgroundLocationUpdates keep-alive on iOS 15 and 16.
+enum StallPolicy {
+    enum Decision: Equatable { case none, sleptThrough, restart }
+    static let silence: Double = 60
+    static let cooldown: Double = 120
+    static let foregroundSettle: Double = 5
+    static func decide(now: Double, lastDelivery: Double, executingSince: Double, foreground: Bool, lastRecoveryAt: Double) -> Decision {
+        guard now - lastDelivery > silence, now - lastRecoveryAt > cooldown else { return .none }
+        if (foreground && now - executingSince >= foregroundSettle) || now - max(lastDelivery, executingSince) > silence { return .restart }
+        return .sleptThrough
     }
 }
 
@@ -893,8 +1054,14 @@ enum AutomaticFinalisation {
 }
 
 struct AutomaticDetector {
-    static func acceptsDelivery(_ point:GPSPoint,receivedAt:Double,boundary:Double)->Bool {
-        point.timestamp>=boundary && receivedAt-point.timestamp>=0 && receivedAt-point.timestamp<=120 &&
+    // iOS queues location updates while the app is suspended and delivers them when
+    // it runs again. For an open journey, a queued fix newer than its last saved fix
+    // is a real observation of that journey, however late it arrives. Without an
+    // open journey, a late fix cannot start one: it may be a stale cached reading.
+    static func acceptsDelivery(_ point:GPSPoint,receivedAt:Double,boundary:Double,openJourneyLastFix:Double?=nil)->Bool {
+        let age=receivedAt-point.timestamp
+        let queuedForJourney=openJourneyLastFix.map{point.timestamp>$0} ?? false
+        return point.timestamp>=boundary && age>=0 && (age<=120 || queuedForJourney) &&
         point.accuracy>=0 && point.accuracy<=65 && point.latitude.isFinite && point.longitude.isFinite &&
         abs(point.latitude)<=90 && abs(point.longitude)<=180
     }

@@ -43,13 +43,20 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var departureEvidence = DepartureEvidence()
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
-    // In-memory, short-lived native background sharing: off after restart or sign-out.
+    // Native background sharing. Friends use the short-lived session token (off
+    // after restart); household sharing keeps a device credential in the Keychain.
     var liveShareToken: String?
     var liveShareEndpoint: URL?
     var liveShareApiKey: String?
     var liveShareTokenExpiresAt: Double = 0
     var liveShareLastSentAt: Double = 0
     var liveShareInFlight = false
+    // "device": a household publish credential (Keychain-backed); "session": the
+    // signed-in access token, used only until the database is migrated.
+    var liveShareMode = "session"
+    var lastShareFix: CLLocation?
+    var liveShareLastOkAt: Double = 0
+    var liveShareStatus = ""
     var friendShareToken: String?
     var friendShareEndpoint: URL?
     var friendShareApiKey: String?
@@ -67,7 +74,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var arrivalTimer: Timer?
     // CLLocationManager.locationServicesEnabled() may block on the main thread.
     // Read it off-main, cache the answer, and refresh when the app becomes active.
-    private(set) var locationServicesAvailable = false
+    // Until the first answer arrives, assume the service is on: Core Location
+    // itself delivers nothing when it is off, whereas assuming "off" tore down the
+    // significant-change, visit and region wake-ups (and dropped the event) on
+    // every location-triggered relaunch.
+    private(set) var locationServicesAvailable = true
     private var locationServicesCheckPending = false
     private var foregroundLocationObserver: NSObjectProtocol?
     var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
@@ -104,6 +115,24 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // delivering, not when delivery is merely sparse.
     var lastAutomaticDeliveryAt: Double?
     var automaticGPSRecoveryAt: Double = 0
+    var sleptThroughLoggedFor: Double = 0
+    // Main-thread execution heartbeat. Every timer tick and delegate callback
+    // records that the process ran. A gap longer than the 30-second timer period
+    // means iOS was not executing the recorder at all (suspended), which is a
+    // different failure from a running process that receives no fixes.
+    var heartbeat = ExecutionHeartbeat(now: Date().timeIntervalSince1970)
+    var executingSince: Double { heartbeat.executingSince }
+    var lastExecutionGapSeconds: Double { heartbeat.lastGapSeconds }
+    // The one CLBackgroundActivitySession (iOS 17+), held for as long as tracking
+    // may need background capability. Typed AnyObject because the deployment
+    // target predates the class. See BackgroundSessionPolicy.
+    var backgroundActivitySession: AnyObject?
+    var backgroundSessionState = "none"
+    static let backgroundSessionKey = "letm3go-background-session-held"
+    static let commit: String = {
+        let value = (Bundle.main.object(forInfoDictionaryKey: "Letm3goCommit") as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+        return value.isEmpty || value.hasPrefix("$(") ? "local" : value
+    }()
     var continuousStartedAt:Double?
     var continuousStoppedAt:Double?
     private var trackingStartedAt: Double?
@@ -141,6 +170,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "candidateFixes":String(detector.candidate.count),"candidateDistanceMeters":String(Int(detector.candidate.first.flatMap{first in detector.candidate.last.map{first.distance(to:$0)}} ?? 0)),
             "automaticRecording":String(automaticTrip != nil),"manualState":active?.state ?? "none",
             "continuousLocationRequested":String(continuousLocationRequested),"pausedByIOS":String(locationUpdatesPaused),
+            // iOS reports a pause only when automatic pausing is enabled, so
+            // pausedByIOS=false carries no evidence while this is false.
+            "automaticPauseEnabled":String(manager.pausesLocationUpdatesAutomatically),
+            "executingSince":String(executingSince),"lastExecutionGapSeconds":String(Int(lastExecutionGapSeconds)),
+            "backgroundSession":backgroundSessionState,"commit":Self.commit,
             "desiredAccuracyMeters":String(manager.desiredAccuracy),"distanceFilterMeters":String(manager.distanceFilter),
             "probeUntil":String(automaticSampling.probeUntil ?? 0),"retryAfter":String(automaticSampling.retryAfter),
             "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),"lastAutomaticDeliveryAt":String(lastAutomaticDeliveryAt ?? 0),"stalledGPSRestartAt":String(automaticGPSRecoveryAt),
@@ -184,6 +218,72 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         trackingTimeline=trackingTimeline.filter{now-$0.at<=3600}.suffix(80).map{$0}
         recordDiagnostic("decision",reason)
     }
+    // Record that the main thread is executing. When the previous activity was
+    // longer ago than the timer period allows, the process was not running. The
+    // wake is attributed to the first non-timer callback: an overdue timer fires
+    // on resume regardless of what woke the app.
+    func noteExecution(_ cause:String){
+        guard let wake=heartbeat.note(cause,now:Date().timeIntervalSince1970) else {return}
+        recordDiagnostic("lifecycle","Recorder was not executing for \(Int(wake.gapSeconds))s",details:[
+            "notExecutingSeconds":String(Int(wake.gapSeconds)),"wakeCause":wake.cause,
+            "journeyOpen":String(automaticTrip != nil || active?.state == "recording")])
+    }
+    // MARK: Background location session
+    var backgroundSessionSupported: Bool { if #available(iOS 17.0, *) { return true }; return false }
+    // Rejoin at launch, before any location service starts (Apple: recreate the
+    // session immediately on a background launch).
+    func rejoinBackgroundSessionAtLaunch() {
+        let previouslyHeld = UserDefaults.standard.bool(forKey: Self.backgroundSessionKey)
+        // A session is never revived once location access has been withdrawn.
+        guard authorized, BackgroundSessionPolicy.onLaunch(previouslyHeld: previouslyHeld, supported: backgroundSessionSupported) == .rejoin else {
+            backgroundSessionState = backgroundSessionSupported ? "none" : "unsupported"; return
+        }
+        if #available(iOS 17.0, *) { backgroundActivitySession = CLBackgroundActivitySession() }
+        backgroundSessionState = "rejoined"
+    }
+    // Start the session when tracking needs it and the app is in the foreground,
+    // the only state in which iOS lets a new session begin.
+    func reconcileBackgroundSession(_ reason: String) {
+        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording")
+        let action = BackgroundSessionPolicy.decide(wanted: wanted, held: backgroundActivitySession != nil,
+            foreground: UIApplication.shared.applicationState == .active,
+            previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported)
+        switch action {
+        case .start, .rejoin:
+            if #available(iOS 17.0, *) { backgroundActivitySession = CLBackgroundActivitySession() }
+            UserDefaults.standard.set(true, forKey: Self.backgroundSessionKey)
+            backgroundSessionState = action == .start ? "held" : "rejoined"
+            recordDiagnostic("session", action == .start ? "Background location session started" : "Background location session rejoined", details: ["reason": reason])
+        case .deferUntilForeground:
+            // A user launch is inactive until didBecomeActive, which starts it.
+            guard backgroundSessionState != "awaitingForeground", UIApplication.shared.applicationState == .background else { return }
+            backgroundSessionState = "awaitingForeground"
+            recordDiagnostic("session", "Background location session needs the app in the foreground to start", details: ["reason": reason])
+        case .none:
+            // Report what is actually held: no session and no need for one is
+            // "none", never a stale "awaitingForeground".
+            if backgroundActivitySession == nil { backgroundSessionState = backgroundSessionSupported ? "none" : "unsupported" }
+        }
+    }
+    // End the session only for an explicit reason: tracking switched off, Always
+    // permission removed, sign-out or account change, or a manual recording ended
+    // with automatic tracking off.
+    func endBackgroundSession(_ reason: String) {
+        let previouslyHeld = UserDefaults.standard.bool(forKey: Self.backgroundSessionKey)
+        guard backgroundActivitySession != nil || previouslyHeld else { return }
+        if #available(iOS 17.0, *) {
+            // A session held before a relaunch is released by rejoining and invalidating it.
+            ((backgroundActivitySession as? CLBackgroundActivitySession) ?? CLBackgroundActivitySession()).invalidate()
+        }
+        backgroundActivitySession = nil
+        UserDefaults.standard.set(false, forKey: Self.backgroundSessionKey)
+        backgroundSessionState = "none"
+        recordDiagnostic("session", "Background location session ended", details: ["reason": reason])
+    }
+    func releaseBackgroundSessionIfUnneeded(_ reason: String) {
+        if BackgroundSessionPolicy.shouldRelease(accountKnown: storeOpened && ownerID != nil, automaticEnabled: automaticEnabled,
+            alwaysAuthorized: manager.authorizationStatus == .authorizedAlways, manualRecording: active?.state == "recording") { endBackgroundSession(reason) }
+    }
     func recentTrackingNotes(before end:Double)->[String]{
         trackingTimeline.filter{$0.at>=end-1800 && $0.at<=end+30}.suffix(30).map{
             "\(Date(timeIntervalSince1970:$0.at)): \($0.note)"
@@ -197,25 +297,32 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         super.init()
         manager.delegate = self
         refreshLocationServicesAvailable()
-        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.recordDiagnostic("lifecycle","App became active");self?.refreshLocationServicesAvailable();self?.refreshAutomaticMonitoring();self?.recoverStalledAutomaticGPS();self?.finishExpiredContinuation(now:Date().timeIntervalSince1970) }
+        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.noteExecution("foreground");self?.recordDiagnostic("lifecycle","App became active");self?.refreshLocationServicesAvailable();self?.refreshAutomaticMonitoring();self?.recoverStalledAutomaticGPS();self?.finishExpiredContinuation(now:Date().timeIntervalSince1970) }
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
         updateIndicatorPolicy()
         manager.allowsBackgroundLocationUpdates = true
+        // Before the account opens and before any location service restarts.
+        rejoinBackgroundSessionAtLaunch()
         do {
             try sealLegacyData()
             if try AccountKeychain.get("signed-out") == nil, let data = try AccountKeychain.get("active-account"), let id = String(data:data,encoding:.utf8) { try openAccount(id) }
         } catch { lastError = "Private storage could not be opened. Unlock the device and sign in to retry."; storage = nil; ownerID = nil }
+        let launchState = UIApplication.shared.applicationState == .background ? "background" : "foreground"
+        recordDiagnostic("session", backgroundSessionState == "rejoined" ? "Background location session rejoined at launch" : "No background location session to rejoin at launch",
+            details: ["launchState": launchState, "commit": Self.commit])
         refreshAutomaticMonitoring()
         for (notification,message) in [(UIApplication.didEnterBackgroundNotification,"App entered background"),(UIApplication.willResignActiveNotification,"App became inactive"),(UIApplication.willTerminateNotification,"iOS delivered termination notification"),(UIApplication.protectedDataWillBecomeUnavailableNotification,"Protected data becoming unavailable"),(UIApplication.protectedDataDidBecomeAvailableNotification,"Protected data available"),(UIApplication.significantTimeChangeNotification,"System time changed"),(Notification.Name.NSProcessInfoPowerStateDidChange,"Low Power Mode changed")] {
             diagnosticObservers.append(NotificationCenter.default.addObserver(forName:notification,object:nil,queue:.main){[weak self] _ in self?.diagnosticSummary(force:true);self?.recordDiagnostic("lifecycle",message)})
         }
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self else { return }
+            self.noteExecution("timer")
             self.diagnosticSummary()
             self.reconcileAutomaticSampling()
             self.recoverStalledAutomaticGPS()
+            self.confirmHouseholdLocation()
             let now = Date().timeIntervalSince1970
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:now,activity:self.automaticTrip?.activity ?? "Driving") else { return }
@@ -232,10 +339,35 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         disableHouseholdLiveSharing()
         disableFriendLiveSharing()
     }
-    func disableHouseholdLiveSharing() {
-        liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil
-        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false
+    // `forget` also deletes the stored device credential: sharing turned off,
+    // revoked by the server, sign-out or account deletion. Reopening the same
+    // account only clears memory and restores it from the Keychain.
+    func disableHouseholdLiveSharing(forget: Bool = false) {
+        if forget, let owner = ownerID { try? AccountKeychain.set(Self.householdPublisherKey(owner), data: nil) }
+        liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil;liveShareMode="session"
+        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil
         refreshAutomaticMonitoring()
+    }
+    static func householdPublisherKey(_ owner: String) -> String { "household-live-publisher-\(owner)" }
+    // A device credential publishes only this account's own position (see
+    // publish_live_location). It is kept in the Keychain so a backgrounded or
+    // relaunched phone keeps sharing without the web view's one-hour session.
+    func storeHouseholdPublisher() {
+        guard let owner = ownerID, liveShareMode == "device", let token = liveShareToken,
+              let endpoint = liveShareEndpoint, let apiKey = liveShareApiKey else { return }
+        let record: [String: Any] = ["token": token, "endpoint": endpoint.absoluteString, "apiKey": apiKey, "expiresAt": liveShareTokenExpiresAt]
+        if let data = try? JSONSerialization.data(withJSONObject: record) { try? AccountKeychain.set(Self.householdPublisherKey(owner), data: data) }
+    }
+    func restoreHouseholdPublisher() {
+        guard let owner = ownerID, let data = try? AccountKeychain.get(Self.householdPublisherKey(owner)),
+              let record = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let token = record["token"] as? String, HouseholdPublisher.validToken(token),
+              let raw = record["endpoint"] as? String, let endpoint = URL(string: raw), HouseholdPublisher.validEndpoint(endpoint),
+              let apiKey = record["apiKey"] as? String, !apiKey.isEmpty,
+              let expiresAt = record["expiresAt"] as? Double, expiresAt > Date().timeIntervalSince1970 + 60 else { return }
+        liveShareToken = token; liveShareEndpoint = endpoint; liveShareApiKey = apiKey
+        liveShareTokenExpiresAt = expiresAt; liveShareMode = "device"
+        recordDiagnostic("sharing", "Household location sharing restored after launch")
     }
     func disableFriendLiveSharing() {
         friendShareToken=nil;friendShareEndpoint=nil;friendShareApiKey=nil
@@ -270,35 +402,67 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func publishLivePosition(_ location: CLLocation) {
         publishFriendPosition(location)
+        guard location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
+              abs(location.timestamp.timeIntervalSince1970-Date().timeIntervalSince1970) < 25 else {return}
+        lastShareFix=location
+        sendHouseholdLocation(location,confirmation:false)
+    }
+    // A phone that is not moving produces no Core Location callbacks, so it would
+    // otherwise stop publishing and look absent. While the continuous location
+    // service has run without interruption since the last fix, no callback means
+    // the phone is still within its distance filter (5 m recording, 25 m standby),
+    // so that fix is re-confirmed every 5 minutes. After any suspension the next
+    // real fix is required first. Called from the existing 30-second timer.
+    func confirmHouseholdLocation() {
+        guard let fix=lastShareFix, HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
+              resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince) else {return}
+        sendHouseholdLocation(fix,confirmation:true)
+    }
+    func sendHouseholdLocation(_ location: CLLocation, confirmation: Bool) {
         let now=Date().timeIntervalSince1970
-        guard uiUnlocked,!accountSuspended,!accountDeleting,
+        guard storeOpened,ownerID != nil,!accountSuspended,!accountDeleting,
               let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
               now < liveShareTokenExpiresAt-60,!liveShareInFlight,
-              now-liveShareLastSentAt >= 25,
-              location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
-              abs(location.timestamp.timeIntervalSince1970-now) < 25 else {return}
-        let speed=location.speed >= 0 ? min(250,location.speed*3.6) : 0
-        let speedValue: Any = location.speed >= 0 ? speed as Any : NSNull()
-        let payload:[String:Any]=["p_enabled":true,"p_latitude":location.coordinate.latitude,
-                                  "p_longitude":location.coordinate.longitude,
-                                  "p_accuracy":location.horizontalAccuracy,
-                                  "p_speed":speedValue]
+              now-liveShareLastSentAt >= (confirmation ? HouseholdPublisher.confirmationInterval : HouseholdPublisher.movingInterval) else {return}
+        let device=liveShareMode=="device"
+        let speedValue: Any = location.speed >= 0 ? min(250,location.speed*3.6) as Any : NSNull()
+        var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
+                                  "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
+        if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data
         request.timeoutInterval=12
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
-        request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
+        // The device credential travels in the body; the session mode (an
+        // unmigrated database) authenticates with the signed-in access token.
+        if !device { request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization") }
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
         liveShareInFlight=true
         liveShareLastSentAt=now
-        URLSession.shared.dataTask(with:request){[weak self] _,response,error in
+        URLSession.shared.dataTask(with:request){[weak self] body,response,error in
             DispatchQueue.main.async {
                 guard let self=self else{return}
                 self.liveShareInFlight=false
-                if error != nil || !((response as? HTTPURLResponse).map{(200...299).contains($0.statusCode)} ?? false) {
-                    self.liveShareLastSentAt=Date().timeIntervalSince1970-15
+                let status=(response as? HTTPURLResponse)?.statusCode ?? 0
+                let accepted=error == nil && (200...299).contains(status) &&
+                    (!device || String(decoding:body ?? Data(),as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines) == "true")
+                if accepted { self.liveShareLastOkAt=Date().timeIntervalSince1970; self.liveShareStatus="ok"; return }
+                if device, error == nil, (200...299).contains(status) {
+                    // The server no longer accepts this credential: sharing was
+                    // turned off, the member left, or a newer credential replaced it.
+                    // Discard it only if it is still the one in use; a reply to a
+                    // request sent before a rotation must not erase the new one.
+                    guard self.liveShareToken == token else { return }
+                    self.liveShareStatus="revoked"
+                    self.recordDiagnostic("sharing","Household location credential no longer accepted")
+                    self.disableHouseholdLiveSharing(forget:true)
+                    return
                 }
+                let failure=error != nil ? "network" : "http \(status)"
+                if self.liveShareStatus != failure { self.recordDiagnostic("sharing","Household location upload failed",details:["reason":failure]) }
+                self.liveShareStatus=failure
+                self.liveShareLastSentAt=Date().timeIntervalSince1970-15
             }
         }.resume()
     }
@@ -313,10 +477,27 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // producing a fix any sooner.
         let lastFix = precise ? [lastAutomaticFixAt,lastAutomaticDeliveryAt].compactMap{$0}.max() : lastLocationUpdateAt
         let last=max(started,lastFix ?? started)
-        guard now-last>60,
-              now-automaticGPSRecoveryAt>120 else {return}
+        // A silence the process slept through is not a stalled manager: the timer
+        // that runs this check cannot fire while iOS suspends the app, so it only
+        // gets here after something else woke it. iOS delivers the updates it
+        // queued once the app runs, and a restart from the background cannot
+        // recover the route and may discard them. Only silence observed while
+        // executing, or a return to the foreground, justifies a restart.
+        let foreground=UIApplication.shared.applicationState == .active
+        let silentWhileExecuting=now-max(last,executingSince)
+        let decision=StallPolicy.decide(now:now,lastDelivery:last,executingSince:executingSince,foreground:foreground,lastRecoveryAt:automaticGPSRecoveryAt)
+        guard decision != .none else {return}
+        guard decision == .restart else {
+            // Logged once per wake; not a recovery attempt, so the cooldown is untouched.
+            guard sleptThroughLoggedFor != executingSince else {return}
+            sleptThroughLoggedFor=executingSince
+            recordDiagnostic("recovery","Automatic GPS silent for \(Int(now-last))s, of which the recorder was not executing for \(Int(max(0,executingSince-last)))s; location updates left running",
+                details:["silentSeconds":String(Int(now-last)),"silentWhileExecutingSeconds":String(Int(max(0,silentWhileExecuting)))])
+            return
+        }
         automaticGPSRecoveryAt=now
-        recordDiagnostic("recovery","Automatic GPS silent for \(Int(now-last))s with no fix delivery; restarting location updates")
+        recordDiagnostic("recovery","Automatic GPS silent for \(Int(now-last))s with no qualifying automatic fix processed; restarting location updates",
+            details:["silentSeconds":String(Int(now-last)),"silentWhileExecutingSeconds":String(Int(max(0,silentWhileExecuting))),"foreground":String(foreground),"backgroundSession":backgroundSessionState])
         stopContinuousLocation(reason:"Location updates restarted after \(Int(now-last))s without a fix")
         reconcileAutomaticSampling()
     }
@@ -381,6 +562,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         manager.pausesLocationUpdatesAutomatically = false
         manager.activityType = active?.activity == "Driving" ? .automotiveNavigation : .fitness
         startContinuousLocation()
+        reconcileBackgroundSession("manual recording")
     }
     func transition(_ action: String) throws {
         if active == nil {
@@ -405,9 +587,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if action == "finish" { trips.insert(trip, at: 0); active = nil }
         else { active = trip }
         currentSpeed = 0
-        if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring() }
+        if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring(); releaseBackgroundSessionIfUnneeded("manual recording \(action == "finish" ? "finished" : "paused")") }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        noteExecution("location")
         diagnosticGPSReceived += locations.count
         diagnosticLastDeliveryAt=Date().timeIntervalSince1970
         for location in locations {
@@ -415,6 +598,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             if location.horizontalAccuracy>=0 {diagnosticWorstAccuracy=max(diagnosticWorstAccuracy,location.horizontalAccuracy)}
         }
         if let last=locations.last {lastLocationUpdateAt=last.timestamp.timeIntervalSince1970;lastLocationAccuracy=last.horizontalAccuracy>=0 ? last.horizontalAccuracy : nil}
+        // A backlog delivered on wake is evidence of what happened while the app
+        // was not running; record its shape (never coordinates).
+        if let oldest=locations.map({$0.timestamp.timeIntervalSince1970}).min(),diagnosticLastDeliveryAt-oldest>30 {
+            recordDiagnostic("delivery","Delayed location batch delivered",details:["batchFixes":String(locations.count),
+                "oldestAgeSeconds":String(Int(diagnosticLastDeliveryAt-oldest)),
+                "newestAgeSeconds":String(Int(diagnosticLastDeliveryAt-(locations.map{$0.timestamp.timeIntervalSince1970}.max() ?? oldest)))])
+        }
         guard !accountSuspended else { return }
         if let last=locations.last {publishLivePosition(last)}
         if active == nil { processAutomatic(locations);diagnosticSummary(); return }
@@ -452,6 +642,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             do { try finishAutomatic(reason:"Recording stopped: location permission was revoked",trigger:"updateIndicatorPolicy",event:"location permission was revoked") } catch { lastError = "Automatic recording could not finalize after permission changed: \(error.localizedDescription)" }
         }
         refreshAutomaticMonitoring()
+        releaseBackgroundSessionIfUnneeded("location authorization changed")
         if !authorized, active?.state == "recording" {
             do { try transition("pause") } catch { lastError = "Permission changed; saving failed: \(error.localizedDescription)"; stopContinuousLocation() }
             lastError = "Recording paused: location permission is unavailable."
@@ -475,18 +666,22 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let bindingDiagnostics: [String: Any] = ["ownerPresent":ownerID != nil,"uiUnlocked":uiUnlocked,"storeOpened":storeOpened,"storageHandlePresent":storage != nil,"accountSuspended":accountSuspended,"accountDeleting":accountDeleting]
         guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"nativeBinding":bindingDiagnostics,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
         let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
+        // An open journey whose GPS was stopped is "interrupted", never "recording".
+        let automaticStateName: String
+        if let trip = automaticTrip { automaticStateName = trip.state == "recording" ? "recording" : "interrupted" }
+        else { automaticStateName = settledTripID != nil ? "settled" : detector.phase }
         return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
-                "automaticState": automaticTrip != nil ? "recording" : settledTripID != nil ? "settled" : detector.phase,
+                "automaticState": automaticStateName,
                 "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : "locationStandby",
                 "automaticSettledAt": settledAt as Any? ?? NSNull(),
                 "automaticContinuationEndsAt": continuationEndsAt as Any? ?? NSNull(),
                 "automaticSettledTripID": settledTripID as Any? ?? NSNull(),
                 "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
-                "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
+                "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"automaticPauseEnabled":manager.pausesLocationUpdatesAutomatically,"lastExecutionGapSeconds":lastExecutionGapSeconds,"backgroundSession":backgroundSessionState,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
-                "nativeFamilySharing":["armed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"uploadInFlight":liveShareInFlight],
-                "locationManagerID":"LocationRecorder.shared.manager",
+                "nativeFamilySharing":["armed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight],
+                "locationManagerID":"LocationRecorder.shared.manager","commit":Self.commit,"backgroundSession":backgroundSessionState,
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
                 "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
                 "lastTrackingEvent":lastTrackingEvent,"lastTrackingEventAt":lastTrackingEventAt as Any? ?? NSNull(),
@@ -625,7 +820,24 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         let recorder=LocationRecorder.shared
         let friends=call.getString("channel")=="friends"
         if call.getBool("enabled") != true {
-            if friends {recorder.disableFriendLiveSharing()} else {recorder.disableHouseholdLiveSharing()}
+            if friends {recorder.disableFriendLiveSharing()} else {recorder.disableHouseholdLiveSharing(forget:true)}
+            call.resolve();return
+        }
+        // Household device credential: publishes only this account's position,
+        // survives relaunch, and outlives the one-hour session token.
+        if !friends, let publishToken=call.getString("publishToken") {
+            guard HouseholdPublisher.validToken(publishToken),
+                  let rawURL=call.getString("endpoint"),let url=URL(string:rawURL),HouseholdPublisher.validEndpoint(url),
+                  let apiKey=call.getString("apiKey"),!apiKey.isEmpty,
+                  let expiry=call.getDouble("expiresAt"),expiry>Date().timeIntervalSince1970+90 else {
+                call.reject("Valid household sharing credential required.");return
+            }
+            recorder.liveShareToken=publishToken;recorder.liveShareEndpoint=url
+            recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
+            recorder.liveShareMode="device";recorder.liveShareStatus=""
+            recorder.storeHouseholdPublisher()
+            recorder.recordDiagnostic("sharing","Household location sharing armed with a device credential")
+            recorder.refreshAutomaticMonitoring()
             call.resolve();return
         }
         let suffix=friends ? "/rest/v1/rpc/set_friend_location" : "/rest/v1/rpc/set_my_live_location"
@@ -640,6 +852,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             recorder.friendShareToken=token;recorder.friendShareEndpoint=url
             recorder.friendShareApiKey=apiKey;recorder.friendShareTokenExpiresAt=expiry
         } else {
+            // Session mode replaces any stored device credential for this account.
+            recorder.disableHouseholdLiveSharing(forget:true)
             recorder.liveShareToken=token;recorder.liveShareEndpoint=url
             recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
         }
@@ -675,7 +889,9 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("Journey unavailable."); return
         }
         r.diagnosticSummary(force: true)
-        let quality = trip.details?.routeQuality ?? trip.routeQualitySummary()
+        // Always derive quality from the saved fixes: a stored summary can predate
+        // later continuation fixes or an earlier gap rule.
+        let quality = trip.routeQualitySummary()
         let start = trip.startedAt
         let end = trip.endedAt ?? now
         let events = r.diagnosticJournal.window(start: start, end: end)
@@ -703,7 +919,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "oldestAvailableAt": r.diagnosticJournal.events.first?.at ?? 0,
                 "storageError": r.diagnosticStorageError,
                 "current": r.diagnosticContext(),
-                "limitations": "This report explains how the recorder behaved around this journey. It contains no GPS coordinates, route geometry, photos, names, account identifiers or credentials. recordedDistanceMeters is observed (within-segment) movement only. routeQuality.unobservedMeters is the straight-line displacement across GPS gaps — a lower bound on missing coverage, not recorded distance and not an estimate of the road actually driven. No estimated road distance is computed."
+                "limitations": "This report explains how the recorder behaved around this journey. It contains no GPS coordinates, route geometry, photos, names, account identifiers or credentials. recordedDistanceMeters is observed (within-segment) movement only. routeQuality.unobservedMeters is the straight-line displacement across GPS gaps — a lower bound on missing coverage, not recorded distance and not an estimate of the road actually driven. No estimated road distance is computed. `current` describes the recorder when this report was generated, not during the journey; each event's context describes the recorder at that event. Events are matched to the journey by time window only. A 'Recorder was not executing' event means iOS did not run the app for that long."
             ])
         } catch { call.reject("The journey diagnostics could not be prepared.") }
     } }

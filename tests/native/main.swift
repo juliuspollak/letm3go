@@ -689,22 +689,42 @@ for index in 0...RecorderDiagnosticJournal.limit {
 check(journal.events.count == RecorderDiagnosticJournal.limit,"busy diagnostic journal remains bounded")
 check(journal.events.last?.message == "Summary","retention preserves the newest evidence")
 // Build 44 regressions: intermittent GPS, slow traffic, gaps and batched delivery.
+// Build 47: one gap definition. A silence over 45 s with real displacement is an
+// unobserved break (dashed, no distance), exactly what the tracking note and route
+// quality report. Build 46 drew 84 s and 170 s driving gaps as solid route and
+// counted their straight lines as recorded distance.
 var intermittent = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Intermittent drive")
 intermittent.recordingMode="automatic"
 _ = intermittent.accept(metreFix(0,0,speed:10),now:0)
+_ = intermittent.accept(metreFix(300,30,speed:10),now:30)
 _ = intermittent.accept(metreFix(600,60,speed:10),now:60)
-_ = intermittent.accept(metreFix(1200,120,speed:10),now:120)
-_ = intermittent.accept(metreFix(1800,180,speed:10),now:180)
-check(intermittent.distanceMeters > 1700 && intermittent.distanceMeters < 1900,"30-120 second GPS gaps keep a drive in one observed segment")
-check(intermittent.points.allSatisfy{$0.segment == 0},"continuous intermittent fixes stay one segment")
+check(intermittent.distanceMeters > 580 && intermittent.distanceMeters < 620,"30-second GPS gaps keep a drive in one observed segment")
+check(intermittent.points.allSatisfy{$0.segment == 0},"observed intermittent fixes stay one segment")
 let intermittentBeforeGap = intermittent.distanceMeters
-_ = intermittent.accept(metreFix(2400,390,speed:10),now:390)
-check(intermittent.distanceMeters == intermittentBeforeGap,"a 210-second GPS gap does not invent distance")
-check(intermittent.points.last?.segment == 1,"a long gap opens a new route segment")
+_ = intermittent.accept(metreFix(1440,144,speed:10),now:144)
+check(intermittent.distanceMeters == intermittentBeforeGap,"an 84-second moving gap does not add its straight line to distance")
+check(intermittent.points.last?.segment == 1,"an 84-second moving gap opens a new route segment")
+_ = intermittent.accept(metreFix(3140,314,speed:10),now:314)
+check(intermittent.distanceMeters == intermittentBeforeGap,"a 170-second moving gap does not add distance")
+check(intermittent.points.last?.segment == 2,"a 170-second moving gap opens a new route segment")
+_ = intermittent.accept(metreFix(5900,590,speed:10),now:590)
+check(intermittent.points.last?.segment == 3,"a 276-second gap opens a new route segment")
 let intermittentQuality = intermittent.routeQualitySummary()
-check(intermittentQuality.fixCount == 5,"route quality counts every kept fix")
-check(intermittentQuality.gapCount == 1,"route quality reports the one segment break")
-check(intermittentQuality.unobservedMeters > 500 && intermittentQuality.unobservedMeters < 700,"unobserved gap is recorded as straight-line, never added to distance")
+check(intermittentQuality.fixCount == 6,"route quality counts every kept fix")
+check(intermittentQuality.gapCount == 3,"route quality reports every unobserved gap, matching the tracking notes")
+check(intermittentQuality.unobservedMeters > 5200 && intermittentQuality.unobservedMeters < 5400,"unobserved gaps are straight-line, never added to distance")
+check(intermittentQuality.largestGapSeconds == 276,"the largest gap is reported")
+// A car waiting at a light with a 5 m distance filter delivers nothing, then moves
+// on. Long silence without displacement is a stop, not a missing stretch of road.
+var redLight = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Red light")
+redLight.recordingMode="automatic"
+_ = redLight.accept(metreFix(0,0,speed:10),now:0)
+_ = redLight.accept(metreFix(20,120,speed:2),now:120)
+check(redLight.points.last?.segment == 0,"a stationary wait keeps one segment")
+check(redLight.distanceMeters == 0,"a stationary wait adds no distance")
+check(!RecordedActivity.unobservedGap(from:metreFix(0,0,speed:10),to:metreFix(600,45,speed:10)),"a 45-second gap is still observed")
+check(RecordedActivity.unobservedGap(from:metreFix(0,0,speed:10),to:metreFix(60,46,speed:10)),"over 45 seconds with real displacement is unobserved")
+check(RecordedActivity.unobservedGap(from:metreFix(0,0,speed:0),to:metreFix(10,181,speed:0)),"over 180 seconds is unobserved even without displacement")
 var stopStart = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Traffic")
 stopStart.recordingMode="automatic"
 _ = stopStart.accept(metreFix(0,0,speed:0),now:0)
@@ -763,6 +783,7 @@ check(stoppedSampling.probeStartedAt == 210,"the new departure is budgeted from 
 var restartedTrip = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Interrupted drive")
 restartedTrip.recordingMode="automatic"
 _ = restartedTrip.accept(metreFix(0,0,speed:10),now:0)
+_ = restartedTrip.accept(metreFix(300,30,speed:10),now:30)
 _ = restartedTrip.accept(metreFix(600,60,speed:10),now:60)
 let restartedDistance = restartedTrip.distanceMeters
 let restartedIdentity = restartedTrip.id
@@ -1290,6 +1311,132 @@ try inboxStore.save(storedInbox)
 let reloadedInbox = inboxStore.load()
 check(reloadedInbox.entries.count == 1 && reloadedInbox.parked.count == 1, "the inbox and its payload survive a restart")
 check(reloadedInbox.entries.first?.transfer == restoredTransfer, "the parked payload round-trips intact")
+
+// MARK: Background location lifecycle (build 47)
+// A background session is started only in the foreground, rejoined at launch if it
+// was held before termination, and released only for an explicit reason.
+check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:true,previouslyHeld:false,supported:true) == .start,"automatic tracking starts a background session in the foreground")
+check(BackgroundSessionPolicy.decide(wanted:true,held:true,foreground:false,previouslyHeld:true,supported:true) == .none,"a departure while backgrounded keeps the held session; no second session")
+check(BackgroundSessionPolicy.decide(wanted:true,held:true,foreground:true,previouslyHeld:true,supported:true) == .none,"repeated start requests never replace a held session")
+check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:false,previouslyHeld:false,supported:true) == .deferUntilForeground,"a new session is never started from the background")
+check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:false,previouslyHeld:true,supported:true) == .rejoin,"a background wake rejoins a session held before termination")
+check(BackgroundSessionPolicy.decide(wanted:false,held:false,foreground:true,previouslyHeld:false,supported:true) == .none,"no session without tracking")
+check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:true,previouslyHeld:false,supported:false) == .none,"iOS before 17 keeps the legacy configuration")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true) == .rejoin,"a relaunch rejoins before location services restart")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:false,supported:true) == .none,"a relaunch without a held session creates nothing from the background")
+check(BackgroundSessionPolicy.wanted(automaticAvailable:false,manualRecording:true),"manual recording also wants a background session")
+check(!BackgroundSessionPolicy.shouldRelease(accountKnown:false,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false),"an account not yet open at a background launch never releases the session")
+check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false),"switching automatic tracking off releases the session")
+check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:false,manualRecording:false),"losing Always permission releases the session")
+check(!BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:false,manualRecording:true),"a manual recording keeps its session")
+check(!BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:true,manualRecording:false),"enabled automatic tracking keeps its session")
+
+// An open journey is always precise, including an interrupted one; standby is only
+// used when no journey is open, and a drive keeps its automotive profile.
+let lifecycleSampling=AutomaticSampling()
+check(lifecycleSampling.locationMode(available:true,manualActive:false,automaticRecording:true,now:100) == .precise,"an open journey never falls back to standby")
+check(lifecycleSampling.locationMode(available:true,manualActive:true,automaticRecording:true,now:100) == .off,"a manual activity owns the location service")
+let standbyConfig=LocationConfiguration.automatic(.standby,journeyOpen:false,journeyActivity:nil,drivingMotion:false,currentProfile:.other)
+check(standbyConfig == LocationConfiguration(accuracy:.tenMetres,distanceFilter:25,profile:.other),"battery-saving standby uses reduced accuracy")
+check(LocationConfiguration.automatic(.off,journeyOpen:false,journeyActivity:nil,drivingMotion:false,currentProfile:.other) == nil,"off stops the service")
+check(LocationConfiguration.automatic(.precise,journeyOpen:true,journeyActivity:"Unknown",drivingMotion:true,currentProfile:.other)?.profile == .automotive,"driving motion selects the automotive profile")
+check(LocationConfiguration.automatic(.precise,journeyOpen:true,journeyActivity:"Unknown",drivingMotion:false,currentProfile:.automotive)?.profile == .automotive,"a stale motion label cannot drop an open drive to the generic profile")
+check(LocationConfiguration.automatic(.precise,journeyOpen:false,journeyActivity:nil,drivingMotion:false,currentProfile:.automotive)?.profile == .other,"a departure check without driving evidence uses the generic profile")
+check(LocationConfiguration.automatic(.precise,journeyOpen:true,journeyActivity:"Driving",drivingMotion:false,currentProfile:.other) == LocationConfiguration(accuracy:.best,distanceFilter:5,profile:.automotive),"a recorded drive uses best accuracy and 5 m")
+
+// The heartbeat separates "not running" from "running without GPS".
+var beat=ExecutionHeartbeat(now:0)
+check(beat.note("timer",now:30) == nil && beat.note("timer",now:60) == nil,"regular timer ticks are execution, not a wake")
+check(beat.note("location",now:65) == nil,"a callback between ticks is execution")
+check(beat.note("timer",now:341) == nil && beat.resuming,"an overdue timer detects the gap but waits for the wake cause")
+check(beat.executingSince == 341 && beat.lastGapSeconds == 276,"the 276-second gap is measured and execution restarts at the wake")
+check(beat.note("location",now:341.2) == ExecutionHeartbeat.Wake(gapSeconds:276,cause:"location"),"the wake is attributed to the location event that followed")
+check(!beat.resuming,"a wake is reported once")
+var unexplained=ExecutionHeartbeat(now:0)
+_ = unexplained.note("timer",now:30)
+_ = unexplained.note("timer",now:200)
+check(unexplained.note("timer",now:230)?.cause.hasPrefix("unknown") == true,"a gap with no wake event is reported as unknown")
+var foregroundWake=ExecutionHeartbeat(now:0)
+_ = foregroundWake.note("timer",now:30)
+check(foregroundWake.note("foreground",now:500)?.cause == "foreground","opening the app is a wake cause")
+
+// Recovery: restart only for silence observed while executing, or in the foreground.
+check(StallPolicy.decide(now:1000,lastDelivery:930,executingSince:0,foreground:false,lastRecoveryAt:0) == .restart,"Scenario A: executing with silent GPS restarts updates")
+check(StallPolicy.decide(now:1276,lastDelivery:1000,executingSince:1276,foreground:false,lastRecoveryAt:0) == .sleptThrough,"Scenario C: silence the app slept through is not restarted from the background")
+check(StallPolicy.decide(now:1276,lastDelivery:1000,executingSince:1276,foreground:true,lastRecoveryAt:0) == .sleptThrough,"a foreground wake first lets iOS deliver the updates it queued")
+check(StallPolicy.decide(now:1306,lastDelivery:1000,executingSince:1276,foreground:true,lastRecoveryAt:0) == .restart,"still silent after the foreground wake settles: restart in the foreground")
+// Build 46 timeline: last fix 06:36:28 (t=0), wake at 06:41:04 (t=276). The wake is
+// logged, not restarted; if GPS is still silent once the app has run for a minute,
+// it is restarted then, because logging the wake did not consume the cooldown.
+check(StallPolicy.decide(now:276,lastDelivery:0,executingSince:276,foreground:false,lastRecoveryAt:0) == .sleptThrough,"build 46: the 276 s silence at the wake is not restarted")
+check(StallPolicy.decide(now:306,lastDelivery:0,executingSince:276,foreground:false,lastRecoveryAt:0) == .sleptThrough,"build 46: 30 s after the wake is still the suspension")
+check(StallPolicy.decide(now:366,lastDelivery:0,executingSince:276,foreground:false,lastRecoveryAt:0) == .restart,"build 46: silence 90 s after the wake while executing is restarted")
+check(StallPolicy.decide(now:306,lastDelivery:300,executingSince:276,foreground:false,lastRecoveryAt:0) == .none,"build 46: queued fixes delivered at the wake end the silence")
+check(StallPolicy.decide(now:1340,lastDelivery:1000,executingSince:1276,foreground:false,lastRecoveryAt:0) == .restart,"silence continuing a minute after the wake is a real stall")
+check(StallPolicy.decide(now:1000,lastDelivery:930,executingSince:0,foreground:false,lastRecoveryAt:950) == .none,"recovery is rate limited")
+check(StallPolicy.decide(now:1000,lastDelivery:950,executingSince:0,foreground:false,lastRecoveryAt:0) == .none,"less than a minute of silence is not a stall")
+
+// Scenario C: iOS queues updates while suspended and delivers them on resume. For an
+// open journey they are real route; without one they cannot start a journey.
+let queuedFix=GPSPoint(latitude:-33,longitude:151,timestamp:1100,accuracy:8,altitude:0,speed:12)
+check(AutomaticDetector.acceptsDelivery(queuedFix,receivedAt:1400,boundary:0,openJourneyLastFix:1050),"a fix queued for an open journey is accepted however late")
+check(!AutomaticDetector.acceptsDelivery(queuedFix,receivedAt:1400,boundary:0),"a late fix cannot start a journey")
+check(!AutomaticDetector.acceptsDelivery(queuedFix,receivedAt:1400,boundary:0,openJourneyLastFix:1100),"a queued fix already saved is never imported twice")
+check(!AutomaticDetector.acceptsDelivery(queuedFix,receivedAt:1400,boundary:1200,openJourneyLastFix:1050),"queued fixes never cross the account boundary")
+var suspendedDrive=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Locked drive")
+suspendedDrive.recordingMode="automatic"
+_ = suspendedDrive.accept(metreFix(0,0,speed:12),now:0)
+_ = suspendedDrive.accept(metreFix(120,10,speed:12),now:10)
+// The queued backlog arrives 276 s later; each fix is processed at its own time.
+var backlogAccepted=0
+for offset in stride(from:20.0,through:286.0,by:10) {
+    let fix=metreFix(120+(offset-10)*12,offset,speed:12)
+    if AutomaticDetector.acceptsDelivery(fix,receivedAt:296,boundary:0,openJourneyLastFix:suspendedDrive.points.last?.timestamp),
+       suspendedDrive.accept(fix,now:fix.timestamp) { backlogAccepted += 1 }
+}
+check(backlogAccepted == 27,"every queued fix of the suspended stretch is saved")
+check(suspendedDrive.routeQualitySummary().gapCount == 0,"a delivered backlog leaves no gap in the route")
+check(suspendedDrive.distanceMeters > 3300 && suspendedDrive.distanceMeters < 3400,"the backlog contributes observed distance only")
+check(!suspendedDrive.accept(metreFix(240,20,speed:12),now:20),"a callback repeating a saved fix is rejected, so no duplicate geometry or journey")
+
+// Publishing, splitting or trimming recomputes distance with the recording rule, so
+// drift while waiting at a light never becomes distance after the fact.
+var waitingDrive=RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Light")
+waitingDrive.recordingMode="automatic"
+for point in [metreFix(0,0,speed:12),metreFix(120,10,speed:12),metreFix(124,40,speed:0),metreFix(128,100,speed:0),metreFix(126,160,speed:0),metreFix(246,170,speed:12)] {
+    _ = waitingDrive.accept(point,now:point.timestamp)
+}
+check(waitingDrive.points.allSatisfy{$0.segment == 0},"a wait at a light keeps one segment")
+check(abs(waitingDrive.measuredDistance-waitingDrive.distanceMeters) < 0.001,"recomputed distance equals the distance recorded live")
+check(waitingDrive.distanceMeters > 235 && waitingDrive.distanceMeters < 245,"drift during the wait is not distance")
+check(abs(JourneySplit.kept(waitingDrive,before:1000)!.distanceMeters-waitingDrive.distanceMeters) < 0.001,"a split keeps the live distance")
+var trimmedWait=waitingDrive;trimmedWait.finish(at:170)
+check(abs(RouteTrimming.trimmed(trimmedWait,start:0,end:5)!.distanceMeters-waitingDrive.distanceMeters) < 0.001,"trimming keeps the live distance")
+check(abs(suspendedDrive.measuredDistance-suspendedDrive.distanceMeters) < 0.001,"a delivered backlog recomputes to the same distance")
+
+// A relaunch keeps the account's ownership boundary; sign-out starts a new one.
+check(TrackingBoundary.value(now:5000,restoredAutomatic:nil,boundSince:1000) == 1000,"a relaunch accepts updates queued for the same bound account")
+check(TrackingBoundary.value(now:5000,restoredAutomatic:nil,boundSince:9000) == 5000,"a boundary is never in the future")
+check(TrackingBoundary.value(now:5000,restoredAutomatic:restartedTrip,boundSince:1000) == 0,"a restored journey still owns its saved fixes")
+check(TrackingBoundary.value(now:5000,restoredAutomatic:nil,boundSince:nil) == 5000,"a newly bound account starts at now")
+
+// MARK: Household location publishing
+// The device credential publishes only through the dedicated RPC over HTTPS.
+check(HouseholdPublisher.validToken(String(repeating:"a",count:64)),"a 64-character lowercase hex credential is accepted")
+check(!HouseholdPublisher.validToken(String(repeating:"A",count:64)),"an uppercase credential is rejected")
+check(!HouseholdPublisher.validToken("abc123"),"a short credential is rejected")
+check(!HouseholdPublisher.validToken(String(repeating:"g",count:64)),"a non-hex credential is rejected")
+check(HouseholdPublisher.validEndpoint(URL(string:"https://example.supabase.co/rest/v1/rpc/publish_live_location")!),"the publish RPC endpoint is accepted")
+check(!HouseholdPublisher.validEndpoint(URL(string:"http://example.supabase.co/rest/v1/rpc/publish_live_location")!),"plain HTTP is rejected")
+check(!HouseholdPublisher.validEndpoint(URL(string:"https://example.supabase.co/rest/v1/rpc/set_my_live_location")!),"a credential is never sent to another RPC")
+// A stationary phone keeps its household position current only while its
+// location service has demonstrably run since the last real fix.
+check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:500),"a phone parked at Home re-confirms its last fix while location keeps running")
+check(!HouseholdPublisher.canConfirm(continuousRunning:false,resuming:false,fixAt:1000,executingSince:500),"no confirmation without continuous location")
+check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:1200),"after a suspension a new real fix is required before anything is confirmed")
+check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:true,fixAt:1000,executingSince:500),"no confirmation while a wake is still being attributed")
+check(HouseholdPublisher.movingInterval == 25 && HouseholdPublisher.confirmationInterval == 300,"moving phones publish every 25 s, parked phones confirm every 5 minutes")
+check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation still keeps a present member inside the 10-minute live window")
 
 print("\(assertions) native recorder/auth assertions passed")
 

@@ -1,5 +1,6 @@
 default_platform(:ios)
 APP_IDENTIFIER = 'au.jpollak.journey'
+WATCH_APP_IDENTIFIER = 'au.jpollak.journey.watchkitapp'
 REPOSITORY_ROOT = File.expand_path('..', __dir__)
 PROJECT_FILE = File.join(REPOSITORY_ROOT, 'ios/App/App.xcodeproj/project.pbxproj')
 
@@ -22,6 +23,15 @@ platform :ios do
     number = override.empty? ? [latest + 1, get_build_number(xcodeproj: 'ios/App/App.xcodeproj').to_i].max : override.to_i
     UI.user_error!('Build number must exceed the latest TestFlight build') if number <= latest
     sh('npm run release:check')
+    # The commit is stamped into Info.plist (Letm3goCommit) so every diagnostic
+    # export names the exact source a field test ran, not just the build number.
+    commit = Dir.chdir(REPOSITORY_ROOT) do
+      head = `git rev-parse --short=12 HEAD`.strip
+      UI.user_error!('Unable to read the git commit for the build') if head.empty?
+      # Bundler's vendor/bundle and .bundle (written by CI's Ruby setup) are tool
+      # output, not source; any other change still marks the build dirty.
+      `git status --porcelain -- . ':(exclude)vendor' ':(exclude).bundle'`.strip.empty? ? head : "#{head}-dirty"
+    end
     original_project = File.binread(PROJECT_FILE)
     begin
     update_code_signing_settings(
@@ -30,12 +40,20 @@ platform :ios do
       bundle_identifier: APP_IDENTIFIER, code_sign_identity: 'Apple Distribution',
       profile_name: ENV.fetch('PROFILE_NAME'), profile_uuid: ENV.fetch('PROFILE_UUID')
     )
+    # The embedded Apple Watch app has its own App ID and App Store profile,
+    # signed by the same Apple Distribution certificate.
+    update_code_signing_settings(
+      use_automatic_signing: false, path: 'ios/App/App.xcodeproj', targets: ['Letm3goWatch'],
+      build_configurations: ['Release'], team_id: ENV.fetch('APPLE_TEAM_ID'),
+      bundle_identifier: WATCH_APP_IDENTIFIER, code_sign_identity: 'Apple Distribution',
+      profile_name: ENV.fetch('WATCH_PROFILE_NAME'), profile_uuid: ENV.fetch('WATCH_PROFILE_UUID')
+    )
     FileUtils.rm_f(File.join(REPOSITORY_ROOT, '.build/release/Letm3go.manifest.json'))
     build_app(
       project: 'ios/App/App.xcodeproj', scheme: 'App', configuration: 'Release',
-      export_method: 'app-store', xcargs: "CURRENT_PROJECT_VERSION=#{number}", output_directory: '.build/release', output_name: 'Letm3go.ipa',
+      export_method: 'app-store', xcargs: "CURRENT_PROJECT_VERSION=#{number} LETM3GO_COMMIT=#{commit}", output_directory: '.build/release', output_name: 'Letm3go.ipa',
       archive_path: '.build/release/Letm3go.xcarchive',
-      export_options: {method: 'app-store-connect', signingStyle: 'manual', teamID: ENV.fetch('APPLE_TEAM_ID'), provisioningProfiles: {APP_IDENTIFIER => ENV.fetch('PROFILE_UUID')}}
+      export_options: {method: 'app-store-connect', signingStyle: 'manual', teamID: ENV.fetch('APPLE_TEAM_ID'), provisioningProfiles: {APP_IDENTIFIER => ENV.fetch('PROFILE_UUID'), WATCH_APP_IDENTIFIER => ENV.fetch('WATCH_PROFILE_UUID')}}
     )
     File.write(File.join(REPOSITORY_ROOT, '.build/release/build-number.txt'), number.to_s)
     sh('python3', File.join(REPOSITORY_ROOT, 'scripts/validate-ipa.py'), File.join(REPOSITORY_ROOT, '.build/release/Letm3go.ipa'))
