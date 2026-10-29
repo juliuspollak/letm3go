@@ -43,6 +43,18 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var homeRest = HomeRest()
     var locationMode: AutomaticLocationMode = .off
     var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
+    // Place awareness (see DwellArea). Kept in this account's encrypted storage.
+    var dwell: DwellArea?
+    var dwellInference = DwellInference()
+    var motionProbeGate = MotionProbeGate()
+    var leftAreaProbed = false
+    var lastPlaceDecision = ""
+    var dwellSettled: Bool { dwell.map { Date().timeIntervalSince1970 - $0.since >= DwellInference.settleSeconds } ?? false }
+    // Low-power resting applies at the current dwell area, or at a saved Home
+    // when no area is known yet.
+    var restPlace: SavedPlace? {
+        dwell.map { SavedPlace(id:"dwell-\(Int($0.since))",name:"Current place",kind:$0.placeKind ?? $0.source.rawValue,latitude:$0.latitude,longitude:$0.longitude,radius:$0.radius) } ?? homePlace
+    }
     // No journey, published stop or departure check is open.
     var automaticIdle: Bool { automaticTrip == nil && settledTripID == nil && (automaticSampling.probeUntil ?? 0) <= Date().timeIntervalSince1970 }
     var departureEvidence = DepartureEvidence()
@@ -330,6 +342,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             self.recoverStalledAutomaticGPS()
             self.confirmHouseholdLocation()
             let now = Date().timeIntervalSince1970
+            self.checkDwellInference(now:now)
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:now,activity:self.automaticTrip?.activity ?? "Driving") else { return }
             self.settleAutomatic(trigger:"arrivalTimer",event:"the arrival timer confirmed the stop")
@@ -680,7 +693,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
         // An open journey whose GPS was stopped is "interrupted", never "recording".
         let automaticStateName: String
-        if let trip = automaticTrip { automaticStateName = trip.state == "recording" ? "recording" : "interrupted" }
+        let pendingWalk = automaticTrip?.details?.localWalkOrigin != nil
+        if let trip = automaticTrip { automaticStateName = pendingWalk ? "checkingWalk" : trip.state == "recording" ? "recording" : "interrupted" }
         else { automaticStateName = settledTripID != nil ? "settled" : detector.phase }
         return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
@@ -691,7 +705,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "automaticSettledAt": settledAt as Any? ?? NSNull(),
                 "automaticContinuationEndsAt": continuationEndsAt as Any? ?? NSNull(),
                 "automaticSettledTripID": settledTripID as Any? ?? NSNull(),
-                "automaticTrip": automaticTrip.map(dictionary) as Any? ?? NSNull(),
+                // A walk still being checked is not shown as a journey.
+                "automaticTrip": (pendingWalk ? nil : automaticTrip.map(dictionary)) as Any? ?? NSNull(),
+                "automaticPendingWalk": pendingWalk,
+                // Place awareness without coordinates.
+                "place": ["state": dwell?.source.rawValue ?? "none", "kind": dwell?.placeKind ?? "none",
+                          "radiusMeters": dwell.map { Int(($0.radius/10).rounded())*10 } ?? 0,
+                          "minutes": dwell.map { Int(max(0,Date().timeIntervalSince1970-$0.since)/60) } ?? 0,
+                          "settled": dwellSettled, "lastDecision": lastPlaceDecision] as [String:Any],
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"automaticPauseEnabled":manager.pausesLocationUpdatesAutomatically,"lastExecutionGapSeconds":lastExecutionGapSeconds,"backgroundSession":backgroundSessionState,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
                 "nativeFamilySharing":["armed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight],
@@ -926,7 +947,9 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                     "gapCount": quality.gapCount,
                     "largestGapSeconds": quality.largestGapSeconds,
                     "unobservedSeconds": quality.unobservedSeconds,
-                    "unobservedMeters": quality.unobservedMeters
+                    "unobservedMeters": quality.unobservedMeters,
+                    "stopCount": quality.stopCount ?? 0,
+                    "stoppedSeconds": quality.stoppedSeconds ?? 0
                 ],
                 "trackingNotes": trip.details?.trackingNotes ?? [],
                 "events": entries,

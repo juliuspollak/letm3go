@@ -32,7 +32,19 @@ extension LocationRecorder {
                     self.detector.reset()
                     self.reconcileAutomaticSampling()
                 } else if AutomaticDetector.credibleMovement(self.motion,now:now) {
-                    self.beginAutomaticProbe(movementBegan:AutomaticDetector.movementBegan(previous:previousMotion,current:self.motion,now:now))
+                    let onFootOnly = !AutomaticDetector.drivingMotion(self.motion,now:now) && !AutomaticDetector.cyclingMotion(self.motion,now:now)
+                    let idle = self.automaticTrip == nil && self.settledTripID == nil
+                    if idle, !self.motionProbeGate.allows(onFootOnly:onFootOnly,dwellSettled:self.dwellSettled,now:now) {
+                        // Walking around a settled place: leave resting for standby,
+                        // so GPS displacement can still prove a departure, without
+                        // another precise-GPS check.
+                        self.diagnosticRejections["motionProbeDeferredInPlace",default:0]+=1
+                        self.reconcileAutomaticSampling()
+                    } else {
+                        let began = AutomaticDetector.movementBegan(previous:previousMotion,current:self.motion,now:now)
+                        if idle, onFootOnly, began, self.dwell != nil { self.motionProbeGate.noteMotionProbe(now:now) }
+                        self.beginAutomaticProbe(movementBegan:began)
+                    }
                 }
             }
         }
@@ -145,7 +157,10 @@ extension LocationRecorder {
         // suspended app, so standby keeps reduced-accuracy location running.
         // Settled at Home only lowers standby accuracy. The service, the background
         // session, regions, visits and motion all keep running for the next departure.
-        let resting=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now)
+        // Walking motion, even when it does not justify precise GPS, returns to the
+        // 10 m standby so that a real departure shows up in the fixes.
+        let resting=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now) &&
+            !AutomaticDetector.credibleMovement(motion,now:now)
         let mode=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:resting)
         if mode != locationMode {
             if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
@@ -228,7 +243,8 @@ extension LocationRecorder {
             // trigger a restart.
             // A queued backlog delivered now proves the same, whatever its age.
             if sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
-            homeRest.observe(sample,home:homePlace,now:now)
+            homeRest.observe(sample,home:restPlace,now:now)
+            if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
@@ -337,10 +353,19 @@ extension LocationRecorder {
                         "Motion: \(motion.types.joined(separator:", ")) (\(motion.confidence))"
                     ]
                     trip.details?.startPlace = places.first { $0.contains(first) }?.name
+                    // A walk that begins inside the current place may be local
+                    // movement. It is recorded from its first real fix but held back
+                    // from History until it proves to be a journey. Vehicles are
+                    // never held back.
+                    let vehicle = LocalWalk.vehicleDeparture(detector.candidate,motion:motion,now:observedAt)
+                    if let area = dwell, !vehicle { trip.details?.localWalkOrigin = area }
                     try storage.save(trip); automaticTrip = trip
                     diagnosticGPSAccepted+=trip.points.count
-                    recordDiagnostic("detection","Automatic departure confirmed",details:["firstFixAt":String(first.timestamp),"confirmationDelaySeconds":String(now-first.timestamp),"bufferedFixes":String(trip.points.count)])
+                    recordDiagnostic("detection",trip.details?.localWalkOrigin != nil ? "Possible walk from the current place; checking before recording" : "Automatic departure confirmed",
+                        details:["firstFixAt":String(first.timestamp),"confirmationDelaySeconds":String(now-first.timestamp),"bufferedFixes":String(trip.points.count)].merging(dwell?.summary ?? [:]){a,_ in a})
                     trackingEvent("Automatic departure confirmed")
+                    if trip.details?.localWalkOrigin == nil { setDwell(nil,reason:"a journey started") }
+                    else { evaluatePendingWalk() }
                     // Keep the departure's buffered, genuine fixes and retain precise
                     // GPS throughout the drive, through the one configuration owner.
                     reconcileAutomaticSampling()
@@ -368,6 +393,7 @@ extension LocationRecorder {
                         automaticTrip = trip; unsavedTripID = trip.id
                         if classificationChanged {recordDiagnostic("classification","Automatic activity classification changed",details:["predicted":trip.activity])}
                         diagnosticGPSAccepted+=1
+                        if trip.details?.localWalkOrigin != nil { evaluatePendingWalk() }
                     }else{diagnosticReject("routeDuplicateJitterOrImplausibleMovement")}
                 }
                 if automaticTrip != nil {
@@ -411,6 +437,23 @@ extension LocationRecorder {
             try startAutomaticJourney(family, from: confirmed,
                 note: "Movement change ended an activity too short to publish")
             return
+        }
+        // A walk still being checked ends here (back at the car, say). It is a
+        // journey only if it proved to be one; otherwise it was local movement.
+        if let origin = ended.details?.localWalkOrigin {
+            switch LocalWalk.assess(ended.points, from: origin, ending: true) {
+            case .local(let reason):
+                try? storage.delete(current.id)
+                automaticTrip = nil
+                settleStateReset()
+                absorbLocalWalk(ended, origin: origin, reason: reason)
+                try startAutomaticJourney(family, from: confirmed, note: "Movement change after local walking that was not recorded")
+                return
+            case .genuine(let reason):
+                ended.updateDetails { $0.localWalkOrigin = nil; $0.trackingNotes = Array((($0.trackingNotes ?? []) + ["Walk confirmed as a journey: \(reason)"]).suffix(24)) }
+            case .pending:
+                break
+            }
         }
         // Preserve hiking, running or an MTB subtype rather than flattening it, and
         // never rename a journey that Core Motion could not classify: an "Unknown"
@@ -468,6 +511,9 @@ extension LocationRecorder {
         trip.source = "simulator"
         #endif
         for point in points { _ = trip.accept(point,now:point.timestamp) }
+        // Walking away from a parked car is where a shopping trip or a school
+        // visit begins: the walk is checked against the place the car stopped at.
+        if family == .onFoot { trip.details?.localWalkOrigin = dwell ?? DwellArea.arrival(at: first) }
         return trip
     }
     func activityName(_ family: JourneyFamily, preserving current: String) -> String {
@@ -504,6 +550,13 @@ extension LocationRecorder {
         departureEvidence.reset()
         departureEvidence.anchor = point
         cleanupContinuationRegion()
+        if let origin = trip.details?.localWalkOrigin {
+            setDwell(origin,reason:"walking began at a stop")
+            recordDiagnostic("detection","Possible walk from the current place; checking before recording",details:origin.summary)
+            evaluatePendingWalk()
+        } else {
+            setDwell(nil,reason:"a journey started")
+        }
         notifyJourneyChange()
         trackingEvent("\(trip.activity) journey started after a movement change")
         reconcileAutomaticSampling()
@@ -520,6 +573,23 @@ extension LocationRecorder {
         trip.points = trip.points.filter { $0.timestamp <= end }
         // The same distance rule as recording: drift while stopped is not movement.
         trip.distanceMeters = trip.measuredDistance
+        // A walk still being checked has stopped: decide now whether it was a
+        // journey. Local movement is never published, so it never appears in
+        // History and is not silently removed from it later.
+        if let origin = trip.details?.localWalkOrigin {
+            switch LocalWalk.assess(trip.points, from: origin, ending: true) {
+            case .local(let reason):
+                try? storage.delete(trip.id)
+                automaticTrip = nil
+                absorbLocalWalk(trip, origin: origin, reason: reason)
+                return
+            case .genuine(let reason):
+                trip.updateDetails { $0.localWalkOrigin = nil; $0.trackingNotes = Array((($0.trackingNotes ?? []) + ["Walk confirmed as a journey: \(reason)"]).suffix(24)) }
+                recordDiagnostic("detection","Walk confirmed as a journey",details:["reason":reason])
+            case .pending:
+                break
+            }
+        }
         // Genuine movement is required before a journey is worth publishing.
         guard trip.points.count >= 2, trip.distanceMeters >= 25 else {
             automaticTrip = trip
@@ -552,11 +622,119 @@ extension LocationRecorder {
         detector.phase = "settled"
         movementTransition.reset()
         departureEvidence.reset()
-        if let last = trip.points.last { departureEvidence.anchor = last }
+        if let last = trip.points.last {
+            departureEvidence.anchor = last
+            // Where the journey arrived is now the current place: a saved place
+            // when it is one, otherwise the area around the stop.
+            let saved = places.filter { $0.contains(last) }.min { $0.radius < $1.radius }
+            setDwell(saved.map { DwellArea.saved($0,now:end) } ?? DwellArea.arrival(at:last),reason:"a journey arrived")
+        }
         automaticSampling.stop(now:now)
         monitorContinuationRegion(trip)
         notifyJourneyChange()
         trackingEvent("Journey stopped and saved; watching for movement within \(Int(window/60)) minutes")
+        reconcileAutomaticSampling()
+    }
+    // MARK: Place awareness
+    func setDwell(_ area: DwellArea?, reason: String) {
+        guard area != dwell else { return }
+        let previous = dwell
+        dwell = area
+        motionProbeGate.reset()
+        leftAreaProbed = false
+        if area == nil { dwellInference.reset() }
+        persistDwell()
+        if let area = area {
+            recordDiagnostic("place",previous == nil ? "Current place established" : "Current place updated",details:area.summary.merging(["reason":reason]){a,_ in a})
+        } else if previous != nil {
+            recordDiagnostic("place","Current place cleared",details:["reason":reason])
+        }
+    }
+    // Encrypted with the account's other recorder files; "null" clears it.
+    func persistDwell() {
+        guard let storage = storage else { return }
+        let data = dwell.flatMap { try? JSONEncoder().encode($0) } ?? Data("null".utf8)
+        try? storage.writeData(data,name:"dwell.data")
+    }
+    func restoreDwell() {
+        dwell = (try? storage?.readData(name:"dwell.data")).flatMap { try? JSONDecoder().decode(DwellArea.self,from:$0) }
+    }
+    // Idle fixes keep the current place up to date: a saved place wins, a fix
+    // well outside the area drops it, and ten quiet minutes infer one.
+    func observePlace(_ sample: GPSPoint, now: Double) {
+        guard sample.accuracy >= 0, sample.accuracy <= 65, now - sample.timestamp <= 120 else { return }
+        if let place = places.filter({ $0.contains(sample) }).min(by: { $0.radius < $1.radius }) {
+            if dwell?.source != .saved || dwell?.latitude != place.latitude || dwell?.longitude != place.longitude || dwell?.placeKind != place.kind {
+                setDwell(.saved(place,now:now),reason:"inside a saved place")
+            }
+            dwellInference.reset()
+            return
+        }
+        if let area = dwell, area.clearlyLeft(sample) { setDwell(nil,reason:"a fix placed the phone well outside the area") }
+        guard let area = dwell else {
+            if let inferred = dwellInference.observe(sample,now:now) { setDwell(inferred,reason:"stayed in one small area for 10 minutes") }
+            return
+        }
+        if area.contains(sample) {
+            dwellInference.reset()
+            leftAreaProbed = false
+            return
+        }
+        // Stepping out of the occupied area on a fix good enough to place it is GPS
+        // evidence of a possible departure: check once per exit, whatever the
+        // walking-motion cooldown says, so a walk to a nearby station starts at
+        // the edge of the place instead of after a further displacement.
+        if !leftAreaProbed, now - sample.timestamp <= 30, area.steppedOut(sample) {
+            leftAreaProbed = true
+            trackingEvent("Left the current place's occupied area; checking for a departure")
+            beginAutomaticProbe(movementBegan:true)
+        }
+        // Staying put outside it for ten minutes (the café across the road) makes
+        // that the current place.
+        if let inferred = dwellInference.observe(sample,now:now) { setDwell(inferred,reason:"stayed outside the previous place for 10 minutes") }
+    }
+    // Called from the 30-second timer: a phone that has not moved sends no fixes.
+    func checkDwellInference(now: Double) {
+        guard dwell == nil, automaticIdle, continuousLocationRequested, !locationUpdatesPaused,
+              let inferred = dwellInference.check(now:now,executingSince:executingSince) else { return }
+        setDwell(inferred,reason:"stayed in one small area for 10 minutes")
+    }
+    // A pending walk is confirmed as soon as it proves to be a journey, or as a
+    // vehicle journey once it is classified as one.
+    func evaluatePendingWalk() {
+        guard var trip = automaticTrip, let origin = trip.details?.localWalkOrigin else { return }
+        let family = JourneyFamily.of(trip.activity)
+        let verdict: LocalWalk.Verdict = family == .driving || family == .cycling
+            ? .genuine("Classified as \(trip.activity)")
+            : LocalWalk.assess(trip.points, from: origin, ending: false)
+        guard case .genuine(let reason) = verdict else { return }
+        trip.updateDetails { $0.localWalkOrigin = nil; $0.trackingNotes = Array((($0.trackingNotes ?? []) + ["Walk confirmed as a journey: \(reason)"]).suffix(24)) }
+        try? storage?.save(trip)
+        automaticTrip = trip
+        lastPlaceDecision = reason
+        setDwell(nil,reason:"a walk proved to be a journey")
+        recordDiagnostic("detection","Walk confirmed as a journey",details:["reason":reason,"savedFixes":String(trip.points.count)])
+        trackingEvent("Walk confirmed as a journey")
+        notifyJourneyChange()
+    }
+    // Local movement is not a journey. Its record (never published) is already
+    // deleted by the caller; the place now covers the area it walked, within the cap.
+    func absorbLocalWalk(_ trip: RecordedActivity, origin: DwellArea, reason: String) {
+        var area = dwell ?? origin
+        area.absorb(trip.points)
+        setDwell(area,reason:"local walking absorbed")
+        let metrics = LocalWalk.metrics(trip.points, from: origin)
+        lastPlaceDecision = reason
+        recordDiagnostic("place","Local walking not recorded",details:["reason":reason,"pathMeters":String(Int(metrics.path)),
+            "durationSeconds":String(Int(metrics.duration)),"savedFixes":String(trip.points.count)].merging(area.summary){a,_ in a})
+        settleStateReset()
+        detector.reset()
+        movementTransition.reset()
+        departureEvidence.reset()
+        if let last = trip.points.last { departureEvidence.anchor = last }
+        automaticSampling.stop(now:Date().timeIntervalSince1970)
+        trackingEvent("Local walking not recorded")
+        notifyJourneyChange()
         reconcileAutomaticSampling()
     }
     // Reuse Home and other saved places: a stop inside one is a destination, not
@@ -705,6 +883,10 @@ extension LocationRecorder {
         detector.reset()
         movementTransition.reset()
         cleanupContinuationRegion()
+        // The stop's own geofence just ended. Rebuild the place regions now, so the
+        // place the person is still at keeps an exit wake-up ("last stop") even if
+        // the app stays in the background for hours.
+        if automaticAvailable { configurePlaceRegions() }
         notifyJourneyChange()
         trackingEvent("Journey saved to history")
         automaticSampling.stop(now:Date().timeIntervalSince1970)
@@ -771,6 +953,19 @@ extension LocationRecorder {
             else { detector.reset() }
             return
         }
+        // A walk that has not proved to be a journey is never published by an
+        // external end either (a manual start, tracking switched off).
+        if let origin = trip.details?.localWalkOrigin {
+            if case .local(let note) = LocalWalk.assess(trip.points, from: origin, ending: true) {
+                try? storage.delete(trip.id)
+                automaticTrip = nil
+                automaticProbeTimer?.invalidate();automaticProbeTimer=nil
+                cleanupContinuationRegion()
+                absorbLocalWalk(trip, origin: origin, reason: note)
+                return
+            }
+            trip.updateDetails { $0.localWalkOrigin = nil }
+        }
         // Include a genuine accurate final approach fix near the last movement.
         // Do not extend the journey across the arrival dwell or a GPS outage.
         let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
@@ -826,7 +1021,7 @@ extension LocationRecorder {
     }
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         noteExecution("regionExit")
-        if let home=homePlace, region.identifier == "letm3go-place-\(home.id)" { homeRest.leave() }
+        if region.identifier.hasPrefix("letm3go-place-") { homeRest.leave() }
         guard automaticAvailable, active == nil, region.identifier.hasPrefix("letm3go-place-") else { return }
         // An open journey already has precise GPS; a place exit is not a departure.
         guard automaticTrip == nil || settledAt != nil else { recordDiagnostic("region","Place exit during an open journey");return }
@@ -853,6 +1048,14 @@ extension LocationRecorder {
         recordDiagnostic("region",visit.departureDate == .distantFuture ? "Visit arrival reported" : "Visit departure reported")
         if visit.departureDate == .distantFuture {
             finishExpiredContinuation(now:now)
+            // A visit is the system's own view that the person is staying here. It
+            // refines an arrival or inferred area; a saved place keeps priority.
+            let coordinate = visit.coordinate
+            if automaticTrip == nil, settledTripID == nil || dwell?.source == .arrival, dwell?.source != .saved,
+               CLLocationCoordinate2DIsValid(coordinate), visit.horizontalAccuracy >= 0 {
+                setDwell(.visit(latitude:coordinate.latitude,longitude:coordinate.longitude,accuracy:visit.horizontalAccuracy,
+                    at:visit.arrivalDate == .distantPast ? now : visit.arrivalDate.timeIntervalSince1970),reason:"iOS reported a visit")
+            }
             if automaticTrip != nil, detector.shouldArrive(now:now,activity:automaticTrip?.activity ?? "Driving") { settleAutomatic(trigger:"didVisit",event:"a visit began at the current location") }
             return
         }

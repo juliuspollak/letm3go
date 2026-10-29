@@ -45,6 +45,9 @@ export function journeyFindings(report){
   const causes=[...new Set(notExecuting.map(e=>e.context?.wakeCause).filter(Boolean))];
   findings.push(`iOS stopped running the app ${notExecuting.length} time${notExecuting.length===1?'':'s'} (longest ${span(longest)})${causes.length?`; woken by ${causes.join(', ')}`:''}. GPS cannot be recorded while the app is not running.`);
  }
+ // A published stop that the journey continued from is time spent stopped, not
+ // missing GPS (build 50+). Older exports have no stop fields.
+ if(quality.stopCount>0)findings.push(`Stopped ${quality.stopCount} time${quality.stopCount===1?'':'s'} for ${span(quality.stoppedSeconds)} in total, then continued. Stops are not GPS gaps.`);
  if(quality.gapCount>0)findings.push(`${quality.gapCount} GPS gap${quality.gapCount===1?'':'s'} with no route (dashed on the map), totalling ${span(quality.unobservedSeconds)} and at least ${metres(quality.unobservedMeters)} straight-line. Largest gap ${span(quality.largestGapSeconds)}.`);
  else if(quality.fixCount)findings.push('No GPS gaps: the route was observed continuously.');
  // Whether iOS was asked to keep the app running in the background (build 47+).
@@ -86,6 +89,7 @@ export function journeySummary(report){
   ['GPS gaps',String(quality.gapCount??'—')],
   ['Largest gap',quality.largestGapSeconds!=null?span(quality.largestGapSeconds):'—'],
   ['Unobserved',quality.unobservedSeconds!=null?`${span(quality.unobservedSeconds)} · ≥${metres(quality.unobservedMeters)}`:'—'],
+  ['Stopped',quality.stopCount!=null?`${quality.stopCount} stop${quality.stopCount===1?'':'s'} · ${span(quality.stoppedSeconds)}`:'—'],
  ];
 }
 
