@@ -176,6 +176,10 @@ function PrivateApp(){
  // People on the map and in Household: one state per person from one policy.
  const homePlace=useMemo(()=>(recording.state.places||[]).find(p=>p.kind==='home')||null,[recording.state.places]);
  const householdMembers=useMemo(()=>presence.liveMembers.map(row=>({...row,...memberLocationState(row),source:'household'})),[presence.liveMembers]);
+ // A member who joins (or first appears) after photos loaded gets their photo
+ // without waiting for the app to return to the foreground.
+ const householdMemberKey=householdMembers.map(m=>m.user_id).sort().join(',');
+ useEffect(()=>{if(householdMemberKey)refreshAvatars();},[householdMemberKey,refreshAvatars]);
  const friendMembers=useMemo(()=>friendsLocation.people.filter(p=>!presence.liveMembers.some(m=>m.user_id===p.user_id))
   .map(p=>({...p,sharing_enabled:true,location_at:p.updated_at,server_now:new Date(motionClock).toISOString(),source:'friend'}))
   .map(row=>({...row,...memberLocationState(row)})),[friendsLocation.people,presence.liveMembers,motionClock]);

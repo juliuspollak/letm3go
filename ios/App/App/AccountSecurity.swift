@@ -183,7 +183,7 @@ extension LocationRecorder {
         disableHouseholdLiveSharing(forget: true)
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
-        automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling()
+        automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset()
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()

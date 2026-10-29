@@ -1438,6 +1438,77 @@ check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:true,fixAt:
 check(HouseholdPublisher.movingInterval == 25 && HouseholdPublisher.confirmationInterval == 300,"moving phones publish every 25 s, parked phones confirm every 5 minutes")
 check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation still keeps a present member inside the 10-minute live window")
 
+// Arriving Home and resting there. 0.0001° of latitude is about 11 m.
+let restHome=SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:100)
+var walkedHomeRest=HomeRest()
+for (index,latitude) in [-33.004,-33.003,-33.002,-33.0012].enumerated() { walkedHomeRest.observe(point(latitude,Double(900+index*30)),home:restHome,now:Double(900+index*30)) }
+check(walkedHomeRest.insideSince == nil,"a walk approaching Home is not inside Home yet")
+walkedHomeRest.observe(point(-33.0004,1000),home:restHome,now:1000)
+check(walkedHomeRest.insideSince == 1000,"the first fix inside Home starts the stationary confirmation")
+check(!walkedHomeRest.resting(now:1000+HomeRest.confirmSeconds,idle:false),"a walk still open or awaiting continuation never rests")
+check(!walkedHomeRest.resting(now:1599,idle:true),"resting needs ten minutes inside Home")
+check(walkedHomeRest.resting(now:1600,idle:true),"ten idle minutes at Home after the walk is finalised allow resting")
+var drivenHomeRest=HomeRest()
+for (index,latitude) in [-33.02,-33.01,-33.003,-33.0002].enumerated() { drivenHomeRest.observe(drivingFix(latitude,Double(2000+index*20)),home:restHome,now:Double(2000+index*20)) }
+check(drivenHomeRest.insideSince == 2060,"a drive arriving Home starts the confirmation at the first fix inside")
+check(drivenHomeRest.resting(now:2060+HomeRest.confirmSeconds,idle:true),"after the drive is finalised the phone rests at Home")
+for (index,latitude) in [-33.0011,-32.9990,-33.0008,-33.0012].enumerated() { drivenHomeRest.observe(point(latitude,Double(2700+index*60),accuracy:65),home:restHome,now:Double(2700+index*60)) }
+check(drivenHomeRest.insideSince == 2060,"Wi-Fi drift around the house (±65 m, up to 130 m out) never ends Home rest")
+drivenHomeRest.observe(point(-33.0020,3000,accuracy:5),home:restHome,now:3000)
+check(drivenHomeRest.insideSince == nil,"a precise fix 220 m out leaves Home")
+var staleRest=HomeRest()
+staleRest.observe(point(-33,1000),home:restHome,now:1200)
+check(staleRest.insideSince == nil,"a stale queued fix cannot start Home rest")
+staleRest.observe(point(-33,1200,accuracy:150),home:restHome,now:1200)
+check(staleRest.insideSince == nil,"a fix too coarse to place someone cannot start Home rest")
+staleRest.observe(point(-33,1200),home:nil,now:1200)
+check(staleRest.insideSince == nil && !staleRest.resting(now:9999,idle:true),"without a saved Home there is no Home rest")
+var regionRest=HomeRest()
+regionRest.observe(point(-33,1000),home:restHome,now:1000)
+regionRest.leave()
+check(!regionRest.resting(now:5000,idle:true),"the Home region exit ends rest immediately")
+var movedRest=HomeRest()
+movedRest.observe(point(-33,1000),home:restHome,now:1000)
+movedRest.observe(point(-33,1100),home:SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:150),now:1100)
+check(movedRest.insideSince == 1100,"an edited Home starts a new confirmation")
+
+// Active GPS -> standby -> resting -> next departure.
+var restSampling=AutomaticSampling()
+check(restSampling.locationMode(available:true,manualActive:false,automaticRecording:true,now:100,resting:true) == .precise,"an open journey is always precise, even inside Home")
+check(restSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:100) == .standby,"after arrival the recorder drops to standby")
+check(restSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:100,resting:true) == .resting,"settled at Home it drops further to resting")
+check(LocationConfiguration.automatic(.resting,journeyOpen:false,journeyActivity:nil,drivingMotion:false,currentProfile:.other) == LocationConfiguration(accuracy:.hundredMetres,distanceFilter:50,profile:.other),"resting keeps location running at Wi-Fi/cell accuracy instead of stopping it")
+restSampling.requestProbe(now:100+12*3600,movementBegan:true)
+check(restSampling.locationMode(available:true,manualActive:false,automaticRecording:false,now:100+12*3600+1,resting:true) == .precise,"movement after a night at Home still upgrades straight to precise GPS")
+check(restSampling.locationMode(available:false,manualActive:false,automaticRecording:false,now:100,resting:true) == .off,"permission removal or tracking off stops resting too")
+check(restSampling.locationMode(available:true,manualActive:true,automaticRecording:false,now:100,resting:true) == .off,"a manual activity still owns the location service")
+
+// Resting never touches the background session.
+check(!BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:true,manualRecording:false),"arriving Home never ends the background session")
+check(BackgroundSessionPolicy.wanted(automaticAvailable:true,manualRecording:false),"the session stays wanted while resting at Home")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true) == .rejoin,"after an overnight termination the held session is rejoined at launch")
+check(HomeRest().insideSince == nil,"a relaunched recorder starts in standby until a fresh fix proves it is Home")
+check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:false,manualRecording:false),"removing Always permission releases the session")
+check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false),"switching automatic tracking off releases the session")
+
+// Why the iOS location arrow is showing.
+let restingArrow=LocationIndicator.explain(continuous:true,mode:.resting,manual:false,sessionHeld:true)
+check(restingArrow.expected && restingArrow.reason.contains("no journey is recording") && restingArrow.reason.contains("session held"),"resting explains the arrow without implying a recording")
+check(LocationIndicator.explain(continuous:false,mode:.off,manual:false,sessionHeld:true).expected,"a held session alone is expected to show the arrow")
+check(!LocationIndicator.explain(continuous:false,mode:.off,manual:false,sessionHeld:false).expected,"nothing held, no arrow expected")
+check(LocationIndicator.explain(continuous:true,mode:.precise,manual:false,sessionHeld:true).reason.contains("Precise"),"precise GPS is named as such")
+check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:false,available:true,resting:true).contains("Resting at Home"),"diagnostics name the resting state")
+check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:true,available:true,resting:true).contains("departure check"),"a departure check outranks resting in diagnostics")
+
+// Household sharing while resting: a Wi-Fi fix consistent with the last precise
+// one keeps the precise position; real movement or a suspension replaces it.
+let sharedPrecise=point(-33,1000,accuracy:8)
+check(HouseholdPublisher.keepsPrevious(sharedPrecise,candidate:point(-33.0003,1300,accuracy:65),executingSince:500),"a coarse fix inside its own uncertainty keeps the precise shared position")
+check(!HouseholdPublisher.keepsPrevious(sharedPrecise,candidate:point(-33.002,1300,accuracy:65),executingSince:500),"a coarse fix that proves movement replaces it")
+check(!HouseholdPublisher.keepsPrevious(sharedPrecise,candidate:point(-33.0001,1300,accuracy:5),executingSince:500),"a more precise fix always replaces it")
+check(!HouseholdPublisher.keepsPrevious(sharedPrecise,candidate:point(-33.0003,1300,accuracy:65),executingSince:1200),"after a suspension the new fix is used")
+check(!HouseholdPublisher.keepsPrevious(nil,candidate:point(-33,1300,accuracy:65),executingSince:500),"the first fix is always shared")
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

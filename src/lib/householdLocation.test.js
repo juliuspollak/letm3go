@@ -82,6 +82,32 @@ describe('map pins for people',()=>{
   const rows=[{...anna,sharing_enabled:false},{...anna,user_id:'w',latitude:null,longitude:null,location_at:null},{...anna,user_id:'u',latitude:null,longitude:null,location_at:ago(90000)}];
   expect(peoplePins({members:rows.map(r=>({...r,...memberLocationState(r)}))})).toEqual([]);
  });
+ it('never draws a placeholder initial: a member without a name gets a silhouette, not "F"',()=>{
+  const nameless={...anna,display_name:''};
+  const [pin]=peoplePins({members:[{...nameless,...memberLocationState(nameless)}],photos:{}});
+  expect(pin.title).toBe('Household member');
+  expect(pin.members[0]).toMatchObject({name:'Household member',initial:'',avatar:null});
+  const [friend]=peoplePins({members:[{...nameless,source:'friend',...memberLocationState(nameless)}]});
+  expect(friend.members[0]).toMatchObject({name:'Friend',initial:''});
+ });
+ it('uses each person\'s own photo by id and never someone else\'s',()=>{
+  const other='data:image/jpeg;base64,/9j/BBBB';
+  const [pin]=peoplePins({members:[{...anna,...memberLocationState(anna)}],photos:{stranger:other,ANNA:photo}});
+  expect(pin.members[0].avatar).toBe(photo);
+  const [unknown]=peoplePins({members:[{...anna,...memberLocationState(anna)}],photos:{stranger:other}});
+  expect(unknown.members[0]).toMatchObject({avatar:null,initial:'A'});
+ });
+ it('picks up a changed profile photo on the next render',()=>{
+  const member={...anna,...memberLocationState(anna)};
+  const updated='data:image/jpeg;base64,/9j/CCCC';
+  expect(peoplePins({members:[member],photos:{anna:photo}})[0].members[0].avatar).toBe(photo);
+  expect(peoplePins({members:[member],photos:{anna:updated}})[0].members[0].avatar).toBe(updated);
+ });
+ it('shows my own photo on my bubble, from my preferences first',()=>{
+  const mine='data:image/jpeg;base64,/9j/DDDD';
+  const [pin]=peoplePins({self:{...self,home:false},photos:{julius:photo},selfId:'julius',selfAvatar:mine});
+  expect(pin.members[0]).toMatchObject({self:true,avatar:mine,name:'You'});
+ });
  it('displays my own marker from my position alone',()=>{
   expect(peoplePins({self:{...self,home:false}})).toEqual([expect.objectContaining({title:'You',home:false,members:[expect.objectContaining({self:true})]})]);
  });

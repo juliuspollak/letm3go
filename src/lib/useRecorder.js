@@ -27,6 +27,7 @@ function snapshotKey(data){
   data.motionAvailable,data.motionPermission,data.motionTypes?.join(','),data.motionConfidence,data.motionTimestamp,
   data.backgroundEnabled,data.backgroundRecording,data.locationServices,data.applicationState,data.backgroundSession,data.commit,
   data.gpsReason,data.indicatorRequested,data.lastTrackingEvent,data.lastTrackingEventAt,
+  data.locationMode,data.locationIndicator?.reason,
   data.error,data.recovery,data.accuracy,data.lastFixAt,data.currentSpeed,
   tripKey(data.active),tripKey(data.automaticTrip),
   (data.trips||[]).map(tripKey).join('|'),
