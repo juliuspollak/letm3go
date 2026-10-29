@@ -252,7 +252,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         // returned in that case, so nothing old is presented as new; the native
         // publisher re-confirms the shared position on that same evidence.
         let recorder = LocationRecorder.shared
-        if call.getBool("allowStationary") == true, recorder.liveUpdatesTask != nil, let since = recorder.liveGate.stationarySince {
+        if call.getBool("allowStationary") == true, recorder.adaptive.lowPowerRunning, let since = recorder.liveGate.stationarySince {
             call.resolve(["stationary": true, "stationarySince": since]); return
         }
         let request = PositionRequest(call:call); self.positionRequest = request; request.begin()

@@ -178,7 +178,10 @@ struct LiveUpdateGate {
               now - point.timestamp <= maximumAge, now - point.timestamp >= -5 else { return nil }
         return point
     }
-    mutating func observe(stationary: Bool, point: GPSPoint?, outsidePlace: Bool, now: Double) -> Verdict {
+    // `fallbackReference`: where the recorder last knew the phone to be (it
+    // settled there), used when this stream has not given a reference yet, for
+    // example when its stationary report carried no coordinate.
+    mutating func observe(stationary: Bool, point: GPSPoint?, outsidePlace: Bool, fallbackReference: GPSPoint? = nil, now: Double) -> Verdict {
         let fix = Self.usable(point, now: now)
         if stationary {
             armed = true
@@ -190,6 +193,8 @@ struct LiveUpdateGate {
         stationarySince = nil
         guard let fix = fix else { return .ignored(point == nil ? "no position" : "stale or imprecise position") }
         if outsidePlace { return signal("position outside the current place", now: now) }
+        if reference == nil, let known = fallbackReference, known.latitude.isFinite, known.longitude.isFinite,
+           abs(known.latitude) <= 90, abs(known.longitude) <= 180, known.accuracy >= 0, known.accuracy <= Self.maximumAccuracy { reference = known }
         guard let anchor = reference else { reference = fix; return .none }
         let distance = anchor.distance(to: fix)
         let seconds = fix.timestamp - anchor.timestamp
@@ -301,5 +306,179 @@ struct DepartureLatency: Equatable {
     func measure(firstFixAt: Double, confirmedAt: Double) -> (toFirstFix: Double, toConfirmation: Double)? {
         guard let evidence = evidenceAt else { return nil }
         return (firstFixAt - evidence, confirmedAt - evidence)
+    }
+}
+
+// MARK: Runtime controller
+//
+// The production owner of the adaptive engine's runtime decisions: which
+// standard mode runs, when the low-power stream starts and stops, which
+// generation may act, what its reports mean, and the current-place region. It
+// talks to Core Location only through AdaptiveHost (LocationRecorder in the app,
+// a recording fake in the native tests), so the tests drive this same object
+// through real event sequences.
+enum AdaptiveRegion { static let identifier = "letm3go-place-stationary" }
+struct PlaceRegionSpec: Equatable {
+    var latitude: Double
+    var longitude: Double
+    var radius: Double
+    // Core Location may round what it stores; a registration that matches is kept.
+    func same(_ other: PlaceRegionSpec?) -> Bool {
+        guard let other = other else { return false }
+        return abs(latitude - other.latitude) < 1e-7 && abs(longitude - other.longitude) < 1e-7 && abs(radius - other.radius) < 0.5
+    }
+}
+struct RegionCapability: Equatable {
+    var available: Bool
+    var maximumRadius: Double
+}
+protocol AdaptiveHost: AnyObject {
+    // Whether standard continuous updates are running (requested).
+    var standardRunning: Bool { get }
+    // The current-place region Core Location actually monitors, if any.
+    var registeredPlaceRegion: PlaceRegionSpec? { get }
+    // Apply a standard mode: precise/standby/resting run updates; off/stationary stop them.
+    func runStandard(_ mode: AutomaticLocationMode)
+    func startLowPower(generation: Int)
+    func cancelLowPower()
+    func registerPlaceRegion(_ region: PlaceRegionSpec)
+    func removePlaceRegion()
+    // A usable low-power position, for sharing, place awareness and departure evidence.
+    func observeLowPower(_ fix: GPSPoint)
+    // Start the established bounded departure check.
+    func requestDepartureCheck(cause: String)
+    func adaptiveLog(_ kind: String, _ message: String, _ details: [String: String])
+}
+
+final class AdaptiveController {
+    weak var host: AdaptiveHost?
+    private(set) var policy: AdaptivePolicy
+    private(set) var gate = LiveUpdateGate()
+    private(set) var stream = LowPowerStream()
+    private(set) var state: AdaptiveState = .off
+    private(set) var plan: AdaptivePlan = .established
+    private(set) var failedRegion: PlaceRegionSpec?
+    init(now: Double) { policy = AdaptivePolicy(now: now) }
+    var lowPowerRunning: Bool { stream.running }
+
+    // One reconcile, in a fixed order: stop what is no longer wanted, settle the
+    // region, apply the standard mode (only when automatic tracking owns standard
+    // updates, never during manual recording), and start the low-power stream only
+    // once standard updates are not running.
+    @discardableResult
+    func reconcile(_ inputs: AdaptiveInputs, established: AutomaticLocationMode, standardOwned: Bool,
+                   dwell: DwellArea?, regions: RegionCapability) -> AdaptiveServices {
+        let previous = state, previousSince = policy.since
+        state = policy.decide(inputs)
+        plan = policy.plan(inputs)
+        if state != previous {
+            host?.adaptiveLog("adaptive", "Location state: \(state.rawValue)", [
+                "from": previous.rawValue, "to": state.rawValue, "secondsInPrevious": String(Int(max(0, inputs.now - previousSince))),
+                "engine": plan.liveUpdates ? "lowPower" : "established",
+                "adaptiveEnabled": String(inputs.enabled), "liveUpdatesSupported": String(inputs.supported)])
+        }
+        let services = AdaptiveServices.decide(established: standardOwned ? established : .off, plan: plan)
+        if !services.lowPowerStream { stopLowPower(reason: "low-power standby ended") }
+        reconcileRegion(wanted: inputs.enabled && inputs.supported && inputs.automaticAvailable && ![.off, .activeJourney].contains(state),
+                        dwell: dwell, regions: regions)
+        guard let host = host else { return services }
+        if standardOwned { host.runStandard(services.standardMode) }
+        if services.lowPowerStream, !host.standardRunning, !stream.running {
+            gate.reset()
+            host.startLowPower(generation: stream.start())
+        }
+        return services
+    }
+    // Stopping is never a failure; the generation changes first.
+    func stopLowPower(reason: String) {
+        guard stream.running else { return }
+        stream.stop()
+        gate.reset()
+        host?.cancelLowPower()
+        host?.adaptiveLog("service", "Low-power location updates stopped", ["reason": reason])
+    }
+    // Tracking unavailable, signed out, or switched off: no adaptive service remains.
+    func shutdown(reason: String) {
+        stopLowPower(reason: reason)
+        if host?.registeredPlaceRegion != nil { host?.removePlaceRegion() }
+        state = .off; plan = .established
+    }
+    // Another account: nothing of this one's history carries over.
+    func reset(now: Double, reason: String) {
+        shutdown(reason: reason)
+        policy = AdaptivePolicy(now: now)
+        gate.reset(); failedRegion = nil
+    }
+    func restoreRecovery(until: Double?, now: Double) { policy.restoreRecovery(until: until, now: now) }
+    func noteWake(now: Double) { if state == .stationaryStandby { policy.noteWake(now: now) } }
+    func noteJourneyStarted() { policy.noteJourneyStarted() }
+
+    // The current stream ended by itself. Returns true when the host must
+    // reconcile (to restart it, or fall back after repeated failures).
+    func lowPowerEnded(generation: Int, error: String?, now: Double) -> Bool {
+        guard stream.ended(generation) else { return false }
+        gate.reset()
+        policy.noteServiceFailure(now: now)
+        host?.adaptiveLog("recovery", "Low-power location updates ended unexpectedly", ["error": error ?? "none"])
+        return true
+    }
+    // One report from the low-power stream. `fallback` is the last trustworthy
+    // position the recorder had (where the phone settled), used as the reference
+    // when the stream has not given one, for example when its stationary report
+    // carried no coordinate.
+    func lowPowerUpdate(generation: Int, stationary: Bool, point: GPSPoint?, dwell: DwellArea?, fallback: GPSPoint?, now: Double) {
+        guard stream.accepts(generation), let host = host else { return }
+        let fix = LiveUpdateGate.usable(point, now: now)
+        let wasStationary = gate.stationarySince != nil
+        // A usable position is observed first, so a fix that justifies a departure
+        // check is also its first candidate.
+        if let fix = fix, !stationary || !wasStationary { host.observeLowPower(fix) }
+        // Observing may itself have started a check (and stopped this stream), or
+        // the engine may have been switched off meanwhile.
+        guard stream.accepts(generation) else { return }
+        let outside = fix.map { f in dwell.map { $0.steppedOut(f) || $0.clearlyLeft(f) } ?? false } ?? false
+        switch gate.observe(stationary: stationary, point: point, outsidePlace: outside, fallbackReference: fallback, now: now) {
+        case .stationary:
+            if !wasStationary { host.adaptiveLog("adaptive", "Core Location reports the phone is stationary", [:]) }
+        case .movement(let reason):
+            host.adaptiveLog("decision", "Low-power standby woke: \(reason)", [:])
+            host.requestDepartureCheck(cause: "lowPower: \(reason)")
+        case .ignored(let reason):
+            host.adaptiveLog("observations", "Low-power report ignored", ["reason": reason])
+        case .none:
+            break
+        }
+    }
+    func regionFailed(_ identifier: String?, placeIdentifier: String) {
+        guard identifier == placeIdentifier else { return }
+        failedRegion = lastRequestedRegion
+        lastRequestedRegion = nil
+        host?.adaptiveLog("region", "Current place exit region could not be registered", [:])
+    }
+    private var lastRequestedRegion: PlaceRegionSpec?
+    // Decided against what Core Location actually monitors (regions survive a
+    // relaunch). Re-registering an identifier replaces the old region (Apple,
+    // startMonitoring(for:)); the old one is still removed first, so a refused
+    // registration never leaves the previous place's region behind.
+    private func reconcileRegion(wanted: Bool, dwell: DwellArea?, regions: RegionCapability) {
+        guard let host = host else { return }
+        let registered = host.registeredPlaceRegion
+        guard wanted, let area = dwell, regions.available else {
+            if registered != nil { host.removePlaceRegion(); host.adaptiveLog("region", "Current place exit region removed", [:]) }
+            return
+        }
+        let radius = min(PlaceRegion.radius(placeRadius: area.radius, anchorAccuracy: 65), regions.maximumRadius)
+        let spec = PlaceRegionSpec(latitude: area.latitude, longitude: area.longitude, radius: radius)
+        guard PlaceRegion.valid(latitude: spec.latitude, longitude: spec.longitude, radius: spec.radius) else {
+            if registered != nil { host.removePlaceRegion() }
+            return
+        }
+        if spec.same(registered) { return }
+        // A registration iOS refused is not retried until the place changes.
+        if spec.same(failedRegion) { return }
+        if registered != nil { host.removePlaceRegion() }
+        lastRequestedRegion = spec
+        host.registerPlaceRegion(spec)
+        host.adaptiveLog("region", "Current place exit region set", ["regionRadiusMeters": String(Int((radius/10).rounded())*10)])
     }
 }

@@ -198,7 +198,7 @@ extension LocationRecorder {
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
-        stopLiveUpdates(reason:"the recorder was locked or signed out");adaptiveEnabled=false;adaptivePolicy=AdaptivePolicy(now:Date().timeIntervalSince1970);adaptiveState = .off;adaptivePlan = .established;placeRegionKey=nil;placeRegionFailedKey=nil;lastLowPowerFixAt=nil;adaptiveViolationsLogged=[];departureLatency.reset();lastDepartureLatency=[:]
+        adaptive.reset(now:Date().timeIntervalSince1970,reason:"the recorder was locked or signed out");adaptiveEnabled=false;lastLowPowerFixAt=nil;adaptiveViolationsLogged=[];departureLatency.reset();lastDepartureLatency=[:]
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -218,7 +218,7 @@ extension LocationRecorder {
         WatchSessionManager.shared.updateOwner(nil)
         preferences = AccountPreferences(); lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; recoveryMessage = ""; detector.reset()
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
-        stopLiveUpdates(reason:"the recorder was locked or signed out"); adaptiveEnabled = false
+        adaptive.shutdown(reason:"the recorder was locked or signed out"); adaptiveEnabled = false
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
         for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
     }
@@ -340,7 +340,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         r.automaticEnabled=false; r.accountSuspended=true
                         if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
-                        r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.stopLiveUpdates(reason:"the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
+                        r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.adaptive.shutdown(reason:"the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return

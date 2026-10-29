@@ -45,18 +45,17 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Adaptive location engine (AdaptiveLocationCore.swift): an internal switch
     // per account, off by default; iOS 15/16 always use the established engine.
     var adaptiveEnabled = false
-    var adaptivePolicy = AdaptivePolicy(now: Date().timeIntervalSince1970)
-    var adaptiveState: AdaptiveState = .off
-    var adaptivePlan: AdaptivePlan = .established
-    var liveGate = LiveUpdateGate()
+    // Runtime decisions live in AdaptiveController (testable through AdaptiveHost).
+    lazy var adaptive: AdaptiveController = { let controller = AdaptiveController(now: Date().timeIntervalSince1970); controller.host = self; return controller }()
+    var adaptiveState: AdaptiveState { adaptive.state }
+    var adaptivePlan: AdaptivePlan { adaptive.plan }
+    var liveGate: LiveUpdateGate { adaptive.gate }
+    // The Core Location side of the current low-power stream.
     var liveUpdatesTask: Task<Void, Never>?
-    var lowPowerStream = LowPowerStream()
     var liveUpdatesStartedAt: Double?
     var liveUpdatesSeconds: Double = 0
     var liveUpdatesActivations = 0
     var liveUpdatesFailures = 0
-    var placeRegionKey: String?
-    var placeRegionFailedKey: String?
     var lastLowPowerFixAt: Double?
     var adaptiveViolationsLogged = Set<String>()
     var adaptiveViolationCount = 0
@@ -218,7 +217,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "probeUntil":String(automaticSampling.probeUntil ?? 0),"retryAfter":String(automaticSampling.retryAfter),
             "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),"lastAutomaticDeliveryAt":String(lastAutomaticDeliveryAt ?? 0),"stalledGPSRestartAt":String(automaticGPSRecoveryAt),
             "lowPowerMode":String(ProcessInfo.processInfo.isLowPowerModeEnabled),"backgroundRefreshStatus":String(UIApplication.shared.backgroundRefreshStatus.rawValue),
-            "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(liveUpdatesTask != nil),"locationMode":locationMode.rawValue]
+            "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(adaptive.lowPowerRunning),"locationMode":locationMode.rawValue]
     }
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
         guard ownerID != nil,let storage=storage else {return}
@@ -469,7 +468,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard let fix=lastShareFix else {return}
         let continuous=HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
               resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince)
-        let stationary=liveUpdatesTask != nil && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
+        let stationary=adaptive.lowPowerRunning && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
         guard continuous || stationary else {return}
         sendHouseholdLocation(fix,confirmation:true)
     }
@@ -613,7 +612,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func beginUpdates() {
         // Manual recording owns standard updates; the low-power stream stops first.
-        stopLiveUpdates(reason: "manual recording")
+        adaptive.stopLowPower(reason: "manual recording")
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
@@ -661,7 +660,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // the stream (never into a manual or open journey).
     func handleObservations(_ locations: [CLLocation], source: ObservationSource) {
         if source == .lowPower {
-            guard liveUpdatesTask != nil, active == nil, !automaticActivelyRecording else { diagnosticReject("lowPowerOutsideStandby"); return }
+            guard adaptive.lowPowerRunning, active == nil, !automaticActivelyRecording else { diagnosticReject("lowPowerOutsideStandby"); return }
             noteExecution("liveUpdate")
             lastLowPowerFixAt = locations.last?.timestamp.timeIntervalSince1970
         } else {

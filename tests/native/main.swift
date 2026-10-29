@@ -2116,6 +2116,205 @@ do {
     check(AdaptiveState.allCases.count == 6, "six adaptive states")
 }
 
+// MARK: Adaptive runtime: the production controller driven through a recording host
+final class RecordingHost: AdaptiveHost {
+    var standardRunning = true
+    var registeredPlaceRegion: PlaceRegionSpec?
+    var calls: [String] = []
+    var streams: [Int] = []
+    var observed: [GPSPoint] = []
+    var checks: [String] = []
+    var onObserve: ((GPSPoint) -> Void)?
+    var onCheck: ((String) -> Void)?
+    var refuseRegions = false
+    func runStandard(_ mode: AutomaticLocationMode) {
+        let running = [.precise, .standby, .resting].contains(mode)
+        if running != standardRunning || running { calls.append("standard:\(mode.rawValue)") }
+        standardRunning = running
+    }
+    func startLowPower(generation: Int) { calls.append("lowPower:start:\(generation)"); streams.append(generation) }
+    func cancelLowPower() { calls.append("lowPower:cancel") }
+    func registerPlaceRegion(_ region: PlaceRegionSpec) { calls.append("region:register"); if !refuseRegions { registeredPlaceRegion = region } }
+    func removePlaceRegion() { calls.append("region:remove"); registeredPlaceRegion = nil }
+    func observeLowPower(_ fix: GPSPoint) { observed.append(fix); onObserve?(fix) }
+    func requestDepartureCheck(cause: String) { checks.append(cause); onCheck?(cause) }
+    func adaptiveLog(_ kind: String, _ message: String, _ details: [String: String]) {}
+    func index(_ call: String) -> Int? { calls.firstIndex(of: call) }
+}
+do {
+    func inputs(_ now: Double, enabled: Bool = true, available: Bool = true, manual: Bool = false, journey: Bool = false,
+                probing: Bool = false, settled: Bool = true) -> AdaptiveInputs {
+        AdaptiveInputs(enabled: enabled, supported: true, automaticAvailable: available, manualRecording: manual, journeyRecording: journey,
+                       probing: probing, continuationOpen: false, placeSettled: settled, recentMovement: false, motionMoving: false, now: now)
+    }
+    let regions = RegionCapability(available: true, maximumRadius: 1000)
+    let homeAnchor = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 0, accuracy: 10, altitude: 0, speed: 0)
+    let here = DwellArea.arrival(at: homeAnchor, source: .inferred)
+    func at(_ metres: Double, _ t: Double, accuracy: Double = 10, speed: Double = 0) -> GPSPoint {
+        GPSPoint(latitude: -33.86 + metres / 111_195, longitude: 151.2, timestamp: t, accuracy: accuracy, altitude: 0, speed: speed)
+    }
+
+    // Enter stationary standby: standard updates stop before the one stream starts.
+    let host = RecordingHost()
+    let controller = AdaptiveController(now: 0)
+    controller.host = host
+    controller.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    check(controller.state == .stationaryStandby && !host.standardRunning, "settling stops standard GPS")
+    check(host.index("standard:stationary")! < host.index("lowPower:start:1")!, "standard updates stop before the low-power stream starts")
+    check(host.registeredPlaceRegion != nil, "the current-place region is registered")
+    for t in stride(from: 30.0, through: 3600, by: 30) { controller.reconcile(inputs(t), established: .resting, standardOwned: true, dwell: here, regions: regions) }
+    check(host.streams == [1] && host.calls.filter { $0.hasPrefix("standard:") }.count == 1 && host.calls.filter { $0 == "region:register" }.count == 1,
+          "an hour of reconciles keeps one stream and one region and never restarts standard GPS")
+
+    // Stationary reports, then credible movement: one departure check.
+    controller.lowPowerUpdate(generation: 1, stationary: true, point: at(0, 3600), dwell: here, fallback: nil, now: 3600)
+    controller.lowPowerUpdate(generation: 1, stationary: true, point: at(0, 3700), dwell: here, fallback: nil, now: 3700)
+    check(host.observed.count == 1 && host.checks.isEmpty, "stationary reports are observed once and start nothing")
+    // The recorder answers a departure check by reconciling with the check running.
+    host.onCheck = { _ in controller.reconcile(inputs(7230, probing: true), established: .precise, standardOwned: true, dwell: here, regions: regions) }
+    controller.lowPowerUpdate(generation: 1, stationary: false, point: at(60, 7230, speed: 1.4), dwell: here, fallback: nil, now: 7230)
+    check(host.checks.count == 1 && controller.state == .departureProbe, "credible movement starts one precise departure check")
+    check(host.index("lowPower:cancel")! < host.calls.lastIndex(of: "standard:precise")!, "the stream is cancelled before precise GPS starts")
+    check(host.observed.last.map { $0.timestamp == 7230 } == true, "the moving fix reaches departure detection before the check starts")
+    host.onCheck = nil
+    // A late update from the cancelled stream does nothing.
+    let observedBefore = host.observed.count, checksBefore = host.checks.count
+    controller.lowPowerUpdate(generation: 1, stationary: false, point: at(300, 7240, speed: 10), dwell: here, fallback: nil, now: 7240)
+    check(host.observed.count == observedBefore && host.checks.count == checksBefore, "a late update from a cancelled stream is ignored")
+    check(!controller.lowPowerEnded(generation: 1, error: nil, now: 7241), "a cancelled stream's ending is not a failure")
+
+    // Unexpected failures: restart, then back-off after the third, without repeated GPS churn.
+    let failing = RecordingHost()
+    let recovering = AdaptiveController(now: 0)
+    recovering.host = failing
+    var now: Double = 0
+    recovering.reconcile(inputs(now), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    for attempt in 1...3 {
+        now += 5
+        check(recovering.lowPowerEnded(generation: failing.streams.last!, error: "1", now: now), "failure \(attempt) of the current stream is counted")
+        recovering.reconcile(inputs(now), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    }
+    check(failing.streams == [1, 2, 3] && recovering.state == .recovery && failing.standardRunning, "three failures restart twice, then fall back to established standby")
+    for t in stride(from: now, through: now + 1700, by: 30) { recovering.reconcile(inputs(t), established: .resting, standardOwned: true, dwell: here, regions: regions) }
+    check(failing.streams.count == 3 && failing.calls.filter { $0 == "standard:resting" }.count >= 1, "no stream restarts during the back-off")
+    // Relaunch during the back-off: a new controller restores it.
+    let relaunchHost = RecordingHost()
+    relaunchHost.registeredPlaceRegion = failing.registeredPlaceRegion
+    let relaunched = AdaptiveController(now: now + 60)
+    relaunched.host = relaunchHost
+    relaunched.restoreRecovery(until: recovering.policy.recoveryUntil, now: now + 60)
+    relaunched.reconcile(inputs(now + 60), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    check(relaunched.state == .recovery && relaunchHost.streams.isEmpty && relaunchHost.standardRunning, "a relaunch during the back-off keeps established standby")
+    check(!relaunchHost.calls.contains("region:register"), "a region Core Location kept across the relaunch is not registered again")
+
+    // Disabling adaptive mode during a callback: the stream stops and nothing further happens.
+    let toggling = RecordingHost()
+    let switched = AdaptiveController(now: 0)
+    switched.host = toggling
+    switched.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    toggling.onObserve = { _ in switched.reconcile(inputs(10, enabled: false), established: .resting, standardOwned: true, dwell: here, regions: regions) }
+    switched.lowPowerUpdate(generation: 1, stationary: false, point: at(200, 10, speed: 9), dwell: here, fallback: homeAnchor, now: 10)
+    check(toggling.checks.isEmpty && !switched.lowPowerRunning, "switching off during a callback stops the stream before it can wake precise GPS")
+    check(toggling.standardRunning && toggling.registeredPlaceRegion == nil && toggling.calls.contains("standard:resting"), "the established engine is restored: standard standby, no region")
+
+    // Manual recording during standby: the stream stops and manual owns standard updates.
+    let manualHost = RecordingHost()
+    let manualController = AdaptiveController(now: 0)
+    manualController.host = manualHost
+    manualController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    manualController.stopLowPower(reason: "manual recording")      // beginUpdates
+    manualHost.standardRunning = true                                // manual starts standard updates itself
+    manualHost.calls.removeAll()
+    manualController.reconcile(inputs(5, manual: true), established: .off, standardOwned: false, dwell: here, regions: regions)
+    check(manualController.state == .activeJourney && !manualController.lowPowerRunning, "manual recording is an active journey without the stream")
+    check(!manualHost.calls.contains { $0.hasPrefix("standard:") || $0.hasPrefix("lowPower:start") } && manualHost.standardRunning, "the adaptive engine never touches manual recording's standard updates")
+    check(manualHost.registeredPlaceRegion == nil, "the current-place region is removed for a journey")
+
+    // Permission revoked: everything adaptive stops; established decides off.
+    let revokedHost = RecordingHost()
+    let revoked = AdaptiveController(now: 0)
+    revoked.host = revokedHost
+    revoked.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    revoked.reconcile(inputs(10, available: false), established: .off, standardOwned: true, dwell: here, regions: regions)
+    check(revoked.state == .off && !revoked.lowPowerRunning && revokedHost.registeredPlaceRegion == nil && !revokedHost.standardRunning, "revoking permission stops the stream, the region and standard GPS")
+    revoked.lowPowerUpdate(generation: 1, stationary: false, point: at(400, 20, speed: 10), dwell: here, fallback: nil, now: 20)
+    check(revokedHost.checks.isEmpty, "no callback revives tracking after permission is revoked")
+
+    // Account switch while a stream is active.
+    let accountHost = RecordingHost()
+    let account = AdaptiveController(now: 0)
+    account.host = accountHost
+    account.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    account.noteWake(now: 100)
+    account.reset(now: 200, reason: "account changed")
+    check(!account.lowPowerRunning && account.state == .off && accountHost.registeredPlaceRegion == nil && account.policy.wakesTotal == 0, "an account change stops the stream, removes the region and clears history")
+    account.lowPowerUpdate(generation: 1, stationary: false, point: at(400, 210, speed: 10), dwell: here, fallback: nil, now: 210)
+    check(accountHost.checks.isEmpty && accountHost.observed.isEmpty, "the previous account's stream cannot act after the switch")
+
+    // Region replacement and failures.
+    let regionHost = RecordingHost()
+    let regionController = AdaptiveController(now: 0)
+    regionController.host = regionHost
+    regionController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    let cafe = DwellArea.arrival(at: at(2000, 0), source: .inferred)
+    regionHost.calls.removeAll()
+    regionController.reconcile(inputs(30), established: .resting, standardOwned: true, dwell: cafe, regions: regions)
+    check(regionHost.calls.filter { $0.hasPrefix("region:") } == ["region:remove", "region:register"] && abs(regionHost.registeredPlaceRegion!.latitude - cafe.latitude) < 1e-9,
+          "moving to another unsaved place removes the old region before registering the new one")
+    let saved = DwellArea.saved(SavedPlace(id: "work", name: "Work", kind: "work", latitude: -33.87, longitude: 151.21, radius: 200), now: 60)
+    regionController.reconcile(inputs(60), established: .resting, standardOwned: true, dwell: saved, regions: regions)
+    check(regionHost.registeredPlaceRegion?.radius == 200, "a saved place's region follows its own radius")
+    regionHost.refuseRegions = true; regionHost.registeredPlaceRegion = nil; regionHost.calls.removeAll()
+    regionController.reconcile(inputs(90), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    regionController.regionFailed(AdaptiveRegion.identifier, placeIdentifier: AdaptiveRegion.identifier)
+    for t in stride(from: 120.0, through: 600, by: 30) { regionController.reconcile(inputs(t), established: .resting, standardOwned: true, dwell: here, regions: regions) }
+    check(regionHost.calls.filter { $0 == "region:register" }.count == 1, "a refused registration is not retried for the same place")
+    regionHost.refuseRegions = false
+    regionController.reconcile(inputs(630), established: .resting, standardOwned: true, dwell: cafe, regions: regions)
+    check(regionHost.registeredPlaceRegion != nil, "a new place is tried again after a refusal")
+    regionController.reconcile(inputs(660), established: .resting, standardOwned: true, dwell: cafe, regions: RegionCapability(available: false, maximumRadius: 1000))
+    check(regionHost.registeredPlaceRegion == nil, "region monitoring becoming unavailable removes the region")
+    regionController.reconcile(inputs(690), established: .resting, standardOwned: true, dwell: DwellArea.arrival(at: GPSPoint(latitude: 0, longitude: 0, timestamp: 0, accuracy: 10, altitude: 0, speed: 0)), regions: regions)
+    check(regionHost.registeredPlaceRegion == nil, "an invalid place never registers a region")
+
+    // First movement when the stationary report carried no coordinate: the
+    // recorder's settled position is the reference, so the first moving fix counts.
+    let blindHost = RecordingHost()
+    let blind = AdaptiveController(now: 0)
+    blind.host = blindHost
+    blind.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    blind.lowPowerUpdate(generation: 1, stationary: true, point: nil, dwell: here, fallback: homeAnchor, now: 3600)
+    check(blindHost.observed.isEmpty, "a stationary report without a coordinate has nothing to observe")
+    blind.lowPowerUpdate(generation: 1, stationary: false, point: nil, dwell: here, fallback: homeAnchor, now: 3700)
+    check(blindHost.checks.isEmpty, "a diagnostic report without a coordinate never starts precise GPS")
+    blind.lowPowerUpdate(generation: 1, stationary: false, point: at(50, 3800, speed: 1.4), dwell: here, fallback: homeAnchor, now: 3800)
+    check(blindHost.checks.count == 1, "the first moving fix after a coordinate-less stationary report starts the check")
+    // Without the fallback (the original behaviour) that same fix was only a reference.
+    var noFallback = LiveUpdateGate()
+    _ = noFallback.observe(stationary: true, point: nil, outsidePlace: false, now: 3600)
+    check(noFallback.observe(stationary: false, point: at(50, 3800), outsidePlace: false, now: 3800) == .none, "without a reference the first moving fix cannot be judged")
+    var withFallback = LiveUpdateGate()
+    _ = withFallback.observe(stationary: true, point: nil, outsidePlace: false, now: 3600)
+    check(withFallback.observe(stationary: false, point: at(50, 3800), outsidePlace: false, fallbackReference: homeAnchor, now: 3800) == .movement("Core Location reported movement"),
+          "with the settled position as reference it is movement")
+    check(withFallback.observe(stationary: false, point: at(60, 3810), outsidePlace: false, fallbackReference: homeAnchor, now: 3810) == .none, "and it is signalled once")
+    var jitterFallback = LiveUpdateGate()
+    _ = jitterFallback.observe(stationary: true, point: nil, outsidePlace: false, now: 0)
+    check(jitterFallback.observe(stationary: false, point: at(15, 30, accuracy: 30), outsidePlace: false, fallbackReference: homeAnchor, now: 30) == .none, "jitter near the settled position is still not movement")
+    var coarseFallback = LiveUpdateGate()
+    check(coarseFallback.observe(stationary: false, point: at(80, 30, accuracy: 90), outsidePlace: false, fallbackReference: homeAnchor, now: 30) == .none, "a coarse fix must move beyond its uncertainty")
+    var badFallback = LiveUpdateGate()
+    check(badFallback.observe(stationary: false, point: at(50, 30), outsidePlace: false, fallbackReference: GPSPoint(latitude: .nan, longitude: 0, timestamp: 0, accuracy: 10, altitude: 0, speed: 0), now: 30) == .none,
+          "an invalid fallback is never used")
+    // A first fix clearly outside the place (coarse but well beyond its departure distance).
+    let outsideHost = RecordingHost()
+    let outsideController = AdaptiveController(now: 0)
+    outsideController.host = outsideHost
+    outsideController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
+    outsideController.lowPowerUpdate(generation: 1, stationary: false, point: at(1500, 10, accuracy: 60), dwell: here, fallback: nil, now: 10)
+    check(outsideHost.checks.count == 1, "a first fix clearly outside the place starts the check")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

@@ -66,7 +66,7 @@ extension LocationRecorder {
     }
     func refreshAutomaticMonitoring() {
         updateIndicatorPolicy()
-        guard storage != nil else { stopLiveUpdates(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
+        guard storage != nil else { adaptive.shutdown(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once
         // held, it covers departures that begin with the phone locked.
         reconcileBackgroundSession("monitoring refresh")
@@ -77,8 +77,7 @@ extension LocationRecorder {
            manager.authorizationStatus == .authorizedAlways {
             // Low-power significant-change callbacks can wake a suspended app
             // without keeping continuous GPS active for family presence.
-            stopLiveUpdates(reason:"automatic tracking unavailable")
-            reconcilePlaceRegion(wanted:false)
+            adaptive.shutdown(reason:"automatic tracking unavailable")
             stopContinuousLocation()
             stopVisitMonitoring()
             startSignificantMonitoring()
@@ -96,8 +95,7 @@ extension LocationRecorder {
         } else {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
             automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off
-            stopLiveUpdates(reason:"automatic tracking unavailable");reconcilePlaceRegion(wanted:false)
-            adaptiveState = .off;adaptivePlan = .established
+            adaptive.shutdown(reason:"automatic tracking unavailable")
             if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
@@ -158,28 +156,31 @@ extension LocationRecorder {
                 trackingEvent(observing ? "Departure check budget spent; returning to location standby until the next movement" : "Departure check expired; returning to location standby")
             }
         }
-        // The adaptive engine (when switched on) may replace standby with
-        // low-power standby; it never changes a journey or a departure check.
+        // AutomaticSampling decides the established mode (an open journey or a
+        // departure check is always precise); the adaptive controller decides
+        // whether standby may be low-power and applies everything in order through
+        // runStandard and the low-power stream (AdaptiveController.reconcile).
         let restingNow=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now) &&
             !AutomaticDetector.credibleMovement(motion,now:now)
         let established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow)
-        let services=reconcileAdaptive(now:now,mode:established)
-        defer { checkAdaptiveInvariants() }
+        reconcileAdaptive(now:now,mode:established)
         // A paused manual activity continues to take precedence over automation.
-        if active != nil {locationMode = .off;return}
-        // This is the single owner of the automatic recorder's GPS configuration.
-        // An open journey (recording or interrupted) is always precise; standby is
-        // only for when no journey is open. Motion callbacks cannot wake a
-        // suspended app, so standby keeps reduced-accuracy location running.
-        // Settled at Home only lowers standby accuracy. The service, the background
-        // session, regions, visits and motion all keep running for the next departure.
-        // Walking motion, even when it does not justify precise GPS, returns to the
-        // 10 m standby so that a real departure shows up in the fixes.
-        let mode=services.standardMode
+        if active != nil {locationMode = .off}
+        checkAdaptiveInvariants()
+    }
+    // The single owner of the automatic recorder's standard GPS configuration,
+    // called by the adaptive controller (never during manual recording). An open
+    // journey (recording or interrupted) is always precise; standby is only for
+    // when no journey is open. The established standby keeps reduced-accuracy
+    // location running, because motion callbacks cannot wake a suspended app;
+    // settled at a place it only lowers accuracy. Low-power standby (adaptive
+    // engine) stops it. Walking motion, even when it does not justify precise
+    // GPS, returns to the 10 m standby so that a real departure shows up in the fixes.
+    func runStandard(_ mode: AutomaticLocationMode) {
         if mode != locationMode {
             if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
             else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
-            else if locationMode == .resting || locationMode == .stationary { trackingEvent("Left \(locationMode == .stationary ? "low-power standby" : "Home rest"): \(mode.rawValue) location") }
+            else if locationMode == .resting || locationMode == .stationary { trackingEvent("Left (locationMode == .stationary ? "low-power standby" : "Home rest"): (mode.rawValue) location") }
             locationMode=mode
         }
         guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
@@ -188,8 +189,6 @@ extension LocationRecorder {
             // is compared with the last one.
             if mode != .stationary { departureEvidence.reset() }
             stopContinuousLocation(reason:mode == .stationary ? "Continuous GPS stopped: low-power standby" : "Continuous GPS stopped")
-            // Handover: standard updates are stopped before the stream starts.
-            startLowPowerIfPlanned(services)
             return
         }
         applyLocationConfiguration(configuration)
