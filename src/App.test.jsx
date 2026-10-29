@@ -1,4 +1,4 @@
-import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { demoJourneys } from './test/fixtures/journeys.js';
@@ -171,8 +171,11 @@ it('opens the Map showing everyone, map first, rather than centring on the signe
  expect(mapProps.value.focusPoint).toBeUndefined();
  expect(screen.queryByText('Your world, mapped.')).not.toBeInTheDocument();
  expect(screen.queryByText('Go somewhere. Keep the feeling.')).not.toBeInTheDocument();
- expect(screen.getByRole('button',{name:/My routes/})).toHaveAttribute('aria-pressed','true');
- expect(screen.getByRole('button',{name:'Map filters'})).toBeInTheDocument();
+ // One Layers control instead of a toolbar of toggles above the map.
+ expect(screen.queryByRole('button',{name:/My routes/})).not.toBeInTheDocument();
+ expect(screen.queryByRole('group',{name:'Map filters'})).not.toBeInTheDocument();
+ expect(mapProps.value.onLayers).toEqual(expect.any(Function));
+ expect(mapProps.value.overview).toBeNull();
  // A gesture reported by the native map is kept when the tab is left and reopened.
  const command=mapProps.value.camera.command;
  act(()=>mapProps.value.onCamera({mode:'free',personId:null,command}));
@@ -180,7 +183,19 @@ it('opens the Map showing everyone, map first, rather than centring on the signe
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(mapProps.value.camera).toMatchObject({mode:'free',command});
- // Community trails has no people camera.
- fireEvent.click(screen.getByRole('button',{name:/Community trails/}));
- expect(screen.queryByRole('button',{name:'Map filters'})).not.toBeInTheDocument();
+ // Routes are drawn as a density overview, never as Start/Finish pins per journey.
+ act(()=>mapProps.value.onLayers());
+ const sheet=screen.getByRole('dialog',{name:'Map layers'});
+ fireEvent.click(within(sheet).getByRole('button',{name:'All routes'}));
+ expect(within(sheet).getByRole('button',{name:'All routes'})).toHaveAttribute('aria-pressed','true');
+ expect(within(sheet).getByRole('switch',{name:'People & places'})).toHaveAttribute('aria-checked','true');
+ expect(mapProps.value.camera).toMatchObject({includeRoutes:mapProps.value.overview!==null});
+ // Choosing the other map closes the sheet; Community trails has no people camera.
+ fireEvent.click(within(sheet).getByRole('radio',{name:'Community trails'}));
+ expect(screen.queryByRole('dialog',{name:'Map layers'})).not.toBeInTheDocument();
+ expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
+ // The choice is kept across tabs.
+ fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
 });

@@ -1,6 +1,7 @@
 import PersonAvatar from './components/PersonAvatar.jsx';
-import MapFilters from './components/MapFilters.jsx';
-import {mapLayerJourneys} from './lib/mapLayers.js';
+import MapLayers from './components/MapLayers.jsx';
+import {activeLayerCount,activityChoices,loadMapView,mapViewJourneys,saveMapView} from './lib/mapLayers.js';
+import {mapOverview} from './lib/mapOverview.js';
 import {useMapLocation} from './lib/useMapLocation.js';
 import {usePeopleAvatars} from './lib/usePeopleAvatars.js';
 import Friends from './components/Friends.jsx';
@@ -35,7 +36,7 @@ import EquipmentSheet from './components/EquipmentSheet.jsx';
 import {EquipmentChip} from './components/EquipmentChip.jsx';
 import {equipmentTripCount,equipmentUsage,itemTitle,tripEquipmentLabel,tripUsesEquipment} from './lib/collection.js';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Home, Map, MapPin, Mountain, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
+import { ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Home, MapPin, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Route, Lock, GitMerge, EyeOff, Eye } from 'lucide-react';
 import JourneyMap from './components/JourneyMap.jsx';
 import MtbMap from './components/MtbMap.jsx';
 import RecorderPanel from './components/RecorderPanel.jsx';
@@ -162,8 +163,13 @@ function PrivateApp(){
  const [metricView,setMetricView]=useState(null);
  const [socialSection,setSocialSection]=useState('household');
  const [pendingInvitation,setPendingInvitation]=useState(()=>{try{return JSON.parse(sessionStorage.getItem('letm3go:pending-invitation')||'null');}catch{return null;}});
- const [mapLayers,setMapLayers]=useState(['people']);
-  const [mapMode,setMapMode]=useState('journeys');
+ // What the Map shows (map, people, routes, filters), kept per account so it
+ // survives tab changes and relaunches.
+ const [mapView,setMapView]=useState(()=>loadMapView(session.user.id));
+ useEffect(()=>{saveMapView(session.user.id,mapView);},[session.user.id,mapView]);
+ const [layersOpen,setLayersOpen]=useState(false);
+ const closeLayers=useCallback(()=>setLayersOpen(false),[]);
+ const openLayers=useCallback(()=>setLayersOpen(true),[]);
 
  const [mapCenterVersion,setMapCenterVersion]=useState(0);
  // Show everyone, follow a person or explore freely (see lib/mapCamera.js).
@@ -213,8 +219,8 @@ function PrivateApp(){
   selfLocation:{state:selfLocationState.state,text:selfLocationState.state==='off'?'Location sharing off':selfLocationState.state==='waiting'?'Sharing on · waiting to send':selfLocationState.state==='live'?`Sharing location · sent ${formatAge(selfLocationState.ageSeconds)}`:`Last sent ${formatAge(selfLocationState.ageSeconds)}`}
  }),[householdMembers,selfLocationState.state,selfLocationState.ageSeconds]);
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
- const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapLayers(['people']);setMapMode('journeys');dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
- const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapLayers(['people']);setMapMode('journeys');dispatchCamera({type:'showAll'});setTab('Map');},[]);
+ const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
+ const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
  const onMapCamera=useCallback(event=>dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command}),[]);
  useEffect(()=>{
   const opened=event=>{const invite=event.detail;if(!invite||!['friend','household'].includes(invite.kind))return;setPendingInvitation(invite);setSocialSection(invite.kind==='household'?'household':'friends');setTab('Social');};
@@ -244,7 +250,7 @@ function PrivateApp(){
   document.addEventListener('keydown',keydown);
   return()=>{document.body.style.overflow=overflow;document.removeEventListener('keydown',keydown);previous?.focus();};
  },[sheet,lightbox]);
- const openPhoto=useCallback((trip,id)=>{const index=trip.photos?.findIndex(p=>p.id===id)??-1;if(index>=0){setPhotoZoom(1);setLightbox({trip,index});}},[setLightbox]);
+ const openPhoto=useCallback((trip,id)=>{const index=trip.photos?.findIndex(p=>String(p.id)===String(id))??-1;if(index>=0){setPhotoZoom(1);setLightbox({trip,index});}},[setLightbox]);
  async function bookmark(id){const next=saved.includes(id)?saved.filter(x=>x!==id):[...saved,id];try{await auth.savePreferences({bookmarks:next});}catch(err){setError(err.message||'Favourite could not be saved.');}}
  // Declared after every action it wraps so the ref assignment never reads a value
  // before it is declared; it runs on each commit, exposing the newest closures.
@@ -278,7 +284,12 @@ function PrivateApp(){
  const selectedJourney=selected?.isGroupedJourney?visibleJourneys.find(j=>j.id===selected.id):null;
  const selectedActivity=selected&&!selected.isGroupedJourney?(visibleJourneys.find(j=>j.id===selected.id)||realJourneys.find(j=>j.id===selected.id)||selected):null;
  const today=new Date().toLocaleDateString('en-CA');
- const mapJourneys=useMemo(()=>mapLayerJourneys(grouping.journeys,mapLayers,today,saved),[grouping.journeys,mapLayers,today,saved]);
+ const mapJourneys=useMemo(()=>mapViewJourneys(grouping.journeys,mapView,today,saved),[grouping.journeys,mapView,today,saved]);
+ const mapActivities=useMemo(()=>activityChoices(grouping.journeys),[grouping.journeys]);
+ // The route overview: a density map of every shown journey (not only the 50
+ // most recent) with clustered photos. Rebuilt only when the journeys change.
+ const overview=useMemo(()=>tab==='Map'&&mapView.content==='routes'&&mapView.routes&&mapJourneys.length?mapOverview(mapJourneys,{unit}):null,[tab,mapView.content,mapView.routes,mapJourneys,unit]);
+ const peopleOnMap=mapView.content==='routes'&&mapView.people;
  const shiftDay=(day,offset)=>{const basis=day==='all'||day==='today'?new Date():new Date(day+'T12:00:00');basis.setDate(basis.getDate()+offset);return basis.toLocaleDateString('en-CA');};
  const chosenDay=dayFilter==='today'?today:dayFilter;
  const filtered=useMemo(()=>visibleJourneys.filter(t=>(showArchived?archivedTrips.includes(t.id):!archivedTrips.includes(t.id))&&(!favouritesOnly||saved.includes(t.id))&&((tripSearchOpen&&query.trim())||dayFilter==='all'||t.date===chosenDay||t.segments?.some(s=>s.date===chosenDay))&&(filter==='All activities'||t.activity===filter)&&(!activeEquipmentFilter||tripUsesEquipment(t,vehicles,activeEquipmentFilter))&&`${t.searchIndex||''} ${t.title} ${t.location} ${t.date} ${t.collection||''} ${t.notes||''} ${t.tags.join(' ')} ${tripEquipmentLabel(t,vehicles)}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='duration'?b.durationSeconds-a.durationSeconds||b.startedAt-a.startedAt:sort==='distance'?b.distanceMeters-a.distanceMeters||b.startedAt-a.startedAt:b.startedAt-a.startedAt),[visibleJourneys,showArchived,archivedTrips,favouritesOnly,saved,tripSearchOpen,query,dayFilter,chosenDay,filter,activeEquipmentFilter,vehicles,sort]);
@@ -325,12 +336,11 @@ function PrivateApp(){
 {deleteTrip&&<div className="trip-delete-confirm" role="dialog" aria-label="Delete activity"><strong>Delete {deleteTrip.title}?</strong><p>This permanently removes the local activity and its saved route. Original photos in your library remain.</p><div className="detail-actions"><button type="button" className="secondary" onClick={()=>setDeleteTrip(null)}>Cancel</button><button type="button" className="primary" disabled={recording.busy} onClick={()=>void confirmTripDelete()}>Delete activity</button></div></div>}
  {mergeSource&&mergeTarget&&<div className="modal-backdrop" role="presentation"><div className="notice" role="dialog" aria-modal="true" aria-label="Merge journeys" style={{maxWidth:440,margin:'auto',padding:24}}><h2>Merge these activities?</h2><p>Combine the two selected journeys into one timeline while retaining the original GPS recordings and stops. You can undo this later.</p><p className="muted small-copy">Only consecutive activities from the same account can be merged; overlapping recordings and incompatible vehicles are excluded.</p>{grouping.error&&<p role="alert" className="error">{grouping.error}</p>}<div className="detail-actions"><button className="secondary" onClick={()=>{setMergeTarget(null);setMergeSource(null);}}>Cancel</button><button className="primary" disabled={grouping.busy} onClick={confirmMerge}>{grouping.busy?'Merging…':'Yes, merge'}</button></div></div></div>}
  {tab==='Social'&&<div className="social-layout social-redesign"><div className="social-sections" role="group" aria-label="Social sections"><button type="button" aria-pressed={socialSection==='friends'} onClick={()=>setSocialSection('friends')}>Friends</button><button type="button" aria-pressed={socialSection==='household'} onClick={()=>setSocialSection('household')}>Household</button></div>{socialSection==='friends'?<><HouseholdPresence personPhotos={peopleAvatars.photos} householdLivePeople={presence.livePeople} householdLiveEnabled={presence.liveEnabled} selfId={session.user.id} selfAvatar={auth.preferences.avatar} selfName={auth.preferences.displayName||'You'} permission={recording.state.permission} precise={recording.state.precise} presence={presence} friendsLocation={friendsLocation} places={recording.state.places||[]} onSetHome={()=>setSheet('places')}/><Friends personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} invitationCode={pendingInvitation?.kind==='friend'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} onShareLive={()=>friendsLocation.setSharing(true)}/><FriendTrips activities={grouping.journeys}/></>:<><Household invitationCode={pendingInvitation?.kind==='household'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onMembershipChanged={refreshHousehold} onShareLive={()=>presence.setLiveSharing(true)} onStopLive={()=>presence.setLiveSharing(false)} liveEnabled={presence.liveEnabled} liveReady={presence.liveReady} liveError={presence.liveError} onRetrySharing={presence.refreshLive} permission={recording.state.permission} precise={recording.state.precise} {...householdLocationProps} onShowMember={showOnMap} onOpenMap={openPeopleMap} vehicles={vehicles} onSaveVehicles={setVehicles}/><HouseholdTrips activities={grouping.records}/></>}</div>}
- {tab==='Map'&&<div className={`map-explorer map-social-explorer map-page ${mapMode==='journeys'?'map-page-people':''}`}>
+ {tab==='Map'&&<div className={`map-explorer map-social-explorer map-page ${mapView.content==='routes'?'map-page-people':'map-page-trails'}`}>
  <h1 className="sr-only">Map</h1>
- <div className="map-toolbar"><div className="map-mode-toggle" role="group" aria-label="Map content"><button type="button" aria-pressed={mapMode==='journeys'} className={mapMode==='journeys'?'selected':''} onClick={()=>setMapMode('journeys')}><Map size={14}/> My routes</button><button type="button" aria-pressed={mapMode==='mtb'} className={mapMode==='mtb'?'selected':''} onClick={()=>setMapMode('mtb')}><Mountain size={14}/> Community trails</button></div>
- {mapMode==='journeys'&&<MapFilters value={mapLayers} onChange={setMapLayers}/>}</div>
- {mapMode==='mtb'?<MtbMap currentPosition={mapLocation.position} onRecordTrail={recorderAvailable()&&recording.state.storageReady?recordTrail:null}/>:<>
- <JourneyMap journeys={mapJourneys} viewportKey={`${mapLayers.join(':')}:${mapCenterVersion}`} camera={mapLayers.includes('people')?cameraIntent(camera,session.user.id,mapLayers.some(layer=>layer!=='people')):null} onCamera={onMapCamera} onPhoto={openPhoto} peoplePins={mapLayers.includes('people')?mapPeople:[]} homePresence={(()=>{if(!mapLayers.includes('people')||!homePlace)return null;const placed=new Set(mapPeople.flatMap(pin=>pin.members.map(member=>member.name)));const names=presence.people.filter(p=>p.activity_label==='At home'&&!householdMembers.some(m=>m.user_id===p.user_id&&m.position)&&!placed.has(p.display_name)).map(p=>p.display_name);return names.length?{latitude:homePlace.latitude,longitude:homePlace.longitude,count:names.length,names}:null;})()} large {...(mapLayers.includes('people')?{}:{locating:mapLocation.loading,onLocate:async()=>{if(await mapLocation.locate())setMapCenterVersion(value=>value+1);}})}/>{mapLocation.error&&<p role="status" className="notice">{mapLocation.error}</p>}{mapLayers.includes('people')&&recorderAvailable()&&!['always','whenInUse'].includes(recording.state.permission)&&<p role="status" className="notice">Allow location access in iOS Settings to show yourself on the map. No earlier position is shown as current.</p>}{mapJourneys.length>50&&<p className="muted small-copy">Showing the 50 most recent routes.</p>}</>}</div>}
+ <MapLayers open={layersOpen} view={mapView} onChange={setMapView} onClose={closeLayers} activities={mapActivities}/>
+ {mapView.content==='trails'?<MtbMap currentPosition={mapLocation.position} onRecordTrail={recorderAvailable()&&recording.state.storageReady?recordTrail:null} onLayers={openLayers} layersActive={activeLayerCount(mapView)}/>:<>
+ <JourneyMap journeys={mapJourneys} overview={overview} onLayers={openLayers} layersActive={activeLayerCount(mapView)} onJourney={journey=>{setSelected(journey);setTab('Trips');}} viewportKey={`${mapView.routes||'none'}:${mapView.activity}:${mapView.range}:${mapView.people}:${mapCenterVersion}`} camera={peopleOnMap?cameraIntent(camera,session.user.id,Boolean(overview)):null} onCamera={onMapCamera} onPhoto={openPhoto} peoplePins={peopleOnMap?mapPeople:[]} homePresence={(()=>{if(!peopleOnMap||!homePlace)return null;const placed=new Set(mapPeople.flatMap(pin=>pin.members.map(member=>member.name)));const names=presence.people.filter(p=>p.activity_label==='At home'&&!householdMembers.some(m=>m.user_id===p.user_id&&m.position)&&!placed.has(p.display_name)).map(p=>p.display_name);return names.length?{latitude:homePlace.latitude,longitude:homePlace.longitude,count:names.length,names}:null;})()} large {...(peopleOnMap?{}:{locating:mapLocation.loading,onLocate:async()=>{if(await mapLocation.locate())setMapCenterVersion(value=>value+1);}})}/>{mapLocation.error&&<p role="status" className="notice">{mapLocation.error}</p>}{peopleOnMap&&recorderAvailable()&&!['always','whenInUse'].includes(recording.state.permission)&&<p role="status" className="notice">Allow location access in iOS Settings to show yourself on the map. No earlier position is shown as current.</p>}{overview&&overview.included<overview.total&&<p className="muted small-copy">Route density from your {overview.included} most recent of {overview.total} journeys.</p>}{mapView.routes&&!mapJourneys.length&&<p className="muted small-copy" role="status">No routes match these layers.</p>}</>}</div>}
 
  {tab!=='Map'&&<footer className="page-footer"><span>Go somewhere. Keep the feeling.</span><span><Lock size={12}/> Your routes stay private</span></footer>}</div>}
  </main><MobileNav tab={tab} recordState={recordControlState(recording.state,recording.busy)} onSelect={name=>{setTab(name);setSelected(null);}}/>

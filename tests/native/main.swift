@@ -1849,6 +1849,32 @@ let row = placed.values.sorted { $0.x < $1.x }
 check(row.count == 3 && zip(row, row.dropFirst()).allSatisfy { hypot($1.x - $0.x, $1.y - $0.y) >= 44 - 0.01 }, "people in the same direction get separate, non-overlapping avatars")
 check(layout([("far", CGPoint(x: 195, y: 1e9)), ("nan", CGPoint(x: CGFloat.nan, y: 0))])["far"] != nil, "a very distant person is still placed and an invalid point is ignored")
 
+// MARK: Map overview: density zoom levels and the photo highlight camera
+do {
+    let cells: [Double] = [25, 100, 400, 1600]
+    check(DensityLevels.choose(cells: cells, metresPerPoint: 2) == 0, "street zoom draws the finest 25 m density grid")
+    check(DensityLevels.choose(cells: cells, metresPerPoint: 30) == 1, "suburb zoom draws the 100 m grid")
+    check(DensityLevels.choose(cells: cells, metresPerPoint: 150) == 2, "city zoom draws the 400 m grid")
+    check(DensityLevels.choose(cells: cells, metresPerPoint: 9000) == 3, "a continent still draws the coarsest grid rather than nothing")
+    check(DensityLevels.choose(cells: [400, 25], metresPerPoint: 2) == 1, "levels are chosen by cell size, not by position")
+    check(DensityLevels.choose(cells: [], metresPerPoint: 2) == nil, "no density, no level")
+    check(DensityLevels.choose(cells: cells, metresPerPoint: .nan) == 0, "an unknown zoom falls back to the finest grid")
+
+    let view = MapBox(minX: 1000, minY: 1000, width: 1000, height: 2000)
+    check(HighlightCamera.target(route: MapBox(minX: 1200, minY: 1400, width: 300, height: 400), visible: view) == nil, "a route already in view leaves the camera where it is")
+    let pan = HighlightCamera.target(route: MapBox(minX: 1800, minY: 1400, width: 400, height: 300), visible: view)!
+    check(abs(pan.width - view.width) < 1e-6 && abs(pan.height - view.height) < 1e-6, "a route that fits at this zoom only pans, it does not zoom")
+    check(pan.contains(MapXY(x: 1800, y: 1400)) && pan.contains(MapXY(x: 2200, y: 1700)), "the pan brings the whole route into view")
+    let wider = HighlightCamera.target(route: MapBox(minX: 0, minY: 0, width: 2500, height: 2500), visible: view)!
+    check(wider.width >= 2500 && wider.width <= view.width * 4 + 1e-6, "a larger route zooms out only as far as needed, never past four times")
+    check(abs(wider.width / wider.height - view.width / view.height) < 1e-9, "the zoomed view keeps the map's shape")
+    check(HighlightCamera.target(route: MapBox(minX: -50_000, minY: -50_000, width: 100_000, height: 100_000), visible: view) == nil, "an enormous route that is partly visible is not chased")
+    let far = HighlightCamera.target(route: MapBox(minX: 90_000, minY: 90_000, width: 100_000, height: 100_000), visible: view)!
+    check(abs(far.width - view.width) < 1e-6 && far.contains(MapXY(x: 140_000, y: 140_000)), "an enormous route out of view gets a pan to its centre at the current zoom")
+    let across = HighlightCamera.target(route: MapBox(minX: MapWorld.width - 300, minY: 1400, width: 200, height: 200), visible: MapBox(minX: 0, minY: 1000, width: 1000, height: 1000))!
+    check(across.width <= 1000 + 1e-6, "a route just across the 180th meridian is reached by a short pan, not a world-wide zoom")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

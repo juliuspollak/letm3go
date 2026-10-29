@@ -1,11 +1,12 @@
 import {act,cleanup,fireEvent,render,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({embed:vi.fn(),unembed:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn()}));
-vi.mock('../lib/appleMaps.js',()=>({appleMaps:mocks,appleMapsAvailable:()=>true}));
+const mocks=vi.hoisted(()=>({embed:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn()}));
+vi.mock('../lib/appleMaps.js',()=>({appleMaps:mocks,appleMapsAvailable:()=>true,sendOverview:mocks.sendOverview}));
 import AppleMap from './AppleMap.jsx';
 const payload={routes:[[[1,2],[3,4],[5,6]]],pins:[]};
 beforeEach(()=>{
- for(const name of ['embed','unembed','close'])mocks[name].mockResolvedValue({});
+ for(const name of ['embed','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
+ mocks.hide.mockResolvedValue({image:'data:image/jpeg;base64,frozen'});
  mocks.snapshot.mockResolvedValue({image:'data:image/jpeg;base64,test'});
  mocks.open.mockResolvedValue({});mocks.addListener.mockResolvedValue({remove:vi.fn()});
  vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}});
@@ -20,14 +21,19 @@ it('embeds an interactive map and follows scroll events inside the detail scroll
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:true})));
  expect(container.querySelector('.apple-map-open')).toBeNull();
 });
-it('removes the native map while a web dialog covers it and restores it afterwards',async()=>{
- render(<AppleMap payload={payload}/>);
+it('hides the native map behind a still image while a web dialog covers it, then shows the same map again',async()=>{
+ const {container}=render(<AppleMap payload={payload}/>);
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
  const dialog=document.createElement('dialog');dialog.setAttribute('open','');
  await act(async()=>document.body.append(dialog));
- await waitFor(()=>expect(mocks.unembed).toHaveBeenCalled());
+ await waitFor(()=>expect(mocks.hide).toHaveBeenCalledWith(expect.objectContaining({hidden:true})));
+ // Hidden, never removed: its camera, layers and selection survive.
+ expect(mocks.unembed).not.toHaveBeenCalled();
+ await waitFor(()=>expect(container.querySelector('.apple-map-freeze')).toHaveAttribute('src','data:image/jpeg;base64,frozen'));
  mocks.embed.mockClear();await act(async()=>dialog.remove());
+ await waitFor(()=>expect(mocks.hide).toHaveBeenCalledWith(expect.objectContaining({hidden:false})));
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ await waitFor(()=>expect(container.querySelector('.apple-map-freeze')).toBeNull());
 });
 it('opens the same trimmed route in fullscreen that is shown in the embedded map',async()=>{
  const points=[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:0},{latitude:5,longitude:6,segment:0}];

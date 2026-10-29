@@ -3,6 +3,18 @@ import { mapPayload } from '../lib/appleMaps.js';
 // `camera` (from mapCamera.cameraIntent) turns on the people map: show everyone,
 // follow a person, free exploring and edge avatars. Without it the map fits its
 // routes as before.
-export default function JourneyMap({journeys,onPhoto,large=false,currentPosition=null,onLocate,locating=false,trimRange=null,homePresence=null,livePeople=[],peoplePins=[],embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null}){
- return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={onLocate} locating={locating} onCamera={onCamera} payload={{...mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})}} trimRange={trimRange} large={large} onResult={result=>{if(result.photoID){const journey=journeys.find(j=>String(j.id)===result.journeyID);if(journey)onPhoto?.(journey,result.photoID);}}}/>;
+//
+// `overview` (from mapOverview) draws the journeys as a density map with
+// clustered photos instead of one line, Start and Finish per journey. Selecting a
+// photo there highlights its journey in a native preview card, whose actions
+// come back as `action: 'journey'` or `'photo'`. Elsewhere a photo opens directly.
+export default function JourneyMap({journeys,onPhoto,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,trimRange=null,homePresence=null,livePeople=[],peoplePins=[],embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,onLayers=null,layersActive=0}){
+ return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={onLocate} locating={locating} onCamera={onCamera} overview={overview} onLayers={onLayers} layersActive={layersActive} payload={{...mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins,{overview:overview?.key||null}),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})}} trimRange={trimRange} large={large} onResult={result=>{
+  if(!result?.photoID)return;
+  // Only a journey this map was given, and only one that owns the photo.
+  const journey=journeys.find(j=>String(j.id)===result.journeyID);
+  if(!journey||!journey.photos?.some(photo=>String(photo.id)===String(result.photoID)))return;
+  if(result.action==='journey')onJourney?.(journey);
+  else onPhoto?.(journey,result.photoID);
+ }}/>;
 }
