@@ -508,7 +508,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let chip=UIButton(type:.system)
         chip.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
         chip.layer.cornerRadius=16
-        chip.titleLabel?.font=.systemFont(ofSize:13,weight:.semibold)
+        chip.titleLabel?.font = .systemFont(ofSize:13,weight:.semibold)
         chip.setImage(UIImage(systemName:"xmark.circle.fill",withConfiguration:UIImage.SymbolConfiguration(pointSize:13)),for:.normal)
         chip.semanticContentAttribute = .forceRightToLeft
         chip.contentEdgeInsets=UIEdgeInsets(top:0,left:12,bottom:0,right:10)
