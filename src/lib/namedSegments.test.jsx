@@ -136,3 +136,21 @@ describe('cloud backup of segments',()=>{
   expect(out[0].visibility).toBe('private');
  });
 });
+
+describe('destructive trimming',()=>{
+ it('names every segment a trim would delete, and none it keeps',async()=>{
+  const {segmentsCutByTrim}=await import('./namedSegments.js');
+  const trip=ride({details:{namedSegments:[saved('a','Rock Garden Descent',2,12),saved('b','Climb',8,18),saved('c','Finish',30,39)]}});
+  expect(segmentsCutByTrim(trip,5,39).map(s=>s.name)).toEqual(['Rock Garden Descent']);
+  expect(segmentsCutByTrim(trip,0,35).map(s=>s.name)).toEqual(['Finish']);
+  expect(segmentsCutByTrim(trip,2,39)).toEqual([]);
+ });
+ it('is never reachable from the Activity page, which only changes the visible route',()=>{
+  const run=vi.fn(async()=>true);
+  render(<ActivityDetail trip={ride({details:{namedSegments:[saved('a','A',2,12)]}})} run={run} onUpdated={vi.fn()}/>);
+  fireEvent.change(screen.getByLabelText('Visible route start'),{target:{value:'5'}});
+  fireEvent.click(screen.getByRole('button',{name:'Save visible route'}));
+  expect(run).toHaveBeenCalledWith('setRouteDisplay',{id:'ride',start:5,end:39});
+  expect(run).not.toHaveBeenCalledWith('trimActivity',expect.anything());
+ });
+});

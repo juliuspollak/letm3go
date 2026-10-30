@@ -9,6 +9,18 @@ import {resolvePhoto} from './privateMedia.js';
 // migration is applied, sending them would make every backup of a segmented
 // activity fail the view_metadata check, so they stay on the iPhone only.
 export const NAMED_SEGMENT_BACKUP=false;
+// Apple Watch rides are backed up too: they are the user's own recordings,
+// imported into this account only after the watch-ownership check. Until the
+// same migration allows recording_mode 'watch', they are sent as 'manual' (a
+// recording the user started), which the current schema accepts; a restore then
+// shows them as iPhone recordings. Same id either way, so enabling this later
+// updates the row instead of duplicating it.
+export const WATCH_MODE_BACKUP=false;
+export const BACKED_UP_SOURCES=['device','watch'];
+export function cloudRecordingMode(trip){
+ if(trip.source==='watch')return WATCH_MODE_BACKUP?'watch':'manual';
+ return trip.recordingMode||'manual';
+}
 // References into route_points only: the geometry copy is left out because the
 // route itself is backed up alongside.
 export function backupSegments(segments){
@@ -52,12 +64,12 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  // A stopped journey is published locally before it is complete. It is backed up
  // only once finalised, so the cloud never receives a row that is still growing
  // and no duplicate revision is required to correct it.
- const finished=trip=>trip.source==='device'&&trip.details?.provisional!==true&&Number.isFinite(trip.endedAt)&&!tombstones.has(trip.id.toLowerCase());
+ const finished=trip=>BACKED_UP_SOURCES.includes(trip.source)&&trip.details?.provisional!==true&&Number.isFinite(trip.endedAt)&&!tombstones.has(trip.id.toLowerCase());
  for(const trip of state.trips){
   if(!finished(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   const details=trip.details||{};
-  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:trip.recordingMode||'manual',started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:details.classification||{predicted:'Unknown',confidence:'low',evidence:[]},user_corrected:!!details.userCorrected,route_points:trip.points};
+  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:details.classification||{predicted:'Unknown',confidence:'low',evidence:[]},user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);if(previous?.fingerprint===fingerprint&&!previous.deleted)continue;
   const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');

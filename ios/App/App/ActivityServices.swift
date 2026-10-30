@@ -107,9 +107,15 @@ extension LocationRecorder {
         trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip); trips[index] = trip
     }
-    func trimActivity(id: String, start: Int, end: Int) throws {
+    // Destructive: removes fixes. Segments it would delete are refused unless the
+    // caller passes the confirmation the person gave after seeing their names.
+    func trimActivity(id: String, start: Int, end: Int, confirmSegmentRemoval: Bool = false) throws {
         guard let index = trips.firstIndex(where: { $0.id == id }),
               let storage = storage else { throw failure("Activity not found.") }
+        let cut = RouteTrimming.segmentsCut(trips[index], start: start, end: end)
+        guard cut.isEmpty || confirmSegmentRemoval else {
+            throw failure("Trimming here would delete " + (cut.count == 1 ? "the segment " : "these segments: ") + cut.map { "“" + $0.name + "”" }.joined(separator: ", ") + ". Keep them by choosing a wider range, or confirm to delete them.")
+        }
         guard let trimmed = RouteTrimming.trimmed(trips[index],start:start,end:end) else {
             throw failure("Select at least two recorded route points on a finished activity.")
         }
@@ -421,7 +427,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             call.reject("Choose valid route trim points."); return
         }
         do {
-            try LocationRecorder.shared.trimActivity(id:call.getString("id") ?? "",start:start,end:end)
+            try LocationRecorder.shared.trimActivity(id:call.getString("id") ?? "",start:start,end:end,confirmSegmentRemoval:call.getBool("confirmSegmentRemoval") == true)
             call.resolve(LocationRecorder.shared.snapshot())
         } catch { call.reject(error.localizedDescription) }
     } }

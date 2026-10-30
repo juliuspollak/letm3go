@@ -90,14 +90,34 @@ enum NamedSegments {
                        gapSeconds: gap, observedRuns: stretches.filter { $0.count > 1 }.count)
     }
 
-    // Real fixes only, at most `budget` of them, keeping both ends of every
-    // observed stretch so a gap is never bridged.
+    // Real fixes only, never more than `budget` of them in total, and never a
+    // line across a gap. Policy:
+    // 1. Each observed stretch (two or more connected fixes) is drawn
+    //    separately, from its own first fix to its own last fix.
+    // 2. If there are more stretches than the budget can draw (budget / 2,
+    //    two fixes each), the longest stretches by recorded distance are kept,
+    //    in recording order, and the shortest are left out of this copy. The
+    //    recording itself, and the segment's figures, are unaffected: this copy
+    //    is only for recognising the section on another ride.
+    // 3. Each kept stretch gets its two ends; the rest of the budget is shared
+    //    in proportion to each stretch's remaining fixes, sampled evenly.
     static func geometry(_ points: [GPSPoint], start: Int, end: Int, budget: Int = geometryBudget) -> [[[Double]]] {
-        let stretches = runs(points[start...end]).filter { $0.count > 1 }
-        let total = stretches.reduce(0) { $0 + $1.count }
-        guard total > 0 else { return [] }
+        guard budget >= 2, start >= 0, end < points.count, start < end else { return [] }
+        var stretches = runs(points[start...end]).filter { $0.count > 1 }
+        let maximumStretches = budget / 2
+        if stretches.count > maximumStretches {
+            let longest = stretches.indices.sorted {
+                let a = RecordedActivity.measuredDistance(stretches[$0], automatic: false), b = RecordedActivity.measuredDistance(stretches[$1], automatic: false)
+                return a != b ? a > b : $0 < $1
+            }
+            let kept = Set(longest.prefix(maximumStretches))
+            stretches = stretches.indices.filter { kept.contains($0) }.map { stretches[$0] }
+        }
+        let interior = stretches.reduce(0) { $0 + $1.count - 2 }
+        let spare = budget - 2 * stretches.count
         return stretches.map { run in
-            let share = max(2, Int((Double(budget) * Double(run.count) / Double(total)).rounded(.down)))
+            let extra = interior > 0 ? Int((Double(spare) * Double(run.count - 2) / Double(interior)).rounded(.down)) : 0
+            let share = min(run.count, 2 + extra)
             guard run.count > share else { return run.map { [$0.latitude, $0.longitude] } }
             let step = Double(run.count - 1) / Double(share - 1)
             var picked: [Int] = []

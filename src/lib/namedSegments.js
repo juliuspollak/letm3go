@@ -114,3 +114,12 @@ export function newSegmentID(){
  if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID();
  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);});
 }
+
+// Segments a destructive trim to start...end would delete (RouteTrimming.segmentsCut).
+// Any caller of recorder.trimActivity must list these names and pass
+// confirmSegmentRemoval only after the person agrees; the native recorder
+// refuses otherwise. The Activity page itself never trims destructively: it
+// uses the non-destructive visible route window (setRouteDisplay).
+export function segmentsCutByTrim(trip,start,end){
+ return (trip?.details?.namedSegments||[]).filter(s=>s.startIndex<start||s.endIndex>end);
+}

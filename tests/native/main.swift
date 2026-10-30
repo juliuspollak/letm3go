@@ -2650,6 +2650,82 @@ do {
     check(WatchHistory.status(entry("b", 1, queued: false), outbox: []) == .notSent, "a ride too short to send is not shown as synced")
 }
 
+
+// MARK: Review fixes: trimming, geometry budget, Watch setup round trip
+do {
+    let fixes: [GPSPoint] = (0..<40).map { i in
+        GPSPoint(latitude: -33.9 + Double(i) * 0.0002, longitude: 151.2, timestamp: 1000 + Double(i) * 10, accuracy: 5, altitude: 0, speed: 2)
+    }
+    func named(_ id: String, _ start: Int, _ end: Int) -> NamedSegment {
+        guard case .success(let s) = NamedSegments.make(id: id, name: "S" + id.suffix(1), start: start, end: end, points: fixes, automatic: false, existing: [], now: 1) else { fatalError("segment") }
+        return s
+    }
+    var trip = RecordedActivity(activity: "MTB", startedAt: 1000, resumedAt: nil, title: "Ride")
+    trip.points = fixes; trip.state = "finished"; trip.endedAt = fixes.last!.timestamp
+    let a = named("a1b2c3d4-0000-4000-8000-000000000001", 2, 12), b = named("a1b2c3d4-0000-4000-8000-000000000002", 8, 18), c = named("a1b2c3d4-0000-4000-8000-000000000003", 30, 39)
+    trip.updateDetails { $0.namedSegments = [a, b, c]; $0.visibleRouteStart = 4; $0.visibleRouteEnd = 35 }
+
+    // A trim names every segment it would delete; the recorder refuses it
+    // without confirmation (ActivityServices.trimActivity).
+    check(RouteTrimming.segmentsCut(trip, start: 5, end: 39).map { $0.id } == [a.id], "a trim reports the segment it would cut")
+    check(RouteTrimming.segmentsCut(trip, start: 0, end: 35).map { $0.id } == [c.id], "a trim reports a segment cut at the end")
+    check(RouteTrimming.segmentsCut(trip, start: 2, end: 39).isEmpty, "a trim that keeps every segment reports none")
+    // Whatever a confirmed trim keeps, nothing else is lost, and what is
+    // removed is exactly what was reported.
+    let trimmed = RouteTrimming.trimmed(trip, start: 5, end: 39)!
+    let reported = Set(RouteTrimming.segmentsCut(trip, start: 5, end: 39).map { $0.id })
+    let kept = Set(trimmed.details?.namedSegments?.map { $0.id } ?? [])
+    check(kept.union(reported) == Set([a.id, b.id, c.id]) && kept.isDisjoint(with: reported), "a trim removes only the segments it reported")
+    // The visible route window follows its fixes instead of keeping old indices.
+    check(trimmed.details?.visibleRouteStart == nil && trimmed.details?.visibleRouteEnd == 30, "the visible window is renumbered with the fixes")
+    check(trimmed.points[trimmed.details!.visibleRouteEnd!].timestamp == fixes[35].timestamp, "the window still ends at the same fix")
+    let cleared = RouteTrimming.trimmed(trip, start: 36, end: 39)!
+    check(cleared.details?.visibleRouteStart == nil && cleared.details?.visibleRouteEnd == nil, "a window outside the kept fixes falls back to the whole route")
+
+    // Geometry budget with many GPS discontinuities: never over budget, never a
+    // line between stretches, and the longest stretches kept.
+    var broken: [GPSPoint] = []
+    for run in 0..<400 {
+        let length = run % 50 == 0 ? 30 : 2
+        for k in 0..<length {
+            broken.append(GPSPoint(latitude: -33.9 + Double(broken.count) * 0.0001, longitude: 151.2, timestamp: Double(run) * 1000 + Double(k) * 5,
+                                   accuracy: 5, altitude: 0, speed: 3, segment: run))
+        }
+    }
+    let shape = NamedSegments.geometry(broken, start: 0, end: broken.count - 1)
+    check(shape.reduce(0) { $0 + $1.count } <= NamedSegments.geometryBudget, "geometry stays within its budget with 400 stretches")
+    check(shape.count == NamedSegments.geometryBudget / 2, "at most budget/2 stretches are kept")
+    let stretchOf = Dictionary(uniqueKeysWithValues: broken.map { ("\($0.latitude)", $0.segment) })
+    check(shape.allSatisfy { line in Set(line.map { stretchOf["\($0[0])"]! }).count == 1 }, "no line joins two stretches")
+    check(shape.allSatisfy { $0.count == 2 }, "with no spare budget each kept stretch is drawn by its own two ends")
+    check(shape.filter { abs($0[0][0] - $0[1][0]) > 0.002 }.count == 8, "the longest stretches are the ones kept")
+    let roomy = NamedSegments.geometry(broken, start: 0, end: 200)
+    check(roomy.reduce(0) { $0 + $1.count } <= NamedSegments.geometryBudget && roomy.contains { $0.count > 2 }, "spare budget goes to the longer stretches")
+    let sparse = NamedSegments.geometry(broken, start: 0, end: broken.count - 1, budget: 7)
+    check(sparse.count == 3 && sparse.reduce(0) { $0 + $1.count } <= 7, "a tiny budget keeps whole stretches only")
+    check(NamedSegments.geometry(broken, start: 5, end: 2).isEmpty && NamedSegments.geometry(broken, start: 0, end: 10, budget: 1).isEmpty, "invalid ranges and budgets draw nothing")
+
+    // Cycling → Mountain bike → e-bike survives recording, interruption,
+    // transfer, import and history, and Start Again repeats it exactly.
+    let levo = WatchEquipment(id: "bike-2", name: "Turbo Levo", kind: "ebike")
+    let setup = WatchStartConfig(activity: "MTB", equipment: levo)
+    check(WatchCatalog.family(of: setup.activity)?.id == "Cycling" && WatchCatalog.title(setup.activity) == "Cycling · Mountain bike", "the subtype is MTB under Cycling")
+    var ride = WatchRideDraft(activity: setup.activity, startedAt: 1_000, equipment: setup.equipment)
+    _ = ride.ingest(watchFix(-33.0000, 1_000), now: 1_000)
+    _ = ride.ingest(watchFix(-33.0010, 1_030), now: 1_030)
+    var reopened = WatchRideDraft(meta: ride.meta, points: ride.points)
+    reopened.reopenPaused(); reopened.resume(at: 1_100)
+    _ = reopened.ingest(watchFix(-33.0020, 1_130), now: 1_130)
+    reopened.finish(at: 1_140)
+    let sent = reopened.transfer(now: 1_150, ownerID: "owner-1", deviceID: "w")!
+    let phone = WatchActivityImport.activity(from: try! JSONDecoder().decode(WatchActivityTransfer.self, from: JSONEncoder().encode(sent)), now: 1_160)!
+    check(phone.activity == "MTB" && phone.equipment == [EquipmentRef(id: "bike-2", name: "Turbo Levo")], "the phone keeps the exact subtype and bike")
+    let history = WatchHistoryEntry(id: reopened.id, activity: reopened.activity, equipmentID: reopened.equipment?.id, equipmentName: reopened.equipment?.name,
+                                    equipmentKind: reopened.equipment?.kind, startedAt: reopened.startedAt, endedAt: 1_140, activeSeconds: reopened.activeSeconds,
+                                    distanceMeters: reopened.metrics.distanceMeters, queued: true)
+    check(history.config == setup && history.config.isValid, "Start Again repeats the exact subtype and bike")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

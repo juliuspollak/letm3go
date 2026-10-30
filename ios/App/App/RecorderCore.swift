@@ -308,6 +308,12 @@ struct RecordedActivity: Codable {
 // Trim by recorded point indices rather than coordinates. No interpolated route
 // or invented time is introduced, and segment breaks remain intact.
 enum RouteTrimming {
+    // Named segments a destructive trim to start...end would delete: any whose
+    // fixes are not all kept. The caller must name them to the person and get
+    // explicit confirmation first; a trim never removes a segment silently.
+    static func segmentsCut(_ trip: RecordedActivity, start: Int, end: Int) -> [NamedSegment] {
+        (trip.details?.namedSegments ?? []).filter { $0.startIndex < start || $0.endIndex > end }
+    }
     static func trimmed(_ original: RecordedActivity, start: Int, end: Int) -> RecordedActivity? {
         guard original.state == "finished", original.points.count >= 2,
               start >= 0, end < original.points.count, start < end else { return nil }
@@ -329,6 +335,13 @@ enum RouteTrimming {
         trip.details?.startPlace = nil
         trip.details?.endPlace = nil
         trip.details?.classificationDistances = nil
+        // The visible route window keeps showing the same fixes, renumbered; a
+        // window that no longer spans two kept fixes is cleared (the whole route).
+        let oldStart = original.details?.visibleRouteStart ?? 0, oldEnd = original.details?.visibleRouteEnd ?? original.points.count - 1
+        let windowStart = max(oldStart, start) - start, windowEnd = min(oldEnd, end) - start
+        let keepsWindow = windowStart < windowEnd && (windowStart > 0 || windowEnd < chosen.count - 1)
+        trip.details?.visibleRouteStart = keepsWindow && windowStart > 0 ? windowStart : nil
+        trip.details?.visibleRouteEnd = keepsWindow && windowEnd < chosen.count - 1 ? windowEnd : nil
         // Named segments follow their own fixes; one cut by the trim is removed.
         if let segments = original.details?.namedSegments {
             let kept = NamedSegments.remapped(segments, from: original.points, to: chosen)

@@ -150,3 +150,41 @@ iPhone:
 - Relaunch and offline, then confirm the segments remain.
 - Confirm the visible route and trail link are untouched.
 - After the migration is applied: backup and restore.
+
+## Review of `c774f8c` (branch `fix/segment-watch-review`)
+
+Confirmed defects, each with a regression test:
+
+1. **A destructive trim deleted named segments silently.** Reproduce: create a segment on fixes 2–12, then call `trimActivity` with start 5. `RouteTrimming.trimmed` drops the segment with no warning. Fix:
+   - `RouteTrimming.segmentsCut` names every segment a trim would delete.
+   - `trimActivity` refuses with "Trimming here would delete the segment “…”" unless `confirmSegmentRemoval` is passed.
+   - `segmentsCutByTrim` (web) gives callers the same list. No screen calls `trimActivity`: the Activity page only changes the non-destructive visible route window, and a test asserts this.
+2. **A destructive trim left the visible route window on the old fix numbers.** This existed before segments. Reproduce: set the window to 4–35, then trim to 5–39; the window still says 4–35 on a 35-fix route. Fix: the window is renumbered with its fixes, or cleared when nothing of it remains.
+3. **Apple Watch rides were never backed up.** `cloudSync` selected only `source === 'device'`, and native restore accepted only `device`. Fix:
+   - Watch rides are backed up under their own id.
+   - They are sent as `recording_mode 'manual'`, which the current check accepts, until the migration allows `'watch'` (`WATCH_MODE_BACKUP`).
+   - Restore maps `watch` back to `source 'watch'`.
+   - Duplicates are prevented by id: the restore skips known ids, Watch re-delivery is answered as a duplicate, and fingerprints stop re-uploads. Deleted Watch rides stay deleted (tombstones on both paths). Ownership is unchanged: Watch rides enter an account only through the Watch ownership check, and the backup RPC requires `p_owner = auth.uid()`.
+4. **The geometry budget could be exceeded.** Reproduce: a section with 400 two-fix stretches produced 800 points against a budget of 200. Fix: the explicit policy in `NamedSegments.geometry`:
+   - Keep at most `budget/2` stretches, the longest by recorded distance, in recording order.
+   - Give each kept stretch its two ends; share the rest in proportion.
+   - Never join stretches.
+5. **The migration accepted fractional indices and duplicate segment ids.** Reproduce with the earlier `valid_named_segments`: `startIndex: 1.5` and two segments with one id both returned true. Fix:
+   - Integers only; `0 ≤ startIndex < endIndex < 50000`.
+   - Numeric fields must be ≥ 0; ids are unique lowercase UUIDs; at most 20 segments.
+   - `visibility` must be `private`; no geometry; at most 1000 characters each.
+   - Every cast is guarded by `CASE`, because Postgres does not promise the order of `OR` operands.
+   - The migration also permits `recording_mode 'watch'`.
+   - `tests/database/named-segments.test.js` runs the whole migration chain: accepted payloads, 19 malformed ones rejected as check failures, older `view_metadata` still valid, owner isolation, Watch mode. The migration is still not applied; both backup switches stay off.
+6. **The Watch silently attached a remembered bike.** Reproduce: ride MTB with an e-bike, remove the e-bike from the Collection, then choose Cycling → Mountain bike. Ready showed the old bike, with no way to start without it. Fix: with no Collection bikes, Ready starts without a bike; repeating a setup is Start again.
+
+Verified, no change needed:
+- Cycling → Mountain bike → e-bike keeps the exact activity (`MTB`) and bike through recording, a restart mid-ride, transfer, import, history and Start Again (native test).
+- With a ride open, Ready's Start and the history swipe are disabled and Home shows Resume.
+- With location denied, Ready stays put and shows the Settings message.
+
+Not verifiable here, needing an iPhone and a Watch:
+- Dragging the two handles on a small iPhone, including crossing handles (the start handle stops one fix before the finish) and a long ride.
+- Whether scrolling over the embedded MapKit view competes with the sliders below it.
+- That a saved segment appears at once in its colour with its name on the real map.
+- Watch navigation on the device.

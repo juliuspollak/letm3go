@@ -1048,7 +1048,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 trip.details?.namedSegments = valid.isEmpty ? nil : Array(valid)
             }
             guard UUID(uuidString:trip.id) != nil, trip.state == "finished",
-                trip.source == "device", trip.endedAt != nil, trip.points.count <= 50000,
+                (trip.source == "device" || (trip.source == "watch" && trip.recordingMode == "watch")), trip.endedAt != nil, trip.points.count <= 50000,
                 trip.startedAt.isFinite, (trip.endedAt ?? 0).isFinite,
                 trip.distanceMeters.isFinite, trip.distanceMeters >= 0 else { call.reject("Invalid recovery record."); return }
             if r.trips.contains(where:{$0.id == trip.id}) { call.resolve(["restored":false,"existing":true]); return }

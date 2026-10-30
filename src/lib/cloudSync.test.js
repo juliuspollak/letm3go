@@ -18,3 +18,16 @@ it('backs up a published stop only after the recorder finalises it',async()=>{
  const finalised=await run(api,{...state,trips:[{...trip}]});
  expect(finalised.uploaded).toBe(1);
 });
+it('backs up Apple Watch recordings once, as manual until the schema allows watch, and never simulator ones',async()=>{
+ const api=client();
+ const watch={...trip,id:'w1',source:'watch',recordingMode:'watch',details:{namedSegments:[{id:'a1b2c3d4-0000-4000-8000-000000000001',name:'Climb',startIndex:1,endIndex:5,geometry:[[[1,2]]]}]}};
+ const first=await run(api,{...state,trips:[watch,{...trip,id:'sim',source:'simulator'}]});
+ expect(api.rpc).toHaveBeenCalledTimes(1);
+ const payload=api.rpc.mock.calls[0][1].p_payload;
+ expect(payload).toMatchObject({id:'w1',recording_mode:'manual'});
+ // Segments stay on the iPhone until NAMED_SEGMENT_BACKUP is enabled.
+ expect(payload.view_metadata.namedSegments).toBeUndefined();
+ // A second backup with the same content sends nothing: no duplicate revision.
+ await run(api,{...state,trips:[watch]},first.receipts);
+ expect(api.rpc).toHaveBeenCalledTimes(1);
+});

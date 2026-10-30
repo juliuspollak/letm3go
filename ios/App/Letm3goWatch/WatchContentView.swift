@@ -199,8 +199,10 @@ struct WatchActivityGrid: View {
         if !WatchEquipmentCatalog.compatible(link.equipment, activity: activity).isEmpty {
             path.append(.equipment(activity))
         } else {
-            // No bikes on the watch: start without one, or with the one remembered.
-            path.append(.ready(WatchStartConfig(activity: activity, equipment: recorder.rememberedEquipment(for: activity))))
+            // No bikes from the Collection: start without one. A remembered bike is
+            // never attached silently here (it may have left the Collection);
+            // repeating the last setup is what Start again is for.
+            path.append(.ready(WatchStartConfig(activity: activity)))
         }
     }
 }
