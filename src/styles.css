@@ -544,10 +544,10 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .nav-glyph{display:block;width:21px;height:21px;overflow:visible;transition:transform .32s cubic-bezier(.22,1.24,.36,1)}
 .mobile-nav .nav-glyph{width:22px;height:22px}
 .nav-glyph.is-active{transform:translateY(-1px)}
-.nav-glyph .glyph-roof,.nav-glyph .glyph-door,.nav-glyph .glyph-fold,.nav-glyph .glyph-pin,.nav-glyph .glyph-pin-dot,.nav-glyph .glyph-route,.nav-glyph .glyph-marker,.nav-glyph .glyph-start,.nav-glyph .glyph-friend,.nav-glyph .glyph-ring,.nav-glyph .glyph-core{transform-box:fill-box;transform-origin:50% 50%}
+.nav-glyph .glyph-roof,.nav-glyph .glyph-door,.nav-glyph .glyph-ground,.nav-glyph .glyph-pin,.nav-glyph .glyph-pin-dot,.nav-glyph .glyph-route,.nav-glyph .glyph-marker,.nav-glyph .glyph-start,.nav-glyph .glyph-friend,.nav-glyph .glyph-ring,.nav-glyph .glyph-core{transform-box:fill-box;transform-origin:50% 50%}
 .nav-glyph--home[data-animate="on"] .glyph-roof{animation:glyph-roof .62s cubic-bezier(.22,1.24,.36,1)}
 .nav-glyph--home[data-animate="on"] .glyph-door{animation:glyph-door .62s cubic-bezier(.22,1.24,.36,1)}
-.nav-glyph--map[data-animate="on"] .glyph-fold{animation:glyph-unfold .58s cubic-bezier(.22,1.24,.36,1)}
+.nav-glyph--map[data-animate="on"] .glyph-ground{animation:glyph-unfold .58s cubic-bezier(.22,1.24,.36,1)}
 .nav-glyph--map[data-animate="on"] .glyph-pin{animation:glyph-pin-drop .7s cubic-bezier(.3,1.36,.48,1)}
 .nav-glyph--map[data-animate="on"] .glyph-pin-dot{animation:glyph-pop .6s ease-out .18s}
 .nav-glyph--trips[data-animate="on"] .glyph-route{animation:glyph-draw .72s ease-in-out}

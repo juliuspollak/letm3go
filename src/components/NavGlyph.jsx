@@ -5,10 +5,9 @@ const GLYPHS={
   <path className="glyph-door" d="M9.8 19.3v-4.7h4.4v4.7"/>
  </>,
  Map:<>
-  <path className="glyph-fold glyph-fold-left" d="M3.4 7.4 9 5.2l6 2.2 5.6-2.2v11.4L15 18.8 9 16.6l-5.6 2.2z"/>
-  <path className="glyph-crease" d="M9 5.2v11.4M15 7.4v11.4"/>
-  <path className="glyph-pin" d="M12 6.6c1.8 0 3.2 1.4 3.2 3.2 0 2.2-3.2 5.2-3.2 5.2S8.8 12 8.8 9.8c0-1.8 1.4-3.2 3.2-3.2Z"/>
-  <circle className="glyph-pin-dot" cx="12" cy="9.8" r="1.05"/>
+  <path className="glyph-ground" d="M7.9 17.1c-2.5.5-4.1 1.4-4.1 2.4 0 1.4 3.7 2.5 8.2 2.5s8.2-1.1 8.2-2.5c0-1-1.6-1.9-4.1-2.4"/>
+  <path className="glyph-pin" d="M12 19s-6-5-6-9.6a6 6 0 1 1 12 0C18 14 12 19 12 19Z"/>
+  <circle className="glyph-pin-dot" cx="12" cy="9.4" r="2.1"/>
  </>,
  Trips:<>
   <path className="glyph-route" d="M4.8 19.2c0-4.4 3.2-6.4 7.2-7.4s7.2-2.8 7.2-7.2"/>
