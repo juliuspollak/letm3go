@@ -185,7 +185,7 @@ extension LocationRecorder {
         endPassiveRest()
         endServiceSession(reason)
         resetHomeWiFi()
-        monitoringFailure = nil
+        monitoringFailures = MonitoringFailures()
         restPlaceFixAt = nil; restPlaceAccuracy = nil; sessionReleasedAt = nil; sessionReleases = 0
         departurePlace = nil; departureMotionOnsetAt = nil; lastPreciseReason = "none yet"; keepAliveUpdates = 0
         modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
@@ -199,13 +199,20 @@ extension LocationRecorder {
             motion: RecordingHealth.motion(available: CMMotionActivityManager.isActivityAvailable(), rawStatus: CMMotionActivityManager.authorizationStatus().rawValue),
             backgroundRefresh: RecordingHealth.backgroundRefresh(rawStatus: UIApplication.shared.backgroundRefreshStatus.rawValue),
             services: recordingServices, locationServicesKnown: locationServicesKnown,
-            settling: Date().timeIntervalSince1970 - executingSince < 10)
+            settling: recordingServicesSettling(now: Date().timeIntervalSince1970))
+    }
+    // Access can return before its callback reaches the recorder. Until then the
+    // services are behind, not stopped; the bound stops that lasting forever.
+    func recordingServicesSettling(now: Double) -> Bool {
+        if automaticAvailable, !recorderReconciledAvailable { servicesReconcilePendingSince = servicesReconcilePendingSince ?? now }
+        else { servicesReconcilePendingSince = nil }
+        return RecordingHealth.settling(now: now, executingSince: executingSince, reconcilePendingSince: servicesReconcilePendingSince)
     }
     var recordingServices: String {
         RecordingHealth.services(requested: automaticAvailable && significantLocationRequested && visitMonitoringRequested,
             significantSupported: CLLocationManager.significantLocationChangeMonitoringAvailable(),
             regionsSupported: CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
-            regionsHeld: manager.monitoredRegions.count, monitoringFailed: monitoringFailure != nil)
+            regionsHeld: manager.monitoredRegions.count, monitoringFailed: monitoringFailures.active)
     }
     var recordingHealthSnapshot: [String: Any] {
         let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
@@ -235,10 +242,13 @@ extension LocationRecorder {
         guard previous != current else { return }
         UserDefaults.standard.set(current, forKey: key)
         let issues = report.issues.joined(separator: ",")
-        let permissions = RecordingHealth.changes(from: previous?.filter { $0.key != "status" }, to: current.filter { $0.key != "status" })
+        let permissions = RecordingHealth.changes(from: previous, to: current, keys: RecordingHealth.permissionKeys)
         let when = ["changeObserved": observed, "changeWindowStart": String(windowStart)]
         if !permissions.isEmpty {
             recordDiagnostic("permission", "Permission status changed", details: when.merging(["permissionChanged": permissions.joined(separator: "; "), "recordingIssues": issues]) { a, _ in a })
+        }
+        if let before = previous?["recordingServices"], before != inputs.services {
+            recordDiagnostic("service", "Recording service state changed", details: when.merging(["recordingServicesBefore": before, "recordingServices": inputs.services]) { a, _ in a })
         }
         if previous?["status"] != report.status.rawValue {
             recordDiagnostic("permission", previous == nil ? "Recording readiness evaluated" : "Recording readiness changed", details: when.merging([

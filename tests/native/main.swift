@@ -2979,8 +2979,15 @@ do {
     check(all.status == .unavailable && all.issues == ["locationServicesOff", "locationWhileUsing", "preciseOff", "motionDenied", "backgroundRefreshOff"], "issues are ordered by impact")
     check(RecordingHealth.motion(available: false, rawStatus: 3) == "unavailable" && RecordingHealth.motion(available: true, rawStatus: 3) == "authorized" && RecordingHealth.motion(available: true, rawStatus: 2) == "denied", "Core Motion status maps")
     check(RecordingHealth.backgroundRefresh(rawStatus: 2) == "available" && RecordingHealth.backgroundRefresh(rawStatus: 1) == "denied" && RecordingHealth.backgroundRefresh(rawStatus: 0) == "restricted", "Background App Refresh status maps")
-    check(RecordingHealth.changes(from: ["location": "always", "precise": "true"], to: ["location": "whenInUse", "precise": "true"]) == ["location: always -> whenInUse"], "a change names only what changed")
-    check(RecordingHealth.changes(from: nil, to: ["location": "always"]).isEmpty, "the first look has nothing to compare")
+    let keys = RecordingHealth.permissionKeys
+    check(RecordingHealth.changes(from: ["location": "always", "precise": "true"], to: ["location": "whenInUse", "precise": "true"], keys: keys) == ["location: always -> whenInUse"], "a change names only what changed")
+    check(RecordingHealth.changes(from: nil, to: ["location": "always"], keys: keys).isEmpty, "the first look has nothing to compare")
+    let settled = ["recordingServices": "requested", "automaticTracking": "true", "status": "ready", "location": "always", "precise": "true", "motion": "authorized", "backgroundRefresh": "available", "locationServices": "true"]
+    var serviceOnly = settled; serviceOnly["recordingServices"] = "failed"; serviceOnly["status"] = "limited"
+    check(RecordingHealth.changes(from: settled, to: serviceOnly, keys: keys).isEmpty, "a service or status change alone is never a permission change")
+    var preferenceOnly = settled; preferenceOnly["automaticTracking"] = "false"
+    check(RecordingHealth.changes(from: settled, to: preferenceOnly, keys: keys).isEmpty, "the in-app switch is a preference, not a permission")
+    check(keys == ["locationServices", "location", "precise", "motion", "backgroundRefresh"], "exactly what iOS grants counts as a permission")
     // Settings and services are separate answers, and Ready needs both.
     let stopped = health { $0.services = "notRequested" }
     check(stopped == RecordingHealthReport(status: .limited, permissions: .ready, issues: ["servicesNotRunning"]), "permissions can be Ready while services are not requested, and the status is then not Ready")
@@ -2996,11 +3003,41 @@ do {
     check(services() == "registered" && services(held: 0) == "requested", "requested and held by iOS are separate answers")
     check(services(requested: false) == "notRequested", "nothing requested is reported as such")
     check(services(failed: true) == "failed" && services(held: 0, failed: true) == "failed", "a monitoring failure outranks a request")
+    check(services(requested: false, failed: true) == "failed", "an open failure is not hidden when the request state changes")
+    check(services(significant: false, failed: true) == "unsupported", "no capability outranks a failure")
     check(services(significant: false) == "unsupported" && services(regions: false) == "unsupported", "a missing Core Location capability is reported")
     check(health { $0.services = "requested" }.status == .ready, "having no saved place to monitor is not a problem")
     check(health { $0.services = "failed" } == RecordingHealthReport(status: .limited, permissions: .ready, issues: ["monitoringFailed"]), "a monitoring failure stops Ready but is not a permission problem")
     check(health { $0.services = "unsupported" }.issues == ["servicesUnsupported"], "an unsupported capability stops Ready")
     check(health { $0.services = "failed"; $0.location = "denied" }.issues == ["locationDenied"], "a denied permission explains a failed service")
+
+    // Failure, stop, retry, recovery.
+    var failures = MonitoringFailures()
+    check(!failures.active && failures.summary == "none" && failures.last == nil, "no failures to begin with")
+    failures.failed("home", summary: "saved place or last stop: code 5")
+    failures.failed("rest", summary: "current place: code 4")
+    check(failures.active && failures.total == 2 && failures.summary == "current place: code 4; saved place or last stop: code 5", "two failures stay open side by side")
+    check(failures.recovered("rest") == "current place: code 4" && failures.active, "one region recovering does not hide another")
+    check(failures.recovered("unrelated") == nil && failures.active, "an unrelated registration clears nothing")
+    check(services(requested: false, failed: failures.active) == "failed", "the failure stays visible if requests stop before it is resolved")
+    check(failures.stopped("home") == "saved place or last stop: code 5" && !failures.active, "an intentional stop closes it and reports what closed")
+    check(services(requested: false, failed: failures.active) == "notRequested", "intentionally stopped monitoring is not failed")
+    check(failures.total == 2 && failures.last == "current place: code 4", "history outlives the open state")
+    failures.failed("home", summary: "saved place or last stop: code 5")
+    check(services(failed: failures.active) == "failed", "a failed retry fails again")
+    check(failures.recovered("home") != nil && !failures.active && services(failed: failures.active) == "registered", "a successful retry recovers")
+    check(failures.total == 3, "every failure is counted")
+    failures.failed(nil, summary: "unknown region: code 5")
+    check(failures.stopped("home") == nil && failures.active, "stopping one region cannot close a failure without a region")
+    check(failures.recovered("home") == "unknown region: code 5" && !failures.active, "the next successful registration closes it")
+    failures.failed("a", summary: "x"); failures.failed(nil, summary: "y")
+    check(failures.allStopped() == "x; y" && !failures.active && failures.allStopped() == nil, "tracking switched off closes everything once")
+
+    // Settling covers services catching up, whenever that happens.
+    check(RecordingHealth.settling(now: 105, executingSince: 100, reconcilePendingSince: nil), "just started is settling")
+    check(!RecordingHealth.settling(now: 5000, executingSince: 100, reconcilePendingSince: nil), "a long-running app with nothing pending is not")
+    check(RecordingHealth.settling(now: 5005, executingSince: 100, reconcilePendingSince: 5000), "access returned to a long-running app settles too")
+    check(!RecordingHealth.settling(now: 5011, executingSince: 100, reconcilePendingSince: 5000), "settling ends even if the recorder never catches up")
 
     // Motion that was never requested is not motion that does not exist.
     check(health { $0.motion = "notDetermined" }.issues == ["motionNotRequested"], "motion not yet requested is its own issue")
@@ -3020,6 +3057,12 @@ do {
     check(check1.request() && check1.finish(false) == .applied(changed: true, first: true) && check1.known && !check1.value, "the fresh answer is applied once")
     check(check1.request() && check1.finish(false) == .applied(changed: false, first: false), "an unchanged answer is not a change")
 
+    var burst = AvailabilityCheck()
+    check(burst.request() && !burst.request() && !burst.request() && !burst.request(), "repeated foreground requests start one read")
+    check(burst.finish(true) == .readAgain && burst.request(), "they collapse into one further read")
+    check(burst.finish(true) == .applied(changed: false, first: true) && burst.known, "that read settles it, with no loop")
+    check(burst.request() && !burst.request() && burst.finish(false) == .readAgain && burst.value, "a delayed answer overtaken by a request changes nothing")
+    check(burst.request() && burst.finish(false) == .applied(changed: true, first: false) && !burst.value, "only the answer after the last request is applied")
     // Watched live, or found out later.
     check(RecordingHealth.discovery(firstLook: true, awaySinceLastLook: false, foreground: true) == "afterRelaunch", "a change found by a new process happened while closed")
     check(RecordingHealth.discovery(firstLook: true, awaySinceLastLook: true, foreground: false) == "afterRelaunch", "that holds for a background launch too")
@@ -3044,10 +3087,14 @@ do {
     note(5, "Recording warning openSettings", ["warningAction": "openSettings", "recordingIssue": "locationWhileUsing"])
     note(6, "Recording readiness changed", ["recordingHealth": "ready", "recordingHealthBefore": "limited", "recordingIssues": ""])
     note(7, "Recording readiness evaluated", ["recordingHealth": "ready"])
+    journal.append(RecorderDiagnosticEvent(at: base + 8, kind: "service", message: "Recording service state changed", context: ["recordingServices": "failed", "recordingServicesBefore": "registered", "changeObserved": "live", "changeWindowStart": "1"]))
+    journal.append(RecorderDiagnosticEvent(at: base + 9, kind: "service", message: "Recording service state changed", context: ["recordingServices": "registered", "recordingServicesBefore": "failed"]))
     let file = try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal: journal, current: ["recordingHealth": "limited", "recordingIssues": "locationWhileUsing", "permissionsHealth": "limited", "recordingServices": "failed", "monitoringFailure": "current place: code 5"], journeys: [], now: base + 10, timezone: "UTC", storageError: ""))
     let restored = try JSONDecoder().decode(LocationDiagnosticExport.Report.self, from: DiagnosticGzip.decompress(file.data))
-    check(restored.events.count == 7 && restored.events.filter { $0.context["warningAction"] != nil }.count == 3, "every warning event is in the single compressed file")
-    check(restored.warnings.count == 5 && !restored.warnings.contains { $0.context["recordingHealth"] == "ready" }, "problems are listed as warnings; a return to Ready is not")
+    check(restored.schemaVersion == 3 && restored.events.count == 9 && restored.events.filter { $0.context["warningAction"] != nil }.count == 3, "every warning event is in the single compressed file")
+    check(restored.warnings.count == 6 && !restored.warnings.contains { $0.context["recordingHealth"] == "ready" || $0.context["recordingServices"] == "registered" }, "problems are listed as warnings; a recovery is not")
+    check(restored.events.first { $0.context["recordingServices"] == "failed" }?.context["changeObserved"] == "live" && restored.events.contains { $0.context["recordingServicesBefore"] == "registered" }, "service changes keep when and how they were seen")
+    check(LocationDiagnosticPrivacy.context(["lastMonitoringFailure": "x", "monitoringFailuresTotal": "2"]).count == 2, "failure history survives the export allowlist")
     check(restored.current["recordingHealth"] == "limited" && restored.current["recordingServices"] == "failed" && restored.current["monitoringFailure"] != nil && restored.current["permissionsHealth"] == "limited", "the file states current readiness and any monitoring failure")
 }
 

@@ -209,8 +209,9 @@ enum RecordingHealth {
     // a region as monitored; significant changes and visits offer no such proof.
     static func services(requested: Bool, significantSupported: Bool, regionsSupported: Bool, regionsHeld: Int, monitoringFailed: Bool) -> String {
         if !significantSupported || !regionsSupported { return "unsupported" }
-        if !requested { return "notRequested" }
+        // Checked first: a failure is still open when the request state changes.
         if monitoringFailed { return "failed" }
+        if !requested { return "notRequested" }
         return regionsHeld > 0 ? "registered" : "requested"
     }
     static func evaluate(_ i: RecordingHealthInputs) -> RecordingHealthReport {
@@ -273,13 +274,49 @@ enum RecordingHealth {
     static let warningActions: Set<String> = ["shown", "dismissed", "openSettings"]
     static let warningIssues: Set<String> = ["accountNotReady", "locationServicesOff", "locationDenied", "locationRestricted", "locationNotRequested", "automaticOff",
         "servicesNotRunning", "servicesUnsupported", "monitoringFailed", "locationWhileUsing", "preciseOff", "motionDenied", "motionNotRequested", "motionUnavailable", "backgroundRefreshOff"]
+    // What iOS or the person grants. The recorder's own services and the overall
+    // status are separate questions, with events of their own.
+    static let permissionKeys: Set<String> = ["locationServices", "location", "precise", "motion", "backgroundRefresh"]
+    // A window for services catching up, not a timer: it begins at a launch or wake,
+    // or when access returned and the recorder has not yet reconciled.
+    static let settlingSeconds: Double = 10
+    static func settling(now: Double, executingSince: Double, reconcilePendingSince: Double?) -> Bool {
+        now - executingSince < settlingSeconds || reconcilePendingSince.map { now - $0 < settlingSeconds } ?? false
+    }
     // What changed since the last look, for the log. No baseline, no changes.
-    static func changes(from old: [String: String]?, to new: [String: String]) -> [String] {
+    static func changes(from old: [String: String]?, to new: [String: String], keys: Set<String>) -> [String] {
         guard let old = old else { return [] }
-        return new.keys.sorted().compactMap { key in
+        return keys.sorted().compactMap { key in
             guard let before = old[key], before != new[key] else { return nil }
             return "\(key): \(before) -> \(new[key] ?? "unknown")"
         }
+    }
+}
+
+// Region monitoring failures still open, by region, so one recovering cannot hide
+// another. A region either recovers or is intentionally stopped; `total` and `last`
+// outlive both, so history survives what clears the current state. A failure iOS
+// reports without a region is cleared by the next successful registration.
+struct MonitoringFailures: Equatable {
+    private static let unattributed = ""
+    private var open: [String: String] = [:]
+    private(set) var total = 0
+    private(set) var last: String?
+    var active: Bool { !open.isEmpty }
+    var summary: String { open.isEmpty ? "none" : open.values.sorted().joined(separator: "; ") }
+    mutating func failed(_ identifier: String?, summary: String) {
+        open[identifier ?? Self.unattributed] = summary
+        total += 1; last = summary
+    }
+    // Returns what ended, for the log.
+    mutating func recovered(_ identifier: String) -> String? {
+        let unattributed = open.removeValue(forKey: Self.unattributed)
+        return open.removeValue(forKey: identifier) ?? unattributed
+    }
+    mutating func stopped(_ identifier: String) -> String? { open.removeValue(forKey: identifier) }
+    mutating func allStopped() -> String? {
+        defer { open = [:] }
+        return open.isEmpty ? nil : summary
     }
 }
 

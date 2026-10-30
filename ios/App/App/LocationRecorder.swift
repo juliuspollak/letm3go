@@ -93,7 +93,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var wifiFetchWaiters: [(WiFiObservation?) -> Void] = []
     var homeWiFiStatus = "neverDesignated"
     var passiveFixRequest: (cause: String, at: Double)?
-    var monitoringFailure: (identifier: String, summary: String)?
+    var monitoringFailures = MonitoringFailures()
+    var recorderReconciledAvailable = false
+    var servicesReconcilePendingSince: Double?
     var recordingHealthLooked = false
     var recordingHealthAway = false
     var foregroundCheckAt: Double = 0
@@ -308,7 +310,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         state["recordingIssues"]=health.issues.joined(separator:",")
         state["permissionsHealth"]=health.permissions.rawValue
         state["recordingServices"]=recordingServices
-        state["monitoringFailure"]=monitoringFailure?.summary ?? "none"
+        state["monitoringFailure"]=monitoringFailures.summary
+        state["lastMonitoringFailure"]=monitoringFailures.last ?? "none"
+        state["monitoringFailuresTotal"]=String(monitoringFailures.total)
         state["homeWiFiConfigured"]=String(homeWiFi != nil)
         state["homeWiFiStatus"]=homeWiFiStatus
         state["wifiMatch"]=homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue
@@ -743,11 +747,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func startVisitMonitoring(){guard !visitMonitoringRequested else{return};manager.startMonitoringVisits();visitMonitoringRequested=true;recordDiagnostic("service","Visit monitoring started")}
     func stopVisitMonitoring(){guard visitMonitoringRequested else{return};manager.stopMonitoringVisits();visitMonitoringRequested=false;recordDiagnostic("service","Visit monitoring stopped")}
     func stopMotionUpdates(){guard motionUpdatesRequested else{return};motionManager?.stopActivityUpdates();motionUpdatesRequested=false;recordDiagnostic("service","Motion monitoring stopped")}
+    func noteMonitoringStopped(_ region:CLRegion){
+        guard let ended=monitoringFailures.stopped(region.identifier) else {return}
+        recordDiagnostic("region","Region monitoring failure closed: monitoring was stopped",details:["regionKind":regionKind(region),"lastMonitoringFailure":ended])
+    }
     func regionKind(_ region:CLRegion)->String {
         region.identifier == Self.placeRegionID ? "current place" : region.identifier == Self.continuationRegionID ? "journey continuation" : "saved place or last stop"
     }
     func startRegionMonitoring(_ region:CLRegion){manager.startMonitoring(for:region);recordDiagnostic("service","Geofence monitoring registered",details:["reason":regionKind(region)])}
-    func stopRegionMonitoring(_ region:CLRegion){if monitoringFailure?.identifier == region.identifier {monitoringFailure=nil};manager.stopMonitoring(for:region);recordDiagnostic("service","Geofence monitoring removed",details:["reason":regionKind(region)])}
+    func stopRegionMonitoring(_ region:CLRegion){noteMonitoringStopped(region);manager.stopMonitoring(for:region);recordDiagnostic("service","Geofence monitoring removed",details:["reason":regionKind(region)])}
     func locationManagerDidPauseLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=true;recordDiagnostic("service","iOS paused location updates")}
     func locationManagerDidResumeLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=false;recordDiagnostic("service","iOS resumed location updates")}
     var authorized: Bool { manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse }
@@ -832,15 +840,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         handleObservations(locations, source: .standard)
     }
     func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
-        guard monitoringFailure?.identifier == region.identifier else { return }
-        monitoringFailure = nil
-        recordDiagnostic("region", "Region monitoring recovered", details: ["regionKind": regionKind(region)])
+        guard let ended = monitoringFailures.recovered(region.identifier) else { return }
+        recordDiagnostic("region", "Region monitoring recovered", details: ["regionKind": regionKind(region), "lastMonitoringFailure": ended])
         noteRecordingHealth()
     }
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
         let kind = region.map(regionKind) ?? "unknown region"
         let code = (error as NSError).code
-        monitoringFailure = (region?.identifier ?? "", "\(kind): code \(code)")
+        monitoringFailures.failed(region?.identifier, summary: "\(kind): code \(code)")
         recordDiagnostic("region", "Region monitoring failed", details: ["code": String(code), "regionKind": kind])
         placeRegionFailed(region)
         noteRecordingHealth()

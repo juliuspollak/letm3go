@@ -69,7 +69,7 @@ extension LocationRecorder {
     func refreshAutomaticMonitoring() {
         // Every path that can change what recording may do comes through here:
         // launch, foreground, authorization and Location Services changes.
-        defer { noteRecordingHealth() }
+        defer { recorderReconciledAvailable = automaticAvailable; noteRecordingHealth() }
         updateIndicatorPolicy()
         guard storage != nil else { adaptive.shutdown(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once
@@ -106,6 +106,9 @@ extension LocationRecorder {
             stopSignificantMonitoring()
             stopVisitMonitoring()
             for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
+            if let ended = monitoringFailures.allStopped() {
+                recordDiagnostic("region", "Region monitoring failure closed: monitoring was stopped", details: ["lastMonitoringFailure": ended])
+            }
             // GPS is about to stop, so an open journey must not keep reporting that
             // it is recording. Interrupt it at its last fix: the next accepted fix
             // reopens it as a new segment once tracking is available again.
