@@ -233,11 +233,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let now=Date().timeIntervalSince1970
         let stationarySince=detector.stationarySince ?? liveGate.stationarySince
         let battery=UIDevice.current
+        let confirmedHome=homeRest.insideSince != nil && homePlace.map{homeRest.homeKey?.hasPrefix($0.id+"|")==true} == true
         return ["timezone":TimeZone.current.identifier,"utcOffsetSeconds":String(TimeZone.current.secondsFromGMT()),
             "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
             "homeRestSince":String(homeRest.insideSince ?? 0),"homeRestConfirmed":String(active == nil && locationMode == .resting),
             "stationarySeconds":stationarySince.map{String(Int(max(0,now-$0)))} ?? "unknown",
-            "placeType":dwell?.placeKind ?? restPlace?.kind ?? "none","placeSource":dwell?.source.rawValue ?? "none","placeSettled":String(dwellSettled),
+            "placeType":dwell?.placeKind ?? dwell?.source.rawValue ?? (confirmedHome ? "home" : "none"),"placeSource":dwell?.source.rawValue ?? (confirmedHome ? "savedHomeConfirmation" : "none"),"placeSettled":String(dwellSettled),
             "significantChangesRequested":String(significantLocationRequested),"visitsRequested":String(visitMonitoringRequested),
             "registeredRegions":String(manager.monitoredRegions.count),"locationManagerID":"LocationRecorder.shared.manager",
             "activeLocationManagers":String((continuousLocationRequested || significantLocationRequested || visitMonitoringRequested || !manager.monitoredRegions.isEmpty ? 1 : 0)+PositionRequest.activeRequests.count),"oneShotRequests":String(PositionRequest.activeRequests.count),
