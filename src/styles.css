@@ -525,7 +525,8 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 @keyframes record-auto{0%,100%{opacity:.35}50%{opacity:.95}}
 
 /* Record panel launch: a large circular control with its label underneath. */
-.record-start{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin:26px 0 8px}
+/* Start sits above the activity choices so it is visible without scrolling on small phones. */
+.record-start{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin:4px 0 16px}
 .record-controls .record-control{min-width:0;min-height:0;align-self:center}
 
 /* --- Bottom navigation + shared nav glyphs ------------------------------- */

@@ -81,3 +81,10 @@ it('lets the rider select their own e-bike or regular bicycle without showing ca
  fireEvent.click(screen.getByRole('button',{name:'Start cycling'}));
  expect(run).toHaveBeenCalledWith('start','Cycling','E-MTB','2');
 });
+it('places Start above the activity choices so it needs no scrolling on small phones',()=>{
+ const run=vi.fn();render(<RecorderPanel state={{active:null,permission:'always',storageReady:true}} run={run} vehicles={[]}/>);
+ const start=screen.getByRole('button',{name:'Start walking'}),choices=screen.getByLabelText('Activity type');
+ expect(start.compareDocumentPosition(choices)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:/Driving/}));
+ expect(screen.getByRole('button',{name:'Start driving'})).toBeEnabled();
+});
