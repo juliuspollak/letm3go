@@ -24,7 +24,7 @@ it('shows profile onboarding after first authentication rather than Home',()=>{
 });
 it('keeps demonstration routes and photos out of the real application',()=>{signedIn();render(<App/>);expect(screen.getByText('No device recordings yet.')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Browse labelled demo journeys'})).not.toBeInTheDocument();for(const fixture of demoJourneys)expect(screen.queryByText(fixture.title)).not.toBeInTheDocument();});
 it('restores returning users to Home and keeps browser GPS unavailable',()=>{
- signedIn();render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Start activity'}));expect(screen.getByRole('button',{name:'Start walking'})).toBeDisabled();
+ signedIn();render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Record'})[0]);expect(screen.getByRole('button',{name:'Start walking'})).toBeDisabled();
 });
 it('shows native recorder load failures instead of presenting an unexplained empty history',()=>{
  signedIn();recorderHook.mockReturnValue({state:emptyRecorder,run:vi.fn(),busy:false,error:'Private activity storage could not be read.'});render(<App/>);
