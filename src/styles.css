@@ -503,7 +503,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
    the shape never changes the control's footprint. */
 .record-control{position:relative;display:inline-grid;place-items:center;padding:0;border:0;border-radius:50%;background:none;isolation:isolate;min-height:0;-webkit-tap-highlight-color:transparent}
 .record-control--nav{width:58px;height:58px;margin-top:-16px}
-.record-control--panel{width:108px;height:108px}
 .record-control-halo{position:absolute;inset:1px;border-radius:50%;background:radial-gradient(circle at 34% 26%,color-mix(in srgb,var(--accent) 30%,transparent),transparent 70%);opacity:.5;transition:opacity .4s ease,transform .5s cubic-bezier(.22,1.24,.36,1)}
 .record-control-ring{position:absolute;inset:5px;border-radius:50%;border:1px solid color-mix(in srgb,var(--accent) 22%,transparent);transition:inset .3s ease,border-color .3s ease,opacity .3s ease}
 .record-control-core{position:relative;display:grid;place-items:center;width:100%;height:100%;border-radius:50%;background:linear-gradient(155deg,var(--surface),color-mix(in srgb,var(--accent) 14%,var(--surface)));border:1px solid color-mix(in srgb,var(--accent) 20%,transparent);box-shadow:0 8px 18px color-mix(in srgb,var(--accent) 24%,transparent),inset 0 1px 0 color-mix(in srgb,#fff 65%,transparent);transition:transform .18s cubic-bezier(.22,1.24,.36,1),box-shadow .3s ease,background .35s ease}
@@ -512,7 +511,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .record-control.is-recording .record-control-core{background:linear-gradient(155deg,color-mix(in srgb,var(--accent) 92%,#fff),var(--accent));box-shadow:0 10px 22px color-mix(in srgb,var(--accent) 42%,transparent),inset 0 1px 0 color-mix(in srgb,#fff 35%,transparent)}
 .record-control.is-recording .record-control-shape{width:15px;height:15px;border-radius:4.5px;background:var(--on-accent);box-shadow:none}
 .record-control.is-recording .record-control-halo{animation:record-breathe 2.9s ease-in-out infinite}
-.record-control--panel.is-recording .record-control-ring{animation:record-ripple 2.9s ease-out infinite}
 .record-control.is-paused .record-control-shape{width:15px;height:15px;border-radius:4px;background:color-mix(in srgb,var(--accent) 70%,var(--ink))}
 .record-control.is-paused .record-control-core{background:linear-gradient(155deg,var(--surface),color-mix(in srgb,var(--accent) 22%,var(--surface)))}
 .record-control.is-auto .record-control-ring{border-color:color-mix(in srgb,var(--accent) 42%,transparent);animation:record-auto 3.4s ease-in-out infinite}
@@ -527,8 +525,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 @keyframes record-auto{0%,100%{opacity:.35}50%{opacity:.95}}
 
 /* Record panel launch: a large circular control with its label underneath. */
-.record-launch{display:grid;justify-items:center;gap:10px;margin:26px 0 8px}
-.record-launch-label{font-size:12px;font-weight:650;color:var(--ink)}
+.record-start{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin:26px 0 8px}
 .record-controls .record-control{min-width:0;min-height:0;align-self:center}
 
 /* --- Bottom navigation + shared nav glyphs ------------------------------- */
