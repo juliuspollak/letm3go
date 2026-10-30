@@ -5,7 +5,7 @@ function Control({item,onAction,expanded}){const Icon=icons[item.symbol]||Activi
 export default function MapLayers({toolbar,onAction,onClose}){
  useEffect(()=>{if(!toolbar?.open)return;const escape=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',escape);return()=>document.removeEventListener('keydown',escape);},[toolbar?.open,onClose]);
  if(!toolbar?.open)return null;
- return <div className="map-filter-toolbar" role="toolbar" aria-label="Map filters" aria-orientation="vertical">{toolbar.rows.map(row=><div className="map-filter-row" key={row.id}><Control item={row} onAction={onAction} expanded={row.options?toolbar.category===row.id:undefined}/>{row.options&&toolbar.category===row.id&&<div className="map-filter-options" role="group" aria-label={row.label}>{row.options.map(item=><Control key={item.id} item={item} onAction={onAction}/>)}</div>}</div>)}</div>;
+ return <div className="map-filter-toolbar" role="toolbar" aria-label="Map filters" aria-orientation="vertical">{toolbar.rows.map(row=><div className="map-filter-row" key={row.id}><Control item={row} onAction={onAction} expanded={row.options?toolbar.category===row.id:undefined}/>{row.options&&toolbar.category===row.id&&<div className="map-filter-options" role="group" aria-label={row.label}>{row.options.map(item=><Control key={`${item.id}:${item.label}`} item={item} onAction={onAction}/>)}</div>}</div>)}</div>;
 }
 export function MapLayersButton({active=0,onClick}){
  return <button type="button" className="map-layers-button" aria-label={active?`Map layers, ${active} active`:'Map layers'} onClick={onClick}><SlidersHorizontal size={20} aria-hidden="true"/>{active>0&&<span className="map-layers-dot" aria-hidden="true"/>}</button>;

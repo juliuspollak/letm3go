@@ -3,13 +3,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { demoJourneys } from './test/fixtures/journeys.js';
 import { emptyRecorder } from './lib/recorder.js';
-const { identity, recorderHook, mapProps }=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapProps:{value:null}}));
+const { identity, recorderHook, mapProps, mapLocationHook }=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),mapProps:{value:null}}));
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
+vi.mock('./lib/useMapLocation.js',()=>({useMapLocation:mapLocationHook}));
 vi.mock('./lib/useRecorder.js',()=>({useRecorder:recorderHook}));
 vi.mock('./components/JourneyMap.jsx',()=>({default:props=>{mapProps.value=props;return <div aria-label="Interactive journey route map"/>;}}));
-beforeEach(()=>{identity.value={status:'signedOut',session:null,preferences:{displayName:'',vehicles:[],onboardingStep:0,onboardingComplete:false},savePreferences:vi.fn(async patch=>({...identity.value.preferences,...patch})),beginSignIn:vi.fn(),signOut:vi.fn(),retry:vi.fn()};recorderHook.mockReturnValue({state:emptyRecorder,run:vi.fn(),busy:false,error:''});});
+beforeEach(()=>{mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:vi.fn()});identity.value={status:'signedOut',session:null,preferences:{displayName:'',vehicles:[],onboardingStep:0,onboardingComplete:false},savePreferences:vi.fn(async patch=>({...identity.value.preferences,...patch})),beginSignIn:vi.fn(),signOut:vi.fn(),retry:vi.fn()};recorderHook.mockReturnValue({state:emptyRecorder,run:vi.fn(),busy:false,error:''});});
 afterEach(()=>{cleanup();localStorage.clear();window.history.replaceState({},'','/');});
 function signedIn(){identity.value={...identity.value,status:'authenticated',session:{user:{id:'owner',email:'owner@example.com'}},preferences:{...identity.value.preferences,onboardingComplete:true}};}
 it('requires authentication before accessing any private screens or the native recorder',()=>{
@@ -200,4 +201,17 @@ it('opens the Map showing everyone, map first, rather than centring on the signe
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
+});
+
+it('centres the location arrow on the self marker rather than the account id or everyone',async()=>{
+ signedIn();
+ const position={latitude:-33.87,longitude:151.21,accuracy:5};
+ const locate=vi.fn().mockResolvedValue(position);
+ mapLocationHook.mockReturnValue({position,loading:false,error:'',locate});
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ await act(async()=>{await mapProps.value.onLocate();});
+ expect(locate).toHaveBeenCalledTimes(1);
+ expect(mapProps.value.camera).toMatchObject({mode:'person',personId:'self'});
+ expect(mapProps.value.peoplePins.some(pin=>pin.members.some(member=>member.id==='self'))).toBe(true);
 });

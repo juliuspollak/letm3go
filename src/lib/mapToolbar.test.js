@@ -21,3 +21,12 @@ it('keeps rolling preferences and favourites while selecting days, and ignores d
  expect(toolbarChange({...original,routes:null},'day:2026-10-01').routes).toBe('all');
  expect(toolbarChange(toolbarChange(day,'mode:trails'),'mode:routes')).toEqual(day);
 });
+it('makes the displayed calendar date the Today shortcut without a redundant sun button',()=>{
+ const calendar=view=>mapToolbar(view,true,'calendar',[],'2026-10-30').rows.find(row=>row.id==='calendar').options;
+ const options=calendar(DEFAULT_MAP_VIEW);
+ expect(options.filter(option=>option.id==='day:2026-10-30')).toEqual([expect.objectContaining({label:'Today',text:'Today',symbol:'calendar'})]);
+ expect(options.some(option=>option.symbol==='sun.max')).toBe(false);
+ const past=calendar({...DEFAULT_MAP_VIEW,day:'2026-10-28'});
+ expect(past.find(option=>option.label==='Return to Today')).toMatchObject({id:'day:2026-10-30'});
+ expect(toolbarChange(DEFAULT_MAP_VIEW,options[1].id)).toMatchObject({day:'2026-10-30',routes:'all'});
+});

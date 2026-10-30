@@ -857,3 +857,5 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .map-filter-options button{width:max-content;min-width:44px;white-space:nowrap}
 @keyframes map-filter-reveal{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
 @media(prefers-reduced-motion:reduce){.map-filter-options{animation:none}}
+
+.map-locate-button[aria-pressed=true]{background:var(--accent);color:white}

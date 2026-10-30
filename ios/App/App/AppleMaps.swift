@@ -621,8 +621,10 @@ private struct MapContent {
     let layersActive:Int?
     let toolbar:[String:Any]?
     let showsLocate:Bool
+    let locating:Bool
     init(_ options:[AnyHashable:Any]) {
         showsLocate=options["locate"] as? Bool == true
+        locating=options["locating"] as? Bool == true
         focus=coordinate(options["focus"])
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
@@ -815,7 +817,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         updateLocationButton(next.showsLocate && showsLayers)
         updateLayersButton(next.layersActive)
         updateFilterToolbar(next.toolbar)
-        if isPeopleMap {installControls();applyIntent();plan();layoutIndicators()}
+        if isPeopleMap {installControls();applyIntent();plan();layoutIndicators();updateLocationButton(next.showsLocate && showsLayers)}
     }
 
     // MARK: Overview
@@ -992,10 +994,20 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             button.layer.shadowOpacity=0.15;button.layer.shadowRadius=4
             button.setImage(UIImage(systemName:"location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
             button.accessibilityLabel="Show my location"
-            button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?("locate")},for:.touchUpInside)
+            button.addAction(UIAction{[weak self,weak button] _ in
+                button?.backgroundColor = .systemBlue;button?.tintColor = .white
+                self?.onToolbarAction?("locate")
+            },for:.touchUpInside)
             map.addSubview(button);locationButton=button
             return button
         }()
+        let active=content.locating || (content.camera != nil && planner.mode.personID == "self")
+        button.backgroundColor=active ? .systemBlue : .secondarySystemBackground
+        button.tintColor=active ? .white : .systemBlue
+        button.setImage(UIImage(systemName:active ? "location.fill" : "location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
+        button.isEnabled = !content.locating
+        button.accessibilityValue=content.locating ? "Locating" : active ? "Following you" : nil
+        button.accessibilityTraits=active ? [.button,.selected] : [.button]
         button.frame=CGRect(x:map.bounds.width-56,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-64),width:44,height:44)
         map.bringSubviewToFront(button)
     }
@@ -1148,6 +1160,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         if planner.mode != before {modeChanged()}
     }
     private func modeChanged() {
+        updateLocationButton(content.showsLocate && showsLayers)
         updateControls();remember()
         onModeChange?(planner.mode,appliedCommand ?? 0)
     }
