@@ -101,6 +101,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var friendShareTokenExpiresAt: Double = 0
     var friendShareLastSentAt: Double = 0
     var friendShareInFlight = false
+    var friendShareStatus = ""
     var ownerID: String?
     var uiUnlocked = false
     var accountDeleting = false
@@ -281,7 +282,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         diagnosticWriter.flush()
         diagnosticPreviousState=[:]
         diagnosticLastObservedAt=nil;diagnosticLastObservedAccuracy=nil;diagnosticLastObservedSource="none"
-        diagnosticSharingAttempts=0;diagnosticSharingSuccesses=0;diagnosticSharingFailures=0;friendShareLastOkAt=0;liveShareLastOkAt=0;liveShareStatus="";diagnosticLastSharingLogAt=0
+        diagnosticSharingAttempts=0;diagnosticSharingSuccesses=0;diagnosticSharingFailures=0;friendShareLastOkAt=0;friendShareStatus="";liveShareLastOkAt=0;liveShareStatus="";diagnosticLastSharingLogAt=0
         diagnosticJournal=RecorderDiagnosticJournal();diagnosticStorageError="";diagnosticLastSummaryAt=0
         diagnosticGPSReceived=0;diagnosticGPSAccepted=0;diagnosticMaxDeliveryDelay=0;diagnosticWorstAccuracy=0;diagnosticLastDeliveryAt=0;diagnosticLastMotionAt=0;diagnosticRejections=[:];trackingTimeline=[]
         guard let storage=storage else {return}
@@ -469,7 +470,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func disableFriendLiveSharing() {
         friendShareToken=nil;friendShareEndpoint=nil;friendShareApiKey=nil
-        friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false
+        friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false;friendShareStatus=""
         refreshAutomaticMonitoring()
     }
     func publishFriendPosition(_ location:CLLocation) {
@@ -496,8 +497,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 if error != nil || !((response as? HTTPURLResponse).map{(200...299).contains($0.statusCode)} ?? false) {
                     self.friendShareLastSentAt=Date().timeIntervalSince1970-15
                     self.diagnosticSharingFailures+=1
-                    self.recordDiagnostic("sharing","Friend location publication failed",details:["status":String((response as? HTTPURLResponse)?.statusCode ?? 0)])
-                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.diagnosticSharingSuccesses+=1}
+                    // Retries run every few seconds while offline; log only a change
+                    // of failure, as household uploads do, so each one does not
+                    // rewrite the whole diagnostic journal.
+                    let failure=error != nil ? "network" : "http \((response as? HTTPURLResponse)?.statusCode ?? 0)"
+                    if self.friendShareStatus != failure {self.recordDiagnostic("sharing","Friend location publication failed",details:["reason":failure])}
+                    self.friendShareStatus=failure
+                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.friendShareStatus="ok";self.diagnosticSharingSuccesses+=1}
             }
         }.resume()
     }

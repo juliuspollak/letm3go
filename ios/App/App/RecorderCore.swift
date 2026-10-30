@@ -1659,7 +1659,13 @@ struct RecorderDiagnosticJournal:Codable {
         prune(now:event.at)
     }
     mutating func prune(now:Double){
-        for index in events.indices.reversed() where events[index].at<now-Self.retention {remove(index)}
+        // One pass: removing expired events one at a time is quadratic when a
+        // week-old journal is reopened.
+        let cutoff=now-Self.retention
+        if events.contains(where:{$0.at<cutoff}) {
+            let kept=events.indices.filter{events[$0].at>=cutoff}
+            events=kept.map{events[$0]};sizes=kept.map{sizes[$0]};bytes=sizes.reduce(0,+)
+        }
         // Summaries are expendable before lifecycle evidence. Keep the newest
         // event even during a flood, and explicitly report any capacity loss.
         while events.count>Self.limit || bytes+256>Self.byteLimit {

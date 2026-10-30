@@ -688,6 +688,9 @@ for index in 0...RecorderDiagnosticJournal.limit {
 }
 check(journal.events.count == RecorderDiagnosticJournal.limit,"busy diagnostic journal remains bounded")
 check(journal.events.last?.message == "Summary","retention preserves the newest evidence")
+let newestKept=journal.events.last!.at
+journal.prune(now:newestKept-99+RecorderDiagnosticJournal.retention)
+check(journal.events.count == 100 && journal.events.allSatisfy{$0.at>=newestKept-99},"a single retention pass keeps exactly the unexpired events")
 // Build 44 regressions: intermittent GPS, slow traffic, gaps and batched delivery.
 // Build 47: one gap definition. A silence over 45 s with real displacement is an
 // unobserved break (dashed, no distance), exactly what the tracking note and route

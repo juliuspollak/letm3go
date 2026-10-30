@@ -15,7 +15,7 @@ let pendingPosition=null,lastPosition=null,positionGeneration=0;
 // holds Core Location's stationary report, instead of waking precise GPS.
 export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false}={}){
  if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=POSITION_REUSE_SECONDS&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
- if(pendingPosition)return pendingPosition.then(result=>result?.stationary&&!allowStationary?sharedCurrentPosition(nowSeconds):result);
+ if(pendingPosition)return pendingPosition.then(result=>result?.stationary&&!allowStationary?sharedCurrentPosition():result);
  const generation=positionGeneration;
  const request=allowStationary?native.currentPosition({allowStationary:true}):native.currentPosition();
  const pending=request.then(result=>{
