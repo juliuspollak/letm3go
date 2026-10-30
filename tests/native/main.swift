@@ -2958,6 +2958,61 @@ do {
     check(stoppedAgain.state == "recording" && stoppedAgain.endedAt == nil && !stoppedAgain.isFinalisedButUnmarked, "a continued journey is open again")
 }
 
+// MARK: Recording health
+do {
+    let good = RecordingHealthInputs(accountReady: true, automaticEnabled: true, locationServices: true, location: "always", precise: true, motion: "authorized", backgroundRefresh: "available", servicesArmed: true)
+    func health(_ change: (inout RecordingHealthInputs) -> Void) -> RecordingHealthReport { var inputs = good; change(&inputs); return RecordingHealth.evaluate(inputs) }
+    check(RecordingHealth.evaluate(good) == RecordingHealthReport(status: .ready, permissions: .ready, issues: []), "every prerequisite met is Ready")
+    check(health { $0.location = "whenInUse" } == RecordingHealthReport(status: .limited, permissions: .limited, issues: ["locationWhileUsing"]), "While Using is Limited")
+    check(health { $0.location = "denied" } == RecordingHealthReport(status: .unavailable, permissions: .unavailable, issues: ["locationDenied"]), "denied location is Unavailable")
+    check(health { $0.location = "restricted" }.issues == ["locationRestricted"] && health { $0.location = "restricted" }.status == .unavailable, "restricted location is Unavailable")
+    check(health { $0.location = "notDetermined" }.issues == ["locationNotRequested"], "location not yet requested is its own problem")
+    check(health { $0.locationServices = false }.status == .unavailable, "Location Services off is Unavailable")
+    check(health { $0.automaticEnabled = false }.issues == ["automaticOff"] && health { $0.automaticEnabled = false }.status == .unavailable, "Automatic Tracking off is Unavailable")
+    check(health { $0.accountReady = false }.status == .unavailable, "an unopened account is Unavailable")
+    check(health { $0.precise = false } == RecordingHealthReport(status: .limited, permissions: .limited, issues: ["preciseOff"]), "Precise Location off is Limited")
+    check(health { $0.location = "denied"; $0.precise = false }.issues == ["locationDenied"], "no accuracy warning without location access")
+    check(health { $0.motion = "denied" }.issues == ["motionDenied"] && health { $0.motion = "restricted" }.issues == ["motionDenied"], "denied motion is Limited")
+    check(health { $0.motion = "unavailable" }.issues == ["motionUnavailable"] && health { $0.motion = "notDetermined" }.status == .limited, "unavailable motion is Limited")
+    check(health { $0.backgroundRefresh = "denied" } == RecordingHealthReport(status: .limited, permissions: .limited, issues: ["backgroundRefreshOff"]), "Background App Refresh off is Limited, not Unavailable")
+    let all = health { $0.locationServices = false; $0.location = "whenInUse"; $0.precise = false; $0.motion = "denied"; $0.backgroundRefresh = "denied" }
+    check(all.status == .unavailable && all.issues == ["locationServicesOff", "locationWhileUsing", "preciseOff", "motionDenied", "backgroundRefreshOff"], "issues are ordered by impact")
+    check(RecordingHealth.motion(available: false, rawStatus: 3) == "unavailable" && RecordingHealth.motion(available: true, rawStatus: 3) == "authorized" && RecordingHealth.motion(available: true, rawStatus: 2) == "denied", "Core Motion status maps")
+    check(RecordingHealth.backgroundRefresh(rawStatus: 2) == "available" && RecordingHealth.backgroundRefresh(rawStatus: 1) == "denied" && RecordingHealth.backgroundRefresh(rawStatus: 0) == "restricted", "Background App Refresh status maps")
+    check(RecordingHealth.changes(from: ["location": "always", "precise": "true"], to: ["location": "whenInUse", "precise": "true"]) == ["location: always -> whenInUse"], "a change names only what changed")
+    check(RecordingHealth.changes(from: nil, to: ["location": "always"]).isEmpty, "the first look has nothing to compare")
+    // Settings and services are separate answers, and Ready needs both.
+    let stopped = health { $0.servicesArmed = false }
+    check(stopped == RecordingHealthReport(status: .limited, permissions: .ready, issues: ["servicesNotRunning"]), "permissions can be Ready while services are not running, and the status is then not Ready")
+    check(health { $0.servicesArmed = false; $0.location = "denied" }.issues == ["locationDenied"], "a stopped service is not a second problem when a permission explains it")
+    check(health { $0.servicesArmed = false; $0.location = "whenInUse" }.issues == ["locationWhileUsing"], "While Using explains its own stopped wake-ups")
+    check(health { $0.servicesArmed = false; $0.automaticEnabled = false }.issues == ["automaticOff"], "switched-off tracking explains its own stopped services")
+    check(health { $0.servicesArmed = false; $0.precise = false }.issues == ["servicesNotRunning", "preciseOff"], "a stopped service outranks reduced accuracy")
+    // Everything the warning does reaches the one export, and only known values do.
+    check(RecordingHealth.warningActions == ["shown", "dismissed", "openSettings"], "the warning has three logged actions")
+    check(RecordingHealth.warningIssues.isSuperset(of: all.issues + stopped.issues), "every issue can be logged")
+    check(!RecordingHealth.warningIssues.contains("Home Network"), "free text is not an issue")
+    let exported = LocationDiagnosticPrivacy.context(["recordingHealth": "limited", "recordingHealthBefore": "ready", "permissionsHealth": "ready", "recordingIssues": "locationWhileUsing", "permissionChanged": "location: always -> whenInUse", "servicesArmed": "false", "warningAction": "shown", "recordingIssue": "locationWhileUsing"])
+    check(exported.count == 8, "permission, readiness and warning events survive the export allowlist")
+    var journal = RecorderDiagnosticJournal()
+    let base = 1_800_000_000.0
+    func note(_ at: Double, _ message: String, _ context: [String: String]) {
+        journal.append(RecorderDiagnosticEvent(at: base + at, kind: "permission", message: message, context: context))
+    }
+    note(1, "Permission status changed", ["permissionChanged": "location: always -> whenInUse"])
+    note(2, "Recording readiness changed", ["recordingHealth": "limited", "recordingHealthBefore": "ready", "recordingIssues": "locationWhileUsing"])
+    note(3, "Recording warning shown", ["warningAction": "shown", "recordingIssue": "locationWhileUsing"])
+    note(4, "Recording warning dismissed", ["warningAction": "dismissed", "recordingIssue": "locationWhileUsing"])
+    note(5, "Recording warning openSettings", ["warningAction": "openSettings", "recordingIssue": "locationWhileUsing"])
+    note(6, "Recording readiness changed", ["recordingHealth": "ready", "recordingHealthBefore": "limited", "recordingIssues": ""])
+    note(7, "Recording readiness evaluated", ["recordingHealth": "ready"])
+    let file = try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal: journal, current: ["recordingHealth": "limited", "recordingIssues": "locationWhileUsing", "permissionsHealth": "limited", "servicesArmed": "false"], journeys: [], now: base + 10, timezone: "UTC", storageError: ""))
+    let restored = try JSONDecoder().decode(LocationDiagnosticExport.Report.self, from: DiagnosticGzip.decompress(file.data))
+    check(restored.events.count == 7 && restored.events.filter { $0.context["warningAction"] != nil }.count == 3, "every warning event is in the single compressed file")
+    check(restored.warnings.count == 5 && !restored.warnings.contains { $0.context["recordingHealth"] == "ready" }, "problems are listed as warnings; a return to Ready is not")
+    check(restored.current["recordingHealth"] == "limited" && restored.current["servicesArmed"] == "false" && restored.current["permissionsHealth"] == "limited", "the file states current readiness")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

@@ -191,6 +191,50 @@ extension LocationRecorder {
         passiveRestEnabled = true
     }
 
+    // MARK: Recording health
+    var recordingHealthInputs: RecordingHealthInputs {
+        RecordingHealthInputs(accountReady: storeOpened && ownerID != nil, automaticEnabled: automaticEnabled, locationServices: locationServicesAvailable,
+            location: permission, precise: manager.accuracyAuthorization == .fullAccuracy,
+            motion: RecordingHealth.motion(available: CMMotionActivityManager.isActivityAvailable(), rawStatus: CMMotionActivityManager.authorizationStatus().rawValue),
+            backgroundRefresh: RecordingHealth.backgroundRefresh(rawStatus: UIApplication.shared.backgroundRefreshStatus.rawValue),
+            servicesArmed: recordingServicesArmed)
+    }
+    var recordingServicesArmed: Bool { automaticAvailable && significantLocationRequested && visitMonitoringRequested }
+    var recordingHealthSnapshot: [String: Any] {
+        let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
+        return ["status": report.status.rawValue, "permissions": report.permissions.rawValue, "issues": report.issues, "servicesArmed": inputs.servicesArmed, "automaticEnabled": inputs.automaticEnabled,
+                "locationServices": inputs.locationServices, "location": inputs.location, "precise": inputs.precise,
+                "motion": inputs.motion, "backgroundRefresh": inputs.backgroundRefresh]
+    }
+    // Kept per account across launches, so a setting changed while the app was
+    // closed is logged the next time it runs, including a background wake-up.
+    func noteRecordingHealth() {
+        guard let owner = ownerID, storeOpened else { return }
+        let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
+        let current = ["recordingServices": inputs.servicesArmed ? "running" : "notRunning", "automaticTracking": String(inputs.automaticEnabled), "locationServices": String(inputs.locationServices), "location": inputs.location,
+                       "precise": String(inputs.precise), "motion": inputs.motion, "backgroundRefresh": inputs.backgroundRefresh, "status": report.status.rawValue]
+        let key = "letm3go-recording-health-" + owner
+        let previous = UserDefaults.standard.dictionary(forKey: key) as? [String: String]
+        guard previous != current else { return }
+        UserDefaults.standard.set(current, forKey: key)
+        let issues = report.issues.joined(separator: ",")
+        let permissions = RecordingHealth.changes(from: previous?.filter { $0.key != "status" }, to: current.filter { $0.key != "status" })
+        if !permissions.isEmpty {
+            recordDiagnostic("permission", "Permission status changed", details: ["permissionChanged": permissions.joined(separator: "; "), "recordingIssues": issues])
+        }
+        if previous?["status"] != report.status.rawValue {
+            recordDiagnostic("permission", previous == nil ? "Recording readiness evaluated" : "Recording readiness changed", details: [
+                "recordingHealth": report.status.rawValue, "recordingHealthBefore": previous?["status"] ?? "none", "permissionsHealth": report.permissions.rawValue,
+                "recordingIssues": issues, "servicesArmed": String(inputs.servicesArmed)])
+        }
+        // The open app reads this every two seconds; a real change need not wait.
+        notifyJourneyChange()
+    }
+    func noteRecordingWarning(action: String, issue: String) {
+        guard RecordingHealth.warningActions.contains(action), RecordingHealth.warningIssues.contains(issue) else { return }
+        recordDiagnostic("permission", "Recording warning \(action)", details: ["warningAction": action, "recordingIssue": issue])
+    }
+
     // MARK: Always service session (iOS 18)
     func rejoinServiceSessionAtLaunch() {
         guard UserDefaults.standard.bool(forKey: Self.serviceSessionKey), manager.authorizationStatus == .authorizedAlways else {

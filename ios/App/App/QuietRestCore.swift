@@ -175,6 +175,79 @@ enum RestWake {
     }
 }
 
+// MARK: Recording health
+//
+// Whether the phone's current settings let automatic recording work. It is read
+// from iOS each time, never remembered. `permissions` answers whether the settings
+// allow recording; `status` also needs the recorder's wake-ups to be requested, so
+// Ready never hides services that are not running. Neither means a journey is
+// being recorded.
+enum RecordingHealthStatus: String { case ready, limited, unavailable }
+
+struct RecordingHealthInputs: Equatable {
+    var accountReady: Bool
+    var automaticEnabled: Bool
+    var locationServices: Bool
+    var location: String          // always, whenInUse, denied, restricted, notDetermined
+    var precise: Bool
+    var motion: String            // authorized, denied, restricted, notDetermined, unavailable
+    var backgroundRefresh: String // available, denied, restricted
+    var servicesArmed: Bool
+}
+
+struct RecordingHealthReport: Equatable {
+    var status: RecordingHealthStatus
+    var permissions: RecordingHealthStatus
+    var issues: [String]          // most serious first; the first one is the warning
+}
+
+enum RecordingHealth {
+    static func evaluate(_ i: RecordingHealthInputs) -> RecordingHealthReport {
+        var blocking: [String] = []
+        if !i.accountReady { blocking.append("accountNotReady") }
+        if !i.locationServices { blocking.append("locationServicesOff") }
+        switch i.location {
+        case "always", "whenInUse": break
+        case "restricted": blocking.append("locationRestricted")
+        case "notDetermined": blocking.append("locationNotRequested")
+        default: blocking.append("locationDenied")
+        }
+        if !i.automaticEnabled { blocking.append("automaticOff") }
+        var limiting: [String] = []
+        if i.location == "whenInUse" { limiting.append("locationWhileUsing") }
+        // Without location access there is no accuracy to reduce.
+        if ["always", "whenInUse"].contains(i.location), !i.precise { limiting.append("preciseOff") }
+        if i.motion != "authorized" { limiting.append(i.motion == "denied" || i.motion == "restricted" ? "motionDenied" : "motionUnavailable") }
+        if i.backgroundRefresh != "available" { limiting.append("backgroundRefreshOff") }
+        let permissions: RecordingHealthStatus = !blocking.isEmpty ? .unavailable : !limiting.isEmpty ? .limited : .ready
+        // When a setting already explains it, a stopped service is not a second problem.
+        // While Using stops the recorder's wake-ups for the same reason.
+        let stopped = !i.servicesArmed && blocking.isEmpty && i.location == "always"
+        let status: RecordingHealthStatus = permissions == .ready && stopped ? .limited : permissions
+        return RecordingHealthReport(status: status, permissions: permissions, issues: blocking + (stopped ? ["servicesNotRunning"] : []) + limiting)
+    }
+    static func motion(available: Bool, rawStatus: Int) -> String {
+        guard available else { return "unavailable" }
+        return [0: "notDetermined", 1: "restricted", 2: "denied", 3: "authorized"][rawStatus] ?? "unavailable"
+    }
+    static func backgroundRefresh(rawStatus: Int) -> String {
+        [0: "restricted", 1: "denied", 2: "available"][rawStatus] ?? "restricted"
+    }
+    // The actions the Home warning can report. Anything else is not logged, so
+    // free text from the web layer can never reach the journal.
+    static let warningActions: Set<String> = ["shown", "dismissed", "openSettings"]
+    static let warningIssues: Set<String> = ["accountNotReady", "locationServicesOff", "locationDenied", "locationRestricted", "locationNotRequested", "automaticOff",
+        "servicesNotRunning", "locationWhileUsing", "preciseOff", "motionDenied", "motionUnavailable", "backgroundRefreshOff"]
+    // What changed since the last look, for the log. No baseline, no changes.
+    static func changes(from old: [String: String]?, to new: [String: String]) -> [String] {
+        guard let old = old else { return [] }
+        return new.keys.sorted().compactMap { key in
+            guard let before = old[key], before != new[key] else { return nil }
+            return "\(key): \(before) -> \(new[key] ?? "unknown")"
+        }
+    }
+}
+
 // MARK: Location lifecycle accounting
 //
 // Time in each location mode, accumulated when the mode changes. Only modes and

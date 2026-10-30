@@ -299,6 +299,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let modes:String=modeClock.totals(now:now).sorted{$0.key<$1.key}.map{$0.key+"="+String(Int($0.value))}.joined(separator:",")
         let retained:String=backgroundActivitySession == nil ? "not held" : (passiveRetainReason.isEmpty ? "passive rest pending" : passiveRetainReason)
         var state:[String:String]=[:]
+        let health=RecordingHealth.evaluate(recordingHealthInputs)
+        state["recordingHealth"]=health.status.rawValue
+        state["recordingIssues"]=health.issues.joined(separator:",")
+        state["permissionsHealth"]=health.permissions.rawValue
+        state["servicesArmed"]=String(recordingServicesArmed)
         state["homeWiFiConfigured"]=String(homeWiFi != nil)
         state["homeWiFiStatus"]=homeWiFiStatus
         state["wifiMatch"]=homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue
@@ -496,6 +501,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         for (notification,message) in [(UIApplication.didEnterBackgroundNotification,"App entered background"),(UIApplication.willResignActiveNotification,"App became inactive"),(UIApplication.willTerminateNotification,"iOS delivered termination notification"),(UIApplication.protectedDataWillBecomeUnavailableNotification,"Protected data becoming unavailable"),(UIApplication.protectedDataDidBecomeAvailableNotification,"Protected data available"),(UIApplication.significantTimeChangeNotification,"System time changed"),(Notification.Name.NSProcessInfoPowerStateDidChange,"Low Power Mode changed")] {
             diagnosticObservers.append(NotificationCenter.default.addObserver(forName:notification,object:nil,queue:.main){[weak self] _ in self?.diagnosticSummary(force:true);self?.recordDiagnostic("lifecycle",message)})
         }
+        diagnosticObservers.append(NotificationCenter.default.addObserver(forName:UIApplication.backgroundRefreshStatusDidChangeNotification,object:nil,queue:.main){[weak self] _ in self?.noteRecordingHealth()})
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self else { return }
             self.noteExecution("timer")
@@ -956,6 +962,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "motionAvailable": CMMotionActivityManager.isActivityAvailable(), "motionPermission": motionPermission,
                 "motionTypes": motion.types, "motionConfidence": motion.confidence, "motionTimestamp": motion.timestamp,
                 "passiveRest":passiveSnapshot,
+                "recordingHealth":recordingHealthSnapshot,
                 "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
                 "active": active.map(dictionary) as Any? ?? NSNull(), "trips": trips.map(dictionary),
@@ -1016,7 +1023,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "transition", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise)
     ]
     // Push native journey changes into the WebView so History, the recorder panel
     // and trip details refresh without a restart. Payloads stay empty: the JS
@@ -1272,6 +1280,10 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             catch { call.reject(error.localizedDescription) }
         }
     }
+    @objc func noteRecordingWarning(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        LocationRecorder.shared.noteRecordingWarning(action: call.getString("action") ?? "", issue: call.getString("issue") ?? "")
+        call.resolve()
+    } }
     @objc func openSettings(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }

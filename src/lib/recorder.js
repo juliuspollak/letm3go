@@ -44,6 +44,8 @@ export const recorder = {
  start:(activity,vehicle,vehicleID,trail)=>native.start({activity,vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail)}),
  transition:action=>native.transition({action}),
  openSettings:()=>native.openSettings(),
+ // Diagnostics only: a failure here must never affect the warning itself.
+ noteRecordingWarning:(action,issue)=>recorderAvailable()?native.noteRecordingWarning({action,issue}).catch(()=>{}):Promise.resolve(),
  setAutomatic:enabled=>native.setAutomatic({enabled}),
  savePlace:place=>native.savePlace(place),
  removePlace:id=>native.removePlace({id}),

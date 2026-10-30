@@ -67,6 +67,9 @@ extension LocationRecorder {
         if !enabled { releaseBackgroundSessionIfUnneeded("automatic tracking was switched off") }
     }
     func refreshAutomaticMonitoring() {
+        // Every path that can change what recording may do comes through here:
+        // launch, foreground, authorization and Location Services changes.
+        defer { noteRecordingHealth() }
         updateIndicatorPolicy()
         guard storage != nil else { adaptive.shutdown(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once

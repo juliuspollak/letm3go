@@ -16,11 +16,11 @@ function tripKey(t){
  // in case a future trim path forgets to advance `updatedAt`.
  return [t.id,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length].join(':');
 }
-function snapshotKey(data){
+export function snapshotKey(data){
  if(!data)return '';
  const svc=data.trackingServices||{};
  return [
-  data.ownerID,data.permission,data.precise,data.storageReady,
+  data.ownerID,data.permission,data.precise,data.storageReady,JSON.stringify(data.recordingHealth),
   data.automaticEnabled,data.automaticAvailable,data.automaticVerified,
   data.automaticState,data.automaticSampling,data.automaticSettledTripID,
   data.automaticSettledAt,data.automaticContinuationEndsAt,
