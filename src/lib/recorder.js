@@ -50,6 +50,11 @@ export const recorder = {
  currentPosition:(options={})=>sharedCurrentPosition(Date.now()/1000,options),
  // Internal: the adaptive location engine, for controlled evaluation.
  setAdaptiveLocation:enabled=>native.setAdaptiveLocation({enabled}),
+ // Passive rest: release location and the background session while settled.
+ setPassiveRest:enabled=>native.setPassiveRest({enabled}),
+ // Home Wi-Fi: 'designate' the connected network, or 'forget' it. Native code
+ // returns only match states, never the network name.
+ setHomeWiFi:action=>native.setHomeWiFi({action}),
  searchAddress:query=>native.searchAddress({query}),
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
  editActivity:trip=>native.editActivity(trip),

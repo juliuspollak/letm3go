@@ -2368,6 +2368,143 @@ do {
     home.leave();check(!home.resting(now:50000,idle:true),"region exit clears rest before the precise departure check")
 }
 
+
+// MARK: Home Wi-Fi evidence, rest confirmation and passive rest
+do {
+    let profile = HomeWiFiProfile(network: "net-home", accessPoints: ["ap-1"], designatedAt: 0)
+    func seen(_ network: String?, _ ap: String? = nil, at: Double) -> WiFiObservation { WiFiObservation(network: network, accessPoint: ap, at: at, source: "test") }
+
+    // Match states: unavailable is never "disconnected", stale is unknown.
+    check(HomeWiFi.match(nil, seen("net-home", at: 100), now: 100) == .unknown, "Wi-Fi without a designated network is unknown")
+    check(HomeWiFi.match(profile, nil, now: 100) == .unknown, "Wi-Fi never checked is unknown")
+    check(HomeWiFi.match(profile, seen("net-home", at: 100), now: 100) == .matched, "the designated network matches")
+    check(HomeWiFi.match(profile, seen("net-home", "ap-other", at: 100), now: 100) == .matched, "another access point of the same network (mesh) still matches")
+    check(HomeWiFi.match(profile, seen("net-cafe", at: 100), now: 100) == .notMatched, "another network does not match")
+    check(HomeWiFi.match(profile, seen(nil, at: 100), now: 100) == .unavailable, "no network from iOS is unavailable, not disconnected")
+    check(HomeWiFi.match(profile, seen("net-home", at: 100), now: 100 + HomeWiFi.freshSeconds + 1) == .unknown, "an old reading is unknown")
+    check(HomeWiFi.match(profile, seen("net-home", at: 200), now: 100) == .unknown, "a reading from the future is not trusted")
+
+    // Access points: learned only on the same network while location says Home.
+    check(HomeWiFi.learning(profile, from: seen("net-home", "ap-2", at: 1), atHome: true)?.accessPoints == ["ap-1", "ap-2"], "a mesh access point is learned at Home")
+    check(HomeWiFi.learning(profile, from: seen("net-home", "ap-2", at: 1), atHome: false) == nil, "an access point is not learned away from Home")
+    check(HomeWiFi.learning(profile, from: seen("net-cafe", "ap-2", at: 1), atHome: true) == nil, "another network's access point is never learned")
+    check(HomeWiFi.learning(profile, from: seen("net-home", "ap-1", at: 1), atHome: true) == nil, "a known access point is not added twice")
+    var grown = profile
+    for index in 0..<40 { grown = HomeWiFi.learning(grown, from: seen("net-home", "ap-x\(index)", at: 1), atHome: true) ?? grown }
+    check(grown.accessPoints.count == HomeWiFiProfile.accessPointLimit && grown.accessPoints.last == "ap-x39", "a replaced router's old access points age out")
+    check(HomeWiFi.accessPointKnown(profile, seen("net-home", "ap-1", at: 1)) && !HomeWiFi.accessPointKnown(profile, seen("net-home", "ap-9", at: 1)), "access point familiarity is reported")
+    check(HomeWiFi.leftHome(previous: .matched, current: .notMatched) && HomeWiFi.leftHome(previous: .matched, current: .unavailable), "leaving Home Wi-Fi is noticed")
+    check(!HomeWiFi.leftHome(previous: .matched, current: .unknown) && !HomeWiFi.leftHome(previous: .unknown, current: .notMatched), "an unknown reading is not a change")
+
+    // Rest confirmation.
+    func rest(_ place: RestPlaceKind = .home, since: Double? = 0, disturbed: Double? = nil, accuracy: Double? = 10, verified: Bool = true,
+              idle: Bool = true, movement: Bool = false, motion: Bool = false, wifi: WiFiMatch = .unknown, now: Double) -> RestDecision {
+        RestConfirmation.decide(RestInputs(place: place, placeSince: since, lastDisturbanceAt: disturbed, placeAccuracy: accuracy, placeVerified: verified,
+                                           idle: idle, recentMovement: movement, motionMoving: motion, wifi: wifi, now: now))
+    }
+    check(!rest(now: 1199).confirmed && rest(now: 1200).confirmed, "Home without Wi-Fi confirms after 20 still minutes")
+    check(!rest(wifi: .matched, now: 899).confirmed && rest(wifi: .matched, now: 900).confirmed, "Home Wi-Fi shortens Home confirmation to 15 minutes")
+    check(rest(wifi: .matched, now: 900).wifiCorroborated && rest(wifi: .matched, now: 900).reason.contains("Home Wi-Fi"), "the reason names Wi-Fi corroboration")
+    check(!rest(wifi: .notMatched, now: 1000).confirmed && rest(wifi: .notMatched, now: 1200).confirmed, "another network neither blocks nor shortens rest at Home")
+    check(!rest(wifi: .unavailable, now: 1000).confirmed && rest(wifi: .unavailable, now: 1200).confirmed, "unavailable Wi-Fi is treated as no evidence")
+    check(!rest(.inferredPlace, wifi: .matched, now: 1000).confirmed && rest(.inferredPlace, now: 1200).confirmed, "Home Wi-Fi never counts at another place")
+    check(rest(.savedPlace, now: 1200).code == "savedPlace", "a saved place rests without any Wi-Fi")
+    check(!rest(.none, now: 9999).confirmed && !rest(since: nil, now: 9999).confirmed, "no place, no rest")
+    check(!rest(idle: false, now: 9999).confirmed, "an open journey, stop or check is never rest")
+    check(!rest(movement: true, wifi: .matched, now: 9999).confirmed, "movement wins over a Home Wi-Fi connection")
+    check(!rest(motion: true, wifi: .matched, now: 9999).confirmed, "Core Motion movement wins over a Home Wi-Fi connection")
+    check(!rest(disturbed: 9000, now: 9999).confirmed && rest(disturbed: 9000, now: 10200).confirmed, "a disturbance restarts the still time")
+    check(rest(verified: false, wifi: .matched, now: 99999).code == "unverified", "a place restored after relaunch needs a fix before rest")
+    check(rest(accuracy: 150, now: 9999).code == "coarsePlace", "a coarse place fix does not confirm rest")
+
+    // Passive rest policy: every guard, in order.
+    func passive(_ decision: RestDecision, enabled: Bool = true, always: Bool = true, precise: Bool = true, service: Bool = true,
+                 inUse: Bool = true, significant: Bool = true, region: Bool = true, manual: Bool = false) -> String? {
+        PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: enabled, rest: decision, alwaysAuthorized: always, preciseAuthorized: precise,
+            serviceSessionHeld: service, serviceSessionInUse: inUse, significantChanges: significant, exitRegion: region, manualRecording: manual))
+    }
+    let confirmed = rest(wifi: .matched, now: 900)
+    check(passive(confirmed) == nil, "a confirmed rest with every wake-up armed may go passive")
+    check(passive(rest(now: 100))?.hasPrefix("rest not confirmed") == true, "an unconfirmed rest keeps the session")
+    check(passive(confirmed, enabled: false) != nil, "the preference keeps the session")
+    check(passive(confirmed, always: false) != nil && passive(confirmed, precise: false) != nil, "passive rest needs Always and Precise Location")
+    check(passive(confirmed, service: false)?.contains("iOS 18") == true, "without an Always service session (iOS 17) the session is kept")
+    check(passive(confirmed, inUse: false) != nil, "a service session iOS reports insufficiently in use keeps the session")
+    check(passive(confirmed, significant: false) != nil && passive(confirmed, region: false) != nil, "passive rest needs significant changes and an exit region")
+    check(passive(confirmed, manual: true) != nil, "manual recording keeps the session")
+
+    // Modes, configuration, session and indicator.
+    var sampling = AutomaticSampling()
+    check(sampling.locationMode(available: true, manualActive: false, automaticRecording: false, now: 0, resting: true, passive: true) == .passive, "passive rest is a mode of its own")
+    check(sampling.locationMode(available: true, manualActive: false, automaticRecording: true, now: 0, passive: true) == .precise, "an open journey is always precise")
+    sampling.requestProbe(now: 10, movementBegan: true)
+    check(sampling.locationMode(available: true, manualActive: false, automaticRecording: false, now: 20, passive: true) == .precise, "a departure check overrides passive rest")
+    check(sampling.locationMode(available: true, manualActive: true, automaticRecording: false, now: 20, passive: true) == .off, "manual recording owns location")
+    check(LocationConfiguration.automatic(.passive, journeyOpen: false, journeyActivity: nil, drivingMotion: false, currentProfile: .other) == nil, "passive rest runs no standard location")
+    check(!BackgroundSessionPolicy.wanted(automaticAvailable: true, manualRecording: false, passiveRest: true), "passive rest does not want the activity session")
+    check(BackgroundSessionPolicy.wanted(automaticAvailable: true, manualRecording: true, passiveRest: true), "manual recording always wants it")
+    check(BackgroundSessionPolicy.wanted(automaticAvailable: true, manualRecording: false), "outside passive rest automatic tracking keeps it")
+    check(!LocationIndicator.explain(continuous: false, mode: .passive, manual: false, sessionHeld: false).expected, "no indicator is expected in passive rest")
+    check(LocationIndicator.explain(continuous: false, mode: .passive, manual: false, sessionHeld: true).expected, "a still-held session is reported as an expected indicator")
+    check(AdaptiveServices.decide(established: .passive, plan: .lowPower) == AdaptiveServices(standardMode: .passive, lowPowerStream: false), "passive rest also stops the adaptive low-power stream")
+    let quiet = AdaptiveObservedServices(state: .off, adaptiveEnabled: false, locationMode: .passive, continuousRunning: false, lowPowerRunning: false,
+        lowPowerWanted: false, placeRegionRegistered: true, journeyRecording: false, sessionHeld: false, sessionNeeded: false, restRegionWanted: true)
+    check(AdaptiveInvariants.violations(quiet).isEmpty, "passive rest with its exit region is consistent")
+    var noisy = quiet; noisy.continuousRunning = true; noisy.sessionHeld = true
+    check(Set(AdaptiveInvariants.violations(noisy)).isSuperset(of: ["passiveRestWithLocationUpdates", "passiveRestWithBackgroundSession"]), "location or a session held in passive rest is a contradiction")
+    var stray = quiet; stray.restRegionWanted = false; stray.locationMode = .standby
+    check(AdaptiveInvariants.violations(stray).contains("adaptiveServicesWhileDisabled"), "an exit region nobody wants is a contradiction")
+
+    // The rest exit region is registered with the adaptive engine off.
+    let host = RecordingHost()
+    let controller = AdaptiveController(now: 0)
+    controller.host = host
+    let anchor = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 0, accuracy: 10, altitude: 0, speed: 0)
+    let home = DwellArea.arrival(at: anchor, source: .inferred)
+    func restInputs(_ now: Double, region: Bool) -> AdaptiveInputs {
+        AdaptiveInputs(enabled: false, supported: true, automaticAvailable: true, manualRecording: false, journeyRecording: false, probing: false,
+                       continuationOpen: false, placeSettled: true, recentMovement: false, motionMoving: false, now: now, restRegion: region)
+    }
+    let caps = RegionCapability(available: true, maximumRadius: 1000)
+    controller.reconcile(restInputs(0, region: false), established: .resting, standardOwned: true, dwell: home, regions: caps)
+    check(host.registeredPlaceRegion == nil, "no exit region before rest is confirmed")
+    controller.reconcile(restInputs(1200, region: true), established: .resting, standardOwned: true, dwell: home, regions: caps)
+    check(host.registeredPlaceRegion != nil && host.standardRunning, "a confirmed rest registers the exit region first")
+    controller.reconcile(restInputs(1230, region: true), established: .passive, standardOwned: true, dwell: home, regions: caps)
+    check(!host.standardRunning && host.streams.isEmpty && host.registeredPlaceRegion != nil, "passive rest stops standard location and keeps only the exit region")
+    controller.reconcile(restInputs(4000, region: false), established: .precise, standardOwned: true, dwell: home, regions: caps)
+    check(host.standardRunning && host.registeredPlaceRegion == nil, "a departure check restores precise GPS and drops the rest region")
+
+    // Lifecycle accounting and departure onset.
+    var clock = ModeClock(mode: "standby", now: 0)
+    clock.enter("passive", now: 1200); clock.enter("passive", now: 1300); clock.enter("precise", now: 5000)
+    let totals = clock.totals(now: 5300)
+    check(totals["standby"] == 1200 && totals["passive"] == 3800 && totals["precise"] == 300, "time per mode is accumulated on change only")
+    typealias Act = DepartureOnset.Activity
+    let history = [Act(start: 100, moving: true, confident: true), Act(start: 160, moving: false, confident: true),
+                   Act(start: 900, moving: true, confident: false), Act(start: 950, moving: true, confident: true), Act(start: 1000, moving: true, confident: true)]
+    check(DepartureOnset.firstMovement(history, after: 0, before: 1100) == 950, "onset is the start of the movement still under way, not earlier pottering")
+    check(DepartureOnset.firstMovement(history, after: 0, before: 120) == 100, "movement before the wake-up is found")
+    check(DepartureOnset.firstMovement([Act(start: 50, moving: false, confident: true)], after: 0, before: 100) == nil, "no movement, no onset")
+    check(DepartureOnset.firstMovement(history, after: 2000, before: 3000) == nil, "history outside the rest is ignored")
+
+    // Scenarios, as sequences of policy decisions.
+    // A. Twenty minutes at Home on Home Wi-Fi: passive after 15 minutes.
+    check(passive(rest(wifi: .matched, now: 899)) != nil && passive(rest(wifi: .matched, now: 900)) == nil, "scenario A: Home Wi-Fi rest goes passive at 15 minutes")
+    // C. Wi-Fi switched off at Home: rest continues; nothing starts.
+    check(rest(wifi: .unavailable, now: 3600).confirmed, "scenario C: losing Wi-Fi at Home does not end rest or start a journey")
+    // D. Walking outside still connected: movement ends rest despite Wi-Fi.
+    check(!rest(movement: true, wifi: .matched, now: 3600).confirmed && passive(rest(movement: true, wifi: .matched, now: 3600)) != nil, "scenario D: a walk on Home Wi-Fi leaves passive rest")
+    // False geofence exit: the check finds nothing; rest must be earned again.
+    check(!rest(disturbed: 3600, wifi: .matched, now: 3700).confirmed && rest(disturbed: 3600, wifi: .matched, now: 4500).confirmed, "a false exit costs one check and 15 minutes of standby")
+    // Late background callback: a stale Wi-Fi reading says nothing about now.
+    check(rest(wifi: HomeWiFi.match(profile, seen("net-home", at: 0), now: 3600), now: 1100).confirmed == false, "a late Wi-Fi reading does not shorten rest")
+    // Process relaunch: the restored place waits for a fix, whatever Wi-Fi says.
+    check(passive(rest(verified: false, wifi: .matched, now: 99999)) != nil, "a relaunch stays in standby until a fix confirms the place")
+    // Changing access points during rest keep matching.
+    check(HomeWiFi.match(grown, seen("net-home", "ap-new", at: 10), now: 10) == .matched, "roaming between access points keeps the match")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

@@ -62,6 +62,39 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var departureLatency = DepartureLatency()
     var lastDepartureLatency: [String: String] = [:]
     var liveUpdatesSupported: Bool { if #available(iOS 17.0, *) { return true }; return false }
+    // Passive rest (PassiveRest.swift) and Home Wi-Fi evidence (HomeWiFi.swift).
+    var passiveRestEnabled = true
+    var restDecision = RestDecision.unconfirmed
+    var passiveRetainReason = "not evaluated"
+    var passiveSince: Double?
+    var restDisturbedAt: Double?
+    // iOS 18 CLServiceSession(authorization: .always); AnyObject for the iOS 15 target.
+    var serviceSession: AnyObject?
+    var serviceSessionState = "none"
+    var serviceSessionInsufficient = false
+    var serviceSessionTask: Task<Void, Never>?
+    // Live updates that let Core Location resume the app while precise GPS runs
+    // without a background activity session (after a passive-rest wake-up).
+    var keepAliveTask: Task<Void, Never>?
+    var keepAliveUpdates = 0
+    var modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
+    var lastPreciseReason = "none yet"
+    var lastProbeCause = "movement"
+    var sessionReleasedAt: Double?
+    var sessionReleases = 0
+    var departurePlace: DwellArea?
+    var departureMotionOnsetAt: Double?
+    var homeWiFi: HomeWiFiProfile?
+    var wifiObservation: WiFiObservation?
+    var wifiMatchState: WiFiMatch = .unknown
+    var wifiFetchInFlight = false
+    var wifiCheckRequestedAt: Double = 0
+    var wifiPathMonitor: AnyObject?
+    var wifiOnPath: Bool?
+    var restPlaceFixAt: Double?
+    var restPlaceAccuracy: Double?
+    var keepAliveGeneration = 0
+    var keepAliveEndedAt: Double = 0
     static func adaptiveKey(_ owner: String) -> String { "letm3go-adaptive-location-\(owner)" }
     var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
     // Place awareness (see DwellArea). Kept in this account's encrypted storage.
@@ -228,6 +261,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "lowPowerMode":String(ProcessInfo.processInfo.isLowPowerModeEnabled),"backgroundRefreshStatus":String(UIApplication.shared.backgroundRefreshStatus.rawValue),
             "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(adaptive.lowPowerRunning),"locationMode":active?.state == "recording" ? "manualPrecise" : locationMode.rawValue,"automaticLocationMode":locationMode.rawValue]
         context.merge(locationDiagnosticState()){_,new in new}
+        context.merge(passiveDiagnosticState(now:now)){_,new in new}
         return context
     }
     func locationDiagnosticState()->[String:String]{
@@ -250,9 +284,44 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "lastObservedFixAt":String(diagnosticLastObservedAt ?? 0),"lastObservedFixAgeSeconds":diagnosticLastObservedAt.map{String(Int(max(0,now-$0)))} ?? "unknown",
             "lastObservedAccuracyMeters":diagnosticLastObservedAccuracy.map{String($0)} ?? "unknown","lastObservedSource":diagnosticLastObservedSource,
             "lastSampleAgeSeconds":lastLocationUpdateAt.map{String(Int(max(0,now-$0)))} ?? "unknown","lastSampleAccuracyMeters":lastLocationAccuracy.map{String($0)} ?? "unknown",
-            "indicatorExpected":String(locationIndicator.expected),"indicatorReason":locationIndicator.reason,
-            "wifiPresence":"not measured; Wi-Fi is not used as proof of rest or departure"]
+            "indicatorExpected":String(locationIndicator.expected),"indicatorReason":locationIndicator.reason]
     }
+    // Home Wi-Fi and passive rest: match states and reasons only, never a
+    // network name, access-point address or position.
+    func passiveDiagnosticState(now:Double)->[String:String]{
+        let modes:String=modeClock.totals(now:now).sorted{$0.key<$1.key}.map{$0.key+"="+String(Int($0.value))}.joined(separator:",")
+        let retained:String=backgroundActivitySession == nil ? "not held" : (passiveRetainReason.isEmpty ? "passive rest pending" : passiveRetainReason)
+        var state:[String:String]=[:]
+        state["homeWiFiConfigured"]=String(homeWiFi != nil)
+        state["wifiMatch"]=homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue
+        state["wifiObservedAt"]=String(wifiObservation?.at ?? 0)
+        state["wifiSource"]=wifiObservation?.source ?? "none"
+        state["wifiAccessPointKnown"]=String(HomeWiFi.accessPointKnown(homeWiFi,wifiObservation))
+        state["wifiOnPath"]=wifiOnPath.map{String($0)} ?? "unknown"
+        state["wifiPresence"]=homeWiFi == nil ? "Home Wi-Fi not configured" : "supporting evidence at the saved Home only; never proof of rest or departure"
+        state["restConfirmed"]=String(restDecision.confirmed)
+        state["restReason"]=restDecision.reason
+        state["restPlace"]=restPlaceKind.rawValue
+        state["restStillSeconds"]=String(Int(restDecision.stillSeconds))
+        state["restRequiredSeconds"]=String(Int(restDecision.requiredSeconds))
+        state["passiveRestEnabled"]=String(passiveRestEnabled)
+        state["passiveRest"]=String(locationMode == .passive)
+        state["passiveSince"]=String(passiveSince ?? 0)
+        state["sessionRetainedReason"]=retained
+        state["sessionReleasedAt"]=String(sessionReleasedAt ?? 0)
+        state["serviceSession"]=serviceSessionState
+        state["serviceSessionInsufficient"]=String(serviceSessionInsufficient)
+        state["standardLocationUpdatesActive"]=String(continuousLocationRequested && !locationUpdatesPaused)
+        state["keepAliveRunning"]=String(keepAliveTask != nil)
+        state["lastPreciseReason"]=lastPreciseReason
+        state["modeSeconds"]=modes
+        return state
+    }
+    static let fullContextKinds:Set<String>=["lifecycle","session","rest","journey","preference","error","invariant","recovery","account","detection"]
+    static let compactContextKeys:Set<String>=["process","component","appState","locationMode","automaticLocationMode","backgroundSession","continuousLocationRequested",
+        "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","passiveRest","wifiMatch","reason","commit","build","adaptiveState",
+        // Read back from the journal when it is reopened.
+        "householdLastSuccessAt","friendLastSuccessAt"]
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
         guard ownerID != nil,let storage=storage else {return}
         if let last=diagnosticJournal.events.last,last.kind==kind,last.message==message,
@@ -269,6 +338,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if kind == "observations" || kind == "sampling" {
             let keep=Set(["process","component","appState","locationMode","backgroundSession","reason","lastSampleAt"])
             context=context.filter{keep.contains($0.key)||details[$0.key] != nil}
+        } else if !Self.fullContextKinds.contains(kind) {
+            // Region, motion, service, decision, wifi and sharing events are the
+            // frequent ones: a compact context keeps journal rewrites small.
+            context=context.filter{Self.compactContextKeys.contains($0.key)||details[$0.key] != nil||$0.key.hasPrefix("before.")||$0.key.hasPrefix("after.")}
         }
         diagnosticJournal.append(RecorderDiagnosticEvent(at:Date().timeIntervalSince1970,kind:kind,message:message,context:context))
         diagnosticWriter.write(diagnosticJournal,to:storage){[weak self,weak storage] ok in
@@ -341,7 +414,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Start the session when tracking needs it and the app is in the foreground,
     // the only state in which iOS lets a new session begin.
     func reconcileBackgroundSession(_ reason: String) {
-        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording")
+        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording", passiveRest: locationMode == .passive)
         let action = BackgroundSessionPolicy.decide(wanted: wanted, held: backgroundActivitySession != nil,
             foreground: UIApplication.shared.applicationState == .active,
             previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported)
@@ -387,7 +460,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
     }
     func updateIndicatorPolicy(){manager.showsBackgroundLocationIndicator=TrackingPresentation.indicator(always:manager.authorizationStatus == .authorizedAlways,manual:active?.state == "recording")}
-    var gpsReason:String {locationMode == .stationary ? "Low-power standby: continuous location stopped; Core Location resumes updates when the phone moves" : TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,settled:settledAt != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable,resting:locationMode == .resting)}
+    var gpsReason:String {locationMode == .stationary ? "Low-power standby: continuous location stopped; Core Location resumes updates when the phone moves" : locationMode == .passive ? "Passive rest: location updates released; place exit, significant-change and visit wake-ups watch for departure" : TrackingPresentation.reason(continuous:continuousLocationRequested,manual:active?.state == "recording",automatic:automaticTrip != nil,settled:settledAt != nil,stationary:detector.stationarySince != nil,probing:(automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970,available:automaticAvailable,resting:locationMode == .resting)}
     var locationIndicator:(expected:Bool,reason:String) {LocationIndicator.explain(continuous:continuousLocationRequested,mode:locationMode,manual:active?.state == "recording",sessionHeld:backgroundActivitySession != nil)}
     var motionPermission: String { String(describing:CMMotionActivityManager.authorizationStatus()) }
 
@@ -403,6 +476,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         manager.allowsBackgroundLocationUpdates = true
         // Before the account opens and before any location service restarts.
         rejoinBackgroundSessionAtLaunch()
+        rejoinServiceSessionAtLaunch()
         do {
             try sealLegacyData()
             if try AccountKeychain.get("signed-out") == nil, let data = try AccountKeychain.get("active-account"), let id = String(data:data,encoding:.utf8) { try openAccount(id) }
@@ -842,7 +916,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
-                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .resting ? "restingAtHome" : "locationStandby",
+                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .passive ? "passiveRest" : locationMode == .resting ? "restingAtHome" : "locationStandby",
                 "adaptive":adaptiveSnapshot,
                 "locationMode":locationMode.rawValue,"homeRestSince":homeRest.insideSince as Any? ?? NSNull(),
                 "locationIndicator":["expected":locationIndicator.expected,"reason":locationIndicator.reason],
@@ -873,6 +947,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "lastDetectedTrip":trips.first(where:{$0.recordingMode == "automatic"}).map{["activity":$0.activity,"startedAt":$0.startedAt,"endedAt":$0.endedAt ?? $0.startedAt] as [String:Any]} as Any? ?? NSNull(),
                 "motionAvailable": CMMotionActivityManager.isActivityAvailable(), "motionPermission": motionPermission,
                 "motionTypes": motion.types, "motionConfidence": motion.confidence, "motionTimestamp": motion.timestamp,
+                "passiveRest":passiveSnapshot,
                 "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
                 "active": active.map(dictionary) as Any? ?? NSNull(), "trips": trips.map(dictionary),
@@ -901,6 +976,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "configureLiveSharing", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setPassiveRest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setHomeWiFi", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "savePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "currentPosition", returnType: CAPPluginReturnPromise),
@@ -1085,7 +1162,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "current":LocationDiagnosticPrivacy.context(r.diagnosticContext()),"events":entries,"journeys":summaries,
                 "oldestAvailableAt":events.first?.at as Any? ?? NSNull(),"retentionDays":7,"eventLimit":RecorderDiagnosticJournal.limit,
                 "byteLimit":RecorderDiagnosticJournal.byteLimit,"capacityEvictions":journal.capacityEvictions,"storageError":r.diagnosticStorageError,
-                "limitations":"Requests describe app services, not hardware GPS or which process iOS is indicating. No events are invented while the process is not executing. A heartbeat gap is an observed execution gap, not proof of suspension, force-quit or a crash. Stops, intentional reduced/disabled precise sampling, and GPS delivery gaps are distinct. Wi-Fi association is not measured or used as proof of rest. No coordinates, place names, account identifiers, credentials or routes are exported. Battery is unknown unless already available; copying starts no location or battery monitoring. History is bounded to seven days, 6000 events and 8 MiB; capacity loss is reported. Journey summaries are the most recent 30, not all journey history."])
+                "limitations":"Requests describe app services, not hardware GPS or which process iOS is indicating. No events are invented while the process is not executing. A heartbeat gap is an observed execution gap, not proof of suspension, force-quit or a crash. Stops, intentional reduced/disabled precise sampling, and GPS delivery gaps are distinct. Home Wi-Fi, when designated, is reported only as a match state (matched, not matched, unavailable, unknown), is supporting evidence at the saved Home only, and is never proof of rest or departure; iOS gives no Wi-Fi event that wakes a suspended app. Passive rest releases location updates and the background session; while it lasts, the app is normally suspended and logs nothing until a wake-up. No coordinates, place names, account identifiers, credentials or routes are exported. Battery is unknown unless already available; copying starts no location or battery monitoring. History is bounded to seven days, 6000 events and 8 MiB; capacity loss is reported. Journey summaries are the most recent 30, not all journey history."])
         }catch{call.reject("The full location log could not be prepared.")}
     }}
     @objc func exportJourneyDiagnostics(_ call: CAPPluginCall) { DispatchQueue.main.async {

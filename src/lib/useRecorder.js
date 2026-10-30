@@ -38,7 +38,11 @@ function snapshotKey(data){
   data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight,data.nativeFamilySharing?.mode,data.nativeFamilySharing?.lastUploadOkAt,data.nativeFamilySharing?.status,
  // Adaptive engine status; time in state at minute resolution.
  data.adaptive?.enabled,data.adaptive?.state,data.adaptive?.engine,data.adaptive?.liveUpdatesRunning,data.adaptive?.coreLocationStationary,data.adaptive?.placeRegionMonitored,
- data.adaptive?.standbyWakes,data.adaptive?.liveUpdatesFailures,data.adaptive?.lastDepartureLatency?.at,Math.floor((data.adaptive?.secondsInState||0)/60)
+ data.adaptive?.standbyWakes,data.adaptive?.liveUpdatesFailures,data.adaptive?.lastDepartureLatency?.at,Math.floor((data.adaptive?.secondsInState||0)/60),
+ // Passive rest and Home Wi-Fi; stillness at minute resolution.
+ data.passiveRest?.enabled,data.passiveRest?.active,data.passiveRest?.restConfirmed,data.passiveRest?.retainReason,data.passiveRest?.serviceSession,
+ data.passiveRest?.keepAliveRunning,data.passiveRest?.sessionReleases,data.passiveRest?.lastPreciseReason,Math.floor((data.passiveRest?.stillSeconds||0)/60),
+ data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt
  ].join('~');
 }
 function lockedSnapshot(data){

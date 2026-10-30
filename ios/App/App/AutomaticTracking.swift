@@ -33,6 +33,7 @@ extension LocationRecorder {
                     self.detector.reset()
                     self.reconcileAutomaticSampling()
                 } else if AutomaticDetector.credibleMovement(self.motion,now:now) {
+                    self.noteRestDisturbance(now:now)
                     let onFootOnly = !AutomaticDetector.drivingMotion(self.motion,now:now) && !AutomaticDetector.cyclingMotion(self.motion,now:now)
                     let idle = self.automaticTrip == nil && self.settledTripID == nil
                     if idle, !self.motionProbeGate.allows(onFootOnly:onFootOnly,dwellSettled:self.dwellSettled,now:now) {
@@ -71,6 +72,7 @@ extension LocationRecorder {
         // Start the background session while the app is in the foreground; once
         // held, it covers departures that begin with the phone locked.
         reconcileBackgroundSession("monitoring refresh")
+        reconcileServiceSession("monitoring refresh")
         let now=Date().timeIntervalSince1970
         let backgroundSharingArmed=(liveShareToken != nil && now<liveShareTokenExpiresAt-60) ||
             (friendShareToken != nil && now<friendShareTokenExpiresAt-60)
@@ -82,7 +84,7 @@ extension LocationRecorder {
             stopContinuousLocation()
             stopVisitMonitoring()
             startSignificantMonitoring()
-            homeRest.reset();locationMode = .off
+            homeRest.reset();locationMode = .off;endPassiveRest()
             return
         }
         if automaticAvailable {
@@ -95,7 +97,7 @@ extension LocationRecorder {
             }
         } else {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
-            automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off
+            automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off;endPassiveRest()
             adaptive.shutdown(reason:"automatic tracking unavailable")
             if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
@@ -119,6 +121,8 @@ extension LocationRecorder {
     func beginAutomaticProbe(movementBegan:Bool = false, cause:String = "movement") {
         guard automaticAvailable,active == nil else { return }
         let now=Date().timeIntervalSince1970
+        // Any departure evidence ends a confirmed rest; it must be re-earned.
+        noteRestDisturbance(now:now); lastProbeCause=cause
         if automaticTrip == nil || settledAt != nil {
             let wasIdle=(automaticSampling.probeUntil ?? 0)<=now
             let granted=automaticSampling.requestProbe(now:now,movementBegan:movementBegan)
@@ -163,10 +167,22 @@ extension LocationRecorder {
         // runStandard and the low-power stream (AdaptiveController.reconcile).
         let restingNow=homeRest.resting(now:now,idle:automaticIdle) && !departureEvidence.recentMovement(now:now) &&
             !AutomaticDetector.credibleMovement(motion,now:now)
-        let established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow)
+        // A confirmed rest may go further and release every standard service and
+        // the background session (PassiveRestPolicy). Its exit region is wanted
+        // as soon as rest is confirmed, so it is registered before rest goes passive.
+        evaluateRest(now:now)
+        var passive=passiveRestAllowed
+        var established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:passive)
         reconcileAdaptive(now:now,mode:established)
+        // The exit region registered by that reconcile can allow passive rest now.
+        if !passive, evaluatePassive() {
+            passive=true
+            established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:true)
+            reconcileAdaptive(now:now,mode:established)
+        }
         // A paused manual activity continues to take precedence over automation.
         if active != nil {locationMode = .off}
+        reconcilePassiveSessions(now:now)
         checkAdaptiveInvariants()
     }
     // The single owner of the automatic recorder's standard GPS configuration,
@@ -181,18 +197,24 @@ extension LocationRecorder {
         if mode != locationMode {
             let previous=locationMode
             locationMode=mode
+            let passiveNote:String="rest confirmed ("+restDecision.reason+"); location updates and background session released, wake-ups armed"
             recordDiagnostic("service","Location sampling mode changed",details:["modeBefore":previous.rawValue,"modeAfter":mode.rawValue,
-                "reason":mode == .precise ? "an open journey or bounded departure check needs precise fixes" : mode == .resting ? "settled place confirmed; reduce accuracy without releasing background departures" : mode == .stationary ? "adaptive stationary standby; precise updates intentionally disabled" : "automatic sampling reconciled"])
+                "reason":mode == .precise ? "an open journey or bounded departure check needs precise fixes" : mode == .resting ? "settled place confirmed; reduce accuracy without releasing background departures" : mode == .passive ? passiveNote : mode == .stationary ? "adaptive stationary standby; precise updates intentionally disabled" : "automatic sampling reconciled"])
             if mode == .resting { trackingEvent("Resting at settled place: reduced-accuracy location until movement") }
             else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
-            else if previous == .resting || previous == .stationary { trackingEvent("Left \(previous == .stationary ? "low-power standby" : "Home rest"): \(mode.rawValue) location") }
+            else if previous == .resting || previous == .stationary || previous == .passive {
+                let left:String = previous == .stationary ? "low-power standby" : previous == .passive ? "passive rest" : "Home rest"
+                trackingEvent("Left " + left + ": " + mode.rawValue + " location")
+            }
+            if mode == .precise { lastPreciseReason = automaticTrip != nil ? "an open journey" : "departure check: " + lastProbeCause }
         }
         guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
             drivingMotion:motion.types.contains("Driving"),currentProfile:manager.activityType == .automotiveNavigation ? .automotive : .other) else {
             // Low-power standby keeps its departure evidence: a later wake-up fix
             // is compared with the last one.
-            if mode != .stationary { departureEvidence.reset() }
-            stopContinuousLocation(reason:mode == .stationary ? "Continuous GPS stopped: low-power standby" : "Continuous GPS stopped")
+            // So does passive rest: a wake-up fix is compared with where it settled.
+            if mode != .stationary && mode != .passive { departureEvidence.reset() }
+            stopContinuousLocation(reason:mode == .stationary ? "Continuous GPS stopped: low-power standby" : mode == .passive ? "Continuous GPS stopped: passive rest" : "Continuous GPS stopped")
             return
         }
         applyLocationConfiguration(configuration)
@@ -223,7 +245,9 @@ extension LocationRecorder {
         // Reconcile registrations in place. A foreground/sharing refresh must not
         // tear down every saved-place wake-up and register it again.
         var wanted:[CLCircularRegion]=[]
-        for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(adaptiveEnabled ? 17 : 18) {
+        // 20 regions per app: saved places, the last stop, the continuation region
+        // and the current-place exit region (adaptive standby and passive rest).
+        for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(17) {
             let region=CLCircularRegion(center:CLLocationCoordinate2D(latitude:place.latitude,longitude:place.longitude),radius:min(place.radius,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-\(place.id)")
             region.notifyOnEntry=true;region.notifyOnExit=true;wanted.append(region)
         }
@@ -278,6 +302,7 @@ extension LocationRecorder {
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             homeRest.observe(sample,home:restPlace,now:now)
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
+            noteRestPlaceFix(sample,now:now)
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
             // and lets the normal departure detection start a new one.
@@ -673,6 +698,7 @@ extension LocationRecorder {
         guard area != dwell else { return }
         let previous = dwell
         dwell = area
+        restPlaceFixAt = nil; restPlaceAccuracy = nil
         motionProbeGate.reset()
         leftAreaProbed = false
         if area == nil { dwellInference.reset() }

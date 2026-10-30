@@ -13,6 +13,9 @@
 		BD0000000000000000000003 /* MapOverviewCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000004; };
 		BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000008; };
 		BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000006; };
+		BD000000000000000000000D /* HomeWiFi.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000E; };
+		BD000000000000000000000B /* PassiveRest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000C; };
+		BD0000000000000000000009 /* QuietRestCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000A; };
 		B80000000000000000000002 /* AppleAuthCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000002; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
@@ -74,6 +77,9 @@
 		BD0000000000000000000004 /* MapOverviewCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapOverviewCore.swift; sourceTree = "<group>"; };
 		BD0000000000000000000008 /* AdaptiveLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLocation.swift; sourceTree = "<group>"; };
 		BD0000000000000000000006 /* AdaptiveLocationCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLocationCore.swift; sourceTree = "<group>"; };
+		BD000000000000000000000E /* HomeWiFi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeWiFi.swift; sourceTree = "<group>"; };
+		BD000000000000000000000C /* PassiveRest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PassiveRest.swift; sourceTree = "<group>"; };
+		BD000000000000000000000A /* QuietRestCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuietRestCore.swift; sourceTree = "<group>"; };
 		B70000000000000000000002 /* AppleAuthCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleAuthCore.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
@@ -159,6 +165,9 @@
 				BD0000000000000000000004 /* MapOverviewCore.swift */,
 				BD0000000000000000000008 /* AdaptiveLocation.swift */,
 				BD0000000000000000000006 /* AdaptiveLocationCore.swift */,
+				BD000000000000000000000E /* HomeWiFi.swift */,
+				BD000000000000000000000C /* PassiveRest.swift */,
+				BD000000000000000000000A /* QuietRestCore.swift */,
 				B70000000000000000000001 /* AppleAuthentication.swift */,
 				B70000000000000000000002 /* AppleAuthCore.swift */,
 				B90000000000000000000001 /* WatchSessionManager.swift */,
@@ -320,6 +329,9 @@
 				BD0000000000000000000003 /* MapOverviewCore.swift in Sources */,
 				BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */,
 				BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */,
+				BD000000000000000000000D /* HomeWiFi.swift in Sources */,
+				BD000000000000000000000B /* PassiveRest.swift in Sources */,
+				BD0000000000000000000009 /* QuietRestCore.swift in Sources */,
 				B80000000000000000000001 /* AppleAuthentication.swift in Sources */,
 				B80000000000000000000002 /* AppleAuthCore.swift in Sources */,
 				B90000000000000000000002 /* WatchSessionManager.swift in Sources */,

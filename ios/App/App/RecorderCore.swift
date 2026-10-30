@@ -970,8 +970,11 @@ enum HouseholdPublisher {
 // before any location service starts, and ended only for an explicit reason.
 enum BackgroundSessionPolicy {
     enum Action: Equatable { case none, start, rejoin, deferUntilForeground }
-    static func wanted(automaticAvailable: Bool, manualRecording: Bool) -> Bool {
-        automaticAvailable || manualRecording
+    // Passive rest (PassiveRestPolicy) is the one automatic state that releases
+    // it: no location service runs, and Core Location's wake-ups restore precise
+    // GPS, kept running by an Always service session and live updates.
+    static func wanted(automaticAvailable: Bool, manualRecording: Bool, passiveRest: Bool = false) -> Bool {
+        (automaticAvailable && !passiveRest) || manualRecording
     }
     // Launch: rejoin immediately when a session was held before termination, before
     // any location service is restarted.
@@ -1009,7 +1012,8 @@ struct LocationConfiguration: Equatable {
         switch mode {
         // Adaptive low-power standby: no standard continuous updates at all
         // (CLLocationUpdate.liveUpdates and wake-up services take over).
-        case .off, .stationary: return nil
+        // Passive rest: nothing runs; only wake-up services remain.
+        case .off, .stationary, .passive: return nil
         case .standby: return LocationConfiguration(accuracy: .tenMetres, distanceFilter: 25, profile: .other)
         // Settled at Home: the service keeps running (so the app keeps executing,
         // Core Motion and the Home exit still arrive, and the background session
@@ -1279,14 +1283,15 @@ struct AutomaticSampling {
     }
     // `resting` only lowers standby. A departure check or an open journey is
     // always precise, so resting can never delay a confirmed departure.
-    func locationMode(available:Bool,manualActive:Bool,automaticRecording:Bool,now:Double,resting:Bool=false)->AutomaticLocationMode {
+    func locationMode(available:Bool,manualActive:Bool,automaticRecording:Bool,now:Double,resting:Bool=false,passive:Bool=false)->AutomaticLocationMode {
         guard available,!manualActive else {return .off}
         if needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticRecording,now:now) {return .precise}
+        if passive {return .passive}
         return resting ? .resting : .standby
     }
 }
 
-enum AutomaticLocationMode: String {case off,resting,standby,precise,stationary}
+enum AutomaticLocationMode: String {case off,resting,standby,precise,stationary,passive}
 // Where a location observation came from: the standard manager, or the adaptive
 // engine's low-power stream (CLLocationUpdate.liveUpdates).
 enum ObservationSource: String {case standard,lowPower}
@@ -1571,9 +1576,10 @@ enum LocationIndicator {
             case .precise: return (true, "Precise GPS: a journey is open or a departure is being checked")
             case .resting: return (true, "Resting at settled place: reduced-accuracy continuous location keeps departure detection ready; no journey is recording" + session)
             case .standby: return (true, "Departure standby: reduced-accuracy location keeps departure detection ready; no journey is recording" + session)
-            case .off, .stationary: return (true, "Location updates are stopping" + session)
+            case .off, .stationary, .passive: return (true, "Location updates are stopping" + session)
             }
         }
+        if mode == .passive { return (sessionHeld, sessionHeld ? "Passive rest: location updates stopped; background session still held" : "Passive rest: no location updates and no background session; place exit, significant-change and visit wake-ups armed. iOS may still show a brief arrow when a wake-up delivers a location") }
         if mode == .stationary { return (sessionHeld, sessionHeld ? "Low-power standby: continuous location stopped; Core Location resumes updates when the phone moves (background session held so a departure can be recorded)" : "Low-power standby: continuous location stopped") }
         if sessionHeld { return (true, "Background location session held so a later departure can be recorded; no continuous location requested") }
         return (false, "No continuous location and no background session")
@@ -1711,7 +1717,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {

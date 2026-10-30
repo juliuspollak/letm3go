@@ -25,6 +25,9 @@ if watch:
 else:
     require(entitlements.get('com.apple.developer.applesignin') == ['Default'], 'Profile must authorize native Sign in with Apple')
     require(entitlements.get('aps-environment') == 'production', 'App Store profile must authorize production push')
+    # Home Wi-Fi evidence (NEHotspotNetwork.fetchCurrent). Enable Access Wi-Fi
+    # Information on the App ID, then regenerate this profile.
+    require(entitlements.get('com.apple.developer.networking.wifi-info') is True, 'App Store profile must include Access Wi-Fi Information')
     require(entitlements.get('application-identifier') == f'{team}.au.jpollak.journey', 'Profile is not for Letm3go')
 require(not entitlements.get('get-task-allow', False), 'Development profile cannot distribute to TestFlight')
 require(not profile.get('ProvisionedDevices') and not profile.get('ProvisionsAllDevices'), 'App Store profile required')

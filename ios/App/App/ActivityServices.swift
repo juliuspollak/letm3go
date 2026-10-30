@@ -237,6 +237,27 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setAdaptive(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
+    // Passive rest: release location and the background session while settled.
+    @objc func setPassiveRest(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        do { try LocationRecorder.shared.setPassiveRest(call.getBool("enabled") ?? true); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    // Home Wi-Fi: designate the connected network, or forget it. Only match
+    // states are ever returned; never a network name or address.
+    @objc func setHomeWiFi(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let r = LocationRecorder.shared
+        if call.getString("action") == "forget" {
+            do { try r.forgetHomeWiFi(); call.resolve(r.snapshot()) } catch { call.reject(error.localizedDescription) }
+            return
+        }
+        guard call.getString("action") == "designate" else { call.reject("Unknown Home Wi-Fi action."); return }
+        let owner = r.ownerID
+        r.designateHomeWiFi { error in
+            guard owner == r.ownerID else { call.reject("Account changed."); return }
+            if let error = error { call.reject(error.localizedDescription) } else { call.resolve(r.snapshot()) }
+        }
+    } }
     @objc func setAutomatic(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setAutomatic(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
@@ -260,6 +281,11 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         let recorder = LocationRecorder.shared
         if call.getBool("allowStationary") == true, recorder.adaptive.lowPowerRunning, let since = recorder.liveGate.stationarySince {
             call.resolve(["stationary": true, "stationarySince": since]); return
+        }
+        // Passive rest is confirmed stillness at a verified place: periodic
+        // refreshes do not start precise GPS for it. Nothing is re-published as new.
+        if call.getBool("allowStationary") == true, recorder.locationMode == .passive, recorder.restDecision.confirmed, let since = recorder.passiveSince {
+            call.resolve(["stationary": true, "stationarySince": since, "source": "passiveRest"]); return
         }
         let request = PositionRequest(call:call); self.positionRequest = request; request.begin()
     } }

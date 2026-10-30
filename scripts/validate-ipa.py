@@ -25,6 +25,7 @@ with zipfile.ZipFile(ipa) as archive:
         require(not signed.get('get-task-allow'),'Debug entitlement in distribution app')
         require(signed.get('com.apple.developer.applesignin')==['Default'],'Signed Apple entitlement missing')
         require(signed.get('aps-environment')=='production','Signed production push entitlement missing')
+        require(signed.get('com.apple.developer.networking.wifi-info') is True,'Signed Access Wi-Fi Information entitlement missing')
         require(signed.get('application-identifier')=='8YP6PFWVZ9.au.jpollak.journey','Signed application identifier mismatch')
         # The embedded Apple Watch app carries its own App Store signature.
         watch_apps=sorted((app/'Watch').glob('*.app'))

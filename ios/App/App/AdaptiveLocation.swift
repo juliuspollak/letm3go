@@ -39,7 +39,8 @@ extension LocationRecorder: AdaptiveHost {
                        // a current place still counts after ten quiet minutes there.
                        placeSettled: dwellSettled || homeRest.resting(now: now, idle: automaticIdle),
                        recentMovement: departureEvidence.recentMovement(now: now),
-                       motionMoving: AutomaticDetector.credibleMovement(motion, now: now), now: now)
+                       motionMoving: AutomaticDetector.credibleMovement(motion, now: now), now: now,
+                       restRegion: restDecision.confirmed && passiveRestEnabled && serviceSession != nil)
     }
 
     @discardableResult
@@ -120,8 +121,15 @@ extension LocationRecorder: AdaptiveHost {
 
     // MARK: Departure latency, for both engines
     func noteDepartureEvidence(_ cause: String, now: Double) {
-        let engine = adaptiveState == .stationaryStandby && adaptivePlan.liveUpdates ? "lowPower" : "established"
+        let engine = locationMode == .passive ? "passive" : adaptiveState == .stationaryStandby && adaptivePlan.liveUpdates ? "lowPower" : "established"
         adaptive.noteWake(now: now)
+        if departureLatency.evidenceAt == nil {
+            // Where the phone rested, kept in memory only, to measure how much of
+            // the departure preceded the first precise fix.
+            departurePlace = dwell
+            departureMotionOnsetAt = nil
+            if locationMode == .passive, let since = passiveSince { queryDepartureOnset(since: since, evidenceAt: now) }
+        }
         departureLatency.noteEvidence(cause, engine: engine, now: now)
     }
     func noteDepartureConfirmed(firstFixAt: Double, now: Double) {
@@ -132,8 +140,20 @@ extension LocationRecorder: AdaptiveHost {
         }
         lastDepartureLatency = ["engine": departureLatency.engine, "cause": departureLatency.cause, "at": String(now),
             "evidenceToFirstFixSeconds": String(Int(measured.toFirstFix)), "evidenceToConfirmationSeconds": String(Int(measured.toConfirmation))]
+        // From the first observable sign of the departure (Core Motion history,
+        // when it shows one) to the wake-up and to the first precise fix.
+        if let onset = departureMotionOnsetAt, let evidence = departureLatency.evidenceAt {
+            lastDepartureLatency["motionOnsetToEvidenceSeconds"] = String(Int(max(0, evidence - onset)))
+            lastDepartureLatency["motionOnsetToFirstFixSeconds"] = String(Int(firstFixAt - onset))
+        }
+        // How far beyond the place the first saved fix was: route the journey
+        // could not record. Rounded to 10 m; no coordinates.
+        if let place = departurePlace, let first = automaticTrip?.points.first {
+            lastDepartureLatency["startGapMeters"] = String(Int((max(0, place.centre.distance(to: first) - place.radius) / 10).rounded()) * 10)
+        }
         recordDiagnostic("detection", "Departure latency", details: lastDepartureLatency)
         departureLatency.reset()
+        departurePlace = nil; departureMotionOnsetAt = nil
     }
 
     // MARK: Invariants (what is actually held), logged once per kind, no coordinates
@@ -144,7 +164,8 @@ extension LocationRecorder: AdaptiveHost {
             placeRegionRegistered: registeredPlaceRegion != nil,
             journeyRecording: automaticActivelyRecording || active?.state == "recording",
             sessionHeld: backgroundActivitySession != nil,
-            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording") || !storeOpened)
+            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording", passiveRest: locationMode == .passive) || !storeOpened,
+            restRegionWanted: restDecision.confirmed && passiveRestEnabled && serviceSession != nil)
         var found = AdaptiveInvariants.violations(observed)
         // The Core Location task and the controller's generation must agree.
         if (liveUpdatesTask != nil) != adaptive.lowPowerRunning && liveUpdatesSupported { found.append("lowPowerTaskMismatch") }

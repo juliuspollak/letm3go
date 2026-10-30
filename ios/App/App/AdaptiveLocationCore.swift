@@ -39,6 +39,9 @@ struct AdaptiveInputs: Equatable {
     var recentMovement: Bool     // GPS displacement or speed in the last 30 s
     var motionMoving: Bool       // fresh, credible walking/running/cycling/driving
     var now: Double
+    // A confirmed rest wants the current place's exit region whether or not the
+    // adaptive engine is on: it is passive rest's own departure wake-up.
+    var restRegion: Bool = false
 }
 
 // What the recorder should run in a state.
@@ -259,6 +262,7 @@ struct AdaptiveObservedServices: Equatable {
     var journeyRecording: Bool
     var sessionHeld: Bool
     var sessionNeeded: Bool
+    var restRegionWanted: Bool = false
 }
 enum AdaptiveInvariants {
     static func violations(_ s: AdaptiveObservedServices) -> [String] {
@@ -267,7 +271,9 @@ enum AdaptiveInvariants {
         if s.lowPowerRunning && s.continuousRunning { found.append("lowPowerAndContinuousTogether") }
         if s.journeyRecording && !s.continuousRunning { found.append("journeyWithoutPreciseGPS") }
         if s.lowPowerWanted && !s.lowPowerRunning && !s.continuousRunning { found.append("noLocationServiceInStandby") }
-        if !s.adaptiveEnabled && (s.lowPowerRunning || s.placeRegionRegistered) { found.append("adaptiveServicesWhileDisabled") }
+        if !s.adaptiveEnabled && (s.lowPowerRunning || (s.placeRegionRegistered && !s.restRegionWanted)) { found.append("adaptiveServicesWhileDisabled") }
+        if s.locationMode == .passive && (s.continuousRunning || s.lowPowerRunning) { found.append("passiveRestWithLocationUpdates") }
+        if s.locationMode == .passive && s.sessionHeld { found.append("passiveRestWithBackgroundSession") }
         if s.sessionHeld && !s.sessionNeeded { found.append("backgroundSessionWithoutOwner") }
         return found
     }
@@ -379,7 +385,7 @@ final class AdaptiveController {
         }
         let services = AdaptiveServices.decide(established: standardOwned ? established : .off, plan: plan)
         if !services.lowPowerStream { stopLowPower(reason: "low-power standby ended") }
-        reconcileRegion(wanted: inputs.enabled && inputs.supported && inputs.automaticAvailable && ![.off, .activeJourney].contains(state),
+        reconcileRegion(wanted: inputs.automaticAvailable && ((inputs.enabled && inputs.supported && ![.off, .activeJourney].contains(state)) || inputs.restRegion),
                         dwell: dwell, regions: regions)
         guard let host = host else { return services }
         if standardOwned { host.runStandard(services.standardMode) }

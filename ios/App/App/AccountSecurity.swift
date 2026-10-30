@@ -99,11 +99,13 @@ extension LocationRecorder {
         lastError = ""; recoveryMessage = ""; lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil; accuracy = nil; lastFixAt = nil; currentSpeed = 0
         automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(ownerID!)")
         adaptiveEnabled = UserDefaults.standard.bool(forKey:Self.adaptiveKey(ownerID!))
+        passiveRestEnabled = !UserDefaults.standard.bool(forKey:Self.passiveRestKey(ownerID!))
         restoreAdaptiveRecovery()
         preferences = AccountPreferences()
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
+        loadHomeWiFi()
         let records = try storage!.load()
         // A stopped journey is a published record, not an unfinished one: it is
         // restored as a journey that may still be continued.
@@ -200,6 +202,7 @@ extension LocationRecorder {
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
         adaptive.reset(now:Date().timeIntervalSince1970,reason:"the recorder was locked or signed out");adaptiveEnabled=false;lastLowPowerFixAt=nil;adaptiveViolationsLogged=[];departureLatency.reset();lastDepartureLatency=[:]
+        resetPassiveRest(reason:"the recorder was locked or signed out")
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
@@ -342,12 +345,12 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         r.automaticEnabled=false; r.accountSuspended=true
                         if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
-                        r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.adaptive.shutdown(reason:"the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
+                        r.endBackgroundSession("the account was scheduled for deletion");r.resetPassiveRest(reason:"the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.adaptive.shutdown(reason:"the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
                         for region in r.manager.monitoredRegions { r.stopRegionMonitoring(region) }
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
-                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
+                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
                 } catch { r.uiUnlocked = false; call.reject("Unable to open this account’s private storage. Local data is preserved.") }
             }
         }.resume()
@@ -387,14 +390,14 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard r.uiUnlocked, let id = r.ownerID, call.getString("confirmation") == "DELETE" else { call.reject("Sign in and confirm deletion."); return }
         do {
             let directory = r.storage?.directory
-            r.endBackgroundSession("the local account was deleted"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
+            r.endBackgroundSession("the local account was deleted"); r.resetPassiveRest(reason:"the local account was deleted"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             r.diagnosticWriter.flush()
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
-            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveRecoveryKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
+            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveRecoveryKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.passiveRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
     } }
 }
