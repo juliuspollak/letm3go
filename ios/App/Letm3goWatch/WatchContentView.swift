@@ -423,7 +423,7 @@ struct WatchHistoryList: View {
                     HStack(spacing: 8) {
                         WatchActivityIcon(symbol: WatchCatalog.choice(ride.activity)?.symbol ?? "figure.walk", size: 14)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(ride.config.title).font(.headline).lineLimit(1).minimumScaleFactor(0.8)
+                            Text(WatchCatalog.choice(ride.activity)?.title ?? ride.activity).font(.headline).lineLimit(1).minimumScaleFactor(0.8)
                             Text("\(WatchFormat.date(ride.startedAt)) · \(WatchFormat.distance(ride.distanceMeters)) · \(WatchFormat.clock(ride.activeSeconds))")
                                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                             WatchSyncBadge(status: WatchHistory.status(ride, outbox: outbox))
