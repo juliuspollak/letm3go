@@ -102,13 +102,13 @@ struct WatchActionButton: View {
             HStack(spacing: 10) {
                 Image(systemName: symbol).font(.title3.weight(.semibold)).foregroundStyle(tint).frame(width: 28).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.headline).lineLimit(2).minimumScaleFactor(0.8)
+                    Text(title).font(.headline).lineLimit(1).minimumScaleFactor(0.7)
                     if let detail { Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         }
         .accessibilityElement(children: .combine)
     }
@@ -131,14 +131,15 @@ struct WatchHome: View {
                     .tint(.orange)
                 } else {
                     WatchActionButton(title: "Start Activity", symbol: "play.fill") { path = [.activities] }
-                    if let last = recorder.memory.last {
-                        WatchActionButton(title: "Start again", detail: [last.title, last.detail].compactMap { $0 }.joined(separator: " · "),
-                                          symbol: WatchCatalog.choice(last.activity)?.symbol ?? "arrow.clockwise", tint: .mint) {
-                            path = [.ready(last)]
-                        }
-                    }
                 }
                 WatchActionButton(title: "Past Activities", detail: waitingDetail, symbol: "clock.arrow.circlepath", tint: .blue) { path = [.history] }
+                // The last setup, one tap from Ready ("Mountain bike · Turbo Levo").
+                if !recorder.hasRide, let last = recorder.memory.last {
+                    WatchActionButton(title: "Start again", detail: [WatchCatalog.choice(last.activity)?.title, last.detail].compactMap { $0 }.joined(separator: " · "),
+                                      symbol: WatchCatalog.choice(last.activity)?.symbol ?? "arrow.clockwise", tint: .mint) {
+                        path = [.ready(last)]
+                    }
+                }
             }
         }
         .navigationTitle("Letm3go")
@@ -285,10 +286,10 @@ struct WatchRecordingView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             ScrollView {
-                VStack(spacing: 6) {
+                VStack(spacing: 4) {
                     status(now: context.date.timeIntervalSince1970)
                     Text(WatchFormat.clock(recorder.activeSeconds))
-                        .font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .font(.system(size: 36, weight: .semibold, design: .rounded)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
                         .accessibilityLabel("Elapsed \(WatchFormat.clock(recorder.activeSeconds))")
                     HStack(alignment: .top) {
@@ -307,11 +308,12 @@ struct WatchRecordingView: View {
                         Button { confirming = true } label: { Image(systemName: "stop.fill").font(.title3) }
                             .tint(.red).accessibilityLabel("Finish")
                     }
-                    .frame(minHeight: 48)
+                    .frame(minHeight: 44)
                 }
             }
         }
-        .navigationTitle(recorder.config.title)
+        .navigationTitle(WatchCatalog.choice(recorder.config.activity)?.title ?? recorder.config.activity)
+        .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(recorder.hasRide)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
