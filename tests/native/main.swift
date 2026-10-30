@@ -1497,7 +1497,7 @@ check(restingArrow.expected && restingArrow.reason.contains("no journey is recor
 check(LocationIndicator.explain(continuous:false,mode:.off,manual:false,sessionHeld:true).expected,"a held session alone is expected to show the arrow")
 check(!LocationIndicator.explain(continuous:false,mode:.off,manual:false,sessionHeld:false).expected,"nothing held, no arrow expected")
 check(LocationIndicator.explain(continuous:true,mode:.precise,manual:false,sessionHeld:true).reason.contains("Precise"),"precise GPS is named as such")
-check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:false,available:true,resting:true).contains("Resting at Home"),"diagnostics name the resting state")
+check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:false,available:true,resting:true).contains("Resting at settled place"),"diagnostics name the resting state")
 check(TrackingPresentation.reason(continuous:true,manual:false,automatic:false,stationary:false,probing:true,available:true,resting:true).contains("departure check"),"a departure check outranks resting in diagnostics")
 
 // Household sharing while resting: a Wi-Fi fix consistent with the last precise
@@ -2313,6 +2313,56 @@ do {
     outsideController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
     outsideController.lowPowerUpdate(generation: 1, stationary: false, point: at(1500, 10, accuracy: 60), dwell: here, fallback: nil, now: 10)
     check(outsideHost.checks.count == 1, "a first fix clearly outside the place starts the check")
+}
+
+
+// Full location diagnostics use the existing protected journal without needing a journey.
+do {
+    var overnight=RecorderDiagnosticJournal()
+    overnight.append(RecorderDiagnosticEvent(at:100,kind:"service",message:"Intentional resting",context:["modeAfter":"resting"]))
+    overnight.append(RecorderDiagnosticEvent(at:200,kind:"lifecycle",message:"App entered background",context:[:]))
+    let data=try JSONEncoder().encode(overnight)
+    var morning=try JSONDecoder().decode(RecorderDiagnosticJournal.self,from:data)
+    morning.append(RecorderDiagnosticEvent(at:100+12*3600,kind:"decision",message:"Departure check began",context:["modeBefore":"resting","modeAfter":"precise"]))
+    morning.append(RecorderDiagnosticEvent(at:150+12*3600,kind:"error",message:"Core Location error",context:["code":"0"]))
+    check(morning.events.count==4,"idle overnight lifecycle survives a restart and morning departure with no previous trip")
+    check(morning.window(start:100,end:86400).last?.kind=="error","location errors stay exportable without a journey")
+    // Saturate expendable sampling; an overnight transition still survives.
+    for index in 0..<RecorderDiagnosticJournal.limit {
+        morning.append(RecorderDiagnosticEvent(at:50000+Double(index),kind:"observations",message:"GPS summary",context:["gpsDelivered":"1"]))
+    }
+    check(morning.events.contains{$0.message=="Intentional resting"},"summary overflow preserves important overnight transitions")
+    check(morning.events.contains{$0.kind=="error"},"summary overflow preserves recent errors")
+    check(morning.capacityEvictions>0,"overflow is reported, never presented as complete history")
+    check(try! JSONEncoder().encode(morning).count<=RecorderDiagnosticJournal.byteLimit,"journal respects encoded storage cap")
+    var bytes=RecorderDiagnosticJournal()
+    for index in 0..<6 {bytes.append(RecorderDiagnosticEvent(at:Double(index),kind:"observations",message:"Large summary",context:["reason":String(repeating:"x",count:2*1024*1024)]))}
+    check(try! JSONEncoder().encode(bytes).count<=RecorderDiagnosticJournal.byteLimit && bytes.capacityEvictions>0,"byte cap applies independently of event cap")
+    let clean=LocationDiagnosticPrivacy.context(["ownerID":"private-account","accessToken":"secret","latitude":"-33.12345","longitude":"151.98765","reason":"Bearer private-token https://private.example/path -33.12345, 151.98765", "before.locationMode":"resting","after.locationMode":"precise","before.accessToken":"secret"])
+    check(clean["ownerID"]==nil && clean["accessToken"]==nil && clean["latitude"]==nil && clean["before.accessToken"]==nil,"location export allowlist removes credentials, coordinates and account identifiers")
+    check(clean["before.locationMode"]=="resting" && clean["after.locationMode"]=="precise","safe before/after state survives privacy filtering")
+    check(!(clean["reason"] ?? "").contains("private-token") && !(clean["reason"] ?? "").contains("private.example") && !(clean["reason"] ?? "").contains("33.12345"),"known text fields redact bearer values, URLs and coordinate pairs")
+    let writer=RecorderDiagnosticWriter()
+    writer.write(morning,to:encrypted){_ in}
+    writer.flush()
+    let reloaded=try JSONDecoder().decode(RecorderDiagnosticJournal.self,from:restartedStore.readData(name:"recorder-diagnostics.data"))
+    check(reloaded.events.count==morning.events.count,"asynchronous diagnostics flush to the account's protected store")
+    let failedURL=URL(fileURLWithPath:NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    let failing=try RecordingStorage(directory:failedURL)
+    try FileManager.default.removeItem(at:failedURL)
+    try Data("blocked".utf8).write(to:failedURL)
+    var failed=false
+    writer.write(morning,to:failing){ok in failed = !ok}
+    writer.flush()
+    check(failed,"a diagnostic write failure is reported without throwing into recorder processing")
+    try? FileManager.default.removeItem(at:failedURL)
+    // Overnight rest never releases the session, with or without a Wi-Fi estimate.
+    var home=HomeRest()
+    home.observe(point(-33.0001,1000),home:restHome,now:1000)
+    check(home.resting(now:1000+12*3600,idle:true),"overnight Home rest stays settled without invented GPS fixes")
+    check(!home.resting(now:1000+12*3600,idle:false),"a locked-phone departure check overrides rest immediately")
+    check(BackgroundSessionPolicy.decide(wanted:true,held:true,foreground:false,previouslyHeld:true,supported:true) == .none,"overnight rest retains the existing background session rather than recreating it")
+    home.leave();check(!home.resting(now:50000,idle:true),"region exit clears rest before the precise departure check")
 }
 
 print("\(assertions) native recorder/auth assertions passed")

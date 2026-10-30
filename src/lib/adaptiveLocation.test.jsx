@@ -20,6 +20,28 @@ describe('one position for household, friends and the map',()=>{
   expect(native.currentPosition).toHaveBeenCalledTimes(1);
   expect(a).toBe(b);expect(b).toBe(c);
  });
+ it('coalesces stationary-capable sharing calls and upgrades only once for the map',async()=>{
+  let resolve;native.currentPosition.mockReturnValueOnce(new Promise(r=>{resolve=r;})).mockResolvedValueOnce(fix(Date.now()/1000));
+  const household=recorder.currentPosition({allowStationary:true});
+  const second=recorder.currentPosition({allowStationary:true});
+  const map=recorder.currentPosition(),friend=recorder.currentPosition();
+  expect(native.currentPosition).toHaveBeenCalledTimes(1);
+  resolve({stationary:true,stationarySince:1});
+  const values=await Promise.all([household,second,map,friend]);
+  expect(values[0]).toMatchObject({stationary:true});expect(values[1]).toMatchObject({stationary:true});
+  expect(values[2]).toMatchObject({accuracy:8});expect(values[3]).toEqual(values[2]);
+  expect(native.currentPosition).toHaveBeenCalledTimes(2);
+ });
+ it('does not cache or deliver a previous account session’s in-flight position',async()=>{
+  let resolve;native.currentPosition.mockReturnValueOnce(new Promise(r=>{resolve=r;})).mockResolvedValueOnce(fix(Date.now()/1000));
+  const previous=recorder.currentPosition();
+  forgetSharedPosition();
+  const next=recorder.currentPosition();
+  resolve(fix(Date.now()/1000));
+  await expect(previous).rejects.toThrow('previous account');
+  await expect(next).resolves.toMatchObject({accuracy:8});
+  expect(native.currentPosition).toHaveBeenCalledTimes(2);
+ });
  it('reuses a fix for 20 seconds by its own timestamp, then asks again',async()=>{
   const taken=1_800_000_000;
   native.currentPosition.mockResolvedValueOnce(fix(taken)).mockResolvedValueOnce(fix(taken+30));

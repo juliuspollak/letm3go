@@ -57,6 +57,7 @@ export function useRecorder(ownerID,onBindingRequired){
   void Promise.resolve().then(()=>onBindingRequired(ownerID)).catch(err=>setError(err?.message||'Unable to reopen private activity storage.'));
  },[ownerID,onBindingRequired]);
  useEffect(()=>{
+  recorder.forgetPosition?.();
   let alive=true,pending=false,requestID=0,startedAt=0;
   async function refresh(force=false){
    if(!alive||(!force&&document.visibilityState==='hidden'))return;
@@ -89,7 +90,7 @@ export function useRecorder(ownerID,onBindingRequired){
   // Native pushes settle/continue/finish events, so a journey appears in History
   // as soon as it is published instead of on the next poll or app restart.
   void onJourneysChanged(()=>void refresh(true)).then(handle=>{if(alive)journeyListener=handle;else void handle?.remove();}).catch(()=>{});
-  return()=>{alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
+  return()=>{recorder.forgetPosition?.();alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID,requestRebind]);
  const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(lockedSnapshot(result));requestRebind(result.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID,requestRebind]);
  // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the

@@ -9,20 +9,29 @@ export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
 // reused, so the publishers never trigger separate precise requests. Only real
 // Core Location fixes are returned, with their own timestamps.
 export const POSITION_REUSE_SECONDS=20;
-let pendingPosition=null,lastPosition=null;
+let pendingPosition=null,lastPosition=null,positionGeneration=0;
 // `allowStationary`: a periodic refresh that only needs to know whether anything
 // changed may get {stationary:true} (no coordinates) while the adaptive engine
 // holds Core Location's stationary report, instead of waking precise GPS.
 export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false}={}){
  if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=POSITION_REUSE_SECONDS&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
- if(allowStationary&&!pendingPosition)return native.currentPosition({allowStationary:true}).then(result=>{if(!result?.stationary)lastPosition=result;return result;});
- if(!pendingPosition)pendingPosition=native.currentPosition().then(fix=>{lastPosition=fix;return fix;}).finally(()=>{pendingPosition=null;});
- return pendingPosition;
+ if(pendingPosition)return pendingPosition.then(result=>result?.stationary&&!allowStationary?sharedCurrentPosition(nowSeconds):result);
+ const generation=positionGeneration;
+ const request=allowStationary?native.currentPosition({allowStationary:true}):native.currentPosition();
+ const pending=request.then(result=>{
+  if(generation!==positionGeneration)throw new Error('Location request belongs to a previous account session.');
+  if(!result?.stationary)lastPosition=result;
+  return result;
+ }).finally(()=>{if(pendingPosition===pending)pendingPosition=null;});
+ pendingPosition=pending;
+ return pending;
 }
-export function forgetSharedPosition(){lastPosition=null;}
+export function forgetSharedPosition(){positionGeneration+=1;lastPosition=null;pendingPosition=null;}
 export const emptyRecorder = { active:null, trips:[], permission:'unavailable', automaticEnabled:false, automaticAvailable:false, automaticState:'idle', automaticSettledTripID:null, places:[], deletedIDs:[], backgroundEnabled:false, accuracy:null, version:'1.0', build:'web', error:'', recovery:'', storageReady:false };
 export const recorder = {
+ forgetPosition:forgetSharedPosition,
  trackingReport:params=>native.trackingReport(params),
+  exportLocationDiagnostics:()=>native.exportLocationDiagnostics(),
   exportJourneyDiagnostics:journeyID=>native.exportJourneyDiagnostics({journeyID}),
 
  getState:()=>recorderAvailable()?native.getState():Promise.resolve(emptyRecorder),

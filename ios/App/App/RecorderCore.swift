@@ -1569,7 +1569,7 @@ enum LocationIndicator {
         if continuous {
             switch mode {
             case .precise: return (true, "Precise GPS: a journey is open or a departure is being checked")
-            case .resting: return (true, "Resting at Home: low-power location keeps departure detection ready; no journey is recording" + session)
+            case .resting: return (true, "Resting at settled place: reduced-accuracy continuous location keeps departure detection ready; no journey is recording" + session)
             case .standby: return (true, "Departure standby: reduced-accuracy location keeps departure detection ready; no journey is recording" + session)
             case .off, .stationary: return (true, "Location updates are stopping" + session)
             }
@@ -1617,7 +1617,7 @@ enum TrackingPresentation {
             if settled {return "Journey stopped; watching for a continuation"}
             if automatic {return stationary ? "Confirming stop (up to 3 minutes)" : "Recording automatic journey"}
             if probing {return "Bounded departure check (up to 2 minutes)"}
-            if resting && available {return "Resting at Home: low-power location (Wi-Fi/cell), watching for departure"}
+            if resting && available {return "Resting at settled place: reduced-accuracy location requested, watching for departure"}
             if available {return "Departure standby: lower-accuracy background location"}
             return "Stopping continuous location service"
         }
@@ -1635,17 +1635,89 @@ struct RecorderDiagnosticEvent:Codable {
 }
 struct RecorderDiagnosticJournal:Codable {
     static let retention:Double=7*24*3600
-    static let limit=2000
-    var events:[RecorderDiagnosticEvent]=[]
+    static let limit=6000
+    static let byteLimit=8*1024*1024
+    private(set) var events:[RecorderDiagnosticEvent]=[]
+    private(set) var capacityEvictions=0
+    private var sizes:[Int]=[]
+    private var bytes=0
+    enum CodingKeys:String,CodingKey {case events,capacityEvictions}
+    init() {}
+    init(from decoder:Decoder)throws {
+        let values=try decoder.container(keyedBy:CodingKeys.self)
+        events=try values.decode([RecorderDiagnosticEvent].self,forKey:.events)
+        capacityEvictions=try values.decodeIfPresent(Int.self,forKey:.capacityEvictions) ?? 0
+        sizes=events.map(Self.size);bytes=sizes.reduce(0,+)
+    }
+    func encode(to encoder:Encoder)throws {
+        var values=encoder.container(keyedBy:CodingKeys.self)
+        try values.encode(events,forKey:.events);try values.encode(capacityEvictions,forKey:.capacityEvictions)
+    }
+    private static func size(_ event:RecorderDiagnosticEvent)->Int {((try? JSONEncoder().encode(event).count) ?? byteLimit)+1}
     mutating func append(_ event:RecorderDiagnosticEvent){
-        events.append(event)
+        events.append(event);let size=Self.size(event);sizes.append(size);bytes+=size
         prune(now:event.at)
     }
-    mutating func prune(now:Double){events=Array(events.filter{$0.at>=now-Self.retention}.suffix(Self.limit))}
+    mutating func prune(now:Double){
+        for index in events.indices.reversed() where events[index].at<now-Self.retention {remove(index)}
+        // Summaries are expendable before lifecycle evidence. Keep the newest
+        // event even during a flood, and explicitly report any capacity loss.
+        while events.count>Self.limit || bytes+256>Self.byteLimit {
+            guard !events.isEmpty else {break}
+            let index=events.firstIndex{$0.kind=="observations" || $0.kind=="sampling"} ?? 0
+            remove(index);capacityEvictions+=1
+        }
+    }
+    private mutating func remove(_ index:Int){bytes-=sizes.remove(at:index);events.remove(at:index)}
     func window(start:Double,end:Double)->[RecorderDiagnosticEvent]{
         let ordered=events.sorted{$0.at<$1.at}
-        // Keep the last known state before the incident as well as events inside it.
         return Array(ordered.filter{$0.at<start}.suffix(1))+ordered.filter{$0.at>=start && $0.at<=end}
+    }
+}
+
+// The journal uses the same encrypted storage as journeys, but its disk I/O is
+// independent. Errors never propagate into recording. Account/deletion boundaries
+// flush the serial queue before replacing or removing the protected store.
+final class RecorderDiagnosticWriter {
+    private let queue=DispatchQueue(label:"au.jpollak.recorder-diagnostics",qos:.utility)
+    private let lock=NSLock()
+    private struct Pending {
+        var journal:RecorderDiagnosticJournal
+        var storage:RecordingStorage
+        var completion:(Bool)->Void
+    }
+    private var pending:[ObjectIdentifier:Pending]=[:]
+    func write(_ journal:RecorderDiagnosticJournal,to storage:RecordingStorage,completion:@escaping(Bool)->Void){
+        let key=ObjectIdentifier(storage)
+        lock.lock();pending[key]=Pending(journal:journal,storage:storage,completion:completion);lock.unlock()
+        // Coalesce queued snapshots of this account, bounding memory during a
+        // burst. A final write always contains all appended journal events.
+        queue.async {
+            self.lock.lock();let work=self.pending.removeValue(forKey:key);self.lock.unlock()
+            guard let work=work else{return}
+            do {try work.storage.writeData(JSONEncoder().encode(work.journal),name:"recorder-diagnostics.data");work.completion(true)}
+            catch {work.completion(false)}
+        }
+    }
+    func flush(){queue.sync{}}
+}
+
+// Defense in depth for the copy/paste report. Known recorder fields are the only
+// context exported; network errors are codes, never request bodies or endpoints.
+enum LocationDiagnosticPrivacy {
+    static let keys:Set<String>=Set(("backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions").split(separator:" ").map(String.init))
+    static func text(_ value:String)->String {
+        var result=value
+        for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {
+            result=result.replacingOccurrences(of:pattern,with:"[redacted]",options:.regularExpression)
+        }
+        return result
+    }
+    static func context(_ values:[String:String])->[String:String]{
+        values.filter{keys.contains($0.key)||$0.key.hasPrefix("rejected.")||($0.key.hasPrefix("before.")&&keys.contains(String($0.key.dropFirst(7))))||($0.key.hasPrefix("after.")&&keys.contains(String($0.key.dropFirst(6))))}.mapValues(text)
+    }
+    static func event(_ event:RecorderDiagnosticEvent)->RecorderDiagnosticEvent {
+        RecorderDiagnosticEvent(at:event.at,kind:text(event.kind),message:text(event.message),context:context(event.context))
     }
 }
 

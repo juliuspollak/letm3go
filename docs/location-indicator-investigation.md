@@ -1,0 +1,61 @@
+# Persistent iOS location indicator and full location diagnostics
+
+Reviewed `origin/main`: `5529c56f89a1cc749600337ee46571a0aeae989d` (fetched 30 October 2026). This report distinguishes conclusions from the code/API contract from physical-device observations. No new overnight/locked-iPhone test has been performed for this branch.
+
+## Indicator diagnosis
+
+The established automatic engine intentionally retains a `CLBackgroundActivitySession` while automatic tracking is enabled and Always access is available. Home Rest does not invalidate it. Apple defines this object as managing the visual indicator that keeps an app in use in the background: [CLBackgroundActivitySession](https://developer.apple.com/documentation/corelocation/clbackgroundactivitysession-3mzv3). This is a confirmed sufficient app-side explanation for the indicator even when there is no open journey. It is not a measurement of the user's particular indicator or of another process: iOS provides no public attribution/hardware-GPS getter to this app. The exported current state now records both the session state and whether its object is actually held.
+
+Reducing desired accuracy and distance frequency does not release that session, nor prove that only Wi-Fi/cell hardware is used. Home Wi-Fi association is not measured by this app, and is not evidence on which it can safely end departure monitoring. The existing `showsBackgroundLocationIndicator` policy does not override a held background activity session. No cosmetic suppression has been added.
+
+## Services after a journey ends
+
+| Stage / component | What actually remains active | Purpose and distinction |
+| --- | --- | --- |
+| Manual recording | Shared recorder manager, best accuracy, 5 m distance filter; background session | Saved journey fixes until pause/finish. |
+| Automatic journey / departure probe | Same manager, precise configuration; background session | Confirms and records real departure fixes. A check is bounded; it is not itself a published journey. |
+| Arrival and continuation | Published stopped journey and a continuation geofence; automatic sampling selects the required configuration | An intentional stop is not a route gap. A nearby departure can continue the same journey during the existing window. |
+| Established standby | Standard location remains requested at nearest-ten-metre accuracy and 25 m distance filter; significant-change, visits, saved/last-stop regions and motion remain armed | Sampling watches for departure; it does not record every idle fix as a journey. |
+| Home Rest / settled place | Standard location remains requested at hundred-metre accuracy and 50 m filter, background session remains held | Entered only when idle and sufficiently settled, with no recent credible movement/probe. Recent place-aware code applies this at inferred/arrival/visit places as well as saved Home. Diagnostics now name it “settled place”, rather than incorrectly implying every rest is at Home. |
+| Optional adaptive stationary engine | Standard updates stop; one `CLLocationUpdate.liveUpdates()` stream and current-place exit region take over; session is retained | Existing internal test preference is unchanged. Stream failures recover to the established engine. It is not automatically enabled as an indicator workaround. |
+| Household publishing | Existing delivered locations feed the native publisher; while running, the existing timer may reconfirm a stationary fix only under the current continuity rules | Sharing is separate from journey recording. With automation off and Always access, significant-change monitoring can remain armed for sharing without continuous standard updates. |
+| Foreground sharing / map | Short-lived best-accuracy `PositionRequest` managers, with a 20 s timeout, plus the JS 20 s genuine-fix cache | These requests can temporarily escalate accuracy while the UI is open. The stationary-capable path formerly bypassed request coalescing; this branch fixes it and logs its lifecycle. |
+| Native maps | `showsUserLocation` is false; maps consume recorder-delivered pins | MapKit is not configured as an additional continuous location client. |
+
+There is one long-lived `LocationRecorder.shared.manager`, one motion manager and at most one adaptive stream. One-shot foreground requests create their own short-lived managers, now counted and traced. The log does not claim to enumerate managers inside iOS itself.
+
+## Architecture decision
+
+Keep the established reliability contract. A background activity session is not a universal Apple requirement for every Always-authorized app, and this audit does not prove it indispensable on this phone. The current engine deliberately retains it, particularly across background launches; removing it requires measured departure comparisons rather than assuming that Always permission alone reproduces the same behavior. [Core Motion updates are best-effort and are not delivered while an app is suspended](https://developer.apple.com/documentation/coremotion/cmmotionactivitymanager/startactivityupdates(to:withhandler:)). Significant-change callbacks and geofences are useful wake-up mechanisms, but do not guarantee the earliest precise departure fixes; [region monitoring adds a boundary cushion](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/LocationAwarenessPG/RegionMonitoring/RegionMonitoring.html). Replacing the current engine with region/motion-only standby would risk missing the beginning of short drives, cycling or meaningful walks with the phone locked.
+
+Apple's [streamlined live updates](https://developer.apple.com/videos/play/wwdc2023/10180/) can suspend during stationary periods and resume when updates become available. That is why the existing adaptive engine is a reasonable controlled experiment, but it still retains the background activity session and cannot promise an invisible indicator or an uninterrupted earliest route. This branch does not promote it without an on-device comparison. Force-quit, authorization changes, Background App Refresh restrictions, weak fixes, iOS scheduling and power policies remain limitations; a held session is a capability request, not a guarantee that the process continuously executes.
+
+## Confirmed defects and changes
+
+- Saved geofences were removed and recreated on each monitoring refresh. Reconcile identifiers, geometry and entry/exit flags instead, preserving unchanged registrations and reserved continuation/current-place regions.
+- Significant-change and visit start calls repeated on refresh. Make start/stop requests idempotent, with explicit service lifecycle events.
+- Stationary-capable foreground callers bypassed shared request coalescing. Coalesce them and allow a coordinate-requiring caller to upgrade a stationary-only response to one genuine fix, without duplicating concurrent upgrades.
+- Clear the foreground fix cache on recorder/account lifecycle boundaries and reject late responses from previous account generations. Native sharing callbacks also verify the original account/credential before updating current state; credential rotation resets the corresponding request gate.
+- Pre-boundary cached fixes reached place/rest inference before rejection. Reject them before place/rest observation.
+- A stop event previously captured the continuous-running flag before clearing it. Capture the stopped state and distinguish intentional service stops from delivery gaps.
+- Reuse the existing encrypted account journal, while moving its encryption/disk writes to a serial utility queue. Coalesce queued snapshots; catch write errors. Flush before account replacement/deletion. Failures cannot throw into journey saving. No extra location manager, wake timer or background session is created by logging.
+
+Expected benefit: fewer redundant registrations and foreground location requests, and less diagnostic disk work on the recorder's main queue. Battery savings are not quantified; this is not a GPS-off change. Automatic detector thresholds, continuation rules, incidental-walk suppression, geofence wake-up coverage and session policy remain intact.
+
+## Copy the complete report
+
+Open **profile avatar → Diagnostics → Copy Full Location Log**. The action is at the top, works with zero journeys, fetches fresh native state and reuses the journey report's clipboard helper and WebView fallback. Per-journey diagnostic export remains available below it.
+
+A report contains app version/build/source commit; timezone; permission/background capability; manual and automatic states; detection phase; place source/type and rest/stationary evidence; accuracy/distance configuration; service/manager inventory; actual held session; recent fix age/accuracy and source; sharing attempts/success/failures; available battery/Low Power Mode information; lifecycle/region/visit/motion/probe/journey/service events; latest 30 journey IDs and quality summaries; observation counters; and errors/warnings. No GPS coordinates, routes, names, raw account IDs, credentials or request URLs are exported. Export allowlisting and text redaction run natively. Battery monitoring is not enabled just to produce a report; unavailable values remain explicit. Wi-Fi presence is explicitly unmeasured.
+
+Plain-text output has BEGIN/END markers and an ISO UTC timestamp with the device timezone/offset recorded separately. Up to 512 KiB copies in one tap. Larger retained logs show explicit **Copy part 1 of N**, **Copy part 2 of N**, etc.; paste all parts in order. Each part has independent boundaries and a common generation timestamp. **Full location log text** provides a selectable fallback for the selected part. No clipboard truncation is silent.
+
+The existing journal now retains up to **seven days, 6,000 events and 8 MiB**, whichever limit is reached first. Routine summaries/one-shot sampling are evicted before important transitions under pressure; evictions are counted and exported. Idle summaries run on the existing timer (at most once per five idle minutes without fixes); repeated unchanged motion callbacks are not separately logged. This is intended to retain at least an overnight/24-hour idle cycle under normal use, not guarantee 24 hours during unlimited event floods. Data is encrypted with the account's existing key and protected after first unlock. Older journal files decode without migration. A few final queued events can be lost if iOS kills the process before their write executes. No events are invented for execution gaps, and log gaps cannot prove suspension, force-quit or a crash.
+
+Local `ios:build` and `ios:device` commands now stamp the source SHA (and `-dirty` when tracked source changes exist). Direct Xcode builds without `LETM3GO_COMMIT` still honestly report `local`; set that build setting for attributable direct builds.
+
+## Verification and device work still required
+
+Automated checks cover existing Home Rest, drift, geofence/departure policy, inferred places with/without Wi-Fi estimates, motion/probe limits, household stationary reconfirmation, session start/rejoin/retention/release and permission changes. New tests cover overnight journal restart with no journey, subsequent morning departure/error history, protected storage, capacity/byte bounds, preserving transitions under summary floods, privacy redaction, write failure isolation, mixed stationary/precise request coalescing, old-account response rejection, copy boundaries, Unicode chunks and clipboard fallback. These are deterministic policy/integration tests, not a locked-phone driving test.
+
+On the iPhone: enable normal automation; copy the report while settled at Home, then at an inferred destination; leave it locked overnight; depart driving/cycling and on a meaningful walk; compare first movement/fix/confirmation and route start. Repeat with Home Wi-Fi absent, Low Power Mode, sharing on/off and a permission change. Copy before/after restart, verify clipboard markers/all numbered parts, and check geofence/visit/motion events and last publication time. A force-quit case must be reported separately, without claiming normal suspended-app reliability. Only consider changing the session/standby architecture after these logs establish departure performance.

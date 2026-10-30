@@ -184,6 +184,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var trackingTimeline:[(at:Double,note:String)]=[]
     var diagnosticJournal=RecorderDiagnosticJournal()
     var diagnosticStorageError=""
+    let diagnosticWriter=RecorderDiagnosticWriter()
+    var diagnosticPreviousState:[String:String]=[:]
+    var diagnosticSharingAttempts=0,diagnosticSharingSuccesses=0,diagnosticSharingFailures=0
+    var diagnosticLastSharingLogAt:Double=0
+    var friendShareLastOkAt:Double=0
     let diagnosticProcessID=UUID().uuidString
     var diagnosticLastSummaryAt:Double=0
     var diagnosticGPSReceived=0
@@ -191,13 +196,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var diagnosticMaxDeliveryDelay:Double=0
     var diagnosticWorstAccuracy:Double=0
     var diagnosticLastDeliveryAt:Double=0
+    var diagnosticLastObservedAt:Double?
+    var diagnosticLastObservedAccuracy:Double?
+    var diagnosticLastObservedSource="none"
     var diagnosticLastMotionAt:Double=0
     var diagnosticRejections:[String:Int]=[:]
     var diagnosticObservers:[NSObjectProtocol]=[]
     func diagnosticContext()->[String:String]{
         let now=Date().timeIntervalSince1970
         let info=Bundle.main.infoDictionary ?? [:]
-        return ["process":diagnosticProcessID,"uptimeSeconds":String(Int(ProcessInfo.processInfo.systemUptime)),
+        var context:[String:String]=["process":diagnosticProcessID,"uptimeSeconds":String(Int(ProcessInfo.processInfo.systemUptime)),
             "version":info["CFBundleShortVersionString"] as? String ?? "unknown","build":info["CFBundleVersion"] as? String ?? "unknown",
             "iOS":UIDevice.current.systemVersion,"appState":UIApplication.shared.applicationState == .background ? "background" : UIApplication.shared.applicationState == .active ? "foreground" : "inactive",
             "automaticEnabled":String(automaticEnabled),"automaticAvailable":String(automaticAvailable),"accountSuspended":String(accountSuspended),
@@ -206,7 +214,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "motionAgeSeconds":String(Int(max(0,now-motion.timestamp))),"detectorPhase":detector.phase,
             "candidateElapsedSeconds":String(detector.candidate.first.map{now-$0.timestamp} ?? 0),"candidateMinimumDistance":String(detector.minimumDistance),"candidateMinimumSeconds":String(detector.minimumSeconds),
             "candidateFixes":String(detector.candidate.count),"candidateDistanceMeters":String(Int(detector.candidate.first.flatMap{first in detector.candidate.last.map{first.distance(to:$0)}} ?? 0)),
-            "automaticRecording":String(automaticTrip != nil),"manualState":active?.state ?? "none",
+            "automaticRecording":String(automaticActivelyRecording),"automaticJourneyState":automaticTrip?.state ?? "none","continuationOpen":String(settledTripID != nil || settledAt != nil),"manualState":active?.state ?? "none",
             "continuousLocationRequested":String(continuousLocationRequested),"pausedByIOS":String(locationUpdatesPaused),
             // iOS reports a pause only when automatic pausing is enabled, so
             // pausedByIOS=false carries no evidence while this is false.
@@ -217,18 +225,62 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "probeUntil":String(automaticSampling.probeUntil ?? 0),"retryAfter":String(automaticSampling.retryAfter),
             "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),"lastAutomaticDeliveryAt":String(lastAutomaticDeliveryAt ?? 0),"stalledGPSRestartAt":String(automaticGPSRecoveryAt),
             "lowPowerMode":String(ProcessInfo.processInfo.isLowPowerModeEnabled),"backgroundRefreshStatus":String(UIApplication.shared.backgroundRefreshStatus.rawValue),
-            "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(adaptive.lowPowerRunning),"locationMode":locationMode.rawValue]
+            "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(adaptive.lowPowerRunning),"locationMode":active?.state == "recording" ? "manualPrecise" : locationMode.rawValue,"automaticLocationMode":locationMode.rawValue]
+        context.merge(locationDiagnosticState()){_,new in new}
+        return context
+    }
+    func locationDiagnosticState()->[String:String]{
+        let now=Date().timeIntervalSince1970
+        let stationarySince=detector.stationarySince ?? liveGate.stationarySince
+        let battery=UIDevice.current
+        return ["timezone":TimeZone.current.identifier,"utcOffsetSeconds":String(TimeZone.current.secondsFromGMT()),
+            "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
+            "homeRestSince":String(homeRest.insideSince ?? 0),"homeRestConfirmed":String(active == nil && locationMode == .resting),
+            "stationarySeconds":stationarySince.map{String(Int(max(0,now-$0)))} ?? "unknown",
+            "placeType":dwell?.placeKind ?? restPlace?.kind ?? "none","placeSource":dwell?.source.rawValue ?? "none","placeSettled":String(dwellSettled),
+            "significantChangesRequested":String(significantLocationRequested),"visitsRequested":String(visitMonitoringRequested),
+            "registeredRegions":String(manager.monitoredRegions.count),"locationManagerID":"LocationRecorder.shared.manager",
+            "activeLocationManagers":String((continuousLocationRequested || significantLocationRequested || visitMonitoringRequested || !manager.monitoredRegions.isEmpty ? 1 : 0)+PositionRequest.activeRequests.count),"oneShotRequests":String(PositionRequest.activeRequests.count),
+            "liveUpdatesRunning":String(liveUpdatesTask != nil),"householdArmed":String(liveShareToken != nil && now<liveShareTokenExpiresAt-60),
+            "householdStatus":liveShareStatus,"householdLastSuccessAt":String(liveShareLastOkAt),"householdLastAttemptAt":String(liveShareLastSentAt),
+            "friendSharingArmed":String(friendShareToken != nil && now<friendShareTokenExpiresAt-60),"friendLastSuccessAt":String(friendShareLastOkAt),
+            "batteryMonitoringAvailable":String(battery.isBatteryMonitoringEnabled),"batteryLevel":String(battery.batteryLevel),"batteryState":String(battery.batteryState.rawValue),
+            "lastObservedFixAt":String(diagnosticLastObservedAt ?? 0),"lastObservedFixAgeSeconds":diagnosticLastObservedAt.map{String(Int(max(0,now-$0)))} ?? "unknown",
+            "lastObservedAccuracyMeters":diagnosticLastObservedAccuracy.map{String($0)} ?? "unknown","lastObservedSource":diagnosticLastObservedSource,
+            "lastSampleAgeSeconds":lastLocationUpdateAt.map{String(Int(max(0,now-$0)))} ?? "unknown","lastSampleAccuracyMeters":lastLocationAccuracy.map{String($0)} ?? "unknown",
+            "indicatorExpected":String(locationIndicator.expected),"indicatorReason":locationIndicator.reason,
+            "wifiPresence":"not measured; Wi-Fi is not used as proof of rest or departure"]
     }
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
         guard ownerID != nil,let storage=storage else {return}
         if let last=diagnosticJournal.events.last,last.kind==kind,last.message==message,
            Date().timeIntervalSince1970-last.at<30,details.allSatisfy({last.context[$0.key]==$0.value}) {return}
         var context=diagnosticContext();context.merge(details){_,new in new}
+        context["component"]=details["component"] ?? (["sharing":"HouseholdSharing","motion":"CoreMotion","session":"BackgroundSession","region":"CoreLocation","place":"PlaceAwareness" ][kind] ?? "LocationRecorder")
+        context["reason"]=context["reason"] ?? message
+        for key in ["locationMode","detectorPhase","manualState","automaticRecording","backgroundSession","continuousLocationRequested","placeType","placeSource"] {
+            if let previous=diagnosticPreviousState[key],previous != context[key] {context["before."+key]=previous;context["after."+key]=context[key]}
+        }
+        diagnosticPreviousState=context
+        // Keep summaries small so overnight idle evidence cannot crowd out state
+        // changes. Full state is captured on each lifecycle/decision event.
+        if kind == "observations" || kind == "sampling" {
+            let keep=Set(["process","component","appState","locationMode","backgroundSession","reason","lastSampleAt"])
+            context=context.filter{keep.contains($0.key)||details[$0.key] != nil}
+        }
         diagnosticJournal.append(RecorderDiagnosticEvent(at:Date().timeIntervalSince1970,kind:kind,message:message,context:context))
-        do {try storage.writeData(JSONEncoder().encode(diagnosticJournal),name:"recorder-diagnostics.data");diagnosticStorageError=""}
-        catch {diagnosticStorageError="Recorder diagnostic history could not be saved on this device."}
+        diagnosticWriter.write(diagnosticJournal,to:storage){[weak self,weak storage] ok in
+            DispatchQueue.main.async {
+                guard let self=self,let storage=storage,self.storage === storage else {return}
+                self.diagnosticStorageError=ok ? "" : "Recorder diagnostic history could not be saved on this device."
+            }
+        }
     }
     func loadRecorderDiagnostics(){
+        diagnosticWriter.flush()
+        diagnosticPreviousState=[:]
+        diagnosticLastObservedAt=nil;diagnosticLastObservedAccuracy=nil;diagnosticLastObservedSource="none"
+        diagnosticSharingAttempts=0;diagnosticSharingSuccesses=0;diagnosticSharingFailures=0;friendShareLastOkAt=0;liveShareLastOkAt=0;liveShareStatus="";diagnosticLastSharingLogAt=0
         diagnosticJournal=RecorderDiagnosticJournal();diagnosticStorageError="";diagnosticLastSummaryAt=0
         diagnosticGPSReceived=0;diagnosticGPSAccepted=0;diagnosticMaxDeliveryDelay=0;diagnosticWorstAccuracy=0;diagnosticLastDeliveryAt=0;diagnosticLastMotionAt=0;diagnosticRejections=[:];trackingTimeline=[]
         guard let storage=storage else {return}
@@ -236,6 +288,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             do {diagnosticJournal=try JSONDecoder().decode(RecorderDiagnosticJournal.self,from:storage.readData(name:"recorder-diagnostics.data"));diagnosticJournal.prune(now:Date().timeIntervalSince1970)}
             catch {recordDiagnostic("error","Earlier recorder diagnostic history could not be read")}
         }
+        liveShareLastOkAt=diagnosticJournal.events.compactMap{Double($0.context["householdLastSuccessAt"] ?? "")}.max() ?? 0
+        friendShareLastOkAt=diagnosticJournal.events.compactMap{Double($0.context["friendLastSuccessAt"] ?? "")}.max() ?? 0
         recordDiagnostic("lifecycle","Private recorder opened; process or account binding started")
     }
     func diagnosticSummary(force:Bool=false){
@@ -245,7 +299,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         var details=diagnosticRejections.mapValues(String.init)
         details["gpsDelivered"]=String(diagnosticGPSReceived);details["routeFixesSaved"]=String(diagnosticGPSAccepted)
         details["maxDeliveryDelaySeconds"]=String(diagnosticMaxDeliveryDelay);details["worstAccuracyMeters"]=String(diagnosticWorstAccuracy)
+        details["sharingAttempts"]=String(diagnosticSharingAttempts);details["sharingSuccesses"]=String(diagnosticSharingSuccesses);details["sharingFailures"]=String(diagnosticSharingFailures)
         recordDiagnostic("observations","Recorder observation summary",details:details)
+        diagnosticSharingAttempts=0;diagnosticSharingSuccesses=0;diagnosticSharingFailures=0
         diagnosticGPSReceived=0;diagnosticGPSAccepted=0;diagnosticMaxDeliveryDelay=0;diagnosticWorstAccuracy=0;diagnosticRejections=[:]
     }
     func diagnosticReject(_ reason:String){diagnosticRejections["rejected."+reason,default:0]+=1}
@@ -430,14 +486,17 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
-        friendShareInFlight=true;friendShareLastSentAt=now
+        friendShareInFlight=true;friendShareLastSentAt=now;diagnosticSharingAttempts+=1
+        let requestOwner=ownerID
         URLSession.shared.dataTask(with:request){[weak self] _,response,error in
             DispatchQueue.main.async {
-                guard let self=self else{return}
+                guard let self=self,self.ownerID==requestOwner,self.friendShareToken==token else{return}
                 self.friendShareInFlight=false
                 if error != nil || !((response as? HTTPURLResponse).map{(200...299).contains($0.statusCode)} ?? false) {
                     self.friendShareLastSentAt=Date().timeIntervalSince1970-15
-                }
+                    self.diagnosticSharingFailures+=1
+                    self.recordDiagnostic("sharing","Friend location publication failed",details:["status":String((response as? HTTPURLResponse)?.statusCode ?? 0)])
+                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.diagnosticSharingSuccesses+=1}
             }
         }.resume()
     }
@@ -494,14 +553,26 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
         liveShareInFlight=true
         liveShareLastSentAt=now
+        diagnosticSharingAttempts+=1
+        let requestOwner=ownerID
         URLSession.shared.dataTask(with:request){[weak self] body,response,error in
             DispatchQueue.main.async {
-                guard let self=self else{return}
+                guard let self=self,self.ownerID==requestOwner,self.liveShareToken==token else{return}
                 self.liveShareInFlight=false
                 let status=(response as? HTTPURLResponse)?.statusCode ?? 0
                 let accepted=error == nil && (200...299).contains(status) &&
                     (!device || String(decoding:body ?? Data(),as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines) == "true")
-                if accepted { self.liveShareLastOkAt=Date().timeIntervalSince1970; self.liveShareStatus="ok"; return }
+                if accepted {
+                    self.diagnosticSharingSuccesses+=1
+                    let previous=self.liveShareStatus
+                    self.liveShareLastOkAt=Date().timeIntervalSince1970;self.liveShareStatus="ok"
+                    if previous != "ok" || self.liveShareLastOkAt-self.diagnosticLastSharingLogAt>=300 {
+                        self.diagnosticLastSharingLogAt=self.liveShareLastOkAt
+                        self.recordDiagnostic("sharing","Household location publication succeeded",details:["confirmation":String(confirmation)])
+                    }
+                    return
+                }
+                self.diagnosticSharingFailures+=1
                 if device, error == nil, (200...299).contains(status) {
                     // The server no longer accepts this credential: sharing was
                     // turned off, the member left, or a newer credential replaced it.
@@ -560,14 +631,21 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingStartedAt=continuousStartedAt;gpsStartCount += 1;trackingEvent(gpsReason)}
     }
     func stopContinuousLocation(reason:String = "Continuous GPS stopped"){
-        if continuousLocationRequested {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;if let start=trackingStartedAt {continuousSeconds += max(0,continuousStoppedAt!-start)};trackingStartedAt=nil;trackingEvent(reason)}
+        let wasRunning=continuousLocationRequested
+        if wasRunning {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;if let start=trackingStartedAt {continuousSeconds += max(0,continuousStoppedAt!-start)};trackingStartedAt=nil}
         continuousLocationRequested=false;locationUpdatesPaused=false;updateIndicatorPolicy()
+        if wasRunning {recordDiagnostic("service",reason,details:["stopKind":"intentional service stop; not a GPS delivery gap"])}
     }
-    func startSignificantMonitoring(){manager.startMonitoringSignificantLocationChanges();significantLocationRequested=true}
-    func stopSignificantMonitoring(){manager.stopMonitoringSignificantLocationChanges();significantLocationRequested=false}
-    func startVisitMonitoring(){manager.startMonitoringVisits();visitMonitoringRequested=true}
-    func stopVisitMonitoring(){manager.stopMonitoringVisits();visitMonitoringRequested=false}
-    func stopMotionUpdates(){motionManager?.stopActivityUpdates();motionUpdatesRequested=false}
+    func startSignificantMonitoring(){guard !significantLocationRequested else{return};manager.startMonitoringSignificantLocationChanges();significantLocationRequested=true;recordDiagnostic("service","Significant-change monitoring started")}
+    func stopSignificantMonitoring(){guard significantLocationRequested else{return};manager.stopMonitoringSignificantLocationChanges();significantLocationRequested=false;recordDiagnostic("service","Significant-change monitoring stopped")}
+    func startVisitMonitoring(){guard !visitMonitoringRequested else{return};manager.startMonitoringVisits();visitMonitoringRequested=true;recordDiagnostic("service","Visit monitoring started")}
+    func stopVisitMonitoring(){guard visitMonitoringRequested else{return};manager.stopMonitoringVisits();visitMonitoringRequested=false;recordDiagnostic("service","Visit monitoring stopped")}
+    func stopMotionUpdates(){guard motionUpdatesRequested else{return};motionManager?.stopActivityUpdates();motionUpdatesRequested=false;recordDiagnostic("service","Motion monitoring stopped")}
+    func regionKind(_ region:CLRegion)->String {
+        region.identifier == Self.placeRegionID ? "current place" : region.identifier == Self.continuationRegionID ? "journey continuation" : "saved place or last stop"
+    }
+    func startRegionMonitoring(_ region:CLRegion){manager.startMonitoring(for:region);recordDiagnostic("service","Geofence monitoring registered",details:["reason":regionKind(region)])}
+    func stopRegionMonitoring(_ region:CLRegion){manager.stopMonitoring(for:region);recordDiagnostic("service","Geofence monitoring removed",details:["reason":regionKind(region)])}
     func locationManagerDidPauseLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=true;recordDiagnostic("service","iOS paused location updates")}
     func locationManagerDidResumeLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=false;recordDiagnostic("service","iOS resumed location updates")}
     var authorized: Bool { manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse }
@@ -607,6 +685,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         try storage!.save(trip)
         active = trip; lastError = ""; recoveryMessage = ""; accuracy = nil; lastFixAt = nil
+        recordDiagnostic("journey","Manual journey started")
         if CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
         beginUpdates()
     }
@@ -617,6 +696,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false
         manager.activityType = active?.activity == "Driving" ? .automotiveNavigation : .fitness
+        recordDiagnostic("service","Manual precise location configuration applied",details:["configuration":"best accuracy, 5 m distance filter"])
         startContinuousLocation()
         reconcileBackgroundSession("manual recording")
     }
@@ -643,6 +723,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if action == "finish" { trips.insert(trip, at: 0); active = nil }
         else { active = trip }
         currentSpeed = 0
+        recordDiagnostic("journey","Manual journey \(action == "finish" ? "finished" : action == "pause" ? "paused" : "resumed")",details:["stopKind":action == "pause" || action == "finish" ? "intentional journey stop; not a GPS gap" : "explicit continuation"])
         if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring(); releaseBackgroundSessionIfUnneeded("manual recording \(action == "finish" ? "finished" : "paused")") }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -665,6 +746,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             lastLowPowerFixAt = locations.last?.timestamp.timeIntervalSince1970
         } else {
             noteExecution("location")
+        }
+        if let last=locations.last {
+            diagnosticLastObservedAt=last.timestamp.timeIntervalSince1970
+            diagnosticLastObservedAccuracy=last.horizontalAccuracy>=0 ? last.horizontalAccuracy : nil
+            diagnosticLastObservedSource=source == .standard ? "standard manager" : "adaptive low-power stream"
         }
         diagnosticGPSReceived += locations.count
         diagnosticLastDeliveryAt=Date().timeIntervalSince1970
@@ -829,6 +915,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "restoreActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "restorePhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trackingReport", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "exportLocationDiagnostics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "exportJourneyDiagnostics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
@@ -919,6 +1006,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                   let expiry=call.getDouble("expiresAt"),expiry>Date().timeIntervalSince1970+90 else {
                 call.reject("Valid household sharing credential required.");return
             }
+            if recorder.liveShareToken != publishToken {recorder.liveShareInFlight=false;recorder.liveShareLastSentAt=0}
             recorder.liveShareToken=publishToken;recorder.liveShareEndpoint=url
             recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
             recorder.liveShareMode="device";recorder.liveShareStatus=""
@@ -936,6 +1024,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("Valid signed-in session required for background sharing.");return
         }
         if friends {
+            if recorder.friendShareToken != token {recorder.friendShareInFlight=false;recorder.friendShareLastSentAt=0}
             recorder.friendShareToken=token;recorder.friendShareEndpoint=url
             recorder.friendShareApiKey=apiKey;recorder.friendShareTokenExpiresAt=expiry
         } else {
@@ -966,6 +1055,31 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "storageError":r.diagnosticStorageError,"retentionDays":7,"eventLimit":RecorderDiagnosticJournal.limit,
                 "limitations":"A log gap means no diagnostic events were persisted. It cannot prove force-quit, suspension, crash, or the actual time movement began. No coordinates, routes, names, account identifiers, or credentials are included."])
         }catch{call.reject("The tracking report could not be prepared.")}
+    }}
+    @objc func exportLocationDiagnostics(_ call:CAPPluginCall){DispatchQueue.main.async {
+        guard self.requireAccount(call) else {return}
+        let r=LocationRecorder.shared,now=Date().timeIntervalSince1970
+        r.diagnosticSummary(force:true)
+        r.diagnosticJournal.prune(now:now)
+        let journal=r.diagnosticJournal
+        let events=journal.events.sorted{$0.at<$1.at}.map(LocationDiagnosticPrivacy.event)
+        var journeys=r.trips
+        if let active=r.active {journeys.append(active)}
+        if let active=r.automaticTrip,!journeys.contains(where:{$0.id==active.id}) {journeys.append(active)}
+        let summaries=journeys.sorted{$0.startedAt>$1.startedAt}.prefix(30).map {trip -> [String:Any] in
+            let quality=trip.routeQualitySummary()
+            return ["journeyID":trip.id,"activity":trip.activity,"state":trip.state,"startedAt":trip.startedAt,
+                "endedAt":trip.endedAt as Any? ?? NSNull(),"fixCount":quality.fixCount,"gapCount":quality.gapCount,
+                "largestGapSeconds":quality.largestGapSeconds,"stopCount":quality.stopCount ?? 0,"stoppedSeconds":quality.stoppedSeconds ?? 0]
+        }
+        do {
+            let entries=try JSONSerialization.jsonObject(with:JSONEncoder().encode(events))
+            call.resolve(["schemaVersion":1,"generatedAt":now,"timezone":TimeZone.current.identifier,
+                "current":LocationDiagnosticPrivacy.context(r.diagnosticContext()),"events":entries,"journeys":summaries,
+                "oldestAvailableAt":events.first?.at as Any? ?? NSNull(),"retentionDays":7,"eventLimit":RecorderDiagnosticJournal.limit,
+                "byteLimit":RecorderDiagnosticJournal.byteLimit,"capacityEvictions":journal.capacityEvictions,"storageError":r.diagnosticStorageError,
+                "limitations":"Requests describe app services, not hardware GPS or which process iOS is indicating. No events are invented while the process is not executing. A heartbeat gap is an observed execution gap, not proof of suspension, force-quit or a crash. Stops, intentional reduced/disabled precise sampling, and GPS delivery gaps are distinct. Wi-Fi association is not measured or used as proof of rest. No coordinates, place names, account identifiers, credentials or routes are exported. Battery is unknown unless already available; copying starts no location or battery monitoring. History is bounded to seven days, 6000 events and 8 MiB; capacity loss is reported. Journey summaries are the most recent 30, not all journey history."])
+        }catch{call.reject("The full location log could not be prepared.")}
     }}
     @objc func exportJourneyDiagnostics(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

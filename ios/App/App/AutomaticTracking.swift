@@ -8,6 +8,7 @@ extension LocationRecorder {
         if [.denied,.restricted].contains(CMMotionActivityManager.authorizationStatus()) {stopMotionUpdates();return}
         if motionUpdatesRequested {return}
         motionUpdatesRequested=true
+        recordDiagnostic("service","Motion monitoring started")
         if motionManager == nil { motionManager = CMMotionActivityManager() }
         motionManager?.startActivityUpdates(to:.main) { [weak self] activity in
             guard let self = self, let activity = activity else { return }
@@ -21,7 +22,7 @@ extension LocationRecorder {
             let previousMotion=self.motion
             let now=Date().timeIntervalSince1970
             self.motion = MotionEvidence(types:types,confidence:confidence,timestamp:activity.startDate.timeIntervalSince1970,continuous:true)
-            if previousMotion.types != types || previousMotion.confidence != confidence || now-self.diagnosticLastMotionAt>=60 {
+            if previousMotion.types != types || previousMotion.confidence != confidence {
                 self.diagnosticLastMotionAt=now
                 self.recordDiagnostic("motion","Motion classification delivered",details:["motionStartedAt":String(activity.startDate.timeIntervalSince1970)])
             }
@@ -99,7 +100,7 @@ extension LocationRecorder {
             if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
-            for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { manager.stopMonitoring(for:region) }
+            for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
             // GPS is about to stop, so an open journey must not keep reporting that
             // it is recording. Interrupt it at its last fix: the next accepted fix
             // reopens it as a new segment once tracking is available again.
@@ -178,10 +179,13 @@ extension LocationRecorder {
     // GPS, returns to the 10 m standby so that a real departure shows up in the fixes.
     func runStandard(_ mode: AutomaticLocationMode) {
         if mode != locationMode {
-            if mode == .resting { trackingEvent("Resting at Home: low-power location until movement") }
-            else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
-            else if locationMode == .resting || locationMode == .stationary { trackingEvent("Left \(locationMode == .stationary ? "low-power standby" : "Home rest"): \(mode.rawValue) location") }
+            let previous=locationMode
             locationMode=mode
+            recordDiagnostic("service","Location sampling mode changed",details:["modeBefore":previous.rawValue,"modeAfter":mode.rawValue,
+                "reason":mode == .precise ? "an open journey or bounded departure check needs precise fixes" : mode == .resting ? "settled place confirmed; reduce accuracy without releasing background departures" : mode == .stationary ? "adaptive stationary standby; precise updates intentionally disabled" : "automatic sampling reconciled"])
+            if mode == .resting { trackingEvent("Resting at settled place: reduced-accuracy location until movement") }
+            else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
+            else if previous == .resting || previous == .stationary { trackingEvent("Left \(previous == .stationary ? "low-power standby" : "Home rest"): \(mode.rawValue) location") }
         }
         guard let configuration=LocationConfiguration.automatic(mode,journeyOpen:automaticActivelyRecording,journeyActivity:automaticTrip?.activity,
             drivingMotion:motion.types.contains("Driving"),currentProfile:manager.activityType == .automotiveNavigation ? .automotive : .other) else {
@@ -206,33 +210,37 @@ extension LocationRecorder {
         let type: CLActivityType = configuration.profile == .automotive ? .automotiveNavigation : .other
         guard manager.desiredAccuracy != accuracy || manager.distanceFilter != configuration.distanceFilter ||
               manager.activityType != type || manager.pausesLocationUpdatesAutomatically else { return }
+        let before="accuracy=\(manager.desiredAccuracy), distanceFilter=\(manager.distanceFilter), profile=\(manager.activityType.rawValue)"
         manager.desiredAccuracy = accuracy
         manager.distanceFilter = configuration.distanceFilter
         manager.pausesLocationUpdatesAutomatically = false
         manager.activityType = type
-        recordDiagnostic("service","Location configuration changed",details:["configuration":configuration.label,"continuousRunning":String(continuousLocationRequested)])
+        recordDiagnostic("service","Location configuration changed",details:["configuration":configuration.label,"beforeConfiguration":before,"continuousRunning":String(continuousLocationRequested)])
     }
 
     func configurePlaceRegions() {
-        // The continuation region belongs to the published stop, not to saved
-        // places; rebuilding place regions must not remove its wake-up.
-        // The adaptive engine's current-place region is managed separately.
-        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") && region.identifier != Self.continuationRegionID && region.identifier != Self.placeRegionID { manager.stopMonitoring(for:region) }
-        guard CLLocationManager.isMonitoringAvailable(for:CLCircularRegion.self) else { return }
-        // iOS monitors at most 20 regions: saved places, the last stop, the
-        // continuation region and, with the adaptive engine, the current place.
+        guard CLLocationManager.isMonitoringAvailable(for:CLCircularRegion.self) else {return}
+        // Reconcile registrations in place. A foreground/sharing refresh must not
+        // tear down every saved-place wake-up and register it again.
+        var wanted:[CLCircularRegion]=[]
         for place in places.sorted(by:{ ($0.kind == "favourite" ? 1 : 0) < ($1.kind == "favourite" ? 1 : 0) }).prefix(adaptiveEnabled ? 17 : 18) {
-            let region = CLCircularRegion(center:CLLocationCoordinate2D(latitude:place.latitude,longitude:place.longitude),radius:min(place.radius,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-\(place.id)")
-            region.notifyOnEntry = true; region.notifyOnExit = true
-            manager.startMonitoring(for:region)
+            let region=CLCircularRegion(center:CLLocationCoordinate2D(latitude:place.latitude,longitude:place.longitude),radius:min(place.radius,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-\(place.id)")
+            region.notifyOnEntry=true;region.notifyOnExit=true;wanted.append(region)
         }
-        // Shops and other unsaved destinations need an exit wake-up too. Use only
-        // a genuine recorded endpoint, never invent a missing start or route.
         if let last=trips.filter({$0.recordingMode == "automatic" && $0.endedAt != nil}).max(by:{($0.endedAt ?? 0)<($1.endedAt ?? 0)})?.points.last,
            !places.contains(where:{$0.contains(last)}) {
             let region=CLCircularRegion(center:CLLocationCoordinate2D(latitude:last.latitude,longitude:last.longitude),radius:min(100,manager.maximumRegionMonitoringDistance),identifier:"letm3go-place-last-stop")
-            region.notifyOnEntry=false;region.notifyOnExit=true
-            manager.startMonitoring(for:region)
+            region.notifyOnEntry=false;region.notifyOnExit=true;wanted.append(region)
+        }
+        let identifiers=Set(wanted.map{$0.identifier})
+        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") && region.identifier != Self.continuationRegionID && region.identifier != Self.placeRegionID && !identifiers.contains(region.identifier) {
+            stopRegionMonitoring(region)
+        }
+        for region in wanted {
+            if let existing=manager.monitoredRegions.first(where:{$0.identifier==region.identifier}) as? CLCircularRegion,
+               existing.center.latitude==region.center.latitude,existing.center.longitude==region.center.longitude,
+               existing.radius==region.radius,existing.notifyOnEntry==region.notifyOnEntry,existing.notifyOnExit==region.notifyOnExit {continue}
+            startRegionMonitoring(region)
         }
     }
     func processAutomatic(_ locations: [CLLocation], source: ObservationSource = .standard) {
@@ -265,9 +273,11 @@ extension LocationRecorder {
             // trigger a restart.
             // A queued backlog delivered now proves the same, whatever its age.
             if source == .standard, sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
+            // Cached deliveries from before account/tracking binding must not
+            // establish a new account's current place or shorten rest confirmation.
+            guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             homeRest.observe(sample,home:restPlace,now:now)
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
-            guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
             // and lets the normal departure detection start a new one.
@@ -963,10 +973,10 @@ extension LocationRecorder {
             radius:min(max(120,last.accuracy*3),manager.maximumRegionMonitoringDistance),
             identifier:Self.continuationRegionID)
         region.notifyOnEntry = false; region.notifyOnExit = true
-        manager.startMonitoring(for:region)
+        startRegionMonitoring(region)
     }
     func cleanupContinuationRegion() {
-        for region in manager.monitoredRegions where region.identifier == Self.continuationRegionID { manager.stopMonitoring(for:region) }
+        for region in manager.monitoredRegions where region.identifier == Self.continuationRegionID { stopRegionMonitoring(region) }
     }
     static let continuationRegionID = "letm3go-place-continuation"
     func finishAutomatic(force: Bool = false, reason: String? = nil, trigger: String = "finishAutomatic", event: String = "the automatic journey was ended") throws {
@@ -1044,6 +1054,7 @@ extension LocationRecorder {
     }
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         noteExecution("regionExit")
+        recordDiagnostic("region","Region exit delivered",details:["reason":regionKind(region)])
         if region.identifier.hasPrefix("letm3go-place-") { homeRest.leave() }
         guard automaticAvailable, active == nil, region.identifier.hasPrefix("letm3go-place-") else { return }
         // An open journey already has precise GPS; a place exit is not a departure.
@@ -1057,6 +1068,7 @@ extension LocationRecorder {
     }
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         noteExecution("regionEnter")
+        recordDiagnostic("region","Region entry delivered",details:["reason":regionKind(region)])
         guard automaticAvailable, active == nil else { return }
         finishExpiredContinuation(now:Date().timeIntervalSince1970)
         // A one-shot request on the manager that is already running continuous

@@ -81,6 +81,7 @@ struct LocalVehicle: Codable {
 extension LocationRecorder {
     func applicationSupport() throws -> URL { try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true) }
     func openAccount(_ id: String) throws {
+        diagnosticWriter.flush()
         disableLiveSharing()
         lastLocationUpdateAt=nil;lastLocationAccuracy=nil
         storeOpened = false
@@ -202,13 +203,14 @@ extension LocationRecorder {
         uiUnlocked = false; accountSuspended = true; storeOpened = false
         try AccountKeychain.set("active-account",data:nil)
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
-        for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
+        for region in manager.monitoredRegions { stopRegionMonitoring(region) }
         motion = MotionEvidence()
         if var trip = active { trip.pause(at:Date().timeIntervalSince1970); try storage?.save(trip); active = trip }
         if automaticTrip != nil || settledTripID != nil {
             try finishAutomatic(reason:"Recording stopped: the recorder was locked or signed out",trigger:"stopAccount",event:"the recorder was locked or signed out")
         }
         try AccountKeychain.set("active-account",data:nil)
+        diagnosticWriter.flush()
         uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
         // Rides that could not be attributed to this account must not be handed to
         // the next one. The inbox is emptied first, then the watch is told that no
@@ -220,7 +222,7 @@ extension LocationRecorder {
         // finishAutomatic may have requested monitoring while saving; stop again after locking.
         adaptive.shutdown(reason:"the recorder was locked or signed out"); adaptiveEnabled = false
         stopContinuousLocation(); stopSignificantMonitoring(); stopVisitMonitoring(); stopMotionUpdates()
-        for region in manager.monitoredRegions { manager.stopMonitoring(for:region) }
+        for region in manager.monitoredRegions { stopRegionMonitoring(region) }
     }
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
@@ -341,7 +343,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: the account was scheduled for deletion",trigger:"bindAccount",event:"the account was scheduled for deletion") }
                         if r.active?.state == "recording" { try r.transition("pause") }
                         r.endBackgroundSession("the account was scheduled for deletion");r.disableHouseholdLiveSharing(forget:true);r.adaptive.shutdown(reason:"the account was scheduled for deletion");r.stopContinuousLocation();r.stopSignificantMonitoring();r.stopVisitMonitoring();r.stopMotionUpdates()
-                        for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
+                        for region in r.manager.monitoredRegions { r.stopRegionMonitoring(region) }
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
@@ -375,7 +377,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             if r.automaticTrip != nil || r.settledTripID != nil { try r.finishAutomatic(reason:"Recording stopped: account deletion was prepared",trigger:"prepareDeletion",event:"the user prepared account deletion") }
             if r.active?.state == "recording" { try r.transition("pause") }
             r.endBackgroundSession("account deletion was prepared"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
-            for region in r.manager.monitoredRegions { r.manager.stopMonitoring(for:region) }
+            for region in r.manager.monitoredRegions { r.stopRegionMonitoring(region) }
             try AccountKeychain.set("active-account",data:nil); call.resolve()
         } catch { call.reject("Pending recording could not be saved. Free device storage before deleting your account.") }
     } }
@@ -390,6 +392,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
+            r.diagnosticWriter.flush()
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
             UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveRecoveryKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }

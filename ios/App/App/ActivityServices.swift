@@ -200,7 +200,11 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     let manager = CLLocationManager()
     let call: CAPPluginCall
     let owner = LocationRecorder.shared.ownerID
-    var finished = false {didSet{if finished {Self.activeRequests.remove(requestID)}}}
+    var outcome="completed"
+    var finished = false {didSet{if finished {
+        Self.activeRequests.remove(requestID)
+        if owner==LocationRecorder.shared.ownerID {LocationRecorder.shared.recordDiagnostic("sampling","One-shot location request ended",details:["component":"PositionRequest","reason":outcome])}
+    }}}
     deinit {Self.activeRequests.remove(requestID)}
     init(call: CAPPluginCall) { self.call = call; super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyBest }
     var requesting = false
@@ -210,9 +214,11 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     }
     func requestFix() {
         guard !finished, !requesting else { return }
-        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { finished=true;call.reject("Location permission was declined. Use address search, select the map, or enable access in iOS Settings.");return }
-        requesting=true;Self.activeRequests.insert(requestID);manager.requestLocation()
-        DispatchQueue.main.asyncAfter(deadline:.now()+20) { if !self.finished { self.finished=true;self.call.reject("No recent location fix. Try outdoors or select a point on the map.") } }
+        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { outcome="location permission unavailable";finished=true;call.reject("Location permission was declined. Use address search, select the map, or enable access in iOS Settings.");return }
+        requesting=true;Self.activeRequests.insert(requestID)
+        LocationRecorder.shared.recordDiagnostic("sampling","One-shot precise location requested",details:["component":"PositionRequest","reason":"foreground caller requested a current fix"])
+        manager.requestLocation()
+        DispatchQueue.main.asyncAfter(deadline:.now()+20) { if !self.finished { self.outcome="timed out without a recent fix";self.finished=true;self.call.reject("No recent location fix. Try outdoors or select a point on the map.") } }
     }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus != .notDetermined { requestFix() }
@@ -222,7 +228,7 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
         guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { finished=true; call.reject("Account changed."); return }
         finished = true; call.resolve(["latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy,"speed":location.speed >= 0 ? location.speed : NSNull(),"timestamp":location.timestamp.timeIntervalSince1970])
     }
-    func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) { guard !finished else { return }; finished = true; call.reject(error.localizedDescription) }
+    func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) { guard !finished else { return }; outcome="Core Location error code \((error as NSError).code)";finished = true; call.reject(error.localizedDescription) }
 }
 
 extension ManualRecorderPlugin: PHPickerViewControllerDelegate {

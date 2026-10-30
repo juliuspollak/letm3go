@@ -100,10 +100,10 @@ extension LocationRecorder: AdaptiveHost {
     func registerPlaceRegion(_ spec: PlaceRegionSpec) {
         let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: spec.latitude, longitude: spec.longitude), radius: spec.radius, identifier: Self.placeRegionID)
         region.notifyOnEntry = false; region.notifyOnExit = true
-        manager.startMonitoring(for: region)
+        startRegionMonitoring(region)
     }
     func removePlaceRegion() {
-        for region in manager.monitoredRegions where region.identifier == Self.placeRegionID { manager.stopMonitoring(for: region) }
+        for region in manager.monitoredRegions where region.identifier == Self.placeRegionID { stopRegionMonitoring(region) }
     }
     func observeLowPower(_ fix: GPSPoint) {
         let location = CLLocation(coordinate: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude), altitude: fix.altitude,

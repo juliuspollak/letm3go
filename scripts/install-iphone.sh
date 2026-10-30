@@ -9,7 +9,8 @@ device_identifier="$1"
 npm run ios:sync
 build_args=(-project ios/App/App.xcodeproj -scheme App -configuration Debug
   -sdk iphoneos -destination 'generic/platform=iOS'
-  -derivedDataPath .build/device -clonedSourcePackagesDirPath .build/SourcePackages)
+  -derivedDataPath .build/device -clonedSourcePackagesDirPath .build/SourcePackages
+  "LETM3GO_COMMIT=$(sh scripts/source-commit.sh)")
 if [ "${ALLOW_PROVISIONING_UPDATES:-0}" = '1' ]; then build_args+=(-allowProvisioningUpdates); fi
 xcodebuild "${build_args[@]}" build
 xcrun devicectl device install app --device "$device_identifier" .build/device/Build/Products/Debug-iphoneos/App.app
