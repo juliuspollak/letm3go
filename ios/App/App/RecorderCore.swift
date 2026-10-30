@@ -1754,6 +1754,103 @@ enum LocationDiagnosticPrivacy {
     }
 }
 
+// The diagnostic log leaves the device as exactly one gzip file. Everything here
+// is pure and runs off the main thread, so building a large report never competes
+// with location callbacks. No account data enters: events and current state pass
+// through LocationDiagnosticPrivacy, and journeys carry ordinals instead of IDs.
+enum DiagnosticExportError:Error {case corruptArchive,integrityMismatch}
+enum DiagnosticGzip {
+    private static let crcTable:[UInt32]=(0..<256).map {index in
+        (0..<8).reduce(UInt32(index)) {crc,_ in crc&1 == 1 ? 0xEDB88320^(crc>>1) : crc>>1}
+    }
+    static func crc32(_ data:Data)->UInt32 {
+        let table=crcTable
+        return ~data.reduce(~UInt32(0)) {crc,byte in table[Int((crc^UInt32(byte))&0xFF)]^(crc>>8)}
+    }
+    private static func littleEndian(_ value:UInt32)->Data {withUnsafeBytes(of:value.littleEndian){Data($0)}}
+    private static func word(_ data:Data,at offset:Int)->UInt32 {
+        (0..<4).reduce(UInt32(0)) {$0|UInt32(data[data.startIndex+offset+$1])<<UInt32($1*8)}
+    }
+    // NSData's .zlib algorithm is raw DEFLATE (RFC 1951): gzip only adds the
+    // fixed header and the CRC-32/size trailer (RFC 1952).
+    static func compress(_ data:Data)throws->Data {
+        var archive=Data([0x1F,0x8B,0x08,0,0,0,0,0,0,0xFF])
+        archive.append(try (data as NSData).compressed(using:.zlib) as Data)
+        archive.append(littleEndian(crc32(data)));archive.append(littleEndian(UInt32(truncatingIfNeeded:data.count)))
+        return archive
+    }
+    // Reads only what compress writes; this is an integrity check, not a general gzip reader.
+    static func decompress(_ archive:Data)throws->Data {
+        guard archive.count>18,archive.prefix(4)==Data([0x1F,0x8B,0x08,0]) else {throw DiagnosticExportError.corruptArchive}
+        let body=archive.subdata(in:archive.startIndex+10..<archive.endIndex-8)
+        let data=try (body as NSData).decompressed(using:.zlib) as Data
+        guard crc32(data)==word(archive,at:archive.count-8),UInt32(truncatingIfNeeded:data.count)==word(archive,at:archive.count-4) else {throw DiagnosticExportError.integrityMismatch}
+        return data
+    }
+}
+struct LocationDiagnosticExport {
+    struct Event:Codable {var at:Double;var time:String;var kind:String;var message:String;var context:[String:String]}
+    struct Journey:Codable {var index:Int;var activity:String;var state:String;var startedAt:Double;var endedAt:Double?;var fixCount:Int;var gapCount:Int;var largestGapSeconds:Double;var stopCount:Int;var stoppedSeconds:Double}
+    struct Statistics:Codable {var observationSummaries:Int;var totals:[String:Double];var maxDeliveryDelaySeconds:Double;var worstAccuracyMeters:Double}
+    struct Report:Codable {
+        var schemaVersion=2
+        var generatedAt:Double;var generatedTime:String;var timezone:String
+        var eventCount:Int;var oldestAvailableAt:Double?
+        var retentionDays:Int;var eventLimit:Int;var byteLimit:Int;var capacityEvictions:Int;var storageError:String
+        var current:[String:String];var gpsStatistics:Statistics;var warnings:[Event];var journeys:[Journey];var events:[Event]
+        var limitations:String
+    }
+    struct Archive {var fileName:String;var data:Data;var eventCount:Int;var uncompressedBytes:Int}
+    static let limitations="Requests describe app services, not hardware GPS or which process iOS is indicating. No events are invented while the process is not executing. A heartbeat gap is an observed execution gap, not proof of suspension, force-quit or a crash. Stops, intentional reduced/disabled precise sampling, and GPS delivery gaps are distinct: intentional stops are stopCount/stoppedSeconds and route gaps are gapCount/largestGapSeconds. Wi-Fi association is not measured or used as proof of rest. No coordinates, place names, account identifiers, credentials or routes are exported; journeys are numbered for this file only. Battery is unknown unless already available; exporting starts no location or battery monitoring. History is bounded to seven days, 6000 events and 8 MiB; capacity loss is reported. Journey summaries are the most recent 30, not all journey history."
+    private static let timeFormatter=ISO8601DateFormatter()
+    private static func time(_ at:Double)->String {timeFormatter.string(from:Date(timeIntervalSince1970:at))}
+    private static let totalled:Set<String>=["gpsDelivered","routeFixesSaved","sharingAttempts","sharingSuccesses","sharingFailures"]
+    static func isWarning(_ event:Event)->Bool {
+        ["error","invariant"].contains(event.kind)||event.message.range(of:"failed|failure|unavailable|not executing|silent|interrupted",options:.regularExpression) != nil
+    }
+    static func statistics(_ events:[Event])->Statistics {
+        var stats=Statistics(observationSummaries:0,totals:[:],maxDeliveryDelaySeconds:0,worstAccuracyMeters:0)
+        for event in events where event.kind=="observations" {
+            stats.observationSummaries+=1
+            for (key,value) in event.context {
+                guard let number=Double(value) else {continue}
+                if totalled.contains(key)||key.hasPrefix("rejected.") {stats.totals[key,default:0]+=number}
+                if key=="maxDeliveryDelaySeconds" {stats.maxDeliveryDelaySeconds=max(stats.maxDeliveryDelaySeconds,number)}
+                if key=="worstAccuracyMeters" {stats.worstAccuracyMeters=max(stats.worstAccuracyMeters,number)}
+            }
+        }
+        return stats
+    }
+    static func report(journal:RecorderDiagnosticJournal,current:[String:String],journeys:[RecordedActivity],now:Double,timezone:String,storageError:String)->Report {
+        let events=journal.events.sorted{$0.at<$1.at}.map {raw->Event in
+            let event=LocationDiagnosticPrivacy.event(raw)
+            return Event(at:event.at,time:time(event.at),kind:event.kind,message:event.message,context:event.context)
+        }
+        let summaries=journeys.sorted{$0.startedAt>$1.startedAt}.prefix(30).enumerated().map {index,trip->Journey in
+            let quality=trip.routeQualitySummary()
+            return Journey(index:index+1,activity:LocationDiagnosticPrivacy.text(trip.activity),state:LocationDiagnosticPrivacy.text(trip.state),startedAt:trip.startedAt,endedAt:trip.endedAt,fixCount:quality.fixCount,gapCount:quality.gapCount,largestGapSeconds:quality.largestGapSeconds,stopCount:quality.stopCount ?? 0,stoppedSeconds:quality.stoppedSeconds ?? 0)
+        }
+        return Report(generatedAt:now,generatedTime:time(now),timezone:timezone,eventCount:events.count,oldestAvailableAt:events.first?.at,
+            retentionDays:Int(RecorderDiagnosticJournal.retention/86400),eventLimit:RecorderDiagnosticJournal.limit,byteLimit:RecorderDiagnosticJournal.byteLimit,
+            capacityEvictions:journal.capacityEvictions,storageError:storageError,current:LocationDiagnosticPrivacy.context(current),
+            gpsStatistics:statistics(events),warnings:events.filter(isWarning),journeys:summaries,events:events,limitations:limitations)
+    }
+    static func fileName(_ now:Double)->String {
+        let compact=time(now).replacingOccurrences(of:"[-:]",with:"",options:.regularExpression)
+        return "letm3go-diagnostics-\(compact).json.gz"
+    }
+    // An archive is only returned after it has been read back byte for byte, so a
+    // file that reaches the share sheet is known to hold every retained event.
+    static func archive(_ report:Report)throws->Archive {
+        let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+        let json=try encoder.encode(report)
+        let data=try DiagnosticGzip.compress(json)
+        guard try DiagnosticGzip.decompress(data)==json,
+              try JSONDecoder().decode(Report.self,from:json).events.count==report.eventCount else {throw DiagnosticExportError.integrityMismatch}
+        return Archive(fileName:fileName(report.generatedAt),data:data,eventCount:report.eventCount,uncompressedBytes:json.count)
+    }
+}
+
 // The Apple Watch transfer format, validation and queueing live in
 // WatchActivityCore.swift, which is compiled into the iPhone target, the watch
 // target and the native test binary so both sides cannot drift apart.

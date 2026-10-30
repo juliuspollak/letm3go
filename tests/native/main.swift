@@ -2726,6 +2726,56 @@ do {
     check(history.config == setup && history.config.isValid, "Start Again repeats the exact subtype and bike")
 }
 
+do {
+    // The clipboard export split at 512 KiB, so this history is beyond ten parts.
+    let tenPartBytes=10*512*1024
+    var large=RecorderDiagnosticJournal()
+    let base=1_800_000_000.0
+    for index in 0..<RecorderDiagnosticJournal.limit {
+        var context=["process":"11111111-2222-3333-4444-555555555555","reason":"Sample \(index) settled for \(index*7%3607)s 移動 🧭","locationMode":"resting","ownerID":"private-account","accessToken":"secret-token","latitude":"-33.12345","placeName":"Secret Cottage","wifiSSID":"HomeNetwork"]
+        for field in 0..<28 {context["rejected.reason\(field)"]=String((index+1)*(field+3)%9973)}
+        context["gpsDelivered"]="2";context["routeFixesSaved"]="1";context["maxDeliveryDelaySeconds"]=String(index%40);context["worstAccuracyMeters"]="65"
+        large.append(RecorderDiagnosticEvent(at:base+Double(index),kind:index%2==0 ? "observations" : "service",message:index%100==0 ? "GPS silent \(index)" : "Event \(index)",context:context))
+    }
+    large.append(RecorderDiagnosticEvent(at:base+7000,kind:"error",message:"Core Location error at -33.86412, 151.20913 Bearer private-token https://private.example/token",context:[:]))
+    large.append(RecorderDiagnosticEvent(at:base+7001,kind:"invariant",message:"Location service contradiction",context:["code":"7"]))
+    let retained=large.events.count
+    let trip=RecordedActivity(id:"99999999-aaaa-bbbb-cccc-dddddddddddd",activity:"Walking",startedAt:base,endedAt:base+60,state:"finished",points:[GPSPoint(latitude:-33.86412,longitude:151.20913,timestamp:base,accuracy:5,altitude:0,speed:1)],title:"Secret Cottage walk")
+    let report=LocationDiagnosticExport.report(journal:large,current:["version":"1.0","ownerID":"private-account","placeType":"home"],journeys:[trip],now:base+8000,timezone:"Australia/Sydney",storageError:"")
+    let archive=try LocationDiagnosticExport.archive(report)
+    check(archive.uncompressedBytes>tenPartBytes,"export test exceeds the old ten-part size")
+    check(archive.data.count<archive.uncompressedBytes/3,"export is materially compressed")
+    check(archive.fileName=="letm3go-diagnostics-20270115T101320Z.json.gz","export is named as one dated gzip file")
+    // The system gzip proves that any standard tool, not just our reader, can open it.
+    let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+    try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+    defer {try? FileManager.default.removeItem(at:folder)}
+    let file=folder.appendingPathComponent("report.json.gz");try archive.data.write(to:file)
+    let gzip=Process();gzip.executableURL=URL(fileURLWithPath:"/usr/bin/gzip");gzip.arguments=["-d",file.path]
+    try gzip.run();gzip.waitUntilExit()
+    check(gzip.terminationStatus==0,"system gzip accepts the export")
+    let json=try Data(contentsOf:folder.appendingPathComponent("report.json"))
+    let inflated=try DiagnosticGzip.decompress(archive.data)
+    check(json==inflated,"gzip round trip is byte identical")
+    let restored=try JSONDecoder().decode(LocationDiagnosticExport.Report.self,from:json)
+    check(restored.eventCount==retained&&restored.events.count==retained,"every retained event is in the file")
+    check(zip(restored.events,large.events.sorted{$0.at<$1.at}).allSatisfy{$0.at==$1.at},"events keep their exact order and timestamps")
+    check(restored.events.first?.time.hasSuffix("Z")==true,"events carry a readable UTC time")
+    check(restored.warnings.contains{$0.kind=="invariant"}&&restored.warnings.contains{$0.message.hasPrefix("GPS silent")},"warnings are included")
+    check(restored.gpsStatistics.totals["gpsDelivered"]==Double(restored.gpsStatistics.observationSummaries*2)&&restored.gpsStatistics.worstAccuracyMeters==65,"GPS statistics are included")
+    check(restored.current["version"]=="1.0"&&restored.current["placeType"]=="home","current state is included")
+    let text=String(decoding:json,as:UTF8.self)
+    for secret in ["private-account","secret-token","-33.12345","-33.86412","151.20913","Secret Cottage","HomeNetwork","private.example","private-token","99999999-aaaa","11111111-2222"] {check(!text.contains(secret),"export excludes \(secret)")}
+    var damaged=archive.data;damaged[damaged.count/2]^=0xFF
+    check((try? DiagnosticGzip.decompress(damaged))==nil,"a damaged archive never verifies")
+    var wrongSize=archive.data;wrongSize[wrongSize.count-1]^=0xFF
+    check((try? DiagnosticGzip.decompress(wrongSize))==nil,"a wrong size trailer never verifies")
+    check((try? DiagnosticGzip.decompress(Data([1,2,3])))==nil,"a non-gzip file never verifies")
+    let empty=try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal:RecorderDiagnosticJournal(),current:[:],journeys:[],now:base,timezone:"UTC",storageError:""))
+    let emptyReport=try JSONDecoder().decode(LocationDiagnosticExport.Report.self,from:DiagnosticGzip.decompress(empty.data))
+    check(empty.eventCount==0&&emptyReport.events.isEmpty,"an empty history still exports one valid file")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

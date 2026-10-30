@@ -31,7 +31,7 @@ export const emptyRecorder = { active:null, trips:[], permission:'unavailable', 
 export const recorder = {
  forgetPosition:forgetSharedPosition,
  trackingReport:params=>native.trackingReport(params),
-  exportLocationDiagnostics:()=>native.exportLocationDiagnostics(),
+  shareDiagnosticLog:()=>native.shareDiagnosticLog(),
   exportJourneyDiagnostics:journeyID=>native.exportJourneyDiagnostics({journeyID}),
 
  getState:()=>recorderAvailable()?native.getState():Promise.resolve(emptyRecorder),
