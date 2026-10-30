@@ -3,6 +3,11 @@ name: iOS Native Check
 # Run expensive macOS verification only when explicitly requested.
 on:
   workflow_dispatch:
+    inputs:
+      watch_screenshots:
+        description: 'Also capture Watch simulator screenshots with sample data (Debug -demoScreen)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,7 +19,7 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-26
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,3 +30,38 @@ jobs:
       - run: npm run test:native
       - run: npm run ios:sync
       - run: npm run ios:build
+      - name: Build the Watch app for the simulator
+        if: ${{ inputs.watch_screenshots }}
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -target Letm3goWatch -configuration Debug -sdk watchsimulator \
+            CODE_SIGNING_ALLOWED=NO SYMROOT="$PWD/.build/watch" build | tail -n 20
+      - name: Capture screens on the smallest and largest Watch
+        if: ${{ inputs.watch_screenshots }}
+        run: |
+          set -euo pipefail
+          app=$(find .build/watch -name "Letm3goWatch.app" -type d | head -n 1)
+          test -n "$app"
+          devices=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          watches = [d for runtime, list_ in json.load(sys.stdin)["devices"].items() if "watchOS" in runtime for d in list_]
+          sized = sorted(((int(m.group(1)), d["udid"]) for d in watches for m in [re.search(r"(\d\d)mm", d["name"])] if m))
+          print(sized[0][0], sized[0][1]); print(sized[-1][0], sized[-1][1])')
+          mkdir -p shots
+          echo "$devices" | while read -r size udid; do
+            xcrun simctl boot "$udid" || true
+            xcrun simctl bootstatus "$udid" -b
+            xcrun simctl install "$udid" "$app"
+            for screen in home activities cycling bike ready recording history detail; do
+              xcrun simctl launch "$udid" au.jpollak.journey.watchkitapp -demoScreen "$screen" >/dev/null
+              sleep 8
+              xcrun simctl io "$udid" screenshot "shots/watch-${size}mm-$screen.png"
+              xcrun simctl terminate "$udid" au.jpollak.journey.watchkitapp || true
+            done
+            xcrun simctl shutdown "$udid" || true
+          done
+          ls -la shots
+      - if: ${{ inputs.watch_screenshots }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch-screenshots
+          path: shots
