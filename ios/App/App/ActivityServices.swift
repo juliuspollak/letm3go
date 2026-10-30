@@ -202,7 +202,12 @@ extension LocationRecorder {
         case .importable, .unclaimed:
             break
         }
-        guard let activity = WatchActivityImport.activity(from: transfer) else { return .rejected("invalid-payload") }
+        guard var activity = WatchActivityImport.activity(from: transfer) else { return .rejected("invalid-payload") }
+        // The bike chosen on the watch, with its current Collection name when the
+        // item is still here; otherwise the reference keeps the watch's name.
+        if let ref = activity.equipment?.first, let item = collectionItem(id: ref.id, name: ref.name) {
+            activity.assignEquipment([EquipmentRef(id: item.id, name: item.name)])
+        }
         if trips.contains(where: { $0.id == activity.id }) { return .duplicate }
         // A deleted ride must not be resurrected by a late retry from the watch.
         if (try? storage!.deletedIDs())?.contains(activity.id) == true { return .duplicate }

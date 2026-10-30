@@ -2550,7 +2550,7 @@ do {
     for i in 0..<NamedSegments.maximumPerActivity {
         if case .success(let s) = make(String(format: "a1b2c3d4-0000-4000-8000-%012ld", i), name: "S\(i)", existing: full) { full = NamedSegments.upsert(s, into: full) }
     }
-    check(full.count == NamedSegments.maximumPerActivity && make(idB, existing: full) == .failure(.limit), "at most 20 segments per activity")
+    check(full.count == NamedSegments.maximumPerActivity && make("b1b2c3d4-0000-4000-8000-000000000099", existing: full) == .failure(.limit), "at most 20 segments per activity")
     check(make(full[0].id, name: "Renamed", existing: full).map { $0.name } == .success("Renamed"), "an existing segment can still be edited at the limit")
 
     // Geometry: real fixes only, within budget, ends kept.
@@ -2573,6 +2573,81 @@ do {
     check(kept.first.map { NamedSegments.valid($0, points: trimmed.points) && $0.startIndex == 3 && $0.endIndex == 13 } == true, "a kept segment is re-indexed to the same fixes")
     let oldRecord = try! JSONDecoder().decode(ActivityDetails.self, from: Data("{\"description\":\"\",\"notes\":\"\",\"tags\":[],\"collection\":\"\",\"visibility\":\"private\",\"userCorrected\":false,\"classification\":{\"predicted\":\"Unknown\",\"confidence\":\"low\",\"evidence\":[]},\"photos\":[]}".utf8))
     check(oldRecord.namedSegments == nil, "records written before segments still decode")
+}
+
+
+// MARK: Watch start choices, equipment and history
+do {
+    // Only the iPhone's own activity values, and Cycling's subtypes in one family.
+    let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
+    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 8, "the watch records only iPhone activity values")
+    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Other"], "every activity the watch offered before is still offered")
+    check(WatchCatalog.family(of: "MTB")?.id == "Cycling" && WatchCatalog.family(of: "MTB")?.hasSubtypes == true, "mountain biking is a Cycling subtype")
+    check(WatchCatalog.title("MTB") == "Cycling · Mountain bike" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
+    check(WatchCatalog.usesBicycle("MTB") && !WatchCatalog.usesBicycle("Running"), "only rides offer a bike")
+
+    // The phone's Collection list, validated.
+    let sent: [[String: Any]] = [["id": "bike-1", "name": " Trek Fuel ", "kind": "bicycle"], ["id": "bike-2", "name": "Levo", "kind": "ebike"],
+                                 ["id": "car-1", "name": "Car", "kind": "car"], ["id": "bike-1", "name": "Duplicate", "kind": "bicycle"],
+                                 ["id": "", "name": "No id", "kind": "bicycle"], ["id": "bike-3", "name": "   ", "kind": "bicycle"]]
+    let bikes = WatchEquipmentCatalog.decode(sent)
+    check(bikes.map { $0.id } == ["bike-1", "bike-2"] && bikes[0].name == "Trek Fuel" && bikes[1].isElectric, "only named bicycles and e-bikes, once each")
+    check(WatchEquipmentCatalog.decode(nil).isEmpty && WatchEquipmentCatalog.decode("junk").isEmpty, "a missing or malformed list is no bikes")
+    check(WatchEquipmentCatalog.decode(WatchEquipmentCatalog.encode(bikes)) == bikes, "the list survives the application context")
+    check(WatchEquipmentCatalog.compatible(bikes, activity: "Walking").isEmpty && WatchEquipmentCatalog.compatible(bikes, activity: "MTB").count == 2, "bikes are offered for rides only")
+
+    // Memory: the last setup per activity and overall, for one-tap repeat.
+    var memory = WatchStartMemory()
+    memory.remember(WatchStartConfig(activity: "MTB", equipment: bikes[1]))
+    memory.remember(WatchStartConfig(activity: "Walking"))
+    check(memory.equipment(for: "MTB") == bikes[1] && memory.last?.activity == "Walking", "the e-bike is remembered for MTB")
+    check(memory.equipment(for: "Walking") == nil && memory.equipment(for: "Road cycling") == nil, "nothing is remembered for activities never started")
+    var bad = WatchStartConfig(activity: "Walking"); bad.equipmentID = "bike-1"; bad.equipmentName = "Trek"
+    memory.remember(bad)
+    check(memory.last?.activity == "Walking" && memory.last?.equipmentID == nil, "a bike on a walk is never remembered")
+    check(try! JSONDecoder().decode(WatchStartMemory.self, from: JSONEncoder().encode(memory)) == memory, "memory survives a restart")
+
+    // The bike rides with the recording, the transfer and into the phone's activity.
+    var ride = WatchRideDraft(activity: "MTB", startedAt: 1_000, equipment: bikes[1])
+    check(WatchRideDraft(activity: "Running", startedAt: 1_000, equipment: bikes[1]).equipment == nil, "a run never carries a bike")
+    _ = ride.ingest(watchFix(-33.0000, 1_000), now: 1_000)
+    _ = ride.ingest(watchFix(-33.0010, 1_030), now: 1_030)
+    _ = ride.ingest(watchFix(-33.0020, 1_060), now: 1_060)
+    let restored = WatchRideDraft(meta: ride.meta, points: ride.points)
+    check(restored.equipment == bikes[1], "an interrupted ride keeps its bike after a restart")
+    ride.finish(at: 1_070)
+    let transfer = ride.transfer(now: 1_080, ownerID: "owner-1", deviceID: "w")!
+    check(transfer.equipmentID == "bike-2" && transfer.equipmentKind == "ebike", "the transfer carries the bike")
+    let decoded = try! JSONDecoder().decode(WatchActivityTransfer.self, from: JSONEncoder().encode(transfer))
+    check(decoded.equipmentRef == EquipmentRef(id: "bike-2", name: "Levo"), "the bike survives the file transfer")
+    let imported = WatchActivityImport.activity(from: decoded, now: 1_090)
+    check(imported?.equipment == [EquipmentRef(id: "bike-2", name: "Levo")] && imported?.vehicle == "Levo", "the phone's activity is attached to the same Collection item")
+    var legacy = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(transfer)) as! [String: Any]
+    legacy.removeValue(forKey: "equipmentID"); legacy.removeValue(forKey: "equipmentName"); legacy.removeValue(forKey: "equipmentKind")
+    let older = try! JSONDecoder().decode(WatchActivityTransfer.self, from: JSONSerialization.data(withJSONObject: legacy))
+    check(older.equipmentRef == nil && WatchActivityImport.activity(from: older, now: 1_090)?.equipment == nil, "a ride from an older watch build imports without a bike")
+    var oversized = transfer; oversized.equipmentID = String(repeating: "x", count: 101)
+    check(WatchActivityImport.activity(from: oversized, now: 1_090) != nil && WatchActivityImport.activity(from: oversized, now: 1_090)?.equipment == nil, "invalid equipment is ignored, never a reason to reject the ride")
+
+    // History: newest first, one per ride, and a status read from the outbox.
+    func entry(_ id: String, _ at: Double, queued: Bool = true) -> WatchHistoryEntry {
+        WatchHistoryEntry(id: id, activity: "MTB", equipmentID: "bike-2", equipmentName: "Levo", equipmentKind: "ebike",
+                          startedAt: at, endedAt: at + 60, activeSeconds: 60, distanceMeters: 500, queued: queued)
+    }
+    var history: [WatchHistoryEntry] = []
+    for i in 0..<35 { history = WatchHistory.adding(entry("ride-\(i)", Double(i) * 100), to: history) }
+    history = WatchHistory.adding(entry("RIDE-34", 3_400), to: history)
+    check(history.count == WatchHistory.limit && history.first?.id == "RIDE-34" && history.filter { $0.id.lowercased() == "ride-34" }.count == 1, "history is bounded, newest first and never duplicated")
+    check(history[0].config == WatchStartConfig(activity: "MTB", equipment: bikes[1]), "Start Again reuses the activity, subtype and bike")
+    func outbox(_ id: String, parked: String? = nil) -> WatchOutboxEntry {
+        WatchOutboxEntry(id: id, ownerID: "owner-1", activity: "MTB", queuedAt: 0, startedAt: 0, endedAt: 1, pointCount: 3, attempts: 0, nextAttemptAt: 0, parkedReason: parked, lastError: nil)
+    }
+    let waiting = entry("a", 1)
+    check(WatchHistory.status(waiting, outbox: [outbox("A")]) == .waiting, "a ride still in the outbox is waiting for the iPhone")
+    check(WatchHistory.status(waiting, outbox: []) == .onIPhone, "an acknowledged ride is on the iPhone")
+    check(WatchHistory.status(waiting, outbox: [outbox("a", parked: "foreignAccount")]) == .otherAccount, "a parked ride belongs to another account")
+    check(WatchHistory.status(waiting, outbox: [outbox("a", parked: WatchOutboxIssue.missingPayload.rawValue)]) == .failed, "an unreadable ride failed to sync")
+    check(WatchHistory.status(entry("b", 1, queued: false), outbox: []) == .notSent, "a ride too short to send is not shown as synced")
 }
 
 print("\(assertions) native recorder/auth assertions passed")

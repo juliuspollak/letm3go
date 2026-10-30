@@ -69,14 +69,22 @@ struct WatchActivityTransfer: Codable, Equatable {
     var trailDistanceMeters: Double?
     var workoutSaved: Bool?
     var appVersion: String?
+    // The Collection bicycle chosen on the watch, if any. Optional: older
+    // builds neither send nor expect it, and a ride never depends on it.
+    var equipmentID: String?
+    var equipmentName: String?
+    var equipmentKind: String?
 
     init(id: String, ownerID: String?, activity: String, startedAt: Double, endedAt: Double,
          activeSeconds: Double, points: [WatchPoint], trailID: String? = nil, trailName: String? = nil,
          trailSegmentID: String? = nil, trailDistanceMeters: Double? = nil, workoutSaved: Bool? = nil,
          schema: Int = WatchActivityTransfer.currentSchema, deviceID: String? = nil,
          movingSeconds: Double? = nil, elevationGainMeters: Double? = nil,
-         elevationLossMeters: Double? = nil, appVersion: String? = nil) {
+         elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil) {
         self.schema = schema
+        self.equipmentID = equipment?.id
+        self.equipmentName = equipment?.name
+        self.equipmentKind = equipment?.kind
         self.id = id
         self.ownerID = ownerID
         self.deviceID = deviceID
@@ -120,6 +128,16 @@ extension WatchActivityTransfer {
         trailDistanceMeters = try c.decodeIfPresent(Double.self, forKey: .trailDistanceMeters)
         workoutSaved = try c.decodeIfPresent(Bool.self, forKey: .workoutSaved)
         appVersion = try c.decodeIfPresent(String.self, forKey: .appVersion)
+        equipmentID = try c.decodeIfPresent(String.self, forKey: .equipmentID)
+        equipmentName = try c.decodeIfPresent(String.self, forKey: .equipmentName)
+        equipmentKind = try c.decodeIfPresent(String.self, forKey: .equipmentKind)
+    }
+    // The bike as an equipment reference, when its fields are usable. Invalid
+    // equipment is ignored, never a reason to reject the ride.
+    var equipmentRef: EquipmentRef? {
+        guard let id = equipmentID?.trimmingCharacters(in: .whitespaces), !id.isEmpty, id.count <= 100 else { return nil }
+        let name = (equipmentName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return EquipmentRef(id: id, name: String(name.prefix(100)))
     }
 }
 
@@ -323,6 +341,7 @@ enum WatchActivityImport {
         trip.points = points
         trip.segment = points.last?.segment ?? 0
         var details = ActivityDetails()
+        if let ref = transfer.equipmentRef { trip.assignEquipment([ref]) }
         if let trailID = transfer.trailID, UUID(uuidString: trailID) != nil {
             details.mtbTrailID = trailID.lowercased()
             details.mtbTrailName = String((transfer.trailName ?? "").prefix(120))
@@ -466,11 +485,15 @@ struct WatchRideMeta: Codable, Equatable {
     var endedAt: Double?
     var pointCount: Int
     var queued: Bool
+    var equipmentID: String? = nil
+    var equipmentName: String? = nil
+    var equipmentKind: String? = nil
 }
 
 struct WatchRideDraft {
     var id: String
     var activity: String
+    var equipment: WatchEquipment?
     var startedAt: Double
     var resumedAt: Double?
     var activeSeconds: Double
@@ -485,9 +508,10 @@ struct WatchRideDraft {
     var isRecording: Bool { state == "recording" }
     var isFinished: Bool { state == "finished" }
 
-    init(id: String = UUID().uuidString, activity: String, startedAt: Double) {
+    init(id: String = UUID().uuidString, activity: String, startedAt: Double, equipment: WatchEquipment? = nil) {
         self.id = id
         self.activity = activity
+        self.equipment = WatchCatalog.usesBicycle(activity) ? equipment : nil
         self.startedAt = startedAt
         self.resumedAt = startedAt
         self.activeSeconds = 0
@@ -501,6 +525,9 @@ struct WatchRideDraft {
     init(meta: WatchRideMeta, points: [WatchPoint]) {
         id = meta.id
         activity = meta.activity
+        if let equipmentID = meta.equipmentID, let equipmentName = meta.equipmentName {
+            equipment = WatchEquipment(id: equipmentID, name: equipmentName, kind: meta.equipmentKind ?? "bicycle")
+        }
         startedAt = meta.startedAt
         resumedAt = meta.resumedAt
         activeSeconds = max(0, meta.activeSeconds)
@@ -519,7 +546,8 @@ struct WatchRideDraft {
     var meta: WatchRideMeta {
         WatchRideMeta(id: id, activity: activity, startedAt: startedAt, resumedAt: resumedAt,
                       activeSeconds: activeSeconds, state: state, segment: segment,
-                      endedAt: endedAt, pointCount: points.count, queued: queued)
+                      endedAt: endedAt, pointCount: points.count, queued: queued,
+                      equipmentID: equipment?.id, equipmentName: equipment?.name, equipmentKind: equipment?.kind)
     }
 
     func duration(at now: Double) -> Double {
@@ -614,7 +642,7 @@ struct WatchRideDraft {
             trailDistanceMeters: trail?.distanceMeters,
             deviceID: deviceID, movingSeconds: metrics.movingSeconds,
             elevationGainMeters: metrics.elevationGainMeters, elevationLossMeters: metrics.elevationLossMeters,
-            appVersion: appVersion)
+            appVersion: appVersion, equipment: equipment)
     }
 }
 
@@ -1328,13 +1356,175 @@ final class WatchInboxStore {
 
 // __APPEND__
 
+// MARK: - Watch start choices, equipment and history
+//
+// The watch offers exactly the activity values the iPhone stores
+// (RecordedActivity.activity), grouped the way the iPhone's Record screen
+// groups them: Cycling opens its subtypes. No new activity names exist only for
+// navigation. Equipment is the rider's Collection bicycles and e-bikes, sent by
+// the phone with the account; a ride never waits for it.
+struct WatchActivityChoice: Equatable, Identifiable {
+    let activity: String
+    let title: String
+    let symbol: String
+    var id: String { activity }
+}
 
+struct WatchActivityFamily: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+    let choices: [WatchActivityChoice]
+    var hasSubtypes: Bool { choices.count > 1 }
+}
 
+enum WatchCatalog {
+    static let families: [WatchActivityFamily] = [
+        WatchActivityFamily(id: "Walking", title: "Walking", symbol: "figure.walk",
+                            choices: [WatchActivityChoice(activity: "Walking", title: "Walking", symbol: "figure.walk")]),
+        WatchActivityFamily(id: "Running", title: "Running", symbol: "figure.run",
+                            choices: [WatchActivityChoice(activity: "Running", title: "Running", symbol: "figure.run")]),
+        WatchActivityFamily(id: "Cycling", title: "Cycling", symbol: "bicycle",
+                            choices: [WatchActivityChoice(activity: "MTB", title: "Mountain bike", symbol: "mountain.2.fill"),
+                                      WatchActivityChoice(activity: "Road cycling", title: "Road", symbol: "figure.outdoor.cycle"),
+                                      WatchActivityChoice(activity: "Cycling", title: "Everyday", symbol: "bicycle")]),
+        WatchActivityFamily(id: "Hiking", title: "Hiking", symbol: "figure.hiking",
+                            choices: [WatchActivityChoice(activity: "Hiking", title: "Hiking", symbol: "figure.hiking")]),
+        WatchActivityFamily(id: "Kitesurfing", title: "Kitesurfing", symbol: "wind",
+                            choices: [WatchActivityChoice(activity: "Kitesurfing", title: "Kitesurfing", symbol: "wind")]),
+        WatchActivityFamily(id: "Other", title: "Other", symbol: "figure.mixed.cardio",
+                            choices: [WatchActivityChoice(activity: "Other", title: "Other", symbol: "figure.mixed.cardio")]),
+    ]
+    // Every value the watch may record; each one is an iPhone activity value.
+    static var activities: [String] { families.flatMap { $0.choices.map(\.activity) } }
+    static func choice(_ activity: String) -> WatchActivityChoice? {
+        families.lazy.flatMap { $0.choices }.first { $0.activity == activity }
+    }
+    static func family(of activity: String) -> WatchActivityFamily? {
+        families.first { family in family.choices.contains { $0.activity == activity } }
+    }
+    static func usesBicycle(_ activity: String) -> Bool { ["MTB", "Road cycling", "Cycling"].contains(activity) }
+    // "Cycling · Mountain bike", "Walking".
+    static func title(_ activity: String) -> String {
+        guard let picked = Self.choice(activity), let group = Self.family(of: activity) else { return activity }
+        return group.hasSubtypes ? group.title + " · " + picked.title : picked.title
+    }
+}
 
+struct WatchEquipment: Codable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    // "bicycle" or "ebike", the iPhone Collection category.
+    var kind: String
+    var isElectric: Bool { kind == "ebike" }
+}
 
+enum WatchEquipmentCatalog {
+    static let maximum = 30
+    static let kinds: Set<String> = ["bicycle", "ebike"]
+    // The phone's list, validated: bicycles and e-bikes only, bounded, no blanks.
+    static func decode(_ value: Any?) -> [WatchEquipment] {
+        guard let items = value as? [[String: Any]] else { return [] }
+        var seen = Set<String>()
+        return items.prefix(maximum).compactMap { item in
+            guard let id = item["id"] as? String, !id.isEmpty, id.count <= 100, seen.insert(id).inserted,
+                  let rawName = item["name"] as? String, let kind = item["kind"] as? String, kinds.contains(kind) else { return nil }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            return WatchEquipment(id: id, name: String(name.prefix(60)), kind: kind)
+        }
+    }
+    static func encode(_ items: [WatchEquipment]) -> [[String: String]] {
+        items.prefix(maximum).map { ["id": $0.id, "name": $0.name, "kind": $0.kind] }
+    }
+    static func compatible(_ items: [WatchEquipment], activity: String) -> [WatchEquipment] {
+        WatchCatalog.usesBicycle(activity) ? items : []
+    }
+}
 
+// What to start: an activity and, optionally, the bike.
+struct WatchStartConfig: Codable, Equatable, Hashable {
+    var activity: String
+    var equipmentID: String?
+    var equipmentName: String?
+    var equipmentKind: String?
+    init(activity: String, equipment: WatchEquipment? = nil) {
+        self.activity = activity
+        equipmentID = equipment?.id; equipmentName = equipment?.name; equipmentKind = equipment?.kind
+    }
+    var equipment: WatchEquipment? {
+        guard let id = equipmentID, let name = equipmentName else { return nil }
+        return WatchEquipment(id: id, name: name, kind: equipmentKind ?? "bicycle")
+    }
+    var title: String { WatchCatalog.title(activity) }
+    var detail: String? { equipmentName }
+    var isValid: Bool { WatchCatalog.choice(activity) != nil && (equipmentID == nil || WatchCatalog.usesBicycle(activity)) }
+}
 
+// The last setup per activity, and the last one overall ("Start again: MTB ·
+// E-bike"). A bike that later left the Collection is still offered: the phone
+// attaches it by id when it can, and otherwise keeps the name.
+struct WatchStartMemory: Codable, Equatable {
+    var byActivity: [String: WatchStartConfig] = [:]
+    var last: WatchStartConfig?
+    mutating func remember(_ config: WatchStartConfig) {
+        guard config.isValid else { return }
+        byActivity[config.activity] = config
+        last = config
+    }
+    func equipment(for activity: String) -> WatchEquipment? {
+        guard WatchCatalog.usesBicycle(activity) else { return nil }
+        return byActivity[activity]?.equipment
+    }
+}
 
+// A finished ride as the watch shows it. Only a summary: the route goes to the
+// phone and is not kept here.
+struct WatchHistoryEntry: Codable, Equatable, Identifiable {
+    var id: String
+    var activity: String
+    var equipmentID: String?
+    var equipmentName: String?
+    var equipmentKind: String?
+    var startedAt: Double
+    var endedAt: Double
+    var activeSeconds: Double
+    var distanceMeters: Double
+    // False when the ride was too short to send.
+    var queued: Bool
+    var config: WatchStartConfig {
+        var config = WatchStartConfig(activity: activity)
+        config.equipmentID = equipmentID; config.equipmentName = equipmentName; config.equipmentKind = equipmentKind
+        return config
+    }
+}
 
+enum WatchSyncStatus: String, Equatable {
+    case waiting, onIPhone, otherAccount, failed, notSent
+    var label: String {
+        switch self {
+        case .waiting: return "Waiting for iPhone"
+        case .onIPhone: return "On iPhone"
+        case .otherAccount: return "Another account"
+        case .failed: return "Couldn't sync"
+        case .notSent: return "Too short to save"
+        }
+    }
+}
 
-
+enum WatchHistory {
+    static let limit = 30
+    // Newest first, one entry per ride, bounded.
+    static func adding(_ entry: WatchHistoryEntry, to list: [WatchHistoryEntry]) -> [WatchHistoryEntry] {
+        Array(([entry] + list.filter { $0.id.lowercased() != entry.id.lowercased() }).sorted { $0.startedAt > $1.startedAt }.prefix(limit))
+    }
+    // Derived from the outbox, never stored: an entry still in the outbox is
+    // waiting, parked or unreadable; a queued ride no longer there was
+    // acknowledged by the phone (saved or a duplicate it already had).
+    static func status(_ entry: WatchHistoryEntry, outbox: [WatchOutboxEntry]) -> WatchSyncStatus {
+        guard entry.queued else { return .notSent }
+        guard let item = outbox.first(where: { $0.id.lowercased() == entry.id.lowercased() }) else { return .onIPhone }
+        if item.issue != nil { return .failed }
+        return item.isParked ? .otherAccount : .waiting
+    }
+}

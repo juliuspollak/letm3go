@@ -24,6 +24,13 @@ final class WatchRecorder: NSObject, ObservableObject {
     @Published var activity = "MTB" {
         didSet { UserDefaults.standard.set(activity, forKey: Self.activityKey) }
     }
+    // The setup of the ride being recorded, the last setup per activity, the
+    // recent rides and the ride just finished (for its summary).
+    @Published private(set) var config = WatchStartConfig(activity: "MTB")
+    @Published private(set) var memory = WatchStartMemory()
+    @Published private(set) var history: [WatchHistoryEntry] = []
+    @Published private(set) var lastFinished: WatchHistoryEntry?
+    @Published private(set) var lastFixAt: Double?
 
     static let activityKey = "watch.activity"
     // Fixes are persisted at most this often, which bounds flash wear without
@@ -48,6 +55,9 @@ final class WatchRecorder: NSObject, ObservableObject {
         manager.distanceFilter = 3
         manager.activityType = .fitness
         activity = UserDefaults.standard.string(forKey: Self.activityKey) ?? "MTB"
+        if !WatchCatalog.activities.contains(activity) { activity = "MTB" }
+        config = WatchStartConfig(activity: activity)
+        loadAccountData()
         permission = Self.permissionLabel(manager.authorizationStatus)
         pendingCount = WatchTransferQueue.shared.pendingCount()
     }
@@ -56,6 +66,36 @@ final class WatchRecorder: NSObject, ObservableObject {
     var hasRide: Bool { draft != nil }
     var canStart: Bool { draft == nil }
     var isPaused: Bool { draft?.state == "paused" }
+
+    // MARK: - Start memory and history (per account)
+
+    private static func key(_ name: String) -> String {
+        "watch." + name + "." + (WatchConnectivitySession.shared.ownerID ?? "none")
+    }
+    // Called at launch and when the phone reports another account.
+    func loadAccountData() {
+        let defaults = UserDefaults.standard
+        memory = defaults.data(forKey: Self.key("memory")).flatMap { try? JSONDecoder().decode(WatchStartMemory.self, from: $0) } ?? WatchStartMemory()
+        history = defaults.data(forKey: Self.key("history")).flatMap { try? JSONDecoder().decode([WatchHistoryEntry].self, from: $0) } ?? []
+    }
+    private func saveMemory() {
+        if let data = try? JSONEncoder().encode(memory) { UserDefaults.standard.set(data, forKey: Self.key("memory")) }
+    }
+    private func record(_ entry: WatchHistoryEntry) {
+        history = WatchHistory.adding(entry, to: history)
+        if let data = try? JSONEncoder().encode(history) { UserDefaults.standard.set(data, forKey: Self.key("history")) }
+    }
+    // The equipment last used for an activity, if the watch has a bike list or
+    // remembers one.
+    func rememberedEquipment(for activity: String) -> WatchEquipment? { memory.equipment(for: activity) }
+
+    // Starts a ride with this setup. A bike that has not synced never blocks it.
+    func start(_ setup: WatchStartConfig) {
+        guard draft == nil, setup.isValid else { return }
+        config = setup
+        activity = setup.activity
+        start()
+    }
 
 // __APPEND__
 
@@ -83,6 +123,9 @@ final class WatchRecorder: NSObject, ObservableObject {
         adopt(ride)
         persist(force: true)
         state = ride.state
+        // The restored ride's own setup, so a finish attaches the same bike.
+        config = WatchStartConfig(activity: ride.activity, equipment: ride.equipment)
+        activity = ride.activity
         status = ride.points.isEmpty ? "Restored an unfinished ride" : "Restored \(Self.clock(activeSeconds)) ride"
     }
 
@@ -114,7 +157,12 @@ final class WatchRecorder: NSObject, ObservableObject {
     private func beginRide() {
         requestHealthAccess()
         let now = Date().timeIntervalSince1970
-        draft = WatchRideDraft(activity: activity, startedAt: now)
+        if config.activity != activity { config = WatchStartConfig(activity: activity) }
+        draft = WatchRideDraft(activity: activity, startedAt: now, equipment: config.equipment)
+        memory.remember(config)
+        saveMemory()
+        lastFinished = nil
+        lastFixAt = nil
         state = "recording"
         status = "Recording · watch-only"
         distanceMeters = 0
@@ -210,6 +258,7 @@ final class WatchRecorder: NSObject, ObservableObject {
                 speed: location.speed)
             if case .accepted = ride.ingest(fix, now: now) { accepted = true }
         }
+        if accepted { lastFixAt = now }
         guard accepted || ride.points.count != pointCount else { return }
         // Folding the elapsed time in now means a crash costs milliseconds of
         // duration, never the whole stretch since the last save.
@@ -304,6 +353,14 @@ final class WatchRecorder: NSObject, ObservableObject {
                 return
             }
         }
+
+        // The ride joins the watch's recent list as soon as it is safe.
+        let entry = WatchHistoryEntry(id: ride.id, activity: ride.activity, equipmentID: ride.equipment?.id,
+                                      equipmentName: ride.equipment?.name, equipmentKind: ride.equipment?.kind,
+                                      startedAt: ride.startedAt, endedAt: ride.endedAt ?? now, activeSeconds: activeSeconds,
+                                      distanceMeters: ride.metrics.distanceMeters, queued: transfer != nil)
+        record(entry)
+        lastFinished = entry
 
         // The transfer is durable, so the draft is expendable. Even if clearing it
         // fails the draft is marked queued and never restored or re-sent.

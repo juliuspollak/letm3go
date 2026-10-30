@@ -49,7 +49,15 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private func sendOwnerContext() {
         let session = WCSession.default
         guard WCSession.isSupported(), session.activationState == .activated else { return }
-        try? session.updateApplicationContext(["ownerID": ownerID ?? "", "version": 2])
+        // The open account's bicycles and e-bikes (id, name, kind only), so the
+        // watch can offer them; another account's Collection is never sent.
+        let recorder = LocationRecorder.shared
+        let equipment = ownerID != nil && recorder.ownerID == ownerID ? WatchEquipmentCatalog.encode(recorder.watchEquipment) : []
+        try? session.updateApplicationContext(["ownerID": ownerID ?? "", "version": 3, "equipment": equipment])
+    }
+    // The Collection changed: refresh what the watch offers.
+    func updateEquipment() {
+        sendOwnerContext()
     }
 
     // A sign-out, account switch or account deletion must not leave another person's

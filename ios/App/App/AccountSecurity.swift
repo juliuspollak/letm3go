@@ -246,6 +246,13 @@ extension LocationRecorder {
         }
         if let avatar = updated.avatar, !avatar.hasPrefix("data:image/jpeg;base64,") { throw failure("Use a JPEG profile image.") }
         try storage.writeData(JSONEncoder().encode(updated),name:"preferences.data"); preferences = updated
+        // The watch offers the Collection's bicycles and e-bikes when starting a ride.
+        WatchSessionManager.shared.updateEquipment()
+    }
+    // Bicycles and e-bikes the watch may attach to a ride; nothing else leaves the phone.
+    var watchEquipment: [WatchEquipment] {
+        preferences.vehicles.filter { $0.archived != true && WatchEquipmentCatalog.kinds.contains($0.category ?? "") }
+            .map { WatchEquipment(id: $0.id, name: $0.name, kind: $0.category ?? "bicycle") }
     }
     func sealLegacyData() throws {
         let root = try applicationSupport(), legacy = root.appendingPathComponent("Letm3goRecordings")

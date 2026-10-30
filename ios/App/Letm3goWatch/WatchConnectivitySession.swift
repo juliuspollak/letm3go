@@ -22,6 +22,9 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     // rider is told instead of the queue silently shrinking.
     @Published private(set) var broken = 0
     @Published private(set) var lastMessage = ""
+    // The open account's Collection bicycles and e-bikes, as the phone last sent
+    // them. Kept per account so another account's bikes are never offered.
+    @Published private(set) var equipment: [WatchEquipment] = []
 
     private var inFlight: Set<String> = []
     private var retryTimer: Timer?
@@ -30,6 +33,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     private override init() {
         super.init()
         ownerID = WatchOwnership.normalize(UserDefaults.standard.string(forKey: Self.ownerKey))
+        equipment = Self.storedEquipment(for: ownerID)
         refreshCounts()
     }
 
@@ -138,9 +142,28 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
             } else {
                 UserDefaults.standard.removeObject(forKey: Self.ownerKey)
             }
+            equipment = Self.storedEquipment(for: owner)
+        }
+        // Older phone builds send no list: the last one received is kept.
+        if context.keys.contains("equipment") {
+            let received = WatchEquipmentCatalog.decode(context["equipment"])
+            if received != equipment {
+                equipment = received
+                if let data = try? JSONEncoder().encode(received) { UserDefaults.standard.set(data, forKey: Self.equipmentKey(owner)) }
+            }
         }
         sendPending()
     }
+
+    static func equipmentKey(_ owner: String?) -> String { "watch.equipment." + (owner ?? "none") }
+    private static func storedEquipment(for owner: String?) -> [WatchEquipment] {
+        guard let data = UserDefaults.standard.data(forKey: equipmentKey(owner)),
+              let items = try? JSONDecoder().decode([WatchEquipment].self, from: data) else { return [] }
+        return items
+    }
+
+    // The outbox as it stands, for the history list's sync status.
+    func outboxEntries() -> [WatchOutboxEntry] { queue.outbox.loadIndex() }
 
     // `saved`, `duplicate` and `rejected` retire the ride. `parked` means the phone
     // kept the payload but cannot attribute it to the open account: the ride stays on

@@ -14,6 +14,7 @@
 		BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000008; };
 		BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000006; };
 		BD000000000000000000000F /* NamedSegmentCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000010; };
+		C2000000000000000000000F /* NamedSegmentCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000010; };
 		BD000000000000000000000D /* HomeWiFi.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000E; };
 		BD000000000000000000000B /* PassiveRest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000C; };
 		BD0000000000000000000009 /* QuietRestCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000A; };
@@ -354,6 +355,7 @@
 				C20000000000000000000005 /* WatchConnectivitySession.swift in Sources */,
 				C20000000000000000000007 /* RecorderCore.swift in Sources */,
 				C20000000000000000000009 /* WatchActivityCore.swift in Sources */,
+				C2000000000000000000000F /* NamedSegmentCore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
