@@ -722,7 +722,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var indicatorVersion:[String:Int]=[:]
     private var contentVersion=0
     private var recognizers:[UIGestureRecognizer]=[]
-    private var recenter:UIButton?
     private var chip:UIButton?
     private var compass:MKCompassButton?
     private let controlTop:CGFloat
@@ -1180,7 +1179,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
 
     // MARK: Controls
     private func installControls() {
-        guard let map=map,recenter==nil else {return}
+        guard let map=map,recognizers.isEmpty else {return}
         map.isPitchEnabled=false
         map.showsCompass=false
         // Only the user's own pans, pinches, rotations and double taps count as
@@ -1193,12 +1192,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             recognizer.delegate=self;recognizer.cancelsTouchesInView=false;recognizer.delaysTouchesEnded=false
             map.addGestureRecognizer(recognizer);recognizers.append(recognizer)
         }
-        let button=UIButton(type:.system)
-        button.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
-        button.layer.cornerRadius=18
-        button.accessibilityLabel="Show everyone"
-        button.addAction(UIAction{[weak self] _ in self?.showEveryone()},for:.touchUpInside)
-        map.addSubview(button);recenter=button
         let compass=MKCompassButton(mapView:map)
         compass.compassVisibility = .adaptive
         map.addSubview(compass);self.compass=compass
@@ -1230,9 +1223,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     // Frames follow the current bounds (the full-screen map is created before it
     // has a size), so the column always sits at the right edge.
     private func layoutControls() {
-        guard let map=map,let recenter=recenter else {return}
+        guard let map=map else {return}
         let right=map.bounds.width-16
-        recenter.frame=CGRect(x:right-36,y:controlTop,width:36,height:36)
         compass?.frame=CGRect(x:right-38,y:controlTop+44,width:40,height:40)
         if let chip=chip,!chip.isHidden {
             chip.frame.origin=CGPoint(x:showsLayers ? 64 : 12,y:showsLayers ? 12 : controlTop)
@@ -1240,13 +1232,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
     }
     private func updateControls() {
-        guard let map=map,let recenter=recenter else {return}
+        guard let map=map else {return}
         defer {layoutControls()}
-        let following=planner.mode == .all
-        recenter.setImage(UIImage(systemName:following ? "person.2.fill" : "person.2",withConfiguration:UIImage.SymbolConfiguration(pointSize:15,weight:.semibold)),for:.normal)
-        recenter.tintColor=following ? .systemBlue : .label
-        recenter.accessibilityValue=following ? "Showing everyone" : nil
-        recenter.accessibilityHint=following ? nil : "Moves the map to show everyone sharing their location"
         if let chip=chip {
             if let id=planner.mode.personID {
                 chip.configuration?.title="Following \(name(of:id))"
@@ -1278,7 +1265,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         let size:CGFloat=40
         var blocked=filterViews.map{$0.frame.insetBy(dx:-4,dy:-4)}
-        blocked += [recenter,chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
+        blocked += [chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
         if let compass=compass,compass.alpha>0.01,!compass.isHidden {blocked.append(compass.frame.insetBy(dx:-4,dy:-4))}
         for view in map.subviews where view is UIButton && !(view is EdgeAvatarButton) && !view.isHidden {blocked.append(view.frame.insetBy(dx:-4,dy:-4))}
         // MapKit's Apple Maps logo and Legal link sit at the bottom left (above the
@@ -1327,7 +1314,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             indicators.removeValue(forKey:id);indicatorData.removeValue(forKey:id);indicatorVersion.removeValue(forKey:id)
             UIView.animate(withDuration:0.15,animations:{button.alpha=0},completion:{_ in button.removeFromSuperview()})
         }
-        if let recenter=recenter {map.bringSubviewToFront(recenter)}
     }
 
     func detach() {
@@ -1336,8 +1322,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         recognizers.removeAll()
         for button in indicators.values {button.removeFromSuperview()}
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
-        ([recenter,chip,compass,card,layersButton,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
-        recenter=nil;chip=nil;compass=nil;card=nil;layersButton=nil;locationButton=nil
+        ([chip,compass,card,layersButton,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
+        chip=nil;compass=nil;card=nil;layersButton=nil;locationButton=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
         filterViews.forEach{$0.removeFromSuperview()};filterViews=[];filterToolbarKey=nil
         onModeChange=nil;onPhotoAction=nil;onLayers=nil;onToolbarAction=nil

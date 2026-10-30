@@ -215,3 +215,23 @@ it('centres the location arrow on the self marker rather than the account id or 
  expect(mapProps.value.camera).toMatchObject({mode:'person',personId:'self'});
  expect(mapProps.value.peoplePins.some(pin=>pin.members.some(member=>member.id==='self'))).toBe(true);
 });
+
+it('keeps the self marker and self-location camera when People & places is off, including after relaunch',async()=>{
+ signedIn();
+ const position={latitude:-33.87,longitude:151.21,accuracy:5};
+ const locate=vi.fn().mockResolvedValue(position);
+ mapLocationHook.mockReturnValue({position,loading:false,error:'',locate});
+ const app=render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ act(()=>mapProps.value.onLayers());
+ fireEvent.click(screen.getByRole('button',{name:'People & places'}));
+ expect(screen.getByRole('button',{name:'People & places'})).toHaveAttribute('aria-pressed','false');
+ expect(mapProps.value.peoplePins.flatMap(pin=>pin.members).map(member=>member.id)).toEqual(['self']);
+ expect(mapProps.value.currentPosition).toBeUndefined();
+ await act(async()=>{await mapProps.value.onLocate();});
+ expect(mapProps.value.camera).toMatchObject({mode:'person',personId:'self'});
+ app.unmount();render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(JSON.parse(localStorage.getItem('letm3go:map-view:owner')).people).toBe(false);
+ expect(mapProps.value.peoplePins.flatMap(pin=>pin.members).map(member=>member.id)).toEqual(['self']);
+});
