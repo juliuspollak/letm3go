@@ -2917,6 +2917,47 @@ do {
     check(LocationDiagnosticExport.testSummary([event(1, "Departure wake-up"), event(2, "Departure wake-up", ["wakeSource": "late"])], current: [:]).wakeUpSource == "late", "scenario 15: without a journey the latest wake-up is reported")
 }
 
+// MARK: A finalised journey stays finished across a relaunch
+do {
+    func drive() -> RecordedActivity {
+        var trip = RecordedActivity(activity: "Driving", startedAt: 1000, resumedAt: 1000, title: "Drive")
+        trip.recordingMode = "automatic"
+        _ = trip.accept(GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 1001, accuracy: 5, altitude: 0, speed: 10), now: 1001)
+        _ = trip.accept(GPSPoint(latitude: -33.8605, longitude: 151.2, timestamp: 1021, accuracy: 5, altitude: 0, speed: 10), now: 1021)
+        return trip
+    }
+    var published = drive()
+    published.publishStop(at: 1021, continuationEndsAt: 1621)
+    check(published.state == "paused" && published.isProvisional && !published.isFinalisedButUnmarked, "a published stop can still continue")
+    var finalised = published
+    finalised.completeProvisional()
+    check(finalised.state == "finished" && !finalised.isProvisional, "finalising a stop finishes the journey")
+    check(AutomaticRecovery.plan([finalised], now: 2221).action == nil, "a relaunch within 30 minutes does not reopen a finalised journey")
+
+    // The record 30 October's builds left on disk.
+    var legacy = published
+    legacy.details?.provisional = nil; legacy.details?.continuationEndsAt = nil
+    check(legacy.state == "paused" && legacy.isFinalisedButUnmarked, "an already saved finalised journey is recognised")
+    check(AutomaticRecovery.plan([legacy], now: 2221).action == nil && AutomaticRecovery.plan([legacy], now: 41021).action == nil, "it is neither reopened nor closed a second time")
+    let before = legacy
+    legacy.repairFinalisedState()
+    check(legacy.state == "finished" && legacy.endedAt == before.endedAt && legacy.points.count == before.points.count && legacy.updatedAt == before.updatedAt, "the repair changes only the state")
+
+    // A truly interrupted journey has no end, so it still recovers.
+    var interrupted = drive()
+    interrupted.recoverAfterInterruption()
+    check(!interrupted.isFinalisedButUnmarked && AutomaticRecovery.plan([interrupted], now: 2221).action == .resume, "an interrupted journey is still restored")
+    check(AutomaticRecovery.plan([interrupted], now: 41021).action?.reason != nil, "an old interrupted journey is still closed at its last fix")
+    var manual = published
+    manual.recordingMode = nil
+    manual.details?.provisional = nil
+    check(!manual.isFinalisedButUnmarked, "a paused manual activity is never treated as finished")
+    var stoppedAgain = drive()
+    stoppedAgain.publishStop(at: 1021, continuationEndsAt: 1621)
+    check(stoppedAgain.continueAfterStop(at: 1100), "a published stop can still be continued")
+    check(stoppedAgain.state == "recording" && stoppedAgain.endedAt == nil && !stoppedAgain.isFinalisedButUnmarked, "a continued journey is open again")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

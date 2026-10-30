@@ -176,7 +176,17 @@ struct RecordedActivity: Codable {
             metadata.provisional = nil
             metadata.continuationEndsAt = nil
         }
+        // Publishing only paused it. Without this a relaunch sees an interrupted
+        // journey and can reopen one that is over.
+        if endedAt != nil { state = "finished" }
         updatedAt = Date().timeIntervalSince1970
+    }
+    // Finalised by a build that left it paused. It has an end and no continuation,
+    // so it is complete; an interrupted journey has no end. The saved route, times
+    // and sync order are untouched.
+    var isFinalisedButUnmarked: Bool { recordingMode == "automatic" && state == "paused" && endedAt != nil && !isProvisional }
+    mutating func repairFinalisedState() {
+        if isFinalisedButUnmarked { state = "finished" }
     }
     // Do not connect pauses, long signal gaps, stale fixes, or implausible jumps.
     mutating func accept(_ sample: GPSPoint, now: Double) -> Bool {
@@ -917,7 +927,7 @@ enum AutomaticRecovery {
     static func plan(_ trips: [RecordedActivity], now: Double, resumeWindow: Double = resumeWindow) -> Plan {
         // Published stops (`isProvisional`) are handled by `ProvisionalRecovery`:
         // they already have an end and a continuation window.
-        let unfinished = trips.filter { $0.state != "finished" && !$0.isProvisional && $0.recordingMode == "automatic" }
+        let unfinished = trips.filter { $0.state != "finished" && !$0.isProvisional && !$0.isFinalisedButUnmarked && $0.recordingMode == "automatic" }
             .sorted { ($0.points.last?.timestamp ?? $0.startedAt) > ($1.points.last?.timestamp ?? $1.startedAt) }
         guard let newest = unfinished.first else { return Plan() }
         var closed = unfinished.dropFirst().map { $0.id }

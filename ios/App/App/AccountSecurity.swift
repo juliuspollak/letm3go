@@ -106,7 +106,12 @@ extension LocationRecorder {
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         loadHomeWiFi()
-        let records = try storage!.load()
+        var records = try storage!.load()
+        for index in records.indices where records[index].isFinalisedButUnmarked {
+            records[index].repairFinalisedState()
+            // Corrected in memory either way; a failed save repeats next launch.
+            try? storage!.save(records[index])
+        }
         // A stopped journey is a published record, not an unfinished one: it is
         // restored as a journey that may still be continued.
         trips = records.filter { $0.state == "finished" || $0.isProvisional }
