@@ -857,3 +857,24 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 @media(prefers-reduced-motion:reduce){.map-filter-options{animation:none}}
 
 .map-locate-button[aria-pressed=true]{background:var(--accent);color:white}
+
+/* Named segments: the editor reuses the route-window dual slider; the selection
+   on the map uses the same pink as its track. */
+.create-segment{margin:14px 0 4px}
+.segment-editor{margin-top:14px}.segment-editor h2{font-size:18px}
+.segment-range .route-range-track span{background:#ff2d55}
+.segment-range input[type="range"]{accent-color:#ff2d55}
+.segment-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:6px 0 8px}
+.segment-stats div{background:var(--soft);border-radius:10px;padding:8px 10px}
+.segment-stats dt{font-size:10px;color:var(--muted);letter-spacing:.4px}
+.segment-stats dd{margin:2px 0 0;font-weight:700;font-variant-numeric:tabular-nums}
+.segment-name{display:block;font-size:12px;font-weight:600;margin-top:10px}
+.segment-name input,.segment-rename input{display:block;width:100%;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:12px;border-radius:9px;margin-top:6px}
+.segment-actions{flex-wrap:wrap;gap:8px;margin-top:12px}
+.segment-list{margin:16px 0 4px}.segment-list h2{font-size:16px;margin-bottom:8px}
+.segment-list ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.segment-chip{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.segment-chip strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.segment-chip span:last-child{font-size:11px;color:var(--muted);white-space:nowrap}
+.segment-swatch{width:14px;height:14px;border-radius:4px;flex-shrink:0}
+.segment-summary{padding:8px 4px 4px}.segment-summary .detail-actions{flex-wrap:wrap;gap:8px;margin-top:8px}

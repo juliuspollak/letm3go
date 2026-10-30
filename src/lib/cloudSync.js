@@ -4,11 +4,25 @@ import {resolvePhoto} from './privateMedia.js';
 // Only the presentation fields a user actually changed are uploaded: the trimmed
 // route window, the recognised start/end places and the chosen cover photo. A
 // restored journey therefore looks exactly like the one that was recorded.
+// Named segments are backed up with their activity once the database accepts
+// them (migration 20261107000000_activity_named_segments.sql). Until that
+// migration is applied, sending them would make every backup of a segmented
+// activity fail the view_metadata check, so they stay on the iPhone only.
+export const NAMED_SEGMENT_BACKUP=false;
+// References into route_points only: the geometry copy is left out because the
+// route itself is backed up alongside.
+export function backupSegments(segments){
+ return (Array.isArray(segments)?segments:[]).slice(0,20)
+  .filter(s=>typeof s?.id==='string'&&s.id.length===36&&typeof s.name==='string'&&s.name.trim()&&Number.isInteger(s.startIndex)&&Number.isInteger(s.endIndex)&&s.startIndex<s.endIndex)
+  .map(s=>({id:s.id,name:s.name.slice(0,80),startIndex:s.startIndex,endIndex:s.endIndex,startTimestamp:s.startTimestamp,endTimestamp:s.endTimestamp,distanceMeters:s.distanceMeters,durationSeconds:s.durationSeconds,gapSeconds:s.gapSeconds||0,pointCount:s.pointCount,colorIndex:s.colorIndex||0,visibility:'private',createdAt:s.createdAt,updatedAt:s.updatedAt}));
+}
 function viewMetadata(details){
  const out={};
  for(const key of ['visibleRouteStart','visibleRouteEnd'])if(Number.isInteger(details?.[key]))out[key]=details[key];
  for(const key of ['startPlace','endPlace'])if(typeof details?.[key]==='string'&&details[key])out[key]=details[key].slice(0,120);
  if(typeof details?.coverPhotoID==='string'&&details.coverPhotoID)out.coverPhotoID=details.coverPhotoID.slice(0,100);
+ const segments=backupSegments(details?.namedSegments);
+ if(NAMED_SEGMENT_BACKUP&&segments.length)out.namedSegments=segments;
  return out;
 }
 export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto}={}){

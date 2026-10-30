@@ -76,6 +76,37 @@ extension LocationRecorder {
         trip.updatedAt=Date().timeIntervalSince1970
         try storage.save(trip);trips[index]=trip
     }
+    // Named segments: references into the recording's own fixes. Saving one never
+    // changes the fixes, the visible route window or a linked trail.
+    static let segmentActivities: Set<String> = ["MTB", "Cycling", "Road cycling", "Hiking", "Walking", "Running"]
+    func saveNamedSegment(id: String, segmentID: String, name: String, start: Int, end: Int) throws {
+        guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
+        var trip = trips[index]
+        let mode = trip.recordingMode ?? "manual"
+        guard trip.state == "finished", Self.segmentActivities.contains(trip.activity), mode != "tesla", mode != "historical" else {
+            throw failure("Segments can be made on recorded walks, runs, hikes and rides.")
+        }
+        let existing = trip.details?.namedSegments ?? []
+        let now = Date().timeIntervalSince1970
+        switch NamedSegments.make(id: segmentID, name: name, start: start, end: end, points: trip.points,
+                                  automatic: mode == "automatic", existing: existing, now: now) {
+        case .failure(let problem): throw failure(problem.message)
+        case .success(let segment):
+            trip.updateDetails { $0.namedSegments = NamedSegments.upsert(segment, into: existing) }
+            trip.updatedAt = now
+            try storage.save(trip); trips[index] = trip
+        }
+    }
+    func deleteNamedSegment(id: String, segmentID: String) throws {
+        guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
+        var trip = trips[index]
+        guard let remaining = NamedSegments.removing(segmentID, from: trip.details?.namedSegments ?? []) else {
+            throw failure(NamedSegments.Failure.notFound.message)
+        }
+        trip.updateDetails { $0.namedSegments = remaining.isEmpty ? nil : remaining }
+        trip.updatedAt = Date().timeIntervalSince1970
+        try storage.save(trip); trips[index] = trip
+    }
     func trimActivity(id: String, start: Int, end: Int) throws {
         guard let index = trips.firstIndex(where: { $0.id == id }),
               let storage = storage else { throw failure("Activity not found.") }
@@ -362,6 +393,22 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         guard let start=call.getInt("start"), let end=call.getInt("end") else {call.reject("Choose valid route points.");return}
         do {try LocationRecorder.shared.setRouteDisplay(id:call.getString("id") ?? "",start:start,end:end);call.resolve(LocationRecorder.shared.snapshot())}
         catch {call.reject(error.localizedDescription)}
+    } }
+    @objc func saveNamedSegment(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let start = call.getInt("start"), let end = call.getInt("end") else { call.reject("Choose valid route points."); return }
+        do {
+            try LocationRecorder.shared.saveNamedSegment(id: call.getString("id") ?? "", segmentID: call.getString("segmentID") ?? "",
+                                                         name: call.getString("name") ?? "", start: start, end: end)
+            call.resolve(LocationRecorder.shared.snapshot())
+        } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func deleteNamedSegment(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        do {
+            try LocationRecorder.shared.deleteNamedSegment(id: call.getString("id") ?? "", segmentID: call.getString("segmentID") ?? "")
+            call.resolve(LocationRecorder.shared.snapshot())
+        } catch { call.reject(error.localizedDescription) }
     } }
     @objc func trimActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

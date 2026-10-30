@@ -2,7 +2,7 @@ import {distanceText} from '../lib/distanceUnits.js';
 import ActivityPrivacy from './ActivityPrivacy.jsx';
 import SwipeBack from './SwipeBack.jsx';
 import PrivateImage from './PrivateImage.jsx';
-import { useState } from 'react';
+import { useDeferredValue, useState } from 'react';
 import { ArrowLeft, Pencil, Trash2, ImagePlus, MapPin, Camera } from 'lucide-react';
 import JourneyMap from './JourneyMap.jsx';
 import JourneyTags from './JourneyTags.jsx';
@@ -12,6 +12,8 @@ import { sourceLabel } from '../lib/activityPrivacy.js';
 import { canLinkTrail } from '../lib/mtbLink.js';
 import { recordedJourney, speedLabel, paceLabel } from '../lib/recorder.js';
 import {EquipmentButton} from './EquipmentChip.jsx';
+import { CreateSegmentButton, SegmentEditor, SegmentList } from './NamedSegments.jsx';
+import { canCreateSegments, newSegmentID, segmentLayers } from '../lib/namedSegments.js';
 export default function ActivityDetail({trip,places,vehicles=[],onEquipment,onBack,onEdit,onPhoto,run,onUpdated,onDeleted,busy,error,onSource,onStopChange,grouping,unit='km'}){
  const local=(trip.source==='device'||trip.source==='simulator')&&trip.state!=='recording';
  const [deleting,setDeleting]=useState(false),[suggestions,setSuggestions]=useState(null),[showSkipped,setShowSkipped]=useState(false),[message,setMessage]=useState('');
@@ -23,6 +25,15 @@ export default function ActivityDetail({trip,places,vehicles=[],onEquipment,onBa
  const trimValid=pointCount>=2&&trimStart<trimEnd;
  const trimChanged=trimStart!==(trip.visibleRouteStart??0)||trimEnd!==(trip.visibleRouteEnd??pointCount-1);
  const fullPreview={...trip,route:points.map(p=>[p.latitude,p.longitude]),routeSegments:points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
+ // Named segments: a draft is the section being chosen; the map follows it.
+ const segmentsAllowed=canCreateSegments(trip);
+ const [segmentDraft,setSegmentDraft]=useState(null);
+ const mapSelection=useDeferredValue(segmentDraft);
+ const layers=segmentsAllowed||trip.details?.namedSegments?.length?segmentLayers(trip,{selection:mapSelection&&{start:mapSelection.start,end:mapSelection.end},editingID:mapSelection?.segmentID}):null;
+ function createSegment(){const start=Math.max(0,Math.min(pointCount-2,trip.visibleRouteStart??0)),end=Math.max(start+1,Math.min(pointCount-1,trip.visibleRouteEnd??pointCount-1));setSegmentDraft({segmentID:newSegmentID(),name:'',start,end,existing:false});}
+ async function saveSegment({name,start,end}){const result=await perform('saveNamedSegment',{id:trip.id,segmentID:segmentDraft.segmentID,name,start,end});if(result){setSegmentDraft(null);setMessage(`Segment “${name}” saved. The recording is unchanged.`);}}
+ const renameSegment=async(segment,name)=>!!await perform('saveNamedSegment',{id:trip.id,segmentID:segment.id,name,start:segment.startIndex,end:segment.endIndex});
+ const deleteSegment=async segment=>!!await perform('deleteNamedSegment',{id:trip.id,segmentID:segment.id});
  const pointTime=i=>new Date(points[i]?.timestamp*1000).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit',second:'2-digit'});
  // Remaining time in the published stop's continuation window, in whole minutes.
  const continuationMinutes=Number.isFinite(trip.continuationEndsAt)?Math.max(1,Math.round((trip.continuationEndsAt-Date.now()/1000)/60)):null;
@@ -39,9 +50,11 @@ export default function ActivityDetail({trip,places,vehicles=[],onEquipment,onBa
  {trip.sourceRecords&&<section className="notice"><h3>Recordings of this drive</h3><p>Both sources are preserved. Photos and notes stay with their originals.</p>{trip.sourceRecords.map(s=><button key={s.id} className="secondary" onClick={()=>onSource?.(s)}>View {s.source==='tesla'?'Tesla':'iPhone'} recording</button>)}</section>}
  {trip.state==='recording'&&<p role="status" className="notice">Automatic recording in progress. This activity updates as GPS arrives and continues in the same journey if movement resumes near a stop.</p>}
  {trip.provisional&&<p role="status" className="notice">Stopped and saved to History{continuationMinutes?`; ${continuationMinutes} minute${continuationMinutes===1?'':'s'} remain for the same activity near here`:''}. A different activity (walking after parking, or driving after a walk) is saved as its own journey.</p>}
- {route.length?<JourneyMap journeys={[pointCount>=2?fullPreview:trip]} trimRange={local&&pointCount>=2?{start:trimStart,end:trimEnd,points}:null} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {route.length?<JourneyMap journeys={[pointCount>=2?fullPreview:trip]} trimRange={local&&pointCount>=2&&!segmentDraft?{start:trimStart,end:trimEnd,points}:null} segmentLayers={layers} onPhoto={onPhoto} large/>:<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>}
+ {segmentsAllowed&&(segmentDraft?<SegmentEditor key={segmentDraft.segmentID} trip={trip} draft={segmentDraft} unit={unit} busy={busy} onChange={range=>setSegmentDraft(d=>({...d,...range}))} onCancel={()=>setSegmentDraft(null)} onSave={saveSegment}/>:<CreateSegmentButton onClick={createSegment} disabled={busy}/>)}
+ {!segmentDraft&&<SegmentList trip={trip} unit={unit} busy={busy} onEdit={segment=>setSegmentDraft({segmentID:segment.id,name:segment.name,start:segment.startIndex,end:segment.endIndex,existing:true})} onRename={renameSegment} onDelete={deleteSegment}/>}
  {canLinkTrail(trip)&&<TrailLink trip={trip} perform={perform} busy={busy}/>}
- {trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
+ {!segmentDraft&&trip.source==='device'&&trip.state==='finished'&&pointCount>=2&&<section className="notice route-trim">
   <h2>Route shown on map</h2>
   <p className="muted small-copy">Choose which part of this recording appears on the map. Original GPS points are kept. The map above updates as you drag.</p>
   <div className="route-range route-dual-slider">

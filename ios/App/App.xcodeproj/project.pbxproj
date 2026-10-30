@@ -13,6 +13,7 @@
 		BD0000000000000000000003 /* MapOverviewCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000004; };
 		BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000008; };
 		BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000006; };
+		BD000000000000000000000F /* NamedSegmentCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000010; };
 		BD000000000000000000000D /* HomeWiFi.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000E; };
 		BD000000000000000000000B /* PassiveRest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000C; };
 		BD0000000000000000000009 /* QuietRestCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD000000000000000000000A; };
@@ -77,6 +78,7 @@
 		BD0000000000000000000004 /* MapOverviewCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapOverviewCore.swift; sourceTree = "<group>"; };
 		BD0000000000000000000008 /* AdaptiveLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLocation.swift; sourceTree = "<group>"; };
 		BD0000000000000000000006 /* AdaptiveLocationCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLocationCore.swift; sourceTree = "<group>"; };
+		BD0000000000000000000010 /* NamedSegmentCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NamedSegmentCore.swift; sourceTree = "<group>"; };
 		BD000000000000000000000E /* HomeWiFi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeWiFi.swift; sourceTree = "<group>"; };
 		BD000000000000000000000C /* PassiveRest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PassiveRest.swift; sourceTree = "<group>"; };
 		BD000000000000000000000A /* QuietRestCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuietRestCore.swift; sourceTree = "<group>"; };
@@ -165,6 +167,7 @@
 				BD0000000000000000000004 /* MapOverviewCore.swift */,
 				BD0000000000000000000008 /* AdaptiveLocation.swift */,
 				BD0000000000000000000006 /* AdaptiveLocationCore.swift */,
+				BD0000000000000000000010 /* NamedSegmentCore.swift */,
 				BD000000000000000000000E /* HomeWiFi.swift */,
 				BD000000000000000000000C /* PassiveRest.swift */,
 				BD000000000000000000000A /* QuietRestCore.swift */,
@@ -329,6 +332,7 @@
 				BD0000000000000000000003 /* MapOverviewCore.swift in Sources */,
 				BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */,
 				BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */,
+				BD000000000000000000000F /* NamedSegmentCore.swift in Sources */,
 				BD000000000000000000000D /* HomeWiFi.swift in Sources */,
 				BD000000000000000000000B /* PassiveRest.swift in Sources */,
 				BD0000000000000000000009 /* QuietRestCore.swift in Sources */,

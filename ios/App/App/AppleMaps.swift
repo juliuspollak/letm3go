@@ -16,6 +16,39 @@ private let gapColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UI
 // It is never rendered like an observed route, so a solid line never implies GPS
 // was recorded where it was not.
 private final class GapPolyline: MKPolyline {}
+// A route drawn in its own colour: named segments, the section being chosen in
+// the segment editor, and the recording behind them when it is muted.
+private final class StyledLine: MKPolyline {
+    var color: UIColor = .systemGray3
+    var width: CGFloat = 5
+}
+private struct StyledRoute {
+    let coordinates: [CLLocationCoordinate2D]
+    let color: UIColor
+    let width: CGFloat
+}
+private let mutedRouteColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(white:0.55,alpha:0.85) : UIColor(white:0.62,alpha:0.85) }
+// "#RRGGBB" only; anything else is the route colour.
+private func hexColor(_ value: Any?) -> UIColor {
+    guard let text=value as? String,text.count==7,text.hasPrefix("#"),let rgb=UInt32(text.dropFirst(),radix:16) else { return routeColor }
+    return UIColor(red:CGFloat((rgb>>16)&0xff)/255,green:CGFloat((rgb>>8)&0xff)/255,blue:CGFloat(rgb&0xff)/255,alpha:1)
+}
+private func styledRenderer(_ line: StyledLine) -> MKPolylineRenderer {
+    let renderer=MKPolylineRenderer(polyline:line)
+    renderer.strokeColor=line.color;renderer.lineWidth=line.width;renderer.lineCap = .round;renderer.lineJoin = .round
+    return renderer
+}
+// The lines a payload draws: the routes (muted grey when "muted") and then the
+// styled routes above them.
+private func routeOverlays(_ content: MapContent) -> [MKPolyline] {
+    var lines: [MKPolyline] = []
+    for segment in content.routes where segment.count>1 {
+        if content.muted { let line=StyledLine(coordinates:segment,count:segment.count);line.color=mutedRouteColor;line.width=4;lines.append(line) }
+        else { lines.append(MKPolyline(coordinates:segment,count:segment.count)) }
+    }
+    for route in content.styled { let line=StyledLine(coordinates:route.coordinates,count:route.coordinates.count);line.color=route.color;line.width=route.width;lines.append(line) }
+    return lines
+}
 private func coordinate(_ value: Any?) -> CLLocationCoordinate2D? {
     guard let p=value as? [Double],p.count==2,p.allSatisfy({$0.isFinite}),abs(p[0])<=90,abs(p[1])<=180 else { return nil }
     return CLLocationCoordinate2D(latitude:p[0],longitude:p[1])
@@ -587,6 +620,16 @@ private func edgeAvatarImage(_ members:[[String:Any]])->UIImage {
 // Stable identity for a pin, so an update moves or redraws the existing marker
 // instead of replacing every annotation. People pins carry their own id (the
 // user ids at that place); other pins are identified by what they show.
+// A named segment's label, in the segment's colour, with its name always shown.
+private func segmentMarker(_ pin:JourneyPin)->MKAnnotationView {
+    let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
+    marker.markerTintColor=hexColor(pin.metadata["color"])
+    marker.glyphImage=UIImage(systemName:"flag.fill")
+    marker.titleVisibility = .visible
+    marker.displayPriority = .required
+    marker.canShowCallout=true
+    return marker
+}
 private func pinID(_ pin:[String:Any])->String {
     if let id=pin["id"] as? String,!id.isEmpty {return id}
     let point=(pin["point"] as? [Double] ?? []).map{String($0)}.joined(separator:",")
@@ -613,6 +656,8 @@ private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let gaps: [[CLLocationCoordinate2D]]
     let pins: [[String:Any]]
+    let styled: [StyledRoute]
+    let muted: Bool
     let focus:CLLocationCoordinate2D?
     let camera:CameraIntent?
     // The Map overview's density and photos (sent earlier under this key).
@@ -629,13 +674,20 @@ private struct MapContent {
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
+        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(60).compactMap { item -> StyledRoute? in
+            let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
+            guard points.count>1 else { return nil }
+            let width=(item["width"] as? NSNumber)?.doubleValue ?? 5
+            return StyledRoute(coordinates:Array(points),color:hexColor(item["color"]),width:CGFloat(max(2,min(9,width))))
+        }
+        muted=options["muted"] as? Bool == true
         camera=CameraIntent(options["camera"])
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
         toolbar=(options["layers"] as? [String:Any])?["toolbar"] as? [String:Any]
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
-    var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? []) }
+    var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+styled.flatMap{$0.coordinates}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? []) }
     var peoplePins:[[String:Any]] { pins.filter { ($0["kind"] as? String)=="people" } }
     // Everyone on the map, marked with whether the camera should keep them in view
     // (the web layer leaves out a stale position far from everyone else).
@@ -768,11 +820,13 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         for route in next.routes {hasher.combine(route.count);for c in route {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         hasher.combine(-1)
         for gap in next.gaps {for c in gap {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
+        hasher.combine(next.muted)
+        for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.description);for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         let key=hasher.finalize()
         if key != routeKey {
             map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine)})
-            for segment in next.routes where segment.count>1 {map.addOverlay(MKPolyline(coordinates:segment,count:segment.count))}
             for gap in next.gaps {map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))}
+            for line in routeOverlays(next) {map.addOverlay(line)}
             routeKey=key
         }
         var wantedCircles:[String:(CLLocationCoordinate2D,Double)]=[:]
@@ -1423,7 +1477,12 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     for segment in content.routes where segment.count>1 {
                         let path=UIBezierPath();path.move(to:snapshot.point(for:segment[0]));for c in segment.dropFirst(){path.addLine(to:snapshot.point(for:c))}
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
-                        (trimPreview ? UIColor.systemGray3 : routeColor).setStroke();path.lineWidth=3.5;path.stroke()
+                        (trimPreview || content.muted ? UIColor.systemGray3 : routeColor).setStroke();path.lineWidth=3.5;path.stroke()
+                    }
+                    for route in content.styled {
+                        let path=UIBezierPath();path.move(to:snapshot.point(for:route.coordinates[0]));for c in route.coordinates.dropFirst(){path.addLine(to:snapshot.point(for:c))}
+                        UIColor.white.setStroke();path.lineWidth=route.width*0.8+3;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
+                        route.color.setStroke();path.lineWidth=route.width*0.8;path.stroke()
                     }
                     // Unobserved gaps are dashed so the reader sees incomplete coverage
                     // without a solid line implying a route was actually recorded.
@@ -1712,14 +1771,12 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             coordinator.apply(content)
             return
         }
-        for segment in content.routes where segment.count>1 {
-            // Use the same complete coordinate sequence as the preview; draw above labels
-            // to prevent Apple Maps road styling from obscuring portions of sparse routes.
-            map.addOverlay(MKPolyline(coordinates:segment,count:segment.count),level:.aboveLabels)
-        }
         for gap in content.gaps {
             map.addOverlay(GapPolyline(coordinates:gap,count:gap.count),level:.aboveLabels)
         }
+        // Use the same complete coordinate sequence as the preview; draw above labels
+        // to prevent Apple Maps road styling from obscuring portions of sparse routes.
+        for line in routeOverlays(content) {map.addOverlay(line,level:.aboveLabels)}
         for metadata in content.pins {
             guard let c=coordinate(metadata["point"]) else {continue}
             let pin=JourneyPin();pin.coordinate=c;pin.title=metadata["title"] as? String;pin.subtitle=metadata["subtitle"] as? String;pin.metadata=metadata;map.addAnnotation(pin)
@@ -1752,6 +1809,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if let lines=overlay as? DensityLines {return densityRenderer(lines,dimmed:coordinator?.densityDimmed ?? false)}
         if let line=overlay as? HighlightLine {return highlightRenderer(line)}
         if let gap=overlay as? GapPolyline {let renderer=MKPolylineRenderer(polyline:gap);renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6];return renderer}
+        if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=5;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let circle=overlay as? MKCircle {let renderer=MKCircleRenderer(circle:circle);renderer.strokeColor = .systemBlue;renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.12);renderer.lineWidth=1;return renderer}
         return MKOverlayRenderer(overlay:overlay)
@@ -1791,6 +1849,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
             return view
         }
+        if kind=="segment" {return segmentMarker(pin)}
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil);marker.canShowCallout=true
         marker.markerTintColor=kind=="location" ? .systemBlue : routeColor
         marker.glyphImage=UIImage(systemName:kind=="photo" ? "photo" : "mappin")
@@ -1848,6 +1907,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String ?? ""
         if kind=="people" {return peopleAnnotationView(mapView,pin)}
+        if kind=="segment" {return segmentMarker(pin)}
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
         marker.canShowCallout=true
         if kind=="friend-live" {
@@ -1894,6 +1954,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]
             return renderer
         }
+        if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let route=overlay as? MKPolyline {
             let renderer=MKPolylineRenderer(polyline:route)
             renderer.strokeColor=routeColor;renderer.lineWidth=4;renderer.lineCap = .round

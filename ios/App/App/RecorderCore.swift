@@ -329,6 +329,11 @@ enum RouteTrimming {
         trip.details?.startPlace = nil
         trip.details?.endPlace = nil
         trip.details?.classificationDistances = nil
+        // Named segments follow their own fixes; one cut by the trim is removed.
+        if let segments = original.details?.namedSegments {
+            let kept = NamedSegments.remapped(segments, from: original.points, to: chosen)
+            trip.details?.namedSegments = kept.isEmpty ? nil : kept
+        }
         return trip
     }
 }
@@ -502,6 +507,9 @@ struct ActivityDetails: Codable {
     var mtbTrailName: String?
     var mtbSegmentID: String?
     var mtbTrailDistanceMeters: Double?
+    // Named sections of this recording (NamedSegments). Optional so records
+    // written by earlier builds decode.
+    var namedSegments: [NamedSegment]?
 }
 struct ActivityPhoto: Codable {
     var id: String

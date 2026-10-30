@@ -64,6 +64,9 @@ export const recorder = {
  assignTrail:params=>native.assignTrail(params),
  trimActivity:params=>native.trimActivity(params),
  setRouteDisplay:params=>native.setRouteDisplay(params),
+ // Named segments: references into a recording's own fixes; never change it.
+ saveNamedSegment:params=>native.saveNamedSegment(params),
+ deleteNamedSegment:params=>native.deleteNamedSegment(params),
  deleteActivity:id=>native.deleteActivity({id}),
  addHistorical:trip=>native.addHistorical(trip),
  pickPhotos:id=>native.pickPhotos({id}),

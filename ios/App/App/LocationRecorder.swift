@@ -977,6 +977,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPassiveRest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "saveNamedSegment", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "deleteNamedSegment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setHomeWiFi", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "savePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removePlace", returnType: CAPPluginReturnPromise),
@@ -1039,7 +1041,12 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let raw = call.getObject("activity"), let storage = r.storage else { call.reject("Account storage unavailable."); return }
         do {
             let bytes = try JSONSerialization.data(withJSONObject:raw)
-            let trip = try JSONDecoder().decode(RecordedActivity.self,from:bytes)
+            var trip = try JSONDecoder().decode(RecordedActivity.self,from:bytes)
+            // Restored segments must still name this recording's own fixes.
+            if let segments = trip.details?.namedSegments {
+                let valid = segments.filter { NamedSegments.valid($0, points: trip.points) && NamedSegments.cleanName($0.name) != nil }.prefix(NamedSegments.maximumPerActivity)
+                trip.details?.namedSegments = valid.isEmpty ? nil : Array(valid)
+            }
             guard UUID(uuidString:trip.id) != nil, trip.state == "finished",
                 trip.source == "device", trip.endedAt != nil, trip.points.count <= 50000,
                 trip.startedAt.isFinite, (trip.endedAt ?? 0).isFinite,

@@ -2505,6 +2505,76 @@ do {
     check(HomeWiFi.match(grown, seen("net-home", "ap-new", at: 10), now: 10) == .matched, "roaming between access points keeps the match")
 }
 
+
+// MARK: Named segments
+do {
+    // 40 fixes 10 s and ~22 m apart; a 5-minute GPS gap (new segment) after fix 19.
+    let fixes: [GPSPoint] = (0..<40).map { i in
+        GPSPoint(latitude: -33.9 + Double(i) * 0.0002, longitude: 151.2, timestamp: 1000 + Double(i) * 10 + (i >= 20 ? 300 : 0),
+                 accuracy: 5, altitude: 0, speed: 2, segment: i >= 20 ? 1 : 0)
+    }
+    let idA = "A1B2C3D4-0000-4000-8000-000000000001", idB = "a1b2c3d4-0000-4000-8000-000000000002"
+    func make(_ id: String = idA, name: String = "Rock Garden Descent", start: Int = 2, end: Int = 12, existing: [NamedSegment] = [], now: Double = 5000) -> Result<NamedSegment, NamedSegments.Failure> {
+        NamedSegments.make(id: id, name: name, start: start, end: end, points: fixes, automatic: false, existing: existing, now: now)
+    }
+    guard case .success(let first) = make() else { fatalError("a valid segment is made") }
+    check(first.id == idA.lowercased() && first.name == "Rock Garden Descent", "the id is normalised and the name kept")
+    check(first.startTimestamp == fixes[2].timestamp && first.endTimestamp == fixes[12].timestamp && first.pointCount == 11, "ends reference real fixes")
+    check(abs(first.distanceMeters - fixes[2].distance(to: fixes[12])) < 1 && first.durationSeconds == 100 && first.gapSeconds == 0, "figures come from the fixes")
+    check(NamedSegments.valid(first, points: fixes) && first.visibility == "private", "a new segment is valid and private")
+    check(make(name: "  Rock   Garden ").map { $0.name } == .success("Rock Garden"), "names are tidied")
+    check(make(name: "   ") == .failure(.name) && make(name: String(repeating: "x", count: 81)) == .failure(.name), "a name is mandatory and bounded")
+    check(make("not-a-uuid") == .failure(.invalidID), "the id must be a UUID")
+    check(make(start: 12, end: 2) == .failure(.range) && make(start: 0, end: 40) == .failure(.range), "the range must lie inside the recording")
+    check(make(start: 2, end: 5) == .failure(.tooFewPoints), "at least five fixes")
+    let still = fixes.map { GPSPoint(latitude: -33.9, longitude: 151.2, timestamp: $0.timestamp, accuracy: 5, altitude: 0, speed: 0, segment: $0.segment) }
+    check(NamedSegments.make(id: idA, name: "Still", start: 0, end: 10, points: still, automatic: false, existing: [], now: 1) == .failure(.tooShort), "at least 50 m of route")
+
+    // Across the gap: two stretches, the gap neither drawn nor counted.
+    guard case .success(let across) = make(start: 15, end: 25) else { fatalError("a segment across a gap is allowed") }
+    check(across.gapSeconds == 310 && across.geometry.count == 2 && across.geometry.map { $0.count } == [5, 6], "a gap splits the geometry and is reported")
+    check(across.distanceMeters < fixes[15].distance(to: fixes[25]) - 10, "the gap adds no distance")
+
+    // Updating by id never duplicates; colour and creation time are kept.
+    var list = NamedSegments.upsert(first, into: [])
+    guard case .success(let second) = make(idB, name: "Climb", start: 8, end: 18, existing: list, now: 6000) else { fatalError("overlapping segments are allowed") }
+    list = NamedSegments.upsert(second, into: list)
+    check(list.count == 2 && second.colorIndex != first.colorIndex, "overlapping segments coexist in different colours")
+    guard case .success(let renamed) = make(idA, name: "Rock Garden", existing: list, now: 7000) else { fatalError("rename") }
+    list = NamedSegments.upsert(renamed, into: list)
+    check(list.count == 2 && list.first { $0.id == idA.lowercased() }?.name == "Rock Garden", "a repeated save with the same id updates, never duplicates")
+    check(renamed.colorIndex == first.colorIndex && renamed.createdAt == 5000 && renamed.updatedAt == 7000, "colour and creation time survive an edit")
+    check(NamedSegments.removing(idB.uppercased(), from: list)?.map { $0.id } == [idA.lowercased()], "a segment is deleted by id")
+    check(NamedSegments.removing("a1b2c3d4-0000-4000-8000-00000000ffff", from: list) == nil, "deleting a missing segment is reported")
+    var full: [NamedSegment] = []
+    for i in 0..<NamedSegments.maximumPerActivity {
+        if case .success(let s) = make(String(format: "a1b2c3d4-0000-4000-8000-%012ld", i), name: "S\(i)", existing: full) { full = NamedSegments.upsert(s, into: full) }
+    }
+    check(full.count == NamedSegments.maximumPerActivity && make(idB, existing: full) == .failure(.limit), "at most 20 segments per activity")
+    check(make(full[0].id, name: "Renamed", existing: full).map { $0.name } == .success("Renamed"), "an existing segment can still be edited at the limit")
+
+    // Geometry: real fixes only, within budget, ends kept.
+    let long: [GPSPoint] = (0..<3000).map { i in GPSPoint(latitude: -33.9 + Double(i) * 0.0001, longitude: 151.2, timestamp: Double(i), accuracy: 5, altitude: 0, speed: 3) }
+    let shape = NamedSegments.geometry(long, start: 0, end: 2999)
+    check(shape.count == 1 && shape[0].count <= NamedSegments.geometryBudget + 1 && shape[0].first! == [long[0].latitude, long[0].longitude] && shape[0].last! == [long[2999].latitude, long[2999].longitude], "a long recording is simplified to real fixes with both ends")
+    let fixSet = Set(long.map { "\($0.latitude)" })
+    check(shape[0].allSatisfy { fixSet.contains("\($0[0])") }, "no simplified point is invented")
+
+    // The recording itself: saving segments leaves fixes untouched, and a
+    // destructive trim keeps segments by their fixes or drops them.
+    var trip = RecordedActivity(activity: "MTB", startedAt: 1000, resumedAt: nil, title: "Ride")
+    trip.points = fixes; trip.state = "finished"; trip.endedAt = fixes.last!.timestamp
+    trip.updateDetails { $0.namedSegments = list; $0.visibleRouteStart = 1; $0.visibleRouteEnd = 30 }
+    let encoded = try! JSONDecoder().decode(RecordedActivity.self, from: JSONEncoder().encode(trip))
+    check(encoded.details?.namedSegments == list && encoded.points.count == 40, "segments survive storage with the full recording")
+    let trimmed = RouteTrimming.trimmed(trip, start: 5, end: 39)!
+    let kept = trimmed.details?.namedSegments ?? []
+    check(kept.map { $0.id } == [idB], "a trim that cuts a segment drops it; one inside it is kept")
+    check(kept.first.map { NamedSegments.valid($0, points: trimmed.points) && $0.startIndex == 3 && $0.endIndex == 13 } == true, "a kept segment is re-indexed to the same fixes")
+    let oldRecord = try! JSONDecoder().decode(ActivityDetails.self, from: Data("{\"description\":\"\",\"notes\":\"\",\"tags\":[],\"collection\":\"\",\"visibility\":\"private\",\"userCorrected\":false,\"classification\":{\"predicted\":\"Unknown\",\"confidence\":\"low\",\"evidence\":[]},\"photos\":[]}".utf8))
+    check(oldRecord.namedSegments == nil, "records written before segments still decode")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 
