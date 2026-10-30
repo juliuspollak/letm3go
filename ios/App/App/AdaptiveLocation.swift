@@ -121,14 +121,15 @@ extension LocationRecorder: AdaptiveHost {
 
     // MARK: Departure latency, for both engines
     func noteDepartureEvidence(_ cause: String, now: Double) {
-        let engine = locationMode == .passive ? "passive" : adaptiveState == .stationaryStandby && adaptivePlan.liveUpdates ? "lowPower" : "established"
+        let restedSince: Double? = passiveSince ?? (departureLatency.evidenceAt == nil ? relaunchedPassiveSince(now: now) : nil)
+        let engine = restedSince != nil ? "passive" : adaptiveState == .stationaryStandby && adaptivePlan.liveUpdates ? "lowPower" : "established"
         adaptive.noteWake(now: now)
         if departureLatency.evidenceAt == nil {
             // Where the phone rested, kept in memory only, to measure how much of
             // the departure preceded the first precise fix.
             departurePlace = dwell
             departureMotionOnsetAt = nil
-            if locationMode == .passive, let since = passiveSince { queryDepartureOnset(since: since, evidenceAt: now) }
+            if let since = restedSince { queryDepartureOnset(since: since, evidenceAt: now); if passiveSince == nil { persistPassiveSince(nil) } }
         }
         departureLatency.noteEvidence(cause, engine: engine, now: now)
     }

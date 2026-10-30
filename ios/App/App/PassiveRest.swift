@@ -20,6 +20,21 @@ import UIKit
 extension LocationRecorder {
     static func passiveRestKey(_ owner: String) -> String { "letm3go-passive-rest-off-\(owner)" }
     static let serviceSessionKey = "letm3go-service-session-held"
+    // When passive rest began, kept across termination so a wake-up that
+    // relaunches the app is still measured as a departure from passive rest.
+    static func passiveSinceKey(_ owner: String) -> String { "letm3go-passive-since-" + owner }
+    func persistPassiveSince(_ value: Double?) {
+        guard let owner = ownerID else { return }
+        if let value = value { UserDefaults.standard.set(value, forKey: Self.passiveSinceKey(owner)) }
+        else { UserDefaults.standard.removeObject(forKey: Self.passiveSinceKey(owner)) }
+    }
+    // Passive rest that ended because iOS terminated the app, read only during
+    // the first two minutes of execution after a relaunch or wake-up.
+    func relaunchedPassiveSince(now: Double) -> Double? {
+        guard let owner = ownerID, now - executingSince <= 120 else { return nil }
+        let value = UserDefaults.standard.double(forKey: Self.passiveSinceKey(owner))
+        return value > 0 && value < now ? value : nil
+    }
     var serviceSessionSupported: Bool { if #available(iOS 18.0, *) { return true }; return false }
     var passiveRestAllowed: Bool { passiveRetainReason.isEmpty }
 
@@ -87,6 +102,7 @@ extension LocationRecorder {
         if locationMode == .passive {
             if passiveSince == nil {
                 passiveSince = now
+                persistPassiveSince(now)
                 trackingEvent("Passive rest: location updates released; waiting for a place exit, significant change or visit")
                 recordDiagnostic("rest", "Passive rest began", details: ["restReason": restDecision.reason, "restPlace": restPlaceKind.rawValue, "wifiMatch": wifiMatchState.rawValue])
             }
@@ -96,10 +112,15 @@ extension LocationRecorder {
             }
         } else if let since = passiveSince {
             passiveSince = nil
+            persistPassiveSince(nil)
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": locationMode.rawValue])
             // In the foreground this starts the session again; in the background
             // iOS cannot start one, which is logged, and the keep-alive covers it.
             reconcileBackgroundSession("passive rest ended")
+        } else if let owner = ownerID, now - executingSince > 120, UserDefaults.standard.object(forKey: Self.passiveSinceKey(owner)) != nil {
+            // A relaunch that did not depart: the earlier rest is no longer the
+            // explanation for a later wake-up.
+            persistPassiveSince(nil)
         }
         reconcileKeepAlive(now: now)
     }
@@ -117,6 +138,7 @@ extension LocationRecorder {
     }
     // Sign-out or account change: no rest, Wi-Fi or session state carries over.
     func resetPassiveRest(reason: String) {
+        persistPassiveSince(nil)
         endPassiveRest()
         endServiceSession(reason)
         resetHomeWiFi()
