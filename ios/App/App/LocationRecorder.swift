@@ -93,6 +93,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var wifiFetchWaiters: [(WiFiObservation?) -> Void] = []
     var homeWiFiStatus = "neverDesignated"
     var passiveFixRequest: (cause: String, at: Double)?
+    var monitoringFailure: (identifier: String, summary: String)?
+    var recordingHealthLooked = false
+    var recordingHealthAway = false
     var foregroundCheckAt: Double = 0
     var passiveBlockLogged = ""
     var departureFirstFixLogged = false
@@ -157,26 +160,27 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // itself delivers nothing when it is off, whereas assuming "off" tore down the
     // significant-change, visit and region wake-ups (and dropped the event) on
     // every location-triggered relaunch.
-    private(set) var locationServicesAvailable = true
-    private var locationServicesCheckPending = false
+    private var locationServicesCheck = AvailabilityCheck()
+    var locationServicesAvailable: Bool { locationServicesCheck.value }
+    var locationServicesKnown: Bool { locationServicesCheck.known }
     private var foregroundLocationObserver: NSObjectProtocol?
     var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
     func refreshLocationServicesAvailable() {
-        guard !locationServicesCheckPending else { return }
-        locationServicesCheckPending = true
+        guard locationServicesCheck.request() else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let available = CLLocationManager.locationServicesEnabled()
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.locationServicesCheckPending = false
-                let changed = self.locationServicesAvailable != available
-                self.locationServicesAvailable = available
-                if changed {
-                    self.refreshAutomaticMonitoring()
-                    if !available && self.active?.state == "recording" {
-                        do { try self.transition("pause") }
-                        catch { self.lastError = "Location services disabled; recording could not pause: \(error.localizedDescription)" }
-                    }
+                switch self.locationServicesCheck.finish(available) {
+                case .readAgain: self.refreshLocationServicesAvailable()
+                case .applied(let changed, let first):
+                    if changed {
+                        self.refreshAutomaticMonitoring()
+                        if !available && self.active?.state == "recording" {
+                            do { try self.transition("pause") }
+                            catch { self.lastError = "Location services disabled; recording could not pause: \(error.localizedDescription)" }
+                        }
+                    } else if first { self.noteRecordingHealth() }
                 }
             }
         }
@@ -303,7 +307,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         state["recordingHealth"]=health.status.rawValue
         state["recordingIssues"]=health.issues.joined(separator:",")
         state["permissionsHealth"]=health.permissions.rawValue
-        state["servicesArmed"]=String(recordingServicesArmed)
+        state["recordingServices"]=recordingServices
+        state["monitoringFailure"]=monitoringFailure?.summary ?? "none"
         state["homeWiFiConfigured"]=String(homeWiFi != nil)
         state["homeWiFiStatus"]=homeWiFiStatus
         state["wifiMatch"]=homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue
@@ -501,10 +506,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         for (notification,message) in [(UIApplication.didEnterBackgroundNotification,"App entered background"),(UIApplication.willResignActiveNotification,"App became inactive"),(UIApplication.willTerminateNotification,"iOS delivered termination notification"),(UIApplication.protectedDataWillBecomeUnavailableNotification,"Protected data becoming unavailable"),(UIApplication.protectedDataDidBecomeAvailableNotification,"Protected data available"),(UIApplication.significantTimeChangeNotification,"System time changed"),(Notification.Name.NSProcessInfoPowerStateDidChange,"Low Power Mode changed")] {
             diagnosticObservers.append(NotificationCenter.default.addObserver(forName:notification,object:nil,queue:.main){[weak self] _ in self?.diagnosticSummary(force:true);self?.recordDiagnostic("lifecycle",message)})
         }
+        diagnosticObservers.append(NotificationCenter.default.addObserver(forName:UIApplication.didEnterBackgroundNotification,object:nil,queue:.main){[weak self] _ in self?.recordingHealthAway=true})
         diagnosticObservers.append(NotificationCenter.default.addObserver(forName:UIApplication.backgroundRefreshStatusDidChangeNotification,object:nil,queue:.main){[weak self] _ in self?.noteRecordingHealth()})
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self else { return }
             self.noteExecution("timer")
+            if !self.recordingHealthLooked {self.noteRecordingHealth()}
             self.diagnosticSummary()
             self.reconcileAutomaticSampling()
             self.recoverStalledAutomaticGPS()
@@ -740,7 +747,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         region.identifier == Self.placeRegionID ? "current place" : region.identifier == Self.continuationRegionID ? "journey continuation" : "saved place or last stop"
     }
     func startRegionMonitoring(_ region:CLRegion){manager.startMonitoring(for:region);recordDiagnostic("service","Geofence monitoring registered",details:["reason":regionKind(region)])}
-    func stopRegionMonitoring(_ region:CLRegion){manager.stopMonitoring(for:region);recordDiagnostic("service","Geofence monitoring removed",details:["reason":regionKind(region)])}
+    func stopRegionMonitoring(_ region:CLRegion){if monitoringFailure?.identifier == region.identifier {monitoringFailure=nil};manager.stopMonitoring(for:region);recordDiagnostic("service","Geofence monitoring removed",details:["reason":regionKind(region)])}
     func locationManagerDidPauseLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=true;recordDiagnostic("service","iOS paused location updates")}
     func locationManagerDidResumeLocationUpdates(_ manager:CLLocationManager){locationUpdatesPaused=false;recordDiagnostic("service","iOS resumed location updates")}
     var authorized: Bool { manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse }
@@ -824,9 +831,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         handleObservations(locations, source: .standard)
     }
+    func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
+        guard monitoringFailure?.identifier == region.identifier else { return }
+        monitoringFailure = nil
+        recordDiagnostic("region", "Region monitoring recovered", details: ["regionKind": regionKind(region)])
+        noteRecordingHealth()
+    }
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
-        recordDiagnostic("region", "Region monitoring failed", details: ["code": String((error as NSError).code)])
+        let kind = region.map(regionKind) ?? "unknown region"
+        let code = (error as NSError).code
+        monitoringFailure = (region?.identifier ?? "", "\(kind): code \(code)")
+        recordDiagnostic("region", "Region monitoring failed", details: ["code": String(code), "regionKind": kind])
         placeRegionFailed(region)
+        noteRecordingHealth()
     }
     // Every location observation, from the standard manager or from the
     // adaptive engine's low-power stream. Both feed sharing, place awareness and
@@ -1024,7 +1041,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "transition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestMotionPermission", returnType: CAPPluginReturnPromise)
     ]
     // Push native journey changes into the WebView so History, the recorder panel
     // and trip details refresh without a restart. Payloads stay empty: the JS
@@ -1280,6 +1298,19 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             catch { call.reject(error.localizedDescription) }
         }
     }
+    // Core Motion has no request call: iOS asks the first time activity is read.
+    // One short history query does that and starts no monitoring.
+    @objc func requestMotionPermission(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let r = LocationRecorder.shared
+        guard CMMotionActivityManager.isActivityAvailable(), CMMotionActivityManager.authorizationStatus() == .notDetermined else { call.resolve(r.snapshot()); return }
+        if r.motionManager == nil { r.motionManager = CMMotionActivityManager() }
+        let now = Date()
+        r.motionManager?.queryActivityStarting(from: now.addingTimeInterval(-60), to: now, to: .main) { _, _ in
+            r.refreshAutomaticMonitoring()
+            call.resolve(r.snapshot())
+        }
+    } }
     @objc func noteRecordingWarning(_ call: CAPPluginCall) { DispatchQueue.main.async {
         LocationRecorder.shared.noteRecordingWarning(action: call.getString("action") ?? "", issue: call.getString("issue") ?? "")
         call.resolve()

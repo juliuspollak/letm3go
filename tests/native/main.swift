@@ -2960,7 +2960,7 @@ do {
 
 // MARK: Recording health
 do {
-    let good = RecordingHealthInputs(accountReady: true, automaticEnabled: true, locationServices: true, location: "always", precise: true, motion: "authorized", backgroundRefresh: "available", servicesArmed: true)
+    let good = RecordingHealthInputs(accountReady: true, automaticEnabled: true, locationServices: true, location: "always", precise: true, motion: "authorized", backgroundRefresh: "available", services: "registered")
     func health(_ change: (inout RecordingHealthInputs) -> Void) -> RecordingHealthReport { var inputs = good; change(&inputs); return RecordingHealth.evaluate(inputs) }
     check(RecordingHealth.evaluate(good) == RecordingHealthReport(status: .ready, permissions: .ready, issues: []), "every prerequisite met is Ready")
     check(health { $0.location = "whenInUse" } == RecordingHealthReport(status: .limited, permissions: .limited, issues: ["locationWhileUsing"]), "While Using is Limited")
@@ -2982,18 +2982,56 @@ do {
     check(RecordingHealth.changes(from: ["location": "always", "precise": "true"], to: ["location": "whenInUse", "precise": "true"]) == ["location: always -> whenInUse"], "a change names only what changed")
     check(RecordingHealth.changes(from: nil, to: ["location": "always"]).isEmpty, "the first look has nothing to compare")
     // Settings and services are separate answers, and Ready needs both.
-    let stopped = health { $0.servicesArmed = false }
-    check(stopped == RecordingHealthReport(status: .limited, permissions: .ready, issues: ["servicesNotRunning"]), "permissions can be Ready while services are not running, and the status is then not Ready")
-    check(health { $0.servicesArmed = false; $0.location = "denied" }.issues == ["locationDenied"], "a stopped service is not a second problem when a permission explains it")
-    check(health { $0.servicesArmed = false; $0.location = "whenInUse" }.issues == ["locationWhileUsing"], "While Using explains its own stopped wake-ups")
-    check(health { $0.servicesArmed = false; $0.automaticEnabled = false }.issues == ["automaticOff"], "switched-off tracking explains its own stopped services")
-    check(health { $0.servicesArmed = false; $0.precise = false }.issues == ["servicesNotRunning", "preciseOff"], "a stopped service outranks reduced accuracy")
+    let stopped = health { $0.services = "notRequested" }
+    check(stopped == RecordingHealthReport(status: .limited, permissions: .ready, issues: ["servicesNotRunning"]), "permissions can be Ready while services are not requested, and the status is then not Ready")
+    check(health { $0.services = "notRequested"; $0.location = "denied" }.issues == ["locationDenied"], "a stopped service is not a second problem when a permission explains it")
+    check(health { $0.services = "notRequested"; $0.location = "whenInUse" }.issues == ["locationWhileUsing"], "While Using explains its own stopped wake-ups")
+    check(health { $0.services = "notRequested"; $0.automaticEnabled = false }.issues == ["automaticOff"], "switched-off tracking explains its own stopped services")
+    check(health { $0.services = "notRequested"; $0.precise = false }.issues == ["servicesNotRunning", "preciseOff"], "a stopped service outranks reduced accuracy")
+
+    // Requested is not proof: only iOS listing a region is shown as held.
+    func services(requested: Bool = true, significant: Bool = true, regions: Bool = true, held: Int = 2, failed: Bool = false) -> String {
+        RecordingHealth.services(requested: requested, significantSupported: significant, regionsSupported: regions, regionsHeld: held, monitoringFailed: failed)
+    }
+    check(services() == "registered" && services(held: 0) == "requested", "requested and held by iOS are separate answers")
+    check(services(requested: false) == "notRequested", "nothing requested is reported as such")
+    check(services(failed: true) == "failed" && services(held: 0, failed: true) == "failed", "a monitoring failure outranks a request")
+    check(services(significant: false) == "unsupported" && services(regions: false) == "unsupported", "a missing Core Location capability is reported")
+    check(health { $0.services = "requested" }.status == .ready, "having no saved place to monitor is not a problem")
+    check(health { $0.services = "failed" } == RecordingHealthReport(status: .limited, permissions: .ready, issues: ["monitoringFailed"]), "a monitoring failure stops Ready but is not a permission problem")
+    check(health { $0.services = "unsupported" }.issues == ["servicesUnsupported"], "an unsupported capability stops Ready")
+    check(health { $0.services = "failed"; $0.location = "denied" }.issues == ["locationDenied"], "a denied permission explains a failed service")
+
+    // Motion that was never requested is not motion that does not exist.
+    check(health { $0.motion = "notDetermined" }.issues == ["motionNotRequested"], "motion not yet requested is its own issue")
+    check(health { $0.motion = "unavailable" }.issues == ["motionUnavailable"], "motion the device lacks stays separate")
+    check(RecordingHealth.motion(available: true, rawStatus: 0) == "notDetermined" && RecordingHealth.motion(available: false, rawStatus: 0) == "unavailable", "missing hardware wins over an unanswered permission")
+
+    // Nothing is Ready until iOS has answered, and starting up is not a problem.
+    check(health { $0.locationServicesKnown = false } == RecordingHealthReport(status: .checking, permissions: .checking, issues: []), "Ready needs an answered Location Services check")
+    check(health { $0.locationServicesKnown = false; $0.location = "denied" }.issues.isEmpty, "no warning from an unanswered check")
+    check(health { $0.settling = true; $0.services = "notRequested" }.status == .checking, "services still starting are not a warning")
+    check(health { $0.settling = true }.status == .ready, "services already requested need no settling")
+    check(health { $0.settling = true; $0.location = "denied" }.status == .unavailable, "a real permission problem is not hidden by settling")
+    var check1 = AvailabilityCheck()
+    check(!check1.known && check1.value, "unanswered until iOS replies")
+    check(check1.request() && !check1.request(), "a request during a check does not start a second one")
+    check(check1.finish(true) == .readAgain && !check1.known, "an answer older than the latest request is dropped")
+    check(check1.request() && check1.finish(false) == .applied(changed: true, first: true) && check1.known && !check1.value, "the fresh answer is applied once")
+    check(check1.request() && check1.finish(false) == .applied(changed: false, first: false), "an unchanged answer is not a change")
+
+    // Watched live, or found out later.
+    check(RecordingHealth.discovery(firstLook: true, awaySinceLastLook: false, foreground: true) == "afterRelaunch", "a change found by a new process happened while closed")
+    check(RecordingHealth.discovery(firstLook: true, awaySinceLastLook: true, foreground: false) == "afterRelaunch", "that holds for a background launch too")
+    check(RecordingHealth.discovery(firstLook: false, awaySinceLastLook: true, foreground: true) == "afterForegroundReturn", "a change found on return happened while away")
+    check(RecordingHealth.discovery(firstLook: false, awaySinceLastLook: true, foreground: false) == "duringBackgroundWake", "a change found by a wake-up is labelled so")
+    check(RecordingHealth.discovery(firstLook: false, awaySinceLastLook: false, foreground: true) == "live", "only a change seen while open is live")
     // Everything the warning does reaches the one export, and only known values do.
     check(RecordingHealth.warningActions == ["shown", "dismissed", "openSettings"], "the warning has three logged actions")
     check(RecordingHealth.warningIssues.isSuperset(of: all.issues + stopped.issues), "every issue can be logged")
     check(!RecordingHealth.warningIssues.contains("Home Network"), "free text is not an issue")
-    let exported = LocationDiagnosticPrivacy.context(["recordingHealth": "limited", "recordingHealthBefore": "ready", "permissionsHealth": "ready", "recordingIssues": "locationWhileUsing", "permissionChanged": "location: always -> whenInUse", "servicesArmed": "false", "warningAction": "shown", "recordingIssue": "locationWhileUsing"])
-    check(exported.count == 8, "permission, readiness and warning events survive the export allowlist")
+    let exported = LocationDiagnosticPrivacy.context(["recordingHealth": "limited", "recordingHealthBefore": "ready", "permissionsHealth": "ready", "recordingIssues": "locationWhileUsing", "permissionChanged": "location: always -> whenInUse", "recordingServices": "failed", "warningAction": "shown", "recordingIssue": "locationWhileUsing", "changeObserved": "afterRelaunch", "changeWindowStart": "1", "monitoringFailure": "current place: code 5", "regionKind": "current place"])
+    check(exported.count == 12, "permission, readiness and warning events survive the export allowlist")
     var journal = RecorderDiagnosticJournal()
     let base = 1_800_000_000.0
     func note(_ at: Double, _ message: String, _ context: [String: String]) {
@@ -3006,11 +3044,11 @@ do {
     note(5, "Recording warning openSettings", ["warningAction": "openSettings", "recordingIssue": "locationWhileUsing"])
     note(6, "Recording readiness changed", ["recordingHealth": "ready", "recordingHealthBefore": "limited", "recordingIssues": ""])
     note(7, "Recording readiness evaluated", ["recordingHealth": "ready"])
-    let file = try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal: journal, current: ["recordingHealth": "limited", "recordingIssues": "locationWhileUsing", "permissionsHealth": "limited", "servicesArmed": "false"], journeys: [], now: base + 10, timezone: "UTC", storageError: ""))
+    let file = try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal: journal, current: ["recordingHealth": "limited", "recordingIssues": "locationWhileUsing", "permissionsHealth": "limited", "recordingServices": "failed", "monitoringFailure": "current place: code 5"], journeys: [], now: base + 10, timezone: "UTC", storageError: ""))
     let restored = try JSONDecoder().decode(LocationDiagnosticExport.Report.self, from: DiagnosticGzip.decompress(file.data))
     check(restored.events.count == 7 && restored.events.filter { $0.context["warningAction"] != nil }.count == 3, "every warning event is in the single compressed file")
     check(restored.warnings.count == 5 && !restored.warnings.contains { $0.context["recordingHealth"] == "ready" }, "problems are listed as warnings; a return to Ready is not")
-    check(restored.current["recordingHealth"] == "limited" && restored.current["servicesArmed"] == "false" && restored.current["permissionsHealth"] == "limited", "the file states current readiness")
+    check(restored.current["recordingHealth"] == "limited" && restored.current["recordingServices"] == "failed" && restored.current["monitoringFailure"] != nil && restored.current["permissionsHealth"] == "limited", "the file states current readiness and any monitoring failure")
 }
 
 print("\(assertions) native recorder/auth assertions passed")

@@ -179,10 +179,11 @@ enum RestWake {
 //
 // Whether the phone's current settings let automatic recording work. It is read
 // from iOS each time, never remembered. `permissions` answers whether the settings
-// allow recording; `status` also needs the recorder's wake-ups to be requested, so
-// Ready never hides services that are not running. Neither means a journey is
-// being recorded.
-enum RecordingHealthStatus: String { case ready, limited, unavailable }
+// allow recording; `status` also needs the recorder's wake-ups, so Ready never hides
+// services that are not requested or have failed. `services` says only what can be
+// shown: iOS accepts these requests but never promises to deliver a wake-up. Neither
+// means a journey is being recorded. Until iOS has answered, the status is checking.
+enum RecordingHealthStatus: String { case checking, ready, limited, unavailable }
 
 struct RecordingHealthInputs: Equatable {
     var accountReady: Bool
@@ -192,7 +193,9 @@ struct RecordingHealthInputs: Equatable {
     var precise: Bool
     var motion: String            // authorized, denied, restricted, notDetermined, unavailable
     var backgroundRefresh: String // available, denied, restricted
-    var servicesArmed: Bool
+    var services: String          // RecordingHealth.services
+    var locationServicesKnown: Bool = true
+    var settling: Bool = false    // just started: services may not be requested yet
 }
 
 struct RecordingHealthReport: Equatable {
@@ -202,7 +205,16 @@ struct RecordingHealthReport: Equatable {
 }
 
 enum RecordingHealth {
+    // What the recorder can show about its wake-ups. `registered` means iOS lists
+    // a region as monitored; significant changes and visits offer no such proof.
+    static func services(requested: Bool, significantSupported: Bool, regionsSupported: Bool, regionsHeld: Int, monitoringFailed: Bool) -> String {
+        if !significantSupported || !regionsSupported { return "unsupported" }
+        if !requested { return "notRequested" }
+        if monitoringFailed { return "failed" }
+        return regionsHeld > 0 ? "registered" : "requested"
+    }
     static func evaluate(_ i: RecordingHealthInputs) -> RecordingHealthReport {
+        guard i.locationServicesKnown else { return RecordingHealthReport(status: .checking, permissions: .checking, issues: []) }
         var blocking: [String] = []
         if !i.accountReady { blocking.append("accountNotReady") }
         if !i.locationServices { blocking.append("locationServicesOff") }
@@ -217,14 +229,37 @@ enum RecordingHealth {
         if i.location == "whenInUse" { limiting.append("locationWhileUsing") }
         // Without location access there is no accuracy to reduce.
         if ["always", "whenInUse"].contains(i.location), !i.precise { limiting.append("preciseOff") }
-        if i.motion != "authorized" { limiting.append(i.motion == "denied" || i.motion == "restricted" ? "motionDenied" : "motionUnavailable") }
+        switch i.motion {
+        case "authorized": break
+        case "denied", "restricted": limiting.append("motionDenied")
+        case "notDetermined": limiting.append("motionNotRequested")
+        default: limiting.append("motionUnavailable")
+        }
         if i.backgroundRefresh != "available" { limiting.append("backgroundRefreshOff") }
         let permissions: RecordingHealthStatus = !blocking.isEmpty ? .unavailable : !limiting.isEmpty ? .limited : .ready
         // When a setting already explains it, a stopped service is not a second problem.
         // While Using stops the recorder's wake-ups for the same reason.
-        let stopped = !i.servicesArmed && blocking.isEmpty && i.location == "always"
-        let status: RecordingHealthStatus = permissions == .ready && stopped ? .limited : permissions
-        return RecordingHealthReport(status: status, permissions: permissions, issues: blocking + (stopped ? ["servicesNotRunning"] : []) + limiting)
+        var serviceIssue: String?
+        if blocking.isEmpty, i.location == "always" {
+            switch i.services {
+            case "unsupported": serviceIssue = "servicesUnsupported"
+            case "failed": serviceIssue = "monitoringFailed"
+            case "notRequested": if !i.settling { serviceIssue = "servicesNotRunning" }
+            default: break
+            }
+        }
+        if i.settling, i.services == "notRequested", blocking.isEmpty, limiting.isEmpty, i.location == "always" {
+            return RecordingHealthReport(status: .checking, permissions: permissions, issues: [])
+        }
+        let status: RecordingHealthStatus = permissions == .ready && serviceIssue != nil ? .limited : permissions
+        return RecordingHealthReport(status: status, permissions: permissions, issues: blocking + (serviceIssue.map { [$0] } ?? []) + limiting)
+    }
+    // How a change came to light. Only a change seen while the app stayed open was
+    // watched happening; otherwise it happened at an unknown time since the last look.
+    static func discovery(firstLook: Bool, awaySinceLastLook: Bool, foreground: Bool) -> String {
+        if firstLook { return "afterRelaunch" }
+        if awaySinceLastLook { return foreground ? "afterForegroundReturn" : "duringBackgroundWake" }
+        return "live"
     }
     static func motion(available: Bool, rawStatus: Int) -> String {
         guard available else { return "unavailable" }
@@ -237,7 +272,7 @@ enum RecordingHealth {
     // free text from the web layer can never reach the journal.
     static let warningActions: Set<String> = ["shown", "dismissed", "openSettings"]
     static let warningIssues: Set<String> = ["accountNotReady", "locationServicesOff", "locationDenied", "locationRestricted", "locationNotRequested", "automaticOff",
-        "servicesNotRunning", "locationWhileUsing", "preciseOff", "motionDenied", "motionUnavailable", "backgroundRefreshOff"]
+        "servicesNotRunning", "servicesUnsupported", "monitoringFailed", "locationWhileUsing", "preciseOff", "motionDenied", "motionNotRequested", "motionUnavailable", "backgroundRefreshOff"]
     // What changed since the last look, for the log. No baseline, no changes.
     static func changes(from old: [String: String]?, to new: [String: String]) -> [String] {
         guard let old = old else { return [] }
@@ -245,6 +280,29 @@ enum RecordingHealth {
             guard let before = old[key], before != new[key] else { return nil }
             return "\(key): \(before) -> \(new[key] ?? "unknown")"
         }
+    }
+}
+
+// The Location Services check runs off the main thread. A request made during a
+// check means the answer may already be old, so that answer is dropped and read
+// again; nothing is treated as known until iOS has answered once.
+struct AvailabilityCheck {
+    enum Outcome: Equatable { case readAgain, applied(changed: Bool, first: Bool) }
+    private(set) var known = false
+    private(set) var value = true
+    private var pending = false
+    private var requestedAgain = false
+    mutating func request() -> Bool {
+        if pending { requestedAgain = true; return false }
+        pending = true
+        return true
+    }
+    mutating func finish(_ answer: Bool) -> Outcome {
+        pending = false
+        if requestedAgain { requestedAgain = false; return .readAgain }
+        let first = !known, changed = value != answer
+        known = true; value = answer
+        return .applied(changed: changed, first: first)
     }
 }
 

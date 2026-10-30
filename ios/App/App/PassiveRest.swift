@@ -185,6 +185,7 @@ extension LocationRecorder {
         endPassiveRest()
         endServiceSession(reason)
         resetHomeWiFi()
+        monitoringFailure = nil
         restPlaceFixAt = nil; restPlaceAccuracy = nil; sessionReleasedAt = nil; sessionReleases = 0
         departurePlace = nil; departureMotionOnsetAt = nil; lastPreciseReason = "none yet"; keepAliveUpdates = 0
         modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
@@ -197,12 +198,18 @@ extension LocationRecorder {
             location: permission, precise: manager.accuracyAuthorization == .fullAccuracy,
             motion: RecordingHealth.motion(available: CMMotionActivityManager.isActivityAvailable(), rawStatus: CMMotionActivityManager.authorizationStatus().rawValue),
             backgroundRefresh: RecordingHealth.backgroundRefresh(rawStatus: UIApplication.shared.backgroundRefreshStatus.rawValue),
-            servicesArmed: recordingServicesArmed)
+            services: recordingServices, locationServicesKnown: locationServicesKnown,
+            settling: Date().timeIntervalSince1970 - executingSince < 10)
     }
-    var recordingServicesArmed: Bool { automaticAvailable && significantLocationRequested && visitMonitoringRequested }
+    var recordingServices: String {
+        RecordingHealth.services(requested: automaticAvailable && significantLocationRequested && visitMonitoringRequested,
+            significantSupported: CLLocationManager.significantLocationChangeMonitoringAvailable(),
+            regionsSupported: CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
+            regionsHeld: manager.monitoredRegions.count, monitoringFailed: monitoringFailure != nil)
+    }
     var recordingHealthSnapshot: [String: Any] {
         let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
-        return ["status": report.status.rawValue, "permissions": report.permissions.rawValue, "issues": report.issues, "servicesArmed": inputs.servicesArmed, "automaticEnabled": inputs.automaticEnabled,
+        return ["status": report.status.rawValue, "permissions": report.permissions.rawValue, "issues": report.issues, "services": inputs.services, "automaticEnabled": inputs.automaticEnabled,
                 "locationServices": inputs.locationServices, "location": inputs.location, "precise": inputs.precise,
                 "motion": inputs.motion, "backgroundRefresh": inputs.backgroundRefresh]
     }
@@ -211,7 +218,17 @@ extension LocationRecorder {
     func noteRecordingHealth() {
         guard let owner = ownerID, storeOpened else { return }
         let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
-        let current = ["recordingServices": inputs.servicesArmed ? "running" : "notRunning", "automaticTracking": String(inputs.automaticEnabled), "locationServices": String(inputs.locationServices), "location": inputs.location,
+        // Nothing is logged from an unanswered check or a start still settling,
+        // so neither can look like a change.
+        guard report.status != .checking else { return }
+        let foreground = UIApplication.shared.applicationState == .active
+        let observed = RecordingHealth.discovery(firstLook: !recordingHealthLooked, awaySinceLastLook: recordingHealthAway, foreground: foreground)
+        recordingHealthLooked = true
+        if foreground { recordingHealthAway = false }
+        let lookedKey = "letm3go-recording-health-looked-" + owner
+        let windowStart = UserDefaults.standard.double(forKey: lookedKey)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lookedKey)
+        let current = ["recordingServices": inputs.services, "automaticTracking": String(inputs.automaticEnabled), "locationServices": String(inputs.locationServices), "location": inputs.location,
                        "precise": String(inputs.precise), "motion": inputs.motion, "backgroundRefresh": inputs.backgroundRefresh, "status": report.status.rawValue]
         let key = "letm3go-recording-health-" + owner
         let previous = UserDefaults.standard.dictionary(forKey: key) as? [String: String]
@@ -219,13 +236,14 @@ extension LocationRecorder {
         UserDefaults.standard.set(current, forKey: key)
         let issues = report.issues.joined(separator: ",")
         let permissions = RecordingHealth.changes(from: previous?.filter { $0.key != "status" }, to: current.filter { $0.key != "status" })
+        let when = ["changeObserved": observed, "changeWindowStart": String(windowStart)]
         if !permissions.isEmpty {
-            recordDiagnostic("permission", "Permission status changed", details: ["permissionChanged": permissions.joined(separator: "; "), "recordingIssues": issues])
+            recordDiagnostic("permission", "Permission status changed", details: when.merging(["permissionChanged": permissions.joined(separator: "; "), "recordingIssues": issues]) { a, _ in a })
         }
         if previous?["status"] != report.status.rawValue {
-            recordDiagnostic("permission", previous == nil ? "Recording readiness evaluated" : "Recording readiness changed", details: [
+            recordDiagnostic("permission", previous == nil ? "Recording readiness evaluated" : "Recording readiness changed", details: when.merging([
                 "recordingHealth": report.status.rawValue, "recordingHealthBefore": previous?["status"] ?? "none", "permissionsHealth": report.permissions.rawValue,
-                "recordingIssues": issues, "servicesArmed": String(inputs.servicesArmed)])
+                "recordingIssues": issues, "recordingServices": inputs.services]) { a, _ in a })
         }
         // The open app reads this every two seconds; a real change need not wait.
         notifyJourneyChange()
