@@ -19,7 +19,12 @@ enum WatchRoute: Hashable {
 struct WatchContentView: View {
     @ObservedObject var recorder: WatchRecorder
     @ObservedObject private var link = WatchConnectivitySession.shared
-    @State private var path: [WatchRoute] = []
+    @State private var path: [WatchRoute]
+
+    init(recorder: WatchRecorder, initialPath: [WatchRoute] = []) {
+        self.recorder = recorder
+        _path = State(initialValue: initialPath)
+    }
 
     var body: some View {
         NavigationStack(path: $path) {

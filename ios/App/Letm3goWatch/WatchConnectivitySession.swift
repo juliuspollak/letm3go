@@ -162,6 +162,14 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         return items
     }
 
+    #if DEBUG
+    // Simulator screenshots only: sample bikes in memory, never saved.
+    func loadDemoEquipment() {
+        equipment = [WatchEquipment(id: "demo-1", name: "Trek Fuel EX", kind: "bicycle"),
+                     WatchEquipment(id: "demo-2", name: "Turbo Levo", kind: "ebike")]
+    }
+    #endif
+
     // The outbox as it stands, for the history list's sync status.
     func outboxEntries() -> [WatchOutboxEntry] { queue.outbox.loadIndex() }
 

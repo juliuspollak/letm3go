@@ -89,6 +89,32 @@ final class WatchRecorder: NSObject, ObservableObject {
     // remembers one.
     func rememberedEquipment(for activity: String) -> WatchEquipment? { memory.equipment(for: activity) }
 
+    #if DEBUG
+    // Simulator screenshots only (Letm3goWatchApp -demoScreen). Sample data in
+    // memory: no location, workout, draft file, outbox entry or transfer.
+    func loadDemo(recording: Bool) {
+        let now = Date().timeIntervalSince1970
+        let levo = WatchEquipment(id: "demo-2", name: "Turbo Levo", kind: "ebike")
+        memory = WatchStartMemory()
+        memory.remember(WatchStartConfig(activity: "MTB", equipment: levo))
+        history = [
+            WatchHistoryEntry(id: "demo-1", activity: "MTB", equipmentID: levo.id, equipmentName: levo.name, equipmentKind: levo.kind,
+                              startedAt: now - 3 * 3600, endedAt: now - 3 * 3600 + 4325, activeSeconds: 4325, distanceMeters: 18_420, queued: true),
+            WatchHistoryEntry(id: "demo-2", activity: "Running", startedAt: now - 26 * 3600, endedAt: now - 26 * 3600 + 1934,
+                              activeSeconds: 1934, distanceMeters: 6_210, queued: true),
+            WatchHistoryEntry(id: "demo-3", activity: "Hiking", startedAt: now - 4 * 86400, endedAt: now - 4 * 86400 + 9020,
+                              activeSeconds: 9020, distanceMeters: 11_870, queued: true),
+        ]
+        guard recording else { return }
+        config = WatchStartConfig(activity: "MTB", equipment: levo)
+        draft = WatchRideDraft(activity: "MTB", startedAt: now - 1843, equipment: levo)
+        state = "recording"
+        distanceMeters = 7_842
+        activeSeconds = 1_843
+        lastFixAt = now
+    }
+    #endif
+
     // Starts a ride with this setup. A bike that has not synced never blocks it.
     func start(_ setup: WatchStartConfig) {
         guard draft == nil, setup.isValid else { return }
