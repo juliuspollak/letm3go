@@ -28,7 +28,7 @@ extension LocationRecorder {
             }
             self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970)
             if self.automaticAvailable,self.active == nil {
-                if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now) {
+                if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now),!self.automaticSampling.locationWake {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
                     self.detector.reset()
                     self.reconcileAutomaticSampling()
@@ -118,16 +118,29 @@ extension LocationRecorder {
             if active?.state != "recording" { stopContinuousLocation(reason:"Continuous GPS stopped: automatic tracking unavailable") }
         }
     }
-    func beginAutomaticProbe(movementBegan:Bool = false, cause:String = "movement") {
-        guard automaticAvailable,active == nil else { return }
+    func beginAutomaticProbe(movementBegan:Bool = false, cause:String = "movement", locationWake:Bool = false) {
+        guard automaticAvailable,active == nil else {
+            recordDiagnostic("decision","Departure wake-up ignored",details:["wakeSource":cause,"blockedBy":active != nil ? "a manual recording is running" : "automatic tracking unavailable"])
+            return
+        }
         let now=Date().timeIntervalSince1970
+        // The app slept through the end of the last check, so nothing it gathered is
+        // connected to this wake-up. An open or stopped journey keeps its detector.
+        if (automaticSampling.probeUntil ?? .greatestFiniteMagnitude)<=now,automaticTrip == nil,settledTripID == nil {
+            detector.reset();departureLatency.reset()
+        }
         // Any departure evidence ends a confirmed rest; it must be re-earned.
         noteRestDisturbance(now:now); lastProbeCause=cause
         if automaticTrip == nil || settledAt != nil {
             let wasIdle=(automaticSampling.probeUntil ?? 0)<=now
-            let granted=automaticSampling.requestProbe(now:now,movementBegan:movementBegan)
+            let fromPassive=passiveSince != nil || relaunchedPassiveSince(now:now) != nil
+            let granted=automaticSampling.requestProbe(now:now,movementBegan:movementBegan,locationWake:locationWake)
             if wasIdle,!granted {
-                recordDiagnostic("decision",automaticSampling.probeStartedAt != nil ? "Departure probe blocked: this departure check has spent its time budget" : "Departure probe blocked by retry cooldown")
+                recordDiagnostic("decision",automaticSampling.probeStartedAt != nil ? "Departure probe blocked: this departure check has spent its time budget" : "Departure probe blocked by retry cooldown",details:["wakeSource":cause])
+            }
+            if locationWake || fromPassive {
+                recordDiagnostic("detection",wasIdle ? "Departure wake-up" : "Repeated wake-up absorbed by the running departure check",details:[
+                    "wakeSource":cause,"granted":String(granted),"fromPassive":String(fromPassive),"lastPresenceAt":String(restPlaceFixAt ?? 0)])
             }
             if granted {
                 trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")
@@ -288,6 +301,11 @@ extension LocationRecorder {
                 }
             }
         }
+        // Evaluated once: this delivery is what ended the rest, and the first
+        // check it starts changes the mode.
+        let passiveWake=locationMode == .passive || relaunchedPassiveSince(now:now) != nil
+        let wakeCause=passiveFixCause(now:now)
+        var restPlaceNewlyVerified=false
         for location in locations.sorted(by:{$0.timestamp<$1.timestamp}) {
             let sample = GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
             // Only standard deliveries prove the standard service is alive.
@@ -302,7 +320,7 @@ extension LocationRecorder {
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
             homeRest.observe(sample,home:restPlace,now:now)
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
-            noteRestPlaceFix(sample,now:now)
+            if noteRestPlaceFix(sample,now:now) {restPlaceNewlyVerified=true}
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
             // and lets the normal departure detection start a new one.
@@ -341,8 +359,11 @@ extension LocationRecorder {
             // Promote GPS before applying the stricter route-accuracy filter.
             // Otherwise a coarse background wake can be thrown away without
             // starting the precise observations needed to confirm departure.
+            if let place=dwell,passiveWake,automaticIdle,RestWake.definitelyLeft(sample,place:place,now:now) {
+                beginAutomaticProbe(movementBegan:true,cause:wakeCause,locationWake:true)
+            }
             if automaticTrip == nil,departureEvidence.observe(sample,now:now) {
-                beginAutomaticProbe(movementBegan:true)
+                beginAutomaticProbe(movementBegan:true,cause:passiveWake ? wakeCause : "movement")
             }
             // iOS queues updates while the app is suspended. A queued fix newer than
             // the open journey's last saved fix is real route, however late.
@@ -353,6 +374,7 @@ extension LocationRecorder {
                 }
                 continue
             }
+            noteFirstPreciseFix(sample,now:now)
             let observedAt=sample.timestamp
             if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:observedAt) {beginAutomaticProbe()}
             // Standby fixes only watch for departure. Do not turn time spent
@@ -472,6 +494,9 @@ extension LocationRecorder {
                 return
             }
         }
+        // A short background wake may end before the 30-second timer fires, so a
+        // relaunch at the resting place returns to passive rest on the fix itself.
+        if restPlaceNewlyVerified,locationMode != .passive {reconcileAutomaticSampling()}
     }
     // Persist both independent activities before changing the active recorder.
     // Retain real GPS fixes only; never interpolate a missing part of the route.
@@ -691,6 +716,7 @@ extension LocationRecorder {
         monitorContinuationRegion(trip)
         notifyJourneyChange()
         trackingEvent("Journey stopped and saved; watching for movement within \(Int(window/60)) minutes")
+        recordDiagnostic("journey","Journey stopped",details:["reason":event])
         reconcileAutomaticSampling()
     }
     // MARK: Place awareness
@@ -1090,7 +1116,7 @@ extension LocationRecorder {
         // woken long after the window has passed.
         finishExpiredContinuation(now:Date().timeIntervalSince1970)
         trackingEvent("Place exit triggered departure check")
-        beginAutomaticProbe(movementBegan:true,cause:region.identifier == Self.placeRegionID ? "current place region exit" : "place region exit")
+        beginAutomaticProbe(movementBegan:true,cause:region.identifier == Self.placeRegionID ? "current place region exit" : "place region exit",locationWake:true)
     }
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         noteExecution("regionEnter")
@@ -1123,6 +1149,6 @@ extension LocationRecorder {
         guard automaticAvailable, active == nil else { return }
         finishExpiredContinuation(now:now)
         trackingEvent("Visit departure triggered departure check")
-        beginAutomaticProbe(movementBegan:true,cause:"visit departure")
+        beginAutomaticProbe(movementBegan:true,cause:"visit departure",locationWake:true)
     }
 }

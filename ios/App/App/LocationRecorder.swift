@@ -89,6 +89,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var wifiMatchState: WiFiMatch = .unknown
     var wifiFetchInFlight = false
     var wifiCheckRequestedAt: Double = 0
+    var wifiFetchGeneration = 0
+    var wifiFetchWaiters: [(WiFiObservation?) -> Void] = []
+    var homeWiFiStatus = "neverDesignated"
+    var passiveFixRequest: (cause: String, at: Double)?
+    var foregroundCheckAt: Double = 0
+    var passiveBlockLogged = ""
+    var departureFirstFixLogged = false
     var wifiPathMonitor: AnyObject?
     var wifiOnPath: Bool?
     var restPlaceFixAt: Double?
@@ -293,6 +300,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let retained:String=backgroundActivitySession == nil ? "not held" : (passiveRetainReason.isEmpty ? "passive rest pending" : passiveRetainReason)
         var state:[String:String]=[:]
         state["homeWiFiConfigured"]=String(homeWiFi != nil)
+        state["homeWiFiStatus"]=homeWiFiStatus
         state["wifiMatch"]=homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue
         state["wifiObservedAt"]=String(wifiObservation?.at ?? 0)
         state["wifiSource"]=wifiObservation?.source ?? "none"
@@ -468,7 +476,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         super.init()
         manager.delegate = self
         refreshLocationServicesAvailable()
-        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.noteExecution("foreground");self?.recordDiagnostic("lifecycle","App became active");self?.refreshLocationServicesAvailable();self?.refreshAutomaticMonitoring();self?.recoverStalledAutomaticGPS();self?.finishExpiredContinuation(now:Date().timeIntervalSince1970) }
+        foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.noteExecution("foreground");self?.recordDiagnostic("lifecycle","App became active");self?.refreshLocationServicesAvailable();self?.refreshAutomaticMonitoring();self?.recoverStalledAutomaticGPS();self?.finishExpiredContinuation(now:Date().timeIntervalSince1970);self?.noteForegroundReturn(now:Date().timeIntervalSince1970) }
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
         manager.pausesLocationUpdatesAutomatically = false

@@ -67,12 +67,21 @@ extension LocationRecorder {
             placeVerified: restPlaceFixAt.map { fix in dwell.map { fix >= $0.since - 120 } ?? false } ?? false,
             idle: automaticAvailable && active == nil && automaticIdle, recentMovement: recent, motionMoving: moving,
             wifi: kind == .home ? wifiMatchState : .unknown, now: now))
+        if decision.code == "settling", restDecision.code != "settling" {
+            recordDiagnostic("rest", "Rest confirmation started", details: ["restPlace": kind.rawValue, "restRequiredSeconds": String(Int(decision.requiredSeconds)), "wifiMatch": wifiMatchState.rawValue])
+        }
         if decision.confirmed != restDecision.confirmed || (decision.confirmed && decision.code != restDecision.code) {
             recordDiagnostic("rest", decision.confirmed ? "Rest confirmed" : "Rest no longer confirmed",
                              details: ["restReason": decision.reason, "restPlace": kind.rawValue, "wifiMatch": wifiMatchState.rawValue])
         }
         restDecision = decision
         evaluatePassive()
+        // One entry per distinct reason: a rest that never goes passive explains itself.
+        let blocked = passiveRetainReason.isEmpty ? "" : restDecision.confirmed ? passiveRetainReason : restDecision.code
+        if blocked != passiveBlockLogged {
+            passiveBlockLogged = blocked
+            if !blocked.isEmpty { recordDiagnostic("decision", "Passive rest blocked", details: ["blockedBy": blocked, "restPlace": kind.rawValue]) }
+        }
     }
 
     @discardableResult
@@ -88,10 +97,39 @@ extension LocationRecorder {
     }
 
     // A fix inside the current place verifies it for this process.
-    func noteRestPlaceFix(_ sample: GPSPoint, now: Double) {
+    @discardableResult
+    func noteRestPlaceFix(_ sample: GPSPoint, now: Double) -> Bool {
         guard let area = dwell, sample.accuracy >= 0, sample.accuracy <= RestConfirmation.maximumPlaceAccuracy,
-              now - sample.timestamp <= 120, area.contains(sample) else { return }
+              now - sample.timestamp <= 120, area.contains(sample) else { return false }
+        let newlyVerified = restPlaceFixAt == nil
         restPlaceFixAt = sample.timestamp; restPlaceAccuracy = sample.accuracy
+        if newlyVerified { recordDiagnostic("rest", "Place verified by a location fix", details: ["restPlace": restPlaceKind.rawValue, "placeAccuracyMeters": String(Int(sample.accuracy))]) }
+        return newlyVerified
+    }
+    // What a delivery during passive rest answers. No standard updates run then,
+    // so it is a one-time check the app asked for, or iOS's significant change.
+    func passiveFixCause(now: Double) -> String {
+        guard let request = passiveFixRequest, now - request.at <= 60 else { return "significant location change" }
+        return request.cause
+    }
+    func requestPassiveLocationCheck(cause: String, now: Double) {
+        passiveFixRequest = (cause, now)
+        manager.requestLocation()
+    }
+    // Opening the app is a wake-up too: every background one may have been missed.
+    // One location decides, so opening the app never restarts continuous tracking.
+    func noteForegroundReturn(now: Double) {
+        refreshWiFiIfDue(now: now, foreground: true)
+        guard automaticAvailable, active == nil, locationMode == .passive, !continuousLocationRequested, now - foregroundCheckAt >= 300 else { return }
+        foregroundCheckAt = now
+        recordDiagnostic("rest", "App opened during passive rest: one location check requested")
+        requestPassiveLocationCheck(cause: "foreground return", now: now)
+    }
+    func noteFirstPreciseFix(_ sample: GPSPoint, now: Double) {
+        guard let evidence = departureLatency.evidenceAt, !departureFirstFixLogged, sample.timestamp >= evidence - 5 else { return }
+        departureFirstFixLogged = true
+        recordDiagnostic("detection", "First precise fix after wake-up", details: ["wakeSource": departureLatency.cause, "firstFixAt": String(sample.timestamp),
+            "wakeToFirstFixSeconds": String(Int(max(0, sample.timestamp - evidence))), "firstFixAccuracyMeters": String(Int(sample.accuracy))])
     }
     func noteRestDisturbance(now: Double) { restDisturbedAt = now }
 
@@ -110,6 +148,8 @@ extension LocationRecorder {
                 endBackgroundSession("passive rest: " + restDecision.reason)
                 sessionReleasedAt = now; sessionReleases += 1
             }
+            // Clears a state left by a departure that could not restart the session.
+            reconcileBackgroundSession("passive rest")
         } else if let since = passiveSince {
             passiveSince = nil
             persistPassiveSince(nil)
@@ -133,6 +173,9 @@ extension LocationRecorder {
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": "off"])
         }
         restDecision = .unconfirmed; passiveRetainReason = "automatic tracking unavailable"; restDisturbedAt = nil
+        // The phone may move while tracking is off, so nothing vouches for the place
+        // afterwards, and a later wake-up is not a departure from this rest.
+        persistPassiveSince(nil); restPlaceFixAt = nil; restPlaceAccuracy = nil
         modeClock.enter("off", now: now)
         reconcileKeepAlive(now: now)
     }

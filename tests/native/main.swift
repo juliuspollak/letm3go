@@ -2776,6 +2776,147 @@ do {
     check(empty.eventCount==0&&emptyReport.events.isEmpty,"an empty history still exports one valid file")
 }
 
+// MARK: Passive rest lifecycle scenarios
+// These drive the real policies with injected events. They show the decisions are
+// right given an event; they are not evidence that iOS delivers the event.
+do {
+    let homeArea = DwellArea(source: .saved, placeKind: "home", latitude: -33.86, longitude: 151.2, radius: 120, since: 0)
+    func fix(_ north: Double, at: Double, accuracy: Double = 10, speed: Double = 0) -> GPSPoint {
+        GPSPoint(latitude: -33.86 + north / 111_320, longitude: 151.2, timestamp: at, accuracy: accuracy, altitude: 0, speed: speed)
+    }
+    func decide(_ now: Double, disturbed: Double? = nil, wifi: WiFiMatch = .unknown, verified: Bool = true, idle: Bool = true, moving: Bool = false) -> RestDecision {
+        RestConfirmation.decide(RestInputs(place: .home, placeSince: 0, lastDisturbanceAt: disturbed, placeAccuracy: 10, placeVerified: verified,
+            idle: idle, recentMovement: moving, motionMoving: false, wifi: wifi, now: now))
+    }
+    func retain(_ rest: RestDecision, always: Bool = true, session: Bool = true, inUse: Bool = true, manual: Bool = false) -> String? {
+        PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: rest, alwaysAuthorized: always, preciseAuthorized: true, serviceSessionHeld: session,
+            serviceSessionInUse: inUse, significantChanges: true, exitRegion: true, manualRecording: manual))
+    }
+    func mode(_ sampling: AutomaticSampling, recording: Bool = false, passive: Bool, now: Double) -> AutomaticLocationMode {
+        sampling.locationMode(available: true, manualActive: false, automaticRecording: recording, now: now, passive: passive)
+    }
+
+    // 1. Home without configured Wi-Fi rests after the full wait, with no shortcut.
+    check(!decide(1199).confirmed && decide(1200).confirmed && retain(decide(1200)) == nil, "scenario 1: Home without Wi-Fi reaches passive rest at 20 minutes")
+    check(HomeWiFi.match(nil, WiFiObservation(network: "home", accessPoint: nil, at: 100, source: "test"), now: 100) == .unknown, "scenario 1: an unconfigured network never matches")
+    // 2. A matching network shortens the wait only where location says Home.
+    check(decide(900, wifi: .matched).confirmed && !decide(900, wifi: .matched, verified: false).confirmed, "scenario 2: matching Wi-Fi shortens rest only at a verified Home")
+    // 3. Wi-Fi becoming unavailable is no evidence either way.
+    check(!HomeWiFi.leftHome(previous: .unavailable, current: .unavailable) && decide(1200, wifi: .unavailable).confirmed, "scenario 3: unavailable Wi-Fi neither blocks rest nor signals departure")
+    // 4. Disconnecting without moving asks one question and starts nothing.
+    var sampling = AutomaticSampling()
+    check(HomeWiFi.leftHome(previous: .matched, current: .unavailable), "scenario 4: a Wi-Fi drop is noticed")
+    check(!RestWake.definitelyLeft(fix(0, at: 100), place: homeArea, now: 100) && mode(sampling, passive: true, now: 100) == .passive, "scenario 4: a fix at Home after a Wi-Fi drop leaves passive rest in place")
+    // 5. A false exit costs one bounded check, then rest must be earned again.
+    check(sampling.requestProbe(now: 2000, movementBegan: true, locationWake: true), "scenario 5: a region exit starts a check")
+    check(mode(sampling, passive: true, now: 2001) == .precise, "scenario 5: the check overrides passive rest")
+    check(mode(sampling, passive: false, now: 2121) == .standby, "scenario 5: the check ends by itself")
+    check(!decide(2000 + 1199, disturbed: 2000).confirmed && decide(2000 + 1200, disturbed: 2000).confirmed, "scenario 5: the rest wait restarts after a false exit")
+    // 6. A departure with the app in the background: the check began, the app was
+    // suspended past its end, and the next wake-up must still start a check.
+    sampling = AutomaticSampling()
+    check(sampling.requestProbe(now: 3000, movementBegan: true, locationWake: true), "scenario 6: first wake-up starts a check")
+    check(sampling.requestProbe(now: 3500, movementBegan: true, locationWake: true), "scenario 6: a wake-up after a slept-through check is not lost")
+    check(sampling.probeUntil == 3620 && sampling.locationWake, "scenario 6: the new check gets its full time")
+    var stale = AutomaticSampling()
+    stale.requestProbe(now: 10, movementBegan: true)
+    check(!stale.requestProbe(now: 5000) && stale.probeUntil == nil && stale.retryAfter == 5060, "scenario 6: weak evidence after a slept-through check still honours the cooldown")
+    // A location wake survives a red light; a motion-started check does not need to.
+    check(sampling.locationWake, "scenario 6: Core Motion stillness may not cancel a check Core Location started")
+    sampling.stop(now: 3510)
+    check(!sampling.locationWake, "scenario 6: ending the check clears the protection")
+    var motionProbe = AutomaticSampling()
+    motionProbe.requestProbe(now: 10, movementBegan: true)
+    check(!motionProbe.locationWake, "scenario 6: a motion-started check stays cancellable")
+    motionProbe.requestProbe(now: 20, movementBegan: true, locationWake: true)
+    check(motionProbe.locationWake && motionProbe.probeUntil == 130, "scenario 6: a location wake during a check protects it without extending it")
+    // 7. The session was released, so the check must not depend on restoring it.
+    check(BackgroundSessionPolicy.decide(wanted: true, held: false, foreground: false, previouslyHeld: false, supported: true) == .deferUntilForeground, "scenario 7: a released session is not restarted from the background")
+    check(BackgroundSessionPolicy.decide(wanted: false, held: false, foreground: false, previouslyHeld: false, supported: true) == .none, "scenario 7: re-entering passive rest clears the waiting state")
+    check(BackgroundSessionPolicy.decide(wanted: true, held: false, foreground: true, previouslyHeld: false, supported: true) == .start, "scenario 7: opening the app restores it")
+    // A coarse significant-change fix decides only when it cannot be at Home.
+    check(RestWake.definitelyLeft(fix(3000, at: 100, accuracy: 1000), place: homeArea, now: 110), "scenario 7: a coarse fix 3 km away proves the phone left")
+    check(!RestWake.definitelyLeft(fix(700, at: 100, accuracy: 1000), place: homeArea, now: 110), "scenario 7: a coarse fix that may still be at Home proves nothing")
+    check(!RestWake.definitelyLeft(fix(3000, at: 100, accuracy: -1), place: homeArea, now: 110), "scenario 7: an invalid fix proves nothing")
+    check(!RestWake.definitelyLeft(fix(3000, at: 100, accuracy: 50), place: homeArea, now: 300), "scenario 7: an old fix proves nothing")
+    // 8. A relaunch at Home is not trusted until a fix confirms the place.
+    check(decide(9999, verified: false).code == "unverified" && retain(decide(9999, verified: false)) != nil, "scenario 8: a relaunch cannot go passive on memory alone")
+    check(decide(9999, verified: true).confirmed, "scenario 8: one fix at Home restores rest without a new 20-minute wait")
+    // 9. A relaunch during a journey keeps it, its fixes and precise GPS.
+    var restarted = RecordedActivity(activity: "Driving", startedAt: 100, resumedAt: 100, title: "Restarted")
+    restarted.recordingMode = "automatic"
+    check(TrackingBoundary.value(now: 5000, restoredAutomatic: restarted, boundSince: 1000) == 100, "scenario 9: a restored journey keeps its queued fixes")
+    check(mode(AutomaticSampling(), recording: true, passive: true, now: 5000) == .precise, "scenario 9: an open journey is precise even if rest looks confirmed")
+    check(!decide(9999, idle: false).confirmed, "scenario 9: an open journey is never rest")
+    // 10. Repeated callbacks while a check runs change nothing.
+    sampling = AutomaticSampling()
+    check(sampling.requestProbe(now: 100, movementBegan: true, locationWake: true), "scenario 10: the first callback starts a check")
+    check(!sampling.requestProbe(now: 101, movementBegan: true, locationWake: true) && !sampling.requestProbe(now: 102, movementBegan: true) && sampling.probeUntil == 220, "scenario 10: duplicate callbacks neither restart nor extend it")
+    // 11. Returning needs a new rest, and drift at Home is not a departure.
+    check(!decide(9000 + 1199, disturbed: 9000).confirmed && retain(decide(9000 + 1200, disturbed: 9000)) == nil, "scenario 11: passive rest resumes only after a new still period")
+    var drift = DepartureEvidence()
+    _ = drift.observe(fix(0, at: 100, accuracy: 30), now: 100)
+    check(!drift.observe(fix(25, at: 130, accuracy: 30), now: 130), "scenario 11: GPS drift at Home is not movement")
+    // 12. A missing or insufficient service session keeps the established engine.
+    check(retain(decide(1200), session: false) != nil && retain(decide(1200), inUse: false) != nil, "scenario 12: passive rest needs a working service session")
+    // 13. Account changes: a new account starts at its own boundary, the same account keeps its own.
+    check(TrackingBoundary.value(now: 5000, restoredAutomatic: nil, boundSince: nil) == 5000, "scenario 13: a new account accepts nothing from before it")
+    check(TrackingBoundary.value(now: 5000, restoredAutomatic: nil, boundSince: 1000) == 1000, "scenario 13: the same account keeps fixes queued across a relaunch")
+    // 14. Losing permission ends passive rest and cannot be argued around.
+    check(retain(decide(1200), always: false) != nil, "scenario 14: losing Always access ends passive rest")
+    check(retain(decide(1200), manual: true) != nil, "scenario 14: a manual recording also keeps the session")
+
+    // 15. One export reconstructs the whole Home → departure → journey → return test.
+    var journal = RecorderDiagnosticJournal()
+    let base = 1_800_000_000.0
+    let id = ["build": "70", "commit": "abc123"]
+    func log(_ at: Double, _ kind: String, _ message: String, _ context: [String: String] = [:]) {
+        journal.append(RecorderDiagnosticEvent(at: base + at, kind: kind, message: message, context: id.merging(context) { _, new in new }))
+    }
+    log(0, "place", "Current place established", ["placeKind": "home"])
+    log(5, "rest", "Place verified by a location fix", ["placeAccuracyMeters": "12", "restPlace": "home"])
+    log(6, "rest", "Rest confirmation started", ["restRequiredSeconds": "900", "wifiMatch": "matched"])
+    log(30, "decision", "Passive rest blocked", ["blockedBy": "settling"])
+    log(900, "rest", "Rest confirmed", ["restReason": "at Home, still for 15 min"])
+    log(901, "service", "Continuous GPS stopped: passive rest")
+    log(901, "session", "Background location session ended", ["reason": "passive rest: at Home"])
+    log(902, "rest", "Passive rest began", ["wifiMatch": "matched"])
+    log(5000, "detection", "Departure wake-up", ["wakeSource": "current place region exit", "granted": "true", "fromPassive": "true", "lastPresenceAt": String(base + 5)])
+    log(5001, "rest", "Passive rest ended", ["passiveSeconds": "4099"])
+    log(5012, "detection", "First precise fix after wake-up", ["wakeToFirstFixSeconds": "12", "firstFixAccuracyMeters": "9"])
+    log(5040, "detection", "Automatic departure confirmed", ["keepAliveRunning": "true"])
+    log(5040, "detection", "Departure latency", ["evidenceToFirstFixSeconds": "12", "evidenceToConfirmationSeconds": "40", "startGapMeters": "180", "cause": "current place region exit"])
+    log(7000, "journey", "Journey stopped")
+    log(7001, "rest", "Rest confirmation started", ["restRequiredSeconds": "1200"])
+    log(8200, "rest", "Passive rest began")
+    let current = ["homeWiFiConfigured": "true", "wifiMatch": "matched", "locationMode": "passive", "backgroundSessionHeld": "false", "version": "1.0"]
+    let report = LocationDiagnosticExport.report(journal: journal, current: current, journeys: [], now: base + 8300, timezone: "UTC", storageError: "")
+    let restored = try JSONDecoder().decode(LocationDiagnosticExport.Report.self, from: DiagnosticGzip.decompress(LocationDiagnosticExport.archive(report).data))
+    let summary = restored.testSummary
+    check(restored.schemaVersion == 3 && restored.eventCount == 16, "scenario 15: the single file holds the whole sequence")
+    check(summary.homeWiFiConfigured == "yes" && summary.homeWiFiMatched == "yes", "scenario 15: Wi-Fi is summarised")
+    check(summary.passiveRestEntered == "yes" && summary.backgroundSessionReleased == "yes", "scenario 15: rest and release are summarised")
+    check(summary.departureWakeUpObserved == "yes" && summary.wakeUpSource == "current place region exit", "scenario 15: the wake-up source survives the export allowlist")
+    check(summary.wakeToFirstPreciseFixSeconds == 12 && summary.wakeToJourneyConfirmationSeconds == 40 && summary.routeGapBeforeFirstFixMeters == 180, "scenario 15: departure timings are summarised")
+    check(summary.passiveRestReentered == "yes" && summary.inconclusive.isEmpty, "scenario 15: a complete test leaves nothing inconclusive")
+    check(summary.buildsObserved == [LocationDiagnosticExport.BuildSeen(build: "70", commit: "abc123", firstAt: base, lastAt: base + 8200, events: 16)], "scenario 15: events are attributed to their build and commit")
+    check(summary.physicalIndicator.contains("not observable"), "scenario 15: the indicator is never claimed from app state")
+    check(restored.events.contains { $0.context["blockedBy"] == "settling" } && restored.events.contains { $0.context["lastPresenceAt"] != nil && $0.context["fromPassive"] == "true" }, "scenario 15: blocked reasons and last presence survive the export allowlist")
+
+    // Nothing is invented: an empty or partial history says what it could not show.
+    let silent = LocationDiagnosticExport.testSummary([], current: ["homeWiFiConfigured": "false", "wifiMatch": "notConfigured"])
+    check(silent.departureWakeUpObserved == "no" && silent.wakeToFirstPreciseFixSeconds == nil && silent.homeWiFiMatched == "unknown", "scenario 15: no events, no invented results")
+    check(Set(silent.inconclusive.map { $0.check }) == ["homeWiFiMatched", "departureWakeUpObserved", "passiveRestReentered"], "scenario 15: missing evidence is listed")
+    func event(_ at: Double, _ message: String, _ context: [String: String] = [:]) -> LocationDiagnosticExport.Event {
+        LocationDiagnosticExport.Event(at: at, time: "", kind: "detection", message: message, context: context)
+    }
+    let failed = LocationDiagnosticExport.testSummary([event(1, "Home Wi-Fi designation failed", ["wifiFailure": "noNetworkReported"])], current: [:])
+    check(failed.inconclusive.first?.reason.contains("noNetworkReported") == true, "scenario 15: a failed Wi-Fi setup is told apart from one never tried")
+    let stopped = LocationDiagnosticExport.testSummary([event(1, "Departure wake-up", ["wakeSource": "visit departure"]), event(9, "Recorder was not executing for 600s", ["notExecutingSeconds": "600"])], current: ["homeWiFiConfigured": "true", "wifiMatch": "matched"])
+    check(stopped.wakeToFirstPreciseFixSeconds == nil && stopped.inconclusive.contains { $0.check == "wakeToFirstPreciseFixSeconds" && $0.reason.contains("not executing") }, "scenario 15: a suspended period is reported, not filled in")
+    check(LocationDiagnosticExport.testSummary([event(1, "Departure wake-up"), event(2, "Departure wake-up", ["wakeSource": "late"])], current: [:]).wakeUpSource == "late", "scenario 15: without a journey the latest wake-up is reported")
+}
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

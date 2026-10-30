@@ -29,7 +29,7 @@ describe('passive rest rows',()=>{
  it('explain why the background session is still held while settling',()=>{
   const rows=passiveRows({passiveRest:passive()});
   expect(row(rows,'Passive rest')).toBe('Not active · rest not confirmed: settling: still for 4 of 20 min');
-  expect(row(rows,'Home Wi-Fi')).toBe('Not set up');
+  expect(row(rows,'Home Wi-Fi')).toBe('Not configured');
   expect(row(rows,'Always service session')).toBe('Held (started with the app open)');
  });
  it('report an active passive rest, Wi-Fi as a match state and the measured departure',()=>{
@@ -38,12 +38,12 @@ describe('passive rest rows',()=>{
    adaptive:{lastDepartureLatency:{engine:'passive',cause:'place region exit',evidenceToFirstFixSeconds:'9',motionOnsetToEvidenceSeconds:'140',startGapMeters:'180'}}});
   expect(row(rows,'Rest')).toBe('Confirmed · at Home, still for 16 min, Home Wi-Fi connected');
   expect(row(rows,'Passive rest')).toMatch(/^Active since .* no location updates, no background session$/);
-  expect(row(rows,'Home Wi-Fi')).toBe('Connected to Home Wi-Fi');
+  expect(row(rows,'Home Wi-Fi')).toBe('Home Wi-Fi detected');
   expect(row(rows,'Time per location mode (since app start)')).toBe('precise 5 min · passive 1 h');
   expect(row(rows,'Departure from rest')).toBe('woken by place region exit · movement began 140 s earlier · first GPS 9 s after waking · route began ~180 m beyond the place');
  });
  it('treat unavailable Wi-Fi as unavailable, not as disconnected',()=>{
-  expect(row(passiveRows({passiveRest:passive({wifi:{configured:true,match:'unavailable'}})}),'Home Wi-Fi')).toMatch(/^Unavailable/);
+  expect(row(passiveRows({passiveRest:passive({wifi:{configured:true,match:'unavailable'}})}),'Home Wi-Fi')).toBe('Wi-Fi unavailable');
  });
 });
 
@@ -63,6 +63,26 @@ describe('Tracking & Permissions controls',()=>{
   rerender(<TrackingPermissions recording={{state:{...state,places:[home],passiveRest:passive({wifi:{configured:true,match:'matched'}})},run}} onBack={vi.fn()}/>);
   fireEvent.click(screen.getByRole('button',{name:'Forget'}));
   expect(run).toHaveBeenCalledWith('setHomeWiFi','forget');
+ });
+ it('names every Home Wi-Fi state in plain words',()=>{
+  const labels=['matched','notMatched','unavailable','unknown'].map(match=>row(passiveRows({passiveRest:passive({wifi:{configured:true,match}})}),'Home Wi-Fi'));
+  expect(labels).toEqual(['Home Wi-Fi detected','Connected to another network','Wi-Fi unavailable','Waiting for fresh Wi-Fi evidence']);
+ });
+ it('shows a failed Home Wi-Fi setup beside the control and offers another try',async()=>{
+  const run=vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({trips:[]});
+  const state={permission:'always',automaticEnabled:true,storageReady:true,places:[home],passiveRest:passive()};
+  const message='iOS did not report a Wi-Fi network. Connect to your Home Wi-Fi, keep Precise Location on, and try again.';
+  render(<TrackingPermissions recording={{state,run,error:message}} onBack={vi.fn()}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Use current Wi-Fi'}));
+  expect(await screen.findByRole('alert')).toHaveTextContent('did not report a Wi-Fi network');
+  fireEvent.click(screen.getByRole('button',{name:'Try again'}));
+  expect(run).toHaveBeenCalledTimes(2);
+  await screen.findByRole('button',{name:'Use current Wi-Fi'});
+  expect(screen.getAllByRole('alert')).toHaveLength(1);
+ });
+ it('says when a saved Home Wi-Fi could not be read rather than that it was never set',()=>{
+  render(<TrackingPermissions recording={{state:{permission:'always',storageReady:true,places:[home],passiveRest:passive({wifi:{configured:false,status:'unreadable',match:'notConfigured'}})},run:vi.fn()}} onBack={vi.fn()}/>);
+  expect(screen.getByText(/could not be read on this iPhone/)).toBeInTheDocument();
  });
  it('names passive rest as the native state',()=>{
   render(<TrackingPermissions recording={{state:{permission:'always',automaticEnabled:true,storageReady:true,automaticSampling:'passiveRest',passiveRest:passive({active:true})},run:vi.fn()}} onBack={vi.fn()}/>);

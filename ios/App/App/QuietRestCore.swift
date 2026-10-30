@@ -160,6 +160,21 @@ enum PassiveRestPolicy {
     }
 }
 
+// MARK: Waking from passive rest
+//
+// A significant-change or one-time fix is often far too coarse to be route or
+// displacement evidence, yet it can still prove the phone is no longer at the
+// place it rested: its whole uncertainty circle lies outside. That earns one
+// bounded departure check. It never starts a journey, which still needs precise
+// GPS movement, and a fix that merely might be outside proves nothing.
+enum RestWake {
+    static func definitelyLeft(_ sample: GPSPoint, place: DwellArea, now: Double) -> Bool {
+        guard sample.latitude.isFinite, sample.longitude.isFinite, sample.accuracy >= 0,
+              now - sample.timestamp >= 0, now - sample.timestamp <= 120 else { return false }
+        return place.centre.distance(to: sample) - sample.accuracy > place.radius
+    }
+}
+
 // MARK: Location lifecycle accounting
 //
 // Time in each location mode, accumulated when the mode changes. Only modes and

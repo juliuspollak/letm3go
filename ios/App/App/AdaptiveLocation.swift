@@ -129,6 +129,7 @@ extension LocationRecorder: AdaptiveHost {
             // the departure preceded the first precise fix.
             departurePlace = dwell
             departureMotionOnsetAt = nil
+            departureFirstFixLogged = false
             if let since = restedSince { queryDepartureOnset(since: since, evidenceAt: now); if passiveSince == nil { persistPassiveSince(nil) } }
         }
         departureLatency.noteEvidence(cause, engine: engine, now: now)

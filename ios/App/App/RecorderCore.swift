@@ -1263,11 +1263,19 @@ struct AutomaticSampling {
     // high-accuracy GPS alive for a journey that was never confirmed. Without this
     // cap a stalled delivery loop extends the check forever.
     var probeStartedAt: Double?
+    // Core Location itself reported the departure (a place exit, a visit departure
+    // or a fix clearly outside the place). A moment of Core Motion stillness, such
+    // as a red light, does not cancel that check; it still ends at its time limit.
+    private(set) var locationWake = false
     static let probeDuration: Double = 120
     static let probeCooldown: Double = 60
     static let probeBudget: Double = 360
     @discardableResult
-    mutating func requestProbe(now: Double, movementBegan:Bool = false) -> Bool {
+    mutating func requestProbe(now: Double, movementBegan:Bool = false, locationWake wake:Bool = false) -> Bool {
+        // A check whose time passed while the app was suspended is over: no timer
+        // could expire it, and it must not swallow the wake-up that ended the sleep.
+        if let end=probeUntil,now>=end {probeUntil=nil;retryAfter=now+Self.probeCooldown;locationWake=false}
+        if probeUntil != nil,wake {locationWake=true}
         guard probeUntil == nil, movementBegan || now >= retryAfter else { return false }
         if let started=probeStartedAt, now-started >= Self.probeBudget {
             // A spent episode stays spent for the same movement: only a genuinely new
@@ -1278,6 +1286,7 @@ struct AutomaticSampling {
         }
         if probeStartedAt == nil { probeStartedAt=now }
         probeUntil=now+Self.probeDuration
+        locationWake=wake
         return true
     }
     // Extend a running check only while this episode still has budget left. The
@@ -1293,11 +1302,11 @@ struct AutomaticSampling {
     @discardableResult
     mutating func expire(now: Double) -> Bool {
         guard let end=probeUntil,now>=end else { return false }
-        probeUntil=nil;retryAfter=now+Self.probeCooldown;return true
+        probeUntil=nil;retryAfter=now+Self.probeCooldown;locationWake=false;return true
     }
     // A confirmed stop or a spent budget ends the episode, so the next genuine
     // movement earns a fresh bounded budget instead of inheriting an exhausted one.
-    mutating func stop(now: Double) {probeUntil=nil;retryAfter=now+Self.probeCooldown;probeStartedAt=nil}
+    mutating func stop(now: Double) {probeUntil=nil;retryAfter=now+Self.probeCooldown;probeStartedAt=nil;locationWake=false}
     mutating func endEpisode(now: Double) {stop(now:now)}
     func needsGPS(automaticAvailable:Bool,manualRecording:Bool,automaticRecording:Bool,now:Double)->Bool {
         manualRecording || (automaticAvailable && (automaticRecording || (probeUntil ?? 0)>now))
@@ -1738,7 +1747,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {
@@ -1792,12 +1801,78 @@ struct LocationDiagnosticExport {
     struct Event:Codable {var at:Double;var time:String;var kind:String;var message:String;var context:[String:String]}
     struct Journey:Codable {var index:Int;var activity:String;var state:String;var startedAt:Double;var endedAt:Double?;var fixCount:Int;var gapCount:Int;var largestGapSeconds:Double;var stopCount:Int;var stoppedSeconds:Double}
     struct Statistics:Codable {var observationSummaries:Int;var totals:[String:Double];var maxDeliveryDelaySeconds:Double;var worstAccuracyMeters:Double}
+    // One Home → departure → journey → return cycle, read from the retained events.
+    // Each answer comes from an event that was actually logged. Anything the log
+    // cannot show is listed under inconclusive rather than guessed, and the iOS
+    // indicator itself cannot be observed by the app at all.
+    struct Inconclusive:Codable,Equatable {var check:String;var reason:String}
+    struct BuildSeen:Codable,Equatable {var build:String;var commit:String;var firstAt:Double;var lastAt:Double;var events:Int}
+    struct TestSummary:Codable {
+        var homeWiFiConfigured:String;var homeWiFiMatched:String
+        var passiveRestEntered:String;var backgroundSessionReleased:String
+        var departureWakeUpObserved:String;var wakeUpSource:String?
+        var wakeToFirstPreciseFixSeconds:Int?;var wakeToJourneyConfirmationSeconds:Int?
+        var routeGapBeforeFirstFixMeters:Int?;var passiveRestReentered:String
+        var physicalIndicator:String
+        var inconclusive:[Inconclusive];var buildsObserved:[BuildSeen]
+    }
+    static func buildsObserved(_ events:[Event])->[BuildSeen] {
+        var seen:[BuildSeen]=[]
+        for event in events {
+            guard let build=event.context["build"],let commit=event.context["commit"] else {continue}
+            if let index=seen.lastIndex(where:{$0.build==build&&$0.commit==commit}) {seen[index].lastAt=max(seen[index].lastAt,event.at);seen[index].events+=1}
+            else {seen.append(BuildSeen(build:build,commit:commit,firstAt:event.at,lastAt:event.at,events:1))}
+        }
+        return seen
+    }
+    static func testSummary(_ events:[Event],current:[String:String])->TestSummary {
+        func yes(_ value:Bool)->String {value ? "yes" : "no"}
+        func first(_ message:String,after at:Double)->Event? {events.first{$0.message==message&&$0.at>=at}}
+        var inconclusive:[Inconclusive]=[]
+        let configured=current["homeWiFiConfigured"]=="true"
+        let wifi=current["wifiMatch"] ?? "unknown"
+        let matched=wifi=="matched" ? "yes" : wifi=="notMatched" ? "no" : "unknown"
+        if !configured {
+            let failure=events.last{$0.message=="Home Wi-Fi designation failed"}?.context["wifiFailure"]
+            inconclusive.append(Inconclusive(check:"homeWiFiMatched",reason:failure.map{"Home Wi-Fi is not configured; the last attempt failed: \($0)"} ?? "Home Wi-Fi is not configured and no retained event shows an attempt"))
+        } else if matched=="unknown" {inconclusive.append(Inconclusive(check:"homeWiFiMatched",reason:"no fresh Wi-Fi reading: \(wifi)"))}
+        let entered=events.contains{$0.message=="Passive rest began"}
+        let sessionEnded=events.contains{$0.message=="Background location session ended"&&($0.context["reason"] ?? "").hasPrefix("passive rest")}
+        let released=sessionEnded||(current["locationMode"]=="passive"&&current["backgroundSessionHeld"]=="false")
+        // The latest wake-up that became a journey says the most; otherwise the latest.
+        let wakes=events.filter{$0.message=="Departure wake-up"}
+        let wake=wakes.last{first("Departure latency",after:$0.at) != nil} ?? wakes.last
+        var fixSeconds:Int?,confirmationSeconds:Int?,gap:Int?
+        var reentered="no"
+        if let wake=wake {
+            let fix=first("First precise fix after wake-up",after:wake.at)
+            let confirmed=first("Departure latency",after:wake.at)
+            fixSeconds=fix?.context["wakeToFirstFixSeconds"].flatMap{Int($0)}
+            confirmationSeconds=confirmed?.context["evidenceToConfirmationSeconds"].flatMap{Int($0)}
+            gap=confirmed?.context["startGapMeters"].flatMap{Int($0)}
+            let notExecuting=events.contains{$0.at>wake.at&&$0.context["notExecutingSeconds"] != nil}
+            if fix==nil {inconclusive.append(Inconclusive(check:"wakeToFirstPreciseFixSeconds",reason:notExecuting ? "no precise fix was logged and the app was not executing for part of the time after the wake-up" : "no precise fix was logged after the wake-up"))}
+            if confirmed==nil {inconclusive.append(Inconclusive(check:"wakeToJourneyConfirmationSeconds",reason:"no journey was confirmed after this wake-up; it may have been a false exit"))}
+            else if gap==nil {inconclusive.append(Inconclusive(check:"routeGapBeforeFirstFixMeters",reason:"the resting place was not known when the journey started"))}
+            if let end=confirmed?.at {
+                reentered=yes(first("Passive rest began",after:end) != nil)
+                if reentered=="no" {inconclusive.append(Inconclusive(check:"passiveRestReentered",reason:"no passive rest after this journey; a suspended app cannot run the rest timer, so it may only happen at the next wake-up"))}
+            } else {inconclusive.append(Inconclusive(check:"passiveRestReentered",reason:"no journey was confirmed, so there was no return to measure"))}
+        } else {
+            inconclusive.append(Inconclusive(check:"departureWakeUpObserved",reason:"no departure wake-up is in the retained history"))
+            inconclusive.append(Inconclusive(check:"passiveRestReentered",reason:"no departure happened, so there was no return to measure"))
+        }
+        return TestSummary(homeWiFiConfigured:yes(configured),homeWiFiMatched:matched,passiveRestEntered:yes(entered),backgroundSessionReleased:yes(released),
+            departureWakeUpObserved:yes(wake != nil),wakeUpSource:wake?.context["wakeSource"],wakeToFirstPreciseFixSeconds:fixSeconds,wakeToJourneyConfirmationSeconds:confirmationSeconds,
+            routeGapBeforeFirstFixMeters:gap,passiveRestReentered:reentered,physicalIndicator:"not observable by the app; note what the iPhone showed",
+            inconclusive:inconclusive,buildsObserved:buildsObserved(events))
+    }
     struct Report:Codable {
-        var schemaVersion=2
+        var schemaVersion=3
         var generatedAt:Double;var generatedTime:String;var timezone:String
         var eventCount:Int;var oldestAvailableAt:Double?
         var retentionDays:Int;var eventLimit:Int;var byteLimit:Int;var capacityEvictions:Int;var storageError:String
-        var current:[String:String];var gpsStatistics:Statistics;var warnings:[Event];var journeys:[Journey];var events:[Event]
+        var current:[String:String];var testSummary:TestSummary;var gpsStatistics:Statistics;var warnings:[Event];var journeys:[Journey];var events:[Event]
         var limitations:String
     }
     struct Archive {var fileName:String;var data:Data;var eventCount:Int;var uncompressedBytes:Int}
@@ -1830,9 +1905,10 @@ struct LocationDiagnosticExport {
             let quality=trip.routeQualitySummary()
             return Journey(index:index+1,activity:LocationDiagnosticPrivacy.text(trip.activity),state:LocationDiagnosticPrivacy.text(trip.state),startedAt:trip.startedAt,endedAt:trip.endedAt,fixCount:quality.fixCount,gapCount:quality.gapCount,largestGapSeconds:quality.largestGapSeconds,stopCount:quality.stopCount ?? 0,stoppedSeconds:quality.stoppedSeconds ?? 0)
         }
+        let safeCurrent=LocationDiagnosticPrivacy.context(current)
         return Report(generatedAt:now,generatedTime:time(now),timezone:timezone,eventCount:events.count,oldestAvailableAt:events.first?.at,
             retentionDays:Int(RecorderDiagnosticJournal.retention/86400),eventLimit:RecorderDiagnosticJournal.limit,byteLimit:RecorderDiagnosticJournal.byteLimit,
-            capacityEvictions:journal.capacityEvictions,storageError:storageError,current:LocationDiagnosticPrivacy.context(current),
+            capacityEvictions:journal.capacityEvictions,storageError:storageError,current:safeCurrent,testSummary:testSummary(events,current:safeCurrent),
             gpsStatistics:statistics(events),warnings:events.filter(isWarning),journeys:summaries,events:events,limitations:limitations)
     }
     static func fileName(_ now:Double)->String {

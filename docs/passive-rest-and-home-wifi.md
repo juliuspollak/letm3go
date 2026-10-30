@@ -202,7 +202,7 @@ Before testing:
 1. Install from this branch with a profile that includes Access Wi-Fi Information.
 2. Turn on Always and Precise Location, and Motion & Fitness.
 3. Save Home, then designate Home Wi-Fi in Tracking & Permissions.
-4. Copy the Full Location Log after each test.
+4. Share the Diagnostic Log after each test.
 
 For every test, record:
 - indicator (blue pill / arrow / none) and when it changed;

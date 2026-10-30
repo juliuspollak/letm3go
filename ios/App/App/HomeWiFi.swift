@@ -19,15 +19,16 @@ extension LocationRecorder {
     static let homeWiFiFile = "home-wifi.data"
 
     func loadHomeWiFi() {
-        homeWiFi = nil; wifiObservation = nil; wifiMatchState = .unknown
+        homeWiFi = nil; wifiObservation = nil; wifiMatchState = .unknown; homeWiFiStatus = "neverDesignated"
         guard let storage = storage, FileManager.default.fileExists(atPath: storage.directory.appendingPathComponent(Self.homeWiFiFile).path) else { return }
-        do { homeWiFi = try JSONDecoder().decode(HomeWiFiProfile.self, from: storage.readData(name: Self.homeWiFiFile)) }
-        catch { recordDiagnostic("error", "Home Wi-Fi setting could not be read", details: ["code": String((error as NSError).code)]) }
+        do { homeWiFi = try JSONDecoder().decode(HomeWiFiProfile.self, from: storage.readData(name: Self.homeWiFiFile)); homeWiFiStatus = "loaded" }
+        catch { homeWiFiStatus = "unreadable"; recordDiagnostic("error", "Home Wi-Fi setting could not be read", details: ["code": String((error as NSError).code)]) }
         if homeWiFi != nil { startWiFiPathMonitor() }
     }
     func resetHomeWiFi() {
         stopWiFiPathMonitor()
-        homeWiFi = nil; wifiObservation = nil; wifiMatchState = .unknown; wifiFetchInFlight = false; wifiCheckRequestedAt = 0
+        finishWiFiFetch(nil)
+        homeWiFi = nil; wifiObservation = nil; wifiMatchState = .unknown; wifiCheckRequestedAt = 0; homeWiFiStatus = "neverDesignated"
     }
 
     private func wifiKey() throws -> SymmetricKey {
@@ -41,25 +42,41 @@ extension LocationRecorder {
     }
 
     // One read of the current network. Nil from iOS is "unavailable".
+    // A caller arriving during a read shares its answer. A read iOS never answers
+    // gives up, so one lost callback cannot stop every later Wi-Fi reading.
     func fetchWiFi(source: String, completion: ((WiFiObservation?) -> Void)? = nil) {
-        guard ownerID != nil, !wifiFetchInFlight else { completion?(nil); return }
+        guard ownerID != nil else { completion?(nil); return }
+        if let completion = completion { wifiFetchWaiters.append(completion) }
+        guard !wifiFetchInFlight else { return }
         wifiFetchInFlight = true
+        wifiFetchGeneration += 1
+        let generation = wifiFetchGeneration
         let owner = ownerID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self = self, self.wifiFetchInFlight, self.wifiFetchGeneration == generation else { return }
+            self.recordDiagnostic("wifi", "iOS did not answer a Wi-Fi reading", details: ["wifiSource": source])
+            self.finishWiFiFetch(nil)
+        }
         NEHotspotNetwork.fetchCurrent { [weak self] network in
             let ssid = network?.ssid ?? ""
             let bssid = (network?.bssid ?? "").lowercased()
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.wifiFetchInFlight = false
+                guard let self = self, self.wifiFetchInFlight, self.wifiFetchGeneration == generation else { return }
                 // An answer for a previous account is discarded.
-                guard self.ownerID == owner, let key = try? self.wifiKey() else { completion?(nil); return }
+                guard self.ownerID == owner, let key = try? self.wifiKey() else { self.finishWiFiFetch(nil); return }
                 let observation = WiFiObservation(network: ssid.isEmpty ? nil : self.wifiHash(ssid, kind: "ssid", key: key),
                                                   accessPoint: bssid.isEmpty ? nil : self.wifiHash(bssid, kind: "bssid", key: key),
                                                   at: Date().timeIntervalSince1970, source: source)
                 self.applyWiFi(observation)
-                completion?(observation)
+                self.finishWiFiFetch(observation)
             }
         }
+    }
+    func finishWiFiFetch(_ observation: WiFiObservation?) {
+        wifiFetchInFlight = false
+        let waiters = wifiFetchWaiters
+        wifiFetchWaiters = []
+        waiters.forEach { $0(observation) }
     }
 
     func applyWiFi(_ observation: WiFiObservation) {
@@ -80,38 +97,51 @@ extension LocationRecorder {
            automaticAvailable, active == nil, !continuousLocationRequested, now - wifiCheckRequestedAt >= 600 {
             wifiCheckRequestedAt = now
             recordDiagnostic("wifi", "Home Wi-Fi no longer connected: one location check requested (not a departure)")
-            manager.requestLocation()
+            requestPassiveLocationCheck(cause: "Wi-Fi change", now: now)
         }
         reconcileAutomaticSampling()
     }
 
     // At Home, while the app runs, a reading older than five minutes is renewed.
-    func refreshWiFiIfDue(now: Double) {
-        guard homeWiFi != nil, automaticAvailable, restPlaceKind == .home, !wifiFetchInFlight,
+    // Opening the app renews it anywhere, so the setting always shows a real state.
+    func refreshWiFiIfDue(now: Double, foreground: Bool = false) {
+        guard homeWiFi != nil, !wifiFetchInFlight, foreground || (automaticAvailable && restPlaceKind == .home),
               now - (wifiObservation?.at ?? 0) >= 300 else { return }
         fetchWiFi(source: UIApplication.shared.applicationState == .active ? "foreground check" : "background wake-up")
     }
 
     func designateHomeWiFi(completion: @escaping (Error?) -> Void) {
-        guard storage != nil, ownerID != nil else { completion(failure("Recording storage is unavailable.")); return }
-        guard homePlace != nil else { completion(failure("Save your Home place first.")); return }
-        guard authorized, manager.accuracyAuthorization == .fullAccuracy else { completion(failure("Identifying Wi-Fi needs Precise Location to be on.")); return }
+        // Every refusal is logged by cause, because a log that only says "not
+        // configured" cannot tell a failed attempt from one never made.
+        func refuse(_ code: String, _ message: String) {
+            recordDiagnostic("wifi", "Home Wi-Fi designation failed", details: ["wifiFailure": code])
+            completion(failure(message))
+        }
+        guard storage != nil, ownerID != nil else { refuse("storageUnavailable", "Recording storage is unavailable. Sign in and try again."); return }
+        guard homePlace != nil else { refuse("noHomePlace", "Save your Home place first, then set up Home Wi-Fi."); return }
+        guard authorized, manager.accuracyAuthorization == .fullAccuracy else { refuse("preciseLocationOff", "Identifying Wi-Fi needs Precise Location. Turn it on in iOS Settings → Letm3go → Location, then try again."); return }
         fetchWiFi(source: "designation") { [weak self] observation in
             guard let self = self else { return }
             guard let observation = observation, let network = observation.network else {
-                completion(self.failure("iOS did not report a connected Wi-Fi network. Connect to your Home Wi-Fi and try again.")); return
+                refuse("noNetworkReported", "iOS did not report a Wi-Fi network. Connect to your Home Wi-Fi, keep Precise Location on, and try again."); return
             }
             let profile = HomeWiFiProfile(network: network, accessPoints: observation.accessPoint.map { [$0] } ?? [], designatedAt: observation.at)
             do {
                 guard let storage = self.storage else { throw self.failure("Recording storage is unavailable.") }
                 try storage.writeData(JSONEncoder().encode(profile), name: Self.homeWiFiFile)
+                // Only what can be read back will still be here after a relaunch.
+                guard try JSONDecoder().decode(HomeWiFiProfile.self, from: storage.readData(name: Self.homeWiFiFile)) == profile else { throw self.failure("The Home Wi-Fi setting could not be saved.") }
                 self.homeWiFi = profile
+                self.homeWiFiStatus = "loaded"
                 self.wifiMatchState = HomeWiFi.match(profile, observation, now: Date().timeIntervalSince1970)
                 self.recordDiagnostic("preference", "Home Wi-Fi designated", details: ["wifiMatch": self.wifiMatchState.rawValue])
                 self.startWiFiPathMonitor()
                 self.reconcileAutomaticSampling()
                 completion(nil)
-            } catch { completion(error) }
+            } catch {
+                self.recordDiagnostic("wifi", "Home Wi-Fi designation failed", details: ["wifiFailure": "saveFailed"])
+                completion(error)
+            }
         }
     }
     func forgetHomeWiFi() throws {
@@ -146,7 +176,7 @@ extension LocationRecorder {
     }
 
     var wifiSnapshot: [String: Any] {
-        ["configured": homeWiFi != nil, "match": homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue,
+        ["configured": homeWiFi != nil, "status": homeWiFiStatus, "match": homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue,
          "observedAt": wifiObservation?.at as Any? ?? NSNull(), "source": wifiObservation?.source ?? "none",
          "accessPointKnown": HomeWiFi.accessPointKnown(homeWiFi, wifiObservation), "accessPoints": homeWiFi?.accessPoints.count ?? 0,
          "onWiFiPath": wifiOnPath as Any? ?? NSNull()]

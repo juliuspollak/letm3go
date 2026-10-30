@@ -3,11 +3,16 @@
 import {duration} from './adaptiveDiagnostics.js';
 
 export const WIFI_MATCH_LABELS={
- matched:'Connected to Home Wi-Fi',
+ matched:'Home Wi-Fi detected',
  notMatched:'Connected to another network',
- unavailable:'Unavailable · iOS reported no Wi-Fi network (not connected, or not permitted)',
- unknown:'Unknown · not checked recently',
- notConfigured:'Not set up'
+ unavailable:'Wi-Fi unavailable',
+ unknown:'Waiting for fresh Wi-Fi evidence',
+ notConfigured:'Not configured'
+};
+export const WIFI_HELP={
+ notMatched:'Join your Home network if you are at Home.',
+ unavailable:'iOS reported no network: Wi-Fi may be off or disconnected, or Precise Location may be off.',
+ unknown:'Reopen the app at Home to read it again.'
 };
 export const SERVICE_SESSION_LABELS={
  held:'Held (started with the app open)',
@@ -34,7 +39,7 @@ export function passiveRows(state){
   ['Background session released',passive.sessionReleases?`${passive.sessionReleases} times · last ${time(passive.sessionReleasedAt)}`:'Not this session'],
   ['Last precise GPS reason',passive.lastPreciseReason||'None yet'],
   ['Time per location mode (since app start)',modeSummary||'Not reported'],
-  ['Home Wi-Fi',wifi.configured?WIFI_MATCH_LABELS[wifi.match]||wifi.match:'Not set up'],
+  ['Home Wi-Fi',wifi.configured?WIFI_MATCH_LABELS[wifi.match]||wifi.match:WIFI_MATCH_LABELS.notConfigured],
   ['Home Wi-Fi last checked',wifi.configured?`${time(wifi.observedAt)}${wifi.source&&wifi.source!=='none'?` · ${wifi.source}`:''}`:'—'],
   ['Departure from rest',latency.engine==='passive'?[`woken by ${latency.cause}`,latency.motionOnsetToEvidenceSeconds!=null?`movement began ${latency.motionOnsetToEvidenceSeconds} s earlier`:null,latency.evidenceToFirstFixSeconds!=null?`first GPS ${latency.evidenceToFirstFixSeconds} s after waking`:null,latency.startGapMeters!=null?`route began ~${latency.startGapMeters} m beyond the place`:null].filter(Boolean).join(' · '):'No departure from passive rest measured yet']
  ];
