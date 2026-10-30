@@ -1,28 +1,32 @@
 import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
-import {afterEach,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({exportLocationDiagnostics:vi.fn()}));
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const mocks=vi.hoisted(()=>({shareDiagnosticLog:vi.fn()}));
 vi.mock('../lib/recorder.js',()=>({recorder:mocks,recorderAvailable:()=>true}));
 import LocationLog from './LocationLog.jsx';
-afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.restoreAllMocks();});
-it('copies a full report in one tap with no journeys, using the shared clipboard path',async()=>{
- const writeText=vi.fn().mockResolvedValue();vi.stubGlobal('navigator',{clipboard:{writeText}});
- mocks.exportLocationDiagnostics.mockResolvedValue({generatedAt:100,current:{placeType:'home',locationMode:'resting'},events:[],journeys:[]});
- render(<LocationLog/>);fireEvent.click(screen.getByRole('button',{name:'Copy Full Location Log'}));
- await waitFor(()=>expect(writeText).toHaveBeenCalledTimes(1));
- expect(writeText.mock.calls[0][0]).toContain('BEGIN LETM3GO FULL LOCATION LOG');expect(writeText.mock.calls[0][0]).toContain('END LETM3GO FULL LOCATION LOG');
- expect(await screen.findByRole('status')).toHaveTextContent('Copied part 1 of 1');
+const writeText=vi.fn();
+beforeEach(()=>{mocks.shareDiagnosticLog.mockReset();writeText.mockReset();vi.stubGlobal('navigator',{clipboard:{writeText}});});
+afterEach(()=>{cleanup();vi.unstubAllGlobals();});
+it('offers exactly one export and hands it to the native share sheet',async()=>{
+ mocks.shareDiagnosticLog.mockResolvedValue({shared:true,events:6000});
+ render(<LocationLog/>);
+ expect(screen.getAllByRole('button').map(button=>button.textContent)).toEqual(['Share Diagnostic Log']);
+ fireEvent.click(screen.getByRole('button',{name:'Share Diagnostic Log'}));
+ expect(await screen.findByRole('status')).toHaveTextContent('6000 events');
+ expect(mocks.shareDiagnosticLog).toHaveBeenCalledTimes(1);expect(writeText).not.toHaveBeenCalled();
+ expect(screen.queryByRole('textbox')).not.toBeInTheDocument();expect(screen.queryByText(/part/i)).not.toBeInTheDocument();
 });
-it('shows numbered chunks and selectable full text when the report is large',async()=>{
- const writeText=vi.fn().mockResolvedValue();vi.stubGlobal('navigator',{clipboard:{writeText}});
- mocks.exportLocationDiagnostics.mockResolvedValue({generatedAt:100,current:{},events:Array.from({length:1800},(_,i)=>({at:i+1,kind:'observations',message:'diagnostic summary',context:{reason:'history '.repeat(80)}})),journeys:[]});
- render(<LocationLog/>);fireEvent.click(screen.getByRole('button',{name:'Copy Full Location Log'}));
- await screen.findByRole('button',{name:/Copy part 2 of/});expect(writeText).not.toHaveBeenCalled();
- fireEvent.click(screen.getByRole('button',{name:/Copy part 2 of/}));await waitFor(()=>expect(writeText).toHaveBeenCalledTimes(1));
- expect(writeText.mock.calls[0][0]).toContain('PART 2/');expect(screen.getByLabelText('Full location log text').value).toBe(writeText.mock.calls[0][0]);
+it('treats closing the share sheet as neither success nor failure',async()=>{
+ mocks.shareDiagnosticLog.mockResolvedValue({shared:false,events:12});
+ render(<LocationLog/>);fireEvent.click(screen.getByRole('button',{name:'Share Diagnostic Log'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Share Diagnostic Log'})).toBeEnabled());
+ expect(screen.queryByRole('status')).not.toBeInTheDocument();expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
-it('provides selectable complete text when both clipboard paths fail',async()=>{
- vi.stubGlobal('navigator',{clipboard:{writeText:vi.fn().mockRejectedValue(new Error('refused'))}});
- mocks.exportLocationDiagnostics.mockResolvedValue({generatedAt:100,current:{},events:[],journeys:[]});
- render(<LocationLog/>);fireEvent.click(screen.getByRole('button',{name:'Copy Full Location Log'}));
- expect(await screen.findByText(/Copy unavailable/)).toBeInTheDocument();expect(screen.getByLabelText('Full location log text').value).toContain('END LETM3GO');
+it('shows the failure with Retry and never falls back to another export',async()=>{
+ mocks.shareDiagnosticLog.mockRejectedValueOnce(new Error('The diagnostic log could not be created. Nothing was exported.')).mockResolvedValueOnce({shared:true,events:3});
+ render(<LocationLog/>);fireEvent.click(screen.getByRole('button',{name:'Share Diagnostic Log'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('could not be created');
+ expect(writeText).not.toHaveBeenCalled();expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Retry'}));
+ expect(await screen.findByRole('status')).toHaveTextContent('3 events');
+ expect(screen.queryByRole('alert')).not.toBeInTheDocument();expect(mocks.shareDiagnosticLog).toHaveBeenCalledTimes(2);
 });

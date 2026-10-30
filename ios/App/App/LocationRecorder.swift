@@ -970,6 +970,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     var photoCall: CAPPluginCall?
     var photoTripID: String?
     var photoOwnerID: String?
+    var diagnosticShareOpen=false
     public let identifier = "ManualRecorderPlugin"
     public let jsName = "ManualRecorder"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -1001,7 +1002,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "restoreActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "restorePhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trackingReport", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "exportLocationDiagnostics", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "shareDiagnosticLog", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "exportJourneyDiagnostics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
@@ -1147,31 +1148,54 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "limitations":"A log gap means no diagnostic events were persisted. It cannot prove force-quit, suspension, crash, or the actual time movement began. No coordinates, routes, names, account identifiers, or credentials are included."])
         }catch{call.reject("The tracking report could not be prepared.")}
     }}
-    @objc func exportLocationDiagnostics(_ call:CAPPluginCall){DispatchQueue.main.async {
+    // The only way the location log leaves the device. Only the snapshot below
+    // touches the main thread; building, compressing and verifying the file run
+    // elsewhere, and no location service, journey or session state is changed.
+    @objc func shareDiagnosticLog(_ call:CAPPluginCall){DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
-        let r=LocationRecorder.shared,now=Date().timeIntervalSince1970
+        guard !self.diagnosticShareOpen else {call.reject("The diagnostic log is already being shared.");return}
+        self.diagnosticShareOpen=true
+        let r=LocationRecorder.shared,now=Date().timeIntervalSince1970,owner=r.ownerID
         r.diagnosticSummary(force:true)
         r.diagnosticJournal.prune(now:now)
-        let journal=r.diagnosticJournal
-        let events=journal.events.sorted{$0.at<$1.at}.map(LocationDiagnosticPrivacy.event)
+        let journal=r.diagnosticJournal,current=r.diagnosticContext(),storageError=r.diagnosticStorageError,timezone=TimeZone.current.identifier
         var journeys=r.trips
         if let active=r.active {journeys.append(active)}
         if let active=r.automaticTrip,!journeys.contains(where:{$0.id==active.id}) {journeys.append(active)}
-        let summaries=journeys.sorted{$0.startedAt>$1.startedAt}.prefix(30).map {trip -> [String:Any] in
-            let quality=trip.routeQualitySummary()
-            return ["journeyID":trip.id,"activity":trip.activity,"state":trip.state,"startedAt":trip.startedAt,
-                "endedAt":trip.endedAt as Any? ?? NSNull(),"fixCount":quality.fixCount,"gapCount":quality.gapCount,
-                "largestGapSeconds":quality.largestGapSeconds,"stopCount":quality.stopCount ?? 0,"stoppedSeconds":quality.stoppedSeconds ?? 0]
+        let directory=FileManager.default.temporaryDirectory.appendingPathComponent("diagnostic-export",isDirectory:true)
+        DispatchQueue.global(qos:.userInitiated).async {
+            do {
+                let archive=try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal:journal,current:current,journeys:journeys,now:now,timezone:timezone,storageError:storageError))
+                try? FileManager.default.removeItem(at:directory)
+                try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+                let file=directory.appendingPathComponent(archive.fileName)
+                try archive.data.write(to:file,options:[.atomic,.completeFileProtection])
+                DispatchQueue.main.async {self.presentDiagnosticLog(call,file:file,archive:archive,owner:owner,directory:directory)}
+            } catch {
+                try? FileManager.default.removeItem(at:directory)
+                DispatchQueue.main.async {self.diagnosticShareOpen=false;call.reject("The diagnostic log could not be created. Nothing was exported.")}
+            }
         }
-        do {
-            let entries=try JSONSerialization.jsonObject(with:JSONEncoder().encode(events))
-            call.resolve(["schemaVersion":1,"generatedAt":now,"timezone":TimeZone.current.identifier,
-                "current":LocationDiagnosticPrivacy.context(r.diagnosticContext()),"events":entries,"journeys":summaries,
-                "oldestAvailableAt":events.first?.at as Any? ?? NSNull(),"retentionDays":7,"eventLimit":RecorderDiagnosticJournal.limit,
-                "byteLimit":RecorderDiagnosticJournal.byteLimit,"capacityEvictions":journal.capacityEvictions,"storageError":r.diagnosticStorageError,
-                "limitations":"Requests describe app services, not hardware GPS or which process iOS is indicating. No events are invented while the process is not executing. A heartbeat gap is an observed execution gap, not proof of suspension, force-quit or a crash. Stops, intentional reduced/disabled precise sampling, and GPS delivery gaps are distinct. Home Wi-Fi, when designated, is reported only as a match state (matched, not matched, unavailable, unknown), is supporting evidence at the saved Home only, and is never proof of rest or departure; iOS gives no Wi-Fi event that wakes a suspended app. Passive rest releases location updates and the background session; while it lasts, the app is normally suspended and logs nothing until a wake-up. No coordinates, place names, account identifiers, credentials or routes are exported. Battery is unknown unless already available; copying starts no location or battery monitoring. History is bounded to seven days, 6000 events and 8 MiB; capacity loss is reported. Journey summaries are the most recent 30, not all journey history."])
-        }catch{call.reject("The full location log could not be prepared.")}
     }}
+    func presentDiagnosticLog(_ call:CAPPluginCall,file:URL,archive:LocationDiagnosticExport.Archive,owner:String?,directory:URL){
+        func finish(_ result:()->Void){try? FileManager.default.removeItem(at:directory);diagnosticShareOpen=false;result()}
+        guard owner==LocationRecorder.shared.ownerID,LocationRecorder.shared.uiUnlocked else {finish{call.reject("Account changed. Nothing was exported.")};return}
+        guard let host=bridge?.viewController,host.presentedViewController==nil else {finish{call.reject("The iOS share sheet could not be opened.")};return}
+        let sheet=UIActivityViewController(activityItems:[file],applicationActivities:nil)
+        sheet.popoverPresentationController?.sourceView=host.view
+        sheet.popoverPresentationController?.sourceRect=CGRect(x:host.view.bounds.midX,y:host.view.bounds.midY,width:0,height:0)
+        sheet.completionWithItemsHandler={[weak self,weak sheet] activity,completed,_,error in
+            // Backing out of one destination leaves the sheet open for another,
+            // so the file must survive until the sheet itself is gone.
+            guard let self=self,self.diagnosticShareOpen else {return}
+            if error==nil,!completed,activity != nil,sheet?.presentingViewController != nil {return}
+            finish {
+                if error != nil {call.reject("The diagnostic log could not be shared. Nothing else was exported.")}
+                else {call.resolve(["shared":completed,"fileName":archive.fileName,"events":archive.eventCount,"compressedBytes":archive.data.count,"uncompressedBytes":archive.uncompressedBytes])}
+            }
+        }
+        host.present(sheet,animated:true)
+    }
     @objc func exportJourneyDiagnostics(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         let r = LocationRecorder.shared
