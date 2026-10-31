@@ -170,12 +170,13 @@ extension LocationRecorder {
             // The episode budget is capped, so a stalled delivery loop cannot keep
             // precise GPS alive: once it is spent the recorder returns to standby and
             // only fresh evidence (a real movement transition) may probe again.
-            let observing = detector.phase == "candidate" && (detector.candidate.last.map{now-$0.timestamp<=120} ?? false)
+            let observing = detector.phase == "candidate" && AutomaticSampling.stillDeparting(detector.candidate,driving:AutomaticDetector.drivingMotion(motion,now:now),now:now)
             if observing, automaticSampling.extendProbe(now:now) {
                 trackingEvent("Departure check extended: movement is still being observed")
             } else {
                 detector.reset()
                 automaticSampling.endEpisode(now:now)
+                noteJourneyPossiblyMissed()
                 departureLatency.reset()
                 trackingEvent(observing ? "Departure check budget spent; returning to location standby until the next movement" : "Departure check expired; returning to location standby")
             }
@@ -216,6 +217,7 @@ extension LocationRecorder {
         if mode != locationMode {
             let previous=locationMode
             locationMode=mode
+            automaticPreciseSince=mode == .precise ? Date().timeIntervalSince1970 : nil
             let passiveNote:String="rest confirmed ("+restDecision.reason+"); location updates and background session released, wake-ups armed"
             recordDiagnostic("service","Location sampling mode changed",details:["modeBefore":previous.rawValue,"modeAfter":mode.rawValue,
                 "reason":mode == .precise ? "an open journey or bounded departure check needs precise fixes" : mode == .resting ? "settled place confirmed; reduce accuracy without releasing background departures" : mode == .passive ? passiveNote : mode == .stationary ? "adaptive stationary standby; precise updates intentionally disabled" : "automatic sampling reconciled"])

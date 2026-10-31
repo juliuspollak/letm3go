@@ -48,6 +48,13 @@ enum HomeWiFi {
         updated.accessPoints = Array((profile.accessPoints + [accessPoint]).suffix(HomeWiFiProfile.accessPointLimit))
         return updated
     }
+    // The network the phone is on once it is confirmed at Home is the Home network, so
+    // nobody has to set it up. A wrong guess (a hotspot at Home) costs little: Wi-Fi only
+    // shortens rest and asks for one location, and never starts or blocks a journey.
+    static let learnRetrySeconds: Double = 3600
+    static func shouldLearn(configured: Bool, declined: Bool, atHome: Bool, restConfirmed: Bool, precise: Bool, fetchInFlight: Bool, lastAttemptAt: Double, now: Double) -> Bool {
+        !configured && !declined && atHome && restConfirmed && precise && !fetchInFlight && now - lastAttemptAt >= learnRetrySeconds
+    }
     static func accessPointKnown(_ profile: HomeWiFiProfile?, _ observation: WiFiObservation?) -> Bool {
         guard let profile = profile, let accessPoint = observation?.accessPoint else { return false }
         return profile.accessPoints.contains(accessPoint)
@@ -373,6 +380,7 @@ enum DepartureOnset {
         var start: Double
         var moving: Bool
         var confident: Bool
+        var vehicle = false
     }
     // The start of the movement still under way at the wake-up: a confident
     // stationary report ends any earlier run (walking around the house).
@@ -382,5 +390,16 @@ enum DepartureOnset {
             if activity.moving { if onset == nil { onset = activity.start } } else { onset = nil }
         }
         return onset
+    }
+    // The first sign may be walking around the house long before leaving, so that
+    // alone cannot show a late wake-up. A vehicle running before the wake-up can.
+    static func vehicleMovement(_ activities: [Activity], after since: Double, before evidenceAt: Double) -> Double? {
+        activities.filter { $0.vehicle && $0.confident && $0.start >= since && $0.start <= evidenceAt }.map(\.start).min()
+    }
+    // Driving this long before any wake-up: the drive may be over by the time the app runs.
+    static let missedVehicleSeconds: Double = 60
+    static func possiblyMissed(vehicleOnset: Double?, evidenceAt: Double?) -> Double? {
+        guard let onset = vehicleOnset, let evidence = evidenceAt, evidence - onset >= missedVehicleSeconds else { return nil }
+        return evidence - onset
     }
 }

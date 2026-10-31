@@ -85,6 +85,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var sessionReleases = 0
     var departurePlace: DwellArea?
     var departureMotionOnsetAt: Double?
+    var departureVehicleOnsetAt: Double?
     var homeWiFi: HomeWiFiProfile?
     var wifiObservation: WiFiObservation?
     var wifiMatchState: WiFiMatch = .unknown
@@ -93,6 +94,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var wifiFetchGeneration = 0
     var wifiFetchWaiters: [(WiFiObservation?) -> Void] = []
     var homeWiFiStatus = "neverDesignated"
+    var wifiLearnAttemptAt: Double = 0
     var passiveFixRequest: (cause: String, at: Double)?
     var monitoringFailures = MonitoringFailures()
     var recorderReconciledAvailable = false
@@ -206,6 +208,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // delivering, not when delivery is merely sparse.
     var lastAutomaticDeliveryAt: Double?
     var automaticGPSRecoveryAt: Double = 0
+    var automaticPreciseSince: Double?
     var sleptThroughLoggedFor: Double = 0
     // Main-thread execution heartbeat. Every timer tick and delegate callback
     // records that the process ran. A gap longer than the 30-second timer period
@@ -363,7 +366,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         diagnosticPreviousState=context
         // Keep summaries small so overnight idle evidence cannot crowd out state
         // changes. Full state is captured on each lifecycle/decision event.
-        if kind == "observations" || kind == "sampling" {
+        if kind == "motion" {
+            let keep=Set(["component","appState","locationMode","detectorPhase","reason","motionTypes","motionConfidence","motionAgeSeconds"])
+            context=context.filter{keep.contains($0.key)||details[$0.key] != nil}
+        } else if kind == "observations" || kind == "sampling" {
             let keep=Set(["process","component","appState","locationMode","backgroundSession","reason","lastSampleAt"])
             context=context.filter{keep.contains($0.key)||details[$0.key] != nil}
         } else if !Self.fullContextKinds.contains(kind) {
@@ -721,7 +727,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // service is running, and restarting it would drop the session state without
         // producing a fix any sooner.
         let lastFix = precise ? [lastAutomaticFixAt,lastAutomaticDeliveryAt].compactMap{$0}.max() : lastLocationUpdateAt
-        let last=max(started,lastFix ?? started)
+        // Time spent in standby, with its wider filter, is not silence from precise GPS.
+        let preciseSince=precise ? automaticPreciseSince ?? started : started
+        let last=max(started,preciseSince,lastFix ?? started)
         // A silence the process slept through is not a stalled manager: the timer
         // that runs this check cannot fire while iOS suspends the app, so it only
         // gets here after something else woke it. iOS delivers the updates it
@@ -730,7 +738,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // executing, or a return to the foreground, justifies a restart.
         let foreground=UIApplication.shared.applicationState == .active
         let silentWhileExecuting=now-max(last,executingSince)
-        let decision=StallPolicy.decide(now:now,lastDelivery:last,executingSince:executingSince,foreground:foreground,lastRecoveryAt:automaticGPSRecoveryAt)
+        let quiet=precise && StallPolicy.quietExpected(journeyOpen:automaticTrip != nil,deliveredSincePreciseBegan:(lastAutomaticDeliveryAt ?? 0)>=preciseSince,
+            stationary:motion.continuous && motion.confidence != "low" && motion.types.contains("Stationary"))
+        let decision=StallPolicy.decide(now:now,lastDelivery:last,executingSince:executingSince,foreground:foreground,lastRecoveryAt:automaticGPSRecoveryAt,quietExpected:quiet)
         guard decision != .none else {return}
         guard decision == .restart else {
             // Logged once per wake; not a recovery attempt, so the cooldown is untouched.

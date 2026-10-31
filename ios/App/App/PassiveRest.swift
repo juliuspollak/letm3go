@@ -75,6 +75,7 @@ extension LocationRecorder {
                              details: ["restReason": decision.reason, "restPlace": kind.rawValue, "wifiMatch": wifiMatchState.rawValue])
         }
         restDecision = decision
+        learnHomeWiFi(now: now)
         evaluatePassive()
         // One entry per distinct reason: a rest that never goes passive explains itself.
         let blocked = passiveRetainReason.isEmpty ? "" : restDecision.confirmed ? passiveRetainReason : restDecision.code
@@ -364,17 +365,28 @@ extension LocationRecorder {
     // Core Motion keeps its activity history while the app is suspended; on the
     // wake-up it shows when the movement that woke it actually began.
     func queryDepartureOnset(since: Double, evidenceAt: Double) {
-        departureMotionOnsetAt = nil
+        departureMotionOnsetAt = nil; departureVehicleOnsetAt = nil
         guard CMMotionActivityManager.isActivityAvailable(), CMMotionActivityManager.authorizationStatus() == .authorized else { return }
         if motionManager == nil { motionManager = CMMotionActivityManager() }
         motionManager?.queryActivityStarting(from: Date(timeIntervalSince1970: since), to: Date(timeIntervalSince1970: evidenceAt), to: .main) { [weak self] activities, _ in
             let history = (activities ?? []).compactMap { activity -> DepartureOnset.Activity? in
                 let moving = activity.walking || activity.running || activity.cycling || activity.automotive
                 guard moving || activity.stationary else { return nil }
-                return DepartureOnset.Activity(start: activity.startDate.timeIntervalSince1970, moving: moving, confident: activity.confidence != .low)
+                return DepartureOnset.Activity(start: activity.startDate.timeIntervalSince1970, moving: moving, confident: activity.confidence != .low, vehicle: activity.automotive)
             }
             self?.departureMotionOnsetAt = DepartureOnset.firstMovement(history, after: since, before: evidenceAt)
+            self?.departureVehicleOnsetAt = DepartureOnset.vehicleMovement(history, after: since, before: evidenceAt)
         }
+    }
+
+    // A check that found nothing, after Core Motion saw a drive before the wake-up:
+    // the journey iOS woke the app too late for. This is the record a missed journey
+    // otherwise never leaves.
+    func noteJourneyPossiblyMissed() {
+        guard let seconds = DepartureOnset.possiblyMissed(vehicleOnset: departureVehicleOnsetAt, evidenceAt: departureLatency.evidenceAt) else { return }
+        recordDiagnostic("detection", "Journey possibly missed: the wake-up came after the vehicle moved", details: [
+            "wakeSource": departureLatency.cause, "vehicleOnsetToEvidenceSeconds": String(Int(seconds))])
+        departureVehicleOnsetAt = nil
     }
 
     var passiveSnapshot: [String: Any] {

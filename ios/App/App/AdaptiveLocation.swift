@@ -148,6 +148,9 @@ extension LocationRecorder: AdaptiveHost {
             lastDepartureLatency["motionOnsetToEvidenceSeconds"] = String(Int(max(0, evidence - onset)))
             lastDepartureLatency["motionOnsetToFirstFixSeconds"] = String(Int(firstFixAt - onset))
         }
+        if let onset = departureVehicleOnsetAt, let evidence = departureLatency.evidenceAt {
+            lastDepartureLatency["vehicleOnsetToEvidenceSeconds"] = String(Int(max(0, evidence - onset)))
+        }
         // How far beyond the place the first saved fix was: route the journey
         // could not record. Rounded to 10 m; no coordinates.
         if let place = departurePlace, let first = automaticTrip?.points.first {
