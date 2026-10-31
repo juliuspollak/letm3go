@@ -1,0 +1,25 @@
+{
+  "fixture": "Synthetic 5 km straight line, slope 0.3, near Warilla latitude; not an actual recorded journey",
+  "metrics": [
+    {
+      "cellMetres": 25,
+      "beforeMaxLateralMetres": 14.8193,
+      "afterMaxLateralMetres": 0
+    },
+    {
+      "cellMetres": 100,
+      "beforeMaxLateralMetres": 58.6265,
+      "afterMaxLateralMetres": 0
+    },
+    {
+      "cellMetres": 400,
+      "beforeMaxLateralMetres": 246.4093,
+      "afterMaxLateralMetres": 0
+    },
+    {
+      "cellMetres": 1600,
+      "beforeMaxLateralMetres": 939.1712,
+      "afterMaxLateralMetres": 0
+    }
+  ]
+}

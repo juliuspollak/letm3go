@@ -23,7 +23,7 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
   // never drawn where the route is genuinely unknown.
   for(let i=1;i<segments.length;i++){
    const from=segments[i-1].at(-1),to=segments[i][0];
-   if(from&&to&&gapMetres(from,to)<=1000)gaps.push([from,to]);
+   if(from&&to){const distance=gapMetres(from,to);if(distance>0&&distance<=1000)gaps.push([from,to]);}
   }
   const points=segments.flat();
   if(points.length){pins.push({point:points[0],title:'Start',kind:'start'},{point:points.at(-1),title:'Finish',kind:'finish'});}

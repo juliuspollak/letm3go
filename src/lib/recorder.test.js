@@ -55,3 +55,18 @@ it('shows an automatic drive before arrival confirmation and replaces it with it
  expect(visibleRecorderJourneys([grouped],recording,'owner')).toEqual([grouped]);
  expect(visibleRecorderJourneys([],recording,'other')).toEqual([]);
 });
+
+it('projects the same quality-aware geometry for live and historical recordings without altering stored fixes or metrics',()=>{
+ const raw={id:'noisy',activity:'Driving',startedAt:1000,state:'recording',recordingMode:'automatic',distanceMeters:120,durationSeconds:60,points:[
+  {latitude:-34.56,longitude:150.86,segment:0,timestamp:1000,accuracy:5},
+  {latitude:-34.5601,longitude:150.86,segment:0,timestamp:1005,accuracy:5},
+  {latitude:-34.562,longitude:150.86,segment:0,timestamp:1010,accuracy:130},
+  {latitude:-34.5602,longitude:150.86,segment:0,timestamp:1015,accuracy:5},
+  {latitude:-34.5603,longitude:150.86,segment:0,timestamp:1020,accuracy:5}
+ ]};
+ const before=JSON.stringify(raw),live=recordedJourney(raw),historical=recordedJourney({...raw,state:'finished',endedAt:1060});
+ expect(live.routeSegments).toHaveLength(2);expect(live.routeSegments).toEqual(historical.routeSegments);
+ expect(live.points).toBe(raw.points);expect(live.route).toHaveLength(5);
+ expect(live.distanceMeters).toBe(120);expect(live.durationSeconds).toBe(60);expect(live.activity).toBe('Driving');
+ expect(JSON.stringify(raw)).toBe(before);
+});
