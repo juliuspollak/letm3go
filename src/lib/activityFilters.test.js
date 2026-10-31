@@ -1,5 +1,5 @@
-import {expect,it} from 'vitest';
-import {activeFilterCount,activityToolbar,canShiftForward,chosenDay,dateLabel,matchesDate,shiftDate} from './activityFilters.js';
+import {expect,it,vi} from 'vitest';
+import {activeFilterCount,activityToolbar,canShiftForward,chosenDay,dateLabel,matchesDate,openDatePicker,shiftDate} from './activityFilters.js';
 const today='2026-10-30';
 const none={activity:'All activities',date:'all',favourites:false,archived:false,equipment:''};
 const toolbar=over=>activityToolbar({...none,open:true,category:null,activities:['All activities','MTB'],archivedCount:0,sort:'newest',equipmentOptions:[],today,...over});
@@ -51,4 +51,14 @@ it('marks the selected date whichever control chose it',()=>{
  expect(selected('2026-10-29')).toEqual(['Yesterday']);
  expect(selected('30d')).toEqual(['Past 30 days']);
  expect(selected('2026-01-05')).toEqual([]);
+});
+it('falls back to focus where showPicker is missing or refused',()=>{
+ const focus=vi.fn();
+ openDatePicker({focus});
+ openDatePicker({focus,showPicker(){throw new Error('NotAllowedError');}});
+ expect(focus).toHaveBeenCalledTimes(2);
+ const showPicker=vi.fn();
+ openDatePicker({focus,showPicker});
+ expect(showPicker).toHaveBeenCalledOnce();
+ expect(focus).toHaveBeenCalledTimes(2);
 });

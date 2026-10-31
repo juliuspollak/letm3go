@@ -26,4 +26,8 @@ Activities uses the same controller. `FilterToolbar.jsx` holds the expand/collap
 
 Activities holds one date selection (`all`, `today`, a day, or a rolling range). The arrows, the date picker and the Date category all write that value, so the latest choice replaces the last. Day matching uses the Map's `journeyOnDay`, so an activity crossing midnight appears on both days.
 
-Still verify on a real iPhone: the system date picker opening from the date label, Dynamic Type and VoiceOver in the panel, and scrolling with the panel open.
+Typed search covers all history. The selected date is kept and returns when the search is cleared; until then the date row is hidden and the results say "Searching all dates". All other filters still apply to a search. The date row's one shortcut changes with the selection: Today from a past day or range, All from Today.
+
+The date label is a real button. It calls `showPicker`, falling back to focus before iOS 16, on a hidden input kept under the button because iOS anchors its picker to that box. A date input opens only from its own calendar icon on desktop, so an invisible overlay could not open it there.
+
+Still verify on a real iPhone: the date picker opening from the button, with VoiceOver too, on iOS 15 if supported; Dynamic Type in the panel; scrolling with the panel open.

@@ -273,7 +273,7 @@ describe('Activities filters',()=>{
   expect(screen.getByRole('button',{name:'Next day'})).toBeDisabled();
   fireEvent.click(filters());click('Date');click('Past 7 days');
   expect(shown('Today walk')).toBeInTheDocument();expect(shown('Yesterday walk')).toBeInTheDocument();expect(shown('Old walk')).toBeNull();
-  expect(screen.getByLabelText('Choose journey date')).toHaveValue('');
+  expect(screen.getByRole('button',{name:'Choose journey date, Past 7 days'})).toBeInTheDocument();
   click('Previous day');
   expect(shown('Yesterday walk')).toBeInTheDocument();expect(shown('Today walk')).toBeNull();
   expect(screen.getByRole('button',{name:'Past 7 days'})).toHaveAttribute('aria-pressed','false');
@@ -308,6 +308,52 @@ describe('Activities filters',()=>{
   expect(screen.getByRole('heading',{name:'No journeys found'})).toBeInTheDocument();
   click('Clear filters');
   expect(shown('Walk')).toBeInTheDocument();
+ });
+ it('returns to all dates from the date row, in one row',()=>{
+  open([raw('t','Today walk',noon(0)),raw('y','Yesterday walk',noon(-1))]);
+  click('Previous day');click('Return to Today');
+  expect(shown('Yesterday walk')).toBeNull();
+  click('Show all dates');
+  expect(shown('Yesterday walk')).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Show all dates'})).toBeNull();
+ });
+ it('keeps the date through a search, says when search covers all dates, and hides the dead arrows',()=>{
+  open([raw('t','Today walk',noon(0)),raw('y','Yesterday walk',noon(-1))]);
+  click('Previous day');
+  click('Search all activities');
+  expect(shown('Today walk')).toBeNull();
+  fireEvent.change(screen.getByRole('searchbox',{name:'Search all activity history'}),{target:{value:'walk'}});
+  expect(shown('Today walk')).toBeInTheDocument();expect(shown('Yesterday walk')).toBeInTheDocument();
+  expect(screen.getByText(/^Searching all dates · /)).toBeInTheDocument();
+  expect(screen.queryByRole('group',{name:'Browse journey dates'})).toBeNull();
+  click('Close activity search');
+  expect(shown('Today walk')).toBeNull();expect(shown('Yesterday walk')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Choose journey date, Yesterday'})).toBeInTheDocument();
+ });
+ it('still applies every other filter to a search',()=>{
+  signedIn();identity.value.preferences.bookmarks=['a'];
+  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('a','Fav walk',noon(-2)),raw('b','Plain walk',noon(-2))]},run:vi.fn(),busy:false,error:''});
+  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+  fireEvent.click(filters());click('Favourites');click('Search all activities');
+  fireEvent.change(screen.getByRole('searchbox',{name:'Search all activity history'}),{target:{value:'walk'}});
+  expect(shown('Fav walk')).toBeInTheDocument();expect(shown('Plain walk')).toBeNull();
+ });
+ it('opens the picker from a real button and hides the input from assistive technology',()=>{
+  open([raw('a','Park',noon(0))]);
+  const input=document.querySelector('.trip-date-current input'),showPicker=vi.fn();
+  input.showPicker=showPicker;
+  click('Choose journey date, All dates');
+  expect(showPicker).toHaveBeenCalledOnce();
+  expect(input).toHaveAttribute('aria-hidden','true');expect(input).toHaveAttribute('tabindex','-1');
+  fireEvent.change(input,{target:{value:noon(-1).toLocaleDateString('en-CA')}});
+  expect(screen.getByRole('button',{name:'Choose journey date, Yesterday'})).toBeInTheDocument();
+ });
+ it('leaves the saved sort alone on Reset',()=>{
+  localStorage.setItem('letm3go-trip-sort','distance');
+  open([raw('a','Park',noon(0))]);
+  fireEvent.click(filters());click('Favourites');click('Reset filters');
+  expect(localStorage.getItem('letm3go-trip-sort')).toBe('distance');
+  click('Sort by');expect(screen.getByRole('button',{name:'Distance'})).toHaveAttribute('aria-pressed','true');
  });
  it('keeps the sort choice across launches',()=>{
   open([raw('a','Park',noon(0))]);fireEvent.click(filters());click('Sort by');click('Distance');

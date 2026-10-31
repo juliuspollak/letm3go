@@ -829,7 +829,7 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .map-filter-toolbar{position:absolute;top:64px;left:12px;right:12px;z-index:5;display:flex;flex-direction:column;gap:6px;pointer-events:none}
 .map-filter-row{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
 .map-filter-toolbar button{pointer-events:auto;flex:0 0 auto;display:grid;place-items:center;width:44px;height:44px;min-height:44px;padding:0 8px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);box-shadow:0 2px 8px #0002;font-size:12px}
-.map-filter-toolbar button[aria-pressed=true]{background:var(--accent);color:white}
+.map-filter-toolbar button[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}
 .map-filter-toolbar button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .map-filter-toolbar button:disabled{opacity:.4}
 .map-filter-options{display:flex;flex-wrap:wrap;gap:6px;width:100%;padding:3px 0;pointer-events:auto;border-radius:24px;animation:map-filter-reveal 180ms ease-out}
@@ -840,18 +840,17 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .activity-filter-toolbar .map-filter-row{display:contents}
 .activity-filter-toolbar .map-filter-options{order:1;flex-basis:100%}
 .activity-filter-toolbar button{width:auto;height:38px;min-height:38px;padding:0 12px;border-radius:19px;box-shadow:none;font-size:13px;font-weight:600}
-.activity-filter-toolbar button[aria-pressed=true]{color:var(--on-accent)}
 .trip-filter-count{position:absolute;top:-5px;right:-5px;display:grid;place-items:center;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--accent);color:white;font-size:10px;font-weight:700;line-height:1;box-shadow:0 0 0 2px var(--bg,var(--surface))}
 .trip-date-navigator{display:flex;align-items:center;gap:5px;margin-bottom:10px}
 .trip-date-navigator>button{flex:0 0 auto;display:grid;place-items:center;width:44px;height:38px;border-radius:10px;background:var(--soft);color:var(--ink)}
 .trip-date-navigator>button:disabled{opacity:.3}
 .trip-date-navigator>button.trip-date-today{width:auto;padding:0 12px;background:var(--accent-soft);color:var(--accent);font-size:13px;font-weight:650}
 .trip-prev-icon{transform:rotate(180deg)}
-.trip-date-current{position:relative;flex:1;min-width:0;display:grid;place-items:center;height:38px;padding:0 6px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font-size:14px;font-weight:600}
+.trip-date-current{position:relative;flex:1;min-width:0}
+.trip-date-current button{position:relative;display:grid;place-items:center;width:100%;height:38px;min-height:38px;padding:0 6px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font-size:14px;font-weight:600}
 .trip-date-current span{overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
-/* The real date input lies over the label, so a tap opens the system picker. */
-.trip-date-current input{position:absolute;inset:0;width:100%;height:100%;opacity:0;border:0;padding:0}
-.trip-date-current:focus-within{outline:3px solid var(--accent);outline-offset:2px}
+/* The input stays laid out under the button: iOS anchors its picker to this box. */
+.trip-date-current input{position:absolute;inset:0;width:100%;height:100%;opacity:0;border:0;padding:0;pointer-events:none}
 @keyframes map-filter-reveal{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
 @media(prefers-reduced-motion:reduce){.map-filter-options,.activity-filter-toolbar{animation:none}}
 
