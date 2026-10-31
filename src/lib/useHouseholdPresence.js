@@ -37,7 +37,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  const signalled=useRef(false),positionTimes=useRef(new Map()),latencies=useRef([]),latencyReportedAt=useRef(0),nativeUpload=useRef(0),signals=useRef(0),refreshTimes=useRef([]);
  // Only the newest position read may replace state. Two overlapping reads (a
  // signal and a poll) can otherwise apply an older response after a newer one.
- const positionRequest=useRef(0),reconnects=useRef(0);
+ const positionRequest=useRef(0),settingsRequest=useRef(0),reconnects=useRef(0);
  useEffect(()=>{nativeUpload.current=nativeUploadAt;},[nativeUploadAt]);
  const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -121,16 +121,19 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  },[]);
  const refreshLive=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
-  const request=++positionRequest.current;
+  const request=++positionRequest.current,settingsToken=++settingsRequest.current;
   try{
    const [settings,members,arrival]=await Promise.all([supabase.rpc('my_live_location_settings'),loadHouseholdLocations(),loadOwnArrival()]);
    if(settings.error)throw new Error('Location sharing could not be loaded. Check your connection and retry.');
-   if(request!==positionRequest.current)return;
-   const enabled=settings.data?.[0]?.enabled===true&&!revokePending(owner);
-   liveConsent.current=enabled;
-   setLiveEnabled(enabled);setLiveMembers(members);setSelfArrival(enabled?arrival:null);setLiveError('');setLiveReady(true);
-   noteDelivery(members);
-  }catch(err){if(request===positionRequest.current)setLiveError(err.message||'Location sharing could not be loaded.');}
+   // Settings and positions have separate races. A push-driven position read
+   // must not cancel the initial settings read that arms the native uploader.
+   if(settingsToken===settingsRequest.current){
+    const enabled=settings.data?.[0]?.enabled===true&&!revokePending(owner);
+    liveConsent.current=enabled;
+    setLiveEnabled(enabled);setSelfArrival(enabled?arrival:null);setLiveError('');setLiveReady(true);
+   }
+   if(request===positionRequest.current){setLiveMembers(members);noteDelivery(members);}
+  }catch(err){if(settingsToken===settingsRequest.current)setLiveError(err.message||'Location sharing could not be loaded.');}
  },[owner,online,noteDelivery]);
  // A signal only needs the positions: this one read, not the settings and arrival too.
  const refreshPositions=useCallback(async()=>{
