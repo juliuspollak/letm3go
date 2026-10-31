@@ -18,7 +18,7 @@ npm run supabase -- db push --linked --dry-run
 npm run supabase -- db push --linked
 ```
 
-The dry run must list only `20261110000000_feedback_storage_hardening.sql`.
+The dry run must list only `20261110000000_feedback_storage_hardening.sql` and `20261111000000_feedback_upload_limits.sql`.
 
 ## Deployment order
 
