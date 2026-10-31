@@ -461,8 +461,13 @@ struct Classification: Codable {
 struct MotionEvidence {
     var types: [String] = []
     var confidence = "low"
+    // When this evidence was last delivered. Core Motion's own start date is not
+    // a freshness signal: a drive that began an hour ago still needs to be stale
+    // as soon as updates stop arriving.
     var timestamp: Double = 0
     var continuous = false
+    // Core Motion's startDate, for diagnostics only.
+    var startedAt: Double = 0
 }
 struct SmartClassifier {
     static func classify(motion: MotionEvidence, speed: Double, displacement: Double, seconds: Double, accuracy: Double, now: Double) -> Classification {
@@ -987,9 +992,12 @@ enum TrackingBoundary {
 // filter active, no callback then means the phone has not moved beyond it. After
 // any suspension a new real fix is required before anything is confirmed again.
 enum HouseholdPublisher {
-    static let movingInterval: Double = 25
+    // A phone with no evidence of movement is deliberately slow: writes while
+    // parked add battery cost and Realtime traffic but no visible movement.
+    static let stationaryInterval: Double = 60
+    static let lowPowerStationaryInterval: Double = 120
     // With the app open the map may be in use, so movement is sent far more often.
-    // Background publishing keeps the slower rate: the battery is the reason it exists.
+    // Background publishing keeps a slower rate: the battery is the reason it exists.
     static let foregroundDrivingInterval: Double = 3
     static let foregroundMovingInterval: Double = 5
     static let lowPowerInterval: Double = 10
@@ -1003,23 +1011,48 @@ enum HouseholdPublisher {
     static let requestTimeout: Double = 12
     // One request at a time, so a slow one holds back every newer position.
     static let movingRequestTimeout: Double = 6
+    // A location delivered late is still useful, but it must keep its true age. The
+    // server no longer makes an old offline fix look 30 seconds old.
+    static let maximumFixAge: Double = 15 * 60
+    // Motion evidence is useful for a short while after the last callback. A
+    // suspended app receives no callbacks, so an old "Driving" must expire instead
+    // of leaving a car circling a parked phone.
+    static let activityTTL: Double = 120
+    // A vehicle moves 20 m/s at highway speed; speed alone is enough to drive the
+    // cadence when Core Motion is unavailable or not yet confident.
+    static let vehicleSpeed: Double = 5.5
+    static let movingSpeed: Double = 0.7
     static func moving(_ activity: String?) -> Bool { ["driving","cycling","running","walking"].contains(activity ?? "") }
     // Below this a publish adds a write and a broadcast but no visible movement.
     static let minimumMove: Double = 5
-    static func interval(speed: Double, foreground: Bool, confirmation: Bool, lowPower: Bool = false, activity: String? = nil) -> Double {
+    // Speed, coarse activity and accuracy all contribute. A missing Core Motion
+    // classification therefore slows nothing down; low confidence does not hide
+    // real GPS movement, and a poor fix cannot cause a rapid write loop.
+    static func interval(speed: Double, foreground: Bool, confirmation: Bool, lowPower: Bool = false,
+                         activity: String? = nil, accuracy: Double = 0) -> Double {
         if confirmation { return confirmationInterval }
-        // Driving comes from Core Motion or an open journey, never from speed alone.
-        if activity == "driving" { return lowPower ? lowPowerDrivingInterval : backgroundDrivingInterval }
-        guard foreground else { return moving(activity) ? backgroundMovingInterval : movingInterval }
-        if lowPower { return speed >= 0.7 ? lowPowerInterval : movingInterval }
-        if speed >= 3 { return foregroundDrivingInterval }
-        return speed >= 0.7 ? foregroundMovingInterval : movingInterval
+        let resolvedSpeed = speed.isFinite ? max(0, speed) : 0
+        let driving = activity == "driving" || resolvedSpeed >= vehicleSpeed
+        let moving = moving(activity) || resolvedSpeed >= movingSpeed
+        guard moving else { return lowPower ? lowPowerStationaryInterval : stationaryInterval }
+        let coarse = accuracy.isFinite && accuracy > 0 && accuracy > 50
+        // A coarse fix can be tens of metres out; publishing it at the driving
+        // cadence would make the bubble jump around without better information.
+        if coarse { return lowPower ? lowPowerInterval : backgroundMovingInterval }
+        if driving { return lowPower ? lowPowerDrivingInterval : backgroundDrivingInterval }
+        if foreground {
+            if lowPower { return lowPowerInterval }
+            return resolvedSpeed >= 2.5 ? foregroundMovingInterval : foregroundMovingInterval + 3
+        }
+        return lowPower ? lowPowerInterval : backgroundMovingInterval
     }
     static let confirmationInterval: Double = 300
     // The household's movement status, published with the position by native code, so
     // it does not depend on the WebView running. An open journey outranks a moment of
-    // stillness: a red light is still a drive.
-    static func activity(journey: String?, motion: MotionEvidence) -> String? {
+    // stillness: a red light is still a drive. Without an open journey the status is
+    // only as fresh as the last motion callback; a suspended app must not keep
+    // claiming that a parked phone is driving.
+    static func activity(journey: String?, motion: MotionEvidence, now: Double = Date().timeIntervalSince1970) -> String? {
         switch journey {
         case "Driving": return "driving"
         case "Cycling", "MTB", "Road cycling": return "cycling"
@@ -1027,7 +1060,8 @@ enum HouseholdPublisher {
         case "Walking", "Hiking": return "walking"
         default: break
         }
-        guard motion.continuous, motion.confidence != "low" else { return nil }
+        guard motion.continuous, motion.confidence != "low",
+              motion.timestamp > 0, now - motion.timestamp <= activityTTL else { return nil }
         if motion.types.contains("Driving") { return "driving" }
         if motion.types.contains("Cycling") { return "cycling" }
         if motion.types.contains("Running") { return "running" }
@@ -1041,11 +1075,12 @@ enum HouseholdPublisher {
         url.scheme == "https" && url.path.hasSuffix("/rest/v1/rpc/publish_live_location")
     }
     // A change of status goes out with the next fix, or on its own after a stop, where
-    // no fix will come. An unknown status is not a change.
-    static func activityChanged(sent: String?, current: String?) -> Bool { current != nil && sent != current }
+    // no fix will come. A nil status is a real change when evidence expires: the
+    // server must clear the old car instead of leaving it circling forever.
+    static func activityChanged(sent: String?, current: String?) -> Bool { sent != current }
     static func worthSending(moved: Double?, sinceLast: Double, confirmation: Bool) -> Bool {
         guard !confirmation, let moved else { return true }
-        return moved >= minimumMove || sinceLast >= movingInterval
+        return moved >= minimumMove || sinceLast >= stationaryInterval
     }
     static func canConfirm(continuousRunning: Bool, resuming: Bool, fixAt: Double, executingSince: Double) -> Bool {
         continuousRunning && !resuming && fixAt >= executingSince
@@ -1075,8 +1110,9 @@ enum BackgroundSessionPolicy {
     // Passive rest (PassiveRestPolicy) is the one automatic state that releases
     // it: no location service runs, and Core Location's wake-ups restore precise
     // GPS, kept running by an Always service session and live updates.
-    static func wanted(automaticAvailable: Bool, manualRecording: Bool, passiveRest: Bool = false) -> Bool {
-        (automaticAvailable && !passiveRest) || manualRecording
+    static func wanted(automaticAvailable: Bool, manualRecording: Bool, passiveRest: Bool = false,
+                       liveSharing: Bool = false) -> Bool {
+        liveSharing || (automaticAvailable && !passiveRest) || manualRecording
     }
     // Launch: rejoin immediately when a session was held before termination, before
     // any location service is restarted.
@@ -1094,8 +1130,9 @@ enum BackgroundSessionPolicy {
     // can restore.
     // Sign-out and account changes end the session explicitly. `accountKnown` is
     // false until the account's store is open, when the preference cannot be read.
-    static func shouldRelease(accountKnown: Bool, automaticEnabled: Bool, alwaysAuthorized: Bool, manualRecording: Bool) -> Bool {
-        accountKnown && !manualRecording && (!automaticEnabled || !alwaysAuthorized)
+    static func shouldRelease(accountKnown: Bool, automaticEnabled: Bool, alwaysAuthorized: Bool,
+                              manualRecording: Bool, liveSharing: Bool = false) -> Bool {
+        accountKnown && !manualRecording && !liveSharing && (!automaticEnabled || !alwaysAuthorized)
     }
 }
 
@@ -1143,10 +1180,11 @@ struct HouseholdPublishStats: Equatable {
         if now >= capturedAt { captureToAck.append(now - capturedAt) }
     }
     private static func median(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.sorted()[values.count / 2] }
-    func details(activity: String?) -> [String: String] {
+    func details(activity: String?, now: Double = Date().timeIntervalSince1970) -> [String: String] {
         ["publishAttempts": String(attempts), "publishSuccesses": String(successes), "publishFailures": String(failures),
          "publishIntervalMedianMs": String(Int(Self.median(intervals) * 1000)), "publishIntervalMaxMs": String(Int((intervals.max() ?? 0) * 1000)),
          "captureToAckMedianMs": String(Int(Self.median(captureToAck) * 1000)), "captureToAckMaxMs": String(Int((captureToAck.max() ?? 0) * 1000)),
+         "lastPublishSuccessAgeSeconds": String(lastSuccessAt.map { Int(max(0, now - $0)) } ?? -1),
          "sharedActivity": activity ?? "unknown"]
     }
     // The interval since the last success carries across a summary.
@@ -1879,7 +1917,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {

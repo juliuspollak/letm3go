@@ -40,7 +40,8 @@ extension LocationRecorder: AdaptiveHost {
                        placeSettled: dwellSettled || homeRest.resting(now: now, idle: automaticIdle),
                        recentMovement: departureEvidence.recentMovement(now: now),
                        motionMoving: AutomaticDetector.credibleMovement(motion, now: now), now: now,
-                       restRegion: restDecision.confirmed && passiveRestEnabled && serviceSession != nil)
+                       restRegion: restDecision.confirmed && passiveRestEnabled && serviceSession != nil,
+                       liveSharing: liveSharingArmed)
     }
 
     @discardableResult
@@ -169,7 +170,8 @@ extension LocationRecorder: AdaptiveHost {
             placeRegionRegistered: registeredPlaceRegion != nil,
             journeyRecording: automaticActivelyRecording || active?.state == "recording",
             sessionHeld: backgroundActivitySession != nil,
-            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording", passiveRest: locationMode == .passive) || !storeOpened,
+            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording",
+                passiveRest: locationMode == .passive, liveSharing: liveSharingArmed) || !storeOpened,
             restRegionWanted: restDecision.confirmed && passiveRestEnabled && serviceSession != nil)
         var found = AdaptiveInvariants.violations(observed)
         // The Core Location task and the controller's generation must agree.

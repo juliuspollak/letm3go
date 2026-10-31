@@ -1337,6 +1337,8 @@ check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:true,prev
 check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true) == .rejoin,"a relaunch rejoins before location services restart")
 check(BackgroundSessionPolicy.onLaunch(previouslyHeld:false,supported:true) == .none,"a relaunch without a held session creates nothing from the background")
 check(BackgroundSessionPolicy.wanted(automaticAvailable:false,manualRecording:true),"manual recording also wants a background session")
+check(BackgroundSessionPolicy.wanted(automaticAvailable:false,manualRecording:false,liveSharing:true),"live sharing wants a background session without automatic recording")
+check(!BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false,liveSharing:true),"turning automatic history off does not release a session needed by live sharing")
 check(!BackgroundSessionPolicy.shouldRelease(accountKnown:false,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false),"an account not yet open at a background launch never releases the session")
 check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false),"switching automatic tracking off releases the session")
 check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:false,manualRecording:false),"losing Always permission releases the session")
@@ -1453,7 +1455,7 @@ check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:
 check(!HouseholdPublisher.canConfirm(continuousRunning:false,resuming:false,fixAt:1000,executingSince:500),"no confirmation without continuous location")
 check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:1200),"after a suspension a new real fix is required before anything is confirmed")
 check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:true,fixAt:1000,executingSince:500),"no confirmation while a wake is still being attributed")
-check(HouseholdPublisher.movingInterval == 25 && HouseholdPublisher.confirmationInterval == 300,"moving phones publish every 25 s, parked phones confirm every 5 minutes")
+check(HouseholdPublisher.stationaryInterval == 60 && HouseholdPublisher.confirmationInterval == 300,"parked phones publish once a minute and confirm every 5 minutes")
 check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation still keeps a present member inside the 10-minute live window")
 
 // Arriving Home and resting there. 0.0001° of latitude is about 11 m.
@@ -2434,9 +2436,10 @@ do {
 
     // Passive rest policy: every guard, in order.
     func passive(_ decision: RestDecision, enabled: Bool = true, always: Bool = true, precise: Bool = true, service: Bool = true,
-                 inUse: Bool = true, significant: Bool = true, region: Bool = true, manual: Bool = false) -> String? {
+                 inUse: Bool = true, significant: Bool = true, region: Bool = true, manual: Bool = false, sharing: Bool = false) -> String? {
         PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: enabled, rest: decision, alwaysAuthorized: always, preciseAuthorized: precise,
-            serviceSessionHeld: service, serviceSessionInUse: inUse, significantChanges: significant, exitRegion: region, manualRecording: manual))
+            serviceSessionHeld: service, serviceSessionInUse: inUse, significantChanges: significant, exitRegion: region, manualRecording: manual,
+            liveSharing: sharing))
     }
     let confirmed = rest(wifi: .matched, now: 900)
     check(passive(confirmed) == nil, "a confirmed rest with every wake-up armed may go passive")
@@ -2447,6 +2450,7 @@ do {
     check(passive(confirmed, inUse: false) != nil, "a service session iOS reports insufficiently in use keeps the session")
     check(passive(confirmed, significant: false) != nil && passive(confirmed, region: false) != nil, "passive rest needs significant changes and an exit region")
     check(passive(confirmed, manual: true) != nil, "manual recording keeps the session")
+    check(passive(confirmed, sharing: true) == "location sharing is on", "live sharing blocks passive rest and its session release")
 
     // Modes, configuration, session and indicator.
     var sampling = AutomaticSampling()
@@ -2481,6 +2485,10 @@ do {
                        continuationOpen: false, placeSettled: true, recentMovement: false, motionMoving: false, now: now, restRegion: region)
     }
     let caps = RegionCapability(available: true, maximumRadius: 1000)
+    var sharingPolicy = AdaptivePolicy(now: 0)
+    var sharingInputs = restInputs(0, region: false); sharingInputs.enabled = true; sharingInputs.liveSharing = true
+    check(sharingPolicy.decide(sharingInputs) == .settling, "live sharing keeps the adaptive engine out of stationary standby")
+    check(sharingPolicy.plan(sharingInputs) == .established, "live sharing keeps standard precise updates rather than the low-power stream")
     controller.reconcile(restInputs(0, region: false), established: .resting, standardOwned: true, dwell: home, regions: caps)
     check(host.registeredPlaceRegion == nil, "no exit region before rest is confirmed")
     controller.reconcile(restInputs(1200, region: true), established: .resting, standardOwned: true, dwell: home, regions: caps)
@@ -3414,15 +3422,17 @@ check(watchContext.count == 5 && watchContext["bpm"] == nil && watchContext["lat
 
 // Household publishing adapts to movement and to whether the map can be open.
 check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false) == 3, "foreground driving publishes every 3 s")
-check(HouseholdPublisher.interval(speed: 1.2, foreground: true, confirmation: false) == 5, "foreground walking publishes every 5 s")
-check(HouseholdPublisher.interval(speed: 0, foreground: true, confirmation: false) == 25, "stillness stays slow")
-check(HouseholdPublisher.interval(speed: -1, foreground: true, confirmation: false) == 25, "an unknown speed stays slow")
-check(HouseholdPublisher.interval(speed: 15, foreground: false, confirmation: false) == 25, "the background rate is unchanged")
+check(HouseholdPublisher.interval(speed: 1.2, foreground: true, confirmation: false) == 8, "foreground walking publishes every 8 s")
+check(HouseholdPublisher.interval(speed: 0, foreground: true, confirmation: false) == 60, "stillness publishes once a minute")
+check(HouseholdPublisher.interval(speed: -1, foreground: true, confirmation: false) == 60, "an unknown speed is treated as still")
+check(HouseholdPublisher.interval(speed: 15, foreground: false, confirmation: false) == 3, "GPS speed alone earns the driving rate in the background")
 check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: true) == 300, "confirmations are unchanged")
-check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false, lowPower: true) == 10, "Low Power Mode publishes less")
+check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false, lowPower: true) == 5, "Low Power Mode stays within the 3 to 5 s target while driving")
+check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false, accuracy: 80) == 10, "a coarse fix slows the cadence")
+check(HouseholdPublisher.interval(speed: 0, foreground: true, confirmation: false, accuracy: 80) == 60, "a coarse parked fix stays slow")
 check(!HouseholdPublisher.worthSending(moved: 2, sinceLast: 3, confirmation: false), "no write for movement nobody can see")
 check(HouseholdPublisher.worthSending(moved: 9, sinceLast: 3, confirmation: false), "real movement is sent")
-check(HouseholdPublisher.worthSending(moved: 2, sinceLast: 25, confirmation: false), "the normal rate still refreshes")
+check(!HouseholdPublisher.worthSending(moved: 2, sinceLast: 25, confirmation: false) && HouseholdPublisher.worthSending(moved: 2, sinceLast: 60, confirmation: false), "a parked phone refreshes once a minute, not every 25 s")
 check(HouseholdPublisher.worthSending(moved: 0, sinceLast: 1, confirmation: true) && HouseholdPublisher.worthSending(moved: nil, sinceLast: 0, confirmation: false), "confirmations and first sends always go")
 
 for alias in ["MTB", "Mountain biking", "Mountain Biking"] {
@@ -3509,19 +3519,20 @@ do {
     check(Publisher.interval(speed:15,foreground:false,confirmation:false,activity:"driving") == 3,"a locked phone that is driving publishes every 3 s")
     check(Publisher.interval(speed:15,foreground:false,confirmation:false,lowPower:true,activity:"driving") == 5,"Low Power Mode stays within the 2 to 5 s target")
     check(Publisher.interval(speed:0,foreground:false,confirmation:false,activity:"driving") == 3,"a red light on a drive keeps its rate; the 5 m rule holds back unmoved fixes")
-    check(Publisher.interval(speed:15,foreground:false,confirmation:false) == 25,"high GPS speed alone does not earn the driving rate")
+    check(Publisher.interval(speed:15,foreground:false,confirmation:false) == 3,"high GPS speed alone earns the driving rate")
     check(Publisher.interval(speed:1.4,foreground:false,confirmation:false,activity:"walking") == 10,"walking in the background publishes every 10 s")
     check(Publisher.interval(speed:15,foreground:false,confirmation:true,activity:"driving") == 300,"a confirmation keeps its five-minute rate")
-    check(Publisher.activity(journey:"Driving",motion:moving(["Stationary"])) == "driving","a stop inside a journey is still driving")
-    check(Publisher.activity(journey:nil,motion:moving(["Driving"])) == "driving","Core Motion alone can report driving before the journey confirms")
-    check(Publisher.activity(journey:nil,motion:moving(["Driving","Stationary"])) == "driving","stopped in a vehicle stays driving")
-    check(Publisher.activity(journey:"Unknown",motion:moving(["Driving"])) == "driving","an unclassified journey follows Core Motion")
-    check(Publisher.activity(journey:nil,motion:moving(["Driving"],"low")) == nil,"a low-confidence guess is not shared")
-    check(Publisher.activity(journey:nil,motion:moving(["Driving"],continuous:false)) == nil,"without live Core Motion nothing is claimed")
-    check(Publisher.activity(journey:nil,motion:moving(["Stationary"])) == "stationary","stopping is published, which ends the car")
-    check(Publisher.activity(journey:"MTB",motion:moving([])) == "cycling" && Publisher.activity(journey:"Hiking",motion:moving([])) == "walking","journey types map to one word")
+    check(Publisher.activity(journey:"Driving",motion:moving(["Stationary"]),now:100) == "driving","a stop inside a journey is still driving")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"]),now:100) == "driving","Core Motion alone can report driving before the journey confirms")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving","Stationary"]),now:100) == "driving","stopped in a vehicle stays driving")
+    check(Publisher.activity(journey:"Unknown",motion:moving(["Driving"]),now:100) == "driving","an unclassified journey follows Core Motion")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"],"low"),now:100) == nil,"a low-confidence guess is not shared")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"],continuous:false),now:100) == nil,"without live Core Motion nothing is claimed")
+    check(Publisher.activity(journey:nil,motion:moving(["Stationary"]),now:100) == "stationary","stopping is published, which ends the car")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"]),now:100+Publisher.activityTTL+1) == nil,"motion evidence expires when callbacks stop")
+    check(Publisher.activity(journey:"MTB",motion:moving([]),now:100) == "cycling" && Publisher.activity(journey:"Hiking",motion:moving([]),now:100) == "walking","journey types map to one word")
     check(Publisher.activityChanged(sent:nil,current:"driving") && Publisher.activityChanged(sent:"driving",current:"stationary"),"a change goes out at once")
-    check(!Publisher.activityChanged(sent:"driving",current:"driving") && !Publisher.activityChanged(sent:"driving",current:nil),"no change, or an unknown status, waits its turn")
+    check(!Publisher.activityChanged(sent:"driving",current:"driving") && Publisher.activityChanged(sent:"driving",current:nil),"an expired status is cleared, never left circling")
     check(Publisher.moving("driving") && !Publisher.moving("stationary") && !Publisher.moving(nil),"only movement shortens timeouts and back-off")
     var stats=HouseholdPublishStats()
     stats.noteAttempt();stats.noteSuccess(capturedAt:99,now:100);stats.noteAttempt();stats.noteSuccess(capturedAt:102.5,now:103);stats.noteAttempt();stats.noteFailure()
