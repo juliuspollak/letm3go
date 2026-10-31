@@ -161,6 +161,16 @@ export async function uploadFeedbackPhoto({ client, blob, objectKey, onProgress,
   return objectKey;
 }
 
+// Asks instead of assuming: a row can be saved even when its response is lost.
+async function attachmentRegistered(client, id) {
+  try {
+    const { data, error } = await client.from('feedback_attachments').select('id').eq('id', id).maybeSingle();
+    return !error && Boolean(data);
+  } catch {
+    return false;
+  }
+}
+
 export async function submitFeedbackTicket(client, {
   token, draft, diagnostics, attachments = [], state = {}, native = false, onEvent = () => {}, upload = storageUpload,
 }) {
@@ -184,14 +194,18 @@ export async function submitFeedbackTicket(client, {
         id: attachment.id, feedback_id: ticket.id, owner_id: ticket.owner_id, object_key: objectKey,
         byte_size: attachment.blob.size, width: attachment.width, height: attachment.height, mime_type: 'image/jpeg',
       }, { onConflict: 'id' });
-      if (rowError) throw new Error(feedbackErrorMessage(rowError));
+      if (rowError && !await attachmentRegistered(client, attachment.id)) throw new Error(feedbackErrorMessage(rowError));
       onEvent({ phase: 'photo', id: attachment.id, status: 'uploaded', percent: 100 });
     } catch (caught) {
       const message = caught?.message || 'The photo could not be uploaded. Please retry.';
       onEvent({ phase: 'photo', id: attachment.id, status: 'failed', error: message });
       photoError = message;
-      // Remove a partial object so the next attempt starts cleanly.
-      try { await client.storage?.from?.(FEEDBACK_BUCKET)?.remove?.([objectKey]); } catch { /* Best-effort cleanup. */ }
+      // A failed upload may still have reached Storage, so anything unregistered is removed.
+      // A registered photo keeps its object. If removal fails, a retry reuses the same key;
+      // only an abandoned ticket leaves a file, which the orphan report in the docs finds.
+      if (!await attachmentRegistered(client, attachment.id)) {
+        try { await client.storage?.from?.(FEEDBACK_BUCKET)?.remove?.([objectKey]); } catch { /* Retry reuses the key. */ }
+      }
       break;
     }
   }
@@ -225,7 +239,15 @@ export async function loadFeedbackHistory(client, { limit = 50 } = {}) {
   }));
 }
 
+// supabase-js reports a failed RPC in `error` rather than throwing. The caller gets the
+// outcome: on failure the ticket stays unread on the server and is retried at the next open.
 export async function markFeedbackSeen(client) {
-  try { await client.rpc('mark_my_feedback_seen'); } catch { /* Non-critical read receipt. */ }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { error } = await client.rpc('mark_my_feedback_seen');
+      if (!error) return true;
+    } catch { /* Same as a returned error. */ }
+  }
+  return false;
 }
 

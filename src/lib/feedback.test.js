@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
+import { markFeedbackSeen,
   emptyFeedbackDraft, feedbackArguments, feedbackDiagnostics, feedbackErrors, feedbackHasUnread,
   feedbackReference, newFeedbackToken, submitFeedbackTicket, uploadFeedbackPhoto,
 } from './feedback.js';
@@ -95,6 +95,44 @@ describe('feedback submission pipeline', () => {
     expect(result.photoError).toBe('Offline');
     expect(remove).toHaveBeenCalledWith(['user-1/12345678-abcd-4abc-8abc-1234567890ab/photo-1.jpg']);
     expect(events.at(-1)).toMatchObject({ status: 'failed', error: 'Offline' });
+  });
+
+  it('treats a saved row as success when only its response was lost, and keeps the photo', async () => {
+    const remove = vi.fn().mockResolvedValue({ error: null });
+    const from = vi.fn(() => ({
+      upsert: vi.fn().mockResolvedValue({ error: { message: 'network timeout' } }),
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: 'photo-1' }, error: null }) }) }),
+    }));
+    const events = [];
+    const attachment = { id: 'photo-1', blob: new Blob(['image']), width: 10, height: 8, status: 'ready' };
+    const result = await submitFeedbackTicket(client({ from, storage: { from: vi.fn(() => ({ remove })) } }), {
+      token, draft, attachments: [attachment], onEvent: event => events.push(event), upload: vi.fn().mockResolvedValue(),
+    });
+    expect(result.photoError).toBe('');
+    expect(remove).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({ status: 'uploaded' });
+  });
+
+  it('removes the stored photo when its row really was not saved', async () => {
+    const remove = vi.fn().mockResolvedValue({ error: null });
+    const from = vi.fn(() => ({
+      upsert: vi.fn().mockResolvedValue({ error: { message: 'A feedback ticket can have up to 5 photos.' } }),
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+    }));
+    const attachment = { id: 'photo-1', blob: new Blob(['image']), width: 10, height: 8, status: 'ready' };
+    const result = await submitFeedbackTicket(client({ from, storage: { from: vi.fn(() => ({ remove })) } }), {
+      token, draft, attachments: [attachment], upload: vi.fn().mockResolvedValue(),
+    });
+    expect(result.photoError).toMatch(/up to 5/);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a read receipt that failed, including an error supabase-js returns without throwing', async () => {
+    expect(await markFeedbackSeen({ rpc: vi.fn().mockResolvedValue({ error: null }) })).toBe(true);
+    const failing = { rpc: vi.fn().mockResolvedValue({ error: { message: 'denied' } }) };
+    expect(await markFeedbackSeen(failing)).toBe(false);
+    expect(failing.rpc).toHaveBeenCalledTimes(2);
+    expect(await markFeedbackSeen({ rpc: vi.fn().mockRejectedValue(new Error('offline')) })).toBe(false);
   });
 
   it('refuses photo uploads without a live session', async () => {

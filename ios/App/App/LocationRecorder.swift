@@ -657,7 +657,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
-        let sentCaptureTime=device && liveShareSendsCaptureTime
+        // A confirmation says the phone is still there now, so it carries no old fix time.
+        let sentCaptureTime=device && liveShareSendsCaptureTime && !confirmation
         if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)

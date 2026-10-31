@@ -61,7 +61,9 @@ export default function FeedbackSupport({ recording }) {
         const tickets = await loadFeedbackHistory(supabase);
         if (cancelled) return;
         setHistory({ status: 'ready', tickets, error: '' });
-        if (tickets.some(ticket => feedbackHasUnread(ticket))) void markFeedbackSeen(supabase);
+        if (tickets.some(ticket => feedbackHasUnread(ticket)) && !await markFeedbackSeen(supabase) && !cancelled) {
+          console.warn('Feedback read receipt could not be saved; it will retry next time.');
+        }
       } catch (caught) {
         if (!cancelled) setHistory({ status: 'error', tickets: [], error: caught.message || 'Your feedback could not be loaded.' });
       }
