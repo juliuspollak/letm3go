@@ -78,6 +78,8 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var awaitingHealth = false
     private var gpsSilent = false
     private var restoredWhileRecording = false
+    private var recoveringWorkout = false
+    private var heartSidecarLogged = false
 
     override init() {
         super.init()
@@ -279,6 +281,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         heartRateSummary = ride.heartRateSummary
         status = ride.points.isEmpty ? "Restored an unfinished ride" : "Restored \(Self.clock(activeSeconds)) ride"
         WatchDiagnostics.log("watch", "Watch recording restored", ["points": String(ride.points.count), "heartRateSamples": String(ride.heartRate.count)])
+        noteHeartSidecar()
         recoverActiveWorkout()
         announcePresence(force: true)
     }
@@ -384,7 +387,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         heartRate = .waiting
         persist(force: true)
         if !ride.indoor { startLocation() }
-        if workout == nil {
+        if WatchWorkoutLifecycle.startsNewSession(hasSession: workout != nil, recovering: recoveringWorkout) {
             requestHealthAccessThenStartWorkout()
         } else if workout?.state == .paused {
             workout?.resume()
@@ -441,6 +444,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         do {
             try store.save(ride)
             lastPersistAt = now
+            noteHeartSidecar()
             if storageWarning != nil {
                 storageWarning = nil
                 WatchDiagnostics.log("watch", "Watch checkpoints are saving again")
@@ -451,6 +455,13 @@ final class WatchRecorder: NSObject, ObservableObject {
             storageWarning = "Not saving · Watch storage problem"
             return false
         }
+    }
+
+    // The ride is saved, so the screen stays calm; the export says what was at risk.
+    private func noteHeartSidecar() {
+        guard store.heartSidecarFailed != heartSidecarLogged else { return }
+        heartSidecarLogged = store.heartSidecarFailed
+        WatchDiagnostics.log("health", heartSidecarLogged ? "Heart rate readings are not reaching storage" : "Heart rate readings are saving again")
     }
 
     func ingest(_ samples: [CLLocation]) {
@@ -796,9 +807,15 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // the rider resumes.
     private func recoverActiveWorkout() {
         guard HKHealthStore.isHealthDataAvailable(), workout == nil else { return }
+        recoveringWorkout = true
         health.recoverActiveWorkoutSession { session, _ in
             Task { @MainActor in
-                guard let session else { return }
+                self.recoveringWorkout = false
+                guard let session else {
+                    // Nothing to rejoin, and the rider has already resumed.
+                    if self.draft?.isRecording == true, self.workout == nil { self.requestHealthAccessThenStartWorkout() }
+                    return
+                }
                 guard let ride = self.draft else { session.end(); return }
                 self.healthWorkoutSaves = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor).savesToHealth
                 session.delegate = self
@@ -812,9 +829,10 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                 }
                 self.builder = builder
                 WatchDiagnostics.log("health", "Workout session recovered after an interruption")
-                switch WatchWorkoutLifecycle.afterRecovery(rideWasRecording: self.restoredWhileRecording, sessionRunning: session.state == .running) {
+                switch WatchWorkoutLifecycle.afterRecovery(rideWasRecording: self.restoredWhileRecording, sessionRunning: session.state == .running, rideRecordingNow: ride.isRecording) {
                 case .resumeRide: self.resume()
                 case .pauseSession: session.pause()
+                case .resumeSession: session.resume()
                 default: break
                 }
             }

@@ -39,3 +39,14 @@ order by o.created_at;
 ```
 
 Photos of accounts deleted before the `account` function is redeployed will also appear here.
+
+## Follow-up: `20261111000000_feedback_upload_limits.sql`
+
+Applied after `20261110000000`, in that order. After repairing the history,
+`db push --linked --dry-run` must list exactly these two files and nothing else.
+Running `20261110000000` again on its own puts back the older photo check, so run
+`20261111000000` after it if it is ever repeated by hand.
+
+It widens the attachment size check to 10,485,760 bytes, matching the bucket and the
+app, and makes both five-photo counts wait their turn per ticket. No row is rewritten.
+

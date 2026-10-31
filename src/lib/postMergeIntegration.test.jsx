@@ -6,6 +6,7 @@ vi.mock('../components/JourneyMap.jsx',()=>({default:({journeys})=>{seen.journey
 import ActivityDetail from '../components/ActivityDetail.jsx';
 import {recordedJourney} from './recorder.js';
 import {displaySegments} from './mapGeometry.js';
+import {routeSignature} from './routeDensity.js';
 import {feedbackDiagnostics} from './feedback.js';
 import {heartRateRuns} from './heartRate.js';
 import {publicationPreview} from './activityPrivacy.js';
@@ -45,4 +46,17 @@ it('sends no heart rate, position or overlap detail in feedback diagnostics or a
  const text=JSON.stringify(feedbackDiagnostics({state:{trips:[trip],active:trip,version:'1',build:'2'}}))+JSON.stringify(publicationPreview({...trip,details:trip.details},[]));
  expect(text).not.toMatch(/bpm|heartRate|Secret|overlaps/i);
  expect(JSON.stringify(feedbackDiagnostics({state:{trips:[trip]}}))).not.toMatch(/-33\.8/);
+});
+
+it('draws a coordinate-only route whose segments are empty',()=>{
+ const route=[[-33.8,151],[-33.8001,151]];
+ expect(displaySegments({route,routeSegments:[]})).toEqual([route]);
+ expect(routeSignature({route,routeSegments:[]})).not.toBe(routeSignature({route:[],routeSegments:[]}));
+});
+it('says there is no route rather than joining fixes the display rejected',()=>{
+ const point=(n,accuracy)=>({latitude:-33.8+n*.0001,longitude:151,timestamp:1000+n*5,accuracy,segment:0,speed:2,altitude:0});
+ const journey=recordedJourney({id:'x',activity:'Walking',source:'device',recordingMode:'manual',state:'finished',title:'Walk',startedAt:1000,endedAt:1100,distanceMeters:0,accumulatedSeconds:100,points:[point(0,200),point(1,200),point(2,200)],details:{}});
+ expect(journey.route).toEqual([]);
+ expect(displaySegments(journey)).toEqual([]);
+ expect(journey.points).toHaveLength(3);
 });

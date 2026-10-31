@@ -58,8 +58,11 @@ function simplify(points,budget){
  for(let i=0;i<12;i++){const middle=(low+high)/2,candidate=atTolerance(middle);if(candidate.length>budget)low=middle;else{high=middle;best=candidate;}}
  return best;
 }
+// Empty segments say nothing, so a coordinate-only route still draws. A recorded
+// journey with no displayable observation clears `route` too (see recordedJourney).
+export const routeLines=journey=>journey?.routeSegments?.length?journey.routeSegments:[journey?.route||[]];
 export function displaySegments(journey,limit=2000){
- const segments=runs(journey.routeSegments||[journey.route||[]]);
+ const segments=runs(routeLines(journey));
  const count=segments.reduce((n,s)=>n+s.length,0);
  if(count<=limit)return segments;
  // Limit is a target, never permission to cut a corner beyond two metres.

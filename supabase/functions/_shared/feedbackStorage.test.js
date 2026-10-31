@@ -1,6 +1,6 @@
 import {expect,it,vi} from 'vitest';
 import {removeFeedbackObjects} from './feedbackStorage.js';
-function storage(files,{listError,removeError}={}){
+function storage(files,{listError,removeError,keep}={}){
  const removed=[];
  const bucket={
   list:vi.fn(async folder=>{
@@ -9,7 +9,11 @@ function storage(files,{listError,removeError}={}){
    for(const file of files)if(file.startsWith(prefix))seen.add(file.slice(prefix.length).split('/')[0]);
    return {data:[...seen].map(name=>({name})),error:null};
   }),
-  remove:vi.fn(async keys=>{if(removeError)return {error:removeError};removed.push(...keys);return {error:null};}),
+  remove:vi.fn(async keys=>{
+   if(removeError)return {error:removeError};
+   for(const key of keys){if(key===keep?.value)continue;removed.push(key);files.splice(files.indexOf(key),1);}
+   return {error:null};
+  }),
  };
  return {from:vi.fn(()=>bucket),removed};
 }
@@ -25,4 +29,11 @@ it('does nothing for an account with no photos',async()=>{
 it('fails loudly, so account deletion stops and can be retried',async()=>{
  await expect(removeFeedbackObjects(storage(['a/t/p.jpg'],{listError:new Error('down')}),'a')).rejects.toThrow('down');
  await expect(removeFeedbackObjects(storage(['a/t/p.jpg'],{removeError:new Error('nope')}),'a')).rejects.toThrow('nope');
+});
+it('stops deletion when storage reports success but keeps a photo, and a retry finishes',async()=>{
+ const keep={value:'a/t/p2.jpg'},s=storage(['a/t/p1.jpg','a/t/p2.jpg'],{keep});
+ await expect(removeFeedbackObjects(s,'a')).rejects.toThrow('1 feedback photos remain');
+ keep.value=null;
+ await expect(removeFeedbackObjects(s,'a')).resolves.toBe(1);
+ expect(s.removed.sort()).toEqual(['a/t/p1.jpg','a/t/p2.jpg']);
 });

@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 vi.mock('../components/ActivityPrivacy.jsx',()=>({default:()=>null}));
@@ -81,4 +82,39 @@ it('shows nothing of held readings until the person answers',()=>{
 it('keeps heart rate out of everything that leaves the phone',()=>{
  expect(JSON.stringify(publicationPreview(trip,[]))).not.toMatch(/heartRate|bpm/i);
  expect(JSON.stringify(sharedLocationPayload({latitude:1,longitude:2,accuracy:3,speed:4,timestamp:5,heartRate:120}))).not.toMatch(/heart/i);
+});
+it('never lets out-of-order or impossible readings produce negative time',()=>{
+ const shuffled=[s(1020,170),s(1000,120),s(1010,150),s(1010,151),s(NaN,120),s(1030,900),s(-5,100)];
+ const result=timeInZones(shuffled,[],200);
+ expect(result.zones.every(z=>z.seconds>=0)).toBe(true);
+ expect(result.totalSeconds).toBe(20);
+ expect(result.zones.map(z=>z.seconds)).toEqual([0,10,10,0,0]);
+ expect(heartRateRuns(shuffled)).toEqual([[s(1000,120),s(1010,150),s(1020,170)]]);
+ const record=heartRateOf({details:{heartRate:{samples:shuffled,pausePeriods:[{start:9,end:3},{start:1,end:2}],summary:heartRate.summary}}});
+ expect(record.samples.map(x=>x.timestamp)).toEqual([1000,1010,1020]);
+ expect(record.pausePeriods).toEqual([{start:1,end:2}]);
+});
+it('adds no distance across missing GPS, even inside one segment',()=>{
+ const point=(latitude,timestamp)=>({latitude,longitude:0,timestamp,segment:0,speed:2});
+ const moving=routeAt([point(0,1000),point(.001,1010)],1010).distanceMeters;
+ expect(routeAt([point(0,1000),point(.001,1010),point(.5,1500),point(.501,1510)],1510).distanceMeters).toBeCloseTo(moving*2,0);
+});
+it('keeps no maximum for an unknown account, so none can pass between accounts',()=>{
+ expect(saveMaximum(undefined,188)).toBeNull();
+ expect(localStorage.length).toBe(0);
+ localStorage.setItem('letm3go.maximumHeartRate.device','188');
+ expect(savedMaximum(undefined)).toBeNull();
+});
+it('gives every activity detail entry point the signed-in account',()=>{
+ const uses=['src/App.jsx','src/components/GroupedJourneyDetail.jsx'].flatMap(file=>readFileSync(file,'utf8').match(/<ActivityDetail\b[^>]{0,80}/g));
+ expect(uses).toHaveLength(2);
+ for(const use of uses)expect(use).toContain('ownerID={');
+});
+it('shows the zones saved for this account from an activity opened with it',()=>{
+ saveMaximum('a',190);
+ render(<ActivityDetail ownerID="a" trip={recordedJourney(trip)} places={[]}/>);
+ expect(screen.getByText('Zone 5')).toBeInTheDocument();
+ cleanup();
+ render(<ActivityDetail ownerID="b" trip={recordedJourney(trip)} places={[]}/>);
+ expect(screen.queryByText('Zone 5')).not.toBeInTheDocument();
 });

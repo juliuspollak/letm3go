@@ -82,14 +82,16 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         flushDiagnostics()
     }
 
-    // Queued, so it arrives whenever the phone next wakes. Only what was handed over
-    // leaves the buffer.
+    // Queued, so it arrives whenever the phone next wakes. One batch at a time: a
+    // batch still queued (this launch or the last) would be repeated by a second one.
+    // The buffer is emptied by the delivery report, not here.
     func flushDiagnostics() {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+        let session = WCSession.default
+        guard !session.outstandingUserInfoTransfers.contains(where: { WatchDiagnosticDelivery.isDiagnostics($0.userInfo) }) else { return }
         let (data, through) = WatchDiagnostics.pending()
         guard let data else { return }
-        WCSession.default.transferUserInfo(["diagnostics": data])
-        WatchDiagnostics.markSent(through: through)
+        session.transferUserInfo(WatchDiagnosticDelivery.userInfo(data, through: through))
     }
 
     // Adopts payloads whose index entry was lost and parks entries whose payload is
@@ -275,6 +277,16 @@ extension WatchConnectivitySession: WCSessionDelegate {
                 presence.updatedAt = Date().timeIntervalSince1970
                 self.announce(presence)
             }
+        }
+    }
+
+    // A failed batch stays buffered and goes with the next presence update. Sending it
+    // from here could loop for as long as the failure lasts.
+    nonisolated func session(_ session: WCSession, didFinish userInfoTransfer: WCSessionUserInfoTransfer, error: Error?) {
+        guard let through = WatchDiagnosticDelivery.deliveredThrough(userInfoTransfer.userInfo, failed: error != nil) else { return }
+        DispatchQueue.main.async {
+            WatchDiagnostics.markSent(through: through)
+            self.flushDiagnostics()
         }
     }
 

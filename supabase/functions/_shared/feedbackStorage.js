@@ -12,13 +12,21 @@ async function listed(bucket,folder){
   if((data||[]).length<PAGE)return names;
  }
 }
-export async function removeFeedbackObjects(storage,owner){
- const bucket=storage.from(FEEDBACK_BUCKET);
+async function ownerKeys(bucket,owner){
  const keys=[];
  for(const ticket of await listed(bucket,owner))for(const name of await listed(bucket,`${owner}/${ticket}`))keys.push(`${owner}/${ticket}/${name}`);
+ return keys;
+}
+export async function removeFeedbackObjects(storage,owner){
+ const bucket=storage.from(FEEDBACK_BUCKET);
+ const keys=await ownerKeys(bucket,owner);
  for(let index=0;index<keys.length;index+=PAGE){
   const {error}=await bucket.remove(keys.slice(index,index+PAGE));
   if(error)throw error;
  }
+ // `remove` can succeed for only part of a batch. The user row is what makes a retry
+ // possible, so it stays until the bucket itself says nothing is left.
+ const remaining=await ownerKeys(bucket,owner);
+ if(remaining.length)throw new Error(`${remaining.length} feedback photos remain`);
  return keys.length;
 }

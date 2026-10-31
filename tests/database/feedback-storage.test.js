@@ -1,6 +1,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { readFile, readdir } from 'node:fs/promises';
 import { beforeAll, afterAll, expect, it } from 'vitest';
+import { MAX_IMAGE_BYTES } from '../../src/lib/feedback.js';
 // 20261110000000_feedback_storage_hardening.sql over the whole migration chain, as a
 // database that already ran 20261109000000 will see it.
 const db = new PGlite();
@@ -68,5 +69,32 @@ it('hides photos from another account and from one pending deletion', async () =
 
 it('can be applied again', async () => {
   await db.exec(await readFile('supabase/migrations/20261110000000_feedback_storage_hardening.sql', 'utf8'));
+  await db.exec(await readFile('supabase/migrations/20261111000000_feedback_upload_limits.sql', 'utf8'));
   expect((await db.query(`select count(*)::int as n from pg_policies where schemaname='storage' and policyname like 'feedback attachments%'`)).rows[0].n).toBe(4);
+});
+
+it('agrees on one size limit across the database and the bucket', async () => {
+  const attachment = id => `insert into public.feedback_attachments(id,feedback_id,owner_id,object_key,byte_size,width,height)
+    values('${id}','${ticketB}','${b}','${b}/${ticketB}/${id}.jpg',${size},10,10)`;
+  let size = MAX_IMAGE_BYTES;
+  await as(b, attachment('e0000000-0000-4000-8000-000000000001'));
+  size = MAX_IMAGE_BYTES + 1;
+  await expect(as(b, attachment('e0000000-0000-4000-8000-000000000002'))).rejects.toThrow(/byte_size_check/);
+  const { rows: [bucket] } = await db.query(`select file_size_limit from storage.buckets where id='feedback-attachments'`);
+  expect(Number(bucket.file_size_limit)).toBe(MAX_IMAGE_BYTES);
+});
+
+it('serialises both photo counts per ticket, reading what the last writer committed', async () => {
+  const { rows } = await db.query(`select proname,provolatile from pg_proc where proname in ('can_write_feedback_object','enforce_feedback_attachment_limit') order by proname`);
+  expect(rows).toEqual([{ proname: 'can_write_feedback_object', provolatile: 'v' }, { proname: 'enforce_feedback_attachment_limit', provolatile: 'v' }]);
+  const held = async work => {
+    await db.exec(`begin;set local role authenticated;select set_config('request.jwt.claim.sub','${b}',true);`);
+    try {
+      await db.query(work);
+      return (await db.query(`select count(*)::int as n from pg_locks where locktype='advisory' and granted`)).rows[0].n;
+    } finally { await db.exec('rollback'); }
+  };
+  expect(await held(`insert into public.feedback_attachments(id,feedback_id,owner_id,object_key,byte_size,width,height)
+    values('e0000000-0000-4000-8000-000000000003','${ticketB}','${b}','${b}/${ticketB}/e0000000-0000-4000-8000-000000000003.jpg',10,10,10)`)).toBe(1);
+  expect(await held(`insert into storage.objects(bucket_id,name) values('feedback-attachments','${b}/${ticketB}/e0000000-0000-4000-8000-000000000004.jpg')`)).toBe(1);
 });

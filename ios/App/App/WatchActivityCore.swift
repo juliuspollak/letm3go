@@ -778,6 +778,8 @@ final class WatchRideDraftStore {
     // save replaces the whole log from memory instead.
     private var pointsNeedRewrite = false
     private var heartNeedsRewrite = false
+    // The ride is safe but its readings are not on disk, for the diagnostic export.
+    private(set) var heartSidecarFailed = false
     private var prepared = false
 
     init(directory: URL, backend: WatchFileBackend = FileWatchBackend()) {
@@ -810,18 +812,28 @@ final class WatchRideDraftStore {
             do { try backend.append(data, to: pointsURL) } catch { pointsNeedRewrite = true; throw error }
             persistedPoints = points.count
         }
-        try saveHeart(draft.heartRate)
+        // Heart rate is optional evidence: a failure here must not stop the fixes and
+        // the meta reaching disk, or a finish that needs them. The readings stay in
+        // memory and travel with the ride; the next save tries again.
+        do {
+            try saveHeart(draft.heartRate)
+            heartSidecarFailed = false
+        } catch {
+            heartNeedsRewrite = true
+            heartSidecarFailed = true
+        }
         let meta = try JSONEncoder().encode(draft.meta)
         try backend.write(meta, to: metaURL, protection: true)
     }
 
     private func saveHeart(_ samples: [WatchHeartRateSample]) throws {
         if heartNeedsRewrite || samples.count < persistedHeart {
-            try backend.remove(heartURL)
-            persistedHeart = 0
-            if !samples.isEmpty {
+            if samples.isEmpty {
+                try backend.remove(heartURL)
+            } else {
                 var data = Self.heartMagic
                 for sample in samples { Self.encode(sample, into: &data) }
+                // Replaced atomically: a failure leaves the previous readings on disk.
                 try backend.write(data, to: heartURL, protection: true)
             }
             persistedHeart = samples.count
@@ -848,7 +860,16 @@ final class WatchRideDraftStore {
         guard backend.exists(metaURL), let data = try backend.read(metaURL) else { return nil }
         let meta = try JSONDecoder().decode(WatchRideMeta.self, from: data)
         let points = try readPoints()
-        let heart = try readHeart()
+        // The ride is the fixes and the meta. Unreadable readings cost the readings,
+        // and the next save replaces the file.
+        let heart: [WatchHeartRateSample]
+        do {
+            heart = try readHeart()
+        } catch {
+            heart = []
+            heartNeedsRewrite = true
+            heartSidecarFailed = true
+        }
         persistedPoints = points.count
         persistedHeart = heart.count
         return WatchRideDraft(meta: meta, points: points, heartRate: heart)
@@ -882,8 +903,12 @@ final class WatchRideDraftStore {
         let folder = directory.appendingPathComponent("unreadable-\(Int(now))", isDirectory: true)
         try backend.createDirectory(folder)
         for url in [metaURL, pointsURL, heartURL] where backend.exists(url) {
-            guard let data = try backend.read(url) else { continue }
-            try backend.write(data, to: folder.appendingPathComponent(url.lastPathComponent), protection: true)
+            do {
+                guard let data = try backend.read(url) else { continue }
+                try backend.write(data, to: folder.appendingPathComponent(url.lastPathComponent), protection: true)
+            } catch {
+                if url != heartURL { throw error }
+            }
         }
         try clear()
     }

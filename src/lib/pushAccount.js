@@ -2,8 +2,9 @@ import { Capacitor } from '@capacitor/core';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { supabase } from './supabase.js';
 import { enableNativePush } from './nativeNotifications.js';
+import {newUUID} from './uuid.js';
 let activeOwner=null,dispose=null;
-const installationID=()=>{let id=localStorage.getItem('letm3go-installation');if(!id){id=crypto.randomUUID();localStorage.setItem('letm3go-installation',id);}return id;};
+const installationID=()=>{let id=localStorage.getItem('letm3go-installation');if(!id){id=newUUID();localStorage.setItem('letm3go-installation',id);}return id;};
 export async function enableAccountPush(owner,onError){
  if(activeOwner===owner&&dispose)return {enabled:true};
  if(dispose)await dispose();activeOwner=owner;

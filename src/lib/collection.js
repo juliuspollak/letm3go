@@ -1,3 +1,4 @@
+import {newUUID} from './uuid.js';
 // Collections are the equipment a person already owns. Items stay in the
 // existing device-local Collection (preferences.vehicles) so offline recording,
 // Household vehicle sharing and Tesla imports keep one source of truth.
@@ -169,7 +170,7 @@ export function buildCollectionItem(draft){
   attributes[field.key]=value;
  }
  const clean=value=>String(value||'').trim().slice(0,60);
- return {...draft,id:draft?.id||crypto.randomUUID(),source:draft?.source||'manual',category:category.id,
+ return {...draft,id:draft?.id||newUUID(),source:draft?.source||'manual',category:category.id,
   name:clean(draft?.name),make:clean(draft?.make),model:clean(draft?.model),archived:draft?.archived===true,attributes};
 }
 

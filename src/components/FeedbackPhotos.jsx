@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { Camera, Check, ImagePlus, LoaderCircle, Trash2, AlertCircle } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { Camera as NativeCamera } from '@capacitor/camera';
-import { MAX_ATTACHMENTS } from '../lib/feedback.js';
+import { MAX_ATTACHMENTS, newFeedbackToken } from '../lib/feedback.js';
 import { prepareFeedbackImage } from '../lib/feedbackImage.js';
 
 // Photo evidence is optional. Everything is re-encoded to JPEG locally so EXIF
@@ -25,7 +25,7 @@ export default function FeedbackPhotos({ photos, onAdd, onRemove, onView, disabl
       try {
         const image = await prepareFeedbackImage(file);
         prepared.push({
-          id: globalThis.crypto?.randomUUID?.() || `photo-${Date.now()}-${prepared.length}`,
+          id: newFeedbackToken(),
           ...image,
           previewUrl: URL.createObjectURL(image.blob),
           status: 'ready',

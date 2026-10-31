@@ -1138,16 +1138,24 @@ check(clearedDraft == nil, "and its queued draft is removed")
 // failures: no crash window may drop the only copy of a ride, leave an entry that can
 // never be sent, or send the same ride forever.
 final class FailingWatchBackend: WatchFileBackend {
+    var failRead: ((URL) -> Bool)?
     var failWrite: ((URL) -> Bool)?
+    var failAppend: ((URL) -> Bool)?
     var failRemove: ((URL) -> Bool)?
     private let base = FileWatchBackend()
 
-    func read(_ url: URL) throws -> Data? { try base.read(url) }
+    func read(_ url: URL) throws -> Data? {
+        if failRead?(url) == true { throw WatchStorageError.writeFailed(url.lastPathComponent) }
+        return try base.read(url)
+    }
     func write(_ data: Data, to url: URL, protection: Bool) throws {
         if failWrite?(url) == true { throw WatchStorageError.writeFailed(url.lastPathComponent) }
         try base.write(data, to: url, protection: protection)
     }
-    func append(_ data: Data, to url: URL) throws { try base.append(data, to: url) }
+    func append(_ data: Data, to url: URL) throws {
+        if failAppend?(url) == true { throw WatchStorageError.writeFailed(url.lastPathComponent) }
+        try base.append(data, to: url)
+    }
     func remove(_ url: URL) throws {
         if failRemove?(url) == true { throw WatchStorageError.writeFailed(url.lastPathComponent) }
         try base.remove(url)
@@ -3231,6 +3239,11 @@ do {
     check(late.pausedAt == start + 13, "the pause begins after the last saved reading")
     late.finish(at: start + 90)
     check(WatchActivityImport.activity(from: late.transfer(now: start + 90, ownerID: ownerA, deviceID: nil)!, now: start + 91)?.details?.heartRate?.summary.samples == 1, "a late reading is not lost in recovery")
+    // Diagnostics leave the Watch when delivered, not when handed over.
+    let diagnosticInfo = WatchDiagnosticDelivery.userInfo(Data([1]), through: 42)
+    check(WatchDiagnosticDelivery.deliveredThrough(diagnosticInfo, failed: false) == 42, "a delivered batch clears through its last event")
+    check(WatchDiagnosticDelivery.deliveredThrough(diagnosticInfo, failed: true) == nil, "a failed batch stays buffered")
+    check(WatchDiagnosticDelivery.deliveredThrough(["acks": ["x"]], failed: false) == nil, "other transfers clear nothing")
     // Session lifecycle.
     typealias Life = WatchWorkoutLifecycle
     check(Life.sessionRunning(fromPaused: false, rideState: "paused") == .pauseSession, "a session that finishes starting does not undo a pause")
@@ -3240,6 +3253,9 @@ do {
     check(Life.afterRecovery(rideWasRecording: true, sessionRunning: true) == .resumeRide, "a crash mid-ride keeps recording with the wrist down")
     check(Life.afterRecovery(rideWasRecording: false, sessionRunning: true) == .pauseSession, "a paused ride stays paused after a crash")
     check(Life.afterRecovery(rideWasRecording: true, sessionRunning: false) == .none, "with no session the rider decides")
+    check(Life.afterRecovery(rideWasRecording: false, sessionRunning: true, rideRecordingNow: true) == .none, "a rider who resumed during recovery is not paused again")
+    check(Life.afterRecovery(rideWasRecording: false, sessionRunning: false, rideRecordingNow: true) == .resumeSession, "a paused session follows that rider")
+    check(!Life.startsNewSession(hasSession: false, recovering: true) && Life.startsNewSession(hasSession: false, recovering: false) && !Life.startsNewSession(hasSession: true, recovering: false), "one ride never starts a second session while the first may return")
     check(Life.sensorExpected(sessionRunning: false, awaitingHealth: true) && !Life.sensorExpected(sessionRunning: false, awaitingHealth: false), "an open Health prompt is not a failed sensor")
     walkingFixes(&restored, from: start + 501, count: 2)
     restored.ingest(heartRate: hr(start + 502, 120), now: start + 502)
@@ -3274,6 +3290,36 @@ do {
     check(threw, "a failed append is reported, never assumed")
     try! tornStore.save(tornRide)
     check(try! WatchRideDraftStore(directory: tornDirectory).load()?.points == tornRide.points, "next save repairs a torn log")
+
+    // Heart rate is optional: losing its file must not cost the ride.
+    let heartLostDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let heartLost = FailingWatchBackend(), heartLostStore = WatchRideDraftStore(directory: heartLostDirectory, backend: heartLost)
+    var heartRide = WatchRideDraft(activity: "Running", startedAt: start, ownerID: ownerA)
+    walkingFixes(&heartRide, from: start + 1, count: 2)
+    heartRide.ingest(heartRate: hr(start + 5, 111), now: start + 5)
+    heartLost.failAppend = { $0.lastPathComponent == "draft.heart" }
+    heartLost.failWrite = { $0.lastPathComponent == "draft.heart" }
+    try! heartLostStore.save(heartRide)
+    check(heartLostStore.heartSidecarFailed && (try! WatchRideDraftStore(directory: heartLostDirectory).load()?.points.count) == 2, "a heart-rate write failure still saves the ride")
+    heartRide.finish(at: start + 60)
+    try! heartLostStore.save(heartRide)
+    check(heartRide.transfer(now: start + 60, ownerID: ownerA, deviceID: nil)?.heartRate?.count == 1, "a finish survives it, with the readings from memory")
+    heartLost.failAppend = nil; heartLost.failWrite = nil
+    try! heartLostStore.save(heartRide)
+    check(!heartLostStore.heartSidecarFailed && (try! WatchRideDraftStore(directory: heartLostDirectory).load()?.heartRate.count) == 1, "the next save puts the readings back")
+
+    let heartReadDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let heartRead = FailingWatchBackend(), heartReadStore = WatchRideDraftStore(directory: heartReadDirectory, backend: heartRead)
+    try! heartReadStore.save(heartRide)
+    heartRead.failRead = { $0.lastPathComponent == "draft.heart" }
+    let heartless = try! WatchRideDraftStore(directory: heartReadDirectory, backend: heartRead).loadRestorable()
+    check(heartless?.points.count == 2 && heartless?.heartRate.isEmpty == true && heartless?.isFinished == true, "unreadable heart rate restores the ride without it")
+    let heartlessStore = WatchRideDraftStore(directory: heartReadDirectory, backend: heartRead)
+    _ = try! heartlessStore.load()
+    check(heartlessStore.heartSidecarFailed, "and the loss is reported")
+    try! Data("{broken".utf8).write(to: heartReadDirectory.appendingPathComponent("draft.json"))
+    try! heartlessStore.quarantine(now: start)
+    check(FileManager.default.fileExists(atPath: heartReadDirectory.appendingPathComponent("unreadable-\(Int(start))/draft.points").path), "an unreadable heart file cannot block moving a draft aside")
 
     // A draft that cannot be read is moved aside, never overwritten.
     let badDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

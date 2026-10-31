@@ -1,3 +1,4 @@
+import {newUUID} from './uuid.js';
 // Named segments: sections of one recording, referenced by its own GPS fix
 // indices. The native recorder (NamedSegmentCore.swift) validates and stores
 // them; this mirrors its rules for the live editor, so what the editor shows is
@@ -111,8 +112,7 @@ export function segmentLayers(trip,{selection=null,editingID=null}={}){
 }
 
 export function newSegmentID(){
- if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID();
- return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);});
+ return newUUID();
 }
 
 // Segments a destructive trim to start...end would delete (RouteTrimming.segmentsCut).

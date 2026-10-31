@@ -6,20 +6,28 @@ export const ZONES=[
  {id:1,name:'Zone 1',from:.5,to:.6},{id:2,name:'Zone 2',from:.6,to:.7},{id:3,name:'Zone 3',from:.7,to:.8},
  {id:4,name:'Zone 4',from:.8,to:.9},{id:5,name:'Zone 5',from:.9,to:Infinity}
 ];
+// Outside these a value is a sensor fault (WatchHeartRateLimits on the Watch).
+const MIN_BPM=25,MAX_BPM=250;
 const finite=Number.isFinite;
 
+// Ordered, one reading per moment. Every span below is the distance to the next
+// reading, so an out-of-order pair would otherwise subtract time from a zone.
+export function orderedSamples(samples){
+ const valid=(samples||[]).filter(s=>finite(s?.timestamp)&&s.timestamp>0&&finite(s?.bpm)&&s.bpm>=MIN_BPM&&s.bpm<=MAX_BPM);
+ return valid.sort((a,b)=>a.timestamp-b.timestamp).filter((s,i,list)=>!i||s.timestamp>list[i-1].timestamp);
+}
 export function heartRateOf(trip){
  const record=trip?.details?.heartRate;
  if(!Array.isArray(record?.samples)||!record.samples.length||!record.summary)return null;
- const samples=record.samples.filter(s=>finite(s?.timestamp)&&finite(s?.bpm));
+ const samples=orderedSamples(record.samples);
  if(!samples.length)return null;
- return {samples,pausePeriods:(record.pausePeriods||[]).filter(p=>finite(p?.start)&&finite(p?.end)),summary:record.summary};
+ return {samples,pausePeriods:(record.pausePeriods||[]).filter(p=>finite(p?.start)&&finite(p?.end)&&p.end>p.start),summary:record.summary};
 }
 const crossesPause=(a,b,pauses)=>pauses.some(p=>p.start<b.timestamp&&p.end>a.timestamp);
 // Runs of readings the line may join. A pause or a sensor gap ends a run.
 export function heartRateRuns(samples,pausePeriods=[]){
  const runs=[];
- for(const sample of samples){
+ for(const sample of orderedSamples(samples)){
   const run=runs.at(-1),last=run?.at(-1);
   if(last&&sample.timestamp-last.timestamp<=GAP_SECONDS&&!crossesPause(last,sample,pausePeriods))run.push(sample);
   else runs.push([sample]);
@@ -27,12 +35,13 @@ export function heartRateRuns(samples,pausePeriods=[]){
  return runs;
 }
 // Seconds a reading stands for: until the next one, no further than a gap allows.
-export function timeInZones(samples,pausePeriods,maximum){
+export function timeInZones(samples,pausePeriods=[],maximum){
  const seconds=ZONES.map(()=>0);
  let below=0;
  if(!finite(maximum)||maximum<=0)return null;
- samples.forEach((sample,index)=>{
-  const next=samples[index+1];
+ const ordered=orderedSamples(samples);
+ ordered.forEach((sample,index)=>{
+  const next=ordered[index+1];
   if(!next||crossesPause(sample,next,pausePeriods))return;
   const span=next.timestamp-sample.timestamp;
   if(span>GAP_SECONDS)return;
@@ -49,7 +58,9 @@ export function routeAt(points,timestamp){
  let travelled=0,previous=null,found=null;
  for(const point of points){
   if(point.timestamp>timestamp)break;
-  if(previous&&previous.segment===point.segment)travelled+=metres(previous,point);
+  // Distance is observed movement only, like the route line: a stretch with no
+  // fixes adds nothing, even when both ends carry the same segment number.
+  if(previous&&previous.segment===point.segment&&point.timestamp-previous.timestamp<=GAP_SECONDS)travelled+=metres(previous,point);
   previous=point;found=point;
  }
  if(!found||timestamp-found.timestamp>GAP_SECONDS)return null;
@@ -61,12 +72,16 @@ function metres(a,b){
  return 6371000*2*Math.atan2(Math.sqrt(x),Math.sqrt(Math.max(0,1-x)));
 }
 // A person's own figure. Never assumed or derived from age: without one, no zones.
-const key=owner=>`letm3go.maximumHeartRate.${owner||'device'}`;
+// With no account there is nothing to file it under, so nothing is read or kept: a
+// shared key would hand one person's figure to whoever signs in next.
+const key=owner=>`letm3go.maximumHeartRate.${owner}`;
 export function savedMaximum(owner,storage=globalThis.localStorage){
+ if(!owner)return null;
  const value=Number(storage?.getItem(key(owner)));
  return finite(value)&&value>=100&&value<=240?value:null;
 }
 export function saveMaximum(owner,value,storage=globalThis.localStorage){
+ if(!owner)return null;
  const number=Math.round(Number(value));
  if(!finite(number)||number<100||number>240){storage?.removeItem(key(owner));return null;}
  storage?.setItem(key(owner),String(number));
