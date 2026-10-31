@@ -19,11 +19,13 @@ export function matchesDate(trip,date,today,nowMs=Date.now()){
  return day?journeyOnDay(trip,day):true;
 }
 
-// The visible control is a button, so it opens on any tap or click and reads as one
-// control to a screen reader. A date input only opens from its own calendar icon on
-// desktop, and iOS before 16 has no showPicker, where focus opens the system picker.
+// For a mouse, keyboard or screen reader. A date input opens from its own calendar icon
+// on desktop, so showPicker is needed there, but on iOS it returns without opening
+// anything and without an error: focus has to run as well, never only as a fallback.
+// A finger on a touch screen reaches the real input directly (see styles.css).
 export function openDatePicker(input){
- try{input.showPicker();}catch{input.focus();}
+ input.focus();
+ try{input.showPicker();}catch{/* Refused or unavailable: focus has already run. */}
 }
 
 export function dateLabel(date,today){

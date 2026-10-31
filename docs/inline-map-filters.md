@@ -28,6 +28,6 @@ Activities holds one date selection (`all`, `today`, a day, or a rolling range).
 
 Typed search covers all history. The selected date is kept and returns when the search is cleared; until then the date row is hidden and the results say "Searching all dates". All other filters still apply to a search. The date row's one shortcut changes with the selection: Today from a past day or range, All from Today.
 
-The date label is a real button. It calls `showPicker`, falling back to focus before iOS 16, on a hidden input kept under the button because iOS anchors its picker to that box. A date input opens only from its own calendar icon on desktop, so an invisible overlay could not open it there.
+The date label is a real button over a transparent date input. On touch screens the input takes the tap directly, because iOS accepts `showPicker` but opens nothing, with no error. For mouse, keyboard and screen readers the button runs both `focus` and `showPicker`, because a desktop date input opens only from its own calendar icon.
 
 Still verify on a real iPhone: the date picker opening from the button, with VoiceOver too, on iOS 15 if supported; Dynamic Type in the panel; scrolling with the panel open.

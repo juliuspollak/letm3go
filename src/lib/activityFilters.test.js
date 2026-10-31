@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import {expect,it,vi} from 'vitest';
 import {activeFilterCount,activityToolbar,canShiftForward,chosenDay,dateLabel,matchesDate,openDatePicker,shiftDate} from './activityFilters.js';
 const today='2026-10-30';
@@ -52,15 +53,17 @@ it('marks the selected date whichever control chose it',()=>{
  expect(selected('30d')).toEqual(['Past 30 days']);
  expect(selected('2026-01-05')).toEqual([]);
 });
-it('falls back to focus where showPicker is missing or refused',()=>{
- const focus=vi.fn();
+it('always focuses, because iOS accepts showPicker and opens nothing',()=>{
+ const focus=vi.fn(),showPicker=vi.fn();
+ openDatePicker({focus,showPicker});
+ expect(focus).toHaveBeenCalledOnce();expect(showPicker).toHaveBeenCalledOnce();
  openDatePicker({focus});
  openDatePicker({focus,showPicker(){throw new Error('NotAllowedError');}});
- expect(focus).toHaveBeenCalledTimes(2);
- const showPicker=vi.fn();
- openDatePicker({focus,showPicker});
- expect(showPicker).toHaveBeenCalledOnce();
- expect(focus).toHaveBeenCalledTimes(2);
+ expect(focus).toHaveBeenCalledTimes(3);
+});
+it('lets a finger reach the real date input on touch screens',()=>{
+ const css=readFileSync('src/styles.css','utf8');
+ expect(css).toMatch(/@media\(pointer:coarse\)\{\.trip-date-current input\{pointer-events:auto\}\}/);
 });
 it('shows the stored MTB code under its one display name',()=>{
  const [,chip]=toolbar({activity:'MTB'}).rows[1].options;
