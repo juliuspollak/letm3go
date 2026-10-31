@@ -60,12 +60,15 @@ extension LocationRecorder {
         let recent = departureEvidence.recentMovement(now: now)
         let moving = AutomaticDetector.credibleMovement(motion, now: now)
         if recent || moving { restDisturbedAt = now }
+        // A standby fix arrives because the phone moved 25 m. Just after Core Motion
+        // changed its mind, that fix is the start of a departure, not proof of rest.
+        let unsettled = RestConfirmation.motionUnsettled(lastMotionChangeAt: diagnosticLastMotionAt, stationary: AutomaticDetector.freshStationary(motion, now: now), now: now)
         refreshWiFiIfDue(now: now)
         wifiMatchState = HomeWiFi.match(homeWiFi, wifiObservation, now: now)
         let decision = RestConfirmation.decide(RestInputs(
             place: kind, placeSince: dwell?.since, lastDisturbanceAt: restDisturbedAt, placeAccuracy: restPlaceAccuracy,
             placeVerified: restPlaceFixAt.map { fix in dwell.map { fix >= $0.since - 120 } ?? false } ?? false,
-            idle: automaticAvailable && active == nil && automaticIdle, recentMovement: recent, motionMoving: moving,
+            idle: automaticAvailable && active == nil && automaticIdle, recentMovement: recent, motionMoving: moving || unsettled,
             wifi: kind == .home ? wifiMatchState : .unknown, now: now))
         if decision.code == "settling", restDecision.code != "settling" {
             recordDiagnostic("rest", "Rest confirmation started", details: ["restPlace": kind.rawValue, "restRequiredSeconds": String(Int(decision.requiredSeconds)), "wifiMatch": wifiMatchState.rawValue])

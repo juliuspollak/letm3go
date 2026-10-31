@@ -6,8 +6,8 @@ import {cameraFit,personActivity,personLabel,savedPlaceName,secondsAtPlace} from
 
 // Freshness policy (documented in docs/household-location-sharing.md):
 // - live:        a position confirmed within the last 10 minutes. A phone
-//                publishes every 3-5 s while it moves in the foreground, about
-//                every 25 s while it moves in the background, and confirms an
+//                publishes every 3-5 s while driving or moving in the foreground,
+//                every 10 s on foot in the background, and confirms an
 //                unchanged position every 5 minutes while its location service
 //                runs, so a present member stays inside this window.
 // - stale:       an older position, shown with its age, up to 24 hours.
@@ -16,6 +16,18 @@ import {cameraFit,personActivity,personLabel,savedPlaceName,secondsAtPlace} from
 // - waiting:     sharing is on and no position has been received yet.
 // - off:         the member does not share.
 export const LIVE_SECONDS=10*60;
+// A member's movement status. What their phone published with the position comes from
+// native code and works while locked, so it outranks the WebView's household presence.
+const NATIVE_ACTIVITY={driving:'Driving',cycling:'Cycling',running:'Running',walking:'Walking'};
+export function memberActivities(presence=[],members=[]){
+ const shared=Object.fromEntries(presence.filter(p=>p.user_id&&p.activity_label).map(p=>[p.user_id,p.activity_label]));
+ for(const member of members){
+  if(!member.activity)continue;
+  if(NATIVE_ACTIVITY[member.activity])shared[member.user_id]=NATIVE_ACTIVITY[member.activity];
+  else delete shared[member.user_id];
+ }
+ return shared;
+}
 
 const finite=value=>typeof value==='number'&&Number.isFinite(value);
 export function validPoint(latitude,longitude){

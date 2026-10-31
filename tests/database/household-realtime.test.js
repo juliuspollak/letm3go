@@ -92,7 +92,28 @@ it('cannot be written to by a client, and a member who leaves loses access and t
 
 it('can be applied twice', async () => {
   await db.exec(await readFile('supabase/migrations/20261108000000_household_realtime_signals.sql', 'utf8'));
+  await db.exec(await readFile('supabase/migrations/20261112000000_household_shared_activity.sql', 'utf8'));
   expect((await db.query(`select count(*)::int as n from pg_proc where proname='publish_live_location'`)).rows[0].n).toBe(1);
+});
+
+it('carries the movement status with the position, behind the same access check', async () => {
+  const publish = (activity, lat = -33.9) => as('anon', '', `select public.publish_live_location('${token}',${lat},151.2,5,40,now(),${activity}) as ok`);
+  await db.exec('delete from realtime.messages');
+  expect((await publish(`'driving'`)).rows[0].ok).toBe(true);
+  const seen = await as('authenticated', b, `select activity,latitude from public.my_household_location_status() where user_id='${a}'`);
+  expect(seen.rows[0]).toMatchObject({ activity: 'driving' });
+  const before = (await db.query('select count(*)::int as n from realtime.messages')).rows[0].n;
+  await db.exec(`update public.household_live_locations set activity='stationary' where user_id='${a}'`);
+  expect((await db.query('select count(*)::int as n from realtime.messages')).rows[0].n).toBeGreaterThan(before);
+  // An unknown word costs the status, never the position; an earlier build sends none.
+  expect((await publish(`'teleporting'`, -33.91)).rows[0].ok).toBe(true);
+  expect((await db.query(`select activity from public.household_live_locations where user_id='${a}'`)).rows[0].activity).toBeNull();
+  expect((await as('anon', '', `select public.publish_live_location('${token}',-33.92,151.2,5,40,now()) as ok`)).rows[0].ok).toBe(true);
+  expect((await as('authenticated', outsider, `select * from public.my_household_location_status()`)).rows).toHaveLength(0);
+  await publish(`'driving'`, -33.93);
+  await db.exec(`update public.household_live_locations set enabled=false where user_id='${a}'`);
+  expect((await as('authenticated', b, `select activity from public.my_household_location_status() where user_id='${a}'`)).rows[0].activity).toBeNull();
+  await db.exec(`update public.household_live_locations set enabled=true where user_id='${a}'`);
 });
 
 it('does not fail a publish when Realtime is unavailable', async () => {

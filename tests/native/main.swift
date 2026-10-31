@@ -3501,4 +3501,40 @@ do {
     check(unavailable.confirmed,"rest at Home needs no Wi-Fi at all")
     check(!HomeWiFi.leftHome(previous:.unknown,current:.unavailable),"losing a reading is not leaving Home")
 }
+
+// MARK: Household live tracking
+do {
+    typealias Publisher=HouseholdPublisher
+    func moving(_ types:[String],_ confidence:String="high",continuous:Bool=true)->MotionEvidence { MotionEvidence(types:types,confidence:confidence,timestamp:100,continuous:continuous) }
+    check(Publisher.interval(speed:15,foreground:false,confirmation:false,activity:"driving") == 3,"a locked phone that is driving publishes every 3 s")
+    check(Publisher.interval(speed:15,foreground:false,confirmation:false,lowPower:true,activity:"driving") == 5,"Low Power Mode stays within the 2 to 5 s target")
+    check(Publisher.interval(speed:0,foreground:false,confirmation:false,activity:"driving") == 3,"a red light on a drive keeps its rate; the 5 m rule holds back unmoved fixes")
+    check(Publisher.interval(speed:15,foreground:false,confirmation:false) == 25,"high GPS speed alone does not earn the driving rate")
+    check(Publisher.interval(speed:1.4,foreground:false,confirmation:false,activity:"walking") == 10,"walking in the background publishes every 10 s")
+    check(Publisher.interval(speed:15,foreground:false,confirmation:true,activity:"driving") == 300,"a confirmation keeps its five-minute rate")
+    check(Publisher.activity(journey:"Driving",motion:moving(["Stationary"])) == "driving","a stop inside a journey is still driving")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"])) == "driving","Core Motion alone can report driving before the journey confirms")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving","Stationary"])) == "driving","stopped in a vehicle stays driving")
+    check(Publisher.activity(journey:"Unknown",motion:moving(["Driving"])) == "driving","an unclassified journey follows Core Motion")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"],"low")) == nil,"a low-confidence guess is not shared")
+    check(Publisher.activity(journey:nil,motion:moving(["Driving"],continuous:false)) == nil,"without live Core Motion nothing is claimed")
+    check(Publisher.activity(journey:nil,motion:moving(["Stationary"])) == "stationary","stopping is published, which ends the car")
+    check(Publisher.activity(journey:"MTB",motion:moving([])) == "cycling" && Publisher.activity(journey:"Hiking",motion:moving([])) == "walking","journey types map to one word")
+    check(Publisher.activityChanged(sent:nil,current:"driving") && Publisher.activityChanged(sent:"driving",current:"stationary"),"a change goes out at once")
+    check(!Publisher.activityChanged(sent:"driving",current:"driving") && !Publisher.activityChanged(sent:"driving",current:nil),"no change, or an unknown status, waits its turn")
+    check(Publisher.moving("driving") && !Publisher.moving("stationary") && !Publisher.moving(nil),"only movement shortens timeouts and back-off")
+    var stats=HouseholdPublishStats()
+    stats.noteAttempt();stats.noteSuccess(capturedAt:99,now:100);stats.noteAttempt();stats.noteSuccess(capturedAt:102.5,now:103);stats.noteAttempt();stats.noteFailure()
+    let summary=stats.details(activity:"driving")
+    check(summary["publishSuccesses"] == "2" && summary["publishFailures"] == "1" && summary["publishIntervalMedianMs"] == "3000","publishing rate comes from real acknowledgements")
+    check(summary["captureToAckMedianMs"] == "1000" && summary["captureToAckMaxMs"] == "1000","capture to acknowledgement is measured")
+    check(LocationDiagnosticPrivacy.context(summary).count == summary.count,"the export keeps every publishing figure")
+    stats.startWindow();stats.noteSuccess(capturedAt:105,now:106)
+    check(stats.intervals == [3],"the interval carries across a summary")
+    check(RestConfirmation.motionUnsettled(lastMotionChangeAt:1000,stationary:false,now:1030),"a fix just after Core Motion changes is not proof of rest")
+    check(!RestConfirmation.motionUnsettled(lastMotionChangeAt:1000,stationary:true,now:1030) && !RestConfirmation.motionUnsettled(lastMotionChangeAt:1000,stationary:false,now:1070),"settled motion does not delay rest")
+    var latency=DepartureLatency()
+    latency.noteEvidence("old",engine:"established",now:1000)
+    check(!latency.isStale(now:1100) && latency.isStale(now:6063),"a departure that never confirmed is not measured against a later one")
+}
 print("\(assertions) native recorder/auth assertions passed")
