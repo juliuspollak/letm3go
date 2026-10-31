@@ -7,7 +7,7 @@ import JourneyTags from './JourneyTags.jsx';
 import ActivityPrivacy from './ActivityPrivacy.jsx';
 import ActivityDetail from './ActivityDetail.jsx';
 import SwipeBack from './SwipeBack.jsx';
-export default function GroupedJourneyDetail({trip,grouping,onBack,activities,places,recording,onEdit,onPhoto,unit='km'}){
+export default function GroupedJourneyDetail({ownerID,trip,grouping,onBack,activities,places,recording,onEdit,onPhoto,unit='km'}){
  const [segmentID,setSegmentID]=useState(null),[editing,setEditing]=useState(false),[name,setName]=useState(trip.title),[editingStop,setEditingStop]=useState(null);
  const photoSegments=trip.segments.filter(s=>s.source==='device'||s.source==='simulator');
  const [photoSegmentID,setPhotoSegmentID]=useState(photoSegments[0]?.id||'');
@@ -21,7 +21,7 @@ export default function GroupedJourneyDetail({trip,grouping,onBack,activities,pl
  }
 
  const child=activities.find(s=>s.id===segmentID);
- if(child)return <ActivityDetail unit={unit} trip={child} onStopChange={grouping.act} places={places} onBack={()=>setSegmentID(null)} onEdit={()=>onEdit(child)} onPhoto={onPhoto} run={recording.run} onUpdated={()=>{}} onDeleted={()=>setSegmentID(null)} busy={recording.busy} error={recording.error}/>;
+ if(child)return <ActivityDetail ownerID={ownerID} unit={unit} trip={child} onStopChange={grouping.act} places={places} onBack={()=>setSegmentID(null)} onEdit={()=>onEdit(child)} onPhoto={onPhoto} run={recording.run} onUpdated={()=>{}} onDeleted={()=>setSegmentID(null)} busy={recording.busy} error={recording.error}/>;
  return <SwipeBack onBack={onBack}><div className="detail page-enter"><button className="text-button back" onClick={onBack}><ArrowLeft size={18}/> Back to journeys</button><div className="activity-title-line"><h1>{trip.title}</h1>{!trip.readOnly&&<button className="icon-button" aria-label="Rename journey" onClick={()=>{setName(trip.title);setEditing(true);}}><Pencil size={17}/></button>}</div>
  {editing&&<form className="journey-rename" onSubmit={async e=>{e.preventDefault();if(await grouping.act({type:'rename',anchor:trip.segmentIDs[0],title:name}))setEditing(false);}}><label>Journey name<input value={name} maxLength={150} onChange={e=>setName(e.target.value)} required/></label><button className="primary" disabled={grouping.busy}>Save name</button></form>}
  <div className="activity-facts"><label>Journey activity <select aria-label="Change grouped journey activity" value={trip.activity} disabled={trip.readOnly||grouping.busy} onChange={event=>grouping.act({type:'classify',anchor:trip.segmentIDs[0],activity:event.target.value})}>{['Driving','Walking','Running','Cycling','MTB','Road cycling','Hiking','Kitesurfing','Other','Unknown'].map(type=><option key={type}>{type}</option>)}</select></label></div><p className="muted small-copy">{trip.segments.length} activities · {trip.stops.length} stops · Grouping is private; sharing of each original activity is controlled separately below.</p><JourneyMap journeys={trip.segments} large onPhoto={onPhoto} embeddedEnabled={false}/><div className="record-metrics"><div><strong>{distanceText(trip.distance,unit)}</strong><span>Recorded distance</span></div><div><strong>{trip.minutes} min</strong><span>Activity time</span></div><div><strong>{Math.floor(trip.elapsedSeconds/60)} min</strong><span>Including stops</span></div></div>

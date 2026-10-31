@@ -889,3 +889,26 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .recording-warning p,.recording-health-issue p{margin:8px 0 0;font-size:13px;line-height:1.5;color:var(--muted)}
 .recording-warning-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
 .recording-health-issue{padding:14px 0;border-top:1px solid var(--line)}.recording-health-issue .primary{margin-top:12px}
+
+/* Recording on another device, and Apple Watch heart rate */
+.recording-elsewhere{display:grid;gap:6px}
+.heart-rate{margin:18px 0;display:grid;gap:10px}
+.heart-rate h2{display:flex;align-items:center;gap:7px;margin:0;font-size:1.05rem}
+.heart-rate h3{margin:6px 0 0;font-size:.92rem}
+.heart-chart{margin:0}
+.heart-chart svg{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none}
+.heart-readout{display:flex;gap:8px;align-items:baseline;min-height:22px;font-size:.84rem;color:var(--muted)}
+.heart-readout strong{color:var(--ink);font-variant-numeric:tabular-nums}
+.heart-line{fill:none;stroke:var(--heart,#c8344b);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.heart-dot{fill:var(--heart,#c8344b)}
+.heart-dot-focus{stroke:var(--bg);stroke-width:2}
+.heart-grid{stroke:var(--ink);stroke-opacity:.1;stroke-width:1}
+.heart-cross{stroke:var(--ink);stroke-opacity:.45;stroke-width:1}
+.heart-paused{fill:var(--ink);fill-opacity:.07}
+.heart-axis{fill:var(--muted);font-size:9px;font-variant-numeric:tabular-nums}
+.heart-zones table{width:100%;border-collapse:collapse;font-size:.86rem}
+.heart-zones th{text-align:left;font-weight:600;color:var(--muted);padding:2px 6px 4px 0}
+.heart-zones td{padding:3px 6px 3px 0;font-variant-numeric:tabular-nums}
+.heart-zone-bar{display:inline-block;height:8px;border-radius:0 4px 4px 0;background:var(--heart,#c8344b);width:calc(var(--share)*90px);margin-right:6px}
+.heart-zones-setup{display:grid;gap:8px}
+.heart-zones-setup label{display:grid;gap:4px;font-size:.88rem}
