@@ -45,7 +45,7 @@ it('broadcasts that a location changed, with no position, only to the household 
   expect(messages).toHaveLength(1);
   expect(messages[0].topic).toBe(`household:${house}`);
   expect(messages[0].event).toBe('location');
-  expect(Object.keys(messages[0].payload)).toEqual(['user_id']);
+  expect(messages[0].payload).toEqual({});
   expect(JSON.stringify(messages[0])).not.toMatch(/33\.8|151\.2/);
 });
 
@@ -75,6 +75,24 @@ it('gives each member their own channel and nothing to anyone else', async () =>
   await db.exec(`select set_config('realtime.topic','household:${house}',false)`);
   expect((await as('authenticated', b, 'select count(*)::int as n from realtime.messages')).rows[0].n).toBeGreaterThan(0);
   expect((await as('authenticated', outsider, 'select count(*)::int as n from realtime.messages')).rows[0].n).toBe(0);
+});
+
+it('cannot be written to by a client, and a member who leaves loses access and tells the others', async () => {
+  await expect(as('authenticated', b, `insert into realtime.messages(topic,event,payload) values('household:${house}','location','{}')`)).rejects.toThrow();
+  await expect(as('anon', b, `select public.can_join_household_topic('household:${house}')`)).rejects.toThrow();
+  await expect(as('anon', b, 'select * from public.my_household_signal_topics()')).rejects.toThrow();
+  expect((await as('authenticated', outsider, `select public.can_join_household_topic('household:${house}') as ok`)).rows[0].ok).toBe(false);
+  await db.exec('delete from realtime.messages');
+  await db.exec(`delete from public.household_memberships where user_id='${b}'`);
+  expect((await db.query('select topic,payload from realtime.messages')).rows).toEqual([{ topic: `household:${house}`, payload: {} }]);
+  expect((await as('authenticated', b, `select public.can_join_household_topic('household:${house}') as ok`)).rows[0].ok).toBe(false);
+  expect((await as('authenticated', b, 'select * from public.my_household_location_status()')).rows).toEqual([]);
+  await db.exec(`insert into public.household_memberships(user_id,household_id,role) values('${b}','${house}','member')`);
+});
+
+it('can be applied twice', async () => {
+  await db.exec(await readFile('supabase/migrations/20261108000000_household_realtime_signals.sql', 'utf8'));
+  expect((await db.query(`select count(*)::int as n from pg_proc where proname='publish_live_location'`)).rows[0].n).toBe(1);
 });
 
 it('does not fail a publish when Realtime is unavailable', async () => {

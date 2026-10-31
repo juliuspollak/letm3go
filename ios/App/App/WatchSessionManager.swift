@@ -22,7 +22,15 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private var conflictLogged = false
     // The Watch's manual recording, as last heard. Stale presence stops counting on
     // its own (CrossDeviceRecording), so nothing here needs clearing.
-    private(set) var watchRecording: RecordingPresence?
+    private var heardWatchRecording: RecordingPresence?
+    // A suspended app misses the delegate call, so the delivered context is read too.
+    var watchRecording: RecordingPresence? {
+        if WCSession.isSupported(), WCSession.default.activationState == .activated,
+           let delivered = RecordingPresence(dictionary: WCSession.default.receivedApplicationContext["recording"]), delivered.device == RecordingPresence.watch {
+            heardWatchRecording = CrossDeviceRecording.merged(heardWatchRecording, delivered)
+        }
+        return heardWatchRecording
+    }
 
     func start() {
         guard WCSession.isSupported() else { return }
@@ -71,13 +79,13 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
 
     // Called when a recording changes and from the recorder's 30-second timer. Sends
     // only for a real change or the heartbeat that keeps the Watch's view fresh.
-    func noteRecorderChanged() {
+    func noteRecorderChanged(force: Bool = false) {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
         let now = Date().timeIntervalSince1970
         let presence = currentPresence(now: now)
         let previous = lastPresence
         let changed = previous?.state != presence.state || previous?.sessionID != presence.sessionID
-        guard changed || (presence.isActive && now - (previous?.updatedAt ?? 0) >= CrossDeviceRecording.heartbeat) else { return }
+        guard force || changed || (presence.isActive && now - (previous?.updatedAt ?? 0) >= CrossDeviceRecording.heartbeat) else { return }
         lastPresence = presence
         sendOwnerContext()
         if WCSession.default.isReachable { WCSession.default.sendMessage(["recording": presence.dictionary], replyHandler: nil, errorHandler: nil) }
@@ -92,10 +100,11 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
 
     private func receive(presence value: Any?) {
         guard let presence = RecordingPresence(dictionary: value), presence.device == RecordingPresence.watch else { return }
-        let changed = watchRecording?.state != presence.state
-        watchRecording = presence
-        guard changed else { return }
-        LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch recording state changed", details: ["watchRecording": presence.state])
+        let previous = heardWatchRecording
+        let merged = CrossDeviceRecording.merged(previous, presence)
+        heardWatchRecording = merged
+        guard previous?.state != merged.state else { return }
+        LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch recording state changed", details: ["watchRecording": merged.state])
         checkConflict(now: Date().timeIntervalSince1970)
         LocationRecorder.shared.notifyJourneyChange()
     }
@@ -259,6 +268,10 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
             return
         }
         DispatchQueue.main.async { self.enqueue(transfer) }
+    }
+
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        DispatchQueue.main.async { if session.isReachable { self.noteRecorderChanged(force: true) } }
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {

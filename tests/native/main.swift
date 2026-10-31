@@ -3183,8 +3183,19 @@ do {
     check(indoorTrip?.points.isEmpty == true && indoorTrip?.details?.indoor == true && indoorTrip?.accumulatedSeconds == 600 && indoorTrip?.details?.heartRate?.summary.samples == 1, "indoor workout imports")
     var tap = WatchRideDraft(activity: "Running", startedAt: start)
     tap.finish(at: start + 8)
-    check(!tap.isKeepable && tap.transfer(now: start + 8, ownerID: nil, deviceID: nil) == nil, "a mistaken start is not an activity")
-    check(WatchActivityImport.withoutHeartRate(indoorTransfer!).heartRate == nil, "an unattributed ride loses its readings, not its route")
+    check(tap.isKeepable && tap.transfer(now: start + 8, ownerID: nil, deviceID: nil) != nil, "a short saved workout is kept")
+    let shortTrip = WatchActivityImport.activity(from: tap.transfer(now: start + 8, ownerID: nil, deviceID: nil)!, now: start + 9)
+    check(shortTrip?.points.isEmpty == true && shortTrip?.accumulatedSeconds == 8, "a short workout with no GPS imports")
+    var instant = WatchRideDraft(activity: "Running", startedAt: start)
+    instant.finish(at: start + 0.2)
+    check(!instant.isKeepable, "an instant with nothing in it is not an activity")
+    // Unattributed readings are held, invisible, until the person answers.
+    var held = WatchActivityImport.activity(from: indoorTransfer!, now: start + 700, heartRateVerified: false)!
+    check(held.details?.heartRate == nil && held.details?.unverifiedHeartRate?.summary.samples == 1, "unattributed readings are held, not shown or lost")
+    var declined = held
+    check(declined.resolveUnverifiedHeartRate(accept: false) && declined.details?.unverifiedHeartRate == nil && declined.details?.heartRate == nil, "declined readings are removed")
+    check(held.resolveUnverifiedHeartRate(accept: true) && held.details?.heartRate?.summary.samples == 1 && held.details?.unverifiedHeartRate == nil, "confirmed readings join the activity")
+    check(!held.resolveUnverifiedHeartRate(accept: true), "answered once")
 
     // The owner is fixed when the ride starts.
     let owned = WatchRideDraft(activity: "Walking", startedAt: start, ownerID: ownerA.uppercased())
@@ -3212,6 +3223,24 @@ do {
     check(restored.pausedAt == start + 11, "the unobserved span starts at the last checkpoint")
     restored.resume(at: start + 500)
     check(restored.pausePeriods == [WatchPausePeriod(start: start + 11, end: start + 500)], "the unobserved span is a pause")
+    // A reading saved after the last checkpoint is outside the pause, so it survives import.
+    var late = WatchRideDraft(activity: "Running", startedAt: start)
+    late.checkpoint(at: start + 10)
+    late.ingest(heartRate: hr(start + 13, 120), now: start + 13)
+    late.reopenPaused()
+    check(late.pausedAt == start + 13, "the pause begins after the last saved reading")
+    late.finish(at: start + 90)
+    check(WatchActivityImport.activity(from: late.transfer(now: start + 90, ownerID: ownerA, deviceID: nil)!, now: start + 91)?.details?.heartRate?.summary.samples == 1, "a late reading is not lost in recovery")
+    // Session lifecycle.
+    typealias Life = WatchWorkoutLifecycle
+    check(Life.sessionRunning(fromPaused: false, rideState: "paused") == .pauseSession, "a session that finishes starting does not undo a pause")
+    check(Life.sessionRunning(fromPaused: true, rideState: "paused") == .resumeRide, "resuming from the workout controls resumes the ride")
+    check(Life.sessionRunning(fromPaused: false, rideState: "recording") == .none && Life.sessionRunning(fromPaused: true, rideState: nil) == .none, "nothing else changes")
+    check(Life.sessionPaused(rideState: "recording") == .pauseRide && Life.sessionPaused(rideState: "paused") == .none, "session pause follows the ride")
+    check(Life.afterRecovery(rideWasRecording: true, sessionRunning: true) == .resumeRide, "a crash mid-ride keeps recording with the wrist down")
+    check(Life.afterRecovery(rideWasRecording: false, sessionRunning: true) == .pauseSession, "a paused ride stays paused after a crash")
+    check(Life.afterRecovery(rideWasRecording: true, sessionRunning: false) == .none, "with no session the rider decides")
+    check(Life.sensorExpected(sessionRunning: false, awaitingHealth: true) && !Life.sensorExpected(sessionRunning: false, awaitingHealth: false), "an open Health prompt is not a failed sensor")
     walkingFixes(&restored, from: start + 501, count: 2)
     restored.ingest(heartRate: hr(start + 502, 120), now: start + 502)
     try! fresh.save(restored)
@@ -3293,11 +3322,17 @@ do {
     let phoneNow = RecordingPresence(device: RecordingPresence.iPhone, ownerID: ownerA, sessionID: "P", activity: "MTB", state: "paused", startedAt: start, updatedAt: start)
     check(!CrossDeviceRecording.suppressesAutomaticStart(remote: phoneNow, ownerID: ownerA, now: start + 1), "only the Watch suppresses")
     check(RecordingPresence(dictionary: phoneNow.dictionary) == phoneNow, "presence wire format")
+    var endedLater = watchNow; endedLater.state = "idle"; endedLater.updatedAt = start + 5
+    check(CrossDeviceRecording.merged(endedLater, watchNow) == endedLater, "a late context cannot revive a finished recording")
+    check(CrossDeviceRecording.merged(watchNow, endedLater) == endedLater, "the newest state wins")
+    check(CrossDeviceRecording.merged(nil, watchNow) == watchNow, "first word is taken")
     check(RecordingPresence(dictionary: ["device": "toaster", "state": "recording", "updatedAt": 1.0]) == nil, "unknown device refused")
     var manualTrip = RecordedActivity(activity: "Running", vehicle: nil, startedAt: start + 100, resumedAt: nil, title: "Phone run"); manualTrip.endedAt = start + 400; manualTrip.recordingMode = "manual"
     var brush = manualTrip; brush.id = UUID().uuidString; brush.startedAt = start - 100; brush.endedAt = start + 10
-    let overlap = CrossDeviceRecording.overlaps(startedAt: start, endedAt: start + 300, id: "other", trips: [manualTrip, brush])
+    let overlap = CrossDeviceRecording.overlaps(startedAt: start, endedAt: start + 300, id: "other", trips: [manualTrip, brush], now: start + 300)
     check(overlap.count == 1 && overlap[0].seconds == 200 && overlap[0].kind == "manual", "offline overlap found, nothing removed")
+    var stillRecording = manualTrip; stillRecording.endedAt = nil
+    check(CrossDeviceRecording.overlaps(startedAt: start, endedAt: start + 300, id: "other", trips: [stillRecording], now: start + 300).first?.seconds == 200, "a recording still open counts")
 
     // Health classification.
     check(WatchWorkoutClassifier.classify("Hiking", indoor: false) == WatchWorkoutClass(type: "hiking", indoor: false, savesToHealth: true), "hiking")
@@ -3332,6 +3367,11 @@ check(HouseholdPublisher.interval(speed: 0, foreground: true, confirmation: fals
 check(HouseholdPublisher.interval(speed: -1, foreground: true, confirmation: false) == 25, "an unknown speed stays slow")
 check(HouseholdPublisher.interval(speed: 15, foreground: false, confirmation: false) == 25, "the background rate is unchanged")
 check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: true) == 300, "confirmations are unchanged")
+check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false, lowPower: true) == 10, "Low Power Mode publishes less")
+check(!HouseholdPublisher.worthSending(moved: 2, sinceLast: 3, confirmation: false), "no write for movement nobody can see")
+check(HouseholdPublisher.worthSending(moved: 9, sinceLast: 3, confirmation: false), "real movement is sent")
+check(HouseholdPublisher.worthSending(moved: 2, sinceLast: 25, confirmation: false), "the normal rate still refreshes")
+check(HouseholdPublisher.worthSending(moved: 0, sinceLast: 1, confirmation: true) && HouseholdPublisher.worthSending(moved: nil, sinceLast: 0, confirmation: false), "confirmations and first sends always go")
 
 print("\(assertions) native recorder/auth assertions passed")
 

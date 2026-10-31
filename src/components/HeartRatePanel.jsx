@@ -54,8 +54,18 @@ function Zones({record,owner}){
  <button type="button" className="text-button" onClick={()=>{setDraft(String(maximum));setMaximum(saveMaximum(owner,''));}}>Change maximum heart rate</button></div>;
 }
 
-export default function HeartRatePanel({trip,owner,unit}){
+// Readings from before the Watch knew an account. Nothing about them is shown or
+// counted until the person says they are theirs.
+function HeldHeartRate({trip,onResolve,busy}){
+ if(!trip?.details?.unverifiedHeartRate)return null;
+ return <div className="notice" role="status"><strong>Heart rate waiting for you</strong>
+  <p>This was recorded before your Apple Watch knew which account to use. Add it only if you wore the Watch for this activity.</p>
+  <div className="detail-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>onResolve?.(false)}>Remove it</button><button type="button" className="primary" disabled={busy} onClick={()=>onResolve?.(true)}>This was me</button></div></div>;
+}
+
+export default function HeartRatePanel({trip,owner,unit,onResolve,busy}){
  const record=heartRateOf(trip);
+ if(trip?.details?.unverifiedHeartRate)return <HeldHeartRate trip={trip} onResolve={onResolve} busy={busy}/>;
  if(!record)return trip?.source==='watch'&&trip?.details?.indoor?<p className="muted small-copy heart-none">No heart rate was recorded for this activity.</p>:null;
  const {summary}=record;
  return <section className="heart-rate" aria-label="Heart rate">

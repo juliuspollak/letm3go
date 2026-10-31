@@ -281,9 +281,9 @@ enum WatchTransferLimits {
     // Two fixes further apart than this are not a continuous ride.
     static let outageGap = 30.0
     static let maximumAccuracy = 30.0
-    // A recording with no usable route is still a real activity once it has run this
-    // long: an indoor workout, or an outdoor one under a roof.
-    static let minimumSecondsWithoutRoute = 60.0
+    // The rider chose Finish & Save over Discard, so any recording that ran is kept,
+    // with or without a route. Only an instant with nothing in it is not an activity.
+    static let minimumSecondsWithoutRoute = 1.0
 }
 
 struct WatchRideFix {
@@ -339,7 +339,10 @@ enum WatchActivityImport {
         return nil
     }
 
-    static func activity(from transfer: WatchActivityTransfer, now: Double = Date().timeIntervalSince1970) -> RecordedActivity? {
+    // `heartRateVerified` is false when nothing says whose body was measured: the
+    // readings are then held apart until the person confirms they are theirs.
+    static func activity(from transfer: WatchActivityTransfer, now: Double = Date().timeIntervalSince1970,
+                         heartRateVerified: Bool = true) -> RecordedActivity? {
         guard issue(with: transfer, now: now) == nil else { return nil }
         let analyzer = WatchTrackAnalyzer(points: transfer.points, activity: transfer.activity)
         let points = transfer.points.map {
@@ -363,8 +366,8 @@ enum WatchActivityImport {
         var details = ActivityDetails()
         details.indoor = transfer.indoor == true ? true : nil
         let paused = WatchHeartRate.cleaned(transfer.pausePeriods ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt)
-        // Readings are kept only for a ride whose person is known (see `withoutHeartRate`).
-        details.heartRate = ActivityHeartRate(samples: WatchHeartRate.cleaned(transfer.heartRate ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt, paused: paused), pausePeriods: paused)
+        let series = ActivityHeartRate(samples: WatchHeartRate.cleaned(transfer.heartRate ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt, paused: paused), pausePeriods: paused)
+        if heartRateVerified { details.heartRate = series } else { details.unverifiedHeartRate = series }
         if let ref = transfer.equipmentRef { trip.assignEquipment([ref]) }
         if let trailID = transfer.trailID, UUID(uuidString: trailID) != nil {
             details.mtbTrailID = trailID.lowercased()
@@ -382,14 +385,6 @@ enum WatchActivityImport {
         trip.details = details
         trip.updatedAt = now
         return trip
-    }
-
-    // A ride recorded before the Watch knew any account can be anyone's. Its route
-    // still imports as it always did, but health data is never guessed onto a person.
-    static func withoutHeartRate(_ transfer: WatchActivityTransfer) -> WatchActivityTransfer {
-        var copy = transfer
-        copy.heartRate = nil
-        return copy
     }
 
     // A schema newer than this build is not a bad ride: the phone waits for its own
@@ -620,9 +615,8 @@ struct WatchRideDraft {
                       heartRateCount: heartRate.count)
     }
 
-    // Worth a place in the phone's journal: a route, or enough active time to be a
-    // workout without one. Shorter than that it was a mistaken start.
-    var isKeepable: Bool { points.count >= 2 || activeSeconds >= WatchTransferLimits.minimumSecondsWithoutRoute }
+    // Anything that ran. Too little to keep is reported on screen, never dropped quietly.
+    var isKeepable: Bool { points.count >= 2 || !heartRate.isEmpty || activeSeconds >= WatchTransferLimits.minimumSecondsWithoutRoute }
     var heartRateSummary: WatchHeartRateSummary? { WatchHeartRate.summary(heartRate, paused: pausePeriods) }
 
     // A delayed reading from inside a pause belongs to no recorded time.
@@ -696,8 +690,9 @@ struct WatchRideDraft {
     // last durable duration, so a watch left in a bag overnight cannot add hours.
     mutating func reopenPaused() {
         guard state == "recording" else { return }
-        // The last checkpoint is the last moment this ride was observed.
-        pausedAt = resumedAt
+        // The last moment observed: a reading or fix saved just after the last
+        // checkpoint is real recorded data and must stay outside the pause.
+        pausedAt = [resumedAt, points.last?.timestamp, heartRate.last?.timestamp].compactMap { $0 }.max()
         resumedAt = nil
         state = "paused"
         segment = max(segment, (points.last?.segment ?? segment) + 1)

@@ -37,6 +37,19 @@ jobs:
       - run: npm run check:edge
       - run: npm audit --audit-level=moderate
 
+  database:
+    # A throwaway local Postgres on the runner; nothing here reaches the real project.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.checks == 'web' || inputs.checks == 'all' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run db:start
+      - run: npm run db:lint
+
   ios:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.checks == 'ios' || inputs.checks == 'all') }}
     runs-on: macos-26

@@ -309,7 +309,8 @@ struct WatchReadyView: View {
             }
         }
         .navigationTitle("Ready")
-        .onAppear { indoor = setup.indoor == true; recorder.clearStartBlock() }
+        .onAppear { indoor = setup.indoor == true }
+        .onDisappear { recorder.clearStartBlock() }
         // A start waiting for the location prompt opens the recording screen once it begins.
         .onChange(of: recorder.hasRide) { started in if started { path = [.recording] } }
     }
@@ -321,11 +322,92 @@ struct WatchRecordingView: View {
     @ObservedObject var recorder: WatchRecorder
     @Binding var path: [WatchRoute]
     @State private var confirming = false
+    #if DEBUG
+    static var demoTab = 0
+    @State private var tab = WatchRecordingView.demoTab
+    #else
+    @State private var tab = 0
+    #endif
 
     private var activity: String { recorder.config.activity }
     private var indoor: Bool { recorder.config.indoor == true }
 
     var body: some View {
+        // Metrics first, controls one swipe away, as in Apple's Workout app. Under Water
+        // Lock the numbers stay on screen, and on-screen lock leaves only the numbers.
+        Group {
+            if recorder.softLocked {
+                // Pinned, so the way out is on screen however long the numbers run.
+                VStack(spacing: 2) { metrics; softLock }
+            } else {
+                TabView(selection: $tab) {
+                    metrics.tag(0)
+                    controls.tag(1)
+                }
+                .tabViewStyle(.page)
+            }
+        }
+        .navigationTitle(WatchCatalog.choice(recorder.config.activity)?.title ?? recorder.config.activity)
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(recorder.hasRide)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                if recorder.hasRide && !recorder.softLocked { Button { path = [] } label: { Image(systemName: "house") }.accessibilityLabel("Home") }
+            }
+        }
+        .confirmationDialog("Finish this activity?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Finish & Save") {
+                recorder.finish()
+                path = [.summary]
+            }
+            Button("Discard", role: .destructive) {
+                recorder.discard()
+                path = []
+            }
+            Button("Keep Recording", role: .cancel) {}
+        }
+        .onChange(of: recorder.hasRide) { open in if !open && path.last == .recording { path = [] } }
+        .onChange(of: recorder.isRecording) { _ in tab = 0 }
+    }
+
+    @ViewBuilder private var heartRate: some View {
+        switch recorder.heartRate {
+        case .live(let bpm):
+            Label("\(Int(bpm.rounded())) BPM", systemImage: "heart.fill")
+                .font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(.red)
+                .accessibilityLabel("Heart rate \(Int(bpm.rounded())) beats per minute")
+        case .waiting, .unavailable:
+            Label(recorder.heartRate.label, systemImage: "heart").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+        case .paused, .off:
+            EmptyView()
+        }
+    }
+
+    // While the screen is locked in the app there is nothing to press by accident:
+    // Water Lock itself blocks touch, and the on-screen lock takes a long press.
+    private var controls: some View {
+        ScrollView {
+            VStack(spacing: 8) {
+                if recorder.isRecording {
+                    WatchActionButton(title: "Pause", symbol: "pause.fill", tint: .orange) { recorder.pause() }
+                } else {
+                    WatchActionButton(title: "Resume", symbol: "play.fill", tint: .green) { recorder.resume() }
+                }
+                WatchActionButton(title: "Finish", symbol: "stop.fill", tint: .red) { confirming = true }
+                WatchActionButton(title: "Lock", symbol: "drop.fill", tint: .blue) { tab = 0; recorder.lockScreen() }
+            }
+        }
+    }
+
+    private var softLock: some View {
+        Text("Hold to Unlock")
+            .font(.footnote.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44)
+            .background(.gray.opacity(0.25), in: Capsule())
+            .onLongPressGesture(minimumDuration: 1.5) { recorder.softUnlock() }
+            .accessibilityLabel("Screen locked. Touch and hold to unlock")
+    }
+
+    private var metrics: some View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             ScrollView {
                 VStack(spacing: 4) {
@@ -358,69 +440,8 @@ struct WatchRecordingView: View {
                             metric(WatchFormat.bpm(recorder.heartRateSummary?.maximum), "MAX BPM")
                         }
                     }
-                    controls
                 }
             }
-        }
-        .navigationTitle(WatchCatalog.choice(recorder.config.activity)?.title ?? recorder.config.activity)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(recorder.hasRide)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                if recorder.hasRide && !recorder.softLocked { Button { path = [] } label: { Image(systemName: "house") }.accessibilityLabel("Home") }
-            }
-        }
-        .confirmationDialog("Finish this activity?", isPresented: $confirming, titleVisibility: .visible) {
-            Button("Finish & Save") {
-                recorder.finish()
-                path = [.summary]
-            }
-            Button("Discard", role: .destructive) {
-                recorder.discard()
-                path = []
-            }
-            Button("Keep Recording", role: .cancel) {}
-        }
-        .onChange(of: recorder.hasRide) { open in if !open && path.last == .recording { path = [] } }
-    }
-
-    @ViewBuilder private var heartRate: some View {
-        switch recorder.heartRate {
-        case .live(let bpm):
-            Label("\(Int(bpm.rounded())) BPM", systemImage: "heart.fill")
-                .font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(.red)
-                .accessibilityLabel("Heart rate \(Int(bpm.rounded())) beats per minute")
-        case .waiting, .unavailable:
-            Label(recorder.heartRate.label, systemImage: "heart").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-        case .paused, .off:
-            EmptyView()
-        }
-    }
-
-    // While the screen is locked in the app there is nothing to press by accident:
-    // Water Lock itself blocks touch, and the on-screen lock takes a long press.
-    @ViewBuilder private var controls: some View {
-        if recorder.softLocked {
-            Text("Hold to Unlock")
-                .font(.footnote.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44)
-                .background(.gray.opacity(0.25), in: Capsule())
-                .onLongPressGesture(minimumDuration: 1.5) { recorder.softUnlock() }
-                .accessibilityLabel("Screen locked. Touch and hold to unlock")
-        } else {
-            HStack(spacing: 8) {
-                if recorder.isRecording {
-                    Button { recorder.pause() } label: { Image(systemName: "pause.fill").font(.title3) }
-                        .tint(.orange).accessibilityLabel("Pause")
-                } else {
-                    Button { recorder.resume() } label: { Image(systemName: "play.fill").font(.title3) }
-                        .tint(.green).accessibilityLabel("Resume")
-                }
-                Button { confirming = true } label: { Image(systemName: "stop.fill").font(.title3) }
-                    .tint(.red).accessibilityLabel("Finish")
-                Button { recorder.lockScreen() } label: { Image(systemName: "drop.fill").font(.title3) }
-                    .tint(.blue).accessibilityLabel("Lock screen")
-            }
-            .frame(minHeight: 44)
         }
     }
 

@@ -136,6 +136,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveShareLastSentAt: Double = 0
     var liveShareInFlight = false
     var liveShareRetryAt: Double = 0
+    var liveShareSentPoint: GPSPoint?
+    static let shareTimeFormat = ISO8601DateFormatter()
     // Off once a server without the 20261108 migration refuses the extra argument.
     var liveShareSendsCaptureTime = true
     // "device": a household publish credential (Keychain-backed); "session": the
@@ -548,7 +550,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func disableHouseholdLiveSharing(forget: Bool = false) {
         if forget, let owner = ownerID { try? AccountKeychain.set(Self.householdPublisherKey(owner), data: nil) }
         liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil;liveShareMode="session"
-        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil
+        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil
         refreshAutomaticMonitoring()
     }
     static func householdPublisherKey(_ owner: String) -> String { "household-live-publisher-\(owner)" }
@@ -648,14 +650,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
               let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
               now < liveShareTokenExpiresAt-60,!liveShareInFlight,
               now>=liveShareRetryAt,
-              now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation) else {return}
+              now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation,lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled),
+              HouseholdPublisher.worthSending(moved:liveShareSentPoint?.distance(to:sharePoint(location)),sinceLast:now-liveShareLastSentAt,confirmation:confirmation) else {return}
         let device=liveShareMode=="device"
         let speedValue: Any = location.speed >= 0 ? min(250,location.speed*3.6) as Any : NSNull()
         var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
         let sentCaptureTime=device && liveShareSendsCaptureTime
-        if sentCaptureTime { payload["p_captured_at"]=ISO8601DateFormatter().string(from:location.timestamp) }
+        if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data
@@ -667,6 +670,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
         liveShareInFlight=true
         liveShareLastSentAt=now
+        liveShareSentPoint=sharePoint(location)
         diagnosticSharingAttempts+=1
         let requestOwner=ownerID
         URLSession.shared.dataTask(with:request){[weak self] body,response,error in
@@ -1061,6 +1065,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "noteHouseholdDelivery", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resolveHeartRate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestMotionPermission", returnType: CAPPluginReturnPromise)
     ]
     // Push native journey changes into the WebView so History, the recorder panel
@@ -1316,6 +1321,13 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             catch { call.reject(error.localizedDescription) }
         }
     }
+    @objc func resolveHeartRate(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard self.requireAccount(call) else { return }
+            do { try LocationRecorder.shared.resolveHeartRate(id: call.getString("id") ?? "", accept: call.getBool("accept") == true); call.resolve(LocationRecorder.shared.snapshot()) }
+            catch { call.reject(error.localizedDescription) }
+        }
+    }
     // Diagnostics: how old household positions were when this phone read them.
     @objc func noteHouseholdDelivery(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
@@ -1328,7 +1340,12 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func transition(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }
-            do { try LocationRecorder.shared.transition(call.getString("action") ?? ""); call.resolve(LocationRecorder.shared.snapshot()) }
+            do {
+                try LocationRecorder.shared.transition(call.getString("action") ?? "")
+                // A pause or finish reaches the Watch now, not at the next heartbeat.
+                WatchSessionManager.shared.noteRecorderChanged()
+                call.resolve(LocationRecorder.shared.snapshot())
+            }
             catch { call.reject(error.localizedDescription) }
         }
     }

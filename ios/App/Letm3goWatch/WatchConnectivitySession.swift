@@ -30,6 +30,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
 
     private var inFlight: Set<String> = []
     private var retryTimer: Timer?
+    private var lastPresence: RecordingPresence?
     private let queue = WatchTransferQueue.shared
 
     private override init() {
@@ -73,6 +74,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     // The latest state goes in the context, which survives an unreachable phone;
     // a reachable phone also hears it at once.
     func announce(_ presence: RecordingPresence) {
+        lastPresence = presence
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
         let session = WCSession.default
         try? session.updateApplicationContext(["recording": presence.dictionary])
@@ -165,7 +167,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
 
     private func receive(_ context: [String: Any]) {
         if let presence = RecordingPresence(dictionary: context["recording"]), presence.device == RecordingPresence.iPhone {
-            remoteRecording = presence
+            remoteRecording = CrossDeviceRecording.merged(remoteRecording, presence)
         }
         guard context.keys.contains("ownerID") else { return }
         let owner = WatchOwnership.normalize(context["ownerID"] as? String)
@@ -250,7 +252,7 @@ extension WatchConnectivitySession: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         guard let presence = RecordingPresence(dictionary: message["recording"]), presence.device == RecordingPresence.iPhone else { return }
-        DispatchQueue.main.async { self.remoteRecording = presence }
+        DispatchQueue.main.async { self.remoteRecording = CrossDeviceRecording.merged(self.remoteRecording, presence) }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -266,7 +268,14 @@ extension WatchConnectivitySession: WCSessionDelegate {
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
-        DispatchQueue.main.async { self.sendPending() }
+        DispatchQueue.main.async {
+            self.sendPending()
+            // Back in range: say where the recording stands rather than wait for the heartbeat.
+            if var presence = self.lastPresence, presence.isActive, session.isReachable {
+                presence.updatedAt = Date().timeIntervalSince1970
+                self.announce(presence)
+            }
+        }
     }
 
     nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {

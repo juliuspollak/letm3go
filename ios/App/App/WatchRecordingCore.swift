@@ -62,7 +62,8 @@ enum WatchHeartRate {
             && sample.bpm >= WatchHeartRateLimits.minimumBPM && sample.bpm <= WatchHeartRateLimits.maximumBPM
     }
     static func inside(_ time: Double, _ periods: [WatchPausePeriod]) -> Bool {
-        periods.contains { time >= $0.start && time <= $0.end }
+        // Strict: a reading exactly at either edge was still taken while recording.
+        periods.contains { time > $0.start && time < $0.end }
     }
     // Pause periods that a phone can trust: finite, inside the activity, ordered.
     static func cleaned(_ periods: [WatchPausePeriod], startedAt: Double, endedAt: Double) -> [WatchPausePeriod] {
@@ -123,6 +124,34 @@ struct ActivityHeartRate: Codable, Equatable {
         let kept = WatchHeartRate.cleaned(pausePeriods, startedAt: start, endedAt: end)
         return ActivityHeartRate(samples: samples.filter { $0.timestamp >= start && $0.timestamp <= end }, pausePeriods: kept)
     }
+}
+
+// MARK: - Workout session lifecycle
+
+// How a change in the workout session maps onto the ride. WatchRecorder only carries
+// these out, so each interruption has one tested answer.
+enum WatchWorkoutLifecycle {
+    enum Action: Equatable { case none, resumeRide, pauseRide, pauseSession }
+
+    static func sessionRunning(fromPaused: Bool, rideState: String?) -> Action {
+        guard rideState == "paused" else { return .none }
+        // A session resumed from its own controls resumes the ride. A session that
+        // only finished starting must not undo a pause the rider just made.
+        return fromPaused ? .resumeRide : .pauseSession
+    }
+    static func sessionPaused(rideState: String?) -> Action { rideState == "recording" ? .pauseRide : .none }
+
+    // watchOS kept a running session through a crash, so the rider was still
+    // recording and may not be looking. The unobserved time stays a pause; recording
+    // picks up by itself. A ride already paused stays paused.
+    static func afterRecovery(rideWasRecording: Bool, sessionRunning: Bool) -> Action {
+        guard sessionRunning else { return .none }
+        return rideWasRecording ? .resumeRide : .pauseSession
+    }
+
+    // While the Health prompt is open there is no session yet. That is waiting, not
+    // a failed sensor.
+    static func sensorExpected(sessionRunning: Bool, awaitingHealth: Bool) -> Bool { sessionRunning || awaitingHealth }
 }
 
 // MARK: - Water Lock
@@ -229,6 +258,12 @@ enum CrossDeviceRecording {
     static func suppressesAutomaticStart(remote: RecordingPresence?, ownerID: String?, now: Double) -> Bool {
         active(remote, ownerID: ownerID, now: now)?.device == RecordingPresence.watch
     }
+    // The newest word wins. A context delivered late must not undo a message that
+    // already said the recording ended.
+    static func merged(_ current: RecordingPresence?, _ incoming: RecordingPresence) -> RecordingPresence {
+        guard let current, current.device == incoming.device, current.updatedAt > incoming.updatedAt else { return incoming }
+        return current
+    }
     static func overlapSeconds(_ startA: Double, _ endA: Double, _ startB: Double, _ endB: Double) -> Double {
         max(0, min(endA, endB) - max(startA, startB))
     }
@@ -247,10 +282,11 @@ extension CrossDeviceRecording {
     // A brief brush at either end is not the same activity recorded twice.
     static let meaningfulOverlap = 60.0
 
-    static func overlaps(startedAt: Double, endedAt: Double, id: String, trips: [RecordedActivity]) -> [WatchOverlap] {
+    // `trips` includes anything still recording, so an open recording counts up to now.
+    static func overlaps(startedAt: Double, endedAt: Double, id: String, trips: [RecordedActivity], now: Double) -> [WatchOverlap] {
         trips.compactMap { trip in
-            guard trip.id.lowercased() != id.lowercased(), trip.source != "watch", trip.details?.provisional != true else { return nil }
-            let seconds = overlapSeconds(startedAt, endedAt, trip.startedAt, trip.endedAt ?? trip.startedAt)
+            guard trip.id.lowercased() != id.lowercased(), trip.source != "watch" else { return nil }
+            let seconds = overlapSeconds(startedAt, endedAt, trip.startedAt, trip.endedAt ?? now)
             guard seconds >= meaningfulOverlap else { return nil }
             return WatchOverlap(activityID: trip.id, title: String(trip.title.prefix(120)), kind: trip.recordingMode ?? "manual", seconds: seconds)
         }

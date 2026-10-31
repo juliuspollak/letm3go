@@ -1,5 +1,5 @@
 import {expect,it,vi} from 'vitest';
-import {POLL_CONNECTED_MS,POLL_MS,PUBLISH_MOVING_MS,PUBLISH_STILL_MS,deliveryLatency,latencySummary,pollDelay,publishDelay,sharedLocationPayload,subscribeHouseholdSignals,throttled} from './householdRealtime.js';
+import {joinHouseholdSignals,POLL_CONNECTED_MS,POLL_MS,PUBLISH_MOVING_MS,PUBLISH_STILL_MS,deliveryLatency,latencySummary,pollDelay,publishDelay,sharedLocationPayload,subscribeHouseholdSignals,throttled} from './householdRealtime.js';
 
 it('polls fast only while no push channel is up',()=>{
  expect(pollDelay(false)).toBe(POLL_MS);
@@ -38,6 +38,13 @@ it('joins a private channel, follows its state and falls back when it drops',()=
  channel.status('CHANNEL_ERROR');expect(onState).toHaveBeenLastCalledWith(false);
  channel.status('SUBSCRIBED');expect(onState).toHaveBeenLastCalledWith(true);
  stop();expect(client.removed).toEqual([channel]);expect(onState).toHaveBeenLastCalledWith(false);
+});
+it('hands Realtime the current token before joining a private channel',async()=>{
+ const client=fakeClient(),order=[];
+ client.realtime={setAuth:async()=>{order.push('auth');}};
+ const channel=client.channel.bind(client);client.channel=(...args)=>{order.push('join');return channel(...args);};
+ await joinHouseholdSignals(client,['household:1'],{onSignal(){},onState(){}});
+ expect(order).toEqual(['auth','join']);
 });
 it('sends only the allowed fields of a fix',()=>{
  expect(Object.keys(sharedLocationPayload({latitude:1,longitude:2,accuracy:3,speed:1,bpm:150,activity:'Running'})).sort()).toEqual(['p_accuracy','p_enabled','p_latitude','p_longitude','p_speed']);

@@ -68,6 +68,16 @@ it('names an overlapping recording and keeps both',()=>{
  render(<ActivityDetail trip={recordedJourney({...trip,details:{overlaps:[{activityID:'p',title:'Phone run',kind:'manual',seconds:600}]}})} places={[]}/>);
  expect(screen.getByRole('status')).toHaveTextContent('Phone run · 10 min together. Both are kept');
 });
+it('shows nothing of held readings until the person answers',()=>{
+ const onResolve=vi.fn();
+ render(<HeartRatePanel trip={{...trip,details:{unverifiedHeartRate:heartRate}}} onResolve={onResolve}/>);
+ expect(screen.queryByText('140 BPM')).not.toBeInTheDocument();
+ expect(screen.queryByRole('img',{name:/Heart rate/})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'This was me'}));
+ expect(onResolve).toHaveBeenCalledWith(true);
+ fireEvent.click(screen.getByRole('button',{name:'Remove it'}));
+ expect(onResolve).toHaveBeenLastCalledWith(false);
+});
 it('keeps heart rate out of everything that leaves the phone',()=>{
  expect(JSON.stringify(publicationPreview(trip,[]))).not.toMatch(/heartRate|bpm/i);
  expect(JSON.stringify(sharedLocationPayload({latitude:1,longitude:2,accuracy:3,speed:4,timestamp:5,heartRate:120}))).not.toMatch(/heart/i);

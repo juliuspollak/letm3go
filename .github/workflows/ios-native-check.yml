@@ -51,7 +51,7 @@ jobs:
             xcrun simctl boot "$udid" || true
             xcrun simctl bootstatus "$udid" -b
             xcrun simctl install "$udid" "$app"
-            for screen in home activities cycling bike ready recording history detail; do
+            for screen in home activities cycling bike ready ready-blocked recording controls recording-waiting recording-unavailable recording-softlock recording-conflict recording-storage recording-indoor settings history detail; do
               xcrun simctl launch "$udid" au.jpollak.journey.watchkitapp -demoScreen "$screen" >/dev/null
               sleep 8
               xcrun simctl io "$udid" screenshot "shots/watch-${size}mm-$screen.png"

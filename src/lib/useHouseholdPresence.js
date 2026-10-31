@@ -4,7 +4,7 @@ import {recorder,recorderAvailable} from './recorder.js';
 import {config} from './config.js';
 import {sharedPosition} from './sharedPosition.js';
 import {App as NativeApp} from '@capacitor/app';
-import {deliveryLatency,latencySummary,pollDelay,publishDelay,sharedLocationPayload,subscribeHouseholdSignals,throttled} from './householdRealtime.js';
+import {deliveryLatency,joinHouseholdSignals,latencySummary,pollDelay,publishDelay,sharedLocationPayload,throttled} from './householdRealtime.js';
 
 const missingFunction=error=>error?.code==='PGRST202'||/could not find the function|does not exist/i.test(error?.message||'');
 // Household members and their authorised positions. Falls back to the earlier
@@ -98,6 +98,14 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  // server authorises them. A failed fetch keeps the last rows (with their own
  // ages) and reports the error, so a membership result is never mistaken for a
  // location result and a network blip never blanks the map.
+ const noteDelivery=useCallback(rows=>{
+  latencies.current.push(...deliveryLatency(rows,positionTimes.current));
+  const clock=Date.now();
+  if(clock-latencyReportedAt.current<300000||!latencies.current.length)return;
+  latencyReportedAt.current=clock;
+  void recorder.noteHouseholdDelivery?.({...latencySummary(latencies.current),transport:signalled.current?'push':'polling'});
+  latencies.current=[];
+ },[]);
  const refreshLive=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
   try{
@@ -105,15 +113,19 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    if(settings.error)throw new Error('Location sharing could not be loaded. Check your connection and retry.');
    liveConsent.current=settings.data?.[0]?.enabled===true;
    setLiveEnabled(liveConsent.current);setLiveMembers(members);setSelfArrival(liveConsent.current?arrival:null);setLiveError('');setLiveReady(true);
-   latencies.current.push(...deliveryLatency(members,positionTimes.current));
-   const clock=Date.now();
-   if(clock-latencyReportedAt.current>=300000&&latencies.current.length){
-    latencyReportedAt.current=clock;
-    void recorder.noteHouseholdDelivery?.({...latencySummary(latencies.current),transport:signalled.current?'push':'polling'});
-    latencies.current=[];
-   }
+   noteDelivery(members);
   }catch(err){setLiveError(err.message||'Location sharing could not be loaded.');}
- },[owner,online]);
+ },[owner,online,noteDelivery]);
+ // A signal only needs the positions: this one read, not the settings and arrival too.
+ const refreshPositions=useCallback(async()=>{
+  if(!owner||!online||!supabase)return;
+  try{
+   const members=await loadHouseholdLocations();
+   setLiveMembers(members);setLiveError('');
+   noteDelivery(members);
+  }catch{/* The next poll reports it; a missed signal must not raise an error. */}
+ },[owner,online,noteDelivery]);
+ const memberKey=useMemo(()=>liveMembers.map(member=>member.user_id).sort().join(','),[liveMembers]);
  useEffect(()=>{
   if(!online)return;
   let alive=true,listener,timer;
@@ -131,18 +143,20 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  useEffect(()=>{
   if(!online||!owner||!supabase)return;
   let alive=true,stop=null;
-  const read=throttled(()=>{if(document.visibilityState==='visible')void refreshLive();});
-  void supabase.rpc('my_household_signal_topics').then(({data,error})=>{
+  const read=throttled(()=>{if(document.visibilityState==='visible')void refreshPositions();});
+  void Promise.resolve(supabase.rpc('my_household_signal_topics')).then(async({data,error})=>{
    const topics=(data||[]).map(row=>row.topic).filter(Boolean);
    if(!alive||error||!topics.length)return;
-   stop=subscribeHouseholdSignals(supabase,topics,{onSignal:read,onState:connected=>{
+   const leave=await joinHouseholdSignals(supabase,topics,{onSignal:read,onState:connected=>{
     // Joining (or rejoining) catches up on whatever was missed while away.
     if(connected&&!signalled.current)read();
     signalled.current=connected;
    }});
-  },()=>{});
+   if(alive)stop=leave;else leave();
+  }).catch(()=>{});
   return()=>{alive=false;read.cancel();stop?.();signalled.current=false;};
- },[online,owner,refreshLive]);
+ // memberKey: joining or leaving a household changes which channels apply.
+ },[online,owner,refreshPositions,memberKey]);
  // Keep the native uploader armed with a short-lived session only while
  // the owner has separately opted into precise family sharing. Native tracking
  // uses existing Core Location callbacks when JavaScript is suspended.
@@ -217,7 +231,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
     delay=publishDelay(position.speed);
     if(!liveConsent.current)return;
     const {error:failure}=await supabase.rpc('set_my_live_location',sharedLocationPayload(position));
-    if(failure&&alive)setLiveError('Unable to update live location.');
+    if(failure&&alive){setLiveError('Unable to update live location.');delay=publishDelay(null);}
     if(!failure&&alive)setLastPublishedAt(Date.now());
    }catch{/* Never replace the last confirmed location with a guess. */}
    finally{liveBusy.current=false;}

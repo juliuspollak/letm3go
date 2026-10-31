@@ -23,7 +23,7 @@ Readings come only from the workout session's `HKLiveWorkoutBuilder`; there is n
 
 Apple does not reveal whether reading was allowed, so denied permission looks like silence. The Watch shows Waiting for Heart Rate for 60 seconds, then Heart Rate Unavailable. It never shows zero.
 
-A ride recorded before the Watch knew any account still imports its route, but its readings are dropped: nothing says whose heart rate it was.
+A ride recorded before the Watch knew any account still imports its route. Its readings are held in the encrypted journal, shown nowhere, until the person chooses This was me or Remove it.
 
 **Zones:** five 10% bands of a maximum the person enters, stored per account on this device. No maximum, no zones. Nothing is estimated from age.
 
@@ -39,7 +39,7 @@ The Watch offers every iPhone activity value. Bike selection appears only for cy
 | Other | Speed, climb | other |
 | Driving | Speed | Not saved: a drive is not a workout |
 
-Walking, Running, Cycling and Other can be marked Indoor. A recording with no route is kept once it has run for 60 seconds.
+Walking, Running, Cycling and Other can be marked Indoor. Finish & Save keeps any recording that ran for at least a second, or has a fix or a reading, with or without a route. Discard is the way to drop a mistaken start.
 
 ## Water Lock
 
@@ -71,7 +71,11 @@ The broadcast contains only a user id. Each client re-reads through `my_househol
 
 ### Deployment
 
-`supabase/migrations/20261108000000_household_realtime_signals.sql` must be applied by hand. Until then the app keeps polling and still publishes faster, and the native publisher drops the capture time after one refused request. In the Supabase dashboard, Realtime must allow private channels.
+`supabase/migrations/20261108000000_household_realtime_signals.sql` must be applied by hand, and can be re-run. Apply it before release: the app works without it, but it then polls at 15 s while publishing faster. The native publisher drops the capture time after one refused request. No dashboard change is needed.
+
+Realtime rechecks access on join and on each new token, so a removed member can receive empty signals until their token refreshes, and reads nothing from them.
+
+Publishing skips movement under 5 m, slows to 10 s in Low Power Mode, and never overlaps an upload.
 
 ## Needs a real iPhone and Apple Watch
 
@@ -81,6 +85,6 @@ The broadcast contains only a user id. Each client re-reads through `my_househol
 4. Force-quitting the Watch app mid-ride restores it paused, with one workout in Apple Health.
 5. A Watch ride recorded away from the iPhone arrives later with its heart rate.
 6. Starting on one device shows the other as recording, and offline starts keep both.
-7. With the Watch screen off and no in-app location background mode, GPS keeps arriving.
+7. With the Watch screen off, GPS keeps arriving. `Watch GPS silent` lines in the diagnostic export show any gap and the app state. Do not set `allowsBackgroundLocationUpdates`: it ended the app at recording start on the simulator.
 8. Two phones with the app open: time a marker update while driving, and read the delivery lines in the diagnostic export.
 9. Battery use during a long foreground drive at the 3-second publish rate.

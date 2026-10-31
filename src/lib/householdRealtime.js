@@ -30,6 +30,12 @@ export function throttled(run,ms=SIGNAL_THROTTLE_MS,{now=()=>Date.now(),later=se
 }
 // `onState(connected)` reports whether every channel is joined. Reconnecting is
 // supabase-js's job; a client that never joins simply keeps polling.
+// A private channel is checked against the caller's token, so that token must reach
+// Realtime before joining. supabase-js then renews it on each refresh.
+export async function joinHouseholdSignals(client,topics,handlers){
+ await client.realtime?.setAuth?.();
+ return subscribeHouseholdSignals(client,topics,handlers);
+}
 export function subscribeHouseholdSignals(client,topics,{onSignal,onState}){
  const joined=new Set();
  const channels=topics.map(topic=>client.channel(topic,{config:{private:true}})
