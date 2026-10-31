@@ -141,6 +141,10 @@ final class WatchRecorder: NSObject, ObservableObject {
         distanceMeters = 7_842
         activeSeconds = 1_843
         lastFixAt = now
+        currentSpeed = 5.2
+        elevationGain = 214
+        heartRate = .live(142)
+        heartRateSummary = WatchHeartRateSummary(average: 136, maximum: 171, minimum: 88, samples: 368, gaps: 0)
     }
     #endif
 
@@ -424,6 +428,8 @@ final class WatchRecorder: NSObject, ObservableObject {
     }
 
     private func tick() {
+        // A paused ride is still an open recording, so the iPhone keeps hearing of it.
+        announcePresence(force: false)
         guard var ride = draft, ride.isRecording else { return }
         let now = Date().timeIntervalSince1970
         ride.checkpoint(at: now)
@@ -691,7 +697,8 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         health.recoverActiveWorkoutSession { session, _ in
             Task { @MainActor in
                 guard let session else { return }
-                guard self.draft != nil else { session.end(); return }
+                guard let ride = self.draft else { session.end(); return }
+                self.healthWorkoutSaves = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor).savesToHealth
                 session.delegate = self
                 self.workout = session
                 let builder = session.associatedWorkoutBuilder()
@@ -912,7 +919,6 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     }
 
     private func refreshCrossDevice(now: Double) {
-        announcePresence(force: false)
         let link = WatchConnectivitySession.shared
         let conflict = CrossDeviceRecording.conflict(localSession: draft?.id, remote: link.remoteRecording, ownerID: draft?.ownerID ?? link.ownerID, now: now)
         let other = conflict ? link.remoteRecording : nil

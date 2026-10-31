@@ -3321,6 +3321,10 @@ do {
     check(buffer.events.count == 29, "drained up to what was sent")
 }
 
+// Watch and household diagnostics survive the export filter; readings are never in it.
+let watchContext = LocationDiagnosticPrivacy.context(["watchAt": "1", "heartRateSamples": "4", "heartRateGaps": "1", "latencyMedianMs": "2500", "transport": "push", "bpm": "150", "latitude": "1"])
+check(watchContext.count == 5 && watchContext["bpm"] == nil && watchContext["latitude"] == nil, "diagnostics keep counts, never readings or positions")
+
 // Household publishing adapts to movement and to whether the map can be open.
 check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false) == 3, "foreground driving publishes every 3 s")
 check(HouseholdPublisher.interval(speed: 1.2, foreground: true, confirmation: false) == 5, "foreground walking publishes every 5 s")

@@ -49,6 +49,12 @@ it('broadcasts that a location changed, with no position, only to the household 
   expect(JSON.stringify(messages[0])).not.toMatch(/33\.8|151\.2/);
 });
 
+it('lets the other phone read the published position right after the signal', async () => {
+  const row = (await as('authenticated', b, 'select latitude,location_at,server_now from public.my_household_location_status()')).rows[0];
+  expect(row.latitude).toBe(-33.8);
+  expect(row.location_at).not.toBeNull();
+});
+
 it('still accepts the arguments earlier app builds send', async () => {
   expect((await as('anon', a, `select public.publish_live_location('${token}',-33.81,151.2)  as ok`)).rows[0].ok).toBe(true);
 });
