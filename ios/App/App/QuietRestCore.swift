@@ -154,11 +154,15 @@ struct PassiveRestInputs: Equatable {
     var significantChanges: Bool
     var exitRegion: Bool
     var manualRecording: Bool
+    var liveSharing: Bool = false
 }
 
 enum PassiveRestPolicy {
     static func retainReason(_ i: PassiveRestInputs) -> String? {
         if i.manualRecording { return "a manual recording is running" }
+        // Releasing location while resting would stop the native publisher even
+        // though the person explicitly asked their household to see them.
+        if i.liveSharing { return "location sharing is on" }
         guard i.rest.confirmed else { return "rest not confirmed: \(i.rest.reason)" }
         guard i.enabled else { return "releasing location while resting is switched off" }
         guard i.alwaysAuthorized else { return "needs Always location access" }

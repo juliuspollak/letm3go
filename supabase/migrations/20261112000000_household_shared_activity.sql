@@ -35,13 +35,14 @@ begin
  select l.user_id into v_user from public.household_live_locations l
   where l.publish_token_hash=sha256(convert_to(p_token,'UTF8'))
   and l.publish_token_expires_at>now() and l.enabled
-  and exists(select 1 from public.household_memberships m where m.user_id=l.user_id);
+  and exists(select 1 from public.household_memberships m where m.user_id=l.user_id)
+  for update;
  if v_user is null then return false; end if;
  v_at:=least(now(),greatest(coalesce(p_captured_at,now()),now()-interval '30 seconds'));
  update public.household_live_locations
   set latitude=p_latitude,longitude=p_longitude,accuracy_m=p_accuracy,speed_kmh=p_speed,
    location_at=v_at,expires_at=now()+interval '90 seconds',updated_at=now(),activity=v_activity
-  where user_id=v_user and (location_at is null or location_at<=v_at);
+  where user_id=v_user and enabled and (location_at is null or location_at<=v_at);
  return true;
 end $$;
 revoke all on function public.publish_live_location(text,double precision,double precision,double precision,double precision,timestamptz,text) from public,anon,authenticated;

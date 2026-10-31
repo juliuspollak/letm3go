@@ -1431,7 +1431,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     public let identifier="AppleMapsPlugin"
     public let jsName="AppleMaps"
-    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise)]
+    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise)]
     @objc func setAppearance(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             let dark=call.getString("theme")=="dark"
@@ -1672,6 +1672,26 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
             }
             call.resolve(missingOverview ? ["missingOverview":true] : [:])
+        }
+    }
+    // Live content update: move existing annotations in place and leave the map
+    // view, camera, gestures, selection, routes and photos untouched. The WebView
+    // uses this for position/activity changes instead of re-embedding the map.
+    @objc func update(_ call:CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let id=call.getString("mapID"),let coordinator=self.coordinators[id] else {
+                call.resolve(["missing":true]);return
+            }
+            var content=MapContent(call.options)
+            // A live update names the same overview key but does not resend its
+            // large payload. Keep the data this map already has; otherwise every
+            // position update would clear the density map and photos.
+            if content.overview==nil, let key=call.getString("overview"),
+               let existing=self.embeddedContent[id]?.overview, existing.key==key {content.overview=existing}
+            self.embeddedContent[id]=content
+            coordinator.apply(content)
+            if self.presentedID==id {self.presentedMap?.update(content)}
+            call.resolve()
         }
     }
     @objc func unembed(_ call:CAPPluginCall) {

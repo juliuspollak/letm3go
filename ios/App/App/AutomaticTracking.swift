@@ -21,12 +21,22 @@ extension LocationRecorder {
             let confidence = activity.confidence == .high ? "high" : activity.confidence == .medium ? "medium" : "low"
             let previousMotion=self.motion
             let now=Date().timeIntervalSince1970
-            self.motion = MotionEvidence(types:types,confidence:confidence,timestamp:activity.startDate.timeIntervalSince1970,continuous:true)
+            self.motion = MotionEvidence(types:types,confidence:confidence,timestamp:now,continuous:true,
+                startedAt:activity.startDate.timeIntervalSince1970)
             if previousMotion.types != types || previousMotion.confidence != confidence {
                 self.diagnosticLastMotionAt=now
                 self.recordDiagnostic("motion","Motion classification delivered",details:["motionStartedAt":String(activity.startDate.timeIntervalSince1970)])
             }
             self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970)
+            // A status change is sent on the motion callback, not only on the next
+            // GPS fix or timer tick. This is what removes a car promptly when a
+            // drive becomes a genuine stop.
+            if self.liveSharingArmed, self.active == nil {
+                self.confirmHouseholdLocation()
+                if previousMotion.types != types || previousMotion.confidence != confidence {
+                    self.reconcileLiveSharingLocation()
+                }
+            }
             if self.automaticAvailable,self.active == nil {
                 if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now),!self.automaticSampling.locationWake {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
@@ -76,18 +86,15 @@ extension LocationRecorder {
         // held, it covers departures that begin with the phone locked.
         reconcileBackgroundSession("monitoring refresh")
         reconcileServiceSession("monitoring refresh")
-        let now=Date().timeIntervalSince1970
-        let backgroundSharingArmed=(liveShareToken != nil && now<liveShareTokenExpiresAt-60) ||
-            (friendShareToken != nil && now<friendShareTokenExpiresAt-60)
-        if !automaticAvailable && backgroundSharingArmed && storeOpened && !accountSuspended &&
-           manager.authorizationStatus == .authorizedAlways {
-            // Low-power significant-change callbacks can wake a suspended app
-            // without keeping continuous GPS active for family presence.
-            adaptive.shutdown(reason:"automatic tracking unavailable")
-            stopContinuousLocation()
+        if !automaticAvailable && liveSharingArmed {
+            // Sharing is a separate, explicit reason to track. Automatic History
+            // being off (or its permission being unavailable) must not reduce a
+            // locked phone to significant-change wake-ups.
+            adaptive.shutdown(reason:"automatic tracking unavailable; live sharing remains on")
             stopVisitMonitoring()
             startSignificantMonitoring()
-            homeRest.reset();locationMode = .off;endPassiveRest()
+            homeRest.reset();endPassiveRest()
+            reconcileLiveSharingLocation()
             return
         }
         if automaticAvailable {
@@ -102,7 +109,7 @@ extension LocationRecorder {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
             automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off;endPassiveRest()
             adaptive.shutdown(reason:"automatic tracking unavailable")
-            if !automaticEnabled, active == nil { stopMotionUpdates(); motion = MotionEvidence() }
+            if !automaticEnabled, active == nil, !liveSharingArmed { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
             for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
@@ -197,6 +204,10 @@ extension LocationRecorder {
         evaluateRest(now:now)
         var passive=passiveRestAllowed
         var established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:passive)
+        // Live sharing keeps standard updates on. While parked it uses the lower
+        // accuracy standby stream; a fresh movement signal upgrades it, so the
+        // adaptive policy is never allowed to stop the stream for low-power standby.
+        if liveSharingArmed, active == nil { established = liveSharingStandardMode(now:now) }
         reconcileAdaptive(now:now,mode:established)
         // The exit region registered by that reconcile can allow passive rest now.
         if !passive, evaluatePassive() {

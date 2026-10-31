@@ -11,11 +11,32 @@ export const PUBLISH_STILL_MS=30000;
 export const MOVING_SPEED=1;
 export const pollDelay=connected=>connected?POLL_CONNECTED_MS:POLL_MS;
 export const publishDelay=speed=>Number.isFinite(speed)&&speed>=MOVING_SPEED?PUBLISH_MOVING_MS:PUBLISH_STILL_MS;
+// Topic discovery and channel joins are retried with a bounded backoff. A channel
+// that never joined must be retried too: supabase-js reconnects a joined channel,
+// but it cannot rediscover a topic that failed before the first subscription.
+export const reconnectDelay=attempt=>Math.min(60000,2000*2**Math.min(5,Math.max(0,Math.floor(attempt||0))));
 // The only fields of a fix that reach a household: an allowlist, so nothing added to
-// a position later can start travelling by accident.
+// a position later can start travelling by accident. `p_enabled:true` describes an
+// active position update; the server never uses a position-bearing call to turn a
+// disabled sharing row back on. Enabling is a separate status-only consent action.
 export function sharedLocationPayload(fix){
  const speed=Number.isFinite(fix?.speed)&&fix.speed>=0?Math.max(0,Math.min(250,fix.speed*3.6)):null;
- return {p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy,p_speed:speed};
+ const payload={p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy,p_speed:speed};
+ // Keep the capture time when it is real. The server uses it for newer-wins and
+ // true age; old callers that omit it still work through the function defaults.
+ if(Number.isFinite(fix?.timestamp))payload.p_captured_at=new Date(fix.timestamp*1000).toISOString();
+ return payload;
+}
+// A deployed database may still have the five-argument function while the app is
+// newer. Retry once without the optional tail rather than dropping the position.
+export async function publishLiveLocation(client,payload){
+ const first=await client.rpc('set_my_live_location',payload);
+ if(!first.error)return first;
+ const missing=first.error.code==='PGRST202'||/could not find the function|does not exist/i.test(first.error.message||'');
+ if(!missing)return first;
+ const legacy={...payload};
+ delete legacy.p_captured_at;delete legacy.p_activity;
+ return client.rpc('set_my_live_location',legacy);
 }
 // One read at the leading edge and one after a burst, however many signals arrive.
 export function throttled(run,ms=SIGNAL_THROTTLE_MS,{now=()=>Date.now(),later=setTimeout,cancel=clearTimeout}={}){

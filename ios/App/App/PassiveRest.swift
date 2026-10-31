@@ -96,7 +96,7 @@ extension LocationRecorder {
             preciseAuthorized: manager.accuracyAuthorization == .fullAccuracy,
             serviceSessionHeld: serviceSession != nil, serviceSessionInUse: !serviceSessionInsufficient,
             significantChanges: significantLocationRequested, exitRegion: registeredPlaceRegion != nil,
-            manualRecording: active != nil)) ?? ""
+            manualRecording: active != nil, liveSharing: liveSharingArmed)) ?? ""
         return passiveRetainReason.isEmpty
     }
 

@@ -138,9 +138,31 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveShareLastSentAt: Double = 0
     var liveShareSendsActivity = true
     var liveShareSentActivity: String?
+    // A migration-related 404 must not disable activity forever. Probe again later;
+    // the first successful publish with the field re-enables it.
+    var liveShareSendsActivityRetryAt: Double = 0
+    var liveShareSendsCaptureTimeRetryAt: Double = 0
     var publishStats = HouseholdPublishStats()
     var publishStatsLoggedAt: Double = 0
-    var sharedActivity: String? { HouseholdPublisher.activity(journey: automaticTrip?.activity, motion: motion) }
+    // GPS-only fallback for the shared movement word and for choosing precise
+    // hardware only while something is actually moving.
+    var liveGps = LiveGpsEvidence()
+    var sharedActivity: String? {
+        let now=Date().timeIntervalSince1970
+        let stationaryFor=detector.stationarySince.map{max(0,now-$0)} ?? 0
+        return HouseholdPublisher.activity(journey: automaticTrip?.activity, motion: motion, gps: liveGps,
+                                          stationaryFor: stationaryFor, now: now)
+    }
+    // Explicit live sharing is its own reason to run Core Location. It must not be
+    // inferred from automatic tracking: a household member may switch Automatic
+    // History off and still expect the map to update while the phone is locked.
+    var liveSharingArmed: Bool {
+        let now = Date().timeIntervalSince1970
+        guard storeOpened, ownerID != nil, !accountSuspended, !accountDeleting,
+              locationServicesAvailable, manager.authorizationStatus == .authorizedAlways else { return false }
+        return (liveShareToken != nil && now < liveShareTokenExpiresAt - 60) ||
+            (friendShareToken != nil && now < friendShareTokenExpiresAt - 60)
+    }
     // Only where the server takes the field. Otherwise it could never count as sent,
     // and every fix would go out as a change of status.
     var shareActivityChanged: Bool {
@@ -310,7 +332,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "registeredRegions":String(manager.monitoredRegions.count),"locationManagerID":"LocationRecorder.shared.manager",
             "activeLocationManagers":String((continuousLocationRequested || significantLocationRequested || visitMonitoringRequested || !manager.monitoredRegions.isEmpty ? 1 : 0)+PositionRequest.activeRequests.count),"oneShotRequests":String(PositionRequest.activeRequests.count),
             "liveUpdatesRunning":String(liveUpdatesTask != nil),"householdArmed":String(liveShareToken != nil && now<liveShareTokenExpiresAt-60),
+            "liveSharingArmed":String(liveSharingArmed),"liveSharingPublisher":liveShareToken != nil ? "native" : "webview",
+            "liveSharingTracking":String(continuousLocationRequested && liveSharingArmed),"liveSharingSendActivity":String(liveShareSendsActivity),
+            "liveSharingSendCaptureTime":String(liveShareSendsCaptureTime),"lastShareFixAgeSeconds":lastShareFix.map{String(Int(max(0,now-$0.timestamp.timeIntervalSince1970)))} ?? "none",
             "householdStatus":liveShareStatus,"householdLastSuccessAt":String(liveShareLastOkAt),"householdLastAttemptAt":String(liveShareLastSentAt),
+            "householdLastSuccessAgeSeconds":liveShareLastOkAt>0 ? String(Int(max(0,now-liveShareLastOkAt))) : "none",
             "friendSharingArmed":String(friendShareToken != nil && now<friendShareTokenExpiresAt-60),"friendLastSuccessAt":String(friendShareLastOkAt),
             "batteryMonitoringAvailable":String(battery.isBatteryMonitoringEnabled),"batteryLevel":String(battery.batteryLevel),"batteryState":String(battery.batteryState.rawValue),
             "lastObservedFixAt":String(diagnosticLastObservedAt ?? 0),"lastObservedFixAgeSeconds":diagnosticLastObservedAt.map{String(Int(max(0,now-$0)))} ?? "unknown",
@@ -361,6 +387,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     static let fullContextKinds:Set<String>=["lifecycle","session","rest","journey","preference","error","invariant","recovery","account","detection"]
     static let compactContextKeys:Set<String>=["process","component","appState","locationMode","automaticLocationMode","backgroundSession","continuousLocationRequested",
         "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","passiveRest","wifiMatch","reason","commit","build","adaptiveState",
+        "liveSharingArmed","liveSharingTracking","liveSharingPublisher","liveSharingSendActivity","householdLastSuccessAgeSeconds",
         // Read back from the journal when it is reopened.
         "householdLastSuccessAt","friendLastSuccessAt"]
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
@@ -458,7 +485,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Start the session when tracking needs it and the app is in the foreground,
     // the only state in which iOS lets a new session begin.
     func reconcileBackgroundSession(_ reason: String) {
-        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording", passiveRest: locationMode == .passive)
+        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording",
+            passiveRest: locationMode == .passive, liveSharing: liveSharingArmed)
         let action = BackgroundSessionPolicy.decide(wanted: wanted, held: backgroundActivitySession != nil,
             foreground: UIApplication.shared.applicationState == .active,
             previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported)
@@ -496,7 +524,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func releaseBackgroundSessionIfUnneeded(_ reason: String) {
         if BackgroundSessionPolicy.shouldRelease(accountKnown: storeOpened && ownerID != nil, automaticEnabled: automaticEnabled,
-            alwaysAuthorized: manager.authorizationStatus == .authorizedAlways, manualRecording: active?.state == "recording") { endBackgroundSession(reason) }
+            alwaysAuthorized: manager.authorizationStatus == .authorizedAlways, manualRecording: active?.state == "recording",
+            liveSharing: liveSharingArmed) { endBackgroundSession(reason) }
     }
     func recentTrackingNotes(before end:Double)->[String]{
         trackingTimeline.filter{$0.at>=end-1800 && $0.at<=end+30}.suffix(30).map{
@@ -566,8 +595,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func disableHouseholdLiveSharing(forget: Bool = false) {
         if forget, let owner = ownerID { try? AccountKeychain.set(Self.householdPublisherKey(owner), data: nil) }
         liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil;liveShareMode="session"
-        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil;liveShareSentActivity=nil
+        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil;liveShareSentActivity=nil;liveGps.reset()
+        liveShareRetryAt=0;liveShareSendsActivity=true;liveShareSendsCaptureTime=true
+        liveShareSendsActivityRetryAt=0;liveShareSendsCaptureTimeRetryAt=0
+        // Stop local publishing now, without waiting for a network reply. An
+        // in-flight request is ignored by its token check when it returns.
+        if active?.state != "recording" { stopContinuousLocation(reason:"Location sharing turned off") }
         refreshAutomaticMonitoring()
+        releaseBackgroundSessionIfUnneeded("location sharing turned off")
     }
     static func householdPublisherKey(_ owner: String) -> String { "household-live-publisher-\(owner)" }
     // A device credential publishes only this account's own position (see
@@ -593,15 +628,27 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func disableFriendLiveSharing() {
         friendShareToken=nil;friendShareEndpoint=nil;friendShareApiKey=nil
         friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false;friendShareStatus=""
+        if liveShareToken == nil, active?.state != "recording" { stopContinuousLocation(reason:"Friend location sharing turned off") }
         refreshAutomaticMonitoring()
+        releaseBackgroundSessionIfUnneeded("friend location sharing turned off")
     }
     func publishFriendPosition(_ location:CLLocation) {
         let now=Date().timeIntervalSince1970
-        guard uiUnlocked,!accountSuspended,!accountDeleting,
+        let age=now-location.timestamp.timeIntervalSince1970
+        // Friend sharing uses the same native location callback as household
+        // sharing, but a separate consent/table and an older RPC that has no
+        // captured-at or activity fields. Keep the reason explicit instead of
+        // quietly giving the two audiences different tracking lifecycles.
+        guard !accountSuspended,!accountDeleting,
               let token=friendShareToken,let endpoint=friendShareEndpoint,let apiKey=friendShareApiKey,
-              now<friendShareTokenExpiresAt-60,!friendShareInFlight,now-friendShareLastSentAt>=25,
+              now<friendShareTokenExpiresAt-60,!friendShareInFlight,
+              now-friendShareLastSentAt>=HouseholdPublisher.interval(speed:location.speed,
+                foreground:UIApplication.shared.applicationState == .active,confirmation:false,
+                lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled,accuracy:location.horizontalAccuracy),
               location.horizontalAccuracy>=0,location.horizontalAccuracy<=100,
-              abs(location.timestamp.timeIntervalSince1970-now)<25 else {return}
+              // This older RPC stamps the row at receipt, so an offline fix would
+              // be presented as current. Only a fresh friend fix may be sent.
+              age <= 25, age >= -5 else {return}
         let payload:[String:Any]=["p_enabled":true,"p_latitude":location.coordinate.latitude,
             "p_longitude":location.coordinate.longitude,"p_accuracy":location.horizontalAccuracy]
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else {return}
@@ -629,6 +676,33 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             }
         }.resume()
     }
+    // Live sharing needs a continuous stream, but not always the highest-accuracy
+    // one. Parked, the standard 10 m/25 m standby keeps the stream and the background
+    // session alive at materially lower GPS cost; a fresh movement signal or a
+    // vehicle-sized fix upgrades it to precise immediately. Without this, slower
+    // stationary publishing would only reduce writes while the GPS radio stayed at
+    // best accuracy.
+    func liveSharingStandardMode(now: Double) -> AutomaticLocationMode {
+        // Automatic departure checks and an open journey keep their precise mode;
+        // live sharing only lowers accuracy when it is the sole reason to run GPS.
+        if automaticSampling.needsGPS(automaticAvailable: automaticAvailable, manualRecording: false,
+                                      automaticRecording: automaticActivelyRecording, now: now) { return .precise }
+        if HouseholdPublisher.hardwareMoving(motion: motion, fix: lastShareFix.map(sharePoint), now: now) { return .precise }
+        // Preserve the established Home-rest setting when it is already confirmed;
+        // otherwise use the normal 10 m/25 m standby stream.
+        return automaticAvailable && homeRest.resting(now: now, idle: automaticIdle) ? .resting : .standby
+    }
+    // Keep live sharing alive independently of the automatic sampler. This is the
+    // only place that overrides the automatic engine, and it does so only while a
+    // valid sharing credential is held and the phone is not manually recording
+    // (a manual recording already owns precise GPS).
+    func reconcileLiveSharingLocation() {
+        guard liveSharingArmed, active?.state != "recording" else { return }
+        if adaptive.lowPowerRunning { cancelLowPower() }
+        runStandard(liveSharingStandardMode(now: Date().timeIntervalSince1970))
+        startMotionUpdates()
+        reconcileBackgroundSession("live sharing")
+    }
     func logPublishStats() {
         let now=Date().timeIntervalSince1970
         guard now-publishStatsLoggedAt>=60,publishStats.attempts>0 else {return}
@@ -638,8 +712,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func publishLivePosition(_ location: CLLocation) {
         publishFriendPosition(location)
+        let age=Date().timeIntervalSince1970-location.timestamp.timeIntervalSince1970
+        // A fix queued while offline is still the newest thing this phone knows;
+        // it is sent with its real captured time so the viewer sees its true age.
         guard location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
-              abs(location.timestamp.timeIntervalSince1970-Date().timeIntervalSince1970) < 25 else {return}
+              age <= HouseholdPublisher.maximumFixAge, age >= -5 else {return}
+        liveGps.observe(sharePoint(location), now: Date().timeIntervalSince1970)
         if HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
         lastShareFix=location
         sendHouseholdLocation(location,confirmation:false)
@@ -677,11 +755,17 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let now=Date().timeIntervalSince1970
         let activity=sharedActivity
         let statusChanged=shareActivityChanged
+        // A migration may have been applied since the previous 404. Probe again
+        // on a slow cadence instead of losing activity until the next launch.
+        if !liveShareSendsActivity, now >= liveShareSendsActivityRetryAt { liveShareSendsActivity=true }
+        if !liveShareSendsCaptureTime, now >= liveShareSendsCaptureTimeRetryAt { liveShareSendsCaptureTime=true }
         guard storeOpened,ownerID != nil,!accountSuspended,!accountDeleting,
               let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
               now < liveShareTokenExpiresAt-60,!liveShareInFlight,
               now>=liveShareRetryAt,
-              statusChanged || now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation,lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled,activity:activity),
+              statusChanged || now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,
+                foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation,
+                lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled,activity:activity,accuracy:location.horizontalAccuracy),
               statusChanged || HouseholdPublisher.worthSending(moved:liveShareSentPoint?.distance(to:sharePoint(location)),sinceLast:now-liveShareLastSentAt,confirmation:confirmation) else {return}
         let device=liveShareMode=="device"
         let speedValue: Any = location.speed >= 0 ? min(250,location.speed*3.6) as Any : NSNull()
@@ -689,10 +773,18 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
         // A confirmation says the phone is still there now, so it carries no old fix time.
-        let sentCaptureTime=device && liveShareSendsCaptureTime && !confirmation
+        // Session mode sends it too where supported. Migration 13 refuses to
+        // re-enable sharing from any position-bearing call; a capture time only
+        // orders positions and keeps their true age. An older server returns 404
+        // for the field and the existing fallback retries without it.
+        let sentCaptureTime=liveShareSendsCaptureTime && !confirmation
         if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
-        let sentActivity=device && liveShareSendsActivity ? activity : nil
-        if let sentActivity { payload["p_activity"]=sentActivity }
+        let sendsActivity=device && liveShareSendsActivity
+        let sentActivity=sendsActivity ? activity : nil
+        // A nil value is sent deliberately: it clears an activity whose evidence
+        // has expired. The server accepts an explicit JSON null.
+        if sendsActivity { payload["p_activity"]=sentActivity ?? NSNull() }
+        let sentPoint=sharePoint(location)
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data
@@ -703,8 +795,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if !device { request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization") }
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
         liveShareInFlight=true
+        // Record the attempt, not a success. A failed upload must not make the
+        // next attempt look like movement that has already been delivered.
         liveShareLastSentAt=now
-        liveShareSentPoint=sharePoint(location)
         diagnosticSharingAttempts+=1
         publishStats.noteAttempt()
         let requestOwner=ownerID,capturedAt=location.timestamp.timeIntervalSince1970
@@ -719,10 +812,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 if accepted {
                     self.diagnosticSharingSuccesses+=1
                     self.publishStats.noteSuccess(capturedAt:capturedAt,now:Date().timeIntervalSince1970)
-                    if let sentActivity,sentActivity != self.liveShareSentActivity {
-                        self.recordDiagnostic("sharing","Household activity published",details:["sharedActivity":sentActivity])
+                    if sendsActivity,sentActivity != self.liveShareSentActivity {
+                        self.recordDiagnostic("sharing","Household activity published",details:["sharedActivity":sentActivity ?? "none"])
                     }
-                    self.liveShareSentActivity=sentActivity ?? self.liveShareSentActivity
+                    if sendsActivity { self.liveShareSentActivity=sentActivity }
+                    self.liveShareSentPoint=sentPoint
                     let previous=self.liveShareStatus
                     self.liveShareLastOkAt=Date().timeIntervalSince1970;self.liveShareStatus="ok"
                     if previous != "ok" || self.liveShareLastOkAt-self.diagnosticLastSharingLogAt>=300 {
@@ -747,9 +841,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 let failure=error != nil ? "network" : "http \(status)"
                 if self.liveShareStatus != failure { self.recordDiagnostic("sharing","Household location upload failed",details:["reason":failure]) }
                 self.liveShareStatus=failure
-                // The migration that adds this field may not be applied yet.
-                if sentActivity != nil && status==404 { self.liveShareSendsActivity=false; return }
-                if sentCaptureTime && status==404 { self.liveShareSendsCaptureTime=false; return }
+                // The migration that adds a field may not be applied yet. Back off
+                // and probe again later; do not latch the field off until relaunch.
+                let retryAt=Date().timeIntervalSince1970+300
+                if sendsActivity && status==404 {
+                    self.liveShareSendsActivity=false;self.liveShareSendsActivityRetryAt=retryAt
+                    self.liveShareRetryAt=Date().timeIntervalSince1970+HouseholdPublisher.failureBackoff
+                    return
+                }
+                if sentCaptureTime && status==404 {
+                    self.liveShareSendsCaptureTime=false;self.liveShareSendsCaptureTimeRetryAt=retryAt
+                    self.liveShareRetryAt=Date().timeIntervalSince1970+HouseholdPublisher.failureBackoff
+                    return
+                }
                 self.liveShareRetryAt=Date().timeIntervalSince1970+(HouseholdPublisher.moving(activity) ? HouseholdPublisher.movingFailureBackoff : HouseholdPublisher.failureBackoff)
             }
         }.resume()
@@ -949,6 +1053,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         guard !accountSuspended else { return }
         if let last=locations.last {publishLivePosition(last)}
+        // Apply the precision change on the fix that proves movement, not only on
+        // the next 30-second reconcile.
+        if liveSharingArmed, active == nil { reconcileLiveSharingLocation() }
         if active == nil { processAutomatic(locations,source:source);diagnosticSummary(); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970
@@ -1034,7 +1141,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"automaticPauseEnabled":manager.pausesLocationUpdatesAutomatically,"lastExecutionGapSeconds":lastExecutionGapSeconds,"backgroundSession":backgroundSessionState,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
                 "recordingElsewhere":CrossDeviceRecording.active(WatchSessionManager.shared.watchRecording,ownerID:ownerID,now:Date().timeIntervalSince1970).map{["label":$0.label,"activity":$0.activity,"state":$0.state,"startedAt":$0.startedAt,"sessionID":$0.sessionID] as [String:Any]} as Any? ?? NSNull(),
-                "nativeFamilySharing":["armed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight],
+                "nativeFamilySharing":["armed":liveSharingArmed,"householdArmed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"friendArmed":friendShareToken != nil && Date().timeIntervalSince1970 < friendShareTokenExpiresAt-60,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight,"trackingActive":continuousLocationRequested,"sendActivity":liveShareSendsActivity,"sendCaptureTime":liveShareSendsCaptureTime],
                 "locationManagerID":"LocationRecorder.shared.manager","commit":Self.commit,"backgroundSession":backgroundSessionState,
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
                 "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
@@ -1204,10 +1311,17 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                   let expiry=call.getDouble("expiresAt"),expiry>Date().timeIntervalSince1970+90 else {
                 call.reject("Valid household sharing credential required.");return
             }
-            if recorder.liveShareToken != publishToken {recorder.liveShareInFlight=false;recorder.liveShareLastSentAt=0}
+            if recorder.liveShareToken != publishToken {
+                recorder.liveShareInFlight=false;recorder.liveShareLastSentAt=0;recorder.liveShareRetryAt=0
+                recorder.liveShareSentPoint=nil;recorder.liveShareSentActivity=nil
+            }
             recorder.liveShareToken=publishToken;recorder.liveShareEndpoint=url
             recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
             recorder.liveShareMode="device";recorder.liveShareStatus=""
+            // A new credential is a new contract. Probe the newer fields again even
+            // if this phone previously saw an unmigrated server.
+            recorder.liveShareSendsActivity=true;recorder.liveShareSendsCaptureTime=true
+            recorder.liveShareSendsActivityRetryAt=0;recorder.liveShareSendsCaptureTimeRetryAt=0
             recorder.storeHouseholdPublisher()
             recorder.recordDiagnostic("sharing","Household location sharing armed with a device credential")
             recorder.refreshAutomaticMonitoring()
@@ -1230,6 +1344,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             recorder.disableHouseholdLiveSharing(forget:true)
             recorder.liveShareToken=token;recorder.liveShareEndpoint=url
             recorder.liveShareApiKey=apiKey;recorder.liveShareTokenExpiresAt=expiry
+            recorder.liveShareSentPoint=nil;recorder.liveShareSentActivity=nil
         }
         recorder.refreshAutomaticMonitoring()
         call.resolve()
@@ -1382,7 +1497,9 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             LocationRecorder.shared.recordDiagnostic("sharing","Household positions delivered",details:[
                 "signalsReceived":String(call.getInt("signalsReceived") ?? 0),"refreshMedianMs":String(call.getInt("refreshMedianMs") ?? 0),
                 "transport":call.getString("transport") ?? "unknown","latencySamples":String(call.getInt("latencySamples") ?? 0),
-                "latencyMedianMs":String(call.getInt("latencyMedianMs") ?? 0),"latencyMaxMs":String(call.getInt("latencyMaxMs") ?? 0)])
+                "latencyMedianMs":String(call.getInt("latencyMedianMs") ?? 0),"latencyMaxMs":String(call.getInt("latencyMaxMs") ?? 0),
+                "viewerLastPositionAgeSeconds":String(call.getInt("viewerLastPositionAgeSeconds") ?? -1),
+                "realtimeReconnects":String(call.getInt("realtimeReconnects") ?? 0)])
             call.resolve()
         }
     }

@@ -105,6 +105,7 @@ it('clears the visit when sharing is turned off, and starts unknown when it is t
  await arriveHome();
  await as('authenticated',partner,'select public.set_my_live_location(false)');
  expect((await admin(`select place_latitude,place_since,place_known from public.household_live_locations`)).rows[0]).toEqual({place_latitude:null,place_since:null,place_known:false});
+ await as('authenticated',partner,'select public.set_my_live_location(true)');
  await as('authenticated',partner,`select public.set_my_live_location(true,${HOME[0]},${HOME[1]},10)`);
  await admin(`update public.household_live_locations set location_at=now()+interval '30 minutes' where user_id='${partner}'`);
  expect((await anna()).arrived_at).toBeNull();

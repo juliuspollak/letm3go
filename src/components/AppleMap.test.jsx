@@ -1,11 +1,11 @@
 import {act,cleanup,fireEvent,render,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({embed:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn(),forgetOverview:vi.fn()}));
+const mocks=vi.hoisted(()=>({embed:vi.fn(),update:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn(),forgetOverview:vi.fn()}));
 vi.mock('../lib/appleMaps.js',()=>({appleMaps:mocks,appleMapsAvailable:()=>true,sendOverview:mocks.sendOverview,forgetOverview:mocks.forgetOverview}));
 import AppleMap from './AppleMap.jsx';
 const payload={routes:[[[1,2],[3,4],[5,6]]],pins:[]};
 beforeEach(()=>{
- for(const name of ['embed','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
+ for(const name of ['embed','update','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
  mocks.hide.mockResolvedValue({image:'data:image/jpeg;base64,frozen'});
  mocks.snapshot.mockResolvedValue({image:'data:image/jpeg;base64,test'});
  mocks.open.mockResolvedValue({});mocks.addListener.mockResolvedValue({remove:vi.fn()});
@@ -20,6 +20,17 @@ it('embeds an interactive map and follows scroll events inside the detail scroll
  fireEvent.scroll(container.firstChild);
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:true})));
  expect(container.querySelector('.apple-map-open')).toBeNull();
+});
+it('moves an existing person in place without re-embedding or taking a new snapshot',async()=>{
+ const people=(lng)=>({routes:[],pins:[{id:'people:self',kind:'people',point:[-33.87,lng],title:'You',members:[{id:'self',name:'You',state:'live'}],fit:true}],camera:{key:'people:owner',mode:'all',personId:null,command:2,includeRoutes:false}});
+ const {rerender}=render(<AppleMap payload={people(151.21)}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ mocks.embed.mockClear();mocks.update.mockClear();mocks.snapshot.mockClear();
+ rerender(<AppleMap payload={people(151.22)}/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[expect.objectContaining({point:[-33.87,151.22]})]})));
+ expect(mocks.embed).not.toHaveBeenCalled();
+ expect(mocks.snapshot).not.toHaveBeenCalled();
 });
 it('hides the native map behind a still image while a web dialog covers it, then shows the same map again',async()=>{
  const {container}=render(<AppleMap payload={payload}/>);
