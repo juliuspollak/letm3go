@@ -1,0 +1,231 @@
+// Pure helpers for Feedback & Support: validation, optional diagnostics, history shaping
+// and the idempotent submission pipeline used by both the app and its tests.
+import { config } from './config.js';
+
+export const MAX_ATTACHMENTS = 5;
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+export const FEEDBACK_CATEGORIES = [
+  { id: 'bug', label: 'Bug report', hint: 'Something broke or behaves unexpectedly.' },
+  { id: 'idea', label: 'Feature idea', hint: 'A new capability you would find useful.' },
+  { id: 'improvement', label: 'Improvement', hint: 'Something existing could work better.' },
+  { id: 'other', label: 'Something else', hint: 'Questions, privacy or anything else.' },
+];
+
+export const FEEDBACK_STATUSES = {
+  open: { label: 'Received', tone: 'open' },
+  in_review: { label: 'Being reviewed', tone: 'review' },
+  resolved: { label: 'Resolved', tone: 'resolved' },
+  closed: { label: 'Closed', tone: 'closed' },
+};
+
+export const FEEDBACK_BUCKET = 'feedback-attachments';
+
+export function feedbackCategory(id) {
+  return FEEDBACK_CATEGORIES.find(item => item.id === id) || FEEDBACK_CATEGORIES[FEEDBACK_CATEGORIES.length - 1];
+}
+
+export function feedbackStatus(id) {
+  return FEEDBACK_STATUSES[id] || FEEDBACK_STATUSES.open;
+}
+
+export function newFeedbackToken() {
+  return globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, value => {
+    const random = Math.random() * 16 | 0;
+    return (value === 'x' ? random : random & 0x3 | 0x8).toString(16);
+  });
+}
+
+export function emptyFeedbackDraft() {
+  return { category: '', title: '', description: '', whatHappened: '', expected: '', steps: '' };
+}
+
+export function feedbackErrors(draft) {
+  const errors = {};
+  if (!FEEDBACK_CATEGORIES.some(item => item.id === draft.category)) errors.category = 'Choose what your feedback is about.';
+  const description = draft.description?.trim() || '';
+  if (!description) errors.description = 'Tell us what happened or what you need.';
+  else if (description.length > 4000) errors.description = 'Keep it under 4,000 characters.';
+  if ((draft.title || '').length > 120) errors.title = 'Keep the title under 120 characters.';
+  return errors;
+}
+
+export function feedbackDiagnostics({ state = {}, preferences = {}, session, native = false }) {
+  // A deliberately small snapshot. Routes, coordinates, saved places, email and IDs never leave the device.
+  return {
+    schema: 1,
+    app: { version: String(state.version || 'unknown'), build: String(state.build || 'unknown') },
+    platform: native ? 'ios' : 'web',
+    locale: globalThis.navigator?.language || 'unknown',
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown',
+    screen: typeof window === 'undefined' ? 'unknown' : `${window.screen?.width || 0}x${window.screen?.height || 0}@${window.devicePixelRatio || 1}`,
+    recording: {
+      permission: state.permission || 'unknown',
+      precise: Boolean(state.precise),
+      storageReady: Boolean(state.storageReady),
+      automaticEnabled: Boolean(state.automaticEnabled),
+      automaticState: state.automaticState || 'idle',
+      backgroundCapability: Boolean(state.backgroundEnabled),
+      active: state.active?.state === 'recording',
+      trips: Array.isArray(state.trips) ? state.trips.length : 0,
+    },
+    cloud: {
+      signedIn: Boolean(session?.user?.id),
+      lastBackup: preferences.lastBackup || null,
+    },
+  };
+}
+
+export function feedbackReference(ticket) {
+  return ticket?.id ? `FB-${String(ticket.id).slice(0, 8).toUpperCase()}` : 'FB-PENDING';
+}
+
+export function feedbackDate(value, { withTime = false } = {}) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}) });
+}
+
+export function feedbackHeadline(ticket) {
+  return (ticket?.title || '').trim() || (ticket?.description || '').trim().split('\n')[0].slice(0, 80) || 'Feedback';
+}
+
+export function feedbackHasUnread(ticket) {
+  const seen = ticket?.user_seen_at ? new Date(ticket.user_seen_at).getTime() : 0;
+  return (ticket?.messages || []).some(message => message.is_staff && new Date(message.created_at).getTime() > seen);
+}
+
+function trimmed(value) {
+  return String(value || '').trim();
+}
+
+export function feedbackDiagnosticsOptIn(diagnostics) {
+  return diagnostics && typeof diagnostics === 'object' ? diagnostics : null;
+}
+
+export function feedbackArguments({ token, draft, diagnostics, state = {}, native = false }) {
+  return {
+    p_client_token: token,
+    p_category: draft.category,
+    p_title: trimmed(draft.title),
+    p_description: trimmed(draft.description),
+    p_what_happened: trimmed(draft.whatHappened) || null,
+    p_expected_behaviour: trimmed(draft.expected) || null,
+    p_steps_to_reproduce: trimmed(draft.steps) || null,
+    p_diagnostics: feedbackDiagnosticsOptIn(diagnostics),
+    p_app_version: state.version || null,
+    p_build_number: state.build || null,
+    p_platform: native ? 'ios' : 'web',
+  };
+}
+
+export function feedbackErrorMessage(error, fallback = 'Feedback could not be sent. Check your connection and retry.') {
+  const message = String(error?.message || '').trim();
+  if (!message) return fallback;
+  if (/jwt|session/i.test(message)) return 'Your session expired. Sign in again and retry.';
+  if (/duplicate key/i.test(message)) return 'This feedback was already received. Open My feedback to check it.';
+  if (/row-level security|permission denied/i.test(message) && !/feedback/i.test(message)) return 'This account cannot send feedback right now.';
+  return message.slice(0, 240);
+}
+
+export function storageUpload({ url, apiKey, token, path, blob, onProgress }) {
+  return new Promise((resolve, reject) => {
+    const encoded = path.split('/').map(encodeURIComponent).join('/');
+    const request = new XMLHttpRequest();
+    request.open('POST', `${String(url).replace(/\/$/, '')}/storage/v1/object/${FEEDBACK_BUCKET}/${encoded}`);
+    request.setRequestHeader('authorization', `Bearer ${token}`);
+    request.setRequestHeader('apikey', apiKey);
+    request.setRequestHeader('x-upsert', 'true');
+    request.setRequestHeader('cache-control', '3600');
+    request.setRequestHeader('content-type', blob.type || 'image/jpeg');
+    if (request.upload) request.upload.onprogress = event => {
+      if (event.lengthComputable && event.total) onProgress?.(Math.round(event.loaded / event.total * 100));
+    };
+    request.onerror = () => reject(new Error('The photo could not be uploaded. Check your connection and retry.'));
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) { onProgress?.(100); resolve(); return; }
+      let message = '';
+      try { message = JSON.parse(request.responseText)?.message || ''; } catch { /* Non-JSON storage error. */ }
+      reject(new Error(message || 'The photo could not be uploaded. Please retry.'));
+    };
+    request.send(blob);
+  });
+}
+export async function uploadFeedbackPhoto({ client, blob, objectKey, onProgress, upload = storageUpload, cloud = config }) {
+  const { data, error } = await client.auth.getSession();
+  if (error) throw error;
+  const accessToken = data?.session?.access_token;
+  if (!accessToken) throw new Error('Your session expired. Sign in again to attach photos.');
+  await upload({ url: cloud.url, apiKey: cloud.key, token: accessToken, path: objectKey, blob, onProgress });
+  return objectKey;
+}
+
+export async function submitFeedbackTicket(client, {
+  token, draft, diagnostics, attachments = [], state = {}, native = false, onEvent = () => {}, upload = storageUpload,
+}) {
+  onEvent({ phase: 'ticket' });
+  const { data, error } = await client.rpc('submit_feedback', feedbackArguments({ token, draft, diagnostics, state, native }));
+  if (error) throw new Error(feedbackErrorMessage(error));
+  const ticket = Array.isArray(data) ? data[0] : data;
+  if (!ticket?.id) throw new Error('The server did not confirm your feedback. Please retry.');
+  onEvent({ phase: 'ticket', ticket });
+  let photoError = '';
+  for (const attachment of attachments) {
+    if (attachment.status === 'uploaded') continue;
+    const objectKey = attachment.objectKey || `${ticket.owner_id}/${ticket.id}/${attachment.id}.jpg`;
+    onEvent({ phase: 'photo', id: attachment.id, status: 'uploading', percent: 0 });
+    try {
+      await uploadFeedbackPhoto({
+        client, blob: attachment.blob, objectKey, upload,
+        onProgress: percent => onEvent({ phase: 'photo', id: attachment.id, status: 'uploading', percent }),
+      });
+      const { error: rowError } = await client.from('feedback_attachments').upsert({
+        id: attachment.id, feedback_id: ticket.id, owner_id: ticket.owner_id, object_key: objectKey,
+        byte_size: attachment.blob.size, width: attachment.width, height: attachment.height, mime_type: 'image/jpeg',
+      }, { onConflict: 'id' });
+      if (rowError) throw new Error(feedbackErrorMessage(rowError));
+      onEvent({ phase: 'photo', id: attachment.id, status: 'uploaded', percent: 100 });
+    } catch (caught) {
+      const message = caught?.message || 'The photo could not be uploaded. Please retry.';
+      onEvent({ phase: 'photo', id: attachment.id, status: 'failed', error: message });
+      photoError = message;
+      // Remove a partial object so the next attempt starts cleanly.
+      try { await client.storage?.from?.(FEEDBACK_BUCKET)?.remove?.([objectKey]); } catch { /* Best-effort cleanup. */ }
+      break;
+    }
+  }
+  return { ticket, photoError };
+}
+
+export async function loadFeedbackHistory(client, { limit = 50 } = {}) {
+  const { data, error } = await client.from('feedback').select('*').order('created_at', { ascending: false }).limit(limit);
+  if (error) throw new Error('Your feedback could not be loaded. Please retry.');
+  const tickets = data || [];
+  if (!tickets.length) return [];
+  const ids = tickets.map(ticket => ticket.id);
+  const [messages, attachments] = await Promise.all([
+    client.from('feedback_messages').select('*').in('feedback_id', ids).order('created_at', { ascending: true }),
+    client.from('feedback_attachments').select('*').in('feedback_id', ids).order('created_at', { ascending: true }),
+  ]);
+  if (messages.error || attachments.error) throw new Error('Your feedback could not be loaded. Please retry.');
+  let urls = {};
+  const paths = (attachments.data || []).map(item => item.object_key);
+  if (paths.length) {
+    try {
+      const { data: signed } = await client.storage.from(FEEDBACK_BUCKET).createSignedUrls(paths, 3600);
+      urls = Object.fromEntries((signed || []).filter(item => item?.signedUrl).map(item => [item.path, item.signedUrl]));
+    } catch { /* Thumbnails are optional evidence; the ticket still loads. */ }
+  }
+  return tickets.map(ticket => ({
+    ...ticket,
+    messages: (messages.data || []).filter(message => message.feedback_id === ticket.id),
+    attachments: (attachments.data || []).filter(item => item.feedback_id === ticket.id)
+      .map(item => ({ ...item, url: urls[item.object_key] || '' })),
+  }));
+}
+
+export async function markFeedbackSeen(client) {
+  try { await client.rpc('mark_my_feedback_seen'); } catch { /* Non-critical read receipt. */ }
+}
+
