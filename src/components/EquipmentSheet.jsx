@@ -1,3 +1,4 @@
+import {activityLabel} from '../lib/activityNames.js';
 import {useState} from 'react';
 import {Check,Plus,Trash2} from 'lucide-react';
 import CollectionIcon from './CollectionIcon.jsx';
@@ -43,7 +44,7 @@ export default function EquipmentSheet({trip,vehicles=[],onAssign,onAddItem,onCl
  return <section className="equipment-sheet">
   <p className="eyebrow">EQUIPMENT</p>
   <h2>{multi?'What did you use?':'What did you use it with?'}</h2>
-  <p className="muted small-copy">{trip?.title}{trip?.activity?` · ${trip.activity}`:''}</p>
+  <p className="muted small-copy">{trip?.title}{trip?.activity?` · ${activityLabel(trip.activity)}`:''}</p>
   {options.length?<div className="equipment-options">
    {options.map(item=><button key={item.id} type="button" className="equipment-option" aria-pressed={selected.includes(String(item.id))} aria-label={`${multi?'Toggle':'Use'} ${itemTitle(item)}`} disabled={working} onClick={()=>pick(item)}>
     {item.photo?<PrivateImage className="equipment-option-photo" src={item.photo} alt=""/>:<span className="equipment-option-icon"><CollectionIcon icon={itemCategory(item).icon} size={20}/></span>}

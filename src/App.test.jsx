@@ -235,3 +235,17 @@ it('keeps the self marker and self-location camera when People & places is off, 
  expect(JSON.parse(localStorage.getItem('letm3go:map-view:owner')).people).toBe(false);
  expect(mapProps.value.peoplePins.flatMap(pin=>pin.members).map(member=>member.id)).toEqual(['self']);
 });
+
+it('shows one Mountain biking filter and includes recordings stored under either legacy name',()=>{
+ signedIn();const now=Date.now()/1000;
+ const trip=(id,title,activity)=>({id,title,activity,source:'device',state:'finished',recordingMode:'manual',startedAt:now-600,endedAt:now,durationSeconds:600,distanceMeters:1000,points:[],details:{}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('old','Legacy ride','MTB'),trip('named','Named ride','Mountain Biking')]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
+ expect(screen.getAllByRole('option',{name:'Mountain biking'})).toHaveLength(1);
+ expect(screen.queryByRole('option',{name:'MTB'})).toBeNull();
+ fireEvent.change(screen.getByRole('combobox',{name:'Filter activities'}),{target:{value:'MTB'}});
+ expect(screen.getByRole('button',{name:'Open Legacy ride'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Open Named ride'})).toBeInTheDocument();
+});

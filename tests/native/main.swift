@@ -2592,7 +2592,7 @@ do {
     check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 9, "the watch records only iPhone activity values")
     check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Other"], "the watch offers every iPhone activity value")
     check(WatchCatalog.family(of: "MTB")?.id == "Cycling" && WatchCatalog.family(of: "MTB")?.hasSubtypes == true, "mountain biking is a Cycling subtype")
-    check(WatchCatalog.title("MTB") == "Cycling · Mountain bike" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
+    check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
     check(WatchCatalog.usesBicycle("MTB") && !WatchCatalog.usesBicycle("Running"), "only rides offer a bike")
 
     // The phone's Collection list, validated.
@@ -2718,7 +2718,7 @@ do {
     // transfer, import and history, and Start Again repeats it exactly.
     let levo = WatchEquipment(id: "bike-2", name: "Turbo Levo", kind: "ebike")
     let setup = WatchStartConfig(activity: "MTB", equipment: levo)
-    check(WatchCatalog.family(of: setup.activity)?.id == "Cycling" && WatchCatalog.title(setup.activity) == "Cycling · Mountain bike", "the subtype is MTB under Cycling")
+    check(WatchCatalog.family(of: setup.activity)?.id == "Cycling" && WatchCatalog.title(setup.activity) == "Cycling · Mountain biking", "the subtype is MTB under Cycling")
     var ride = WatchRideDraft(activity: setup.activity, startedAt: 1_000, equipment: setup.equipment)
     _ = ride.ingest(watchFix(-33.0000, 1_000), now: 1_000)
     _ = ride.ingest(watchFix(-33.0010, 1_030), now: 1_030)
@@ -3419,6 +3419,11 @@ check(HouseholdPublisher.worthSending(moved: 9, sinceLast: 3, confirmation: fals
 check(HouseholdPublisher.worthSending(moved: 2, sinceLast: 25, confirmation: false), "the normal rate still refreshes")
 check(HouseholdPublisher.worthSending(moved: 0, sinceLast: 1, confirmation: true) && HouseholdPublisher.worthSending(moved: nil, sinceLast: 0, confirmation: false), "confirmations and first sends always go")
 
+for alias in ["MTB", "Mountain biking", "Mountain Biking"] {
+    check(WatchCatalog.choice(alias)?.title == "Mountain biking", "one Watch display name for legacy mountain biking aliases")
+    check(WatchCatalog.activityCode(alias) == "MTB" && WatchCatalog.usesBicycle(alias), "legacy subtype and bicycle compatibility remain stable")
+}
+check(WatchCatalog.activities.filter { $0 == "MTB" }.count == 1, "one Watch mountain biking recording choice")
 print("\(assertions) native recorder/auth assertions passed")
 
 

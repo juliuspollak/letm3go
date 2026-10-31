@@ -1,3 +1,4 @@
+import {activityCode} from './activityNames.js';
 import { distanceMeters, geometryDistance, validGeometry } from './mtb.js';
 
 // Linking a recorded ride to a community trail is a private, local annotation.
@@ -11,7 +12,7 @@ export const TRAIL_ACTIVITIES = ['MTB', 'Mountain biking'];
 export const TRAIL_SOURCES = ['device', 'simulator', 'watch'];
 
 export function isTrailActivity(trip){
-  return !!trip && TRAIL_ACTIVITIES.includes(trip.activity);
+  return !!trip && TRAIL_ACTIVITIES.includes(activityCode(trip.activity));
 }
 
 // Native refuses trail links for automatic journeys and unfinished recordings.

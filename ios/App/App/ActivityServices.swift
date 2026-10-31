@@ -83,7 +83,7 @@ extension LocationRecorder {
         guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
         var trip = trips[index]
         let mode = trip.recordingMode ?? "manual"
-        guard trip.state == "finished", Self.segmentActivities.contains(trip.activity), mode != "tesla", mode != "historical" else {
+        guard trip.state == "finished", Self.segmentActivities.contains(WatchCatalog.activityCode(trip.activity)), mode != "tesla", mode != "historical" else {
             throw failure("Segments can be made on recorded walks, runs, hikes and rides.")
         }
         let existing = trip.details?.namedSegments ?? []
