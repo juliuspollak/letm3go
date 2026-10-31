@@ -19,11 +19,21 @@ export const LIVE_SECONDS=10*60;
 // A member's movement status. What their phone published with the position comes from
 // native code and works while locked, so it outranks the WebView's household presence.
 const NATIVE_ACTIVITY={driving:'Driving',cycling:'Cycling',running:'Running',walking:'Walking'};
+// A movement status is only meaningful while its position is fresh. This also
+// protects viewers from a car that was left behind by an old app or a phone that
+// stopped publishing before it could send an explicit clear.
+export const NATIVE_ACTIVITY_TTL_SECONDS=120;
 export function memberActivities(presence=[],members=[]){
  const shared=Object.fromEntries(presence.filter(p=>p.user_id&&p.activity_label).map(p=>[p.user_id,p.activity_label]));
  for(const member of members){
-  if(!member.activity)continue;
-  if(NATIVE_ACTIVITY[member.activity])shared[member.user_id]=NATIVE_ACTIVITY[member.activity];
+  // `undefined` means the deployed RPC predates the activity column: keep the
+  // older household-presence fallback. `null` is the server explicitly saying no
+  // activity, so it clears that fallback.
+  if(member.activity===undefined)continue;
+  if(member.activity===null){delete shared[member.user_id];continue;}
+  const at=Date.parse(member.location_at),now=Date.parse(member.server_now);
+  const fresh=Number.isFinite(at)&&Number.isFinite(now)&&now-at<=NATIVE_ACTIVITY_TTL_SECONDS*1000;
+  if(fresh&&NATIVE_ACTIVITY[member.activity])shared[member.user_id]=NATIVE_ACTIVITY[member.activity];
   else delete shared[member.user_id];
  }
  return shared;

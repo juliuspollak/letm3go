@@ -1,5 +1,5 @@
 import { Maximize2, Navigation } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
 import { MapLayersButton } from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
@@ -59,6 +59,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   return()=>{disposed=true;void listener?.remove();};
  },[mapID,hasCamera]);
  const photoPins=JSON.stringify(payload.pins);
+ // A listener must not be torn down and re-added every time somebody moves.
+ const photoPinsRef=useRef([]);
+ useEffect(()=>{try{photoPinsRef.current=JSON.parse(photoPins);}catch{photoPinsRef.current=[];}},[photoPins]);
  useEffect(()=>{
   if(!appleMapsAvailable())return;
   let disposed=false;let listener;
@@ -66,10 +69,10 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    // Overview photos live in the overview data, so they are matched by map; other
    // maps only accept a photo that is one of their own pins.
    if(disposed||!result?.photoID||!result?.journeyID)return;
-   if(result.mapID?result.mapID===mapID:JSON.parse(photoPins).some(pin=>pin.kind==='photo'&&pin.photoID===result.photoID&&pin.journeyID===result.journeyID))latest.current?.(result);
+   if(result.mapID?result.mapID===mapID:photoPinsRef.current.some(pin=>pin.kind==='photo'&&pin.photoID===result.photoID&&pin.journeyID===result.journeyID))latest.current?.(result);
   }).then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
- },[mapID,photoPins]);
+ },[mapID]);
  const data=JSON.stringify(payload);
  const interactiveData=JSON.stringify(trimRange?.points?.length>1?(()=>{
   const points=trimRange.points.slice(trimRange.start,trimRange.end+1).filter(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
@@ -83,15 +86,27 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   pins.push({point:routes[0][0],title:'Start',kind:'start'},{point:routes.at(-1).at(-1),title:'Finish',kind:'finish'});
   return {...payload,routes,pins};
  })():payload);
+ // A live position changes the content, not the map's structure. Keep the latest
+ // payload in a ref and re-embed only when routes, pins, filters, camera mode or
+ // other structure changes; ordinary movement goes through the native incremental
+ // update call and preserves camera, gestures, selection, routes and photos.
+ const latestContent=useMemo(()=>JSON.parse(interactiveData),[interactiveData]);
+ const contentRef=useRef(latestContent);
+ useEffect(()=>{contentRef.current=latestContent;},[latestContent]);
+ const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
+ useEffect(()=>{
+  if(!appleMapsAvailable()||picker||!embeddedOnce.current)return;
+  void appleMaps.update({...latestContent,mapID}).catch(()=>{});
+ },[latestContent,mapID,picker,embedded]);
  useEffect(()=>{
   if(!appleMapsAvailable()||picker)return;
-  if(!embeddedEnabled){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;return;}
+  if(!embeddedEnabled){embeddedOnce.current=false;void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>setEmbedded(false));return;}
   let active=true;let previous='';
   // The overview data must reach the native side before a payload names it.
   // false: the overview did not arrive, so it is left out of this embed rather
   // than named and drawn empty.
   const ready=overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true);
-  const content=JSON.parse(interactiveData);
+  const content=contentRef.current;
   const positions=content.routes.some(route=>route.length)||content.pins.length>0;
   const focus=Boolean(content.focus);
   const mount=()=>{
@@ -122,7 +137,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...JSON.parse(interactiveData),mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport};
+    const request={...contentRef.current,mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport};
     if(!arrived)delete request.overview;
     return appleMaps.embed(request).then(result=>({arrived,result}));
    }).then(outcome=>{
@@ -153,13 +168,13 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   window.addEventListener('scroll',resized,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
- },[interactiveData,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
+ },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
  const endIndex=trimRange&&projected.length>1?Math.max(startIndex+1,Math.min(projected.length-1,Math.round(trimRange.end/(trimRange.points.length-1)*(projected.length-1)))):0;
  const selected=trimRange&&projected.length>1?projected.slice(startIndex,endIndex+1):[];
- useEffect(()=>{let alive=true;if(!appleMapsAvailable())return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...JSON.parse(data),trimPreview:isTrimPreview,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[data,large,themeVersion,isTrimPreview,overviewKey,overviewAttempt]);
+ useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...JSON.parse(data),trimPreview:isTrimPreview,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[data,large,themeVersion,isTrimPreview,overviewKey,overviewAttempt,embedded]);
  async function open(){
   if(busy)return;
   setBusy(true);setError('');

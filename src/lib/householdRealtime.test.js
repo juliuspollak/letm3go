@@ -1,5 +1,5 @@
 import {expect,it,vi} from 'vitest';
-import {joinHouseholdSignals,POLL_CONNECTED_MS,POLL_MS,PUBLISH_MOVING_MS,PUBLISH_STILL_MS,deliveryLatency,latencySummary,pollDelay,publishDelay,sharedLocationPayload,subscribeHouseholdSignals,throttled} from './householdRealtime.js';
+import {joinHouseholdSignals,POLL_CONNECTED_MS,POLL_MS,PUBLISH_MOVING_MS,PUBLISH_STILL_MS,deliveryLatency,latencySummary,pollDelay,publishDelay,publishLiveLocation,reconnectDelay,sharedLocationPayload,subscribeHouseholdSignals,throttled} from './householdRealtime.js';
 
 it('polls fast only while no push channel is up',()=>{
  expect(pollDelay(false)).toBe(POLL_MS);
@@ -10,6 +10,19 @@ it('publishes often while moving and slowly at rest',()=>{
  expect(publishDelay(0.2)).toBe(PUBLISH_STILL_MS);
  expect(publishDelay(-1)).toBe(PUBLISH_STILL_MS);
  expect(publishDelay(undefined)).toBe(PUBLISH_STILL_MS);
+});
+it('retries failed Realtime joins with a bounded backoff',()=>{
+ expect([0,1,2,3,4,5,6,99].map(reconnectDelay)).toEqual([2000,4000,8000,16000,32000,60000,60000,60000]);
+});
+it('sends a captured time and retries without it for an unmigrated database',async()=>{
+ const fix={latitude:1,longitude:2,accuracy:3,speed:1,timestamp:1000};
+ expect(sharedLocationPayload(fix).p_captured_at).toBe(new Date(1000000).toISOString());
+ const calls=[];
+ const client={rpc:async(name,payload)=>{calls.push({name,payload});return calls.length===1?{error:{code:'PGRST202',message:'Could not find the function'}}:{data:null,error:null};}};
+ expect((await publishLiveLocation(client,sharedLocationPayload(fix))).error).toBeNull();
+ expect(calls).toHaveLength(2);
+ expect(calls[1].payload.p_captured_at).toBeUndefined();
+ expect(calls[1].payload.p_latitude).toBe(1);
 });
 it('turns a burst of signals into one read now and one after',()=>{
  let time=0;const pending=[];const run=vi.fn();
