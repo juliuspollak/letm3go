@@ -6,7 +6,8 @@ import {cameraFit,personActivity,personLabel,savedPlaceName,secondsAtPlace} from
 
 // Freshness policy (documented in docs/household-location-sharing.md):
 // - live:        a position confirmed within the last 10 minutes. A phone
-//                publishes about every 25 s while it moves and confirms an
+//                publishes every 3-5 s while it moves in the foreground, about
+//                every 25 s while it moves in the background, and confirms an
 //                unchanged position every 5 minutes while its location service
 //                runs, so a present member stays inside this window.
 // - stale:       an older position, shown with its age, up to 24 hours.

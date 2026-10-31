@@ -13,8 +13,9 @@ let pendingPosition=null,lastPosition=null,positionGeneration=0;
 // `allowStationary`: a periodic refresh that only needs to know whether anything
 // changed may get {stationary:true} (no coordinates) while the adaptive engine
 // holds Core Location's stationary report, instead of waking precise GPS.
-export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false}={}){
- if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=POSITION_REUSE_SECONDS&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
+// `maxAge` narrows that reuse for a moving publisher, which needs a current fix.
+export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false,maxAge=POSITION_REUSE_SECONDS}={}){
+ if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=maxAge&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
  if(pendingPosition)return pendingPosition.then(result=>result?.stationary&&!allowStationary?sharedCurrentPosition():result);
  const generation=positionGeneration;
  const request=allowStationary?native.currentPosition({allowStationary:true}):native.currentPosition();
@@ -41,10 +42,13 @@ export const recorder = {
  requestPermission:always=>native.requestPermission({always}),
  // `trail` is optional and only used when starting a mountain-bike ride from a
  // community trail, so the link survives offline and is saved with the activity.
- start:(activity,vehicle,vehicleID,trail)=>native.start({activity,vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail)}),
+ // `anyway` is the rider's own decision to record here while another device is recording.
+ start:(activity,vehicle,vehicleID,trail,anyway)=>native.start({activity,vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(anyway?{anyway:true}:{})}),
  transition:action=>native.transition({action}),
  openSettings:()=>native.openSettings(),
  requestMotionPermission:()=>native.requestMotionPermission(),
+ resolveHeartRate:(id,accept)=>native.resolveHeartRate({id,accept}),
+ noteHouseholdDelivery:summary=>recorderAvailable()?native.noteHouseholdDelivery(summary).catch(()=>{}):Promise.resolve(),
  // Diagnostics only: a failure here must never affect the warning itself.
  noteRecordingWarning:(action,issue)=>recorderAvailable()?native.noteRecordingWarning({action,issue}).catch(()=>{}):Promise.resolve(),
  setAutomatic:enabled=>native.setAutomatic({enabled}),

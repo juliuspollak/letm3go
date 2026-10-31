@@ -31,3 +31,12 @@ it('backs up Apple Watch recordings once, as manual until the schema allows watc
  await run(api,{...state,trips:[watch]},first.receipts);
  expect(api.rpc).toHaveBeenCalledTimes(1);
 });
+
+it('never uploads heart rate or overlap notes in a private backup',async()=>{
+ const sent=[];
+ const client={rpc:async(name,args)=>{sent.push(args);return {data:1,error:null};},from:()=>({upsert:async()=>({error:null})}),auth:{getUser:async()=>({data:{user:{id:'u'}}})}};
+ const trip={id:'7c9e6679-7425-40de-944b-e07fc1f90ae7',title:'Run',activity:'Running',source:'watch',recordingMode:'watch',state:'finished',startedAt:1,endedAt:900,accumulatedSeconds:899,distanceMeters:0,points:[],details:{indoor:true,unverifiedHeartRate:{samples:[{timestamp:6,bpm:121}]},overlaps:[{activityID:'a',title:'x',kind:'manual',seconds:90}],heartRate:{samples:[{timestamp:5,bpm:120}],pausePeriods:[],summary:{average:120,maximum:120,minimum:120,samples:1,gaps:0}}}};
+ await syncPrivateActivities(client,{ownerID:'u',trips:[trip],places:[],deletedIDs:[]},{}).catch(()=>{});
+ expect(sent.length).toBeGreaterThan(0);
+ expect(JSON.stringify(sent)).not.toMatch(/heartRate|bpm|overlaps/i);
+});

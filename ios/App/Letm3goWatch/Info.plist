@@ -25,9 +25,9 @@
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Letm3go saves your recorded rides as workouts in Health.</string>
+	<string>Letm3go reads your heart rate while you record an activity and shows it with that activity.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Letm3go saves your recorded rides as workouts in Health.</string>
+	<string>Letm3go saves your recorded activities as workouts in Health.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Letm3go records the route of your ride.</string>
 	<key>WKApplication</key>

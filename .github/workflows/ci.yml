@@ -37,6 +37,30 @@ jobs:
       - run: npm run check:edge
       - run: npm audit --audit-level=moderate
 
+  database:
+    # A throwaway local Postgres on the runner; nothing here reaches the real project.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.checks == 'web' || inputs.checks == 'all' }}
+    runs-on: ubuntu-latest
+    env:
+      # Local commands never use it; the repo's wrapper only requires one to be set.
+      SUPABASE_ACCESS_TOKEN: unused-local-stack
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run db:start
+      - run: npm run db:lint
+      # Realtime creates its schema after migrations run, so this repeats the signal
+      # migration against the real realtime.messages table and reports the policy.
+      - name: Apply the Realtime signal migration against real Realtime tables
+        run: |
+          db=$(docker ps --format '{{.Names}}' | grep '^supabase_db_')
+          docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261108000000_household_realtime_signals.sql
+          docker exec "$db" psql -U postgres -d postgres -c "select polname from pg_policy where polrelid='realtime.messages'::regclass"
+          docker exec "$db" psql -U postgres -d postgres -c "select pg_get_function_identity_arguments('realtime.send'::regproc)"
+
   ios:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.checks == 'ios' || inputs.checks == 'all') }}
     runs-on: macos-26

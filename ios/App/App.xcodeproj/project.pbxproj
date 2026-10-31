@@ -31,6 +31,8 @@
 		B20000000000000000000001 /* RecorderCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001; };
 		B20000000000000000000002 /* LocationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002; };
 		B20000000000000000000003 /* WatchActivityCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
+		B20000000000000000000033 /* WatchRecordingCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000033; };
+		C20000000000000000000033 /* WatchRecordingCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000033; };
 		B40000000000000000000001 /* AutomaticTracking.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001; };
 		B40000000000000000000002 /* ActivityServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002; };
 		B40000000000000000000003 /* PhotoSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000003; };
@@ -98,6 +100,7 @@
 		B10000000000000000000001 /* RecorderCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderCore.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* LocationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationRecorder.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* WatchActivityCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchActivityCore.swift; sourceTree = "<group>"; };
+		B10000000000000000000033 /* WatchRecordingCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchRecordingCore.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* AutomaticTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticTracking.swift; sourceTree = "<group>"; };
 		B30000000000000000000002 /* ActivityServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityServices.swift; sourceTree = "<group>"; };
 		B30000000000000000000003 /* PhotoSuggestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoSuggestions.swift; sourceTree = "<group>"; };
@@ -159,6 +162,7 @@
 				B10000000000000000000001 /* RecorderCore.swift */,
 				B10000000000000000000002 /* LocationRecorder.swift */,
 				B10000000000000000000003 /* WatchActivityCore.swift */,
+				B10000000000000000000033 /* WatchRecordingCore.swift */,
 				B30000000000000000000001 /* AutomaticTracking.swift */,
 				B30000000000000000000002 /* ActivityServices.swift */,
 				B30000000000000000000003 /* PhotoSuggestions.swift */,
@@ -324,6 +328,7 @@
 				B20000000000000000000001 /* RecorderCore.swift in Sources */,
 				B20000000000000000000002 /* LocationRecorder.swift in Sources */,
 				B20000000000000000000003 /* WatchActivityCore.swift in Sources */,
+				B20000000000000000000033 /* WatchRecordingCore.swift in Sources */,
 				B40000000000000000000001 /* AutomaticTracking.swift in Sources */,
 				B40000000000000000000002 /* ActivityServices.swift in Sources */,
 				B40000000000000000000003 /* PhotoSuggestions.swift in Sources */,
@@ -355,6 +360,7 @@
 				C20000000000000000000005 /* WatchConnectivitySession.swift in Sources */,
 				C20000000000000000000007 /* RecorderCore.swift in Sources */,
 				C20000000000000000000009 /* WatchActivityCore.swift in Sources */,
+				C20000000000000000000033 /* WatchRecordingCore.swift in Sources */,
 				C2000000000000000000000F /* NamedSegmentCore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

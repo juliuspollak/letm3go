@@ -194,21 +194,35 @@ extension LocationRecorder {
         trips[index] = trip
         notifyJourneyChange()
     }
+    func resolveHeartRate(id: String, accept: Bool) throws {
+        guard let storage = storage, let index = trips.firstIndex(where: { $0.id == id }) else { throw failure("Activity not found.") }
+        var trip = trips[index]
+        guard trip.resolveUnverifiedHeartRate(accept: accept) else { return }
+        try storage.save(trip)
+        trips[index] = trip
+        recordDiagnostic("watch", accept ? "Held heart rate accepted" : "Held heart rate removed")
+        notifyJourneyChange()
+    }
     // An Apple Watch ride is imported exactly once. `deferred` means the app is not
     // ready to write yet (no store open, an account change in progress), so the
     // phone inbox keeps it and the watch is not acknowledged. `foreignAccount` means
     // the payload belongs to a different account: it is parked, never imported.
     func importWatchActivity(_ transfer: WatchActivityTransfer, claimedBy: String? = nil) -> WatchImportOutcome {
         guard storage != nil, storeOpened, !accountSuspended, !accountDeleting, let ownerID = ownerID else { return .deferred }
+        var heartRateVerified = true
         switch WatchOwnership.decision(transferOwner: transfer.ownerID, claimedBy: claimedBy, currentOwner: ownerID) {
         case .noAccountOpen:
             return .deferred
         case .foreignAccount:
             return .foreignAccount
-        case .importable, .unclaimed:
+        case .unclaimed:
+            // Recorded before the Watch knew an account: the route imports as it always
+            // has, and the person decides whether the readings are theirs.
+            heartRateVerified = false
+        case .importable:
             break
         }
-        guard var activity = WatchActivityImport.activity(from: transfer) else { return .rejected("invalid-payload") }
+        guard var activity = WatchActivityImport.activity(from: transfer, heartRateVerified: heartRateVerified) else { return .rejected("invalid-payload") }
         // The bike chosen on the watch, with its current Collection name when the
         // item is still here; otherwise the reference keeps the watch's name.
         if let ref = activity.equipment?.first, let item = collectionItem(id: ref.id, name: ref.name) {
@@ -217,6 +231,11 @@ extension LocationRecorder {
         if trips.contains(where: { $0.id == activity.id }) { return .duplicate }
         // A deleted ride must not be resurrected by a late retry from the watch.
         if (try? storage!.deletedIDs())?.contains(activity.id) == true { return .duplicate }
+        // Offline recordings that share time with this one are named, never merged
+        // or removed: the rider decides which to keep.
+        let overlaps = CrossDeviceRecording.overlaps(startedAt: transfer.startedAt, endedAt: transfer.endedAt, id: activity.id,
+                                                     trips: trips + [active, automaticTrip].compactMap { $0 }, now: Date().timeIntervalSince1970)
+        if !overlaps.isEmpty { activity.details?.overlaps = overlaps }
         do {
             try storage!.save(activity)
             trips.insert(activity, at: 0)
@@ -225,7 +244,11 @@ extension LocationRecorder {
             recordDiagnostic("watch", "Imported an Apple Watch activity", details: [
                 "points": String(activity.points.count),
                 "trail": activity.details?.mtbTrailID == nil ? "none" : "linked",
-                "workoutSaved": transfer.workoutSaved == true ? "yes" : "no"
+                "workoutSaved": transfer.workoutSaved == true ? "yes" : "no",
+                "heartRateSamples": String(activity.details?.heartRate?.summary.samples ?? activity.details?.unverifiedHeartRate?.summary.samples ?? 0),
+                "heartRateHeld": String(activity.details?.unverifiedHeartRate != nil),
+                "heartRateGaps": String(activity.details?.heartRate?.summary.gaps ?? 0),
+                "overlaps": String(overlaps.count)
             ])
             notifyJourneyChange()
             return .imported

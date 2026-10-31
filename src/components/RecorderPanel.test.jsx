@@ -88,3 +88,13 @@ it('places Start above the activity choices so it needs no scrolling on small ph
  fireEvent.click(screen.getByRole('button',{name:/Driving/}));
  expect(screen.getByRole('button',{name:'Start driving'})).toBeEnabled();
 });
+
+it('holds a start while the Watch records, then lets the rider decide',()=>{
+ const run=vi.fn();
+ render(<RecorderPanel state={{active:null,permission:'always',storageReady:true,recordingElsewhere:{label:'Recording on Apple Watch',activity:'Running',state:'recording',sessionID:'W'}}} run={run} vehicles={[]}/>);
+ expect(screen.getByRole('status')).toHaveTextContent('Recording on Apple Watch');
+ expect(screen.queryByRole('button',{name:/^Start walking/})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Start here anyway'}));
+ fireEvent.click(screen.getByRole('button',{name:/^Start walking/}));
+ expect(run).toHaveBeenCalledWith('start','Walking','',undefined,undefined,true);
+});
