@@ -976,6 +976,17 @@ enum TrackingBoundary {
 // any suspension a new real fix is required before anything is confirmed again.
 enum HouseholdPublisher {
     static let movingInterval: Double = 25
+    // With the app open the map may be in use, so movement is sent far more often.
+    // Background publishing keeps the slower rate: the battery is the reason it exists.
+    static let foregroundDrivingInterval: Double = 3
+    static let foregroundMovingInterval: Double = 5
+    static let failureBackoff: Double = 10
+    static func interval(speed: Double, foreground: Bool, confirmation: Bool) -> Double {
+        if confirmation { return confirmationInterval }
+        guard foreground else { return movingInterval }
+        if speed >= 3 { return foregroundDrivingInterval }
+        return speed >= 0.7 ? foregroundMovingInterval : movingInterval
+    }
     static let confirmationInterval: Double = 300
     static func validToken(_ token: String) -> Bool {
         token.count == 64 && token.allSatisfy { $0.isHexDigit && !$0.isUppercase }

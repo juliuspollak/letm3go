@@ -29,6 +29,7 @@ export function snapshotKey(data){
   data.gpsReason,data.indicatorRequested,data.lastTrackingEvent,data.lastTrackingEventAt,
   data.locationMode,data.locationIndicator?.reason,
   data.automaticPendingWalk,data.place?.state,data.place?.radiusMeters,data.place?.settled,data.place?.lastDecision,
+  data.recordingElsewhere?.sessionID,data.recordingElsewhere?.state,
   data.error,data.recovery,data.accuracy,data.lastFixAt,data.currentSpeed,
   tripKey(data.active),tripKey(data.automaticTrip),
   (data.trips||[]).map(tripKey).join('|'),

@@ -3321,6 +3321,14 @@ do {
     check(buffer.events.count == 29, "drained up to what was sent")
 }
 
+// Household publishing adapts to movement and to whether the map can be open.
+check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: false) == 3, "foreground driving publishes every 3 s")
+check(HouseholdPublisher.interval(speed: 1.2, foreground: true, confirmation: false) == 5, "foreground walking publishes every 5 s")
+check(HouseholdPublisher.interval(speed: 0, foreground: true, confirmation: false) == 25, "stillness stays slow")
+check(HouseholdPublisher.interval(speed: -1, foreground: true, confirmation: false) == 25, "an unknown speed stays slow")
+check(HouseholdPublisher.interval(speed: 15, foreground: false, confirmation: false) == 25, "the background rate is unchanged")
+check(HouseholdPublisher.interval(speed: 15, foreground: true, confirmation: true) == 300, "confirmations are unchanged")
+
 print("\(assertions) native recorder/auth assertions passed")
 
 

@@ -135,6 +135,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveShareTokenExpiresAt: Double = 0
     var liveShareLastSentAt: Double = 0
     var liveShareInFlight = false
+    var liveShareRetryAt: Double = 0
+    // Off once a server without the 20261108 migration refuses the extra argument.
+    var liveShareSendsCaptureTime = true
     // "device": a household publish credential (Keychain-backed); "session": the
     // signed-in access token, used only until the database is migrated.
     var liveShareMode = "session"
@@ -644,12 +647,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard storeOpened,ownerID != nil,!accountSuspended,!accountDeleting,
               let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
               now < liveShareTokenExpiresAt-60,!liveShareInFlight,
-              now-liveShareLastSentAt >= (confirmation ? HouseholdPublisher.confirmationInterval : HouseholdPublisher.movingInterval) else {return}
+              now>=liveShareRetryAt,
+              now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation) else {return}
         let device=liveShareMode=="device"
         let speedValue: Any = location.speed >= 0 ? min(250,location.speed*3.6) as Any : NSNull()
         var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
+        let sentCaptureTime=device && liveShareSendsCaptureTime
+        if sentCaptureTime { payload["p_captured_at"]=ISO8601DateFormatter().string(from:location.timestamp) }
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data
@@ -695,7 +701,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 let failure=error != nil ? "network" : "http \(status)"
                 if self.liveShareStatus != failure { self.recordDiagnostic("sharing","Household location upload failed",details:["reason":failure]) }
                 self.liveShareStatus=failure
-                self.liveShareLastSentAt=Date().timeIntervalSince1970-15
+                if sentCaptureTime && status==404 { self.liveShareSendsCaptureTime=false; return }
+                self.liveShareRetryAt=Date().timeIntervalSince1970+HouseholdPublisher.failureBackoff
             }
         }.resume()
     }
@@ -1053,6 +1060,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "transition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "noteHouseholdDelivery", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestMotionPermission", returnType: CAPPluginReturnPromise)
     ]
     // Push native journey changes into the WebView so History, the recorder panel
@@ -1306,6 +1314,15 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID"), trailID: call.getString("trailID"), trailName: call.getString("trailName"), trailSegmentID: call.getString("trailSegmentID"), trailDistanceMeters: call.getDouble("trailDistanceMeters")); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
+        }
+    }
+    // Diagnostics: how old household positions were when this phone read them.
+    @objc func noteHouseholdDelivery(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            LocationRecorder.shared.recordDiagnostic("sharing","Household positions delivered",details:[
+                "transport":call.getString("transport") ?? "unknown","latencySamples":String(call.getInt("latencySamples") ?? 0),
+                "latencyMedianMs":String(call.getInt("latencyMedianMs") ?? 0),"latencyMaxMs":String(call.getInt("latencyMaxMs") ?? 0)])
+            call.resolve()
         }
     }
     @objc func transition(_ call: CAPPluginCall) {
