@@ -13,9 +13,15 @@
 --    the position and credential.
 -- 5. The device publish path locks the consent row and rechecks enabled in the
 --    update, so a request that started before an off switch cannot write after it.
+-- 6. A position-bearing set_my_live_location call can update an enabled row but
+--    can never re-enable a disabled one, even when its captured time is newer
+--    than the off switch. Re-enabling requires the explicit status-only call
+--    set_my_live_location(true) made by the signed-in owner.
 --
 -- Earlier app builds call set_my_live_location with five arguments; the new
--- defaults preserve that call. Earlier publish_live_location calls are unchanged.
+-- defaults preserve that call for position updates. A legacy position call no
+-- longer re-enables sharing after an off switch; an explicit status-only call
+-- still does. Earlier publish_live_location calls are unchanged.
 begin;
 
 alter table public.household_live_locations add column if not exists activity text;
@@ -64,35 +70,33 @@ begin
   case when v_position then v_at end,
   case when p_enabled then v_activity end,now())
  on conflict(user_id) do update set
-  -- A position request captured before the latest off switch cannot revive
-  -- sharing. Device-credential uploads are revoked by the switch; this guard
-  -- closes the same race for the in-app session publisher. An explicit enable
-  -- (no position) still works, and a genuinely newer fix can revive sharing.
+  -- A position request can update an enabled row but can never turn a disabled
+  -- row back on, regardless of its captured time. Re-enabling requires the
+  -- signed-in owner's explicit status-only set_my_live_location(true) action.
   enabled=case when not excluded.enabled then false
    when l.enabled then true
-   when v_position and v_at <= l.updated_at then false
+   when v_position then false
    else true end,
   latitude=case when not excluded.enabled then null
-   when v_position and (l.enabled or v_at > l.updated_at)
+   when l.enabled and v_position
     and (l.location_at is null or l.location_at<=v_at) then excluded.latitude else l.latitude end,
   longitude=case when not excluded.enabled then null
-   when v_position and (l.enabled or v_at > l.updated_at)
+   when l.enabled and v_position
     and (l.location_at is null or l.location_at<=v_at) then excluded.longitude else l.longitude end,
   accuracy_m=case when not excluded.enabled then null
-   when v_position and (l.enabled or v_at > l.updated_at)
+   when l.enabled and v_position
     and (l.location_at is null or l.location_at<=v_at) then excluded.accuracy_m else l.accuracy_m end,
   speed_kmh=case when not excluded.enabled then null
-   when v_position and (l.enabled or v_at > l.updated_at)
+   when l.enabled and v_position
     and (l.location_at is null or l.location_at<=v_at) then excluded.speed_kmh else l.speed_kmh end,
   expires_at=case when not excluded.enabled then null
-   when v_position and (l.enabled or v_at > l.updated_at)
+   when l.enabled and v_position
     and (l.location_at is null or l.location_at<=v_at) then excluded.expires_at else l.expires_at end,
   location_at=case when not excluded.enabled then null
-   when v_position and (l.enabled or v_at > l.updated_at)
+   when l.enabled and v_position
     and (l.location_at is null or l.location_at<=v_at) then v_at else l.location_at end,
   activity=case when not excluded.enabled then null
-   when (l.enabled or not v_position or v_at > l.updated_at)
-    and (l.location_at is null or l.location_at<=v_at) then v_activity else l.activity end,
+   when l.enabled and (l.location_at is null or l.location_at<=v_at) then v_activity else l.activity end,
   publish_token_hash=case when excluded.enabled then l.publish_token_hash end,
   publish_token_expires_at=case when excluded.enabled then l.publish_token_expires_at end,
   updated_at=now();

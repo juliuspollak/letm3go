@@ -773,9 +773,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
         // A confirmation says the phone is still there now, so it carries no old fix time.
-        // Session mode sends it too where supported: migration 13 uses it to stop a
-        // request captured before an off switch from reviving sharing. On an older
-        // server the 404 fallback drops the field and retries.
+        // Session mode sends it too where supported. Migration 13 refuses to
+        // re-enable sharing from any position-bearing call; a capture time only
+        // orders positions and keeps their true age. An older server returns 404
+        // for the field and the existing fallback retries without it.
         let sentCaptureTime=liveShareSendsCaptureTime && !confirmation
         if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
         let sendsActivity=device && liveShareSendsActivity

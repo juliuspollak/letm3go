@@ -72,6 +72,16 @@ it('reloads locations when the app is reopened',async()=>{
  await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
  await waitFor(()=>expect(mock.rpc.mock.calls.filter(([name])=>name==='my_household_location_status').length).toBeGreaterThan(before));
 });
+it('records explicit consent before publishing a position when sharing is enabled',async()=>{
+ const {result}=renderHook(()=>useHouseholdPresence('julius',true));
+ await waitFor(()=>expect(result.current.liveReady).toBe(true));
+ mock.rpc.mockClear();
+ await act(async()=>{await result.current.setLiveSharing(true);});
+ const calls=mock.rpc.mock.calls.filter(([name])=>name==='set_my_live_location');
+ expect(calls[0][1]).toEqual({p_enabled:true});
+ expect(calls[1][1]).toEqual(expect.objectContaining({p_enabled:true,p_latitude:-33.86,p_longitude:151.2}));
+ expect(result.current.liveEnabled).toBe(true);
+});
 it('arms the native uploader with a device credential so a locked phone keeps sharing',async()=>{
  renderHook(()=>useHouseholdPresence('julius',true));
  await waitFor(()=>expect(mock.configure).toHaveBeenCalledWith(expect.objectContaining({enabled:true,publishToken:token,endpoint:'https://example.supabase.co/rest/v1/rpc/publish_live_location',apiKey:'sb_publishable_test'})));

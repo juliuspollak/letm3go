@@ -23,7 +23,7 @@ the member was filtered out.
 
 | Layer | Behaviour |
 |---|---|
-| Database (`20261104000000_household_location_status.sql`) | `my_household_location_status()` returns every other member with `sharing_enabled`, coordinates only while sharing, confirmed in the last 24 h and after both joined, `location_at`, and `server_now`. Turning sharing off erases the position and credential; leaving the household ends sharing (trigger). |
+| Database (`20261104000000_household_location_status.sql`) | `my_household_location_status()` returns every other member with `sharing_enabled`, coordinates only while sharing, confirmed in the last 24 h and after both joined, `location_at`, and `server_now`. Turning sharing off erases the position and credential; leaving the household ends sharing (trigger). A position update can never re-enable a disabled row, even with a newer capture; only the signed-in owner's status-only consent action can. |
 | Device credential | `issue_my_live_location_token()` returns a random credential (SHA-256 stored) valid 30 days; `publish_live_location(token, …)` lets the phone publish only its own position. Kept in the Keychain, so publishing survives relaunch and session expiry. Revoked on sharing off, leave, sign-out, deletion; replaced on reissue. |
 | Native publishing | A real fix (≤ 100 m, true age ≤ 15 min) every 3 s when driving, 5 s in Low Power Mode, 8–10 s for other movement, and once a minute when still. Cadence uses GPS speed, activity, accuracy and battery state; it does not require Core Motion. A still phone re-confirms its last fix every 5 minutes while continuous location has run uninterrupted. While live sharing is parked, the continuous stream runs at standby accuracy (10 m / 25 m filter), not Best/5 m; a fresh movement signal or vehicle-sized fix upgrades it to precise. Failed uploads are not recorded as sent, and the last successful point is kept for retry. |
 | App | Polls every 15 s while visible, and on foreground, visibility and network recovery; a failed fetch keeps the last rows and reports the error. Realtime discovery and joins retry with bounded backoff, and only the newest overlapping read may update state. Falls back to the earlier RPC if the migration is not applied. |
@@ -73,10 +73,12 @@ of each other are one map marker with every avatar in it.
    the Supabase SQL editor (after 20261029000000). It is additive.
 2. Apply `20261112000000_household_shared_activity.sql`, then
    `20261113000000_household_live_hardening.sql`, in that order. Both are
-   additive and safe to re-run after their predecessors. `20261113` adds the
-   captured-time/off-switch guard and locks the publish row, so an in-flight
-   upload cannot revive sharing after an off switch. Do not re-run `20261108`
-   afterwards: it restores the older publish function.
+   additive and safe to re-run after their predecessors. `20261113` refuses to
+   re-enable a disabled sharing row from any position-bearing call, even one
+   captured after the off switch; only the signed-in owner's explicit
+   status-only switch action can record consent again. It also locks the publish
+   row, so an in-flight upload cannot revive sharing after an off switch. Do not
+   re-run `20261108` afterwards: it restores the older publish function.
 3. Install the new TestFlight build on both iPhones.
 4. Each person opens the app once while signed in (this issues the device
    credential).

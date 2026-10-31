@@ -2,8 +2,9 @@ import { PGlite } from '@electric-sql/pglite';
 import { readFile, readdir } from 'node:fs/promises';
 import { beforeAll, afterAll, expect, it } from 'vitest';
 // 20261113000000_household_live_hardening.sql against the whole migration chain.
-// It proves newer-wins, true captured age, explicit activity clearing, and that
-// an old five-argument client still works.
+// It proves newer-wins, true captured age, explicit activity clearing, that a
+// position can never re-enable sharing without explicit consent, and that an old
+// five-argument client still updates an enabled row.
 const db = new PGlite();
 const a = '11111111-1111-4111-8111-111111111111';
 const b = '22222222-2222-4222-8222-222222222222';
@@ -68,31 +69,35 @@ it('clears activity without inventing a new position and clears everything on di
   expect(seen).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
 });
 
-it('keeps the old five-argument call working', async () => {
+it('keeps the old five-argument call working while sharing is already on', async () => {
+  await call(`true`);
   await call(`true,-33.70,151.20,5,30`);
   expect((await row()).latitude).toBeCloseTo(-33.70, 5);
 });
 
-it('does not let a delayed position undo a newer off switch', async () => {
-  await call(`true,-33.70,151.20,5,30,now()-interval '2 minutes','driving'`);
+it('does not let a newly captured location reactivate sharing without explicit consent', async () => {
+  await call(`true`);
+  await call(`true,-33.70,151.20,5,30,now(),'driving'`);
   await call(`false`);
   let seen = await row();
   expect(seen).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
-  // This request was captured before the switch-off but arrives afterwards.
-  await call(`true,-33.70,151.20,5,30,now()-interval '2 minutes','driving'`);
+  // Captured after the off switch, but still only a position update.
+  await call(`true,-33.69,151.20,5,30,now(),'driving'`);
   seen = await row();
   expect(seen).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
-  // An explicit enable has no position; a genuinely new fix follows it.
-  await call(`true,null,null,null,null,null,null`);
-  expect((await row()).enabled).toBe(true);
+  // A legacy five-argument position update cannot re-enable either, even though
+  // the server stamps it as current.
+  await call(`true,-33.68,151.20,5,30`);
+  seen = await row();
+  expect(seen).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
+  // Explicit consent is a status-only action. The first fix follows it.
+  await call(`true`);
+  seen = await row();
+  expect(seen).toMatchObject({ enabled: true, latitude: null, longitude: null, activity: null });
   await call(`true,-33.65,151.20,5,30,now(),'walking'`);
-  expect((await row()).latitude).toBeCloseTo(-33.65, 5);
-  // A genuinely new position (the normal enable path from the app) can revive
-  // sharing as well; only a capture from before the off switch is rejected.
-  await call(`false`);
-  await call(`true,-33.64,151.20,5,30,now(),'walking'`);
-  expect((await row()).enabled).toBe(true);
-  expect((await row()).latitude).toBeCloseTo(-33.64, 5);
+  seen = await row();
+  expect(seen.enabled).toBe(true);
+  expect(seen.latitude).toBeCloseTo(-33.65, 5);
 });
 
 it('applies newer-wins to the device credential too', async () => {
@@ -109,6 +114,8 @@ it('stops an issued device credential writing after sharing is switched off', as
   await call(`true,-33.60,151.20,5,40,now(),'driving'`);
   const token = (await as('authenticated', a, `select * from public.issue_my_live_location_token()`)).rows[0].publish_token;
   await call(`false`);
+  // Even a position captured after the switch-off cannot reactivate the row or
+  // restore the revoked credential.
   const result = await as('anon', '', `select public.publish_live_location('${token}',-33.50,151.20,5,40,now(),'driving') as ok`);
   expect(result.rows[0].ok).toBe(false);
   expect(await row()).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });

@@ -275,14 +275,23 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   }
   if(!supabase||!online)throw new Error('Connect to change location sharing.');
   const fix=await sharedPosition();
-  const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(fix));
-  if(failure)throw new Error(failure.message||'Could not change location sharing.');
+  // Turning sharing on is a consent action, not a position update. The database
+  // refuses to re-enable a disabled row from any fix, however new it is; this
+  // status-only call is the explicit action that records the user's consent.
+  const {error:consentFailure}=await supabase.rpc('set_my_live_location',{p_enabled:true});
+  if(consentFailure)throw new Error(consentFailure.message||'Could not change location sharing.');
   rememberRevoke(owner,false);
-  setLastPublishedAt(Date.now());
   liveConsent.current=true;
-  setLiveEnabled(true);setLiveReady(true);setLiveError('');
+  setLiveEnabled(true);setLiveReady(true);
   lastPlaceSentAt.current=0;
+  const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(fix));
   await refreshLive();
+  if(failure){
+   setLiveError('Location sharing is on, but the first position could not be sent.');
+   return;
+  }
+  setLastPublishedAt(Date.now());
+  setLiveError('');
  };
  // Offline shutdown leaves a marker. Retry only while the local intent is still
  // "off"; a later enable must not be undone by a stale revocation.

@@ -16,7 +16,9 @@ export const publishDelay=speed=>Number.isFinite(speed)&&speed>=MOVING_SPEED?PUB
 // but it cannot rediscover a topic that failed before the first subscription.
 export const reconnectDelay=attempt=>Math.min(60000,2000*2**Math.min(5,Math.max(0,Math.floor(attempt||0))));
 // The only fields of a fix that reach a household: an allowlist, so nothing added to
-// a position later can start travelling by accident.
+// a position later can start travelling by accident. `p_enabled:true` describes an
+// active position update; the server never uses a position-bearing call to turn a
+// disabled sharing row back on. Enabling is a separate status-only consent action.
 export function sharedLocationPayload(fix){
  const speed=Number.isFinite(fix?.speed)&&fix.speed>=0?Math.max(0,Math.min(250,fix.speed*3.6)):null;
  const payload={p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy,p_speed:speed};
