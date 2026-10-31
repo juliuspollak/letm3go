@@ -144,7 +144,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveShareSendsCaptureTimeRetryAt: Double = 0
     var publishStats = HouseholdPublishStats()
     var publishStatsLoggedAt: Double = 0
-    var sharedActivity: String? { HouseholdPublisher.activity(journey: automaticTrip?.activity, motion: motion) }
+    // GPS-only fallback for the shared movement word and for choosing precise
+    // hardware only while something is actually moving.
+    var liveGps = LiveGpsEvidence()
+    var sharedActivity: String? {
+        let now=Date().timeIntervalSince1970
+        let stationaryFor=detector.stationarySince.map{max(0,now-$0)} ?? 0
+        return HouseholdPublisher.activity(journey: automaticTrip?.activity, motion: motion, gps: liveGps,
+                                          stationaryFor: stationaryFor, now: now)
+    }
     // Explicit live sharing is its own reason to run Core Location. It must not be
     // inferred from automatic tracking: a household member may switch Automatic
     // History off and still expect the map to update while the phone is locked.
@@ -587,7 +595,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func disableHouseholdLiveSharing(forget: Bool = false) {
         if forget, let owner = ownerID { try? AccountKeychain.set(Self.householdPublisherKey(owner), data: nil) }
         liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil;liveShareMode="session"
-        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil;liveShareSentActivity=nil
+        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil;liveShareSentActivity=nil;liveGps.reset()
         liveShareRetryAt=0;liveShareSendsActivity=true;liveShareSendsCaptureTime=true
         liveShareSendsActivityRetryAt=0;liveShareSendsCaptureTimeRetryAt=0
         // Stop local publishing now, without waiting for a network reply. An
@@ -668,14 +676,30 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             }
         }.resume()
     }
-    // Keep precise GPS alive for live sharing independently of the automatic
-    // sampler. This is the only place that overrides the automatic engine, and it
-    // does so only while a valid sharing credential is held and the phone is not
-    // manually recording (a manual recording already owns precise GPS).
+    // Live sharing needs a continuous stream, but not always the highest-accuracy
+    // one. Parked, the standard 10 m/25 m standby keeps the stream and the background
+    // session alive at materially lower GPS cost; a fresh movement signal or a
+    // vehicle-sized fix upgrades it to precise immediately. Without this, slower
+    // stationary publishing would only reduce writes while the GPS radio stayed at
+    // best accuracy.
+    func liveSharingStandardMode(now: Double) -> AutomaticLocationMode {
+        // Automatic departure checks and an open journey keep their precise mode;
+        // live sharing only lowers accuracy when it is the sole reason to run GPS.
+        if automaticSampling.needsGPS(automaticAvailable: automaticAvailable, manualRecording: false,
+                                      automaticRecording: automaticActivelyRecording, now: now) { return .precise }
+        if HouseholdPublisher.hardwareMoving(motion: motion, fix: lastShareFix.map(sharePoint), now: now) { return .precise }
+        // Preserve the established Home-rest setting when it is already confirmed;
+        // otherwise use the normal 10 m/25 m standby stream.
+        return automaticAvailable && homeRest.resting(now: now, idle: automaticIdle) ? .resting : .standby
+    }
+    // Keep live sharing alive independently of the automatic sampler. This is the
+    // only place that overrides the automatic engine, and it does so only while a
+    // valid sharing credential is held and the phone is not manually recording
+    // (a manual recording already owns precise GPS).
     func reconcileLiveSharingLocation() {
         guard liveSharingArmed, active?.state != "recording" else { return }
         if adaptive.lowPowerRunning { cancelLowPower() }
-        runStandard(.precise)
+        runStandard(liveSharingStandardMode(now: Date().timeIntervalSince1970))
         startMotionUpdates()
         reconcileBackgroundSession("live sharing")
     }
@@ -693,6 +717,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // it is sent with its real captured time so the viewer sees its true age.
         guard location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
               age <= HouseholdPublisher.maximumFixAge, age >= -5 else {return}
+        liveGps.observe(sharePoint(location), now: Date().timeIntervalSince1970)
         if HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
         lastShareFix=location
         sendHouseholdLocation(location,confirmation:false)
@@ -748,7 +773,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
         // A confirmation says the phone is still there now, so it carries no old fix time.
-        let sentCaptureTime=device && liveShareSendsCaptureTime && !confirmation
+        // Session mode sends it too where supported: migration 13 uses it to stop a
+        // request captured before an off switch from reviving sharing. On an older
+        // server the 404 fallback drops the field and retries.
+        let sentCaptureTime=liveShareSendsCaptureTime && !confirmation
         if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
         let sendsActivity=device && liveShareSendsActivity
         let sentActivity=sendsActivity ? activity : nil
@@ -1024,6 +1052,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         guard !accountSuspended else { return }
         if let last=locations.last {publishLivePosition(last)}
+        // Apply the precision change on the fix that proves movement, not only on
+        // the next 30-second reconcile.
+        if liveSharingArmed, active == nil { reconcileLiveSharingLocation() }
         if active == nil { processAutomatic(locations,source:source);diagnosticSummary(); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970

@@ -43,8 +43,9 @@ struct AdaptiveInputs: Equatable {
     // adaptive engine is on: it is passive rest's own departure wake-up.
     var restRegion: Bool = false
     // Explicit household/friend live sharing. It is independent of automatic
-    // journeys and must keep precise GPS running even when automatic tracking is
-    // switched off or the phone is settled.
+    // journeys and must keep the standard location stream running even when
+    // automatic tracking is switched off or the phone is settled. The stream may
+    // be standby accuracy while parked and precise while moving.
     var liveSharing: Bool = false
 }
 
@@ -107,8 +108,9 @@ struct AdaptivePolicy {
     static func state(for inputs: AdaptiveInputs, lastProbeEndedAt: Double?, wakes: [Double], recoveryUntil: Double?, lowPower: Bool) -> AdaptiveState {
         if inputs.manualRecording || inputs.journeyRecording { return .activeJourney }
         // Live sharing is a foreground user request even while the app is locked:
-        // it owns precise updates and must not be put into low-power or passive
-        // standby just because automatic journeys are off or the phone is settled.
+        // it owns the standard stream (standby while parked, precise while moving)
+        // and must not be put into low-power or passive standby just because
+        // automatic journeys are off or the phone is settled.
         if inputs.liveSharing { return .settling }
         guard inputs.automaticAvailable else { return .off }
         if inputs.probing { return .departureProbe }

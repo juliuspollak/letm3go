@@ -28,6 +28,15 @@ extension LocationRecorder {
                 self.recordDiagnostic("motion","Motion classification delivered",details:["motionStartedAt":String(activity.startDate.timeIntervalSince1970)])
             }
             self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970)
+            // A status change is sent on the motion callback, not only on the next
+            // GPS fix or timer tick. This is what removes a car promptly when a
+            // drive becomes a genuine stop.
+            if self.liveSharingArmed, self.active == nil {
+                self.confirmHouseholdLocation()
+                if previousMotion.types != types || previousMotion.confidence != confidence {
+                    self.reconcileLiveSharingLocation()
+                }
+            }
             if self.automaticAvailable,self.active == nil {
                 if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now),!self.automaticSampling.locationWake {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
@@ -195,10 +204,10 @@ extension LocationRecorder {
         evaluateRest(now:now)
         var passive=passiveRestAllowed
         var established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:passive)
-        // Live sharing keeps precise standard updates on. This is an explicit
-        // owner decision, so it outranks standby/passive battery choices; the
-        // adaptive policy is also told about it so it does not choose low-power.
-        if liveSharingArmed, active == nil { established = .precise }
+        // Live sharing keeps standard updates on. While parked it uses the lower
+        // accuracy standby stream; a fresh movement signal upgrades it, so the
+        // adaptive policy is never allowed to stop the stream for low-power standby.
+        if liveSharingArmed, active == nil { established = liveSharingStandardMode(now:now) }
         reconcileAdaptive(now:now,mode:established)
         // The exit region registered by that reconcile can allow passive rest now.
         if !passive, evaluatePassive() {

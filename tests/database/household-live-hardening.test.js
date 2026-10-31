@@ -73,12 +73,45 @@ it('keeps the old five-argument call working', async () => {
   expect((await row()).latitude).toBeCloseTo(-33.70, 5);
 });
 
+it('does not let a delayed position undo a newer off switch', async () => {
+  await call(`true,-33.70,151.20,5,30,now()-interval '2 minutes','driving'`);
+  await call(`false`);
+  let seen = await row();
+  expect(seen).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
+  // This request was captured before the switch-off but arrives afterwards.
+  await call(`true,-33.70,151.20,5,30,now()-interval '2 minutes','driving'`);
+  seen = await row();
+  expect(seen).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
+  // An explicit enable has no position; a genuinely new fix follows it.
+  await call(`true,null,null,null,null,null,null`);
+  expect((await row()).enabled).toBe(true);
+  await call(`true,-33.65,151.20,5,30,now(),'walking'`);
+  expect((await row()).latitude).toBeCloseTo(-33.65, 5);
+  // A genuinely new position (the normal enable path from the app) can revive
+  // sharing as well; only a capture from before the off switch is rejected.
+  await call(`false`);
+  await call(`true,-33.64,151.20,5,30,now(),'walking'`);
+  expect((await row()).enabled).toBe(true);
+  expect((await row()).latitude).toBeCloseTo(-33.64, 5);
+});
+
 it('applies newer-wins to the device credential too', async () => {
   const token = (await as('authenticated', a, `select * from public.issue_my_live_location_token()`)).rows[0].publish_token;
   const publish = (lat, captured) => as('anon', '', `select public.publish_live_location('${token}',${lat},151.2,5,40,${captured},'driving') as ok`);
+  // The previous six-argument publish signature still resolves through defaults.
+  expect((await as('anon', '', `select public.publish_live_location('${token}',-33.60,151.2,5,40,now()) as ok`)).rows[0].ok).toBe(true);
   expect((await publish(-33.60, 'now()')).rows[0].ok).toBe(true);
   expect((await publish(-33.50, `now()-interval '10 minutes'`)).rows[0].ok).toBe(true);
   expect((await row()).latitude).toBeCloseTo(-33.60, 5);
+});
+
+it('stops an issued device credential writing after sharing is switched off', async () => {
+  await call(`true,-33.60,151.20,5,40,now(),'driving'`);
+  const token = (await as('authenticated', a, `select * from public.issue_my_live_location_token()`)).rows[0].publish_token;
+  await call(`false`);
+  const result = await as('anon', '', `select public.publish_live_location('${token}',-33.50,151.20,5,40,now(),'driving') as ok`);
+  expect(result.rows[0].ok).toBe(false);
+  expect(await row()).toMatchObject({ enabled: false, latitude: null, longitude: null, activity: null });
 });
 
 it('can be applied twice and leaves one function of each name', async () => {

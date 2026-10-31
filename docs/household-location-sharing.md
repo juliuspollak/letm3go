@@ -25,7 +25,7 @@ the member was filtered out.
 |---|---|
 | Database (`20261104000000_household_location_status.sql`) | `my_household_location_status()` returns every other member with `sharing_enabled`, coordinates only while sharing, confirmed in the last 24 h and after both joined, `location_at`, and `server_now`. Turning sharing off erases the position and credential; leaving the household ends sharing (trigger). |
 | Device credential | `issue_my_live_location_token()` returns a random credential (SHA-256 stored) valid 30 days; `publish_live_location(token, …)` lets the phone publish only its own position. Kept in the Keychain, so publishing survives relaunch and session expiry. Revoked on sharing off, leave, sign-out, deletion; replaced on reissue. |
-| Native publishing | A real fix (≤ 100 m, true age ≤ 15 min) every 3 s when driving, 5 s in Low Power Mode, 8–10 s for other movement, and once a minute when still. Cadence uses GPS speed, activity, accuracy and battery state; it does not require Core Motion. A still phone re-confirms its last fix every 5 minutes while continuous location has run uninterrupted. Failed uploads are not recorded as sent, and the last successful point is kept for retry. |
+| Native publishing | A real fix (≤ 100 m, true age ≤ 15 min) every 3 s when driving, 5 s in Low Power Mode, 8–10 s for other movement, and once a minute when still. Cadence uses GPS speed, activity, accuracy and battery state; it does not require Core Motion. A still phone re-confirms its last fix every 5 minutes while continuous location has run uninterrupted. While live sharing is parked, the continuous stream runs at standby accuracy (10 m / 25 m filter), not Best/5 m; a fresh movement signal or vehicle-sized fix upgrades it to precise. Failed uploads are not recorded as sent, and the last successful point is kept for retry. |
 | App | Polls every 15 s while visible, and on foreground, visibility and network recovery; a failed fetch keeps the last rows and reports the error. Realtime discovery and joins retry with bounded backoff, and only the newest overlapping read may update state. Falls back to the earlier RPC if the migration is not applied. |
 
 ### Freshness policy
@@ -46,14 +46,22 @@ of each other are one map marker with every avatar in it.
 ## Limits
 
 - Continuous background publishing needs Always location access. It no longer
-  depends on Automatic History: an explicit sharing credential keeps precise
-  GPS and the iOS background activity session alive. iOS still decides when a
-  suspended app runs, so 3–5 s is a target, not a guarantee. A background
-  relaunch can rejoin an existing activity session; it cannot create one.
+  depends on Automatic History: an explicit sharing credential keeps the
+  standard location stream and the iOS background activity session alive. The
+  stream uses standby accuracy while parked and precise accuracy while moving,
+  so reduced stationary publishing is also a real reduction in GPS demand. iOS
+  still decides when a suspended app runs, so 3–5 s is a target, not a guarantee.
+  A background relaunch can rejoin an existing activity session; it cannot
+  create one.
 - Friends sharing uses the same native callbacks and tracking lifecycle, but a
   separate consent table and an older RPC with no captured-at or activity
   fields. That is an explicit product/schema difference, not a second engine.
   Friend positions still use the 30-minute friend window.
+- With Motion & Fitness denied or unavailable, the car is inferred from a
+  sustained vehicle-sized GPS speed (at least 27 km/h across at least two fixes
+  for 15 s), never from one spike. A train, bus, or fast e-bike can therefore
+  look like a car in that fallback; Core Motion takes precedence whenever it is
+  available.
 - Older app builds still read the 90-second RPC until updated.
 - One publishing device per account: issuing a credential on a second device
   (for example an iPad) replaces the first device's credential until it is
@@ -65,8 +73,10 @@ of each other are one map marker with every avatar in it.
    the Supabase SQL editor (after 20261029000000). It is additive.
 2. Apply `20261112000000_household_shared_activity.sql`, then
    `20261113000000_household_live_hardening.sql`, in that order. Both are
-   additive and safe to re-run after their predecessors. Do not re-run
-   `20261108` afterwards: it restores the older publish function.
+   additive and safe to re-run after their predecessors. `20261113` adds the
+   captured-time/off-switch guard and locks the publish row, so an in-flight
+   upload cannot revive sharing after an off switch. Do not re-run `20261108`
+   afterwards: it restores the older publish function.
 3. Install the new TestFlight build on both iPhones.
 4. Each person opens the app once while signed in (this issues the device
    credential).
@@ -94,8 +104,8 @@ Evidence: `letm3go-diagnostics-20261031T100305Z.json.gz` from the driver's phone
 | Symptom | Cause | Change |
 |---|---|---|
 | Updates about every 20 s | `HouseholdPublisher.interval` returned 25 s for all background movement | Confirmed driving publishes every 3 s, or 5 s in Low Power Mode. Background walking publishes every 10 s |
-| No car while the phone was locked | `Driving` was sent only by React through `set_household_presence`, which does not run on a locked phone and needs a separate setting | Native code sends the status with the position, from an open journey or Core Motion, never speed alone |
-| Car would not end promptly | Stopping produces no fix to carry a change | A status change bypasses the throttle, and a stop publishes at once |
+| No car while the phone was locked | `Driving` was sent only by React through `set_household_presence`, which does not run on a locked phone and needs a separate setting | Native code sends the status with the position, from an open journey, Core Motion, or a sustained vehicle-sized GPS speed when motion is unavailable |
+| Car would not end promptly | Stopping produces no fix to carry a change | A status change bypasses the throttle; a 25 s stop window (or the journey's stop) clears the car, well before the 120 s activity TTL |
 | Upload failures at 20:48:13 and 20:53:44 | First request after a wake-up, and loss of connectivity near the end of the drive: the friend upload failed at the same moment | Retry after 3 s while moving, and a 6 s timeout, so one slow request cannot hold back newer positions |
 | "GPS silent for 88 s" at 20:55:18 | Parked: Core Motion reported Stationary, and the 5 m filter sends nothing | Fixed by the watchdog change already on `main` |
 | Passive rest began 31 s before the region exit | A standby fix caused by moving 25 m verified the place, so rest released the background session as the drive began. It stayed `awaitingForeground` | No rest for 60 s after Core Motion changes, unless it is plainly stationary |
@@ -117,14 +127,17 @@ Install on both phones, export diagnostics from both after each run, and note th
 2. Driver's phone locked: the same, and check the summary shows `publishIntervalMedianMs` near 3,000.
 3. Low Power Mode, locked: expect about 5,000.
 4. Weak network or a car park: expect failures, then recovery without opening the app.
-5. Park: expect the car to go within seconds, and no GPS restart.
+5. Park: expect the car to go within about 25 s (not 120 s), and no GPS restart.
 6. Viewer's Realtime off (flight mode briefly): expect `transport: polling` and 15 s updates, then recovery.
 7. Two members together: a grouped bubble must not show a car.
 8. Compare battery over a real drive at 3 s against the previous build.
 9. Turn Automatic History off on the driver's phone but leave household sharing
    on. Lock it and drive: the viewer must still see 3–5 s movement updates.
 10. Revoke Motion & Fitness (or deny it at first launch). Repeat the drive: the
-    position must still update at the speed-based cadence, with no car claimed.
+    position must still update at the speed-based cadence. Above about 27 km/h
+    for 15 s, the car should appear from sustained GPS speed; a single speed
+    spike, walking or cycling must not produce one. Note that without Core
+    Motion a train, bus, or fast e-bike can be indistinguishable from a car.
 11. Enable Low Power Mode: expect about 5 s while driving, then a stationary
     transition without a car left behind.
 12. Turn sharing off while in Airplane Mode. The viewer must stop receiving new
