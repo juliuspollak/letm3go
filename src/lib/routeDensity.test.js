@@ -185,3 +185,57 @@ describe('invalid samples and gaps',()=>{
   expect(highlightRoutes([lonely],overviewPhotos([lonely]))).toEqual({});
  });
 });
+
+describe('observed heatmap geometry, independent of density grid',()=>{
+ const origin=[-34.56,150.86],cos=Math.cos(origin[0]*Math.PI/180);
+ const at=(x,y)=>[origin[0]+y/111320,origin[1]+x/(111320*cos)];
+ const xy=p=>[(p[1]-origin[1])*111320*cos,(p[0]-origin[0])*111320];
+ it('never manufactures a staircase on a slanted straight road at any zoom band',()=>{
+  const road=Array.from({length:501},(_,i)=>at(i*10,i*3));
+  const density=routeDensity([journey('diagonal',road)]);
+  for(const level of density.levels)for(const point of lines(level).flat()){
+   const [x,y]=xy(point);expect(Math.abs(y-0.3*x)/Math.hypot(1,0.3)).toBeLessThan(0.01);
+  }
+  // The former drawing geometry visibly oscillates even with perfect input.
+  const snapped=[...journeyEdges([road],25)].flatMap(edge=>edgePoints(edge,25));
+  expect(Math.max(...snapped.map(p=>{const [x,y]=xy(p);return Math.abs(y-0.3*x)/Math.hypot(1,0.3);}))).toBeGreaterThan(5);
+ });
+ it('retains bends and genuine right-angle turns instead of connecting unrelated cells at junctions',()=>{
+  const turn=[...Array.from({length:51},(_,i)=>at(i*10,0)),...Array.from({length:50},(_,i)=>at(500,(i+1)*10))];
+  for(const level of routeDensity([journey('turn',turn)]).levels){
+   for(const p of lines(level).flat()){const [x,y]=xy(p);expect(Math.min(Math.abs(y),Math.abs(x-500))).toBeLessThan(0.01);}
+  }
+  const a=[at(0,0),at(500,500)],b=[at(0,500),at(500,0)];
+  for(const level of routeDensity([journey('first',a),journey('second',b)]).levels)for(const line of lines(level)){
+   // Every line is a piece of one observed traversal, not a new turn at a grid junction.
+   const deviations=line.map(p=>{const [x,y]=xy(p);return [Math.abs(y-x),Math.abs(y+x-500)];});
+   expect(Math.min(Math.max(...deviations.map(d=>d[0])),Math.max(...deviations.map(d=>d[1])))).toBeLessThan(0.01);
+  }
+ });
+ it('does not reconnect invalid samples that would have been skipped by the old stride',()=>{
+  const route=Array.from({length:4000},(_,i)=>at(i*2,0));route[1999]=null;
+  const j=journey('broken',route);
+  for(const level of routeDensity([j]).levels)for(const line of lines(level)){
+   const xs=line.map(p=>xy(p)[0]);expect(Math.min(...xs)<3997&&Math.max(...xs)>4000).toBe(false);
+  }
+ });
+ it('chunks very long observed lines before the native polyline safety cap without losing the tail',()=>{
+  const road=Array.from({length:1400},(_,i)=>at(i*60,i*3));
+  const level=routeDensity([journey('long',road)],{cells:[25]}).levels[0];
+  expect(lines(level).length).toBeGreaterThan(1);
+  for(const line of lines(level))expect(line.length).toBeLessThanOrEqual(4900);
+  expect(lines(level).flat().some(p=>Math.abs(xy(p)[0]-83940)<0.01)).toBe(true);
+ });
+});
+
+it('keeps stationary drift and small lateral noise within their observed envelope, without grid amplification',()=>{
+ const origin=[-34.56,150.86],cos=Math.cos(origin[0]*Math.PI/180);
+ const at=(x,y)=>[origin[0]+y/111320,origin[1]+x/(111320*cos)];
+ const road=Array.from({length:900},(_,i)=>at(i*4,(i%2?1:-1)*2));
+ for(const level of routeDensity([journey('slight-noise',road)]).levels)for(const p of lines(level).flat())expect(Math.abs((p[0]-origin[0])*111320)).toBeLessThan(2.01);
+ const stationary=Array.from({length:40},(_,i)=>at(Math.sin(i)*3,Math.cos(i)*3));
+ const density=routeDensity([journey('stationary',stationary)]);
+ for(const level of density.levels){expect(level.maxCount).toBe(1);for(const p of lines(level).flat()){
+  const distance=Math.hypot((p[0]-origin[0])*111320,(p[1]-origin[1])*111320*cos);expect(distance).toBeLessThan(3.01);
+ }}
+});

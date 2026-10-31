@@ -14,8 +14,8 @@ describe('transfer to the worker',()=>{
   expect(packed.coordinates).toBeInstanceOf(Float64Array);
   const back=unpackJourneys(structuredClone(packed));
   expect(back[0].routeSegments).toEqual(journeys[0].routeSegments);
-  // The invalid samples stay invalid (never joined), the separate segment stays separate.
-  expect(back[1].routeSegments).toEqual([[[-33.9,151.1],[NaN,151.1]],[[-33.91,151.1]],[[-33.95,151.15],[-33.96,151.15]]]);
+  // Invalid samples become explicit breaks before transfer; neither side is joined.
+  expect(back[1].routeSegments).toEqual([[[-33.9,151.1]],[[-33.91,151.1]],[[-33.95,151.15],[-33.96,151.15]]]);
   expect(overviewKey(back)).toBe(overviewKey(journeys));
  });
 });
