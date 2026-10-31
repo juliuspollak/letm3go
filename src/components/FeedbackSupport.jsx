@@ -6,8 +6,8 @@ import { supabase } from '../lib/supabase.js';
 import Switch from './Switch.jsx';
 import FeedbackPhotos from './FeedbackPhotos.jsx';
 import {
-  FEEDBACK_CATEGORIES, emptyFeedbackDraft, feedbackCategory, feedbackDate, feedbackDiagnostics,
-  feedbackErrors, feedbackHasUnread, feedbackHeadline, feedbackReference, feedbackStatus,
+  FEEDBACK_CATEGORIES, FeedbackCancelled, emptyFeedbackDraft, feedbackCategory, feedbackDate, feedbackDiagnostics,
+  feedbackErrors, feedbackHasUnread, feedbackHeadline, feedbackMarkedSeen, feedbackReference, feedbackStatus,
   loadFeedbackHistory, markFeedbackSeen, newFeedbackToken, submitFeedbackTicket,
 } from '../lib/feedback.js';
 
@@ -24,6 +24,11 @@ const HELP_TOPICS = [
   { title: 'Notifications are not arriving', body: 'Enable notifications for letm3go in iOS Settings. Sharing and household alerts also require a working connection; the app never exposes your exact position publicly.' },
   { title: 'Privacy and backups', body: 'Your journeys are private by default. A private backup is encrypted before it leaves this device. You can export or delete everything from Account & settings.' },
 ];
+
+// A signed photo link lasts an hour and this sheet can stay open longer. One broken
+// image asks for new links; the rest of that page breaking must not ask again.
+const PHOTO_REFRESH_INTERVAL_MS = 60_000;
+const historyPhotos = ticket => ticket.attachments.filter(item => item.url).map((item, position) => ({ url: item.url, alt: `Attachment ${position + 1}` }));
 
 export default function FeedbackSupport({ recording }) {
   const auth = useAuth();
@@ -45,12 +50,17 @@ export default function FeedbackSupport({ recording }) {
   const [replyBusy, setReplyBusy] = useState('');
   const [replyError, setReplyError] = useState('');
   const [viewer, setViewer] = useState(null);
-  const token = useRef(newFeedbackToken());
+  const [token, setToken] = useState(newFeedbackToken);
+  const sending = useRef(null);
+  const photosRefreshedAt = useRef(0);
   const attachmentsRef = useRef(attachments);
   const formRef = useRef(null);
 
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
-  useEffect(() => () => { attachmentsRef.current.forEach(photo => URL.revokeObjectURL(photo.previewUrl)); }, []);
+  useEffect(() => () => {
+    sending.current?.abort();
+    attachmentsRef.current.forEach(photo => URL.revokeObjectURL(photo.previewUrl));
+  }, []);
 
   // The history loads when its tab opens and again after a successful submission.
   useEffect(() => {
@@ -61,7 +71,16 @@ export default function FeedbackSupport({ recording }) {
         const tickets = await loadFeedbackHistory(supabase);
         if (cancelled) return;
         setHistory({ status: 'ready', tickets, error: '' });
-        if (tickets.some(ticket => feedbackHasUnread(ticket))) void markFeedbackSeen(supabase);
+        // A viewer already open keeps its place on the new links.
+        setViewer(current => {
+          const ticket = current?.ticketID && tickets.find(item => item.id === current.ticketID);
+          return ticket && historyPhotos(ticket).length === current.photos.length ? { ...current, photos: historyPhotos(ticket) } : current;
+        });
+        if (!tickets.some(ticket => feedbackHasUnread(ticket))) return;
+        const saved = await markFeedbackSeen(supabase);
+        if (cancelled) return;
+        if (saved) setHistory(current => ({ ...current, tickets: feedbackMarkedSeen(current.tickets) }));
+        else console.warn('Feedback read receipt could not be saved; it will retry next time.');
       } catch (caught) {
         if (!cancelled) setHistory({ status: 'error', tickets: [], error: caught.message || 'Your feedback could not be loaded.' });
       }
@@ -100,6 +119,10 @@ export default function FeedbackSupport({ recording }) {
   }
 
 
+  function clearFreshReply(id) {
+    setHistory(current => ({ ...current, tickets: current.tickets.map(item => item.id === id && item.freshReply ? { ...item, freshReply: false } : item) }));
+  }
+
   function update(field, value) {
     setDraft(current => ({ ...current, [field]: value }));
     setErrors(current => ({ ...current, [field]: undefined }));
@@ -120,8 +143,14 @@ export default function FeedbackSupport({ recording }) {
   }
 
   function openHistoryPhoto(ticket, index) {
-    const photos = ticket.attachments.filter(item => item.url).map((item, position) => ({ url: item.url, alt: `Attachment ${position + 1}` }));
-    if (photos.length) setViewer({ photos, index });
+    const photos = historyPhotos(ticket);
+    if (photos.length) setViewer({ photos, index, ticketID: ticket.id });
+  }
+
+  function refreshPhotoLinks() {
+    if (Date.now() - photosRefreshedAt.current < PHOTO_REFRESH_INTERVAL_MS) return;
+    photosRefreshedAt.current = Date.now();
+    setRefresh(value => value + 1);
   }
 
   function handleEvent(event) {
@@ -133,6 +162,7 @@ export default function FeedbackSupport({ recording }) {
   }
 
   async function send() {
+    if (sending.current) return;
     if (!supabase) { setError('Feedback needs a connection to your account. Check your connection and retry.'); return; }
     const issues = feedbackErrors(draft);
     setErrors(issues);
@@ -144,21 +174,25 @@ export default function FeedbackSupport({ recording }) {
     setSubmitting(true);
     setError('');
     setResult(null);
+    const controller = new AbortController();
+    sending.current = controller;
     try {
       const outcome = await submitFeedbackTicket(supabase, {
-        token: token.current,
+        token,
         draft,
         diagnostics: diagnosticsEnabled ? feedbackDiagnostics({ state, preferences: auth.preferences, session: auth.session, native: Capacitor.isNativePlatform() }) : null,
         attachments,
         state,
         native: Capacitor.isNativePlatform(),
         onEvent: handleEvent,
+        signal: controller.signal,
       });
       setResult(outcome);
       setRefresh(value => value + 1);
     } catch (caught) {
-      setError(caught.message || 'Feedback could not be sent. Check your connection and retry.');
+      setError(caught instanceof FeedbackCancelled ? 'Sending cancelled. Your draft is still here.' : caught.message || 'Feedback could not be sent. Check your connection and retry.');
     } finally {
+      sending.current = null;
       setSubmitting(false);
       setProgress(null);
     }
@@ -173,7 +207,7 @@ export default function FeedbackSupport({ recording }) {
     setProgress(null);
     setResult(null);
     setDetailsOpen(false);
-    token.current = newFeedbackToken();
+    setToken(newFeedbackToken());
   }
 
   async function sendReply(ticket, event) {
@@ -296,6 +330,7 @@ export default function FeedbackSupport({ recording }) {
       <button type="submit" className="primary full" disabled={submitting || auth.status === 'offline'}>
         {submitting ? <><LoaderCircle className="spin" size={17} aria-hidden="true" /> Sending…</> : <><Send size={17} aria-hidden="true" /> Send feedback</>}
       </button>
+      {submitting && <button type="button" className="secondary full" onClick={() => sending.current?.abort()}>Cancel</button>}
       <small className="muted feedback-hint">We usually reply within a few working days. Check My feedback for updates.</small>
     </form>)}
 
@@ -317,9 +352,9 @@ export default function FeedbackSupport({ recording }) {
       {history.tickets.map(ticket => {
         const status = feedbackStatus(ticket.status);
         const open = openTicket === ticket.id;
-        const unread = feedbackHasUnread(ticket);
+        const unread = feedbackHasUnread(ticket) || ticket.freshReply;
         return <article key={ticket.id} className={`feedback-ticket${open ? ' is-open' : ''}`}>
-          <button type="button" className="feedback-ticket-head" aria-expanded={open} onClick={() => { setOpenTicket(open ? '' : ticket.id); setReply(''); setReplyError(''); }}>
+          <button type="button" className="feedback-ticket-head" aria-expanded={open} onClick={() => { setOpenTicket(open ? '' : ticket.id); setReply(''); setReplyError(''); clearFreshReply(ticket.id); }}>
             <span className="feedback-ticket-title"><strong>{feedbackHeadline(ticket)}</strong><small>{feedbackCategory(ticket.category).label} · {feedbackDate(ticket.created_at)}</small></span>
             {unread && <span className="feedback-unread">New reply</span>}
             <span className={`feedback-status ${status.tone}`}>{status.label}</span>
@@ -333,7 +368,7 @@ export default function FeedbackSupport({ recording }) {
             {ticket.steps_to_reproduce && <div className="feedback-answer"><strong>Steps</strong><p>{ticket.steps_to_reproduce}</p></div>}
 
             {ticket.attachments.some(photo => photo.url) && <div className="feedback-history-photos">
-              {ticket.attachments.filter(photo => photo.url).map((photo, index) => <button key={photo.id} type="button" onClick={() => openHistoryPhoto(ticket, index)} aria-label={`View attachment ${index + 1}`}><img src={photo.url} alt={`Attachment ${index + 1}`} /></button>)}
+              {ticket.attachments.filter(photo => photo.url).map((photo, index) => <button key={photo.id} type="button" onClick={() => openHistoryPhoto(ticket, index)} aria-label={`View attachment ${index + 1}`}><img src={photo.url} alt={`Attachment ${index + 1}`} onError={refreshPhotoLinks} /></button>)}
             </div>}
             {ticket.messages.length > 0 && <ul className="feedback-thread" aria-label="Conversation">
               {ticket.messages.map(message => <li key={message.id} className={message.is_staff ? 'staff' : 'owner'}>
@@ -371,7 +406,7 @@ export default function FeedbackSupport({ recording }) {
       <div className="feedback-viewer-inner" onClick={event => event.stopPropagation()}>
         <button type="button" className="feedback-viewer-close" onClick={() => setViewer(null)} aria-label="Close photo"><X size={20} /></button>
         {viewer.photos.length > 1 && <button type="button" className="feedback-viewer-nav prev" onClick={() => setViewer(current => ({ ...current, index: (current.index - 1 + current.photos.length) % current.photos.length }))} aria-label="Previous photo"><ChevronLeft size={22} /></button>}
-        <img src={viewer.photos[viewer.index]?.url} alt={viewer.photos[viewer.index]?.alt || 'Feedback attachment'} />
+        <img src={viewer.photos[viewer.index]?.url} alt={viewer.photos[viewer.index]?.alt || 'Feedback attachment'} onError={viewer.ticketID ? refreshPhotoLinks : undefined} />
         {viewer.photos.length > 1 && <button type="button" className="feedback-viewer-nav next" onClick={() => setViewer(current => ({ ...current, index: (current.index + 1) % current.photos.length }))} aria-label="Next photo"><ChevronRight size={22} /></button>}
         <p>{viewer.index + 1} / {viewer.photos.length}</p>
       </div>

@@ -156,13 +156,13 @@ function representativeLines(pieces){
 // replaced, not mutated, when a journey changes), so re-renders cost nothing.
 const signatures=new WeakMap();
 export function routeSignature(journey){
- const route=journey?.routeSegments||journey?.route;
+ const route=journey?.routeSegments?.length?journey.routeSegments:journey?.route;
  if(!Array.isArray(route))return '0';
  let signature=signatures.get(route);
  if(signature===undefined){
   let hash=2166136261,count=0;
   const mix=value=>{hash^=value;hash=Math.imul(hash,16777619);};
-  for(const segment of journey.routeSegments?route:[route]){
+  for(const segment of route===journey.routeSegments?route:[route]){
    mix(0x9e37);
    for(const point of Array.isArray(segment)?segment:[]){
     count++;

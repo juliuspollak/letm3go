@@ -60,6 +60,10 @@ jobs:
           docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261108000000_household_realtime_signals.sql
           docker exec "$db" psql -U postgres -d postgres -c "select polname from pg_policy where polrelid='realtime.messages'::regclass"
           docker exec "$db" psql -U postgres -d postgres -c "select pg_get_function_identity_arguments('realtime.send'::regproc)"
+          docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261110000000_feedback_storage_hardening.sql
+          docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261111000000_feedback_upload_limits.sql
+          docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < tests/database/real-storage-realtime.sql
+          bash tests/database/feedback-concurrency.sh "$db"
 
   ios:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.checks == 'ios' || inputs.checks == 'all') }}

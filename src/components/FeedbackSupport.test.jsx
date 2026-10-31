@@ -19,6 +19,7 @@ vi.mock('../lib/feedback.js', async importOriginal => ({
 }));
 
 import FeedbackSupport from './FeedbackSupport.jsx';
+import { FeedbackCancelled } from '../lib/feedback.js';
 
 const ticket = {
   id: '12345678-abcd-4abc-8abc-1234567890ab',
@@ -121,4 +122,74 @@ it('keeps help topics available without an account connection', () => {
   expect(screen.getByText('Try these first')).toBeInTheDocument();
   expect(screen.getByText('Notifications are not arriving')).toBeInTheDocument();
   expect(screen.getByText(/Enable notifications for letm3go/)).toBeInTheDocument();
+});
+
+it('clears the tab indicator once the receipt is saved, and the ticket label once it is read', async () => {
+  m.load.mockResolvedValue([ticket]);
+  m.seen.mockResolvedValue(true);
+  render(<FeedbackSupport />);
+  fireEvent.click(screen.getByRole('button', { name: 'My feedback' }));
+  expect(await screen.findByText('Map freezes on open')).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByLabelText('Unread reply')).not.toBeInTheDocument());
+  expect(screen.getByText('New reply')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /Map freezes on open/ }));
+  expect(screen.queryByText('New reply')).not.toBeInTheDocument();
+});
+
+it('keeps the unread indicator when the receipt could not be saved', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  m.load.mockResolvedValue([ticket]);
+  m.seen.mockResolvedValue(false);
+  render(<FeedbackSupport />);
+  fireEvent.click(screen.getByRole('button', { name: 'My feedback' }));
+  await waitFor(() => expect(warn).toHaveBeenCalled());
+  expect(screen.getByLabelText('Unread reply')).toBeInTheDocument();
+  warn.mockRestore();
+});
+
+it('fetches new links when a signed photo has expired, once however many images break', async () => {
+  const withPhoto = { ...ticket, attachments: [{ id: 'p', url: 'https://storage/expired' }, { id: 'q', url: 'https://storage/expired2' }] };
+  m.load.mockResolvedValueOnce([withPhoto]).mockResolvedValue([{ ...withPhoto, attachments: [{ id: 'p', url: 'https://storage/fresh' }, { id: 'q', url: 'https://storage/fresh2' }] }]);
+  m.seen.mockResolvedValue(true);
+  render(<FeedbackSupport />);
+  fireEvent.click(screen.getByRole('button', { name: 'My feedback' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Map freezes on open/ }));
+  const images = screen.getAllByRole('img', { name: /Attachment/ });
+  fireEvent.error(images[0]);
+  fireEvent.error(images[1]);
+  await waitFor(() => expect(screen.getAllByRole('img', { name: /Attachment/ })[0]).toHaveAttribute('src', 'https://storage/fresh'));
+  expect(m.load).toHaveBeenCalledTimes(2);
+});
+
+it('cancels a send in progress and keeps the draft, ready to send with the same token', async () => {
+  m.submit.mockImplementationOnce((_, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new FeedbackCancelled()))));
+  m.submit.mockResolvedValueOnce({ ticket, photoError: '' });
+  render(<FeedbackSupport />);
+  fireEvent.click(screen.getByRole('radio', { name: /Bug report/ }));
+  fireEvent.change(screen.getByLabelText(/What happened\?/), { target: { value: 'It froze.' } });
+  fireEvent.click(within(document.querySelector('form')).getByRole('button', { name: 'Send feedback' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Your draft is still here');
+  expect(screen.getByLabelText(/What happened\?/)).toHaveValue('It froze.');
+  fireEvent.click(within(document.querySelector('form')).getByRole('button', { name: 'Send feedback' }));
+  await screen.findByText(/Thank you/);
+  expect(m.submit.mock.calls[1][1].token).toBe(m.submit.mock.calls[0][1].token);
+});
+
+it('abandons a send when the sheet closes, and creates one token per draft', async () => {
+  const token = vi.spyOn(globalThis.crypto, 'randomUUID');
+  m.submit.mockImplementation(() => new Promise(() => {}));
+  const { unmount, rerender } = render(<FeedbackSupport />);
+  rerender(<FeedbackSupport />);
+  rerender(<FeedbackSupport />);
+  expect(token).toHaveBeenCalledTimes(1);
+  token.mockRestore();
+  fireEvent.click(screen.getByRole('radio', { name: /Bug report/ }));
+  fireEvent.change(screen.getByLabelText(/What happened\?/), { target: { value: 'It froze.' } });
+  fireEvent.click(within(document.querySelector('form')).getByRole('button', { name: 'Send feedback' }));
+  await waitFor(() => expect(m.submit).toHaveBeenCalled());
+  const { signal } = m.submit.mock.calls[0][1];
+  expect(signal.aborted).toBe(false);
+  unmount();
+  expect(signal.aborted).toBe(true);
 });

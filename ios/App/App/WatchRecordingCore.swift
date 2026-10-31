@@ -131,7 +131,7 @@ struct ActivityHeartRate: Codable, Equatable {
 // How a change in the workout session maps onto the ride. WatchRecorder only carries
 // these out, so each interruption has one tested answer.
 enum WatchWorkoutLifecycle {
-    enum Action: Equatable { case none, resumeRide, pauseRide, pauseSession }
+    enum Action: Equatable { case none, resumeRide, pauseRide, pauseSession, resumeSession }
 
     static func sessionRunning(fromPaused: Bool, rideState: String?) -> Action {
         guard rideState == "paused" else { return .none }
@@ -144,10 +144,17 @@ enum WatchWorkoutLifecycle {
     // watchOS kept a running session through a crash, so the rider was still
     // recording and may not be looking. The unobserved time stays a pause; recording
     // picks up by itself. A ride already paused stays paused.
-    static func afterRecovery(rideWasRecording: Bool, sessionRunning: Bool) -> Action {
+    // A rider who tapped Resume while the session was still being found has already
+    // answered: the session follows them, and pausing it would pause their ride.
+    static func afterRecovery(rideWasRecording: Bool, sessionRunning: Bool, rideRecordingNow: Bool = false) -> Action {
+        if rideRecordingNow { return sessionRunning ? .none : .resumeSession }
         guard sessionRunning else { return .none }
         return rideWasRecording ? .resumeRide : .pauseSession
     }
+
+    // A session may still come back from watchOS. Starting another now would split one
+    // ride into two Health workouts, so Resume waits for the answer.
+    static func startsNewSession(hasSession: Bool, recovering: Bool) -> Bool { !hasSession && !recovering }
 
     // While the Health prompt is open there is no session yet. That is waiting, not
     // a failed sensor.
@@ -328,6 +335,17 @@ struct WatchDiagnosticEvent: Codable, Equatable {
     var kind: String
     var message: String
     var details: [String: String]?
+}
+
+// Events leave the buffer when WatchConnectivity reports them delivered. Handing them
+// over is not delivery: a transfer can still fail, and it would take the events with it.
+enum WatchDiagnosticDelivery {
+    static func userInfo(_ data: Data, through: Double) -> [String: Any] { ["diagnostics": data, "through": through] }
+    static func isDiagnostics(_ userInfo: [String: Any]) -> Bool { userInfo["diagnostics"] != nil }
+    static func deliveredThrough(_ userInfo: [String: Any], failed: Bool) -> Double? {
+        guard !failed, isDiagnostics(userInfo) else { return nil }
+        return userInfo["through"] as? Double
+    }
 }
 
 struct WatchDiagnosticBuffer: Codable, Equatable {

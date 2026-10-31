@@ -15,6 +15,7 @@ import {EquipmentButton} from './EquipmentChip.jsx';
 import { CreateSegmentButton, SegmentEditor, SegmentList } from './NamedSegments.jsx';
 import { canCreateSegments, newSegmentID, segmentLayers } from '../lib/namedSegments.js';
 import HeartRatePanel from './HeartRatePanel.jsx';
+import { recordedRouteSegments } from '../lib/mapGeometry.js';
 export default function ActivityDetail({ownerID,trip,places,vehicles=[],onEquipment,onBack,onEdit,onPhoto,run,onUpdated,onDeleted,busy,error,onSource,onStopChange,grouping,unit='km'}){
  const local=(trip.source==='device'||trip.source==='simulator')&&trip.state!=='recording';
  const [deleting,setDeleting]=useState(false),[suggestions,setSuggestions]=useState(null),[showSkipped,setShowSkipped]=useState(false),[message,setMessage]=useState('');
@@ -25,7 +26,7 @@ export default function ActivityDetail({ownerID,trip,places,vehicles=[],onEquipm
  const [trimEnd,setTrimEnd]=useState(trip.visibleRouteEnd??Math.max(0,pointCount-1));
  const trimValid=pointCount>=2&&trimStart<trimEnd;
  const trimChanged=trimStart!==(trip.visibleRouteStart??0)||trimEnd!==(trip.visibleRouteEnd??pointCount-1);
- const fullPreview={...trip,route:points.map(p=>[p.latitude,p.longitude]),routeSegments:points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
+ const fullPreview={...trip,route:points.map(p=>[p.latitude,p.longitude]),routeSegments:recordedRouteSegments(points,{automatic:trip.recordingMode==='automatic',fleet:trip.recordingMode==='tesla'})};
  // Named segments: a draft is the section being chosen; the map follows it.
  const segmentsAllowed=canCreateSegments(trip);
  const [segmentDraft,setSegmentDraft]=useState(null);

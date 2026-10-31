@@ -1,3 +1,4 @@
+import {removeFeedbackObjects} from '../_shared/feedbackStorage.js';
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { importPKCS8, SignJWT, createRemoteJWKSet, jwtVerify } from 'npm:jose@6';
 import { S3Client, DeleteObjectsCommand, ListObjectsV2Command } from 'npm:@aws-sdk/client-s3@3';
@@ -67,6 +68,9 @@ Deno.serve(async request=>{
    if(result.Errors?.length)return reply({error:'Some private media could not be removed. Retry deletion.'},503);
    if(batch===9)return reply({pending:true,error:'Media cleanup is in progress. Retry to finish account deletion.'},202);
   }
+  // Runs after the freeze above, so no new photo can arrive behind this listing.
+  try{await removeFeedbackObjects(admin.storage,owner);}
+  catch{return reply({error:'Some private media could not be removed. Retry deletion.'},503);}
   const {error:deleted}=await admin.auth.admin.deleteUser(owner,false);if(deleted)throw deleted;
   const {error:cleanup}=await admin.from('media_cleanup').delete().like('object_key',`${owner}/%`);if(cleanup)return reply({deleted:true,cleanupPending:true});
   return reply({deleted:true});

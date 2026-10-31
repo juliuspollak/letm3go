@@ -2,6 +2,7 @@ import { Maximize2, Navigation } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
 import { MapLayersButton } from './MapLayers.jsx';
+import {newUUID} from '../lib/uuid.js';
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
 // sent to the native map once per key and the payload names only the key.
@@ -31,7 +32,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const [projection,setProjection]=useState([]);
  const [themeVersion,setThemeVersion]=useState(0);
  useEffect(()=>{const changed=()=>setThemeVersion(v=>v+1);window.addEventListener('letm3go:theme-changed',changed);return()=>window.removeEventListener('letm3go:theme-changed',changed);},[]);
- const [mapID]=useState(()=>crypto.randomUUID());
+ const [mapID]=useState(newUUID);
  const locateHandler=useRef(onLocate);useEffect(()=>{locateHandler.current=onLocate;},[onLocate]);
  const toolbarHandler=useRef(onToolbarAction);useEffect(()=>{toolbarHandler.current=onToolbarAction;},[onToolbarAction]);
  const layersHandler=useRef(onLayers);useEffect(()=>{layersHandler.current=onLayers;},[onLayers]);
