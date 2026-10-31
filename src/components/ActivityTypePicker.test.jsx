@@ -6,3 +6,9 @@ afterEach(cleanup);
 it('corrects the type immediately while preserving notes, tags and custom titles',async()=>{const updated={id:'t',activity:'Driving'},run=vi.fn().mockResolvedValue({trips:[updated]}),onUpdated=vi.fn();render(<ActivityTypePicker trip={{id:'t',title:'Shopping',activity:'Walking',notes:'Keep',tags:['family'],vehicle:'Kia'}} run={run} onUpdated={onUpdated}/>);fireEvent.change(screen.getByLabelText('Change activity type'),{target:{value:'Driving'}});await waitFor(()=>expect(onUpdated).toHaveBeenCalledWith(updated));expect(run).toHaveBeenCalledWith('editActivity',expect.objectContaining({title:'Shopping',activity:'Driving',notes:'Keep',tags:['family'],vehicle:'Kia'}));});
 it('keeps failures visible without pretending the type was saved',async()=>{const onUpdated=vi.fn();render(<ActivityTypePicker trip={{id:'t',title:'Walking',activity:'Walking'}} run={vi.fn().mockResolvedValue(null)} onUpdated={onUpdated}/>);fireEvent.change(screen.getByLabelText('Change activity type'),{target:{value:'Driving'}});expect(await screen.findByRole('alert')).toHaveTextContent('not saved');expect(onUpdated).not.toHaveBeenCalled();});
 it('simplifies generated titles while preserving personal titles',()=>{expect(activityTitle({recordingMode:'automatic',title:'Walking · Automatically detected',activity:'Walking'})).toBe('Walking');expect(activityTitle({recordingMode:'automatic',title:'Shops with family',activity:'Walking'})).toBe('Shops with family');});
+it('offers Mountain biking once, including for a legacy named record, while retaining the compatible value',()=>{
+ render(<ActivityTypePicker trip={{id:'legacy',activity:'Mountain Biking',title:'Forest ride'}} run={vi.fn()} onUpdated={vi.fn()}/>);
+ expect(screen.getAllByRole('option',{name:'Mountain biking'})).toHaveLength(1);
+ expect(screen.queryByRole('option',{name:'MTB'})).toBeNull();
+ expect(screen.getByLabelText('Change activity type')).toHaveValue('MTB');
+});

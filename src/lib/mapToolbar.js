@@ -1,9 +1,10 @@
+import {activityCode,activityLabel,activityOptions,sameActivity} from './activityNames.js';
 import {chooseMapDay,chooseRouteLayer,localDay,RANGE_OPTIONS,shiftMapDay} from './mapLayers.js';
 
 export function activitySymbol(activity){
  const name=activity.toLowerCase();
  if(/driv|car/.test(name))return 'car';
- if(/mtb/.test(name))return 'mountain.2';
+ if(activityCode(activity)==='MTB')return 'mountain.2';
  if(/cycl|bik/.test(name))return 'bicycle';
  if(/run/.test(name))return 'figure.run';
  if(/hik/.test(name))return 'figure.hiking';
@@ -21,7 +22,7 @@ export function mapToolbar(view,open,category,activities=[],today=localDay()){
   rows.push({id:'routes',label:'Routes',symbol:'point.topleft.down.to.point.bottomright.curvepath',selected:!!view.routes,options:[option('route:today','Today','sun.max',view.routes==='today'),option('route:pinned','Favourites','star',view.routes==='pinned'),option('route:all','All routes','point.topleft.down.to.point.bottomright.curvepath',view.routes==='all'),option('route:off','Routes off','nosign',!view.routes)]});
   const day=view.day||today;
   rows.push({id:'calendar',label:'Calendar',symbol:'calendar',selected:!!view.day||view.range!=='any',options:[option('day:'+shiftMapDay(day,-1),'Previous day','chevron.left'),option('day:'+today,day===today?'Today':'Return to Today','calendar',!!view.day,day===today?'Today':new Date(day+'T12:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short'})),{...option('day:'+shiftMapDay(day,1),'Next day','chevron.right'),disabled:day>=today},...RANGE_OPTIONS.map(([id,label])=>option('range:'+id,label,'clock',!view.day&&view.range===id,id==='any'?'All':id.replace('d','d')))]});
-  if(view.routes)rows.push({id:'activity',label:'Activity',symbol:'figure.mixed.cardio',selected:!!view.activity,options:[option('activity:','All activities','figure.mixed.cardio',!view.activity),...activities.map(a=>option('activity:'+a,a,activitySymbol(a),view.activity===a))]});
+  if(view.routes)rows.push({id:'activity',label:'Activity',symbol:'figure.mixed.cardio',selected:!!view.activity,options:[option('activity:','All activities','figure.mixed.cardio',!view.activity),...activityOptions(activities).map(a=>option('activity:'+a,activityLabel(a),activitySymbol(a),sameActivity(view.activity,a)))]});
  }
  return {open,category,rows};
 }

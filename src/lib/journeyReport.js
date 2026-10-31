@@ -1,3 +1,4 @@
+import {activityLabel} from './activityNames.js';
 // Turns the native journey export into plain English for a bug report. The raw
 // export is appended unchanged, so nothing is lost for engineering analysis.
 const time=at=>new Date(at*1000).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
@@ -80,7 +81,7 @@ export function journeySummary(report){
  const quality=report.routeQuality||{};
  const end=report.endedAt??report.generatedAt;
  return [
-  ['Activity',report.activity||'Unknown'],
+  ['Activity',activityLabel(report.activity)||'Unknown'],
   ['Started',report.startedAt?dateTime(report.startedAt):'—'],
   ['Ended',report.endedAt?dateTime(report.endedAt):'Still open'],
   ['Duration',report.startedAt&&end?span(end-report.startedAt):'—'],

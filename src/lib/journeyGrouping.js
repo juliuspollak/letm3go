@@ -1,3 +1,4 @@
+import {activityCode} from './activityNames.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
@@ -178,8 +179,8 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
   const a=ordered.find(t=>t.id===action.after),b=ordered.find(t=>t.id===action.before);
   if(!a||!b)throw new Error('Segment not found.');const key=edge(a.id,b.id);next.cuts=[...new Set([...next.cuts,key])];next.links=next.links.filter(k=>k!==key);
  }else if(action.type==='classify'){
-  if(!ordered.some(t=>t.id===action.anchor)||!['Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Other','Unknown'].includes(action.activity))throw new Error('Choose a supported journey activity type.');
-  next.types[action.anchor]=action.activity;
+  if(!ordered.some(t=>t.id===action.anchor)||!['Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Other','Unknown'].includes(activityCode(action.activity)))throw new Error('Choose a supported journey activity type.');
+  next.types[action.anchor]=activityCode(action.activity);
  }else if(action.type==='rename'){
   if(!ordered.some(t=>t.id===action.anchor)||!action.title?.trim()||action.title.length>150)throw new Error('Enter a journey name (up to 150 characters).');next.titles[action.anchor]=action.title.trim();
  }else if(action.type==='stop'){

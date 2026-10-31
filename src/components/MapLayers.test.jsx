@@ -30,7 +30,7 @@ it('navigates days, returns to today, retains ranges and applies recorded activi
  click('Next day');expect(current().day).toBe('2026-10-30');
  click('Previous day');click('Return to Today');expect(current().day).toBe('2026-10-30');
  click('Past 30 days');expect(current()).toMatchObject({day:null,range:'30d'});
- click('Activity');click('MTB');expect(current().activity).toBe('MTB');click('All activities');expect(current().activity).toBe('');
+ click('Activity');click('Mountain biking');expect(current().activity).toBe('MTB');click('All activities');expect(current().activity).toBe('');
  click('Map type');click('Community trails');expect(current()).toMatchObject({content:'trails',range:'30d'});
  expect(screen.queryByRole('button',{name:'Calendar'})).toBeNull();click('My routes');expect(current().range).toBe('30d');
 });
