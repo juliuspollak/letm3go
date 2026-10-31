@@ -1,5 +1,5 @@
 import { act, render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { demoJourneys } from './test/fixtures/journeys.js';
 import { emptyRecorder } from './lib/recorder.js';
@@ -41,7 +41,7 @@ it('permits deliberately public journey links without mounting private recording
 });
 it('opens Tracking & Permissions from Profile through Account settings',()=>{signedIn();render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Open profile'}));fireEvent.click(screen.getByRole('button',{name:'Account & settings'}));fireEvent.click(screen.getByRole('button',{name:'Tracking & Permissions'}));expect(screen.getByRole('heading',{name:'Tracking & Permissions'})).toBeInTheDocument();expect(screen.getByRole('switch',{name:'Automatic Tracking'})).toBeInTheDocument();});
 it('keeps the activity list in Trips rather than duplicating it on Home and Map',()=>{signedIn();recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[{id:'trip',source:'device',title:'Walk to park',activity:'Walking',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:100,points:[],details:{}}]},run:vi.fn(),busy:false,error:''});render(<App/>);expect(screen.queryByRole('button',{name:'Open Walk to park'})).not.toBeInTheDocument();expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);expect(screen.getByRole('button',{name:'Open Walk to park'})).toBeInTheDocument();fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Walk to park'})).not.toBeInTheDocument();expect(screen.queryByText('Recorded paths')).not.toBeInTheDocument();});
-it('opens today-only Trips from Home metrics and allows returning to all dates',()=>{signedIn();const date=new Date();date.setHours(12,0,0,0);const previous=new Date(date);previous.setDate(date.getDate()-1);const trip=(id,title,at)=>({id,title,source:'device',activity:'Walking',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{}});recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('today','Today walk',date),trip('previous','Yesterday walk',previous)]},run:vi.fn(),busy:false,error:''});render(<App/>);fireEvent.click(screen.getByRole('button',{name:/Activities today: 1/}));expect(screen.getByRole('button',{name:'Open Today walk'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Yesterday walk'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'Today',exact:true})).toHaveAttribute('aria-pressed','true');fireEvent.click(screen.getByRole('button',{name:'All',exact:true}));expect(screen.getByRole('button',{name:'Open Yesterday walk'})).toBeInTheDocument();});
+it('opens today-only Trips from Home metrics and allows returning to all dates',()=>{signedIn();const date=new Date();date.setHours(12,0,0,0);const previous=new Date(date);previous.setDate(date.getDate()-1);const trip=(id,title,at)=>({id,title,source:'device',activity:'Walking',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{}});recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('today','Today walk',date),trip('previous','Yesterday walk',previous)]},run:vi.fn(),busy:false,error:''});render(<App/>);fireEvent.click(screen.getByRole('button',{name:/Activities today: 1/}));expect(screen.getByRole('button',{name:'Open Today walk'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Yesterday walk'})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Activity filters, 1 active'}));fireEvent.click(screen.getByRole('button',{name:'Date',exact:true}));expect(screen.getByRole('button',{name:'Today',exact:true})).toHaveAttribute('aria-pressed','true');fireEvent.click(screen.getByRole('button',{name:'All dates',exact:true}));expect(screen.getByRole('button',{name:'Open Yesterday walk'})).toBeInTheDocument();});
 
 it('filters favourites and saves the star without opening the trip',()=>{
  signedIn();identity.value.preferences.bookmarks=['first'];
@@ -52,6 +52,7 @@ it('filters favourites and saves the star without opening the trip',()=>{
  fireEvent.click(screen.getByRole('button',{name:'Add to favourites: Shop'}));
  expect(identity.value.savePreferences).toHaveBeenCalledWith({bookmarks:['first','second']});
  expect(screen.getByRole('button',{name:'Open Shop'})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
  fireEvent.click(screen.getByRole('button',{name:'Favourites',exact:true}));
  expect(screen.getByRole('button',{name:'Open Park'})).toBeInTheDocument();
  expect(screen.queryByRole('button',{name:'Open Shop'})).not.toBeInTheDocument();
@@ -66,15 +67,12 @@ it('opens distinct Home distance, duration and activity views with numeric sorti
  render(<App/>);
  const titles=()=>screen.getAllByRole('button',{name:/^Open (Longest|Newest)/}).map(button=>button.getAttribute('aria-label'));
  fireEvent.click(screen.getByRole('button',{name:/Today's distance:/}));
- const filtersButton=screen.getByRole('button',{name:'Activity filters'});
- if(filtersButton.getAttribute('aria-expanded')!=='true')fireEvent.click(filtersButton);
- expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('distance');
+ const sorted=name=>{const toggle=screen.getByRole('button',{name:/^Activity filters/});if(toggle.getAttribute('aria-expanded')!=='true')fireEvent.click(toggle);if(!screen.queryByRole('group',{name:'Sort by'}))fireEvent.click(screen.getByRole('button',{name:'Sort by'}));expect(screen.getByRole('button',{name})).toHaveAttribute('aria-pressed','true');};
+ sorted('Distance');
  expect(titles()).toEqual(['Open Longest distance','Open Longest time','Open Newest trip']);
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:/Recorded time:/}));
- const reopenedFiltersButton=screen.getByRole('button',{name:'Activity filters'});
- if(reopenedFiltersButton.getAttribute('aria-expanded')!=='true')fireEvent.click(reopenedFiltersButton);
- expect(screen.getByRole('combobox',{name:'Sort trips'})).toHaveValue('duration');
+ sorted('Duration');
  expect(titles()).toEqual(['Open Longest time','Open Longest distance','Open Newest trip']);
  expect(screen.getByText('Today · 31 min recorded · Longest first')).toBeInTheDocument();
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
@@ -118,12 +116,12 @@ it('filters trips by equipment and clears the filter again',()=>{
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('geely','Geely drive',[{id:'car-1',name:'Geely'}]),raw('kia','Unassigned drive')]},run:vi.fn(),busy:false,error:''});
  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
- fireEvent.change(screen.getByRole('combobox',{name:'Filter by equipment'}),{target:{value:'car-1'}});
+ fireEvent.click(screen.getByRole('button',{name:'Equipment'}));fireEvent.click(screen.getByRole('button',{name:'Geely (1)'}));
  expect(screen.getByRole('button',{name:'Open Geely drive'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Unassigned drive'})).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Remove equipment filter Geely'}));
  expect(screen.getByRole('button',{name:'Open Unassigned drive'})).toBeInTheDocument();
- fireEvent.change(screen.getByRole('combobox',{name:'Filter by equipment'}),{target:{value:'car-1'}});
- fireEvent.change(screen.getByRole('combobox',{name:'Filter activities'}),{target:{value:'Cycling'}});
+ fireEvent.click(screen.getByRole('button',{name:'Geely (1)'}));
+ fireEvent.click(screen.getByRole('button',{name:'Activity type'}));fireEvent.click(screen.getByRole('button',{name:'Cycling',exact:true}));
  expect(screen.queryByRole('button',{name:'Open Geely drive'})).not.toBeInTheDocument();
 });
 
@@ -135,7 +133,7 @@ it('keeps an archived drive searchable by the equipment it used',()=>{
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('geely','Geely drive',[{id:'car-1',name:'Geely'}]),raw('kia','Other drive')]},run:vi.fn(),busy:false,error:''});
  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
- fireEvent.change(screen.getByRole('combobox',{name:'Filter by equipment'}),{target:{value:'car-1'}});
+ fireEvent.click(screen.getByRole('button',{name:'Equipment'}));fireEvent.click(screen.getByRole('button',{name:'Geely (1)'}));
  fireEvent.click(screen.getByRole('button',{name:'Archived activities (1)'}));
  expect(screen.getByRole('button',{name:'Open Geely drive'})).toBeInTheDocument();
  expect(screen.queryByRole('button',{name:'Open Other drive'})).not.toBeInTheDocument();
@@ -234,4 +232,86 @@ it('keeps the self marker and self-location camera when People & places is off, 
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(JSON.parse(localStorage.getItem('letm3go:map-view:owner')).people).toBe(false);
  expect(mapProps.value.peoplePins.flatMap(pin=>pin.members).map(member=>member.id)).toEqual(['self']);
+});
+
+describe('Activities filters',()=>{
+ const noon=offset=>{const date=new Date();date.setHours(12,0,0,0);date.setDate(date.getDate()+offset);return date;};
+ const raw=(id,title,at,extra={})=>({id,title,source:'device',activity:'Walking',state:'finished',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{},...extra});
+ const open=trips=>{signedIn();recorderHook.mockReturnValue({state:{...emptyRecorder,trips},run:vi.fn(),busy:false,error:''});render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);};
+ const click=name=>fireEvent.click(screen.getByRole('button',{name,exact:true}));
+ const shown=title=>screen.queryByRole('button',{name:`Open ${title}`});
+ const filters=()=>screen.getByRole('button',{name:/^Activity filters/});
+
+ it('collapses to a title, three actions and one date row',()=>{
+  open([raw('a','Park',noon(0))]);
+  expect(screen.getByRole('heading',{name:'Activities',level:1})).toBeInTheDocument();
+  for(const name of ['Search all activities','Activity filters','More activity actions','Previous day','Next day'])expect(screen.getByRole('button',{name})).toBeInTheDocument();
+  for(const name of ['All','Today','Favourites','Return to Today'])expect(screen.queryByRole('button',{name,exact:true})).toBeNull();
+  expect(screen.queryByRole('toolbar')).toBeNull();
+  expect(screen.getByText('All dates')).toBeInTheDocument();
+ });
+ it('expands inline, not as a dialog, and Escape collapses it',()=>{
+  open([raw('a','Park',noon(0))]);
+  fireEvent.click(filters());
+  expect(screen.getByRole('toolbar',{name:'Activity filter options'})).toBeInTheDocument();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(shown('Park')).toBeInTheDocument();
+  fireEvent.keyDown(document,{key:'Escape'});
+  expect(screen.queryByRole('toolbar')).toBeNull();
+ });
+ it('offers every activity type that was on offer before',()=>{
+  open([raw('a','Park',noon(0))]);fireEvent.click(filters());click('Activity type');
+  const types=within(screen.getByRole('group',{name:'Activity type'})).getAllByRole('button').map(button=>button.textContent);
+  expect(types).toEqual(['All activities','Unknown','Cycling','MTB','Hiking','Mountain biking','Walking','Running','Road cycling','Kitesurfing','Driving','Other']);
+ });
+ it('keeps one date selection across the arrows, the panel and the picker',()=>{
+  open([raw('t','Today walk',noon(0)),raw('y','Yesterday walk',noon(-1)),raw('o','Old walk',noon(-20))]);
+  click('Previous day');
+  expect(shown('Yesterday walk')).toBeInTheDocument();expect(shown('Today walk')).toBeNull();
+  expect(screen.getByText('Yesterday')).toBeInTheDocument();
+  click('Next day');expect(shown('Today walk')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Next day'})).toBeDisabled();
+  fireEvent.click(filters());click('Date');click('Past 7 days');
+  expect(shown('Today walk')).toBeInTheDocument();expect(shown('Yesterday walk')).toBeInTheDocument();expect(shown('Old walk')).toBeNull();
+  expect(screen.getByLabelText('Choose journey date')).toHaveValue('');
+  click('Previous day');
+  expect(shown('Yesterday walk')).toBeInTheDocument();expect(shown('Today walk')).toBeNull();
+  expect(screen.getByRole('button',{name:'Past 7 days'})).toHaveAttribute('aria-pressed','false');
+  click('Return to Today');
+  expect(shown('Today walk')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Return to Today'})).toBeNull();
+ });
+ it('finds an activity crossing midnight on both days',()=>{
+  const late=noon(-1);late.setHours(23,30,0,0);
+  open([raw('m','Night ride',late,{endedAt:late.getTime()/1000+3600,durationSeconds:3600})]);
+  click('Previous day');expect(shown('Night ride')).toBeInTheDocument();
+  click('Next day');expect(shown('Night ride')).toBeInTheDocument();
+ });
+ it('counts active filters, shows them collapsed, combines them and resets together',()=>{
+  localStorage.setItem('letm3go:archived-trips:owner',JSON.stringify(['b']));
+  signedIn();identity.value.preferences.bookmarks=['a','c'];
+  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('a','Fav walk',noon(0)),raw('b','Archived walk',noon(0)),raw('c','Fav old',noon(-3)),raw('d','Plain',noon(0))]},run:vi.fn(),busy:false,error:''});
+  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+  fireEvent.click(filters());click('Favourites');click('Date');click('Today');
+  expect(shown('Fav walk')).toBeInTheDocument();expect(shown('Fav old')).toBeNull();expect(shown('Plain')).toBeNull();expect(shown('Archived walk')).toBeNull();
+  fireEvent.click(filters());
+  expect(screen.getByRole('button',{name:'Activity filters, 2 active'})).toHaveAttribute('aria-expanded','false');
+  fireEvent.click(filters());click('Reset filters');
+  expect(shown('Plain')).toBeInTheDocument();expect(shown('Fav old')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Activity filters'})).toBeInTheDocument();
+ });
+ it('Clear filters leaves the archive too, so an empty result always recovers',()=>{
+  localStorage.setItem('letm3go:archived-trips:owner',JSON.stringify(['b']));
+  open([raw('a','Walk',noon(0)),raw('b','Hidden',noon(-30))]);
+  fireEvent.click(filters());click('Archived activities (1)');
+  expect(screen.getByText(/^Archived · /)).toBeInTheDocument();
+  click('Previous day');
+  expect(screen.getByRole('heading',{name:'No journeys found'})).toBeInTheDocument();
+  click('Clear filters');
+  expect(shown('Walk')).toBeInTheDocument();
+ });
+ it('keeps the sort choice across launches',()=>{
+  open([raw('a','Park',noon(0))]);fireEvent.click(filters());click('Sort by');click('Distance');
+  expect(localStorage.getItem('letm3go-trip-sort')).toBe('distance');
+  expect(screen.getByRole('button',{name:'Activity filters'})).toBeInTheDocument();
+ });
 });

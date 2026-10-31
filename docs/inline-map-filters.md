@@ -19,3 +19,11 @@ Device feedback follow-up: options now start at the map’s left inset beneath t
 Calendar follow-up: the displayed date is now the Today shortcut; the redundant calendar sun button is removed. The self-location camera command uses the marker's `self` ID, rather than the account UUID (which caused the planner to fall back to everyone). The native location arrow gives immediate blue feedback, indicates a pending request, and stays filled while following self; panning clears the follow state. Regression coverage includes the self-marker camera target and actionable Today label.
 
 People-filter follow-up: People & places controls other people and their place markers. Self is always retained as the same avatar marker, with the self camera and location-arrow behavior available in both filter states. Other people are excluded before marker grouping, so a combined self/other marker cannot leak hidden members. The redundant top-right Show everyone people button has been removed; the following chip still allows exiting follow mode. Validation: 56 targeted tests pass, including self retention and saved People-off preference across relaunch.
+
+## Activities filters
+
+Activities uses the same controller. `FilterToolbar.jsx` holds the expand/collapse rows, option strips, Escape handling and roles; `MapLayers.jsx` is now a thin wrapper around it with unchanged markup. Each page keeps its own rows and state: `mapToolbar.js` for the Map, whose rows UIKit also renders, and `activityFilters.js` for Activities, which is a web view on iOS and needs no native control.
+
+Activities holds one date selection (`all`, `today`, a day, or a rolling range). The arrows, the date picker and the Date category all write that value, so the latest choice replaces the last. Day matching uses the Map's `journeyOnDay`, so an activity crossing midnight appears on both days.
+
+Still verify on a real iPhone: the system date picker opening from the date label, Dynamic Type and VoiceOver in the panel, and scrolling with the panel open.

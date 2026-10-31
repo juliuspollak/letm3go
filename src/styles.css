@@ -72,7 +72,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .privacy-footer{padding:14px 20px max(16px,env(safe-area-inset-bottom));border-top:1px solid var(--line);flex-shrink:0}.privacy-footer .primary{width:100%}
 @media(max-width:700px){.activity-privacy-dialog{width:100%;max-width:100%;margin:auto 0 0;border-radius:24px 24px 0 0;max-height:88dvh}}
 
-.trip-row-bookmark[aria-pressed=true]{color:var(--accent)}.trip-period-filter button{display:inline-flex;align-items:center;justify-content:center;gap:6px}.trip-period-filter{flex-wrap:wrap}
+.trip-row-bookmark[aria-pressed=true]{color:var(--accent)}
 
 .trip-results-heading{gap:12px;align-items:center}.trip-results-heading .small-copy{font-size:11px;margin-top:5px}.trip-sort{display:grid;gap:4px;font-size:10px;color:var(--muted);flex-shrink:0}.trip-sort select{border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12px;min-height:40px}.trip-time-distance{display:block;margin-top:3px;font-weight:400}
 
@@ -265,13 +265,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 @media(max-width:480px){.recent-activity-row{padding:12px 8px;gap:7px}.recent-activity-distance{font-size:13px}.recent-activity-row>svg{width:14px}}
 
 /* Compact historical day browsing, without scrolling through every journey. */
-.trip-date-navigator{display:flex;align-items:center;gap:10px;margin:4px 0 16px;max-width:420px}
-.trip-date-navigator>button{width:44px;min-width:44px;height:44px;display:grid;place-items:center;border-radius:12px;background:var(--soft);color:var(--ink)}
-.trip-date-navigator>button:disabled{opacity:.3}
 .trip-prev-icon{transform:rotate(180deg)}
-.trip-date-navigator>label{display:flex;flex:1;align-items:center;gap:10px;min-width:0;padding:5px 10px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
-.trip-date-navigator>label>span{color:var(--muted);font-size:11px;white-space:nowrap}
-.trip-date-navigator input[type=date]{width:100%;min-width:0;border:0;background:transparent;color:var(--ink);font-size:14px;padding:6px 0}
 
 .diagnostic-quality{margin-top:26px;display:grid;gap:12px}
 .diagnostic-quality h3{font-size:17px}
@@ -311,7 +305,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-journal-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 15px}
 .trip-journal-heading .eyebrow{margin:0 0 5px}.trip-journal-heading h1{font-size:clamp(25px,5vw,35px);line-height:1.15;margin:0}
 .trip-heading-actions{display:flex;gap:7px;align-items:center;flex-shrink:0}
-.trip-round-action{display:grid;place-items:center;width:40px;height:40px;border:1px solid var(--line);border-radius:13px;background:var(--surface);color:var(--ink)}
+.trip-round-action{position:relative;display:grid;place-items:center;width:40px;height:40px;border:1px solid var(--line);border-radius:13px;background:var(--surface);color:var(--ink)}
 .trip-round-action[aria-expanded=true]{background:var(--accent-soft);color:var(--accent);border-color:transparent}
 .trip-popover{display:grid;gap:4px;padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:14px;margin-bottom:12px}
 .trip-popover button{display:flex;align-items:center;gap:10px;min-height:40px;padding:8px 12px;text-align:left;color:var(--ink);border-radius:9px}
@@ -319,19 +313,9 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-expanded-search{display:flex;align-items:center;gap:10px;padding:0 14px;min-height:50px;background:var(--surface);border:1px solid var(--accent);border-radius:14px;margin-bottom:12px;color:var(--accent)}
 .trip-expanded-search input{flex:1;min-width:0;background:transparent;border:0;outline:none;font-size:15px;color:var(--ink)}
 .trip-expanded-search button{display:grid;place-items:center;color:var(--muted)}
-.trip-expanded-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--surface);margin-bottom:12px}
-.trip-expanded-filters label{display:grid;gap:5px;font-size:11px;color:var(--muted)}
-.trip-expanded-filters select{width:100%;min-width:0;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink)}
 .trip-merge-hint{display:flex;gap:8px;align-items:center;margin:10px 0;font-size:12px}
-.trip-compact-navigation{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
-.trip-compact-navigation .trip-period-filter{margin:0;flex-shrink:0;gap:5px}
-.trip-compact-navigation .trip-period-filter button{min-height:36px;padding:7px 10px;border-radius:10px;display:inline-flex;align-items:center;gap:4px}
-.trip-compact-navigation .trip-date-navigator{margin:0;max-width:275px;flex:1;min-width:0;gap:5px}
-.trip-compact-navigation .trip-date-navigator>button{width:35px;min-width:35px;height:36px;border-radius:10px}
-.trip-compact-navigation .trip-date-navigator>label{min-width:0;padding:2px 8px}
-.trip-compact-navigation .trip-date-navigator input[type=date]{font-size:12px}
 .trip-results-heading{margin-bottom:10px}.trips-activity-list{margin-top:0}
-@media(max-width:600px){.trip-compact-navigation{flex-wrap:wrap;gap:9px}.trip-compact-navigation .trip-date-navigator{max-width:none;flex-basis:100%}.trip-compact-navigation .trip-period-filter{width:100%;justify-content:flex-start}.trip-journal-heading h1{font-size:27px}.trip-round-action{width:38px;height:38px}}
+@media(max-width:600px){.trip-journal-heading h1{font-size:27px}.trip-round-action{width:38px;height:38px}}
 
 .tag-review-tools{display:grid;gap:9px;margin:14px 0}.tag-suggestion{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:11px}.tag-suggestion span{display:grid;flex:1;gap:2px}.tag-suggestion small{color:var(--muted);font-size:11px}.tag-suggestion button{padding:7px 10px;border-radius:8px;background:var(--soft)}.tag-review-tools details{font-size:12px;color:var(--muted)}
 
@@ -359,8 +343,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .trip-action-more{background:#6b7280}.trip-action-more span{font-size:24px;line-height:20px;letter-spacing:2px}
 .trip-action-pin{background:#f2a900}.trip-action-archive{background:#8835dc}
 .trip-archive-toast{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--soft);border-radius:12px;padding:12px 14px;margin:12px 0;font-size:13px}
-.trip-archive-toast button,.trip-archived-toggle{color:var(--accent);font-weight:700}
-.trip-archived-toggle{padding:10px 0;font-size:13px}
+.trip-archive-toast button{color:var(--accent);font-weight:700}
 @media(prefers-reduced-motion:reduce){.trip-swipe-surface{transition:none!important}}
 /* Paging keeps the first paint short: iOS only builds rows as the list approaches them. */
 .trip-load-sentinel{height:1px}
@@ -689,7 +672,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .activity-detail-subtitle-row .activity-detail-subtitle{margin:0}
 .trip-active-filters{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
 .trip-filter-chip{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:6px 11px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:650}
-.trip-expanded-filters label.wide{grid-column:1/-1}
 
 /* Equipment sheet: one tap assigns, the selected item is unmistakable. */
 .equipment-sheet h2{margin-top:2px}
@@ -853,8 +835,25 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .map-filter-options{display:flex;flex-wrap:wrap;gap:6px;width:100%;padding:3px 0;pointer-events:auto;border-radius:24px;animation:map-filter-reveal 180ms ease-out}
 .map-filter-options button:has(+button){flex-shrink:0}
 .map-filter-options button{width:max-content;min-width:44px;white-space:nowrap}
+/* Activities shares the Map's controller, in the page flow rather than over a map. */
+.activity-filter-toolbar{position:static;flex-direction:row;flex-wrap:wrap;margin-bottom:10px;pointer-events:auto;animation:map-filter-reveal 180ms ease-out}
+.activity-filter-toolbar .map-filter-row{display:contents}
+.activity-filter-toolbar .map-filter-options{order:1;flex-basis:100%}
+.activity-filter-toolbar button{width:auto;height:38px;min-height:38px;padding:0 12px;border-radius:19px;box-shadow:none;font-size:13px;font-weight:600}
+.activity-filter-toolbar button[aria-pressed=true]{color:var(--on-accent)}
+.trip-filter-count{position:absolute;top:-5px;right:-5px;display:grid;place-items:center;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--accent);color:white;font-size:10px;font-weight:700;line-height:1;box-shadow:0 0 0 2px var(--bg,var(--surface))}
+.trip-date-navigator{display:flex;align-items:center;gap:5px;margin-bottom:10px}
+.trip-date-navigator>button{flex:0 0 auto;display:grid;place-items:center;width:44px;height:38px;border-radius:10px;background:var(--soft);color:var(--ink)}
+.trip-date-navigator>button:disabled{opacity:.3}
+.trip-date-navigator>button.trip-date-today{width:auto;padding:0 12px;background:var(--accent-soft);color:var(--accent);font-size:13px;font-weight:650}
+.trip-prev-icon{transform:rotate(180deg)}
+.trip-date-current{position:relative;flex:1;min-width:0;display:grid;place-items:center;height:38px;padding:0 6px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font-size:14px;font-weight:600}
+.trip-date-current span{overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}
+/* The real date input lies over the label, so a tap opens the system picker. */
+.trip-date-current input{position:absolute;inset:0;width:100%;height:100%;opacity:0;border:0;padding:0}
+.trip-date-current:focus-within{outline:3px solid var(--accent);outline-offset:2px}
 @keyframes map-filter-reveal{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
-@media(prefers-reduced-motion:reduce){.map-filter-options{animation:none}}
+@media(prefers-reduced-motion:reduce){.map-filter-options,.activity-filter-toolbar{animation:none}}
 
 .map-locate-button[aria-pressed=true]{background:var(--accent);color:white}
 
