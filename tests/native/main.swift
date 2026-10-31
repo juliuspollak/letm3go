@@ -900,6 +900,7 @@ unsupportedWatchTransfer.activity = "Paragliding"
 check(WatchActivityImport.activity(from: unsupportedWatchTransfer, now: 2_000) == nil, "unsupported activities are rejected")
 var singlePointTransfer = watchTransfer
 singlePointTransfer.points = [watchPoint(-33, 151, 1_000)]
+singlePointTransfer.schema = 2
 check(WatchActivityImport.activity(from: singlePointTransfer, now: 2_000) == nil, "a ride without two fixes is rejected")
 var badIDTransfer = watchTransfer
 badIDTransfer.id = "not-a-uuid"
@@ -1005,7 +1006,7 @@ var unfinishedRide = WatchRideDraft(activity: "MTB", startedAt: 1_000)
 _ = unfinishedRide.ingest(watchFix(-33.0000, 1_000), now: 1_000)
 check(unfinishedRide.transfer(now: 1_100, ownerID: nil, deviceID: nil) == nil, "an unfinished ride is never transferred")
 unfinishedRide.finish(at: 1_100)
-check(unfinishedRide.transfer(now: 1_100, ownerID: nil, deviceID: nil) == nil, "a ride without two fixes is never transferred")
+check(unfinishedRide.transfer(now: 1_100, ownerID: nil, deviceID: nil) != nil, "a real activity with little GPS is kept, not discarded")
 
 // MARK: Apple Watch track continuity
 //
@@ -2580,8 +2581,8 @@ do {
 do {
     // Only the iPhone's own activity values, and Cycling's subtypes in one family.
     let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
-    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 8, "the watch records only iPhone activity values")
-    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Other"], "every activity the watch offered before is still offered")
+    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 9, "the watch records only iPhone activity values")
+    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Other"], "the watch offers every iPhone activity value")
     check(WatchCatalog.family(of: "MTB")?.id == "Cycling" && WatchCatalog.family(of: "MTB")?.hasSubtypes == true, "mountain biking is a Cycling subtype")
     check(WatchCatalog.title("MTB") == "Cycling · Mountain bike" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
     check(WatchCatalog.usesBicycle("MTB") && !WatchCatalog.usesBicycle("Running"), "only rides offer a bike")
@@ -3096,6 +3097,228 @@ do {
     check(restored.events.first { $0.context["recordingServices"] == "failed" }?.context["changeObserved"] == "live" && restored.events.contains { $0.context["recordingServicesBefore"] == "registered" }, "service changes keep when and how they were seen")
     check(LocationDiagnosticPrivacy.context(["lastMonitoringFailure": "x", "monitoringFailuresTotal": "2"]).count == 2, "failure history survives the export allowlist")
     check(restored.current["recordingHealth"] == "limited" && restored.current["recordingServices"] == "failed" && restored.current["monitoringFailure"] != nil && restored.current["permissionsHealth"] == "limited", "the file states current readiness and any monitoring failure")
+}
+
+// MARK: - Watch recording: heart rate, storage, conflicts, Water Lock
+do {
+    let start = 1_800_000_000.0
+    let ownerA = "11111111-1111-4111-8111-111111111111", ownerB = "22222222-2222-4222-8222-222222222222"
+    func hr(_ t: Double, _ bpm: Double) -> WatchHeartRateSample { WatchHeartRateSample(timestamp: t, bpm: bpm) }
+    func walkingFixes(_ ride: inout WatchRideDraft, from: Double, count: Int) {
+        for i in 0..<count { _ = ride.ingest(WatchRideFix(latitude: -33.8 + Double(i) * 0.0001, longitude: 151, timestamp: from + Double(i) * 5, accuracy: 5, altitude: 20, speed: 2), now: from + Double(i) * 5) }
+    }
+
+    // Heart rate during walking, running and cycling, with pause and resume.
+    for activity in ["Walking", "Running", "MTB"] {
+        var ride = WatchRideDraft(activity: activity, startedAt: start, ownerID: ownerA)
+        check(ride.ingest(heartRate: hr(start + 5, 100), now: start + 5), "heart rate recorded while \(activity)")
+        check(ride.ingest(heartRate: hr(start + 10, 120), now: start + 10), "second reading")
+        check(!ride.ingest(heartRate: hr(start + 10, 121), now: start + 10), "repeated timestamp refused")
+        check(!ride.ingest(heartRate: hr(start + 11, 0), now: start + 11), "zero BPM is not a reading")
+        check(!ride.ingest(heartRate: hr(start + 11, 900), now: start + 11), "impossible BPM is not a reading")
+        ride.pause(at: start + 20)
+        check(!ride.ingest(heartRate: hr(start + 25, 140), now: start + 25), "paused ride takes no readings")
+        ride.resume(at: start + 80)
+        check(!ride.ingest(heartRate: hr(start + 30, 140), now: start + 85), "a delayed reading from a pause is refused")
+        check(ride.ingest(heartRate: hr(start + 85, 140), now: start + 85), "resumed ride takes readings")
+        walkingFixes(&ride, from: start + 90, count: 3)
+        ride.finish(at: start + 120)
+        check(ride.pausePeriods == [WatchPausePeriod(start: start + 20, end: start + 80)], "pause period kept")
+        let summary = ride.heartRateSummary
+        check(summary?.average == 120 && summary?.maximum == 140 && summary?.samples == 3, "average and maximum")
+        check(summary?.gaps == 0, "a pause is not a sensor gap")
+        let transfer = ride.transfer(now: start + 120, ownerID: ride.ownerID, deviceID: "w")!
+        check(transfer.schema == 3 && transfer.heartRate?.count == 3 && transfer.pausePeriods?.count == 1, "heart rate travels with the ride")
+        let decoded = try! JSONDecoder().decode(WatchActivityTransfer.self, from: JSONEncoder().encode(transfer))
+        check(decoded == transfer, "transfer round trip")
+        let trip = WatchActivityImport.activity(from: decoded, now: start + 200)!
+        check(trip.details?.heartRate?.summary.maximum == 140 && trip.details?.heartRate?.pausePeriods.count == 1, "saved against the activity")
+        let stored = try! JSONDecoder().decode(RecordedActivity.self, from: JSONEncoder().encode(trip))
+        check(stored.details?.heartRate == trip.details?.heartRate, "journal round trip")
+    }
+
+    // Missing readings stay missing.
+    var gappy = WatchRideDraft(activity: "Running", startedAt: start)
+    gappy.ingest(heartRate: hr(start + 5, 110), now: start + 5)
+    gappy.ingest(heartRate: hr(start + 200, 150), now: start + 200)
+    check(gappy.heartRateSummary?.gaps == 1 && gappy.heartRate.count == 2, "gap preserved, nothing interpolated")
+    check(WatchHeartRate.summary([]) == nil, "no readings, no summary")
+    // Denied or revoked permission looks like silence, so the display says so instead of showing a number.
+    check(WatchHeartRate.display(recording: true, sessionRunning: true, last: nil, waitingSince: start, now: start + 10) == .waiting, "waiting first")
+    check(WatchHeartRate.display(recording: true, sessionRunning: true, last: nil, waitingSince: start, now: start + 61) == .unavailable, "silence becomes unavailable")
+    check(WatchHeartRate.display(recording: true, sessionRunning: true, last: hr(start, 90), waitingSince: start, now: start + 200) == .unavailable, "an old reading is not shown as live")
+    check(WatchHeartRate.display(recording: true, sessionRunning: false, last: nil, waitingSince: start, now: start) == .unavailable, "no session, no sensor")
+    check(WatchHeartRate.display(recording: true, sessionRunning: true, last: hr(start, 91), waitingSince: start, now: start + 3) == .live(91), "live reading")
+    check(WatchHeartRate.display(recording: false, sessionRunning: true, last: hr(start, 91), waitingSince: start, now: start + 3) == .paused, "paused says paused")
+    check(WatchHeartRateDisplay.unavailable.label == "Heart Rate Unavailable" && WatchHeartRateDisplay.waiting.label == "Waiting for Heart Rate", "required wording")
+
+    // Hostile or broken readings are dropped alone.
+    let cleaned = WatchHeartRate.cleaned([hr(start + 9, 100), hr(start + 1, .nan), hr(start + 3, 100), hr(start + 3, 101), hr(start + 900, 100), hr(start + 25, 90)],
+                                         startedAt: start, endedAt: start + 60, paused: [WatchPausePeriod(start: start + 20, end: start + 30)])
+    check(cleaned == [hr(start + 3, 100), hr(start + 9, 100)], "invalid, duplicate, outside and paused readings dropped")
+
+    // Legacy payloads still decode and import, with no heart rate.
+    let legacyJSON = #"{"schema":2,"id":"AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE","ownerID":"\#(ownerA)","activity":"MTB","startedAt":\#(start),"endedAt":\#(start + 60),"activeSeconds":60,"points":[{"latitude":-33.8,"longitude":151,"timestamp":\#(start + 1),"accuracy":5,"altitude":1,"speed":2,"segment":0},{"latitude":-33.8001,"longitude":151,"timestamp":\#(start + 20),"accuracy":5,"altitude":1,"speed":2,"segment":0}]}"#
+    let legacy = try! JSONDecoder().decode(WatchActivityTransfer.self, from: Data(legacyJSON.utf8))
+    check(legacy.heartRate == nil && WatchActivityImport.activity(from: legacy, now: start + 100)?.details?.heartRate == nil, "legacy payload imports without heart rate")
+    var malformed = try! JSONSerialization.jsonObject(with: Data(legacyJSON.utf8)) as! [String: Any]
+    malformed["heartRate"] = "not a series"
+    let tolerated = try! JSONDecoder().decode(WatchActivityTransfer.self, from: JSONSerialization.data(withJSONObject: malformed))
+    check(tolerated.heartRate == nil, "a bad heart-rate field cannot lose a ride")
+    let oldDraftMeta = #"{"schema":1,"id":"x","activity":"MTB","startedAt":1,"activeSeconds":3,"state":"paused","segment":1,"pointCount":0,"queued":false}"#
+    let oldMeta = try! JSONDecoder().decode(WatchRideMeta.self, from: Data(oldDraftMeta.utf8))
+    check(WatchRideDraft(meta: oldMeta, points: []).ownerCaptured == false, "drafts from earlier builds keep the old owner rule")
+    var zeroPoints = legacy; zeroPoints.points = []
+    check(WatchActivityImport.issue(with: zeroPoints, now: start + 100) == "invalid-point-count", "a legacy ride still needs a route")
+    var future = legacy; future.schema = 99
+    check(WatchActivityImport.isFromNewerBuild(future) && WatchActivityImport.issue(with: future, now: start + 100) == "unsupported-schema", "a newer schema is recognised and not retired")
+
+    // A valid indoor workout with no GPS is kept; a mistaken start is not.
+    var indoor = WatchRideDraft(activity: "Running", startedAt: start, ownerID: ownerA, indoor: true)
+    indoor.ingest(heartRate: hr(start + 30, 130), now: start + 30)
+    indoor.finish(at: start + 600)
+    let indoorTransfer = indoor.transfer(now: start + 600, ownerID: indoor.ownerID, deviceID: nil)
+    check(indoorTransfer != nil && indoorTransfer?.points.isEmpty == true && indoorTransfer?.indoor == true, "indoor workout transfers")
+    let indoorTrip = WatchActivityImport.activity(from: indoorTransfer!, now: start + 700)
+    check(indoorTrip?.points.isEmpty == true && indoorTrip?.details?.indoor == true && indoorTrip?.accumulatedSeconds == 600 && indoorTrip?.details?.heartRate?.summary.samples == 1, "indoor workout imports")
+    var tap = WatchRideDraft(activity: "Running", startedAt: start)
+    tap.finish(at: start + 8)
+    check(!tap.isKeepable && tap.transfer(now: start + 8, ownerID: nil, deviceID: nil) == nil, "a mistaken start is not an activity")
+    check(WatchActivityImport.withoutHeartRate(indoorTransfer!).heartRate == nil, "an unattributed ride loses its readings, not its route")
+
+    // The owner is fixed when the ride starts.
+    let owned = WatchRideDraft(activity: "Walking", startedAt: start, ownerID: ownerA.uppercased())
+    check(owned.ownerID == ownerA && owned.meta.ownerCaptured == true, "owner captured at start")
+    check(WatchRideDraft(meta: owned.meta, points: []).ownerID == ownerA, "owner survives a restart")
+
+    // Restoration: heart rate, pause state and a crash mid-append.
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = WatchRideDraftStore(directory: directory)
+    var ride = WatchRideDraft(activity: "Running", startedAt: start, ownerID: ownerA)
+    walkingFixes(&ride, from: start + 1, count: 3)
+    ride.ingest(heartRate: hr(start + 5, 111), now: start + 5)
+    ride.checkpoint(at: start + 11)
+    try! store.save(ride)
+    var pointsFile = try! Data(contentsOf: directory.appendingPathComponent("draft.points"))
+    pointsFile.append(contentsOf: [1, 2, 3])
+    try! pointsFile.write(to: directory.appendingPathComponent("draft.points"))
+    var heartFile = try! Data(contentsOf: directory.appendingPathComponent("draft.heart"))
+    heartFile.append(contentsOf: [9, 9])
+    try! heartFile.write(to: directory.appendingPathComponent("draft.heart"))
+    let fresh = WatchRideDraftStore(directory: directory)
+    var restored = try! fresh.loadRestorable()!
+    check(restored.points.count == 3 && restored.heartRate == ride.heartRate, "partial tails ignored")
+    restored.reopenPaused()
+    check(restored.pausedAt == start + 11, "the unobserved span starts at the last checkpoint")
+    restored.resume(at: start + 500)
+    check(restored.pausePeriods == [WatchPausePeriod(start: start + 11, end: start + 500)], "the unobserved span is a pause")
+    walkingFixes(&restored, from: start + 501, count: 2)
+    restored.ingest(heartRate: hr(start + 502, 120), now: start + 502)
+    try! fresh.save(restored)
+    let again = try! WatchRideDraftStore(directory: directory).load()!
+    check(again.points.count == 5 && again.points == restored.points, "appending after a torn record keeps every fix readable")
+    check(again.heartRate.count == 2, "appending after a torn heart record keeps every reading")
+
+    // An append that fails part-way is repaired by the next save.
+    final class TornBackend: WatchFileBackend {
+        let base = FileWatchBackend(); var tear = false
+        func read(_ url: URL) throws -> Data? { try base.read(url) }
+        func write(_ data: Data, to url: URL, protection: Bool) throws { try base.write(data, to: url, protection: protection) }
+        func append(_ data: Data, to url: URL) throws {
+            if tear { tear = false; try base.append(data.prefix(10), to: url); throw WatchStorageError.writeFailed("torn") }
+            try base.append(data, to: url)
+        }
+        func remove(_ url: URL) throws { try base.remove(url) }
+        func exists(_ url: URL) -> Bool { base.exists(url) }
+        func size(_ url: URL) -> Int { base.size(url) }
+        func createDirectory(_ url: URL) throws { try base.createDirectory(url) }
+    }
+    let tornDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let torn = TornBackend(), tornStore = WatchRideDraftStore(directory: tornDirectory, backend: torn)
+    var tornRide = WatchRideDraft(activity: "Running", startedAt: start)
+    walkingFixes(&tornRide, from: start + 1, count: 2)
+    try! tornStore.save(tornRide)
+    walkingFixes(&tornRide, from: start + 11, count: 2)
+    torn.tear = true
+    var threw = false
+    do { try tornStore.save(tornRide) } catch { threw = true }
+    check(threw, "a failed append is reported, never assumed")
+    try! tornStore.save(tornRide)
+    check(try! WatchRideDraftStore(directory: tornDirectory).load()?.points == tornRide.points, "next save repairs a torn log")
+
+    // A draft that cannot be read is moved aside, never overwritten.
+    let badDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let badStore = WatchRideDraftStore(directory: badDirectory)
+    try! badStore.save(ride)
+    try! Data("{broken".utf8).write(to: badDirectory.appendingPathComponent("draft.json"))
+    check((try? badStore.load()) == nil, "unreadable draft reported")
+    try! badStore.quarantine(now: start)
+    check(FileManager.default.fileExists(atPath: badDirectory.appendingPathComponent("unreadable-\(Int(start))/draft.points").path), "fixes kept aside")
+    check(try! badStore.load() == nil, "a new ride can start")
+
+    // A failed finish returns to a retryable pause and can be finished again.
+    var retry = WatchRideDraft(activity: "Running", startedAt: start)
+    retry.finish(at: start + 100)
+    retry.reopenAfterFailedFinish(at: start + 100)
+    check(retry.state == "paused" && retry.endedAt == nil && retry.pausedAt == start + 100, "retryable after a failed save")
+    retry.finish(at: start + 130)
+    check(retry.endedAt == start + 130 && retry.duration(at: start + 130) == 100, "the retry credits no extra time")
+
+    // Water Lock: once per recording, and never straight back on.
+    var lock = WatchWaterLockPolicy(automatic: true)
+    check(!lock.shouldLock(workoutRunning: false, recording: true), "needs a running workout session")
+    check(lock.shouldLock(workoutRunning: true, recording: true), "locks when recording starts")
+    lock.noteRequested()
+    check(lock.observe(locked: true) == .locked && lock.observe(locked: true) == nil, "lock observed once")
+    check(lock.observe(locked: false) == .unlocked && lock.unlockedByRider, "unlock noted")
+    check(!lock.shouldLock(workoutRunning: true, recording: true), "does not re-lock after a deliberate unlock")
+    lock.noteManualLock()
+    check(lock.observe(locked: true) == .locked, "the rider can lock again")
+    lock.reset()
+    check(lock.shouldLock(workoutRunning: true, recording: true), "the next recording locks")
+    check(!WatchWaterLockPolicy(automatic: false).shouldLock(workoutRunning: true, recording: true), "the setting turns it off")
+
+    // One recording per account.
+    let watchNow = RecordingPresence(device: RecordingPresence.watch, ownerID: ownerA, sessionID: "W", activity: "Running", state: "recording", startedAt: start, updatedAt: start)
+    check(CrossDeviceRecording.start(remote: watchNow, ownerID: ownerA, now: start + 10) == .blocked(watchNow), "a fresh recording blocks a start")
+    check(watchNow.label == "Recording on Apple Watch", "label")
+    check(CrossDeviceRecording.start(remote: watchNow, ownerID: ownerB, now: start + 10) == .allowed, "another account never blocks")
+    check(CrossDeviceRecording.start(remote: watchNow, ownerID: nil, now: start + 10) == .allowed, "no account never blocks")
+    check(CrossDeviceRecording.start(remote: watchNow, ownerID: ownerA, now: start + 151) == .allowed, "a silent device stops blocking: offline stays independent")
+    check(CrossDeviceRecording.start(remote: nil, ownerID: ownerA, now: start) == .allowed, "unknown means independent")
+    check(CrossDeviceRecording.start(remote: .idle(device: "watch", ownerID: ownerA, now: start), ownerID: ownerA, now: start + 1) == .allowed, "idle does not block")
+    check(CrossDeviceRecording.conflict(localSession: "P", remote: watchNow, ownerID: ownerA, now: start + 1), "two sessions are a conflict")
+    check(!CrossDeviceRecording.conflict(localSession: "w", remote: watchNow, ownerID: ownerA, now: start + 1), "the same session is not")
+    check(CrossDeviceRecording.suppressesAutomaticStart(remote: watchNow, ownerID: ownerA, now: start + 1), "no automatic journey during a Watch recording")
+    let phoneNow = RecordingPresence(device: RecordingPresence.iPhone, ownerID: ownerA, sessionID: "P", activity: "MTB", state: "paused", startedAt: start, updatedAt: start)
+    check(!CrossDeviceRecording.suppressesAutomaticStart(remote: phoneNow, ownerID: ownerA, now: start + 1), "only the Watch suppresses")
+    check(RecordingPresence(dictionary: phoneNow.dictionary) == phoneNow, "presence wire format")
+    check(RecordingPresence(dictionary: ["device": "toaster", "state": "recording", "updatedAt": 1.0]) == nil, "unknown device refused")
+    var manualTrip = RecordedActivity(activity: "Running", vehicle: nil, startedAt: start + 100, resumedAt: nil, title: "Phone run"); manualTrip.endedAt = start + 400; manualTrip.recordingMode = "manual"
+    var brush = manualTrip; brush.id = UUID().uuidString; brush.startedAt = start - 100; brush.endedAt = start + 10
+    let overlap = CrossDeviceRecording.overlaps(startedAt: start, endedAt: start + 300, id: "other", trips: [manualTrip, brush])
+    check(overlap.count == 1 && overlap[0].seconds == 200 && overlap[0].kind == "manual", "offline overlap found, nothing removed")
+
+    // Health classification.
+    check(WatchWorkoutClassifier.classify("Hiking", indoor: false) == WatchWorkoutClass(type: "hiking", indoor: false, savesToHealth: true), "hiking")
+    check(WatchWorkoutClassifier.classify("Road cycling", indoor: false).type == "cycling" && WatchWorkoutClassifier.classify("Running", indoor: true).indoor, "cycling and indoor")
+    check(!WatchWorkoutClassifier.classify("Driving", indoor: false).savesToHealth, "a drive is not a workout")
+    check(WatchCatalog.activities.contains("Driving") && !WatchCatalog.usesBicycle("Walking") && WatchCatalog.usesPace("Hiking") && !WatchCatalog.usesPace("MTB"), "catalog")
+    check(Set(WatchCatalog.activities).isSubset(of: Set(WatchActivityImport.supported)), "every Watch activity is importable")
+    check(WatchStartConfig(activity: "MTB", indoor: true).indoor == nil && WatchStartConfig(activity: "Running", indoor: true).title == "Indoor Running", "indoor only where it means something")
+    let oldMemory = #"{"activity":"MTB","equipmentID":"1","equipmentName":"Levo"}"#
+    check(try! JSONDecoder().decode(WatchStartConfig.self, from: Data(oldMemory.utf8)).indoor == nil, "remembered setups still decode")
+
+    // Trimming keeps only readings from the kept window.
+    let series = ActivityHeartRate(samples: [hr(start + 5, 100), hr(start + 50, 120)], pausePeriods: [])!
+    check(series.trimmed(start: start + 30, end: start + 60)?.summary.average == 120 && series.trimmed(start: start + 100, end: start + 110) == nil, "trim")
+
+    // Diagnostics buffer stays bounded and carries no readings.
+    var buffer = WatchDiagnosticBuffer()
+    for i in 0..<130 { buffer.add(WatchDiagnosticEvent(at: Double(i), kind: "watch", message: "m")) }
+    check(buffer.events.count == 100 && buffer.events.first?.at == 30, "bounded")
+    buffer.drain(sentThrough: 100)
+    check(buffer.events.count == 29, "drained up to what was sent")
 }
 
 print("\(assertions) native recorder/auth assertions passed")

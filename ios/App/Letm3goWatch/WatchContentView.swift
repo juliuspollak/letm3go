@@ -14,6 +14,7 @@ enum WatchRoute: Hashable {
     case summary
     case history
     case detail(String)
+    case settings
 }
 
 struct WatchContentView: View {
@@ -39,6 +40,7 @@ struct WatchContentView: View {
                     case .summary: WatchSummaryView(recorder: recorder, link: link, path: $path)
                     case .history: WatchHistoryList(recorder: recorder, link: link, path: $path)
                     case .detail(let id): WatchHistoryDetail(recorder: recorder, link: link, path: $path, id: id)
+                    case .settings: WatchSettingsView(recorder: recorder)
                     }
                 }
         }
@@ -60,7 +62,7 @@ enum WatchFormat {
     }
     // Pace for activities on foot, speed on a bike or board.
     static func pace(activity: String, meters: Double, seconds: Double) -> (value: String, label: String) {
-        let onFoot = ["Walking", "Running", "Hiking"].contains(activity)
+        let onFoot = WatchCatalog.usesPace(activity)
         guard meters >= 20, seconds >= 10 else { return ("—", onFoot ? "PACE /KM" : "KM/H") }
         if onFoot {
             let perKm = seconds / (meters / 1000)
@@ -68,6 +70,16 @@ enum WatchFormat {
         }
         return (String(format: "%.1f", meters / seconds * 3.6), "KM/H")
     }
+    // The last GPS speed, shown the same way as the average beside it.
+    static func current(activity: String, metresPerSecond: Double?) -> String {
+        guard let speed = metresPerSecond, speed >= 0.3 else { return "—" }
+        if WatchCatalog.usesPace(activity) {
+            let perKm = 1000 / speed
+            return perKm < 5999 ? String(format: "%d:%02d", Int(perKm) / 60, Int(perKm) % 60) : "—"
+        }
+        return String(format: "%.1f", speed * 3.6)
+    }
+    static func bpm(_ value: Double?) -> String { value.map { String(Int($0.rounded())) } ?? "—" }
     static func date(_ seconds: Double) -> String {
         let date = Date(timeIntervalSince1970: seconds)
         if Calendar.current.isDateInToday(date) { return "Today " + date.formatted(date: .omitted, time: .shortened) }
@@ -132,6 +144,9 @@ struct WatchHome: View {
                 } else {
                     WatchActionButton(title: "Start Activity", symbol: "play.fill") { path = [.activities] }
                 }
+                if !recorder.hasRide, let phone = phoneRecording {
+                    Label(phone.label, systemImage: "iphone").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                }
                 WatchActionButton(title: "Past Activities", detail: waitingDetail, symbol: "clock.arrow.circlepath", tint: .blue) { path = [.history] }
                 // The last setup, one tap from Ready ("Mountain bike · Turbo Levo").
                 if !recorder.hasRide, let last = recorder.memory.last {
@@ -140,9 +155,14 @@ struct WatchHome: View {
                         path = [.ready(last)]
                     }
                 }
+                WatchActionButton(title: "Settings", symbol: "gearshape", tint: .gray) { path = [.settings] }
             }
         }
         .navigationTitle("Letm3go")
+    }
+
+    private var phoneRecording: RecordingPresence? {
+        CrossDeviceRecording.active(link.remoteRecording, ownerID: link.ownerID, now: Date().timeIntervalSince1970)
     }
 
     private var resumeDetail: String {
@@ -247,6 +267,14 @@ struct WatchReadyView: View {
     @ObservedObject var recorder: WatchRecorder
     @Binding var path: [WatchRoute]
     let setup: WatchStartConfig
+    @State private var indoor = false
+
+    private func begin(anyway: Bool) {
+        var chosen = setup
+        chosen.indoor = indoor && WatchCatalog.supportsIndoor(setup.activity) ? true : nil
+        recorder.start(chosen, anyway: anyway)
+        path = recorder.hasRide ? [.recording] : path
+    }
 
     var body: some View {
         ScrollView {
@@ -257,14 +285,22 @@ struct WatchReadyView: View {
                     Label(bike, systemImage: setup.equipmentKind == "ebike" ? "bolt.fill" : "bicycle")
                         .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Button {
-                    recorder.start(setup)
-                    path = recorder.hasRide ? [.recording] : path
-                } label: {
-                    Label("Start", systemImage: "play.fill").font(.title3.weight(.bold)).frame(maxWidth: .infinity, minHeight: 48)
+                if WatchCatalog.supportsIndoor(setup.activity) {
+                    Toggle("Indoor", isOn: $indoor).font(.footnote)
                 }
-                .tint(.green)
-                .disabled(recorder.hasRide)
+                if let other = recorder.startBlocked {
+                    Label(other.label, systemImage: "iphone").font(.footnote.weight(.semibold)).foregroundStyle(.orange)
+                    Button("Start Anyway") { begin(anyway: true) }.font(.footnote)
+                } else {
+                    Button { begin(anyway: false) } label: {
+                        Label("Start", systemImage: "play.fill").font(.title3.weight(.bold)).frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .tint(.green)
+                    .disabled(recorder.hasRide)
+                }
+                if !recorder.hasRide, recorder.status.hasPrefix("Can't start") {
+                    Text(recorder.status).font(.caption2).foregroundStyle(.red).multilineTextAlignment(.center)
+                }
                 if recorder.permission == "denied" || recorder.permission == "restricted" {
                     Text("Location is off. Allow it in Settings › Privacy › Location.").font(.caption2).foregroundStyle(.orange).multilineTextAlignment(.center)
                 } else if recorder.permission == "unknown", !recorder.hasRide, recorder.status.hasPrefix("Allow") {
@@ -273,6 +309,7 @@ struct WatchReadyView: View {
             }
         }
         .navigationTitle("Ready")
+        .onAppear { indoor = setup.indoor == true; recorder.clearStartBlock() }
         // A start waiting for the location prompt opens the recording screen once it begins.
         .onChange(of: recorder.hasRide) { started in if started { path = [.recording] } }
     }
@@ -285,32 +322,43 @@ struct WatchRecordingView: View {
     @Binding var path: [WatchRoute]
     @State private var confirming = false
 
+    private var activity: String { recorder.config.activity }
+    private var indoor: Bool { recorder.config.indoor == true }
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             ScrollView {
                 VStack(spacing: 4) {
                     status(now: context.date.timeIntervalSince1970)
+                    if let warning = recorder.storageWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                    }
+                    if let other = recorder.otherRecording {
+                        Label("Also \(other.label)", systemImage: "iphone").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                    }
                     Text(WatchFormat.clock(recorder.activeSeconds))
                         .font(.system(size: 36, weight: .semibold, design: .rounded)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
                         .accessibilityLabel("Elapsed \(WatchFormat.clock(recorder.activeSeconds))")
-                    HStack(alignment: .top) {
-                        metric(WatchFormat.distance(recorder.distanceMeters), "DISTANCE")
-                        let pace = WatchFormat.pace(activity: recorder.config.activity, meters: recorder.distanceMeters, seconds: recorder.activeSeconds)
-                        metric(pace.value, pace.label)
-                    }
-                    HStack(spacing: 8) {
-                        if recorder.isRecording {
-                            Button { recorder.pause() } label: { Image(systemName: "pause.fill").font(.title3) }
-                                .tint(.orange).accessibilityLabel("Pause")
-                        } else {
-                            Button { recorder.resume() } label: { Image(systemName: "play.fill").font(.title3) }
-                                .tint(.green).accessibilityLabel("Resume")
+                    heartRate
+                    if !indoor {
+                        HStack(alignment: .top) {
+                            metric(WatchFormat.distance(recorder.distanceMeters), "DISTANCE")
+                            let pace = WatchFormat.pace(activity: activity, meters: recorder.distanceMeters, seconds: recorder.activeSeconds)
+                            metric(pace.value, "AVG " + pace.label)
                         }
-                        Button { confirming = true } label: { Image(systemName: "stop.fill").font(.title3) }
-                            .tint(.red).accessibilityLabel("Finish")
+                        HStack(alignment: .top) {
+                            metric(WatchFormat.current(activity: activity, metresPerSecond: recorder.currentSpeed), WatchCatalog.usesPace(activity) ? "NOW /KM" : "NOW KM/H")
+                            if WatchCatalog.showsElevation(activity) { metric("\(Int(recorder.elevationGain.rounded())) m", "CLIMB") }
+                        }
                     }
-                    .frame(minHeight: 44)
+                    if let average = recorder.heartRateSummary?.average {
+                        HStack(alignment: .top) {
+                            metric(WatchFormat.bpm(average), "AVG BPM")
+                            metric(WatchFormat.bpm(recorder.heartRateSummary?.maximum), "MAX BPM")
+                        }
+                    }
+                    controls
                 }
             }
         }
@@ -319,7 +367,7 @@ struct WatchRecordingView: View {
         .navigationBarBackButtonHidden(recorder.hasRide)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                if recorder.hasRide { Button { path = [] } label: { Image(systemName: "house") }.accessibilityLabel("Home") }
+                if recorder.hasRide && !recorder.softLocked { Button { path = [] } label: { Image(systemName: "house") }.accessibilityLabel("Home") }
             }
         }
         .confirmationDialog("Finish this activity?", isPresented: $confirming, titleVisibility: .visible) {
@@ -336,10 +384,50 @@ struct WatchRecordingView: View {
         .onChange(of: recorder.hasRide) { open in if !open && path.last == .recording { path = [] } }
     }
 
+    @ViewBuilder private var heartRate: some View {
+        switch recorder.heartRate {
+        case .live(let bpm):
+            Label("\(Int(bpm.rounded())) BPM", systemImage: "heart.fill")
+                .font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(.red)
+                .accessibilityLabel("Heart rate \(Int(bpm.rounded())) beats per minute")
+        case .waiting, .unavailable:
+            Label(recorder.heartRate.label, systemImage: "heart").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+        case .paused, .off:
+            EmptyView()
+        }
+    }
+
+    // While the screen is locked in the app there is nothing to press by accident:
+    // Water Lock itself blocks touch, and the on-screen lock takes a long press.
+    @ViewBuilder private var controls: some View {
+        if recorder.softLocked {
+            Text("Hold to Unlock")
+                .font(.footnote.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44)
+                .background(.gray.opacity(0.25), in: Capsule())
+                .onLongPressGesture(minimumDuration: 1.5) { recorder.softUnlock() }
+                .accessibilityLabel("Screen locked. Touch and hold to unlock")
+        } else {
+            HStack(spacing: 8) {
+                if recorder.isRecording {
+                    Button { recorder.pause() } label: { Image(systemName: "pause.fill").font(.title3) }
+                        .tint(.orange).accessibilityLabel("Pause")
+                } else {
+                    Button { recorder.resume() } label: { Image(systemName: "play.fill").font(.title3) }
+                        .tint(.green).accessibilityLabel("Resume")
+                }
+                Button { confirming = true } label: { Image(systemName: "stop.fill").font(.title3) }
+                    .tint(.red).accessibilityLabel("Finish")
+                Button { recorder.lockScreen() } label: { Image(systemName: "drop.fill").font(.title3) }
+                    .tint(.blue).accessibilityLabel("Lock screen")
+            }
+            .frame(minHeight: 44)
+        }
+    }
+
     private func status(now: Double) -> some View {
         let fresh = recorder.lastFixAt.map { now - $0 < 20 } ?? false
-        let (text, color): (String, Color) = !recorder.isRecording ? ("Paused", .orange) : fresh ? ("GPS · Recording", .green) : ("Finding GPS…", .yellow)
-        return Label(text, systemImage: recorder.isRecording ? "location.fill" : "pause.fill")
+        let (text, color): (String, Color) = !recorder.isRecording ? ("Paused", .orange) : indoor ? ("Indoor · Recording", .green) : fresh ? ("GPS · Recording", .green) : ("Finding GPS…", .yellow)
+        return Label(text, systemImage: recorder.isRecording ? (indoor ? "house.fill" : "location.fill") : "pause.fill")
             .font(.caption2.weight(.semibold)).foregroundStyle(color)
     }
 
@@ -350,6 +438,18 @@ struct WatchRecordingView: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct WatchSettingsView: View {
+    @ObservedObject var recorder: WatchRecorder
+    var body: some View {
+        List {
+            Toggle("Automatically Lock During Recording", isOn: $recorder.autoLock)
+            Text("Water Lock stops accidental touches. Press and hold the Digital Crown to unlock. Recording carries on either way.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .navigationTitle("Settings")
     }
 }
 
@@ -368,6 +468,12 @@ struct WatchSummaryView: View {
                     HStack {
                         summaryMetric(WatchFormat.distance(ride.distanceMeters), "DISTANCE")
                         summaryMetric(WatchFormat.clock(ride.activeSeconds), "TIME")
+                    }
+                    if ride.averageHeartRate != nil {
+                        HStack {
+                            summaryMetric(WatchFormat.bpm(ride.averageHeartRate), "AVG BPM")
+                            summaryMetric(WatchFormat.bpm(ride.maximumHeartRate), "MAX BPM")
+                        }
                     }
                     WatchSyncBadge(status: WatchHistory.status(ride, outbox: link.outboxEntries()))
                 } else {
@@ -466,6 +572,9 @@ struct WatchHistoryDetail: View {
                     HStack {
                         VStack { Text(WatchFormat.distance(ride.distanceMeters)).font(.title3.weight(.semibold)); Text("DISTANCE").font(.system(size: 10)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
                         VStack { Text(WatchFormat.clock(ride.activeSeconds)).font(.title3.weight(.semibold)).monospacedDigit(); Text("TIME").font(.system(size: 10)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
+                    }
+                    if ride.averageHeartRate != nil {
+                        Text("\(WatchFormat.bpm(ride.averageHeartRate)) avg · \(WatchFormat.bpm(ride.maximumHeartRate)) max BPM").font(.footnote).foregroundStyle(.secondary)
                     }
                     WatchSyncBadge(status: WatchHistory.status(ride, outbox: link.outboxEntries()))
                     Button { path = [.ready(ride.config)] } label: {

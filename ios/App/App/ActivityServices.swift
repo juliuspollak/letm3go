@@ -200,12 +200,20 @@ extension LocationRecorder {
     // the payload belongs to a different account: it is parked, never imported.
     func importWatchActivity(_ transfer: WatchActivityTransfer, claimedBy: String? = nil) -> WatchImportOutcome {
         guard storage != nil, storeOpened, !accountSuspended, !accountDeleting, let ownerID = ownerID else { return .deferred }
+        var transfer = transfer
         switch WatchOwnership.decision(transferOwner: transfer.ownerID, claimedBy: claimedBy, currentOwner: ownerID) {
         case .noAccountOpen:
             return .deferred
         case .foreignAccount:
             return .foreignAccount
-        case .importable, .unclaimed:
+        case .unclaimed:
+            // Recorded before the Watch knew an account: nothing says whose body this
+            // measured, so the readings stay out of this account's journal.
+            if transfer.heartRate?.isEmpty == false {
+                recordDiagnostic("watch", "Heart rate not imported: the Watch knew no account when recording", details: ["heartRateSamples": String(transfer.heartRate?.count ?? 0)])
+                transfer = WatchActivityImport.withoutHeartRate(transfer)
+            }
+        case .importable:
             break
         }
         guard var activity = WatchActivityImport.activity(from: transfer) else { return .rejected("invalid-payload") }
@@ -217,6 +225,10 @@ extension LocationRecorder {
         if trips.contains(where: { $0.id == activity.id }) { return .duplicate }
         // A deleted ride must not be resurrected by a late retry from the watch.
         if (try? storage!.deletedIDs())?.contains(activity.id) == true { return .duplicate }
+        // Offline recordings that share time with this one are named, never merged
+        // or removed: the rider decides which to keep.
+        let overlaps = CrossDeviceRecording.overlaps(startedAt: transfer.startedAt, endedAt: transfer.endedAt, id: activity.id, trips: trips)
+        if !overlaps.isEmpty { activity.details?.overlaps = overlaps }
         do {
             try storage!.save(activity)
             trips.insert(activity, at: 0)
@@ -225,7 +237,10 @@ extension LocationRecorder {
             recordDiagnostic("watch", "Imported an Apple Watch activity", details: [
                 "points": String(activity.points.count),
                 "trail": activity.details?.mtbTrailID == nil ? "none" : "linked",
-                "workoutSaved": transfer.workoutSaved == true ? "yes" : "no"
+                "workoutSaved": transfer.workoutSaved == true ? "yes" : "no",
+                "heartRateSamples": String(activity.details?.heartRate?.summary.samples ?? 0),
+                "heartRateGaps": String(activity.details?.heartRate?.summary.gaps ?? 0),
+                "overlaps": String(overlaps.count)
             ])
             notifyJourneyChange()
             return .imported

@@ -1,13 +1,24 @@
 import SwiftUI
+import WatchKit
+
+// watchOS relaunches the app here when a workout was interrupted by a crash.
+final class WatchAppDelegate: NSObject, WKApplicationDelegate {
+    static var recorder: WatchRecorder?
+    func handleActiveWorkoutRecovery() {
+        Task { @MainActor in Self.recorder?.handleWorkoutRecovery() }
+    }
+}
 
 @main
 struct Letm3goWatchApp: App {
+    @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var delegate
     @StateObject private var recorder = WatchRecorder()
 
     var body: some Scene {
         WindowGroup {
             WatchContentView(recorder: recorder, initialPath: Self.demoPath(recorder))
                 .onAppear {
+                    WatchAppDelegate.recorder = recorder
                     WatchConnectivitySession.shared.activate()
                     recorder.restore()
                 }
@@ -33,6 +44,7 @@ struct Letm3goWatchApp: App {
         case "bike": return [.activities, .family("Cycling"), .equipment("MTB")]
         case "ready": return [.ready(WatchStartConfig(activity: "MTB", equipment: WatchEquipment(id: "demo-2", name: "Turbo Levo", kind: "ebike")))]
         case "recording": return [.recording]
+        case "settings": return [.settings]
         case "history": return [.history]
         case "detail": return [.history, .detail("demo-1")]
         default: return []

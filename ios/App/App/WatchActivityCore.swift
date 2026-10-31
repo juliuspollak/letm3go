@@ -43,8 +43,9 @@ enum WatchImportOutcome: Equatable {
 }
 
 struct WatchActivityTransfer: Codable, Equatable {
-    static let currentSchema = 2
-    static let supportedSchemas = 1...2
+    // 3 adds heart rate, pause periods, indoor recordings and recordings with no route.
+    static let currentSchema = 3
+    static let supportedSchemas = 1...3
 
     var schema = WatchActivityTransfer.currentSchema
     var id: String
@@ -74,14 +75,23 @@ struct WatchActivityTransfer: Codable, Equatable {
     var equipmentID: String?
     var equipmentName: String?
     var equipmentKind: String?
+    // Readings from the active time of this ride, in order. Absent from older
+    // builds and when the sensor gave nothing: never filled in.
+    var heartRate: [WatchHeartRateSample]?
+    var pausePeriods: [WatchPausePeriod]?
+    var indoor: Bool?
 
     init(id: String, ownerID: String?, activity: String, startedAt: Double, endedAt: Double,
          activeSeconds: Double, points: [WatchPoint], trailID: String? = nil, trailName: String? = nil,
          trailSegmentID: String? = nil, trailDistanceMeters: Double? = nil, workoutSaved: Bool? = nil,
          schema: Int = WatchActivityTransfer.currentSchema, deviceID: String? = nil,
          movingSeconds: Double? = nil, elevationGainMeters: Double? = nil,
-         elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil) {
+         elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil,
+         heartRate: [WatchHeartRateSample]? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil) {
         self.schema = schema
+        self.heartRate = heartRate
+        self.pausePeriods = pausePeriods
+        self.indoor = indoor
         self.equipmentID = equipment?.id
         self.equipmentName = equipment?.name
         self.equipmentKind = equipment?.kind
@@ -131,6 +141,9 @@ extension WatchActivityTransfer {
         equipmentID = try c.decodeIfPresent(String.self, forKey: .equipmentID)
         equipmentName = try c.decodeIfPresent(String.self, forKey: .equipmentName)
         equipmentKind = try c.decodeIfPresent(String.self, forKey: .equipmentKind)
+        heartRate = try? c.decodeIfPresent([WatchHeartRateSample].self, forKey: .heartRate)
+        pausePeriods = try? c.decodeIfPresent([WatchPausePeriod].self, forKey: .pausePeriods)
+        indoor = try? c.decodeIfPresent(Bool.self, forKey: .indoor)
     }
     // The bike as an equipment reference, when its fields are usable. Invalid
     // equipment is ignored, never a reason to reject the ride.
@@ -268,6 +281,9 @@ enum WatchTransferLimits {
     // Two fixes further apart than this are not a continuous ride.
     static let outageGap = 30.0
     static let maximumAccuracy = 30.0
+    // A recording with no usable route is still a real activity once it has run this
+    // long: an indoor workout, or an outdoor one under a roof.
+    static let minimumSecondsWithoutRoute = 60.0
 }
 
 struct WatchRideFix {
@@ -295,7 +311,11 @@ enum WatchActivityImport {
         guard transfer.endedAt.isFinite, transfer.endedAt > transfer.startedAt else { return "invalid-end" }
         guard transfer.endedAt <= now + WatchTransferLimits.maximumFutureSeconds else { return "future-ride" }
         guard transfer.activeSeconds.isFinite, transfer.activeSeconds >= 0 else { return "invalid-duration" }
-        guard transfer.points.count >= 2, transfer.points.count <= WatchTransferLimits.maximumPoints else { return "invalid-point-count" }
+        guard transfer.points.count <= WatchTransferLimits.maximumPoints else { return "invalid-point-count" }
+        if transfer.points.count < 2 {
+            // Only this schema can say a route was not expected.
+            guard transfer.schema >= 3, min(transfer.activeSeconds, transfer.endedAt - transfer.startedAt) >= WatchTransferLimits.minimumSecondsWithoutRoute else { return "invalid-point-count" }
+        }
         if let owner = transfer.ownerID, WatchOwnership.normalize(owner) == nil { return "invalid-owner" }
         if let device = transfer.deviceID, device.count > WatchOwnership.maximumLength { return "invalid-device" }
 
@@ -341,6 +361,10 @@ enum WatchActivityImport {
         trip.points = points
         trip.segment = points.last?.segment ?? 0
         var details = ActivityDetails()
+        details.indoor = transfer.indoor == true ? true : nil
+        let paused = WatchHeartRate.cleaned(transfer.pausePeriods ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt)
+        // Readings are kept only for a ride whose person is known (see `withoutHeartRate`).
+        details.heartRate = ActivityHeartRate(samples: WatchHeartRate.cleaned(transfer.heartRate ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt, paused: paused), pausePeriods: paused)
         if let ref = transfer.equipmentRef { trip.assignEquipment([ref]) }
         if let trailID = transfer.trailID, UUID(uuidString: trailID) != nil {
             details.mtbTrailID = trailID.lowercased()
@@ -358,6 +382,20 @@ enum WatchActivityImport {
         trip.details = details
         trip.updatedAt = now
         return trip
+    }
+
+    // A ride recorded before the Watch knew any account can be anyone's. Its route
+    // still imports as it always did, but health data is never guessed onto a person.
+    static func withoutHeartRate(_ transfer: WatchActivityTransfer) -> WatchActivityTransfer {
+        var copy = transfer
+        copy.heartRate = nil
+        return copy
+    }
+
+    // A schema newer than this build is not a bad ride: the phone waits for its own
+    // update instead of telling the Watch to give up.
+    static func isFromNewerBuild(_ transfer: WatchActivityTransfer) -> Bool {
+        transfer.schema > WatchActivityTransfer.currentSchema
     }
 
     static func metrics(for transfer: WatchActivityTransfer) -> WatchRideMetrics? {
@@ -488,10 +526,26 @@ struct WatchRideMeta: Codable, Equatable {
     var equipmentID: String? = nil
     var equipmentName: String? = nil
     var equipmentKind: String? = nil
+    // Schema 2. `ownerCaptured` tells a ride that began with no account from a draft
+    // written before the owner was stored with it.
+    var ownerID: String? = nil
+    var ownerCaptured: Bool? = nil
+    var indoor: Bool? = nil
+    var pausedAt: Double? = nil
+    var pausePeriods: [WatchPausePeriod]? = nil
+    var heartRateCount: Int? = nil
 }
 
 struct WatchRideDraft {
     var id: String
+    // The account open when this ride began. A later account change on the phone
+    // cannot re-attribute it, or its heart rate.
+    var ownerID: String?
+    var ownerCaptured: Bool
+    var indoor: Bool
+    var pausedAt: Double?
+    var pausePeriods: [WatchPausePeriod]
+    private(set) var heartRate: [WatchHeartRateSample]
     var activity: String
     var equipment: WatchEquipment?
     var startedAt: Double
@@ -508,8 +562,15 @@ struct WatchRideDraft {
     var isRecording: Bool { state == "recording" }
     var isFinished: Bool { state == "finished" }
 
-    init(id: String = UUID().uuidString, activity: String, startedAt: Double, equipment: WatchEquipment? = nil) {
+    init(id: String = UUID().uuidString, activity: String, startedAt: Double, equipment: WatchEquipment? = nil,
+         ownerID: String? = nil, indoor: Bool = false) {
         self.id = id
+        self.ownerID = WatchOwnership.normalize(ownerID)
+        self.ownerCaptured = true
+        self.indoor = indoor
+        self.pausedAt = nil
+        self.pausePeriods = []
+        self.heartRate = []
         self.activity = activity
         self.equipment = WatchCatalog.usesBicycle(activity) ? equipment : nil
         self.startedAt = startedAt
@@ -522,8 +583,14 @@ struct WatchRideDraft {
         self.analyzer = WatchTrackAnalyzer(activity: activity)
     }
 
-    init(meta: WatchRideMeta, points: [WatchPoint]) {
+    init(meta: WatchRideMeta, points: [WatchPoint], heartRate: [WatchHeartRateSample] = []) {
         id = meta.id
+        ownerID = WatchOwnership.normalize(meta.ownerID)
+        ownerCaptured = meta.ownerCaptured ?? false
+        indoor = meta.indoor ?? false
+        pausedAt = meta.pausedAt
+        pausePeriods = meta.pausePeriods ?? []
+        self.heartRate = heartRate
         activity = meta.activity
         if let equipmentID = meta.equipmentID, let equipmentName = meta.equipmentName {
             equipment = WatchEquipment(id: equipmentID, name: equipmentName, kind: meta.equipmentKind ?? "bicycle")
@@ -544,10 +611,29 @@ struct WatchRideDraft {
     }
 
     var meta: WatchRideMeta {
-        WatchRideMeta(id: id, activity: activity, startedAt: startedAt, resumedAt: resumedAt,
+        WatchRideMeta(schema: 2, id: id, activity: activity, startedAt: startedAt, resumedAt: resumedAt,
                       activeSeconds: activeSeconds, state: state, segment: segment,
                       endedAt: endedAt, pointCount: points.count, queued: queued,
-                      equipmentID: equipment?.id, equipmentName: equipment?.name, equipmentKind: equipment?.kind)
+                      equipmentID: equipment?.id, equipmentName: equipment?.name, equipmentKind: equipment?.kind,
+                      ownerID: ownerID, ownerCaptured: ownerCaptured, indoor: indoor ? true : nil,
+                      pausedAt: pausedAt, pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods,
+                      heartRateCount: heartRate.count)
+    }
+
+    // Worth a place in the phone's journal: a route, or enough active time to be a
+    // workout without one. Shorter than that it was a mistaken start.
+    var isKeepable: Bool { points.count >= 2 || activeSeconds >= WatchTransferLimits.minimumSecondsWithoutRoute }
+    var heartRateSummary: WatchHeartRateSummary? { WatchHeartRate.summary(heartRate, paused: pausePeriods) }
+
+    // A delayed reading from inside a pause belongs to no recorded time.
+    @discardableResult
+    mutating func ingest(heartRate sample: WatchHeartRateSample, now: Double) -> Bool {
+        guard isRecording, WatchHeartRate.valid(sample), sample.timestamp <= now + 1, sample.timestamp >= startedAt - 1,
+              !WatchHeartRate.inside(sample.timestamp, pausePeriods),
+              (heartRate.last?.timestamp ?? 0) < sample.timestamp,
+              WatchHeartRateLimits.maximumSamples > heartRate.count else { return false }
+        heartRate.append(sample)
+        return true
     }
 
     func duration(at now: Double) -> Double {
@@ -569,11 +655,13 @@ struct WatchRideDraft {
         checkpoint(at: now)
         resumedAt = nil
         state = "paused"
+        pausedAt = now
         segment += 1
     }
 
     mutating func resume(at now: Double) {
         guard state == "paused" else { return }
+        closePause(at: now)
         resumedAt = now
         state = "recording"
         segment += 1
@@ -582,15 +670,34 @@ struct WatchRideDraft {
     mutating func finish(at now: Double) {
         guard state != "finished" else { return }
         if state == "recording" { checkpoint(at: now) }
+        closePause(at: now)
         resumedAt = nil
         state = "finished"
         endedAt = now
+    }
+
+    private mutating func closePause(at now: Double) {
+        guard let pausedAt else { return }
+        if now > pausedAt { pausePeriods.append(WatchPausePeriod(start: pausedAt, end: now)) }
+        self.pausedAt = nil
+    }
+
+    // A finish that could not be saved returns to a retryable pause. The time between
+    // the attempt and the next one is not credited.
+    mutating func reopenAfterFailedFinish(at now: Double) {
+        guard state == "finished" else { return }
+        state = "paused"
+        resumedAt = nil
+        endedAt = nil
+        pausedAt = now
     }
 
     // Restoring never credits unobserved time: the ride is reopened paused at the
     // last durable duration, so a watch left in a bag overnight cannot add hours.
     mutating func reopenPaused() {
         guard state == "recording" else { return }
+        // The last checkpoint is the last moment this ride was observed.
+        pausedAt = resumedAt
         resumedAt = nil
         state = "paused"
         segment = max(segment, (points.last?.segment ?? segment) + 1)
@@ -632,7 +739,7 @@ struct WatchRideDraft {
 
     func transfer(now: Double, ownerID: String?, deviceID: String?,
                   trail: WatchTrailLink? = nil, appVersion: String? = nil) -> WatchActivityTransfer? {
-        guard points.count >= 2, isFinished, let endedAt else { return nil }
+        guard isKeepable, isFinished, let endedAt else { return nil }
         let elapsed = max(0, endedAt - startedAt)
         guard elapsed > 0 else { return nil }
         return WatchActivityTransfer(
@@ -642,7 +749,9 @@ struct WatchRideDraft {
             trailDistanceMeters: trail?.distanceMeters,
             deviceID: deviceID, movingSeconds: metrics.movingSeconds,
             elevationGainMeters: metrics.elevationGainMeters, elevationLossMeters: metrics.elevationLossMeters,
-            appVersion: appVersion, equipment: equipment)
+            appVersion: appVersion, equipment: equipment,
+            heartRate: heartRate.isEmpty ? nil : heartRate,
+            pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods, indoor: indoor ? true : nil)
     }
 }
 
@@ -662,10 +771,18 @@ struct WatchTrailLink: Codable, Equatable {
 final class WatchRideDraftStore {
     static let recordBytes = 64
     static let magic = Data("L3GOPTS1".utf8)
+    static let heartRecordBytes = 16
+    static let heartMagic = Data("L3GOHRT1".utf8)
 
     let directory: URL
     private let backend: WatchFileBackend
     private var persistedPoints = 0
+    private var persistedHeart = 0
+    // An append that failed part-way, or a log that a crash left uneven, cannot be
+    // appended to again: every later record would be read out of alignment. The next
+    // save replaces the whole log from memory instead.
+    private var pointsNeedRewrite = false
+    private var heartNeedsRewrite = false
     private var prepared = false
 
     init(directory: URL, backend: WatchFileBackend = FileWatchBackend()) {
@@ -675,6 +792,7 @@ final class WatchRideDraftStore {
 
     private var metaURL: URL { directory.appendingPathComponent("draft.json") }
     private var pointsURL: URL { directory.appendingPathComponent("draft.points") }
+    private var heartURL: URL { directory.appendingPathComponent("draft.heart") }
 
     private func prepare() throws {
         guard !prepared else { return }
@@ -687,18 +805,39 @@ final class WatchRideDraftStore {
     func save(_ draft: WatchRideDraft) throws {
         try prepare()
         let points = draft.points
-        if points.count < persistedPoints {
+        if pointsNeedRewrite || points.count < persistedPoints {
             try rewrite(points)
         } else if points.count > persistedPoints {
             var data = Data()
             if !backend.exists(pointsURL) || backend.size(pointsURL) == 0 { data.append(Self.magic) }
             data.reserveCapacity((points.count - persistedPoints) * Self.recordBytes)
             for point in points[persistedPoints...] { Self.encode(point, into: &data) }
-            try backend.append(data, to: pointsURL)
+            do { try backend.append(data, to: pointsURL) } catch { pointsNeedRewrite = true; throw error }
             persistedPoints = points.count
         }
+        try saveHeart(draft.heartRate)
         let meta = try JSONEncoder().encode(draft.meta)
         try backend.write(meta, to: metaURL, protection: true)
+    }
+
+    private func saveHeart(_ samples: [WatchHeartRateSample]) throws {
+        if heartNeedsRewrite || samples.count < persistedHeart {
+            try backend.remove(heartURL)
+            persistedHeart = 0
+            if !samples.isEmpty {
+                var data = Self.heartMagic
+                for sample in samples { Self.encode(sample, into: &data) }
+                try backend.write(data, to: heartURL, protection: true)
+            }
+            persistedHeart = samples.count
+            heartNeedsRewrite = false
+        } else if samples.count > persistedHeart {
+            var data = Data()
+            if !backend.exists(heartURL) || backend.size(heartURL) == 0 { data.append(Self.heartMagic) }
+            for sample in samples[persistedHeart...] { Self.encode(sample, into: &data) }
+            do { try backend.append(data, to: heartURL) } catch { heartNeedsRewrite = true; throw error }
+            persistedHeart = samples.count
+        }
     }
 
     // Marks the draft as handed to the outbox before it is deleted, so a restart
@@ -714,8 +853,10 @@ final class WatchRideDraftStore {
         guard backend.exists(metaURL), let data = try backend.read(metaURL) else { return nil }
         let meta = try JSONDecoder().decode(WatchRideMeta.self, from: data)
         let points = try readPoints()
+        let heart = try readHeart()
         persistedPoints = points.count
-        return WatchRideDraft(meta: meta, points: points)
+        persistedHeart = heart.count
+        return WatchRideDraft(meta: meta, points: points, heartRate: heart)
     }
 
     // A ride that is already in the outbox is never reopened as an unfinished ride.
@@ -732,22 +873,47 @@ final class WatchRideDraftStore {
         try prepare()
         try backend.remove(metaURL)
         try backend.remove(pointsURL)
+        try backend.remove(heartURL)
         persistedPoints = 0
+        persistedHeart = 0
+        pointsNeedRewrite = false
+        heartNeedsRewrite = false
+    }
+
+    // A draft this build cannot read moves aside instead of being overwritten by the
+    // next ride, so the fixes on disk can still be recovered.
+    func quarantine(now: Double) throws {
+        try prepare()
+        let folder = directory.appendingPathComponent("unreadable-\(Int(now))", isDirectory: true)
+        try backend.createDirectory(folder)
+        for url in [metaURL, pointsURL, heartURL] where backend.exists(url) {
+            guard let data = try backend.read(url) else { continue }
+            try backend.write(data, to: folder.appendingPathComponent(url.lastPathComponent), protection: true)
+        }
+        try clear()
     }
 
     private func rewrite(_ points: [WatchPoint]) throws {
-        try backend.remove(pointsURL)
-        persistedPoints = 0
-        guard !points.isEmpty else { return }
+        guard !points.isEmpty else {
+            try backend.remove(pointsURL)
+            persistedPoints = 0
+            pointsNeedRewrite = false
+            return
+        }
         var data = Self.magic
         for point in points { Self.encode(point, into: &data) }
+        // Replaced atomically: a failure leaves the previous log readable.
         try backend.write(data, to: pointsURL, protection: true)
         persistedPoints = points.count
+        pointsNeedRewrite = false
     }
 
     private func readPoints() throws -> [WatchPoint] {
         guard backend.exists(pointsURL), let data = try backend.read(pointsURL) else { return [] }
-        guard data.count >= Self.magic.count, data.prefix(Self.magic.count) == Self.magic else { return [] }
+        guard data.count >= Self.magic.count, data.prefix(Self.magic.count) == Self.magic else {
+            pointsNeedRewrite = true
+            return []
+        }
         let body = [UInt8](data.dropFirst(Self.magic.count))
         // A partial trailing record (crash mid-append) is ignored rather than
         // corrupting the ride.
@@ -758,7 +924,40 @@ final class WatchRideDraftStore {
             let start = index * Self.recordBytes
             if let point = Self.decode(Array(body[start..<(start + Self.recordBytes)])) { points.append(point) }
         }
+        pointsNeedRewrite = body.count % Self.recordBytes != 0 || points.count != count
         return points
+    }
+
+    private func readHeart() throws -> [WatchHeartRateSample] {
+        guard backend.exists(heartURL), let data = try backend.read(heartURL) else { return [] }
+        guard data.count >= Self.heartMagic.count, data.prefix(Self.heartMagic.count) == Self.heartMagic else {
+            heartNeedsRewrite = true
+            return []
+        }
+        let body = [UInt8](data.dropFirst(Self.heartMagic.count))
+        let count = body.count / Self.heartRecordBytes
+        var samples: [WatchHeartRateSample] = []
+        samples.reserveCapacity(count)
+        for index in 0..<count {
+            let start = index * Self.heartRecordBytes
+            let sample = WatchHeartRateSample(timestamp: Self.double(body, start), bpm: Self.double(body, start + 8))
+            if WatchHeartRate.valid(sample) { samples.append(sample) }
+        }
+        heartNeedsRewrite = body.count % Self.heartRecordBytes != 0 || samples.count != count
+        return samples
+    }
+
+    private static func double(_ bytes: [UInt8], _ offset: Int) -> Double {
+        var bits: UInt64 = 0
+        for index in 0..<8 { bits |= UInt64(bytes[offset + index]) << (8 * UInt64(index)) }
+        return Double(bitPattern: bits)
+    }
+
+    static func encode(_ sample: WatchHeartRateSample, into data: inout Data) {
+        for value in [sample.timestamp, sample.bpm] {
+            var bits = value.bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+        }
     }
 
     static func encode(_ point: WatchPoint, into data: inout Data) {
@@ -1392,6 +1591,8 @@ enum WatchCatalog {
                             choices: [WatchActivityChoice(activity: "Hiking", title: "Hiking", symbol: "figure.hiking")]),
         WatchActivityFamily(id: "Kitesurfing", title: "Kitesurfing", symbol: "wind",
                             choices: [WatchActivityChoice(activity: "Kitesurfing", title: "Kitesurfing", symbol: "wind")]),
+        WatchActivityFamily(id: "Driving", title: "Driving", symbol: "car.fill",
+                            choices: [WatchActivityChoice(activity: "Driving", title: "Driving", symbol: "car.fill")]),
         WatchActivityFamily(id: "Other", title: "Other", symbol: "figure.mixed.cardio",
                             choices: [WatchActivityChoice(activity: "Other", title: "Other", symbol: "figure.mixed.cardio")]),
     ]
@@ -1404,6 +1605,10 @@ enum WatchCatalog {
         families.first { family in family.choices.contains { $0.activity == activity } }
     }
     static func usesBicycle(_ activity: String) -> Bool { ["MTB", "Road cycling", "Cycling"].contains(activity) }
+    // On foot the Watch shows pace; everything else shows speed.
+    static func usesPace(_ activity: String) -> Bool { ["Walking", "Running", "Hiking"].contains(activity) }
+    static func showsElevation(_ activity: String) -> Bool { !["Driving", "Kitesurfing"].contains(activity) }
+    static func supportsIndoor(_ activity: String) -> Bool { ["Walking", "Running", "Cycling", "Other"].contains(activity) }
     // "Cycling · Mountain bike", "Walking".
     static func title(_ activity: String) -> String {
         guard let picked = Self.choice(activity), let group = Self.family(of: activity) else { return activity }
@@ -1448,15 +1653,18 @@ struct WatchStartConfig: Codable, Equatable, Hashable {
     var equipmentID: String?
     var equipmentName: String?
     var equipmentKind: String?
-    init(activity: String, equipment: WatchEquipment? = nil) {
+    // Optional on disk: setups remembered by earlier builds are outdoor.
+    var indoor: Bool?
+    init(activity: String, equipment: WatchEquipment? = nil, indoor: Bool = false) {
         self.activity = activity
+        self.indoor = indoor && WatchCatalog.supportsIndoor(activity) ? true : nil
         equipmentID = equipment?.id; equipmentName = equipment?.name; equipmentKind = equipment?.kind
     }
     var equipment: WatchEquipment? {
         guard let id = equipmentID, let name = equipmentName else { return nil }
         return WatchEquipment(id: id, name: name, kind: equipmentKind ?? "bicycle")
     }
-    var title: String { WatchCatalog.title(activity) }
+    var title: String { indoor == true ? "Indoor " + WatchCatalog.title(activity) : WatchCatalog.title(activity) }
     var detail: String? { equipmentName }
     var isValid: Bool { WatchCatalog.choice(activity) != nil && (equipmentID == nil || WatchCatalog.usesBicycle(activity)) }
 }
@@ -1492,9 +1700,14 @@ struct WatchHistoryEntry: Codable, Equatable, Identifiable {
     var distanceMeters: Double
     // False when the ride was too short to send.
     var queued: Bool
+    // Optional on disk: entries from earlier builds have neither.
+    var averageHeartRate: Double?
+    var maximumHeartRate: Double?
+    var indoor: Bool?
     var config: WatchStartConfig {
         var config = WatchStartConfig(activity: activity)
         config.equipmentID = equipmentID; config.equipmentName = equipmentName; config.equipmentKind = equipmentKind
+        config.indoor = indoor
         return config
     }
 }

@@ -37,7 +37,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Native journey changes are pushed to the WebView so History updates without
     // polling or relaunching. Set by the Capacitor plugin.
     var journeyChangeHandler: (() -> Void)?
-    func notifyJourneyChange() { journeyChangeHandler?() }
+    func notifyJourneyChange() { journeyChangeHandler?(); WatchSessionManager.shared.noteRecorderChanged() }
+    var watchSuppressionLoggedAt: Double = 0
     var movementTransition = MovementTransition()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
@@ -520,6 +521,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             self.reconcileAutomaticSampling()
             self.recoverStalledAutomaticGPS()
             self.confirmHouseholdLocation()
+            WatchSessionManager.shared.noteRecorderChanged()
             let now = Date().timeIntervalSince1970
             self.checkDwellInference(now:now)
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
@@ -796,6 +798,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         try storage!.save(trip)
         active = trip; lastError = ""; recoveryMessage = ""; accuracy = nil; lastFixAt = nil
         recordDiagnostic("journey","Manual journey started")
+        WatchSessionManager.shared.noteRecorderChanged()
         if CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
         beginUpdates()
     }
@@ -971,6 +974,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                           "settled": dwellSettled, "lastDecision": lastPlaceDecision] as [String:Any],
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"automaticPauseEnabled":manager.pausesLocationUpdatesAutomatically,"lastExecutionGapSeconds":lastExecutionGapSeconds,"backgroundSession":backgroundSessionState,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
+                "recordingElsewhere":CrossDeviceRecording.active(WatchSessionManager.shared.watchRecording,ownerID:ownerID,now:Date().timeIntervalSince1970).map{["label":$0.label,"activity":$0.activity,"state":$0.state,"startedAt":$0.startedAt,"sessionID":$0.sessionID] as [String:Any]} as Any? ?? NSNull(),
                 "nativeFamilySharing":["armed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight],
                 "locationManagerID":"LocationRecorder.shared.manager","commit":Self.commit,"backgroundSession":backgroundSessionState,
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
@@ -1294,6 +1298,12 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func start(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }
+            // A current recording on the Watch holds a start until the rider confirms.
+            if call.getBool("anyway") != true, case .blocked(let other) = CrossDeviceRecording.start(remote: WatchSessionManager.shared.watchRecording, ownerID: LocationRecorder.shared.ownerID, now: Date().timeIntervalSince1970) {
+                LocationRecorder.shared.recordDiagnostic("watch", "iPhone start held: recording on Apple Watch")
+                call.reject(other.label + ". Finish it there, or choose Start Anyway.", "RECORDING_ELSEWHERE")
+                return
+            }
             do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID"), trailID: call.getString("trailID"), trailName: call.getString("trailName"), trailSegmentID: call.getString("trailSegmentID"), trailDistanceMeters: call.getDouble("trailDistanceMeters")); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }

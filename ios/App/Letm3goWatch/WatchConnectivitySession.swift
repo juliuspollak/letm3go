@@ -25,6 +25,8 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     // The open account's Collection bicycles and e-bikes, as the phone last sent
     // them. Kept per account so another account's bikes are never offered.
     @Published private(set) var equipment: [WatchEquipment] = []
+    // The iPhone's manual recording, as last heard.
+    @Published private(set) var remoteRecording: RecordingPresence?
 
     private var inFlight: Set<String> = []
     private var retryTimer: Timer?
@@ -52,11 +54,40 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
             session.activate()
         case .activated:
             receive(session.receivedApplicationContext)
+            rejoinTransfers()
             sendPending()
         default:
             break
         }
         startRetryTimer()
+    }
+
+    // WatchConnectivity keeps queued files across a relaunch. Counting them as in
+    // flight stops the same ride being queued a second time.
+    private func rejoinTransfers() {
+        for transfer in WCSession.default.outstandingFileTransfers {
+            if let id = transfer.file.metadata?["id"] as? String { inFlight.insert(id) }
+        }
+    }
+
+    // The latest state goes in the context, which survives an unreachable phone;
+    // a reachable phone also hears it at once.
+    func announce(_ presence: RecordingPresence) {
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+        let session = WCSession.default
+        try? session.updateApplicationContext(["recording": presence.dictionary])
+        if session.isReachable { session.sendMessage(["recording": presence.dictionary], replyHandler: nil, errorHandler: nil) }
+        flushDiagnostics()
+    }
+
+    // Queued, so it arrives whenever the phone next wakes. Only what was handed over
+    // leaves the buffer.
+    func flushDiagnostics() {
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+        let (data, through) = WatchDiagnostics.pending()
+        guard let data else { return }
+        WCSession.default.transferUserInfo(["diagnostics": data])
+        WatchDiagnostics.markSent(through: through)
     }
 
     // Adopts payloads whose index entry was lost and parks entries whose payload is
@@ -133,6 +164,9 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     }
 
     private func receive(_ context: [String: Any]) {
+        if let presence = RecordingPresence(dictionary: context["recording"]), presence.device == RecordingPresence.iPhone {
+            remoteRecording = presence
+        }
         guard context.keys.contains("ownerID") else { return }
         let owner = WatchOwnership.normalize(context["ownerID"] as? String)
         if owner != ownerID {
@@ -208,8 +242,15 @@ extension WatchConnectivitySession: WCSessionDelegate {
         DispatchQueue.main.async {
             if let errorText { self.lastMessage = errorText }
             self.reconcileQueue()
+            self.rejoinTransfers()
             self.receive(context)
+            self.flushDiagnostics()
         }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        guard let presence = RecordingPresence(dictionary: message["recording"]), presence.device == RecordingPresence.iPhone else { return }
+        DispatchQueue.main.async { self.remoteRecording = presence }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -243,8 +284,37 @@ extension WatchConnectivitySession: WCSessionDelegate {
                 // later activation, finish, reachability change or timer retries it.
                 self.queue.noteAttempt(id, error: errorText)
                 self.lastMessage = "Waiting for iPhone: \(errorText)"
+                WatchDiagnostics.log("watch", "Watch transfer failed; will retry")
             }
             self.refreshCounts()
         }
+    }
+}
+
+// Lifecycle events for the single diagnostic export on the iPhone. Kept here until
+// the phone has been handed them, bounded, and free of routes and readings.
+enum WatchDiagnostics {
+    private static let key = "watch.diagnostics"
+
+    private static func load() -> WatchDiagnosticBuffer {
+        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(WatchDiagnosticBuffer.self, from: $0) } ?? WatchDiagnosticBuffer()
+    }
+    private static func store(_ buffer: WatchDiagnosticBuffer) {
+        if let data = try? JSONEncoder().encode(buffer) { UserDefaults.standard.set(data, forKey: key) }
+    }
+    static func log(_ kind: String, _ message: String, _ details: [String: String]? = nil) {
+        var buffer = load()
+        buffer.add(WatchDiagnosticEvent(at: Date().timeIntervalSince1970, kind: kind, message: message, details: details))
+        store(buffer)
+    }
+    static func pending() -> (Data?, Double) {
+        let events = load().events
+        guard let last = events.last, let data = try? JSONEncoder().encode(events) else { return (nil, 0) }
+        return (data, last.at)
+    }
+    static func markSent(through at: Double) {
+        var buffer = load()
+        buffer.drain(sentThrough: at)
+        store(buffer)
     }
 }

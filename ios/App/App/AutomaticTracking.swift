@@ -424,6 +424,16 @@ extension LocationRecorder {
             }
             let event = detector.observe(sample,motion:motion,manualActive:false,now:observedAt,activity:automaticTrip?.activity ?? "Driving")
             do {
+                // The Watch is already recording this person's activity; a second,
+                // automatic copy would only duplicate it.
+                if event == "depart", CrossDeviceRecording.suppressesAutomaticStart(remote: WatchSessionManager.shared.watchRecording, ownerID: ownerID, now: now) {
+                    detector.reset()
+                    if now - watchSuppressionLoggedAt >= 600 {
+                        watchSuppressionLoggedAt = now
+                        recordDiagnostic("watch", "Automatic journey held: recording on Apple Watch")
+                    }
+                    continue
+                }
                 if event == "depart", let first = detector.candidate.first {
                     var trip = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Automatically detected journey")
                     trip.recordingMode = "automatic"; trip.details = ActivityDetails()
