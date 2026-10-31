@@ -105,6 +105,10 @@ enum RestConfirmation {
     static let homeSeconds: Double = 1200
     static let placeSeconds: Double = 1200
     static let maximumPlaceAccuracy: Double = 100
+    static let motionSettleSeconds: Double = 60
+    static func motionUnsettled(lastMotionChangeAt: Double, stationary: Bool, now: Double) -> Bool {
+        !stationary && now >= lastMotionChangeAt && now - lastMotionChangeAt < motionSettleSeconds
+    }
     static func decide(_ i: RestInputs) -> RestDecision {
         let start = max(i.placeSince ?? i.now, i.lastDisturbanceAt ?? 0)
         let still = max(0, i.now - start)

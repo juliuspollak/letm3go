@@ -307,6 +307,7 @@ struct DepartureLatency: Equatable {
         evidenceAt = now; self.cause = cause; self.engine = engine
     }
     mutating func reset() { evidenceAt = nil; cause = "" }
+    func isStale(now: Double) -> Bool { evidenceAt.map { now - $0 > AutomaticSampling.probeBudget } ?? false }
     // Seconds from evidence to the first accepted fix and to confirmation; the
     // first fix may predate the evidence (buffered before the check).
     func measure(firstFixAt: Double, confirmedAt: Double) -> (toFirstFix: Double, toConfirmation: Double)? {

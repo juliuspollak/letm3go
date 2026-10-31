@@ -13,7 +13,7 @@ import Friends from './components/Friends.jsx';
 import FriendTrips from './components/FriendTrips.jsx';
 import HouseholdTrips from './components/HouseholdTrips.jsx';
 import {useHouseholdPresence} from './lib/useHouseholdPresence.js';
-import {LIVE_SECONDS,memberLocationState,peoplePins} from './lib/householdLocation.js';
+import {LIVE_SECONDS,memberLocationState,peoplePins,memberActivities} from './lib/householdLocation.js';
 import {useHomePresence} from './lib/useHomePresence.js';
 import {cameraIntent,cameraReducer,initialCamera} from './lib/mapCamera.js';
 import {secondsAtPlace} from './lib/peopleMap.js';
@@ -215,7 +215,7 @@ function PrivateApp(){
   ...householdMembers.map(m=>({id:m.user_id,eligible:m.state==='live',point:m.position}))
  ],homePlace);
  // Coarse statuses members already share (Driving, Walking...), for the person model only.
- const sharedActivities=useMemo(()=>Object.fromEntries(presence.people.filter(p=>p.user_id&&p.activity_label).map(p=>[p.user_id,p.activity_label])),[presence.people]);
+ const sharedActivities=useMemo(()=>memberActivities(presence.people,presence.liveMembers),[presence.people,presence.liveMembers]);
  // Your own time at a place, as your household sees it, and only while your
  // shared position is current, so it never outlives what was actually published.
  const selfArrival=presence.selfArrival;

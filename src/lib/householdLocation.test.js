@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {atHome,formatAge,groupPeople,locationStatusText,memberLocationState,peoplePins,validPoint} from './householdLocation.js';
+import {atHome,formatAge,groupPeople,locationStatusText,memberActivities,memberLocationState,peoplePins,validPoint} from './householdLocation.js';
 import {mapPayload} from './appleMaps.js';
 
 const server='2026-11-04T08:00:00.000Z';
@@ -111,4 +111,17 @@ describe('map pins for people',()=>{
  it('displays my own marker from my position alone',()=>{
   expect(peoplePins({self:{...self,home:false}})).toEqual([expect.objectContaining({title:'You',home:false,members:[expect.objectContaining({self:true})]})]);
  });
+});
+
+it('uses the status published by the phone, which works while it is locked',()=>{
+ expect(memberActivities([],[{user_id:'a',activity:'driving'}])).toEqual({a:'Driving'});
+ expect(memberActivities([{user_id:'a',activity_label:'Driving'}],[{user_id:'a',activity:'stationary'}])).toEqual({});
+ expect(memberActivities([{user_id:'a',activity_label:'Walking'}],[{user_id:'a',activity:null}])).toEqual({a:'Walking'});
+ expect(memberActivities([{user_id:'a',activity_label:'At home'}],[])).toEqual({a:'At home'});
+});
+it('gives a live driver the driving marker, and a stale one nothing',()=>{
+ const member=state=>({user_id:'a',state,position:{latitude:-33.8,longitude:151.2},name:'Sam'});
+ const activity=state=>JSON.stringify(peoplePins({members:[member(state)],activities:memberActivities([],[{user_id:'a',activity:'driving'}])}));
+ expect(activity('live')).toContain('"activity":"driving"');
+ expect(activity('stale')).not.toContain('"activity":"driving"');
 });

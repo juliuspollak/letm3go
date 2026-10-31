@@ -62,6 +62,7 @@ jobs:
           docker exec "$db" psql -U postgres -d postgres -c "select pg_get_function_identity_arguments('realtime.send'::regproc)"
           docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261110000000_feedback_storage_hardening.sql
           docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261111000000_feedback_upload_limits.sql
+          docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/migrations/20261112000000_household_shared_activity.sql
           docker exec -i "$db" psql -v ON_ERROR_STOP=1 -U postgres -d postgres < tests/database/real-storage-realtime.sql
           bash tests/database/feedback-concurrency.sh "$db"
 

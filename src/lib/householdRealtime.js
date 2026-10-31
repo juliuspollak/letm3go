@@ -5,6 +5,7 @@
 export const POLL_MS=15000;
 export const POLL_CONNECTED_MS=60000;
 export const SIGNAL_THROTTLE_MS=1000;
+export const DELIVERY_REPORT_MS=60000;
 export const PUBLISH_MOVING_MS=5000;
 export const PUBLISH_STILL_MS=30000;
 export const MOVING_SPEED=1;

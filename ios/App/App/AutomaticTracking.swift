@@ -151,7 +151,11 @@ extension LocationRecorder {
             if granted {
                 trackingEvent(movementBegan ? "Movement triggered precise-GPS departure probe" : "GPS evidence triggered departure probe")
                 // Departure latency is measured from here, for either engine.
-                if wasIdle, automaticTrip == nil { noteDepartureEvidence(cause, now:now) }
+                if wasIdle, automaticTrip == nil {
+                    // A departure that never confirmed must not be measured against this one.
+                    if departureLatency.isStale(now:now) { departureLatency.reset() }
+                    noteDepartureEvidence(cause, now:now)
+                }
             }
         }
         reconcileAutomaticSampling()
@@ -736,6 +740,8 @@ extension LocationRecorder {
         trackingEvent("Journey stopped and saved; watching for movement within \(Int(window/60)) minutes")
         recordDiagnostic("journey","Journey stopped",details:["reason":event])
         reconcileAutomaticSampling()
+        // The household should see the stop now, not at the next timer tick.
+        confirmHouseholdLocation()
     }
     // MARK: Place awareness
     func setDwell(_ area: DwellArea?, reason: String) {

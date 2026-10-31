@@ -994,22 +994,55 @@ enum HouseholdPublisher {
     static let foregroundMovingInterval: Double = 5
     static let lowPowerInterval: Double = 10
     static let failureBackoff: Double = 10
+    // A driver moves 40 m in the time it takes to back off, and the first request after
+    // a wake-up often fails only because the network is not back yet.
+    static let movingFailureBackoff: Double = 3
+    static let backgroundDrivingInterval: Double = 3
+    static let lowPowerDrivingInterval: Double = 5
+    static let backgroundMovingInterval: Double = 10
+    static let requestTimeout: Double = 12
+    // One request at a time, so a slow one holds back every newer position.
+    static let movingRequestTimeout: Double = 6
+    static func moving(_ activity: String?) -> Bool { ["driving","cycling","running","walking"].contains(activity ?? "") }
     // Below this a publish adds a write and a broadcast but no visible movement.
     static let minimumMove: Double = 5
-    static func interval(speed: Double, foreground: Bool, confirmation: Bool, lowPower: Bool = false) -> Double {
+    static func interval(speed: Double, foreground: Bool, confirmation: Bool, lowPower: Bool = false, activity: String? = nil) -> Double {
         if confirmation { return confirmationInterval }
-        guard foreground else { return movingInterval }
+        // Driving comes from Core Motion or an open journey, never from speed alone.
+        if activity == "driving" { return lowPower ? lowPowerDrivingInterval : backgroundDrivingInterval }
+        guard foreground else { return moving(activity) ? backgroundMovingInterval : movingInterval }
         if lowPower { return speed >= 0.7 ? lowPowerInterval : movingInterval }
         if speed >= 3 { return foregroundDrivingInterval }
         return speed >= 0.7 ? foregroundMovingInterval : movingInterval
     }
     static let confirmationInterval: Double = 300
+    // The household's movement status, published with the position by native code, so
+    // it does not depend on the WebView running. An open journey outranks a moment of
+    // stillness: a red light is still a drive.
+    static func activity(journey: String?, motion: MotionEvidence) -> String? {
+        switch journey {
+        case "Driving": return "driving"
+        case "Cycling", "MTB", "Road cycling": return "cycling"
+        case "Running": return "running"
+        case "Walking", "Hiking": return "walking"
+        default: break
+        }
+        guard motion.continuous, motion.confidence != "low" else { return nil }
+        if motion.types.contains("Driving") { return "driving" }
+        if motion.types.contains("Cycling") { return "cycling" }
+        if motion.types.contains("Running") { return "running" }
+        if motion.types.contains("Walking") { return "walking" }
+        return motion.types.contains("Stationary") ? "stationary" : nil
+    }
     static func validToken(_ token: String) -> Bool {
         token.count == 64 && token.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
     static func validEndpoint(_ url: URL) -> Bool {
         url.scheme == "https" && url.path.hasSuffix("/rest/v1/rpc/publish_live_location")
     }
+    // A change of status goes out with the next fix, or on its own after a stop, where
+    // no fix will come. An unknown status is not a change.
+    static func activityChanged(sent: String?, current: String?) -> Bool { current != nil && sent != current }
     static func worthSending(moved: Double?, sinceLast: Double, confirmation: Bool) -> Bool {
         guard !confirmation, let moved else { return true }
         return moved >= minimumMove || sinceLast >= movingInterval
@@ -1093,6 +1126,31 @@ struct LocationConfiguration: Equatable {
             return LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: automotive ? .automotive : .other)
         }
     }
+}
+
+// One line per minute of publishing, so a test measures rate and delay from real
+// timestamps. Capture to server acknowledgement uses this phone's clock only.
+struct HouseholdPublishStats: Equatable {
+    private(set) var attempts = 0, successes = 0, failures = 0
+    private(set) var intervals: [Double] = [], captureToAck: [Double] = []
+    private var lastSuccessAt: Double?
+    mutating func noteAttempt() { attempts += 1 }
+    mutating func noteFailure() { failures += 1 }
+    mutating func noteSuccess(capturedAt: Double, now: Double) {
+        successes += 1
+        if let last = lastSuccessAt, now > last { intervals.append(now - last) }
+        lastSuccessAt = now
+        if now >= capturedAt { captureToAck.append(now - capturedAt) }
+    }
+    private static func median(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.sorted()[values.count / 2] }
+    func details(activity: String?) -> [String: String] {
+        ["publishAttempts": String(attempts), "publishSuccesses": String(successes), "publishFailures": String(failures),
+         "publishIntervalMedianMs": String(Int(Self.median(intervals) * 1000)), "publishIntervalMaxMs": String(Int((intervals.max() ?? 0) * 1000)),
+         "captureToAckMedianMs": String(Int(Self.median(captureToAck) * 1000)), "captureToAckMaxMs": String(Int((captureToAck.max() ?? 0) * 1000)),
+         "sharedActivity": activity ?? "unknown"]
+    }
+    // The interval since the last success carries across a summary.
+    mutating func startWindow() { attempts = 0; successes = 0; failures = 0; intervals = []; captureToAck = [] }
 }
 
 // Main-thread execution heartbeat. The recorder's 30-second timer and every
@@ -1821,7 +1879,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {

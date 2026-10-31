@@ -4,7 +4,7 @@ import {recorder,recorderAvailable} from './recorder.js';
 import {config} from './config.js';
 import {sharedPosition} from './sharedPosition.js';
 import {App as NativeApp} from '@capacitor/app';
-import {deliveryLatency,joinHouseholdSignals,latencySummary,pollDelay,publishDelay,sharedLocationPayload,throttled} from './householdRealtime.js';
+import {DELIVERY_REPORT_MS,deliveryLatency,joinHouseholdSignals,latencySummary,pollDelay,publishDelay,sharedLocationPayload,throttled} from './householdRealtime.js';
 
 const missingFunction=error=>error?.code==='PGRST202'||/could not find the function|does not exist/i.test(error?.message||'');
 // Household members and their authorised positions. Falls back to the earlier
@@ -28,7 +28,7 @@ export async function loadOwnArrival(){
  }catch{return null;}
 }
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[],nativeUploadAt=0){
- const signalled=useRef(false),positionTimes=useRef(new Map()),latencies=useRef([]),latencyReportedAt=useRef(0),nativeUpload=useRef(0);
+ const signalled=useRef(false),positionTimes=useRef(new Map()),latencies=useRef([]),latencyReportedAt=useRef(0),nativeUpload=useRef(0),signals=useRef(0),refreshTimes=useRef([]);
  useEffect(()=>{nativeUpload.current=nativeUploadAt;},[nativeUploadAt]);
  const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -101,10 +101,10 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  const noteDelivery=useCallback(rows=>{
   latencies.current.push(...deliveryLatency(rows,positionTimes.current));
   const clock=Date.now();
-  if(clock-latencyReportedAt.current<300000||!latencies.current.length)return;
+  if(clock-latencyReportedAt.current<DELIVERY_REPORT_MS||!latencies.current.length)return;
   latencyReportedAt.current=clock;
-  void recorder.noteHouseholdDelivery?.({...latencySummary(latencies.current),transport:signalled.current?'push':'polling'});
-  latencies.current=[];
+  void recorder.noteHouseholdDelivery?.({...latencySummary(latencies.current),transport:signalled.current?'push':'polling',signalsReceived:signals.current,refreshMedianMs:latencySummary(refreshTimes.current)?.latencyMedianMs??0});
+  latencies.current=[];signals.current=0;refreshTimes.current=[];
  },[]);
  const refreshLive=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
@@ -120,7 +120,9 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  const refreshPositions=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
   try{
+   const started=Date.now();
    const members=await loadHouseholdLocations();
+   refreshTimes.current.push(Date.now()-started);
    setLiveMembers(members);setLiveError('');
    noteDelivery(members);
   }catch{/* The next poll reports it; a missed signal must not raise an error. */}
@@ -144,10 +146,11 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   if(!online||!owner||!supabase)return;
   let alive=true,stop=null;
   const read=throttled(()=>{if(document.visibilityState==='visible')void refreshPositions();});
+  const signal=()=>{signals.current+=1;read();};
   void Promise.resolve(supabase.rpc('my_household_signal_topics')).then(async({data,error})=>{
    const topics=(data||[]).map(row=>row.topic).filter(Boolean);
    if(!alive||error||!topics.length)return;
-   const leave=await joinHouseholdSignals(supabase,topics,{onSignal:read,onState:connected=>{
+   const leave=await joinHouseholdSignals(supabase,topics,{onSignal:signal,onState:connected=>{
     // Joining (or rejoining) catches up on whatever was missed while away.
     if(connected&&!signalled.current)read();
     signalled.current=connected;

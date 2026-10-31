@@ -136,6 +136,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveShareApiKey: String?
     var liveShareTokenExpiresAt: Double = 0
     var liveShareLastSentAt: Double = 0
+    var liveShareSendsActivity = true
+    var liveShareSentActivity: String?
+    var publishStats = HouseholdPublishStats()
+    var publishStatsLoggedAt: Double = 0
+    var sharedActivity: String? { HouseholdPublisher.activity(journey: automaticTrip?.activity, motion: motion) }
+    // Only where the server takes the field. Otherwise it could never count as sent,
+    // and every fix would go out as a change of status.
+    var shareActivityChanged: Bool {
+        liveShareSendsActivity && liveShareMode=="device" && HouseholdPublisher.activityChanged(sent:liveShareSentActivity,current:sharedActivity)
+    }
     var liveShareInFlight = false
     var liveShareRetryAt: Double = 0
     var liveShareSentPoint: GPSPoint?
@@ -556,7 +566,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func disableHouseholdLiveSharing(forget: Bool = false) {
         if forget, let owner = ownerID { try? AccountKeychain.set(Self.householdPublisherKey(owner), data: nil) }
         liveShareToken=nil;liveShareEndpoint=nil;liveShareApiKey=nil;liveShareMode="session"
-        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil
+        liveShareTokenExpiresAt=0;liveShareLastSentAt=0;liveShareInFlight=false;lastShareFix=nil;liveShareSentPoint=nil;liveShareSentActivity=nil
         refreshAutomaticMonitoring()
     }
     static func householdPublisherKey(_ owner: String) -> String { "household-live-publisher-\(owner)" }
@@ -619,6 +629,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             }
         }.resume()
     }
+    func logPublishStats() {
+        let now=Date().timeIntervalSince1970
+        guard now-publishStatsLoggedAt>=60,publishStats.attempts>0 else {return}
+        publishStatsLoggedAt=now
+        recordDiagnostic("sharing","Household publishing summary",details:publishStats.details(activity:sharedActivity))
+        publishStats.startWindow()
+    }
     func publishLivePosition(_ location: CLLocation) {
         publishFriendPosition(location)
         guard location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
@@ -644,6 +661,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // the household sees the honest last-updated time.
     func confirmHouseholdLocation() {
         guard let fix=lastShareFix else {return}
+        // Stopping sends no fix, so the status cannot wait for one. The position is
+        // only what it was recently: an old one is not presented as current.
+        if shareActivityChanged,
+           Date().timeIntervalSince1970-fix.timestamp.timeIntervalSince1970<=HouseholdPublisher.confirmationInterval {
+            sendHouseholdLocation(fix,confirmation:true);return
+        }
         let continuous=HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
               resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince)
         let stationary=adaptive.lowPowerRunning && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
@@ -652,12 +675,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func sendHouseholdLocation(_ location: CLLocation, confirmation: Bool) {
         let now=Date().timeIntervalSince1970
+        let activity=sharedActivity
+        let statusChanged=shareActivityChanged
         guard storeOpened,ownerID != nil,!accountSuspended,!accountDeleting,
               let token=liveShareToken,let endpoint=liveShareEndpoint,let apiKey=liveShareApiKey,
               now < liveShareTokenExpiresAt-60,!liveShareInFlight,
               now>=liveShareRetryAt,
-              now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation,lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled),
-              HouseholdPublisher.worthSending(moved:liveShareSentPoint?.distance(to:sharePoint(location)),sinceLast:now-liveShareLastSentAt,confirmation:confirmation) else {return}
+              statusChanged || now-liveShareLastSentAt >= HouseholdPublisher.interval(speed:location.speed,foreground:UIApplication.shared.applicationState == .active,confirmation:confirmation,lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled,activity:activity),
+              statusChanged || HouseholdPublisher.worthSending(moved:liveShareSentPoint?.distance(to:sharePoint(location)),sinceLast:now-liveShareLastSentAt,confirmation:confirmation) else {return}
         let device=liveShareMode=="device"
         let speedValue: Any = location.speed >= 0 ? min(250,location.speed*3.6) as Any : NSNull()
         var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
@@ -666,10 +691,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // A confirmation says the phone is still there now, so it carries no old fix time.
         let sentCaptureTime=device && liveShareSendsCaptureTime && !confirmation
         if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
+        let sentActivity=device && liveShareSendsActivity ? activity : nil
+        if let sentActivity { payload["p_activity"]=sentActivity }
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else{return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data
-        request.timeoutInterval=12
+        request.timeoutInterval=HouseholdPublisher.moving(activity) ? HouseholdPublisher.movingRequestTimeout : HouseholdPublisher.requestTimeout
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         // The device credential travels in the body; the session mode (an
         // unmigrated database) authenticates with the signed-in access token.
@@ -679,16 +706,23 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         liveShareLastSentAt=now
         liveShareSentPoint=sharePoint(location)
         diagnosticSharingAttempts+=1
-        let requestOwner=ownerID
+        publishStats.noteAttempt()
+        let requestOwner=ownerID,capturedAt=location.timestamp.timeIntervalSince1970
         URLSession.shared.dataTask(with:request){[weak self] body,response,error in
             DispatchQueue.main.async {
                 guard let self=self,self.ownerID==requestOwner,self.liveShareToken==token else{return}
                 self.liveShareInFlight=false
+                defer {self.logPublishStats()}
                 let status=(response as? HTTPURLResponse)?.statusCode ?? 0
                 let accepted=error == nil && (200...299).contains(status) &&
                     (!device || String(decoding:body ?? Data(),as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines) == "true")
                 if accepted {
                     self.diagnosticSharingSuccesses+=1
+                    self.publishStats.noteSuccess(capturedAt:capturedAt,now:Date().timeIntervalSince1970)
+                    if let sentActivity,sentActivity != self.liveShareSentActivity {
+                        self.recordDiagnostic("sharing","Household activity published",details:["sharedActivity":sentActivity])
+                    }
+                    self.liveShareSentActivity=sentActivity ?? self.liveShareSentActivity
                     let previous=self.liveShareStatus
                     self.liveShareLastOkAt=Date().timeIntervalSince1970;self.liveShareStatus="ok"
                     if previous != "ok" || self.liveShareLastOkAt-self.diagnosticLastSharingLogAt>=300 {
@@ -698,6 +732,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                     return
                 }
                 self.diagnosticSharingFailures+=1
+                self.publishStats.noteFailure()
                 if device, error == nil, (200...299).contains(status) {
                     // The server no longer accepts this credential: sharing was
                     // turned off, the member left, or a newer credential replaced it.
@@ -712,8 +747,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 let failure=error != nil ? "network" : "http \(status)"
                 if self.liveShareStatus != failure { self.recordDiagnostic("sharing","Household location upload failed",details:["reason":failure]) }
                 self.liveShareStatus=failure
+                // The migration that adds this field may not be applied yet.
+                if sentActivity != nil && status==404 { self.liveShareSendsActivity=false; return }
                 if sentCaptureTime && status==404 { self.liveShareSendsCaptureTime=false; return }
-                self.liveShareRetryAt=Date().timeIntervalSince1970+HouseholdPublisher.failureBackoff
+                self.liveShareRetryAt=Date().timeIntervalSince1970+(HouseholdPublisher.moving(activity) ? HouseholdPublisher.movingFailureBackoff : HouseholdPublisher.failureBackoff)
             }
         }.resume()
     }
@@ -1343,6 +1380,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func noteHouseholdDelivery(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             LocationRecorder.shared.recordDiagnostic("sharing","Household positions delivered",details:[
+                "signalsReceived":String(call.getInt("signalsReceived") ?? 0),"refreshMedianMs":String(call.getInt("refreshMedianMs") ?? 0),
                 "transport":call.getString("transport") ?? "unknown","latencySamples":String(call.getInt("latencySamples") ?? 0),
                 "latencyMedianMs":String(call.getInt("latencyMedianMs") ?? 0),"latencyMaxMs":String(call.getInt("latencyMaxMs") ?? 0)])
             call.resolve()
