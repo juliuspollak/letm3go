@@ -92,8 +92,8 @@
 	<key>NSMotionUsageDescription</key>
 	<string>Letm3go uses motion activity to distinguish walking, cycling and driving when you enable automatic tracking.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Find and preview photos taken during an activity. Only photos you explicitly add are copied to this device; nothing uploads automatically.</string>
+	<string>Choose a photo for an activity or attach a screenshot to feedback. Only items you explicitly pick are read, and nothing uploads automatically.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Take a profile photo or journey memory only when you choose to use the camera.</string>
+	<string>Take a profile photo, journey memory or feedback photo only when you choose to use the camera.</string>
 </dict>
 </plist>
