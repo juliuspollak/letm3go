@@ -170,10 +170,10 @@ it('opens the Map showing everyone, map first, rather than centring on the signe
  expect(mapProps.value.focusPoint).toBeUndefined();
  expect(screen.queryByText('Your world, mapped.')).not.toBeInTheDocument();
  expect(screen.queryByText('Go somewhere. Keep the feeling.')).not.toBeInTheDocument();
- // One Layers control instead of a toolbar of toggles above the map.
+ // Labelled controls on the map instead of a toolbar of toggles above it.
  expect(screen.queryByRole('button',{name:/My routes/})).not.toBeInTheDocument();
  expect(screen.queryByRole('group',{name:'Map filters'})).not.toBeInTheDocument();
- expect(mapProps.value.onLayers).toEqual(expect.any(Function));
+ expect(mapProps.value.controls).toMatchObject({active:0,filters:{text:'Filters'},layers:{text:'Layers'},date:null,panel:null});
  expect(mapProps.value.overview).toBeNull();
  // A gesture reported by the native map is kept when the tab is left and reopened.
  const command=mapProps.value.camera.command;
@@ -183,22 +183,39 @@ it('opens the Map showing everyone, map first, rather than centring on the signe
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(mapProps.value.camera).toMatchObject({mode:'free',command});
  // Routes are drawn as a density overview, never as Start/Finish pins per journey.
- act(()=>mapProps.value.onLayers());
- const sheet=screen.getByRole('toolbar',{name:'Map filters'});
- fireEvent.click(within(sheet).getByRole('button',{name:'Routes',exact:true}));
- fireEvent.click(within(sheet).getByRole('button',{name:'All routes'}));
- expect(within(sheet).getByRole('button',{name:'All routes'})).toHaveAttribute('aria-pressed','true');
- expect(within(sheet).getByRole('button',{name:'People & places'})).toHaveAttribute('aria-pressed','true');
+ act(()=>mapProps.value.onControl('panel:filters'));
+ act(()=>mapProps.value.onControl('route:all'));
+ const option=id=>mapProps.value.controls.panel.sections.flatMap(section=>section.options).find(item=>item.id===id);
+ expect(option('route:all').selected).toBe(true);
+ expect(option('people').selected).toBe(true);
  expect(mapProps.value.camera).toMatchObject({includeRoutes:mapProps.value.overview!==null});
- // Choosing the other map keeps filters inline; Community trails has no people camera.
- fireEvent.click(within(sheet).getByRole('button',{name:'Map type'}));
- fireEvent.click(within(sheet).getByRole('button',{name:'Community trails'}));
+ // Choosing the other map stays in Layers; Community trails has no people camera.
+ act(()=>mapProps.value.onControl('panel:layers'));
+ act(()=>mapProps.value.onControl('mode:trails'));
  expect(screen.queryByRole('dialog',{name:'Map layers'})).not.toBeInTheDocument();
  expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
  // The choice is kept across tabs.
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
+});
+
+it('leaves archived journeys on the Map until hidden, closes panels with the page, and never moves the camera for a filter',()=>{
+ signedIn();
+ localStorage.setItem('letm3go:map-view:owner',JSON.stringify({routes:'all',style:'satellite'}));
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(mapProps.value.controls).toMatchObject({style:'satellite',layers:{changed:true}});
+ const camera=mapProps.value.camera;
+ act(()=>mapProps.value.onControl('panel:filters'));
+ for(const id of ['route:pinned','range:7d','day:2026-10-28','activity:Walking','people','people'])act(()=>mapProps.value.onControl(id));
+ act(()=>mapProps.value.onControl('panel:close'));
+ expect(mapProps.value.camera).toMatchObject({key:camera.key,mode:camera.mode,command:camera.command});
+ expect(JSON.parse(localStorage.getItem('letm3go:map-view:owner'))).toMatchObject({routes:'pinned',day:'2026-10-28',activity:'Walking',style:'satellite',archived:true});
+ act(()=>mapProps.value.onControl('panel:filters'));
+ fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(mapProps.value.controls.panel).toBeNull();
 });
 
 it('centres the location arrow on the self marker rather than the account id or everyone',async()=>{
@@ -221,9 +238,9 @@ it('keeps the self marker and self-location camera when People & places is off, 
  mapLocationHook.mockReturnValue({position,loading:false,error:'',locate});
  const app=render(<App/>);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
- act(()=>mapProps.value.onLayers());
- fireEvent.click(screen.getByRole('button',{name:'People & places'}));
- expect(screen.getByRole('button',{name:'People & places'})).toHaveAttribute('aria-pressed','false');
+ act(()=>mapProps.value.onControl('panel:filters'));
+ act(()=>mapProps.value.onControl('people'));
+ expect(mapProps.value.controls.panel.sections[0].options[0]).toMatchObject({id:'people',selected:false});
  expect(mapProps.value.peoplePins.flatMap(pin=>pin.members).map(member=>member.id)).toEqual(['self']);
  expect(mapProps.value.currentPosition).toBeUndefined();
  await act(async()=>{await mapProps.value.onLocate();});

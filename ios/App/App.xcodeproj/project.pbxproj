@@ -10,6 +10,7 @@
 		BB0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002; };
 		BA0000000000000000000001 /* AppleMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA0000000000000000000002; };
 		BD0000000000000000000001 /* MapCameraCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000002; };
+		BD0000000000000000000011 /* MapControlsCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000012; };
 		BD0000000000000000000003 /* MapOverviewCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000004; };
 		BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000008; };
 		BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000006; };
@@ -78,6 +79,7 @@
 		BB0000000000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BA0000000000000000000002 /* AppleMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMaps.swift; sourceTree = "<group>"; };
 		BD0000000000000000000002 /* MapCameraCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapCameraCore.swift; sourceTree = "<group>"; };
+		BD0000000000000000000012 /* MapControlsCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapControlsCore.swift; sourceTree = "<group>"; };
 		BD0000000000000000000004 /* MapOverviewCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapOverviewCore.swift; sourceTree = "<group>"; };
 		BD0000000000000000000008 /* AdaptiveLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLocation.swift; sourceTree = "<group>"; };
 		BD0000000000000000000006 /* AdaptiveLocationCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveLocationCore.swift; sourceTree = "<group>"; };
@@ -169,6 +171,7 @@
 				B50000000000000000000001 /* AccountSecurity.swift */,
 				BA0000000000000000000002 /* AppleMaps.swift */,
 				BD0000000000000000000002 /* MapCameraCore.swift */,
+				BD0000000000000000000012 /* MapControlsCore.swift */,
 				BD0000000000000000000004 /* MapOverviewCore.swift */,
 				BD0000000000000000000008 /* AdaptiveLocation.swift */,
 				BD0000000000000000000006 /* AdaptiveLocationCore.swift */,
@@ -335,6 +338,7 @@
 				B60000000000000000000001 /* AccountSecurity.swift in Sources */,
 				BA0000000000000000000001 /* AppleMaps.swift in Sources */,
 				BD0000000000000000000001 /* MapCameraCore.swift in Sources */,
+				BD0000000000000000000011 /* MapControlsCore.swift in Sources */,
 				BD0000000000000000000003 /* MapOverviewCore.swift in Sources */,
 				BD0000000000000000000007 /* AdaptiveLocation.swift in Sources */,
 				BD0000000000000000000005 /* AdaptiveLocationCore.swift in Sources */,
