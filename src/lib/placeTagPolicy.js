@@ -1,10 +1,11 @@
+import {activityCode} from './activityNames.js';
 // Conservative, activity-aware location tagging. Search samples are NOT saved tags.
 const outdoor=new Set(['Hiking','Walking','Running','Cycling','MTB','Road cycling','Mountain biking']);
 const generic=new Set(['Shopping','Food','Outdoors','Nature','Park','Unknown location','Unnamed stop']);
 export function placeTagPolicy(activity){
  if(activity==='Driving'||activity==='Unknown')return {limit:3,route:false,minimum:4};
  if(activity==='Kitesurfing')return {limit:4,route:true,minimum:3};
- if(outdoor.has(activity))return {limit:6,route:true,minimum:3};
+ if(outdoor.has(activityCode(activity)))return {limit:6,route:true,minimum:3};
  return {limit:3,route:false,minimum:4};
 }
 export function rankPlaceCandidates(candidates,{activity='Unknown',hidden=[],existing=[],limit}={}){

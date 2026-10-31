@@ -1,3 +1,4 @@
+import {activityCode} from './activityNames.js';
 import {recordedRouteSegments} from './mapGeometry.js';
 import { activityTitle, automaticTitle } from './activityTitle.js';
 import { trailLinkPayload, trailSummary } from './mtbLink.js';
@@ -44,7 +45,7 @@ export const recorder = {
  // `trail` is optional and only used when starting a mountain-bike ride from a
  // community trail, so the link survives offline and is saved with the activity.
  // `anyway` is the rider's own decision to record here while another device is recording.
- start:(activity,vehicle,vehicleID,trail,anyway)=>native.start({activity,vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(anyway?{anyway:true}:{})}),
+ start:(activity,vehicle,vehicleID,trail,anyway)=>native.start({activity:activityCode(activity),vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(anyway?{anyway:true}:{})}),
  transition:action=>native.transition({action}),
  openSettings:()=>native.openSettings(),
  requestMotionPermission:()=>native.requestMotionPermission(),
@@ -65,7 +66,7 @@ export const recorder = {
  setHomeWiFi:action=>native.setHomeWiFi({action}),
  searchAddress:query=>native.searchAddress({query}),
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
- editActivity:trip=>native.editActivity(trip),
+ editActivity:trip=>native.editActivity({...trip,activity:activityCode(trip.activity)}),
  assignEquipment:params=>native.assignEquipment(params),
  // A trail link is stored on the local activity, so it works offline and never
  // alters community trail data. Passing no trail reference removes the link.
@@ -76,7 +77,7 @@ export const recorder = {
  saveNamedSegment:params=>native.saveNamedSegment(params),
  deleteNamedSegment:params=>native.deleteNamedSegment(params),
  deleteActivity:id=>native.deleteActivity({id}),
- addHistorical:trip=>native.addHistorical(trip),
+ addHistorical:trip=>native.addHistorical({...trip,activity:activityCode(trip.activity)}),
  pickPhotos:id=>native.pickPhotos({id}),
  editPhoto:params=>native.editPhoto(params),
  suggestPhotos:(id)=>native.suggestPhotos({id}),

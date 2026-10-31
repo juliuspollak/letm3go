@@ -1,3 +1,4 @@
+import {activityLabel,sameActivity} from './activityNames.js';
 import {journeyOnDay,RANGE_DAYS,RANGE_OPTIONS,shiftMapDay,validDay} from './mapLayers.js';
 
 // One date selection: 'all', 'today', a calendar day, or a rolling range ('7d').
@@ -49,7 +50,7 @@ export function activityToolbar({open,category,activities,activity,date,favourit
   {id:'date',label:'Date',text:'Date',selected:date!=='all',options:[
    option('date:all','All dates',date==='all'),option('date:today','Today',chosenDay(date,today)===today),option('date:'+yesterday,'Yesterday',chosenDay(date,today)===yesterday),
    ...RANGE_OPTIONS.filter(([id])=>RANGE_DAYS[id]).map(([id,label])=>option('date:'+id,label,date===id))]},
-  {id:'activity',label:'Activity type',text:'Type',selected:activity!=='All activities',options:activities.map(name=>option('activity:'+name,name,activity===name))},
+  {id:'activity',label:'Activity type',text:'Type',selected:activity!=='All activities',options:activities.map(name=>option('activity:'+name,activityLabel(name),sameActivity(activity,name)))},
   {id:'favourites',label:'Favourites',text:'Favourites',selected:favourites},
  ];
  if(archivedCount>0||archived)rows.push({id:'archived',label:`Archived activities (${archivedCount})`,text:`Archived (${archivedCount})`,selected:archived});

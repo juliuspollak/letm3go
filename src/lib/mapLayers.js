@@ -1,3 +1,4 @@
+import {activityCode,sameActivity} from './activityNames.js';
 // What the Map tab shows, in one value:
 // - content: 'routes' (your own map) or 'trails' (Community trails). Mutually
 //   exclusive: they are different maps with different tools.
@@ -15,7 +16,7 @@ export function normaliseMapView(value){
   content:view.content==='trails'?'trails':'routes',
   people:view.people!==false,
   routes:ROUTE_LAYERS.some(([id])=>id===view.routes)?view.routes:null,
-  activity:typeof view.activity==='string'?view.activity.slice(0,60):'',
+  activity:typeof view.activity==='string'?activityCode(view.activity.slice(0,60)):'',
   range:RANGE_DAYS[view.range]?view.range:'any',
   day:validDay(view.day)?view.day:null
  };
@@ -45,14 +46,14 @@ export function mapViewJourneys(journeys,view,today,saved=[],nowMs=Date.now()){
   if(view.routes==='pinned'&&!(saved.includes(trip.id)||trip.segmentIDs?.some(id=>saved.includes(id))))return false;
   if(supportsRange(view)&&view.day&&!journeyOnDay(trip,view.day))return false;
   if(!view.day&&sinceSeconds!=null&&!((trip.endedAt||trip.startedAt||0)>=sinceSeconds))return false;
-  if(supportsActivity(view)&&view.activity&&trip.activity!==view.activity)return false;
+  if(supportsActivity(view)&&view.activity&&!sameActivity(trip.activity,view.activity))return false;
   return true;
  });
 }
 
 // Activity types that actually occur, so the filter never offers an empty choice.
 export function activityChoices(journeys){
- return [...new Set(journeys.map(trip=>trip.activity).filter(value=>typeof value==='string'&&value.trim()))].sort((a,b)=>a.localeCompare(b));
+ return [...new Set(journeys.map(trip=>activityCode(trip.activity)).filter(value=>typeof value==='string'&&value.trim()))].sort((a,b)=>a.localeCompare(b));
 }
 
 // Kept per account on this device, so the map comes back as it was left.

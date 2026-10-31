@@ -1,3 +1,4 @@
+import {activityCode} from './activityNames.js';
 import {newUUID} from './uuid.js';
 // Named segments: sections of one recording, referenced by its own GPS fix
 // indices. The native recorder (NamedSegmentCore.swift) validates and stores
@@ -25,7 +26,7 @@ const usable=p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Nu
 
 // Recorded walks, runs, hikes and rides with real GPS, stored on this iPhone.
 export function canCreateSegments(trip){
- return !!trip&&LOCAL_SOURCES.includes(trip.source)&&trip.state==='finished'&&SEGMENT_ACTIVITIES.includes(trip.activity)&&
+ return !!trip&&LOCAL_SOURCES.includes(trip.source)&&trip.state==='finished'&&SEGMENT_ACTIVITIES.includes(activityCode(trip.activity))&&
   !['tesla','historical'].includes(trip.recordingMode)&&Array.isArray(trip.points)&&trip.points.filter(usable).length>=SEGMENT_MIN_POINTS;
 }
 

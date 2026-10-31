@@ -234,6 +234,21 @@ it('keeps the self marker and self-location camera when People & places is off, 
  expect(mapProps.value.peoplePins.flatMap(pin=>pin.members).map(member=>member.id)).toEqual(['self']);
 });
 
+it('shows one Mountain biking filter and includes recordings stored under either legacy name',()=>{
+ signedIn();const now=Date.now()/1000;
+ const trip=(id,title,activity)=>({id,title,activity,source:'device',state:'finished',recordingMode:'manual',startedAt:now-600,endedAt:now,durationSeconds:600,distanceMeters:1000,points:[],details:{}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('old','Legacy ride','MTB'),trip('named','Named ride','Mountain Biking')]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:'Activity filters'}));
+ fireEvent.click(screen.getByRole('button',{name:'Activity type'}));
+ expect(screen.getAllByRole('button',{name:'Mountain biking',exact:true})).toHaveLength(1);
+ expect(screen.queryByRole('button',{name:'MTB',exact:true})).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'Mountain biking',exact:true}));
+ expect(screen.getByRole('button',{name:'Open Legacy ride'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Open Named ride'})).toBeInTheDocument();
+});
+
 describe('Activities filters',()=>{
  const noon=offset=>{const date=new Date();date.setHours(12,0,0,0);date.setDate(date.getDate()+offset);return date;};
  const raw=(id,title,at,extra={})=>({id,title,source:'device',activity:'Walking',state:'finished',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{},...extra});
@@ -262,7 +277,7 @@ describe('Activities filters',()=>{
  it('offers every activity type that was on offer before',()=>{
   open([raw('a','Park',noon(0))]);fireEvent.click(filters());click('Activity type');
   const types=within(screen.getByRole('group',{name:'Activity type'})).getAllByRole('button').map(button=>button.textContent);
-  expect(types).toEqual(['All activities','Unknown','Cycling','MTB','Hiking','Mountain biking','Walking','Running','Road cycling','Kitesurfing','Driving','Other']);
+  expect(types).toEqual(['All activities','Unknown','Cycling','Mountain biking','Hiking','Walking','Running','Road cycling','Kitesurfing','Driving','Other']);
  });
  it('keeps one date selection across the arrows, the panel and the picker',()=>{
   open([raw('t','Today walk',noon(0)),raw('y','Yesterday walk',noon(-1)),raw('o','Old walk',noon(-20))]);

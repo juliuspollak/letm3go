@@ -62,3 +62,7 @@ it('falls back to focus where showPicker is missing or refused',()=>{
  expect(showPicker).toHaveBeenCalledOnce();
  expect(focus).toHaveBeenCalledTimes(2);
 });
+it('shows the stored MTB code under its one display name',()=>{
+ const [,chip]=toolbar({activity:'MTB'}).rows[1].options;
+ expect(chip).toMatchObject({id:'activity:MTB',label:'Mountain biking',selected:true});
+});

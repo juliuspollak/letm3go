@@ -1,3 +1,4 @@
+import {activityLabel} from './activityNames.js';
 // What the Map overview sends to the native map once per change of journeys or
 // filters (never with every location update): the route density, one pin per
 // journey photo with what its preview card shows, and the simplified route of
@@ -27,7 +28,7 @@ export function overviewPhotos(journeys,unit='km'){
     id:`photo:${photo.id}`,kind:'photo',point:photo.point,photoID:String(photo.id),journeyID:String(journey.id),
     title:photo.caption||'Journey photo',
     // Only what is known; the card leaves out anything empty.
-    journeyTitle:journey.title||journey.activity||'',
+    journeyTitle:journey.title||activityLabel(journey.activity)||'',
     journeyDate:journeyDateText(journey),
     ...(km>0?{journeyDistance:distanceText(km,unit)}:{})
    });

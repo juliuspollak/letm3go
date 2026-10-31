@@ -5,7 +5,7 @@ it('uses distinct activity symbols and preserves unknown recorded types',()=>{
  const activities=['Driving','Walking','Cycling','MTB','Running','Hiking','Kitesurfing','Sailing'];
  expect(new Set(activities.map(activitySymbol)).size).toBe(8);
  const toolbar=mapToolbar({...DEFAULT_MAP_VIEW,routes:'all'},true,'activity',activities);
- expect(toolbar.rows.find(row=>row.id==='activity').options.map(option=>option.label)).toEqual(['All activities',...activities]);
+ expect(toolbar.rows.find(row=>row.id==='activity').options.map(option=>option.label)).toEqual(['All activities',...activities.map(a=>a==='MTB'?'Mountain biking':a)]);
 });
 it('navigates calendar dates across month and year boundaries',()=>{
  expect(shiftMapDay('2026-01-01',-1)).toBe('2025-12-31');

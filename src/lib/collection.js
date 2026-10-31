@@ -1,3 +1,4 @@
+import {activityCode} from './activityNames.js';
 import {newUUID} from './uuid.js';
 // Collections are the equipment a person already owns. Items stay in the
 // existing device-local Collection (preferences.vehicles) so offline recording,
@@ -114,7 +115,7 @@ export function brandOptions(categoryId){
 }
 
 export function categoriesForActivity(activity){
- return (ACTIVITY_EQUIPMENT[activity]||[]).map(categoryById).filter(Boolean);
+ return (ACTIVITY_EQUIPMENT[activityCode(activity)]||[]).map(categoryById).filter(Boolean);
 }
 
 // The first compatible category names the empty-state action ("Add car").
@@ -127,7 +128,7 @@ export function equipmentActionLabel(activity){
 // The activity's own category order decides relevance (the kite before the
 // board), then names keep the list predictable.
 export function equipmentForActivity(items,activity){
- const categories=ACTIVITY_EQUIPMENT[activity]||[];
+ const categories=ACTIVITY_EQUIPMENT[activityCode(activity)]||[];
  if(!categories.length)return [];
  return (items||[])
   .filter(item=>item&&!item.archived&&categories.includes(itemCategory(item).id))

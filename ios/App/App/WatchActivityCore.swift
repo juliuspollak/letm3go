@@ -1604,7 +1604,7 @@ enum WatchCatalog {
         WatchActivityFamily(id: "Running", title: "Running", symbol: "figure.run",
                             choices: [WatchActivityChoice(activity: "Running", title: "Running", symbol: "figure.run")]),
         WatchActivityFamily(id: "Cycling", title: "Cycling", symbol: "bicycle",
-                            choices: [WatchActivityChoice(activity: "MTB", title: "Mountain bike", symbol: "mountain.2.fill"),
+                            choices: [WatchActivityChoice(activity: "MTB", title: "Mountain biking", symbol: "mountain.2.fill"),
                                       WatchActivityChoice(activity: "Road cycling", title: "Road", symbol: "figure.outdoor.cycle"),
                                       WatchActivityChoice(activity: "Cycling", title: "Everyday", symbol: "bicycle")]),
         WatchActivityFamily(id: "Hiking", title: "Hiking", symbol: "figure.hiking",
@@ -1618,18 +1618,21 @@ enum WatchCatalog {
     ]
     // Every value the watch may record; each one is an iPhone activity value.
     static var activities: [String] { families.flatMap { $0.choices.map(\.activity) } }
+    static func activityCode(_ activity: String) -> String {
+        ["mtb", "mountain biking"].contains(activity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ? "MTB" : activity
+    }
     static func choice(_ activity: String) -> WatchActivityChoice? {
-        families.lazy.flatMap { $0.choices }.first { $0.activity == activity }
+        families.lazy.flatMap { $0.choices }.first { $0.activity == activityCode(activity) }
     }
     static func family(of activity: String) -> WatchActivityFamily? {
-        families.first { family in family.choices.contains { $0.activity == activity } }
+        families.first { family in family.choices.contains { $0.activity == activityCode(activity) } }
     }
-    static func usesBicycle(_ activity: String) -> Bool { ["MTB", "Road cycling", "Cycling"].contains(activity) }
+    static func usesBicycle(_ activity: String) -> Bool { ["MTB", "Road cycling", "Cycling"].contains(activityCode(activity)) }
     // On foot the Watch shows pace; everything else shows speed.
     static func usesPace(_ activity: String) -> Bool { ["Walking", "Running", "Hiking"].contains(activity) }
     static func showsElevation(_ activity: String) -> Bool { !["Driving", "Kitesurfing"].contains(activity) }
     static func supportsIndoor(_ activity: String) -> Bool { ["Walking", "Running", "Cycling", "Other"].contains(activity) }
-    // "Cycling · Mountain bike", "Walking".
+    // "Cycling · Mountain biking", "Walking".
     static func title(_ activity: String) -> String {
         guard let picked = Self.choice(activity), let group = Self.family(of: activity) else { return activity }
         return group.hasSubtypes ? group.title + " · " + picked.title : picked.title
