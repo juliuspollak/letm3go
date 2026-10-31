@@ -125,18 +125,10 @@ extension LocationRecorder {
             guard let observation = observation, let network = observation.network else {
                 refuse("noNetworkReported", "iOS did not report a Wi-Fi network. Connect to your Home Wi-Fi, keep Precise Location on, and try again."); return
             }
-            let profile = HomeWiFiProfile(network: network, accessPoints: observation.accessPoint.map { [$0] } ?? [], designatedAt: observation.at)
             do {
-                guard let storage = self.storage else { throw self.failure("Recording storage is unavailable.") }
-                try storage.writeData(JSONEncoder().encode(profile), name: Self.homeWiFiFile)
-                // Only what can be read back will still be here after a relaunch.
-                guard try JSONDecoder().decode(HomeWiFiProfile.self, from: storage.readData(name: Self.homeWiFiFile)) == profile else { throw self.failure("The Home Wi-Fi setting could not be saved.") }
-                self.homeWiFi = profile
-                self.homeWiFiStatus = "loaded"
-                self.wifiMatchState = HomeWiFi.match(profile, observation, now: Date().timeIntervalSince1970)
+                try self.saveHomeWiFi(HomeWiFiProfile(network: network, accessPoints: observation.accessPoint.map { [$0] } ?? [], designatedAt: observation.at), observation)
+                self.setHomeWiFiDeclined(false)
                 self.recordDiagnostic("preference", "Home Wi-Fi designated", details: ["wifiMatch": self.wifiMatchState.rawValue])
-                self.startWiFiPathMonitor()
-                self.reconcileAutomaticSampling()
                 completion(nil)
             } catch {
                 self.recordDiagnostic("wifi", "Home Wi-Fi designation failed", details: ["wifiFailure": "saveFailed"])
@@ -144,11 +136,49 @@ extension LocationRecorder {
             }
         }
     }
+    func saveHomeWiFi(_ profile: HomeWiFiProfile, _ observation: WiFiObservation) throws {
+        guard let storage = storage else { throw failure("Recording storage is unavailable.") }
+        try storage.writeData(JSONEncoder().encode(profile), name: Self.homeWiFiFile)
+        // Only what can be read back will still be here after a relaunch.
+        guard try JSONDecoder().decode(HomeWiFiProfile.self, from: storage.readData(name: Self.homeWiFiFile)) == profile else { throw failure("The Home Wi-Fi setting could not be saved.") }
+        homeWiFi = profile
+        homeWiFiStatus = "loaded"
+        wifiMatchState = HomeWiFi.match(profile, observation, now: Date().timeIntervalSince1970)
+        startWiFiPathMonitor()
+        reconcileAutomaticSampling()
+    }
+    // One read, once rest at Home is confirmed: no polling, no setup. Forgetting the
+    // network is the person's decision, so it is not learned back.
+    func learnHomeWiFi(now: Double) {
+        guard let owner = ownerID, HomeWiFi.shouldLearn(configured: homeWiFi != nil, declined: UserDefaults.standard.bool(forKey: Self.homeWiFiDeclinedKey(owner)),
+            atHome: restPlaceKind == .home, restConfirmed: restDecision.confirmed, precise: manager.accuracyAuthorization == .fullAccuracy,
+            fetchInFlight: wifiFetchInFlight, lastAttemptAt: wifiLearnAttemptAt, now: now) else { return }
+        wifiLearnAttemptAt = now
+        fetchWiFi(source: "automatic recognition") { [weak self] observation in
+            guard let self = self, self.ownerID == owner, self.homeWiFi == nil, self.restPlaceKind == .home else { return }
+            guard let observation = observation, let network = observation.network else {
+                self.recordDiagnostic("wifi", "Home Wi-Fi not recognised: iOS reported no network"); return
+            }
+            let profile = HomeWiFiProfile(network: network, accessPoints: observation.accessPoint.map { [$0] } ?? [], designatedAt: observation.at)
+            do {
+                try self.saveHomeWiFi(profile, observation)
+                self.recordDiagnostic("wifi", "Home Wi-Fi recognised automatically", details: ["wifiMatch": self.wifiMatchState.rawValue])
+            } catch {
+                self.recordDiagnostic("wifi", "Home Wi-Fi designation failed", details: ["wifiFailure": "saveFailed"])
+            }
+        }
+    }
+    static func homeWiFiDeclinedKey(_ owner: String) -> String { "letm3go-home-wifi-declined-" + owner }
+    func setHomeWiFiDeclined(_ declined: Bool) {
+        guard let owner = ownerID else { return }
+        UserDefaults.standard.set(declined, forKey: Self.homeWiFiDeclinedKey(owner))
+    }
     func forgetHomeWiFi() throws {
         guard let storage = storage else { throw failure("Recording storage is unavailable.") }
         let url = storage.directory.appendingPathComponent(Self.homeWiFiFile)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         resetHomeWiFi()
+        setHomeWiFiDeclined(true)
         recordDiagnostic("preference", "Home Wi-Fi forgotten")
         reconcileAutomaticSampling()
     }

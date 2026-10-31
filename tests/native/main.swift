@@ -1387,6 +1387,12 @@ check(StallPolicy.decide(now:306,lastDelivery:300,executingSince:276,foreground:
 check(StallPolicy.decide(now:1340,lastDelivery:1000,executingSince:1276,foreground:false,lastRecoveryAt:0) == .restart,"silence continuing a minute after the wake is a real stall")
 check(StallPolicy.decide(now:1000,lastDelivery:930,executingSince:0,foreground:false,lastRecoveryAt:950) == .none,"recovery is rate limited")
 check(StallPolicy.decide(now:1000,lastDelivery:950,executingSince:0,foreground:false,lastRecoveryAt:0) == .none,"less than a minute of silence is not a stall")
+// Precise GPS has a 5 m filter: a phone that is not moving gets no fixes, by design.
+check(StallPolicy.quietExpected(journeyOpen:true,deliveredSincePreciseBegan:true,stationary:true),"a stop during a journey is not a GPS stall")
+check(!StallPolicy.quietExpected(journeyOpen:true,deliveredSincePreciseBegan:true,stationary:false),"silence while still moving is a stall: a tunnel, or genuine GPS loss")
+check(StallPolicy.quietExpected(journeyOpen:false,deliveredSincePreciseBegan:true,stationary:false),"a departure check that has had a fix needs no restart")
+check(!StallPolicy.quietExpected(journeyOpen:false,deliveredSincePreciseBegan:false,stationary:true),"a departure check that never had a fix may restart")
+check(StallPolicy.decide(now:1000,lastDelivery:900,executingSince:0,foreground:false,lastRecoveryAt:0,quietExpected:true) == .none,"expected quiet never restarts location updates")
 
 // Scenario C: iOS queues updates while suspended and delivers them on resume. For an
 // open journey they are real route; without one they cannot start a journey.
@@ -3424,6 +3430,75 @@ for alias in ["MTB", "Mountain biking", "Mountain Biking"] {
     check(WatchCatalog.activityCode(alias) == "MTB" && WatchCatalog.usesBicycle(alias), "legacy subtype and bicycle compatibility remain stable")
 }
 check(WatchCatalog.activities.filter { $0 == "MTB" }.count == 1, "one Watch mountain biking recording choice")
+
+// MARK: Background tracking audit
+do {
+    func point(_ metres:Double,_ at:Double,accuracy:Double=8,speed:Double=10)->GPSPoint {
+        GPSPoint(latitude:-33.8+metres/111_320,longitude:151.2,timestamp:at,accuracy:accuracy,altitude:0,speed:speed)
+    }
+    let rest=1_800_000_000.0
+    // The export's 3 m candidate spent six minutes of precise GPS indoors.
+    let indoors=(0..<8).map{point(Double($0)*0.4,rest+Double($0)*20,speed:0)}
+    check(!AutomaticSampling.stillDeparting(indoors,driving:false,now:rest+150),"fixes metres apart earn no more precise GPS")
+    check(AutomaticSampling.stillDeparting(indoors,driving:true,now:rest+150),"Core Motion driving keeps the check going before fixes spread out")
+    check(AutomaticSampling.stillDeparting([point(0,rest),point(30,rest+40)],driving:false,now:rest+150),"sparse fixes that really moved keep the check going")
+    check(!AutomaticSampling.stillDeparting([point(0,rest),point(30,rest+40)],driving:false,now:rest+400),"old fixes say nothing about now")
+    check(!AutomaticSampling.stillDeparting([],driving:true,now:rest),"no candidate, nothing to extend")
+
+    func departs(_ fixes:[GPSPoint],_ motion:MotionEvidence)->Double? {
+        var sampling=AutomaticSampling(),detector=AutomaticDetector()
+        guard let first=fixes.first,sampling.requestProbe(now:first.timestamp,movementBegan:true,locationWake:true) else { return nil }
+        for fix in fixes where detector.observe(fix,motion:motion,manualActive:false,now:fix.timestamp,activity:"Driving") == "depart" { return fix.timestamp-first.timestamp }
+        return nil
+    }
+    func moving(_ type:String,_ at:Double)->MotionEvidence { MotionEvidence(types:[type],confidence:"high",timestamp:at,continuous:true) }
+    // A wake-up hours after the last fix: nothing about the rest blocks the check.
+    let wake=rest+6*3600
+    var slept=AutomaticSampling()
+    check(slept.requestProbe(now:rest,movementBegan:true) && slept.requestProbe(now:wake,movementBegan:true,locationWake:true),"a place exit hours later earns a check, even after one the app slept through")
+    let drive=(0..<60).map{point(Double($0)*10,wake+Double($0))}
+    check((departs(drive,moving("Driving",wake)) ?? 999)<=60,"a short drive is confirmed within its first minute of fixes")
+    let walk=(0..<40).map{point(Double($0)*7,wake+Double($0)*5,speed:1.4)}
+    check((departs(walk,moving("Walking",wake)) ?? 999)<=120,"a short walk is confirmed inside the first check")
+    // iOS can hand over a whole backlog at once: each fix keeps its own time.
+    var batched=AutomaticDetector()
+    var batchedAt:Double?
+    for fix in drive.shuffled().sorted(by:{$0.timestamp<$1.timestamp}) where batchedAt == nil && batched.observe(fix,motion:moving("Driving",wake),manualActive:false,now:fix.timestamp,activity:"Driving") == "depart" { batchedAt=fix.timestamp }
+    check(batchedAt != nil,"a batched delivery confirms the same departure")
+    check(AutomaticDetector.acceptsDelivery(point(500,wake),receivedAt:wake+900,boundary:0,openJourneyLastFix:wake-5),"a queued fix newer than the journey's last fix is real route, however late")
+    check(!AutomaticDetector.acceptsDelivery(point(500,wake),receivedAt:wake+900,boundary:0,openJourneyLastFix:wake+5),"a fix older than the saved route is not re-added")
+    check(!AutomaticDetector.acceptsDelivery(point(500,wake),receivedAt:wake+900,boundary:0,openJourneyLastFix:nil),"with no journey open, an old fix cannot start one")
+
+    // Which wake-ups were late, and for which the journey was lost.
+    typealias Onset=DepartureOnset
+    let history=[Onset.Activity(start:wake-400,moving:true,confident:true),Onset.Activity(start:wake-90,moving:true,confident:true,vehicle:true)]
+    check(Onset.firstMovement(history,after:rest,before:wake) == wake-400,"the first movement may be walking around the house")
+    check(Onset.vehicleMovement(history,after:rest,before:wake) == wake-90,"the vehicle shows when the journey really began")
+    check(Onset.vehicleMovement([Onset.Activity(start:wake-90,moving:true,confident:false,vehicle:true)],after:rest,before:wake) == nil,"an unsure vehicle label proves nothing")
+    check(Onset.possiblyMissed(vehicleOnset:wake-90,evidenceAt:wake) == 90,"driving before a fruitless wake-up is reported as a possible missed journey")
+    check(Onset.possiblyMissed(vehicleOnset:wake-20,evidenceAt:wake) == nil,"a prompt wake-up is not")
+    check(Onset.possiblyMissed(vehicleOnset:nil,evidenceAt:wake) == nil,"no drive, no report")
+    check(LocationDiagnosticPrivacy.context(["vehicleOnsetToEvidenceSeconds":"90"]).count == 1,"the export keeps the late wake-up evidence")
+
+    // Evidence for a missed journey outlives the routine callbacks.
+    var flooded=RecorderDiagnosticJournal()
+    flooded.append(RecorderDiagnosticEvent(at:rest,kind:"decision",message:"Automatic departure confirmed",context:[:]))
+    flooded.append(RecorderDiagnosticEvent(at:rest+1,kind:"lifecycle",message:"Protected data available",context:[:]))
+    for index in 0...RecorderDiagnosticJournal.limit { flooded.append(RecorderDiagnosticEvent(at:rest+2+Double(index),kind:"motion",message:"Motion classification delivered",context:[:])) }
+    check(flooded.events.contains{$0.message == "Automatic departure confirmed"},"motion cannot push a decision out of the journal")
+    check(flooded.events.contains{$0.message == "Protected data available"},"motion goes first")
+    check(flooded.events.count == RecorderDiagnosticJournal.limit && flooded.capacityEvictions>0,"and the journal stays bounded")
+
+    // Home Wi-Fi: learned once settled at Home, never required, never against a choice.
+    func learn(configured:Bool=false,declined:Bool=false,atHome:Bool=true,rest:Bool=true,precise:Bool=true,inFlight:Bool=false,last:Double=0)->Bool {
+        HomeWiFi.shouldLearn(configured:configured,declined:declined,atHome:atHome,restConfirmed:rest,precise:precise,fetchInFlight:inFlight,lastAttemptAt:last,now:10_000)
+    }
+    check(learn(),"Home Wi-Fi is recognised without setup once rest at Home is confirmed")
+    check(!learn(configured:true) && !learn(declined:true),"a known or forgotten network is left alone")
+    check(!learn(atHome:false) && !learn(rest:false),"never learned away from a confirmed Home")
+    check(!learn(precise:false) && !learn(inFlight:true) && !learn(last:9_000),"no read without Precise Location, no overlap, no polling")
+    let unavailable=RestConfirmation.decide(RestInputs(place:.home,placeSince:rest-3600,lastDisturbanceAt:nil,placeAccuracy:10,placeVerified:true,idle:true,recentMovement:false,motionMoving:false,wifi:.unknown,now:rest))
+    check(unavailable.confirmed,"rest at Home needs no Wi-Fi at all")
+    check(!HomeWiFi.leftHome(previous:.unknown,current:.unavailable),"losing a reading is not leaving Home")
+}
 print("\(assertions) native recorder/auth assertions passed")
-
-
