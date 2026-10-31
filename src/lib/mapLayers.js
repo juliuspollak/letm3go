@@ -8,7 +8,7 @@ import {activityCode,sameActivity} from './activityNames.js';
 export const DEFAULT_MAP_VIEW=Object.freeze({content:'routes',people:true,routes:null,activity:'',range:'any',day:null});
 export const ROUTE_LAYERS=[['today','Today'],['pinned','Favourites'],['all','All routes']];
 export const RANGE_OPTIONS=[['any','Any time'],['7d','Past 7 days'],['30d','Past 30 days'],['365d','Past year']];
-const RANGE_DAYS={'7d':7,'30d':30,'365d':365};
+export const RANGE_DAYS={'7d':7,'30d':30,'365d':365};
 
 export function normaliseMapView(value){
  const view={...DEFAULT_MAP_VIEW,...(value&&typeof value==='object'?value:{})};
