@@ -570,6 +570,7 @@ extension LocationRecorder {
                 if event == "depart", let first = detector.candidate.first {
                     var trip = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Automatically detected journey")
                     trip.recordingMode = "automatic"; trip.details = ActivityDetails()
+                    trip.timezone = TimeZone.current.identifier
                     #if targetEnvironment(simulator)
                     trip.source = "simulator"
                     #endif
@@ -737,6 +738,7 @@ extension LocationRecorder {
         let name = activityName(family, preserving: "")
         var trip = RecordedActivity(activity:name,startedAt:first.timestamp,resumedAt:first.timestamp,title:name)
         trip.recordingMode = "automatic"
+        trip.timezone = TimeZone.current.identifier
         trip.details = ActivityDetails()
         let corroborated = movementCorroborates(family)
         trip.details?.classification = Classification(predicted:name,confidence:corroborated ? "high" : "medium",

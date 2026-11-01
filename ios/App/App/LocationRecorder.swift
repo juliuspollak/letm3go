@@ -964,6 +964,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             trip.assignEquipment([EquipmentRef(id: assigned.id, name: assigned.name)])
         } else { trip.vehicleID = nil; trip.vehicle = vehicle }
         trip.recordingMode = "manual"
+        trip.timezone = TimeZone.current.identifier
         trip.details = ActivityDetails()
         if trailID != nil {
             // A trail link is optional, but a malformed one is rejected before the

@@ -1,8 +1,8 @@
 import {describe,expect,it} from 'vitest';
 import {
  assetKey,batchMessage,batchSummary,dayLabel,deselectSuggestions,groupSuggestions,isDuplicate,markSkipped,
- planImport,reconcileSelection,selectSuggestions,selectedCount,selectionAfterBatch,suggestionConfidence,
- suggestionDay,suggestionLabel,suggestionsAfterBatch,toggleSelected,visibleSuggestions
+ mergeBatchResults,mergeSuggestionPages,nextSuggestionOffset,planImport,reconcileSelection,sameCaptureMoment,selectSuggestions,selectedCount,
+ selectionAfterBatch,suggestionConfidence,suggestionDay,suggestionLabel,suggestionsAfterBatch,toggleSelected,visibleSuggestions
 } from './photoSuggestions.js';
 
 // Local noon on 1 November 2026: grouping is intentionally local-calendar based,
@@ -28,6 +28,28 @@ describe('suggestion eligibility and ordering',()=>{
  it('ignores malformed suggestions instead of rendering an unselectable tile',()=>{
   expect(visibleSuggestions([null,{},{assetID:''},photo('ok',at(0))]).map(assetKey)).toEqual(['ok']);
  });
+ // A photo taken just after midnight is "today" where the activity happened, not
+ // wherever the phone is now. 22:30 UTC on 1 November is 09:30 on 2 November in
+ // Sydney, so the day label must follow the activity's own timezone.
+ const abroad=Date.UTC(2026,10,1,22,30)/1000;
+ it('groups by the activity timezone rather than the device timezone',()=>{
+  expect(suggestionDay({captureTime:abroad},{timeZone:'UTC'})).toBe('2026-11-01');
+  expect(suggestionDay({captureTime:abroad},{timeZone:'Australia/Sydney'})).toBe('2026-11-02');
+  expect(dayLabel(suggestionDay({captureTime:abroad},{timeZone:'Australia/Sydney'}))).toBe('Mon, 2 Nov 2026');
+ });
+ it('applies the daylight-saving offset in force on the capture date',()=>{
+  // Sydney switches to daylight saving on 4 October 2026. 13:30 UTC is 23:30 on
+  // 4 October under a fixed +10 offset, but the real +11 offset makes it 00:30 on
+  // 5 October — the day the person actually experienced.
+  const dstEdge=Date.UTC(2026,9,4,13,30)/1000;
+  expect(suggestionDay({captureTime:dstEdge},{timeZone:'Australia/Sydney'})).toBe('2026-10-05');
+  expect(suggestionDay({captureTime:dstEdge},{timeZone:'UTC'})).toBe('2026-10-04');
+ });
+ it('splits groups on the activity calendar day',()=>{
+  const items=[photo('late',Date.UTC(2026,10,1,22,30)/1000),photo('next',Date.UTC(2026,10,2,5,0)/1000)];
+  expect(groupSuggestions(items,{timeZone:'Australia/Sydney'}).map(g=>g.label)).toEqual(['Mon, 2 Nov 2026']);
+  expect(groupSuggestions(items,{timeZone:'UTC'}).map(g=>g.label)).toEqual(['Sun, 1 Nov 2026','Mon, 2 Nov 2026']);
+ });
 });
 
 describe('selection',()=>{
@@ -52,20 +74,22 @@ describe('selection',()=>{
 
 describe('duplicate prevention',()=>{
  const existing=[{captureTime:at(0)},{captureTime:at(60),assetID:'known'}];
- it('matches by asset identity or by the same captured moment',()=>{
-  expect(isDuplicate(photo('x',at(0)),existing)).toBe(true);
+ it('blocks only the same library asset, never a nearby timestamp',()=>{
   expect(isDuplicate(photo('known',at(600)),existing)).toBe(true);
-  expect(isDuplicate(photo('x',at(59.5)),existing)).toBe(true);
-  expect(isDuplicate(photo('x',at(120)),existing)).toBe(false);
+  expect(isDuplicate(photo('x',at(0)),existing)).toBe(false);
+  expect(isDuplicate({assetID:'',captureTime:at(0)},existing)).toBe(false);
  });
- it('never treats an unknown capture time as a duplicate of an unknown photo',()=>{
-  expect(isDuplicate({assetID:'x',captureTime:null},[{captureTime:null}])).toBe(false);
+ it('still names the same captured moment without blocking the import',()=>{
+  expect(sameCaptureMoment(photo('x',at(0)),existing)).toBe(true);
+  expect(sameCaptureMoment(photo('x',at(59.5)),existing)).toBe(true);
+  expect(sameCaptureMoment(photo('x',at(120)),existing)).toBe(false);
+  expect(sameCaptureMoment({assetID:'x',captureTime:null},[{captureTime:null}])).toBe(false);
  });
  it('plans a batch split into importable and already-present photos',()=>{
-  const suggestions=[photo('new',at(120)),photo('old',at(60)),photo('skipped',at(180),{skipped:true})];
-  const plan=planImport({suggestions,selected:new Set(['new','old','skipped']),existing});
+  const suggestions=[photo('new',at(120)),photo('known',at(60)),photo('skipped',at(180),{skipped:true})];
+  const plan=planImport({suggestions,selected:new Set(['new','known','skipped']),existing});
   expect(plan.ready.map(item=>item.assetID)).toEqual(['new']);
-  expect(plan.duplicates.map(item=>item.assetID)).toEqual(['old']);
+  expect(plan.duplicates.map(item=>item.assetID)).toEqual(['known']);
  });
  it('respects an explicit selection rather than importing every visible photo',()=>{
   const suggestions=[photo('a',at(0)),photo('b',at(10))];
@@ -89,6 +113,15 @@ describe('batch results',()=>{
  it('describes a batch with no work without a misleading message',()=>{
   expect(batchMessage(batchSummary([]))).toBe('');
  });
+ it('merges a retry into the earlier batch instead of forgetting prior successes',()=>{
+  const earlier=[{assetID:'a',status:'added'},{assetID:'b',status:'failed',message:'Not available locally.'},{assetID:'skipped',status:'skipped'}];
+  const retry=[{assetID:'b',status:'added'}];
+  const merged=mergeBatchResults(earlier,retry);
+  expect(merged.map(result=>`${result.assetID}:${result.status}`)).toEqual(['a:added','b:added','skipped:skipped']);
+  expect(batchMessage(batchSummary(merged))).toBe('2 added · 1 already with this activity');
+  // A result for an asset that was not in the earlier batch is appended, not lost.
+  expect(mergeBatchResults(earlier,[{assetID:'d',status:'added'}]).map(result=>result.assetID)).toEqual(['a','b','skipped','d']);
+ });
 });
 
 describe('skip, revisit and accessibility',()=>{
@@ -100,7 +133,7 @@ describe('skip, revisit and accessibility',()=>{
   expect(visibleSuggestions(markSkipped(skipped,'a',false)).map(assetKey)).toEqual(['a','b']);
  });
  it('explains confidence from what is actually known',()=>{
-  expect(suggestionConfidence({hasLocation:true}).label).toBe('Date and location match');
+  expect(suggestionConfidence({hasLocation:true}).label).toBe('Date match · photo GPS');
   expect(suggestionConfidence({hasLocation:false}).detail).toContain('inferred');
   expect(suggestionConfidence({}).id).toBe('unknown');
  });
@@ -110,5 +143,21 @@ describe('skip, revisit and accessibility',()=>{
   expect(label).toContain('Date match only');
   expect(label).toContain('selected');
   expect(suggestionLabel({assetID:'a',captureTime:null})).toContain('not selected');
+ });
+});
+
+describe('paged suggestions',()=>{
+ it('appends the next page and never shows the same asset twice',()=>{
+  const first=[photo('a',at(0)),photo('b',at(10))];
+  const next=mergeSuggestionPages(first,[photo('b',at(10)),photo('c',at(20)),null]);
+  expect(next.map(assetKey)).toEqual(['a','b','c']);
+  expect(mergeSuggestionPages(first,[]).map(assetKey)).toEqual(['a','b']);
+  expect(mergeSuggestionPages([],first).map(assetKey)).toEqual(['a','b']);
+ });
+ it('asks for the next page by the number of distinct candidates already held',()=>{
+  expect(nextSuggestionOffset([])).toBe(0);
+  expect(nextSuggestionOffset([photo('a',at(0)),photo('b',at(10))])).toBe(2);
+  // A duplicated row from Photos must not make the next page skip an asset.
+  expect(nextSuggestionOffset([photo('a',at(0)),photo('a',at(0)),photo('b',at(10))])).toBe(2);
  });
 });

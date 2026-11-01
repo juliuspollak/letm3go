@@ -951,6 +951,17 @@ let legacyRideJSON = """
 """
 let legacyRide = try JSONDecoder().decode(RecordedActivity.self, from: Data(legacyRideJSON.utf8))
 check(legacyRide.details?.mtbTrailID == nil, "older records decode without trail keys")
+// Photo timestamps are grouped by the timezone the activity happened in. Records
+// written before the field existed must decode and stay nil (device fallback), and
+// a journey that stamps one must round-trip it to JS.
+check(legacyRide.timezone == nil, "older records decode without a timezone")
+var zonedRide = legacyRide
+zonedRide.timezone = "Australia/Sydney"
+let zonedData = try JSONEncoder().encode(zonedRide)
+let zonedBack = try JSONDecoder().decode(RecordedActivity.self, from: zonedData)
+check(zonedBack.timezone == "Australia/Sydney", "an activity keeps the timezone it started in")
+check(String(data: zonedData, encoding: .utf8)?.contains("\"timezone\":") == true,
+      "the activity timezone reaches the JavaScript snapshot")
 
 // MARK: Apple Watch ride state machine
 //
@@ -4218,4 +4229,40 @@ do {
     do {try store.save(lateRestore);check(false,"a restored lowercase alias must not resurrect a deleted activity")}catch{check(true,"delayed restored UUID aliases remain deleted")}
     check(ActivityIdentity.matches(record.id,record.id.lowercased()), "Watch retry duplicate detection shares canonical identity")
 }
+do {
+    let suite="photo-skip-scope-\(UUID().uuidString)"
+    let defaults=UserDefaults(suiteName:suite)!
+    defer { defaults.removePersistentDomain(forName:suite) }
+    let activity="ABCDEFAB-1234-4567-89AB-ABCDEFABCDEF"
+    let alice=PhotoSuggestionSkips.key(ownerID:"Alice@Example.com",activityID:activity)
+    let bob=PhotoSuggestionSkips.key(ownerID:"bob@example.com",activityID:activity)
+    check(alice != bob, "skipped-photo marks never cross account boundaries")
+    check(alice == PhotoSuggestionSkips.key(ownerID:"alice@example.com",activityID:activity), "owner scope is case-insensitive")
+    defaults.set(["asset-A"],forKey:alice)
+    defaults.set(["asset-B"],forKey:bob)
+    PhotoSuggestionSkips.remove(ownerID:"Alice@Example.com",activityID:activity,defaults:defaults)
+    check(defaults.stringArray(forKey:alice) == nil, "deleting an activity removes its skipped-photo marks")
+    check(defaults.stringArray(forKey:bob) == ["asset-B"], "deleting one activity leaves another account's marks intact")
+    PhotoSuggestionSkips.clearAll(defaults:defaults)
+    check(defaults.stringArray(forKey:bob) == nil, "sign-out clears every account's local photo identifiers")
+}
+do {
+    var photo = ActivityPhoto(id:"photo-one",filename:"one.jpg",caption:"",latitude:nil,longitude:nil,captureTime:1000,locationSource:"timestamp")
+    photo.assetID = "synthetic-asset-A"
+    var details = ActivityDetails(); details.photos = [photo]
+    check(details.containsPhotoAsset("synthetic-asset-A"), "a repeated source asset is idempotent")
+    check(!details.containsPhotoAsset("synthetic-asset-B"), "different burst assets remain distinct despite identical capture time")
+    check(!details.containsPhotoAsset(nil) && !details.containsPhotoAsset(""), "unknown identity does not falsely deduplicate legacy photos")
+    let encoded = try JSONEncoder().encode(details)
+    let restored = try JSONDecoder().decode(ActivityDetails.self,from:encoded)
+    check(restored.containsPhotoAsset("synthetic-asset-A"), "photo identity survives persistence and process restart")
+    var old = try JSONSerialization.jsonObject(with:JSONEncoder().encode(photo)) as! [String:Any]
+    old.removeValue(forKey:"assetID")
+    let legacy = try JSONDecoder().decode(ActivityPhoto.self,from:JSONSerialization.data(withJSONObject:old))
+    check(legacy.assetID == nil && legacy.id == photo.id, "old photos decode unchanged without source identity")
+    check(!ActivityDetails().containsPhotoAsset("synthetic-asset-A"), "separate owner or activity details never share source identities")
+}
+check(ActivityPhoto.thumbnailDataURL(nil) == nil, "unavailable thumbnails remain absent")
+check(ActivityPhoto.thumbnailDataURL(Data()) == nil, "empty thumbnail data is not a valid source URL")
+check(ActivityPhoto.thumbnailDataURL(Data([0xff,0xd8,0xff,0xd9])) == "data:image/jpeg;base64,/9j/2Q==", "native JPEG thumbnails include a data URI scheme before crossing the bridge")
 print("\(assertions) native recorder/auth assertions passed")

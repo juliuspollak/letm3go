@@ -69,6 +69,10 @@ function lockedSnapshot(data){
 export function useRecorder(ownerID,onBindingRequired){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const lastKey=useRef(''),accepted=useRef(emptyRecorder),generation=useRef(0),readRequest=useRef(0),actionSequence=useRef(0);
+ // Why the last action failed has to be readable in the same tick the awaited
+ // `run(...)` resolves, before React re-renders, so it lives in a ref behind a
+ // getter instead of in state (state would still hold the previous render's value).
+ const failure=useRef('');
  const rebindAttempt=useRef(null);
  const requestRebind=useCallback(actualOwner=>{
   if(!ownerID||!onBindingRequired)return;
@@ -118,7 +122,7 @@ export function useRecorder(ownerID,onBindingRequired){
   return()=>{recorder.forgetPosition?.();alive=false;generation.current+=1;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID,requestRebind]);
  const run=useCallback(async(method,...args)=>{
-  const epoch=++generation.current,action=++actionSequence.current;setBusy(true);setError('');
+  const epoch=++generation.current,action=++actionSequence.current;setBusy(true);setError('');failure.current='';
   try{
    const result=await recorder[method](...args,...(['deleteActivity','deleteActivities'].includes(method)?[ownerID]:[]));
    if(epoch!==generation.current)return null;
@@ -130,8 +134,9 @@ export function useRecorder(ownerID,onBindingRequired){
    }
    generation.current+=1; // also reject polls started while the mutation ran
    return result||true;
-  }catch(err){if(epoch!==generation.current)return null;generation.current+=1;setError(err.message||'Recording action failed.');return null;}finally{if(action===actionSequence.current)setBusy(false);}
+  }catch(err){if(epoch!==generation.current)return null;generation.current+=1;failure.current=err?.message||'Recording action failed.';setError(failure.current);return null;}finally{if(action===actionSequence.current)setBusy(false);}
  },[ownerID,requestRebind]);
+ const lastError=useCallback(()=>failure.current,[]);
  // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the
  // debug-only counters (trackingUsage, recorderDiagnostics) refresh on open even
  // though they are excluded from routine polling.
@@ -150,5 +155,5 @@ export function useRecorder(ownerID,onBindingRequired){
   }catch(err){if(epoch===generation.current&&request===readRequest.current)setError(err.message||'Unable to read native recorder.');}
  },[ownerID,requestRebind]);
 
- return {state,run,busy,error,refresh};
+ return {state,run,busy,error,refresh,lastError};
 }

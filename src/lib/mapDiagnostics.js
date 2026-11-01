@@ -5,17 +5,48 @@
 const counters=new Map();
 const frames=[];
 
-export const MAP_EVENTS=['embed','resize','update','snapshot','hide','unembed','frozen','scroll-ignored'];
+export const MAP_EVENTS=['embed','resize','update','snapshot','hide','unembed','frozen','scroll-ignored','render','overlay'];
+
+// The global reader is installed only while the opt-in flag is set, so a release
+// build does not expose map internals (or pay for them) unless diagnostics were
+// explicitly turned on for a measurement.
+const readers=new Set();
+function publish(){
+ if(typeof window==='undefined'||!mapDiagnosticsEnabled())return;
+ window.__letm3goMapEvents=snapshot();
+ window.letm3goMapDiagnostics=()=>{
+  for(const read of readers)try{read();}catch{/* a detached map must not break the reader */}
+  return window.__letm3goMapEvents=snapshot();
+ };
+}
+// Registers one live map with the global reader. Returns a release function; the
+// global is removed with the last map instead of being left pointing at nothing.
+export function installMapDiagnostics(read){
+ if(!mapDiagnosticsEnabled())return ()=>{};
+ readers.add(read);publish();
+ return ()=>{
+  readers.delete(read);
+  if(typeof window!=='undefined'&&!readers.size){
+   delete window.letm3goMapDiagnostics;
+   delete window.__letm3goMapEvents;
+  }
+ };
+}
 
 export function recordMapEvent(event,detail){
+ // Recording itself is opt-in: a normal build must not accumulate counters or
+ // retain event details for a measurement nobody asked for.
+ if(!mapDiagnosticsEnabled())return;
  const current=counters.get(event)||{count:0,lastAt:0,lastDetail:null};
  counters.set(event,{count:current.count+1,lastAt:Date.now(),lastDetail:detail??null});
- if(typeof window!=='undefined')window.__letm3goMapEvents=snapshot();
+ publish();
 }
-// Frame durations for the sheet drag, in milliseconds. Bounded so a long session
-// cannot grow the buffer without limit.
+// Frame intervals are JS requestAnimationFrame intervals, not native frame
+// times; snapshot() labels them kind:'js-rAF' so they are never reported as the
+// latter. They are sampled around actual page scrolls and sheet/viewer
+// transitions, not just the initial five-hundred-millisecond settle.
 export function recordMapFrame(milliseconds){
- if(!Number.isFinite(milliseconds)||milliseconds<0)return;
+ if(!mapDiagnosticsEnabled()||!Number.isFinite(milliseconds)||milliseconds<0)return;
  frames.push(Math.round(milliseconds*10)/10);
  while(frames.length>120)frames.shift();
 }
@@ -24,13 +55,18 @@ export function snapshot(){
  for(const name of MAP_EVENTS)events[name]=counters.get(name)?.count||0;
  return {
   events,
-  frames:{count:frames.length,worst:frames.length?Math.max(...frames):0,average:frames.length?Math.round(frames.reduce((sum,n)=>sum+n,0)/frames.length*10)/10:0},
+  frames:{
+   kind:'js-rAF',
+   count:frames.length,
+   worst:frames.length?Math.max(...frames):0,
+   average:frames.length?Math.round(frames.reduce((sum,n)=>sum+n,0)/frames.length*10)/10:0
+  },
   at:Date.now(),
  };
 }
 export function resetMapDiagnostics(){
  counters.clear();frames.length=0;
- if(typeof window!=='undefined')delete window.__letm3goMapEvents;
+ if(typeof window!=='undefined'){delete window.__letm3goMapEvents;delete window.letm3goMapDiagnostics;}
 }
 // The diagnostics are opt-in and read-only; the UI and the performance notes use
 // the same numbers.

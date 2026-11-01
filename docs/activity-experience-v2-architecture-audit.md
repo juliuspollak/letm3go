@@ -172,17 +172,31 @@ cleared whenever an embed succeeds (`:164`), so native and snapshot are never bo
   **Add N photos** (the R3-08 "Add Selected (N)") and is disabled at zero selected, a persistent
   **Cancel**, an added/failed/skipped summary, a **Retry N failed** action that re-runs only the
   failures, and per-tile **Skip** / **Show again**.
-- `src/lib/photoSuggestions.js` holds the pure model: `isDuplicate` (asset ID or capture time
-  within `DUPLICATE_WINDOW_SECONDS`), `planImport` → `{ready, duplicates, blocked}`,
-  `batchSummary`/`batchMessage` ("2 added, 1 failed"), `reconcileSelection` (drops selections that
-  no longer exist after an async refresh), `suggestionsAfterBatch`, `selectionAfterBatch` (keeps
-  only failures selected), `markSkipped`, `suggestionLabel` (screen-reader text including
-  selected state) and `groupSuggestions` by local day.
+- `src/lib/photoSuggestions.js` holds the pure model: `isDuplicate` (an exact Photos
+  asset identity that the activity already keeps; capture time is only a non-blocking
+  `sameCaptureMoment` hint inside `DUPLICATE_WINDOW_SECONDS`), `planImport` →
+  `{ready, duplicates}`,
+  `batchSummary`/`batchMessage` ("2 added · 1 failed"), `reconcileSelection` (drops selections that
+  no longer exist or became duplicates after an async refresh), `suggestionsAfterBatch`,
+  `selectionAfterBatch` (keeps only failures selected), `markSkipped`, `suggestionLabel`
+  (screen-reader text including selected state) and `groupSuggestions` by local day.
 - Import stays one bridge call per asset (`ActivityDetail.jsx:59-62` `importSuggestion`), so a
   partial failure is reported honestly and a retry cannot duplicate a success — the native side
   resolves the snapshot per asset rather than trusting a batch.
-- `ios/App/App/PhotoSuggestions.swift:53-62` now honours `skipped:false` and removes the asset from
+- `ios/App/App/PhotoSuggestions.swift:84-95` now honours `skipped:false` and removes the asset from
   the local skip list, which is what makes "reveal skipped → undo skip" truthful.
+- An iCloud-only candidate is returned with an explicit JSON `thumbnail:null` and
+  `localAvailable:false` (`PhotoSuggestions.swift:53-56`). The grid and preview render an
+  "In iCloud / Not downloaded" placeholder plus download-and-retry guidance instead of hiding the
+  photo or claiming the library has no matches.
+- `mergeBatchResults` (`lib/photoSuggestions.js:214`) overlays retried outcomes onto the earlier
+  batch, so `batchSummary` keeps the successes alongside the retry result rather than showing only
+  the last attempt. `PhotoSuggestions.jsx:89` uses it for retry and leaves the initial batch as-is.
+- The empty page state is honest about paging: "No photos in this first page. Load more to
+  continue." when `hasMore`, "All shown photos added." when every fetched candidate is already
+  imported, and "No photos from your library…" only for a genuine empty result
+  (`PhotoSuggestions.jsx:127-136`). The paging and Cancel/Retry row is rendered outside the grid
+  (`PhotoSuggestions.jsx:201`), so it remains reachable when a page is empty or fully imported.
 
 ## 3. Design decisions and trade-offs
 
@@ -208,3 +222,8 @@ cleared whenever an embed succeeds (`:164`), so native and snapshot are never bo
   `width:100vw;height:100dvh` so it cannot collapse, but the swipe visual needs a device check.
 
   `src/lib/activitySheet.test.js`.
+
+
+## Authoritative architecture/review correction
+
+The permanent SwipeBack will-change hint WAS a confirmed containing-block defect, not merely an active-gesture risk. Real synthetic Chromium geometry reproduced and then verified its correction; see testing.md for exact scope and dimensions. Selected photo identity now flows from ActivityDetail to JourneyMap and both embedded/fullscreen annotation renderers. Optional timezone/photo-asset identity fields change the local model; decoding tests preserve old records. Remaining async teardown, camera restoration, bounded-memory, picker metadata and computation/diagnostics defects remain OPEN according to both frozen independent reports. The current flex-resized map is not evidence of measured smooth persistent-background behaviour on an iPhone. No source-code review or green build proves that device behaviour.

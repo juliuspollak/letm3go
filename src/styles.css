@@ -29,7 +29,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 .apple-map-preview{display:block;position:relative;padding:0;width:100%;overflow:hidden;background:var(--soft);border-radius:16px;text-align:left;isolation:isolate}.apple-map-preview>img{width:100%;height:100%;object-fit:cover;display:block}.apple-map-open{display:inline-flex;align-items:center;gap:8px;position:absolute;z-index:1;right:14px;top:14px;padding:10px 14px;border-radius:20px;background:var(--surface);box-shadow:0 2px 12px #0002;font-size:12px;font-weight:600;color:var(--ink)}.apple-map-placeholder{position:absolute;inset:0;display:grid;place-items:center;font-size:15px;color:var(--muted)}
 .apple-map-attribution{position:absolute;bottom:8px;left:10px;z-index:1;font-size:10px;font-weight:600;padding:3px 6px;border-radius:5px;background:var(--surface);color:var(--ink);pointer-events:none}
-.swipe-back-page{min-width:0;will-change:transform}
+.swipe-back-page{min-width:0}
 
 .recent-activities{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-bottom:28px}.recent-activity-row{display:flex;align-items:center;gap:12px;width:100%;min-height:72px;padding:14px 16px;text-align:left}.recent-activity-row+.recent-activity-row{border-top:1px solid var(--line)}.recent-activity-icon{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border-radius:11px;background:var(--soft);color:var(--ink)}.recent-activity-info{flex:1;min-width:0}.recent-activity-info strong{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.recent-activity-info small{display:block;margin-top:5px;font-size:11px;color:var(--muted)}.recent-activity-distance{flex-shrink:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}.recent-activity-distance small{font-size:11px;font-weight:400;color:var(--muted)}.recent-activity-row>svg{flex-shrink:0;color:var(--muted)}.recent-activity-row:active{background:var(--soft)}.recent-activity-row:focus-visible{outline-offset:-4px}.recent-activities:empty{display:none}
 
@@ -1109,6 +1109,7 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .suggestion-grid li{min-width:0}
 .suggestion-grid li.skipped{opacity:.55}
 .suggestion-grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block}
+.suggestion-placeholder{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:1;border-radius:10px;background:var(--soft);border:1px dashed var(--line);color:var(--muted);font-size:11px;font-weight:600}
 .suggestion-tile{position:relative;display:block}
 .suggestion-tile input{position:absolute;top:8px;left:8px;width:22px;height:22px;margin:0}
 .suggestion-tile input:not(:checked)+img{outline:1px solid var(--line);outline-offset:-1px;border-radius:10px}
@@ -1116,6 +1117,16 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .suggestion-grid .text-button{margin-left:0;padding-left:0;font-size:10px}
 .suggestion-status{margin-top:12px;font-size:11px;color:var(--muted)}
 .suggestion-failures{margin:6px 0 0;padding-left:18px;font-size:11px;color:var(--danger);line-height:1.6}
+.suggestion-toolbar .secondary,.suggestion-actions .primary,.suggestion-actions .secondary,.suggestion-more .secondary{min-height:44px}
+.suggestion-grid .text-button{display:inline-flex;align-items:center;min-height:44px;font-size:12px;line-height:1.35}
+.suggestion-day-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.suggestion-day-head .text-button{min-height:44px;font-size:12px}
+.suggestion-tile input{width:24px;height:24px}
+@media(orientation:landscape) and (max-height:520px){
+ .detail-map-layer{min-height:110px}
+ .activity-sheet-body{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+ .suggestion-grid{grid-template-columns:repeat(3,1fr)}
+}
 @media(max-width:760px){.suggestion-grid{grid-template-columns:repeat(2,1fr)}.activity-summary{padding:16px}}
 
 /* Activity Experience v2: one stable map plus a coordinated details sheet. The
@@ -1147,14 +1158,14 @@ main:has(.map-page) .topbar{margin-bottom:10px}
    sheet the bottom layer, so on iOS the native MapKit view never sits over the
    sheet. A detent only changes the sheet height (and therefore the map's visible
    height), which the native side handles as a frame resize, not a re-embed. */
-@media(max-width:760px){
- .detail-sheet-page{position:fixed;top:0;left:0;width:100vw;height:100dvh;z-index:30;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);padding-top:env(safe-area-inset-top)}
+@media(max-width:760px), (pointer:coarse){
+ .detail-sheet-page{position:fixed;top:0;left:0;width:100vw;height:100dvh;z-index:30;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);padding-top:env(safe-area-inset-top);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
  .detail-map-layer{position:relative;flex:1 1 auto;min-height:140px;border-radius:0;background:var(--soft)}
  .detail-map-layer .journey-map,.detail-map-layer .journey-map.large,.detail-map-layer .first-recording{height:100%;min-height:0;margin:0;border-radius:0}
  .activity-sheet{flex:0 0 auto;margin-top:0;border-radius:22px 22px 0 0;padding-bottom:calc(74px + env(safe-area-inset-bottom));max-height:calc(100% - 140px)}
  .activity-sheet-body{padding:4px 20px 10px}
 }
-@media(min-width:761px){.activity-sheet{height:auto;max-height:none;transition:none}.activity-sheet-body{overflow:visible}.activity-sheet-handle{display:none}}
+@media(min-width:761px) and (pointer:fine){.activity-sheet{height:auto;max-height:none;transition:none}.activity-sheet-body{overflow:visible}.activity-sheet-handle{display:none}}
 @media(prefers-reduced-motion:reduce){.activity-sheet{transition:none}}
 
 /* Photo suggestions: a sticky batch action, a tile that can be previewed without

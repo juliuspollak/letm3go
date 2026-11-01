@@ -81,7 +81,7 @@ export const recorder = {
  addHistorical:trip=>native.addHistorical({...trip,activity:activityCode(trip.activity)}),
  pickPhotos:id=>native.pickPhotos({id}),
  editPhoto:params=>native.editPhoto(params),
- suggestPhotos:(id)=>native.suggestPhotos({id}),
+ suggestPhotos:(id,options={})=>native.suggestPhotos({id,...options}),
  acceptSuggestion:params=>native.acceptSuggestion(params),
  skipSuggestion:params=>native.skipSuggestion(params),
 };

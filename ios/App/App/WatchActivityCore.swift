@@ -355,6 +355,7 @@ enum WatchActivityImport {
         trip.id = transfer.id.lowercased()
         trip.source = "watch"
         trip.recordingMode = "watch"
+        trip.timezone = TimeZone.current.identifier
         trip.state = "finished"
         trip.endedAt = transfer.endedAt
         // Active time is clamped to the elapsed window: a payload cannot claim

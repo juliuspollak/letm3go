@@ -119,10 +119,14 @@ describe('people map camera',()=>{
  it('removes a person from the native map as soon as their sharing is revoked',async()=>{
   const {rerender}=render(<AppleMap payload={people(['self','anna'])}/>);
   await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
-  mocks.embed.mockClear();
+  await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+  mocks.embed.mockClear();mocks.update.mockClear();
   rerender(<AppleMap payload={people(['self'])}/>);
-  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
-  expect(mocks.embed.mock.calls.at(-1)[0].pins.map(pin=>pin.id)).toEqual(['people:self']);
+  // A pin change is incremental content, not a new map: the live instance keeps
+  // its camera and the revoked person disappears from the next update.
+  await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+  expect(mocks.update.mock.calls.at(-1)[0].pins.map(pin=>pin.id)).toEqual(['people:self']);
+  expect(mocks.embed).not.toHaveBeenCalled();
  });
  it('releases the native map on tab change and re-embeds the same camera on return',async()=>{
   const {unmount}=render(<AppleMap payload={people(['self','anna'])}/>);
@@ -216,4 +220,14 @@ it('renders the location action natively and routes it to the current position r
  handlers.layersTapped({mapID:'other',action:'locate'});expect(onLocate).not.toHaveBeenCalled();
  handlers.layersTapped({mapID,action:'locate'});expect(onLocate).toHaveBeenCalledTimes(1);
  await waitFor(()=>expect(container.querySelector('.map-locate-button')).toBeNull());
+});
+
+it('adds a photo through incremental update without re-embedding while preserving people-revocation behaviour',async()=>{
+ const {rerender}=render(<AppleMap payload={payload}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ mocks.embed.mockClear();mocks.update.mockClear();
+ rerender(<AppleMap payload={{...payload,pins:[{kind:'photo',point:[1,2],journeyID:'ride',photoID:'new-photo',selected:true}]}}/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[expect.objectContaining({photoID:'new-photo',selected:true})]})));
+ expect(mocks.embed).not.toHaveBeenCalled();
 });

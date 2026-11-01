@@ -22,7 +22,7 @@ its place in the sheet changed.
 | 13 | Use as cover | `.photo-management` | same | same |
 | 14 | Remove photo | `.photo-management` | same | same |
 | 15 | Photo privacy note ("Only selected photos are copied locally…") | bottom strip | `ActivityMoments` footer, local only | `ActivityMoments.test.jsx` |
-| 16 | Photo suggestions grid | inline block, per-image Add | `PhotoSuggestions` dialog: multi-select, preview, sticky batch footer | `PhotoSuggestions.test.jsx` (9 tests) |
+| 16 | Photo suggestions grid | inline block, per-image Add | `PhotoSuggestions` dialog: multi-select, preview, sticky batch footer | `PhotoSuggestions.test.jsx` (19 tests) |
 | 17 | Suggestion Add | one button per tile | checkbox selection + sticky **Add N photos** primary action (R3-08 "Add Selected (N)"); the per-tile Add is replaced by design because the specification §3 requires the bulk flow | `PhotoSuggestions.test.jsx` |
 | 18 | Suggestion skip / show skipped | one-way, per tile | Skip / Undo skip + "Show skipped", native `skipped:false` support | `PhotoSuggestions.test.jsx`, `lib/photoSuggestions.test.js` |
 | 19 | Suggestions close | `Close` | explicit **Cancel** in the sticky footer | `PhotoSuggestions.test.jsx` |
@@ -71,3 +71,8 @@ its place in the sheet changed.
 | 33 | Story, notes, tags | `.detail-story` | same `.detail-story` (only the photo column was lifted out) | `ActivityDetail.test.jsx` |
 | 34 | Delete activity + "Delete permanently" confirmation | bottom | same, still last | existing tests |
 | 35 | Photo pin on the map opens that photo | `onPhoto` via `JourneyMap` | unchanged; the same viewer opens from `ActivityMoments` | `JourneyMap`/`AppleMap` tests |
+
+
+## Authoritative review correction
+
+This mapping describes implementation locations, NOT whole-phase acceptance. Frozen independent reviews confirm gallery-to-map selected pin state is now implemented in ActivityDetail/JourneyMap and both native renderers. Any earlier row calling it absent/deferred is superseded by this correction. The overall phase remains BLOCKED for the actual findings in docs/activity-experience-v2-review-findings.md; no old feature or incomplete requirement may be dropped.

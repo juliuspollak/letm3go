@@ -1,3 +1,7 @@
+# Mandatory carried-forward integration scope
+
+The phase-01 gate is BLOCKED after five developer attempts; actual retained findings in docs/activity-experience-v2-review-findings.md remain mandatory software defects, not accepted limitations. This final integration phase MUST fix and independently re-review every still-open finding alongside live Watch segments and the full original specification. Do not drop old photo, map, memory, accessibility, metadata, picker, diagnostics or privacy work merely because this phase's headline is Watch. No overall VERIFIED until all assigned phases and all software gates pass; external hardware/data/migration gates must stay honest.
+
 # Activity Experience v2 phased execution contract
 
 The user has authorized FULL implementation of the original specification, through four sequential implementation phases. This wrapper schedules work; it does not remove any original requirement. The full unmodified specification is embedded below and remains authoritative.

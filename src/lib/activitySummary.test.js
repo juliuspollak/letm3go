@@ -15,12 +15,31 @@ describe('activity summary values',()=>{
   expect(elevationGainMeters({points:[{altitude:10}]})).toBeNull();
   expect(elevationGainMeters({})).toBeNull();
  });
+ it('does not turn altitude jitter, invalid fixes or pauses into climb',()=>{
+  // A long ride whose barometer wanders one metre up and down must not accumulate
+  // thousands of metres of gain.
+  const jitter=Array.from({length:200},(_,index)=>({altitude:100+(index%2)}));
+  expect(elevationGainMeters({points:jitter})).toBeNull();
+  // Missing altitude is persisted as 0 by some recorders; that is not sea level.
+  expect(elevationGainMeters({points:[{altitude:100},{altitude:0},{altitude:140}]})).toBeNull();
+  expect(elevationGainMeters({points:[{altitude:100},{altitude:300,accuracy:80},{altitude:140}]})).toBe(40);
+  // A pause or segment jump starts a new reference instead of joining two places.
+  expect(elevationGainMeters({points:[{segment:0,altitude:100},{segment:0,altitude:130},{segment:1,altitude:500},{segment:1,altitude:540}]})).toBe(70);
+  expect(elevationGainMeters({points:[{timestamp:0,altitude:100},{timestamp:1000,altitude:700},{timestamp:1001,altitude:740}]})).toBe(40);
+ });
  it('never invents calories from an implausible value',()=>{
-  expect(activeCalories({details:{activeCalories:412.4}})).toEqual({kcal:412,label:'Active calories'});
-  expect(activeCalories({details:{caloriesKcal:88}})).toEqual({kcal:88,label:'Calories'});
+  expect(activeCalories({details:{activeEnergyKcal:412.4}})).toEqual({kcal:412,label:'Active calories',source:null});
+  expect(activeCalories({details:{caloriesKcal:88}})).toEqual({kcal:88,label:'Calories',source:null});
+  expect(activeCalories({details:{activeEnergyKcal:412.4},source:'watch'})).toEqual({kcal:412,label:'Active calories',source:null});
   expect(activeCalories({details:{activeCalories:0}})).toBeNull();
   expect(activeCalories({details:{activeCalories:999999}})).toBeNull();
   expect(activeCalories({})).toBeNull();
+ });
+ it('only attributes calories to Apple Watch when the recording source says watch',()=>{
+  const generic=activitySummary({details:{caloriesKcal:300}}).find(entry=>entry.id==='calories');
+  expect(generic).toMatchObject({label:'Calories',detail:null});
+  const watch=activitySummary({source:'watch',details:{activeEnergyKcal:300,energySource:'healthkit'}}).find(entry=>entry.id==='calories');
+  expect(watch).toMatchObject({label:'Active calories',detail:'From Apple Watch active energy'});
  });
  it('reports a heart rate only when an average was recorded',()=>{
   expect(heartRateSummary({details:{heartRate:{summary:{average:128.6,maximum:161.2}}}})).toEqual({average:129,maximum:161});
@@ -36,4 +55,11 @@ describe('activity summary values',()=>{
   const entries=activitySummary({durationSeconds:3600,details:{movingSeconds:3000}});
   expect(entries.map(entry=>[entry.label,entry.value])).toEqual([['Moving time','50 min'],['Elapsed time','1 h 0 min']]);
  });
+});
+
+it('rejects untyped energy aliases and distinguishes measured zero from missing energy',()=>{
+ expect(activeCalories({source:'watch',details:{activeEnergy:418400}})).toBeNull();
+ expect(activeCalories({source:'watch',calories:100})).toBeNull();
+ expect(activeCalories({source:'watch',details:{activeEnergyKcal:0,energySource:'healthkit'}})).toEqual({kcal:0,label:'Active calories',source:'watch'});
+ expect(activeCalories({source:'watch',details:{caloriesKcal:100,energySource:'healthkit'}})).toEqual({kcal:100,label:'Calories',source:null});
 });

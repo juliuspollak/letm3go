@@ -36,3 +36,15 @@ it('never drags past the detents even when the finger keeps going',()=>{
  expect(screen.getByRole('region',{name:'Activity details'})).toHaveAttribute('data-detent','medium');
  expect(Number(handle().getAttribute('aria-valuenow'))).toBeLessThanOrEqual(Number(handle().getAttribute('aria-valuemax')));
 });
+
+it('tracks a pointer without a height transition and restores detent snapping on release',()=>{
+ render(<ActivitySheet>Notes</ActivitySheet>);
+ const sheet=screen.getByRole('region',{name:'Activity details'});
+ expect(sheet.style.transition).toBe('');
+ fireEvent.pointerDown(handle(),{clientY:300});
+ expect(sheet.style.transition).toBe('none');
+ fireEvent.pointerMove(handle(),{clientY:240});
+ expect(sheet.style.transition).toBe('none');
+ fireEvent.pointerUp(handle(),{clientY:240});
+ expect(sheet.style.transition).toBe('');
+});

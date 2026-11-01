@@ -48,6 +48,7 @@ export default function ActivitySheet({initialDetent='medium',onDetentChange,chi
   onDetentChange?.(next);
  }
  function pointerDown(event){
+  setDragged(height);
   drag.current={startHeight:height,startY:event.clientY??0,lastY:event.clientY??0,lastAt:event.timeStamp||Date.now(),velocity:0};
   event.currentTarget.setPointerCapture?.(event.pointerId);
  }
@@ -75,7 +76,7 @@ export default function ActivitySheet({initialDetent='medium',onDetentChange,chi
   choose(adjacentDetent(detent,event.key==='ArrowUp'?1:-1));
  }
 
- return <section className="activity-sheet" data-detent={detent} style={sheetStyle(height)} aria-label={label}>
+ return <section className="activity-sheet" data-detent={detent} style={{...sheetStyle(height),transition:dragged==null?undefined:'none'}} aria-label={label}>
   <div className="activity-sheet-handle" role="slider" tabIndex={0}
    aria-label="Resize activity details" aria-orientation="vertical"
    aria-valuemin={sheetHeight(SHEET_DETENTS[0],viewport)}

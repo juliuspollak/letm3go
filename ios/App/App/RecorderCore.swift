@@ -41,6 +41,10 @@ struct RecordedActivity: Codable {
     var distanceMeters: Double = 0
     var source = "device"
     var title: String
+    // Captured when the journey starts, so photo timestamps are described in the
+    // timezone the activity happened in rather than wherever the phone is now.
+    // Optional: older saved journeys predate the field and fall back to the device.
+    var timezone: String?
     var recordingMode: String?
     var details: ActivityDetails?
     var equipment: [EquipmentRef]?
@@ -421,6 +425,27 @@ enum ActivityIdentity {
     static func matches(_ a: String, _ b: String) -> Bool { canonical(a) == canonical(b) }
 }
 
+// Local "not this photo" marks are reversible UI state, but the source asset IDs
+// are private to one person's library. The key therefore includes the signed-in
+// owner, and sign-out clears every mark so the next account can never inherit
+// local photo identifiers from the previous one.
+enum PhotoSuggestionSkips {
+    static let prefix = "letm3go-photo-skips-"
+    static func key(ownerID: String?, activityID: String) -> String {
+        "\(prefix)\((ownerID ?? "anonymous").lowercased())-\(activityID)"
+    }
+    static func legacyKey(activityID: String) -> String { "\(prefix)\(activityID)" }
+    static func remove(ownerID: String?, activityID: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key(ownerID: ownerID, activityID: activityID))
+        defaults.removeObject(forKey: legacyKey(activityID: activityID))
+    }
+    static func clearAll(defaults: UserDefaults = .standard) {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+}
+
 final class RecordingStorage {
     let directory: URL
     private let encoder = JSONEncoder()
@@ -607,6 +632,8 @@ struct ActivityPhoto: Codable {
     var longitude: Double?
     var captureTime: Double?
     var locationSource: String
+    // Account-private Photos identity; optional for existing recordings.
+    var assetID: String?
     var publicSelected = false
 }
 
@@ -2243,3 +2270,19 @@ struct LocationDiagnosticExport {
 // The Apple Watch transfer format, validation and queueing live in
 // WatchActivityCore.swift, which is compiled into the iPhone target, the watch
 // target and the native test binary so both sides cannot drift apart.
+
+// Storage is owner-specific. Never infer identical assets from nearby timestamps.
+extension ActivityDetails {
+    func containsPhotoAsset(_ identifier: String?) -> Bool {
+        guard let identifier, !identifier.isEmpty else { return false }
+        return photos.contains { $0.assetID == identifier }
+    }
+}
+
+extension ActivityPhoto {
+    // The bridge consumes URLs, not unlabelled base64 strings.
+    static func thumbnailDataURL(_ jpeg: Data?) -> String? {
+        guard let jpeg, !jpeg.isEmpty else { return nil }
+        return "data:image/jpeg;base64," + jpeg.base64EncodedString()
+    }
+}

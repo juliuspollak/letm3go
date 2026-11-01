@@ -22,7 +22,7 @@ export function surfaceGeometry(surface,win=typeof window==='undefined'?null:win
   width:Math.round(box.width*10)/10,
   height:Math.round(height*10)/10,
   pageY:Math.round((box.y+scrollY)*10)/10,
-  visible:box.width>MAP_MIN_EXTENT&&height>MAP_MIN_EXTENT&&box.bottom>0,
+  visible:box.width>MAP_MIN_EXTENT&&height>MAP_MIN_EXTENT,
  };
 }
 

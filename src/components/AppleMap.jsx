@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
 import MapControls from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
-import {recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
+import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
 import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
@@ -37,6 +37,14 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const [themeVersion,setThemeVersion]=useState(0);
  useEffect(()=>{const changed=()=>setThemeVersion(v=>v+1);window.addEventListener('letm3go:theme-changed',changed);return()=>window.removeEventListener('letm3go:theme-changed',changed);},[]);
  const [mapID]=useState(newUUID);
+ // Release the native map only when this component (or its mapID) really goes
+ // away. A dependency change that re-applies content must keep the live instance:
+ // unembedding it here would drop the camera the sheet is meant to preserve.
+ useEffect(()=>()=>{
+  if(!appleMapsAvailable())return;
+  if(embeddedOnce.current){recordMapEvent('unembed',{reason:'unmount'});void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>{void appleMaps.close({mapID}).catch(()=>{});});}
+  else void appleMaps.close({mapID}).catch(()=>{});
+ },[mapID]);
  const locateHandler=useRef(onLocate);useEffect(()=>{locateHandler.current=onLocate;},[onLocate]);
  const controlHandler=useRef(onControl);useEffect(()=>{controlHandler.current=onControl;},[onControl]);
  const hasLayers=Boolean(controls);
@@ -48,12 +56,11 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    .then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
  },[mapID,hasMapActions]);
- useEffect(()=>()=>{if(appleMapsAvailable()){recordMapEvent('unembed',{reason:'unmount'});void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
  // Read-only evidence for the performance notes and for a reviewer on a device:
  // window.letm3goMapDiagnostics() reports embed/resize/update/snapshot/hide/
  // unembed counts and frame times. Nothing is uploaded and nothing is sent
  // unless a diagnostics screen asks for it.
- useEffect(()=>{if(typeof window==='undefined')return undefined;window.letm3goMapDiagnostics=mapDiagnosticsSnapshot;return()=>{delete window.letm3goMapDiagnostics;};},[]);
+ useEffect(()=>installMapDiagnostics(mapDiagnosticsSnapshot),[]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
  // The people map reports its own camera changes (a gesture, an edge avatar, its
  // Show everyone button) so the requested mode survives a remount.
@@ -67,6 +74,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   return()=>{disposed=true;void listener?.remove();};
  },[mapID,hasCamera]);
  const photoPins=JSON.stringify(payload.pins);
+ // React render and overlay counts, so the claims about re-render cost and overlay
+ // drawing can be checked from the same counters as the native lifecycle.
+ useEffect(()=>{recordMapEvent('render');});
  // A listener must not be torn down and re-added every time somebody moves.
  const photoPinsRef=useRef([]);
  useEffect(()=>{try{photoPinsRef.current=JSON.parse(photoPins);}catch{photoPinsRef.current=[];}},[photoPins]);
@@ -81,7 +91,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   }).then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
  },[mapID]);
- const data=JSON.stringify(payload);
+ // The whole payload is re-serialised on every movement anyway; the value that
+// matters here is content *structure*, so the heavy string is not kept around and
+// a live position update must not force a new snapshot.
  const interactiveData=JSON.stringify(trimRange?.points?.length>1?(()=>{
   const points=trimRange.points.slice(trimRange.start,trimRange.end+1).filter(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
   if(points.length<2)return payload;
@@ -101,14 +113,15 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const latestContent=useMemo(()=>JSON.parse(interactiveData),[interactiveData]);
  const contentRef=useRef(latestContent);
  useEffect(()=>{contentRef.current=latestContent;},[latestContent]);
- const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
+ const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
+ const snapshotKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
  useEffect(()=>{
   if(!appleMapsAvailable()||picker||!embeddedOnce.current)return;
   recordMapEvent('update');void appleMaps.update({...latestContent,mapID}).catch(()=>{});
  },[latestContent,mapID,picker,embedded]);
  useEffect(()=>{
   if(!appleMapsAvailable()||picker)return;
-  if(!embeddedEnabled){embeddedOnce.current=false;void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>setEmbedded(false));return;}
+  if(!embeddedEnabled){const wasEmbedded=embeddedOnce.current;embeddedOnce.current=false;if(wasEmbedded)recordMapEvent('unembed',{reason:'disabled'});void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>setEmbedded(false));return;}
   let active=true;let previous='';
   // The overview data must reach the native side before a payload names it.
   // false: the overview did not arrive, so it is left out of this embed rather
@@ -117,7 +130,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   const content=contentRef.current;
   const positions=content.routes.some(route=>route.length)||content.pins.length>0;
   const focus=Boolean(content.focus);
-  const mount=()=>{
+  const mount=(origin)=>{
    if(!active||openingFullscreen.current||!mapSurface.current)return;
    const surface=mapSurface.current;
    const dialog=document.querySelector('dialog[open], [aria-modal="true"], [role="dialog"], .lightbox');
@@ -130,13 +143,14 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    // The sheet closed: show the live map again (the embed below follows).
    if(hiddenForDialog.current){hiddenForDialog.current=false;previous='';void appleMaps.hide({mapID,hidden:false}).catch(()=>{});}
    if(document.visibilityState==='hidden'){
-    previous='';embeddedOnce.current=false;setEmbedded(false);setFrozen(null);
-    void appleMaps.unembed({mapID}).catch(()=>{});return;
+    previous='';
+    if(embeddedOnce.current){embeddedOnce.current=false;recordMapEvent('unembed',{reason:'hidden'});void appleMaps.unembed({mapID}).catch(()=>{});}
+    setEmbedded(false);setFrozen(null);return;
    }
    const geometry=surfaceGeometry(surface,window);
    if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const key=geometryKey(geometry);
-   if(key===previous)return;
+   if(key===previous){if(origin==='scroll')recordMapEvent('scroll-ignored');return;}
    // A sheet detent, rotation or keyboard changes only the frame. Moving the map
    // the person is already looking at keeps its camera, overlays, selection and
    // gestures and costs one frame-sized bridge call instead of a full content
@@ -175,27 +189,39 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   };
   // The detail page animates into place; ResizeObserver alone does not see
   // transforms. Follow its initial movement before leaving layout to observers.
+  // Frame durations are sampled around the interactions that can stutter: page
+  // entry, a page scroll and a sheet drag. Sampling runs only while something is
+  // moving, so the numbers describe the gesture instead of idle time.
   let frame;const until=performance.now()+500;let lastFrameAt=performance.now();
-  const settle=()=>{const now=performance.now();recordMapFrame(now-lastFrameAt);lastFrameAt=now;mount();if(active&&performance.now()<until)frame=requestAnimationFrame(settle);};
+  let sampleFrame=null,samplingUntil=0;
+  // Frame sampling is only useful for a measurement. Without the opt-in flag the
+  // page-scroll and mutation observers must not start a rAF loop per interaction.
+  const diagnostics=mapDiagnosticsEnabled();
+  const tick=()=>{const now=performance.now();recordMapFrame(now-lastFrameAt);lastFrameAt=now;sampleFrame=now<samplingUntil?requestAnimationFrame(tick):null;};
+  const sampleFor=milliseconds=>{if(!diagnostics)return;samplingUntil=Math.max(samplingUntil,performance.now()+milliseconds);if(!sampleFrame){lastFrameAt=performance.now();sampleFrame=requestAnimationFrame(tick);}};
+  const settle=()=>{const now=performance.now();if(diagnostics)recordMapFrame(now-lastFrameAt);lastFrameAt=now;mount();if(active&&performance.now()<until)frame=requestAnimationFrame(settle);};
   frame=requestAnimationFrame(settle);
-  const mutations=new MutationObserver(()=>mount());
+  const mutations=new MutationObserver(()=>{sampleFor(300);mount();});
   mutations.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','aria-modal','role']});
-  const observer=new ResizeObserver(mount);if(mapSurface.current)observer.observe(mapSurface.current);
+  const observer=new ResizeObserver(()=>{sampleFor(300);mount();});if(mapSurface.current)observer.observe(mapSurface.current);
   const resized=()=>mount();
   window.addEventListener('resize',resized);
   // A page scroll moves the native map with the WebView's own scroll view, so the
   // listener only has to handle maps inside an inner scroll container. mount()
-  // compares document-space geometry, so an ordinary page scroll costs nothing.
-  window.addEventListener('scroll',resized,{passive:true,capture:true});
+  // compares document-space geometry, so an ordinary page scroll costs nothing -
+  // and is counted as such, which is what backs the "scrolls are free" claim.
+  const scrolled=()=>{sampleFor(600);mount('scroll');};
+  window.addEventListener('scroll',scrolled,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
-  return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
+  return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
  },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
  const endIndex=trimRange&&projected.length>1?Math.max(startIndex+1,Math.min(projected.length-1,Math.round(trimRange.end/(trimRange.points.length-1)*(projected.length-1)))):0;
  const selected=trimRange&&projected.length>1?projected.slice(startIndex,endIndex+1):[];
- useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...JSON.parse(data),trimPreview:isTrimPreview,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[data,large,themeVersion,isTrimPreview,overviewKey,overviewAttempt,embedded]);
+ useEffect(()=>{if(selected.length>1)recordMapEvent('overlay',{points:selected.length});},[selected.length]);
+ useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...contentRef.current,trimPreview:isTrimPreview,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{recordMapEvent('snapshot');if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[snapshotKey,large,themeVersion,isTrimPreview,overviewKey,overviewAttempt,embedded]);
  async function open(){
   if(busy)return;
   setBusy(true);setError('');
@@ -203,6 +229,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   try{
    // MapKit fullscreen presentation can appear blank while another live MKMapView
    // overlays the Capacitor WebView. Release that view before presenting.
+   if(embeddedOnce.current){recordMapEvent('unembed',{reason:'fullscreen'});embeddedOnce.current=false;}
    await appleMaps.unembed({mapID}).catch(()=>{});
    setEmbedded(false);
    const arrived=overviewKey?await sendOverview(overviewData.current).then(()=>true,()=>false):true;

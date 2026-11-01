@@ -1,10 +1,20 @@
+# Phase 02 execution context
+
+Phase 01 used its five real developer calls and is BLOCKED, not complete. The current code compiles and its frozen checks passed, but the actual Codex/Claude reports retain software defects. Carry these unchanged as global release blockers; do not lower severity or mark them accepted. This phase independently implements ALL section 4 Watch energy requirements and any regressions caused by that implementation. Earlier unrelated defects remain tracked for the already-approved final cross-feature integration phase; phase-02 acceptance is not overall release acceptance. Read docs/activity-experience-v2-review-findings.md and the release gates before editing.
+
+Begin implementation immediately after tracing the actual existing pipeline. Do not rewrite the orchestrator or merely document a proposal. Use existing watch ownership/outbox/finish guarantees; energy work must never block durable route saves. Do not estimate energy from HR/distance. Distinguish measured zero, unavailable, pending, active vs total and explicit joule/kcal units. HealthKit read denial is deliberately indistinguishable from absent readable samples; do not claim denial merely from no result or from write authorization status. Account-unverified energy needs the same strict private quarantine/ownership policy as existing heart rate.
+
+The current summary accepts explicit activeEnergyKcal and only labels HealthKit provenance when details.energySource is healthkit; align persisted/bridge fields with an explicit tested schema. Unknown-unit generic calories/activeEnergy are not valid kcal. The actual November ride is unavailable: explain code-confirmed causes separately from that ride's unknown data. Never mutate its history or run production queries. If cloud schema support is needed, prepare/test LOCAL ONLY, feature-gate unsupported remote payloads and hold migration approval. Do not pretend cloud support is live.
+
+Required evidence: actual targeted/new/full tests; native Swift core tests; supported unsigned iOS AND Watch builds; both independent actual reviews and automatic fixes up to five attempts. Preserve permanent regression tests and recording/privacy guarantees. Keep logs in .build. No other agents invoked by Cline itself, no source branch changes, no push/merge/deploy/TestFlight/remote SQL. The complete original phase contract and full master spec follow.
+
 # Activity Experience v2 phased execution contract
 
 The user has authorized FULL implementation of the original specification, through four sequential implementation phases. This wrapper schedules work; it does not remove any original requirement. The full unmodified specification is embedded below and remains authoritative.
 
 CURRENT PHASE: 02-watch-energy
 
-Trace and implement the complete Watch active/total energy collection, transport, persistence and honest Activity Details rendering requirements in section 4. Preserve the verified phase-1 map/photo implementation and all recording durability guarantees. Sections 5-7 remain pending for subsequent phases.
+Trace and implement the complete Watch active/total energy collection, transport, persistence and honest Activity Details rendering requirements in section 4. Preserve the phase-1 map/photo working checkpoint (its independent gate remains BLOCKED) and all recording durability guarantees. Sections 5-7 remain pending for subsequent phases.
 
 Developer: audit BEFORE source edits, then implement this phase completely and add meaningful regression tests. Maintain docs/activity-experience-v2-progress.md with exact requirement IDs, evidence and outstanding work. Create/update all five required delivery docs. Run the required existing/new tests and attempt supported local iOS/Watch builds with output in ignored .build artifacts. Never report unavailable hardware, actual user activity, frame-time/battery measurements or simulator interaction as verified. Do not access production credentials, remote databases, actual historical user data or apply SQL. Work exclusively in /Users/juliuspollak/Projects/letm3go-ai on the existing feature branch; do not change branches. No push, merge, deployment, TestFlight or remote SQL. Local commits allowed; do not edit the runner/tests for the runner, disable checks or invoke other AI agents.
 
