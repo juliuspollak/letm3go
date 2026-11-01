@@ -95,7 +95,7 @@ export function internalStops(t,context){
  }
  return result;
 }
-export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),places=[],vehicles=[],telemetry=[]}={}){
+export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),places=[],vehicles=[],telemetry=[],projectionCache=null}={}){
  // All callers must supply the authenticated owner and an account-scoped input set.
  if(!owner)return {journeys:[],suggestions:[]};
  if(metadata.owner!==owner)metadata=emptyGrouping(owner);
@@ -134,11 +134,18 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   const merged=[...groups[a],...groups[b]].sort((x,y)=>x.startedAt-y.startedAt||x.id.localeCompare(y.id));
   groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
+ if(projectionCache){const live=new Set(sorted.map(s=>`${owner}:${s.id}`));for(const key of projectionCache.keys())if(!live.has(key))projectionCache.delete(key);}
  const journeys=groups.map(segments=>{
-  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);
+  if(segments.length===1){const s=segments[0],cacheID=`${owner}:${s.id}`,previous=projectionCache?.get(cacheID);
+   const keys=previous?.source===s?previous.keys:[...new Set((s.points||[]).map(placeKey))];
+   const recordKey=JSON.stringify(keys.map(key=>metadata.places[key]));
+   const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],metadata.stopEdits]);
+   if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
+   const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=internalStops(s,context);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
    const generatedTitle=destinationTitle(s.activity,recognition.primary)||((from.nearbyName||to.nearbyName)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<100):null);
-   return {...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,internalStops(s,context)),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:internalStops(s,context)};}
+   const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
+   projectionCache?.set(cacheID,{source:s,keys,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>internalStops(t,context));
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}

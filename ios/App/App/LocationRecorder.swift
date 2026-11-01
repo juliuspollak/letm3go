@@ -1118,10 +1118,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         dict["durationSeconds"] = trip.duration(at: Date().timeIntervalSince1970)
         return dict
     }
-    func snapshot() -> [String: Any] {
+    func snapshot(historyToken supplied: String? = nil) -> [String: Any] {
         let info = Bundle.main.infoDictionary ?? [:]
         let bindingDiagnostics: [String: Any] = ["ownerPresent":ownerID != nil,"uiUnlocked":uiUnlocked,"storeOpened":storeOpened,"storageHandlePresent":storage != nil,"accountSuspended":accountSuspended,"accountDeleting":accountDeleting]
         guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"nativeBinding":bindingDiagnostics,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
+        let token = RecorderHistoryFingerprint.token(trips, owner: ownerID!)
+        let unchanged = supplied == token
         let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
         // An open journey whose GPS was stopped is "interrupted", never "recording".
         let automaticStateName: String
@@ -1167,7 +1169,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "recordingHealth":recordingHealthSnapshot,
                 "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
-                "active": active.map(dictionary) as Any? ?? NSNull(), "trips": trips.map(dictionary),
+                "active": active.map(dictionary) as Any? ?? NSNull(), "trips": unchanged ? [] : trips.map(dictionary),
+                "historyToken": token, "historyUnchanged": unchanged,
                 "permission": permission, "precise": manager.accuracyAuthorization == .fullAccuracy,
                 "locationServices": locationServicesAvailable,
                 "backgroundEnabled": manager.allowsBackgroundLocationUpdates,
@@ -1208,6 +1211,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "assignTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRouteDisplay", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "deleteActivities", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addHistorical", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pickPhotos", returnType: CAPPluginReturnPromise),
@@ -1244,7 +1248,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     // web UI needs this read-only status to diagnose failed account binding.
     @objc func getState(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            call.resolve(LocationRecorder.shared.snapshot())
+            call.resolve(LocationRecorder.shared.snapshot(historyToken: call.getString("historyToken")))
         }
     }
     func requireAccount(_ call: CAPPluginCall) -> Bool {
@@ -1273,8 +1277,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 (trip.source == "device" || (trip.source == "watch" && trip.recordingMode == "watch")), trip.endedAt != nil, trip.points.count <= 50000,
                 trip.startedAt.isFinite, (trip.endedAt ?? 0).isFinite,
                 trip.distanceMeters.isFinite, trip.distanceMeters >= 0 else { call.reject("Invalid recovery record."); return }
-            if r.trips.contains(where:{$0.id == trip.id}) { call.resolve(["restored":false,"existing":true]); return }
-            guard !(try storage.deletedIDs()).contains(trip.id) else { call.reject("This activity was intentionally deleted on this device."); return }
+            if r.trips.contains(where:{ActivityIdentity.matches($0.id,trip.id)}) { call.resolve(["restored":false,"existing":true]); return }
+            guard !(try storage.isDeleted(trip.id)) else { call.reject("This activity was intentionally deleted on this device."); return }
             try storage.save(trip)
             r.trips.append(trip); r.trips.sort{$0.startedAt > $1.startedAt}
             call.resolve(["restored":true])
@@ -1297,7 +1301,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             var details=trip.details ?? ActivityDetails()
             guard details.photos.count < 50 else { call.reject("Activity photo limit reached."); return }
             details.photos.append(ActivityPhoto(id:photoID,filename:filename,caption:call.getString("caption") ?? "",latitude:call.getDouble("latitude"),longitude:call.getDouble("longitude"),captureTime:nil,locationSource:call.getString("locationSource") ?? "unlocated"))
-            trip.details=details
+            trip.details=details;trip.updatedAt=Date().timeIntervalSince1970
             try storage.save(trip);r.trips[index]=trip
             call.resolve(["restored":true])
         } catch { call.reject("Could not restore photo safely.") }

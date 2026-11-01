@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { recordedJourney, visibleRecorderJourneys, provisionalJourney, speedLabel, paceLabel } from './recorder.js';
+import { recordedJourney,localRecorderJourneys, visibleRecorderJourneys, provisionalJourney, speedLabel, paceLabel } from './recorder.js';
 it('preserves native provenance and pause gaps without fabricating route points',()=>{
  const trip=recordedJourney({id:'real',startedAt:1000,source:'device',title:'Walk',points:[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:1}],distanceMeters:1000,durationSeconds:600});
  expect(trip.source).toBe('device');
@@ -69,4 +69,18 @@ it('projects the same quality-aware geometry for live and historical recordings 
  expect(live.points).toBe(raw.points);expect(live.route).toHaveLength(5);
  expect(live.distanceMeters).toBe(120);expect(live.durationSeconds).toBe(60);expect(live.activity).toBe('Driving');
  expect(JSON.stringify(raw)).toBe(before);
+});
+
+it('projects own Watch records and reuses unchanged routes when another activity arrives',()=>{
+ const cache=new WeakMap(),watch={id:'watch',source:'watch',title:'Watch bike',activity:'Cycling',startedAt:100,endedAt:200,points:[],distanceMeters:100,durationSeconds:100,details:{}};
+ const first=localRecorderJourneys({ownerID:'owner',trips:[watch]},'owner',cache);
+ expect(first[0].source).toBe('watch');
+ const second=localRecorderJourneys({ownerID:'owner',trips:[watch,{...watch,id:'phone',source:'device'}]},'owner',cache);
+ expect(second[0]).toBe(first[0]);
+ expect(localRecorderJourneys({ownerID:'other',trips:[watch]},'owner',cache)).toEqual([]);
+});
+
+it('keeps a completed visible list stable across unrelated live status polls',()=>{
+ const known=[{id:'watch',source:'watch'}];
+ expect(visibleRecorderJourneys(known,{ownerID:'owner',trips:[]},'owner')).toBe(known);
 });

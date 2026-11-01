@@ -1,8 +1,8 @@
 import {act,cleanup,renderHook,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({getState:vi.fn(),addListener:vi.fn(),onJourneysChanged:vi.fn(),remove:vi.fn(),foreground:null,journeysChanged:null}));
+const mocks=vi.hoisted(()=>({getState:vi.fn(),deleteActivity:vi.fn(),addListener:vi.fn(),onJourneysChanged:vi.fn(),remove:vi.fn(),foreground:null,journeysChanged:null}));
 vi.mock('@capacitor/app',()=>({App:{addListener:mocks.addListener}}));
-vi.mock('./recorder.js',()=>({emptyRecorder:{trips:[]},recorderAvailable:()=>true,onJourneysChanged:mocks.onJourneysChanged,recorder:{getState:mocks.getState}}));
+vi.mock('./recorder.js',()=>({emptyRecorder:{trips:[]},recorderAvailable:()=>true,onJourneysChanged:mocks.onJourneysChanged,recorder:{getState:mocks.getState,deleteActivity:mocks.deleteActivity}}));
 import {useRecorder} from './useRecorder.js';
 const snapshot=(trips=[])=>({ownerID:'owner',trips});
 beforeEach(()=>{
@@ -91,4 +91,39 @@ it('exposes native bridge errors instead of claiming there are no recorded journ
  mocks.getState.mockRejectedValue(new Error('ManualRecorder bridge unavailable'));
  const {result}=renderHook(()=>useRecorder('owner'));
  await waitFor(()=>expect(result.current.error).toContain('ManualRecorder bridge unavailable'));
+});
+
+it('a late pre-delete poll cannot restore a deleted activity in the UI',async()=>{
+ mocks.getState.mockResolvedValue(snapshot([{id:'delete-me',updatedAt:1}]));
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.trips).toHaveLength(1));
+ let complete; mocks.getState.mockImplementationOnce(()=>new Promise(resolve=>{complete=resolve;}));
+ await act(async()=>mocks.foreground({isActive:true}));
+ mocks.deleteActivity.mockResolvedValue(snapshot([]));
+ await act(async()=>result.current.run('deleteActivity','delete-me'));
+ expect(mocks.deleteActivity).toHaveBeenCalledWith('delete-me','owner');
+ await act(async()=>complete(snapshot([{id:'delete-me',updatedAt:1}])));
+ expect(result.current.state.trips).toEqual([]);
+});
+it('requests incremental native history after the first full snapshot',async()=>{
+ mocks.getState.mockResolvedValue({...snapshot([{id:'watch'}]),historyToken:'history-v1'});
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.trips).toHaveLength(1));
+ const original=result.current.state.trips;
+ mocks.getState.mockResolvedValue({...snapshot([]),historyToken:'history-v1',historyUnchanged:true,currentSpeed:2});
+ await act(async()=>mocks.foreground({isActive:true}));
+ expect(mocks.getState).toHaveBeenLastCalledWith({historyToken:'history-v1'});
+ expect(result.current.state.trips).toBe(original);
+});
+
+it('does not display an obsolete polling failure after a successful deletion',async()=>{
+ mocks.getState.mockResolvedValue(snapshot([{id:'delete-me',updatedAt:1}]));
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.trips).toHaveLength(1));
+ let fail;mocks.getState.mockImplementationOnce(()=>new Promise((resolve,reject)=>{fail=reject;}));
+ await act(async()=>mocks.foreground({isActive:true}));
+ mocks.deleteActivity.mockResolvedValue(snapshot([]));
+ await act(async()=>result.current.run('deleteActivity','delete-me'));
+ await act(async()=>fail(new Error('Old polling failure')));
+ expect(result.current.state.trips).toEqual([]);expect(result.current.error).toBe('');
 });

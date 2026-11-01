@@ -24,3 +24,15 @@ export function tripMatchReason(trip,query,vehicles){
  for(const [label,value] of [['Title',trip.title],['Location',trip.location],['Notes',trip.notes],['Collection',trip.collection],['Date',trip.date]])if(value?.toLowerCase().includes(q))return {label:'Matched '+label.toLowerCase(),value};
  return {label:'Matched trip details',value:q};
 }
+
+// Local account-owned recordings only. A grouped journey deletes its originals;
+// provider/shared rows cannot be passed to a private native delete operation.
+export function deletionIDs(trip){
+ if(!trip||trip.readOnly||trip.state==='recording')return [];
+ if(trip.isGroupedJourney){
+  const segments=trip.segments||[];
+  if(!segments.length||segments.some(s=>!deletionIDs(s).length))return [];
+  return [...new Set(segments.flatMap(deletionIDs))];
+ }
+ return trip.endedAt!=null&&['device','watch','simulator'].includes(trip.source)?[trip.id]:[];
+}

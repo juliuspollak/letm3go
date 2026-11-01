@@ -124,15 +124,39 @@ extension LocationRecorder {
         trips[index] = trimmed
     }
     func deleteActivity(_ id: String) throws {
-        guard let storage = storage, trips.contains(where: { $0.id == id }) else { throw failure("Activity not found.") }
-        let photos = trips.first { $0.id == id }?.details?.photos ?? []
+        guard let storage = storage else { throw failure("Activity storage is unavailable.") }
+        if !trips.contains(where: { ActivityIdentity.matches($0.id,id) }) {
+            if try storage.isDeleted(id) { return }
+            throw failure("Activity not found.")
+        }
+        guard active.map({ActivityIdentity.matches($0.id,id)}) != true,
+              automaticTrip.map({ActivityIdentity.matches($0.id,id)}) != true else { throw failure("Finish the recording before deleting it.") }
+        guard let record = trips.first(where: { ActivityIdentity.matches($0.id,id) }), record.endedAt != nil, record.state != "recording",
+              ["device", "watch", "simulator"].contains(record.source) else { throw failure("Finish your local recording before deleting it.") }
+        let photos = trips.filter { ActivityIdentity.matches($0.id,id) }.flatMap { $0.details?.photos ?? [] }
         try storage.delete(id)
         UserDefaults.standard.removeObject(forKey:"letm3go-photo-skips-\(id)")
-        trips.removeAll { $0.id == id }
+        trips.removeAll { ActivityIdentity.matches($0.id,id) }
         // A deleted stopped journey must not be continued or restored later.
-        if settledTripID == id { settleStateReset(); cleanupContinuationRegion(); departureEvidence.reset() }
+        if settledTripID.map({ActivityIdentity.matches($0,id)}) == true { settleStateReset(); cleanupContinuationRegion(); departureEvidence.reset() }
         notifyJourneyChange()
         for photo in photos { try? FileManager.default.removeItem(at:storage.directory.appendingPathComponent("media").appendingPathComponent(photo.filename)) }
+    }
+    func deleteActivities(_ ids: [String]) throws {
+        guard let storage, !ids.isEmpty, ids.count <= 500 else { throw failure("Choose activities to delete.") }
+        let deleted = try storage.deletedIDs()
+        // Validate the whole request before any deletion; only this private
+        // account's completed journal records can be removed.
+        for id in Set(ids) where !deleted.contains(ActivityIdentity.canonical(id)) {
+            guard active.map({ActivityIdentity.matches($0.id,id)}) != true,
+                  automaticTrip.map({ActivityIdentity.matches($0.id,id)}) != true else { throw failure("Finish the recording before deleting it.") }
+            guard let trip = trips.first(where: { ActivityIdentity.matches($0.id,id) }), trip.endedAt != nil, trip.state != "recording",
+                  ["device", "watch", "simulator"].contains(trip.source) else { throw failure("Only your completed local recordings can be deleted.") }
+        }
+        for id in Set(ids) {
+            do { try deleteActivity(id) }
+            catch { throw failure("Some activities could not be deleted. Deleted activities stay deleted; retry to finish the remaining activities.") }
+        }
     }
     func historical(title: String, activity: String, startedAt: Double, seconds: Double, meters: Double, vehicle: String?, vehicleID: String? = nil) throws {
         guard let storage = storage, startedAt.isFinite, seconds.isFinite, meters.isFinite,
@@ -199,6 +223,7 @@ extension LocationRecorder {
         guard let storage = storage, let index = trips.firstIndex(where: { $0.id == id }) else { throw failure("Activity not found.") }
         var trip = trips[index]
         guard trip.resolveUnverifiedHeartRate(accept: accept) else { return }
+        trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip)
         trips[index] = trip
         recordDiagnostic("watch", accept ? "Held heart rate accepted" : "Held heart rate removed")
@@ -229,9 +254,9 @@ extension LocationRecorder {
         if let ref = activity.equipment?.first, let item = collectionItem(id: ref.id, name: ref.name) {
             activity.assignEquipment([EquipmentRef(id: item.id, name: item.name)])
         }
-        if trips.contains(where: { $0.id == activity.id }) { return .duplicate }
+        if trips.contains(where: { ActivityIdentity.matches($0.id,activity.id) }) { return .duplicate }
         // A deleted ride must not be resurrected by a late retry from the watch.
-        if (try? storage!.deletedIDs())?.contains(activity.id) == true { return .duplicate }
+        if (try? storage!.isDeleted(activity.id)) == true { return .duplicate }
         // Offline recordings that share time with this one are named, never merged
         // or removed: the rider decides which to keep.
         let overlaps = CrossDeviceRecording.overlaps(startedAt: transfer.startedAt, endedAt: transfer.endedAt, id: activity.id,
@@ -443,8 +468,16 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             call.resolve(LocationRecorder.shared.snapshot())
         } catch { call.reject(error.localizedDescription) }
     } }
+    @objc func deleteActivities(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID else { call.reject("Account changed. Nothing was deleted."); return }
+        guard let ids = call.getArray("ids", String.self) else { call.reject("Choose activities to delete."); return }
+        do { try LocationRecorder.shared.deleteActivities(ids); call.resolve(LocationRecorder.shared.snapshot()) }
+        catch { call.reject(error.localizedDescription) }
+    } }
     @objc func deleteActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
+        if let owner = call.getString("ownerID"), owner.lowercased() != LocationRecorder.shared.ownerID { call.reject("Account changed. Nothing was deleted."); return }
         do { try LocationRecorder.shared.deleteActivity(call.getString("id") ?? ""); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func addHistorical(_ call: CAPPluginCall) { DispatchQueue.main.async {

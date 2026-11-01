@@ -37,7 +37,7 @@ export const recorder = {
   shareDiagnosticLog:()=>native.shareDiagnosticLog(),
   exportJourneyDiagnostics:journeyID=>native.exportJourneyDiagnostics({journeyID}),
 
- getState:()=>recorderAvailable()?native.getState():Promise.resolve(emptyRecorder),
+ getState:options=>recorderAvailable()?(options?native.getState(options):native.getState()):Promise.resolve(emptyRecorder),
  configureLiveSharing:params=>recorderAvailable()?native.configureLiveSharing(params):Promise.resolve(),
  restoreActivity:activity=>native.restoreActivity({activity}),
  restorePhoto:params=>native.restorePhoto(params),
@@ -76,7 +76,8 @@ export const recorder = {
  // Named segments: references into a recording's own fixes; never change it.
  saveNamedSegment:params=>native.saveNamedSegment(params),
  deleteNamedSegment:params=>native.deleteNamedSegment(params),
- deleteActivity:id=>native.deleteActivity({id}),
+ deleteActivities:(ids,ownerID)=>native.deleteActivities({ids,ownerID}),
+ deleteActivity:(id,ownerID)=>native.deleteActivity({id,...(ownerID?{ownerID}:{})}),
  addHistorical:trip=>native.addHistorical({...trip,activity:activityCode(trip.activity)}),
  pickPhotos:id=>native.pickPhotos({id}),
  editPhoto:params=>native.editPhoto(params),
@@ -95,7 +96,7 @@ export function recordedJourney(trip) {
  // No observation fit to draw: the journey says so instead of joining rejected fixes.
  const routeSegments=recordedRouteSegments(visiblePoints,{automatic:trip.recordingMode==='automatic',fleet:trip.recordingMode==='tesla'});
  const photos=(trip.localPhotos||[]).map(p=>({...p,url:p.privateURI,point:p.latitude!=null&&p.longitude!=null?[p.latitude,p.longitude]:null,caption:p.caption||'A moment along the way'}));
- return {...trip,recordedTitle:trip.title,visibleRouteStart:start,visibleRouteEnd:end,provisional:details.provisional===true,trail:trailSummary(trip),continuationEndsAt:Number.isFinite(details.continuationEndsAt)?details.continuationEndsAt:null,title:activityTitle(trip),titleIsAutomatic:automaticTitle(trip),location:details.startPlace&&details.endPlace?`${details.startPlace} → ${details.endPlace}`:trip.source==='simulator'?'Simulator recording':'Recorded on this iPhone',date:date.toLocaleDateString('en-CA'),distance:Math.round(trip.distanceMeters/100)/10,minutes:Math.floor(trip.durationSeconds/60),durationSeconds:trip.durationSeconds,elevation:0,description:details.description||'',notes:details.notes||'',collection:details.collection||'',classification:details.classification,corrected:details.userCorrected||false,visibility:details.visibility||'private',tags:details.tags||[],route:routeSegments.length?visiblePoints.map(p=>[p.latitude,p.longitude]):[],routeSegments,photos,cover:photos.find(p=>p.id===details.coverPhotoID)?.url||null};
+ return {...trip,recordedTitle:trip.title,visibleRouteStart:start,visibleRouteEnd:end,provisional:details.provisional===true,trail:trailSummary(trip),continuationEndsAt:Number.isFinite(details.continuationEndsAt)?details.continuationEndsAt:null,title:activityTitle(trip),titleIsAutomatic:automaticTitle(trip),location:details.startPlace&&details.endPlace?`${details.startPlace} → ${details.endPlace}`:trip.source==='simulator'?'Simulator recording':trip.source==='watch'?'Recorded on Apple Watch':'Recorded on this iPhone',date:date.toLocaleDateString('en-CA'),distance:Math.round(trip.distanceMeters/100)/10,minutes:Math.floor(trip.durationSeconds/60),durationSeconds:trip.durationSeconds,elevation:0,description:details.description||'',notes:details.notes||'',collection:details.collection||'',classification:details.classification,corrected:details.userCorrected||false,visibility:details.visibility||'private',tags:details.tags||[],route:routeSegments.length?visiblePoints.map(p=>[p.latitude,p.longitude]):[],routeSegments,photos,cover:photos.find(p=>p.id===details.coverPhotoID)?.url||null};
 }
 // Arrival confirmation can outlast the drive. Present its saved GPS immediately,
 // without adding unfinished activities to grouping, cloud sync or sharing inputs.
@@ -107,6 +108,12 @@ export const provisionalJourney = state => (state?.trips||[]).find(trip=>trip.de
 export const onJourneysChanged = handler => recorderAvailable()&&typeof native.addListener==='function'
  ? native.addListener('journeysChanged',handler)
  : Promise.resolve(null);
+export function localRecorderJourneys(state,owner,cache=new WeakMap()){
+ if(state.ownerID&&state.ownerID.toLowerCase()!==owner.toLowerCase())return [];
+ return (state.trips||[]).filter(t=>['device','watch','simulator'].includes(t.source)&&(!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id).toLowerCase()===owner.toLowerCase())).map(t=>{
+  let value=cache.get(t);if(!value){value=recordedJourney(t);cache.set(t,value);}return value;
+ });
+}
 export function visibleRecorderJourneys(journeys,state,ownerID){
  const known=journeys||[];
  const owned=ownerID&&state.ownerID?.toLowerCase()===ownerID.toLowerCase();
@@ -115,6 +122,7 @@ export function visibleRecorderJourneys(journeys,state,ownerID){
  // invisible while the continuation window is open.
  const stopped=owned?(state.trips||[]).filter(t=>t.source==='device'&&t.details?.provisional===true):[];
  const recording=owned&&state.automaticTrip&&state.automaticTrip.source==='device'?[state.automaticTrip]:[];
+ if(!stopped.length&&!recording.length)return known;
  return [...stopped,...recording]
   .filter(trip=>!known.some(j=>j.id===trip.id||j.segmentIDs?.includes(trip.id)))
   .map(recordedJourney)

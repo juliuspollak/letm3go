@@ -72,3 +72,16 @@ it('retains original segment titles, corrections, notes and route gaps after mer
 it('lets users remove inferred stop tags or dismiss a congestion stop and undo the decision',()=>{
  const {activities,meta}=setup(),context={activities,owner,vehicles};const stop=build(activities,meta).journeys[0].stops[0];let next=changeGrouping(meta,{type:'stop',id:stop.id,name:'Break',tags:['My stop'],replaceTags:true},context);expect(build(activities,next).journeys[0].stops[0].tags).toEqual(['My stop']);next=changeGrouping(next,{type:'stop',id:stop.id,name:'Break',tags:[],ignored:true},context);expect(build(activities,next).journeys[0].stops.some(s=>s.id===stop.id)).toBe(false);expect(build(activities,changeGrouping(next,{type:'undo'},context)).journeys[0].stops.some(s=>s.id===stop.id)).toBe(true);
 });
+
+it('reuses a projection across unrelated place updates and invalidates relevant evidence',()=>{
+ const metadata=emptyGrouping(owner),projectionCache=new Map(),places=[],vehicles=[],telemetry=[];
+ const activity={id:'cache-walk',source:'device',activity:'Walking',recordingMode:'manual',title:'Walking · 1 Nov 2026 at 10:47 am',startedAt:100,endedAt:200,state:'finished',tags:[],points:[p(-34,151,100),p(-34.001,151,200)]};
+ const options={owner,metadata,projectionCache,places,vehicles,telemetry};
+ const first=buildJourneys([activity],options).journeys[0];
+ const other=structuredClone(metadata);other.places.unrelated={locality:'Elsewhere'};
+ expect(buildJourneys([activity],{...options,metadata:other}).journeys[0]).toBe(first);
+ other.places[placeKey(activity.points[0])]={nearbyName:'Named trailhead'};
+ const changed=buildJourneys([activity],{...options,metadata:other}).journeys[0];
+ expect(changed).not.toBe(first);expect(changed.tags).toContain('Named trailhead');
+ buildJourneys([],{...options,metadata:other});expect(projectionCache.size).toBe(0);
+});

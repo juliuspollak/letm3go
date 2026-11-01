@@ -3665,4 +3665,36 @@ if let index = CommandLine.arguments.firstIndex(of: "--watch-exclusion-replay"),
     check(excluded == input["expectedExcludedStarts"] as! Int, "private historical automatic starts inside Watch ownership are all excluded")
     print("Private replay: \(excluded) overlapping automatic starts excluded; completed recordings unchanged.")
 }
+do {
+    var record = RecordedActivity(activity: "Cycling", startedAt: 1000, resumedAt: nil, title: "Watch ride")
+    record.source = "watch"; record.finish(at: 1100)
+    let token = RecorderHistoryFingerprint.token([record], owner: "owner")
+    check(token == RecorderHistoryFingerprint.token([record], owner: "owner"), "unchanged history has a stable poll token")
+    check(token != RecorderHistoryFingerprint.token([record], owner: "other"), "history tokens cannot cross account boundaries")
+    check(token != RecorderHistoryFingerprint.token([], owner: "owner"), "deletion invalidates the history response")
+    record.updatedAt = 1200
+    check(token != RecorderHistoryFingerprint.token([record], owner: "owner"), "metadata edits invalidate cached history")
+    let beforePhoto = RecorderHistoryFingerprint.token([record], owner: "owner")
+    record.updateDetails { $0.photos.append(ActivityPhoto(id: "synthetic-photo", filename: "synthetic.jpg", caption: "Synthetic", latitude: nil, longitude: nil, captureTime: nil, locationSource: "unlocated")) }
+    check(beforePhoto != RecorderHistoryFingerprint.token([record], owner: "owner"), "photo restoration invalidates history even without a timestamp advance")
+    let beforeHealth = RecorderHistoryFingerprint.token([record], owner: "owner")
+    record.updateDetails { $0.heartRate = ActivityHeartRate(samples: [WatchHeartRateSample(timestamp: 1050, bpm: 100)], pausePeriods: []) }
+    check(beforeHealth != RecorderHistoryFingerprint.token([record], owner: "owner"), "accepted health samples invalidate history without traversing their values")
+
+}
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("delete-identity-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = try RecordingStorage(directory: directory)
+    var record = RecordedActivity(activity: "Walking", startedAt: 1000, resumedAt: nil, title: "Synthetic")
+    record.id = "ABCDEFAB-1234-4567-89AB-ABCDEFABCDEF";record.finish(at: 1100)
+    try store.save(record)
+    try store.delete(record.id.lowercased())
+    check(try! store.isDeleted(record.id), "deletion tombstones use canonical activity UUIDs")
+    check(try! store.isDeleted(record.id.lowercased()), "case variants are the same deleted activity")
+    check((try! store.load()).isEmpty, "all UUID-case payload aliases are excluded after deletion")
+    var lateRestore=record;lateRestore.id=record.id.lowercased()
+    do {try store.save(lateRestore);check(false,"a restored lowercase alias must not resurrect a deleted activity")}catch{check(true,"delayed restored UUID aliases remain deleted")}
+    check(ActivityIdentity.matches(record.id,record.id.lowercased()), "Watch retry duplicate detection shares canonical identity")
+}
 print("\(assertions) native recorder/auth assertions passed")

@@ -393,3 +393,33 @@ describe('Activities filters',()=>{
   expect(screen.getByRole('button',{name:'Activity filters'})).toBeInTheDocument();
  });
 });
+
+it('shows an imported Watch ride in Trips and permits opening and deleting it',async()=>{
+ signedIn();
+ const ride={id:'watch-bike',source:'watch',recordingMode:'watch',title:'Watch bike ride',activity:'MTB',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:500,points:[],details:{}};
+ const run=vi.fn().mockResolvedValue({trips:[]});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[ride]},run,busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:'Open Watch bike ride'}));
+ expect(screen.getByRole('heading',{name:'Watch bike ride'})).toBeInTheDocument();
+ expect(screen.getByText('Recorded on Apple Watch')).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Delete activity'})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Back to activities'}));
+ fireEvent.click(screen.getByRole('button',{name:'Delete: Watch bike ride'}));
+ expect(run).not.toHaveBeenCalled();
+ fireEvent.click(within(screen.getByRole('dialog',{name:'Delete activity'})).getByRole('button',{name:'Delete activity'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('deleteActivity','watch-bike'));
+});
+
+it('confirms the number of originals before deleting a grouped journey',async()=>{
+ signedIn();const run=vi.fn().mockResolvedValue({trips:[]});
+ const make=(id,start)=>({id,source:'device',recordingMode:'automatic',activity:'Driving',title:'Driving',vehicleID:'same-car',startedAt:start,endedAt:start+100,durationSeconds:100,distanceMeters:10000,details:{},points:[{latitude:-34,longitude:151,timestamp:start,accuracy:5},{latitude:-34.001,longitude:151,timestamp:start+100,accuracy:5}]});
+ const a=make('a',1000),b=make('b',1120);b.points[0]={...a.points[1],timestamp:1120};
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[a,b]},run,busy:false,error:''});
+ render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:/^Delete:/}));
+ expect(screen.getByText('This deletes all 2 original activities in this journey.')).toBeInTheDocument();
+ expect(run).not.toHaveBeenCalled();
+ fireEvent.click(within(screen.getByRole('dialog',{name:'Delete activity'})).getByRole('button',{name:'Delete activity'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('deleteActivities',['a','b']));
+});

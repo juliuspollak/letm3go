@@ -386,6 +386,29 @@ enum JourneySplit {
     }
 }
 
+// Polling history identity is computed without encoding routes, photos or health
+// arrays. Native journal mutation paths advance updatedAt; live/provisional fields
+// are included explicitly. Account identity is part of the cache boundary.
+enum RecorderHistoryFingerprint {
+    static func token(_ trips: [RecordedActivity], owner: String) -> String {
+        let rows = trips.map { trip -> [String] in
+            var fields = [trip.id, trip.source, trip.title, trip.activity, trip.state, trip.recordingMode ?? ""]
+            fields += [String(trip.updatedAt ?? 0), String(trip.startedAt), String(trip.endedAt ?? 0), String(trip.points.count)]
+            fields += [String(trip.accumulatedSeconds), String(trip.distanceMeters), String(trip.details?.provisional ?? false), String(trip.details?.continuationEndsAt ?? 0)]
+            fields += [String(trip.details?.photos.count ?? 0), String(trip.details?.heartRate?.samples.count ?? 0), String(trip.details?.unverifiedHeartRate?.samples.count ?? 0)]
+            fields += [String(trip.details?.visibleRouteStart ?? -1), String(trip.details?.visibleRouteEnd ?? -1), trip.details?.coverPhotoID ?? ""]
+            return fields
+        }
+        let data = (try? JSONEncoder().encode([[owner]] + rows)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum ActivityIdentity {
+    static func canonical(_ id: String) -> String { UUID(uuidString: id)?.uuidString ?? id }
+    static func matches(_ a: String, _ b: String) -> Bool { canonical(a) == canonical(b) }
+}
+
 final class RecordingStorage {
     let directory: URL
     private let encoder = JSONEncoder()
@@ -415,18 +438,23 @@ final class RecordingStorage {
     var tombstonesURL: URL { directory.appendingPathComponent("deletions.log") }
     func deletedIDs() throws -> Set<String> {
         guard FileManager.default.fileExists(atPath:tombstonesURL.path) else { return [] }
-        return Set(String(decoding:try readData(name:"deletions.log"),as:UTF8.self).split(separator:"\n").map(String.init))
+        return Set(String(decoding:try readData(name:"deletions.log"),as:UTF8.self).split(separator:"\n").map { ActivityIdentity.canonical(String($0)) })
     }
+    func isDeleted(_ id: String) throws -> Bool { try deletedIDs().contains(ActivityIdentity.canonical(id)) }
     func delete(_ id: String) throws {
         guard UUID(uuidString:id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
-        var ids = try deletedIDs(); ids.insert(id)
+        var ids = try deletedIDs(); ids.insert(ActivityIdentity.canonical(id))
         let data = Data((ids.sorted().joined(separator:"\n")+"\n").utf8)
         try writeData(data,name:"deletions.log")
-        let url = directory.appendingPathComponent("\(id).json")
-        if FileManager.default.fileExists(atPath:url.path) { try FileManager.default.removeItem(at:url) }
+        // Remove UUID-case aliases on case-sensitive filesystems too. The
+        // tombstone is already durable before any payload is removed.
+        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            where url.pathExtension == "json" && ActivityIdentity.matches(url.deletingPathExtension().lastPathComponent, id) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
     func save(_ trip: RecordedActivity) throws {
-        guard UUID(uuidString:trip.id) != nil, !(try deletedIDs()).contains(trip.id) else { throw CocoaError(.fileWriteNoPermission) }
+        guard UUID(uuidString:trip.id) != nil, !(try isDeleted(trip.id)) else { throw CocoaError(.fileWriteNoPermission) }
         let data = try encoder.encode(trip)
         try writeData(data,name:"\(trip.id).json")
     }
@@ -435,7 +463,7 @@ final class RecordingStorage {
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil }
             .map { try decoder.decode(RecordedActivity.self, from: readData(name:$0.lastPathComponent)) }
-            .filter { !deleted.contains($0.id) }
+            .filter { !deleted.contains(ActivityIdentity.canonical($0.id)) }
             .sorted { $0.startedAt > $1.startedAt }
     }
 }

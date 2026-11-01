@@ -14,13 +14,13 @@ function tripKey(t){
  // distanceMeters, state) plus everything `updatedAt` reflects (edits, route trim,
  // equipment, photos). The visible-route indices are listed explicitly as defence
  // in case a future trim path forgets to advance `updatedAt`.
- return [t.id,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length].join(':');
+ return [t.id,t.source,t.recordingMode,t.title,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length,t.details?.heartRate?.samples?.length,t.details?.unverifiedHeartRate?.samples?.length,t.details?.titleEdited].join(':');
 }
 export function snapshotKey(data){
  if(!data)return '';
  const svc=data.trackingServices||{};
  return [
-  data.ownerID,data.permission,data.precise,data.storageReady,JSON.stringify(data.recordingHealth),
+  data.ownerID,data.historyToken,data.sharedActivity,data.permission,data.precise,data.storageReady,JSON.stringify(data.recordingHealth),
   data.automaticEnabled,data.automaticAvailable,data.automaticVerified,
   data.automaticState,data.automaticSampling,data.automaticSettledTripID,
   data.automaticSettledAt,data.automaticContinuationEndsAt,
@@ -29,7 +29,7 @@ export function snapshotKey(data){
   data.gpsReason,data.indicatorRequested,data.lastTrackingEvent,data.lastTrackingEventAt,
   data.locationMode,data.locationIndicator?.reason,
   data.automaticPendingWalk,data.place?.state,data.place?.radiusMeters,data.place?.settled,data.place?.lastDecision,
-  data.recordingElsewhere?.sessionID,data.recordingElsewhere?.state,
+  data.recordingElsewhere?.sessionID,data.recordingElsewhere?.state,data.recordingElsewhere?.activity,
   data.error,data.recovery,data.accuracy,data.lastFixAt,data.currentSpeed,
   tripKey(data.active),tripKey(data.automaticTrip),
   (data.trips||[]).map(tripKey).join('|'),
@@ -46,13 +46,29 @@ export function snapshotKey(data){
  data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt
  ].join('~');
 }
+// Preserve immutable history across live-status polls. This also supports older
+// native builds returning full arrays: unchanged records retain their identities.
+export function reconcileRecorderSnapshot(previous,data){
+ const sameOwner=(previous?.ownerID||'').toLowerCase()===(data.ownerID||'').toLowerCase();
+ if(data.historyUnchanged){
+  if(!sameOwner||!data.historyToken||data.historyToken!==previous?.historyToken)throw new Error('Activity history cache changed. Refresh to reload your activities.');
+  data={...data,trips:previous.trips,historyUnchanged:false};
+ }
+ if(!sameOwner)return data;
+ const old=new Map((previous.trips||[]).map(t=>[t.id,t]));
+ const trips=(data.trips||[]).map(t=>{const prior=old.get(t.id);return prior&&tripKey(prior)===tripKey(t)?prior:t;});
+ const stable=trips.length===previous.trips?.length&&trips.every((t,i)=>t===previous.trips[i]);
+ const places=JSON.stringify(data.places||[])===JSON.stringify(previous.places||[])?previous.places:data.places;
+ const deletedIDs=(data.deletedIDs||[]).join('|')===(previous.deletedIDs||[]).join('|')?previous.deletedIDs:data.deletedIDs;
+ return {...data,trips:stable?previous.trips:trips,places,deletedIDs};
+}
 function lockedSnapshot(data){
  return {...emptyRecorder,version:data?.version||emptyRecorder.version,build:data?.build||emptyRecorder.build,permission:data?.permission||'locked',storageReady:false,nativeBinding:data?.nativeBinding||null,error:data?.error||''};
 }
 
 export function useRecorder(ownerID,onBindingRequired){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const lastKey=useRef('');
+ const lastKey=useRef(''),accepted=useRef(emptyRecorder),generation=useRef(0),readRequest=useRef(0),actionSequence=useRef(0);
  const rebindAttempt=useRef(null);
  const requestRebind=useCallback(actualOwner=>{
   if(!ownerID||!onBindingRequired)return;
@@ -63,6 +79,8 @@ export function useRecorder(ownerID,onBindingRequired){
  },[ownerID,onBindingRequired]);
  useEffect(()=>{
   recorder.forgetPosition?.();
+  generation.current+=1;
+  if(accepted.current.ownerID!==ownerID){accepted.current=emptyRecorder;lastKey.current='';}
   let alive=true,pending=false,requestID=0,startedAt=0;
   async function refresh(force=false){
    if(!alive||(!force&&document.visibilityState==='hidden'))return;
@@ -70,9 +88,11 @@ export function useRecorder(ownerID,onBindingRequired){
    // foreground event starts a fresh read; late responses cannot replace it.
    if(pending&&!force&&Date.now()-startedAt<10000)return;
    const id=++requestID;pending=true;startedAt=Date.now();
+   const epoch=generation.current,request=++readRequest.current;
    try{
-    const data=await recorder.getState();
-    if(!alive||id!==requestID)return;
+    const incoming=await recorder.getState(accepted.current.historyToken?{historyToken:accepted.current.historyToken}:undefined);
+    if(!alive||id!==requestID||epoch!==generation.current||request!==readRequest.current)return;
+    const data=incoming;
     if(recorderAvailable()&&ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
      lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);throw new Error(data.ownerID?'Private recorder account does not match this sign-in. Activity storage remains locked.':'Native activity storage is locked / not bound to this sign-in. Existing recordings were not cleared.');
     }
@@ -80,11 +100,11 @@ export function useRecorder(ownerID,onBindingRequired){
     setError('');
     // Skip an identical poll: keeps the state reference stable so memoised
     // journey lists and maps do not recompute while nothing actually changed.
-    const key=snapshotKey(data);
+    const next=reconcileRecorderSnapshot(accepted.current,data),key=snapshotKey(next);
     if(key===lastKey.current)return;
-    lastKey.current=key;
-    setState(data);
-   }catch(err){if(alive&&id===requestID)setError(err.message||'Unable to read native recorder.');}
+    lastKey.current=key;accepted.current=next;
+    setState(next);
+   }catch(err){if(alive&&id===requestID&&epoch===generation.current&&request===readRequest.current)setError(err.message||'Unable to read native recorder.');}
    finally{if(id===requestID)pending=false;}
   }
   const visible=()=>{if(document.visibilityState!=='hidden')void refresh(true);};
@@ -95,22 +115,39 @@ export function useRecorder(ownerID,onBindingRequired){
   // Native pushes settle/continue/finish events, so a journey appears in History
   // as soon as it is published instead of on the next poll or app restart.
   void onJourneysChanged(()=>void refresh(true)).then(handle=>{if(alive)journeyListener=handle;else void handle?.remove();}).catch(()=>{});
-  return()=>{recorder.forgetPosition?.();alive=false;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
+  return()=>{recorder.forgetPosition?.();alive=false;generation.current+=1;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID,requestRebind]);
- const run=useCallback(async(method,...args)=>{setBusy(true);setError('');try{const result=await recorder[method](...args);if(result?.trips){if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){setState(lockedSnapshot(result));requestRebind(result.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');}setState(result);}return result||true;}catch(err){setError(err.message||'Recording action failed.');return null;}finally{setBusy(false);}},[ownerID,requestRebind]);
+ const run=useCallback(async(method,...args)=>{
+  const epoch=++generation.current,action=++actionSequence.current;setBusy(true);setError('');
+  try{
+   const result=await recorder[method](...args,...(['deleteActivity','deleteActivities'].includes(method)?[ownerID]:[]));
+   if(epoch!==generation.current)return null;
+   if(result?.trips){
+    if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
+     accepted.current=emptyRecorder;lastKey.current='';setState(lockedSnapshot(result));requestRebind(result.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');
+    }
+    const next=reconcileRecorderSnapshot(accepted.current,result);accepted.current=next;lastKey.current=snapshotKey(next);setState(next);
+   }
+   generation.current+=1; // also reject polls started while the mutation ran
+   return result||true;
+  }catch(err){if(epoch!==generation.current)return null;generation.current+=1;setError(err.message||'Recording action failed.');return null;}finally{if(action===actionSequence.current)setBusy(false);}
+ },[ownerID,requestRebind]);
  // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the
  // debug-only counters (trackingUsage, recorderDiagnostics) refresh on open even
  // though they are excluded from routine polling.
  const refresh=useCallback(async()=>{
   if(!recorderAvailable())return;
+  const epoch=generation.current,request=++readRequest.current;
   try{
    const data=await recorder.getState();
+   if(epoch!==generation.current||request!==readRequest.current)return;
    if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);setError(data.ownerID?'Private recorder account does not match this sign-in. Activity storage remains locked.':'Native activity storage is locked / not bound to this sign-in. Existing recordings were not cleared.');return;}
    rebindAttempt.current=null;
    setError('');
-   lastKey.current=snapshotKey(data);
-   setState(data);
-  }catch(err){setError(err.message||'Unable to read native recorder.');}
+   const next=reconcileRecorderSnapshot(accepted.current,data);accepted.current=next;
+   lastKey.current=snapshotKey(next);
+   setState(next);
+  }catch(err){if(epoch===generation.current&&request===readRequest.current)setError(err.message||'Unable to read native recorder.');}
  },[ownerID,requestRebind]);
 
  return {state,run,busy,error,refresh};
