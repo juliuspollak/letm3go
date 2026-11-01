@@ -51,6 +51,10 @@ try {
       if (r.status !== 0) throw new Error(cmd + ' CLI not found on PATH.');
     }
   }
+  if (dryRun) {
+    console.log('DRY RUN: would run Cline (configured DeepSeek), Codex review, web/native checks' + (ios ? ', and unsigned iOS build' : '') + '. No agent commands run.');
+    save(); process.exit(0);
+  }
   const base = git('merge-base', 'HEAD', 'main');
   const schema = {
     type: 'object',
@@ -81,6 +85,7 @@ try {
       '\nDo not declare success without running available checks.';
     const implement = run('cline', ['--auto-approve','true',prompt], 'cline-' + cycle);
     if (implement.status !== 0 || implement.error) throw new Error('Cline failed. See run logs.');
+    if (git('branch', '--show-current') !== branch) throw new Error('Cline changed the active branch; stopping.');
     const diff = git('diff', base, 'HEAD', '--stat') + '\n' + git('status', '--short');
     if (!diff.trim()) throw new Error('No implementation changes detected.');
     const reviewOut = join(dir, 'review-' + cycle + '.json');
@@ -90,6 +95,7 @@ try {
       'List reproducible findings with concrete evidence and locations. Do not edit any files.';
     const review = run('codex', ['exec','--sandbox','read-only','--output-schema',schemaPath,'--output-last-message',reviewOut,reviewPrompt], 'codex-review-' + cycle);
     if (review.status !== 0 || review.error || !existsSync(reviewOut)) throw new Error('Codex review failed or missing structured report.');
+    if (git('branch', '--show-current') !== branch) throw new Error('Branch changed during review; stopping.');
     let verdict;
     try { verdict = JSON.parse(readFileSync(reviewOut,'utf8')); }
     catch { throw new Error('Invalid Codex review JSON.'); }
