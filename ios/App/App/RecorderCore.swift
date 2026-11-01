@@ -386,6 +386,18 @@ enum JourneySplit {
     }
 }
 
+// Ends an open draft at the last real fix before a manual recording began. Nothing
+// is interpolated; a draft with no usable route left is discarded by finishAutomatic.
+enum ManualDraftClosure {
+    static func truncated(_ trip: RecordedActivity, before start: Double) -> RecordedActivity {
+        if let kept = JourneySplit.kept(trip, before: start) { return kept }
+        var before = trip
+        before.points = trip.points.filter { $0.timestamp < start }
+        before.distanceMeters = before.measuredDistance
+        return before
+    }
+}
+
 // Polling history identity is computed without encoding routes, photos or health
 // arrays. Native journal mutation paths advance updatedAt; live/provisional fields
 // are included explicitly. Account identity is part of the cache boundary.

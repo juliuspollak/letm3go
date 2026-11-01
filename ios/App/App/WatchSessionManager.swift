@@ -27,12 +27,17 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     var watchRecording: RecordingPresence? {
         loadInbox()
         if WCSession.isSupported(), WCSession.default.activationState == .activated,
-           let delivered = RecordingPresence(dictionary: WCSession.default.receivedApplicationContext["recording"]), delivered.device == RecordingPresence.watch {
+           var delivered = RecordingPresence(dictionary: WCSession.default.receivedApplicationContext["recording"]), delivered.device == RecordingPresence.watch {
+            delivered.heardAt = Date().timeIntervalSince1970
             let merged = CrossDeviceRecording.merged(heardWatchRecording, delivered)
             if heardWatchRecording != merged {
                 heardWatchRecording = merged; state.recording = merged
                 persistInbox()
             }
+        }
+        if let held = CrossDeviceRecording.confirmingExpiry(heardWatchRecording, now: Date().timeIntervalSince1970) {
+            heardWatchRecording = held; state.recording = held
+            persistInbox()
         }
         return heardWatchRecording
     }
@@ -104,13 +109,14 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     }
 
     private func receive(presence value: Any?) {
-        guard let presence = RecordingPresence(dictionary: value), presence.device == RecordingPresence.watch else { return }
+        guard var presence = RecordingPresence(dictionary: value), presence.device == RecordingPresence.watch else { return }
         loadInbox()
+        presence.heardAt = Date().timeIntervalSince1970
         let previous = heardWatchRecording
         let merged = CrossDeviceRecording.merged(previous, presence)
         heardWatchRecording = merged
         if previous != merged { state.recording = merged; persistInbox() }
-        LocationRecorder.shared.reconcileWatchRecordingExclusion()
+        LocationRecorder.shared.reconcileManualExclusion()
         LocationRecorder.shared.confirmHouseholdLocation()
         guard previous?.state != merged.state || previous?.activity != merged.activity else { return }
         LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch recording state changed", details: ["watchRecording": merged.state])
@@ -135,15 +141,20 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     // rides in a device-wide inbox. Nothing is acknowledged: the watch keeps its own
     // copy and re-offers it when an account is open again.
     func clearPending() {
+        // Which recording is open on the Watch is not a ride. Forgetting it would let
+        // a relaunch start automatic recording beside it.
         state = WatchInboxState()
+        state.recording = heardWatchRecording
         persistInbox()
     }
 
     private func loadInbox() {
-        guard !loaded else { return }
+        guard !loaded, !store.unreadable else { return }
         loaded = true
         state = store.load()
-        heardWatchRecording = state.recording
+        // Anything heard while the inbox was still unreadable is newer than the file.
+        heardWatchRecording = heardWatchRecording.map { CrossDeviceRecording.merged(state.recording, $0) } ?? state.recording
+        state.recording = heardWatchRecording
     }
 
     // Returns false when the inbox could not be written; callers must not
@@ -255,6 +266,12 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         guard persistInbox() else {
             state = previous
             return
+        }
+        // The ride can arrive first, and it can be what wakes a locked iPhone.
+        if let ended = CrossDeviceRecording.finished(heardWatchRecording, sessionID: transfer.id, startedAt: transfer.startedAt, endedAt: transfer.endedAt) {
+            heardWatchRecording = ended; state.recording = ended
+            persistInbox()
+            LocationRecorder.shared.reconcileManualExclusion()
         }
         flush()
     }

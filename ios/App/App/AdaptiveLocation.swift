@@ -170,7 +170,7 @@ extension LocationRecorder: AdaptiveHost {
             placeRegionRegistered: registeredPlaceRegion != nil,
             journeyRecording: automaticActivelyRecording || active?.state == "recording",
             sessionHeld: backgroundActivitySession != nil,
-            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording",
+            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: active?.state == "recording",
                 passiveRest: locationMode == .passive, liveSharing: liveSharingArmed) || !storeOpened,
             restRegionWanted: restDecision.confirmed && passiveRestEnabled && serviceSession != nil)
         var found = AdaptiveInvariants.violations(observed)

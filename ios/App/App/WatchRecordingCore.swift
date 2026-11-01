@@ -214,6 +214,13 @@ struct RecordingPresence: Codable, Equatable {
     var state: String
     var startedAt: Double
     var updatedAt: Double
+    // This iPhone's clock when the update arrived. Never sent: it keeps the ownership
+    // lease bounded when the two devices disagree about the time.
+    var heardAt: Double? = nil
+    // Set when the lease is first seen to have passed. A relaunched or resumed iPhone
+    // reads its saved presence before WatchConnectivity hands over newer ones, so
+    // silence is only believed after this. Never sent, and any new packet clears it.
+    var leaseHeldUntil: Double? = nil
 
     var isActive: Bool { state == "recording" || state == "paused" }
     var deviceName: String { device == Self.watch ? "Apple Watch" : "iPhone" }
@@ -255,7 +262,11 @@ enum CrossDeviceRecording {
     // Ownership is deliberately longer than live-icon freshness. Going out of
     // range must not grant the phone permission to record a second activity.
     // Explicit completion releases immediately; an abandoned session is bounded.
+    // Silence alone never ends a recording before this: an unreachable Watch is a
+    // Watch that is still recording. It can only ever hold for this long, because a
+    // clock cannot extend it (leaseAnchor) and nothing is kept beyond it.
     static let automaticOwnershipLease = 12 * 3600.0
+    static let leaseConfirmation = 60.0
 
     // The other device's recording, when it is known, current and this account's.
     static func active(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> RecordingPresence? {
@@ -280,13 +291,66 @@ enum CrossDeviceRecording {
     static func suppressesAutomaticStart(remote: RecordingPresence?, ownerID: String?, now: Double) -> Bool {
         automaticOwner(remote, ownerID: ownerID, now: now) != nil
     }
+    // The lease runs from whichever is earlier: a late packet is as old as it says,
+    // and a Watch clock running ahead cannot push the end of the lease into the future.
+    static func leaseAnchor(_ remote: RecordingPresence) -> Double {
+        min(remote.updatedAt, remote.heardAt ?? remote.updatedAt)
+    }
+    // Same-account, or a recording the Watch could not attribute yet: it records for
+    // whichever account is open when it arrives (WatchInboxState), so it counts here.
+    // Only a different account has no claim on this recorder.
     static func automaticOwner(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> RecordingPresence? {
         guard let remote, remote.device == RecordingPresence.watch, remote.isActive,
-              let owner = WatchOwnership.normalize(ownerID), WatchOwnership.normalize(remote.ownerID) == owner,
-              !remote.sessionID.isEmpty, remote.startedAt.isFinite, remote.startedAt > 0,
-              remote.startedAt <= remote.updatedAt, remote.updatedAt - now <= clockTolerance,
-              now - remote.updatedAt <= automaticOwnershipLease else { return nil }
+              let owner = WatchOwnership.normalize(ownerID), remote.updatedAt.isFinite else { return nil }
+        if let claimed = WatchOwnership.normalize(remote.ownerID), claimed != owner { return nil }
+        let anchor = leaseAnchor(remote)
+        guard anchor - now <= clockTolerance, now - anchor <= automaticOwnershipLease || now < (remote.leaseHeldUntil ?? 0) else { return nil }
         return remote
+    }
+    // The presence with its one bounded confirmation started, or nil if none is due.
+    // Saved with the presence, so repeated relaunches cannot hold the lease open.
+    static func confirmingExpiry(_ remote: RecordingPresence?, now: Double) -> RecordingPresence? {
+        guard var remote, remote.device == RecordingPresence.watch, remote.isActive, remote.leaseHeldUntil == nil,
+              now - leaseAnchor(remote) > automaticOwnershipLease else { return nil }
+        remote.leaseHeldUntil = now + leaseConfirmation
+        return remote
+    }
+    // The finished ride itself proves the recording ended, if its end packet is late.
+    static func finished(_ remote: RecordingPresence?, sessionID: String, startedAt: Double, endedAt: Double) -> RecordingPresence? {
+        guard var remote, remote.device == RecordingPresence.watch, remote.isActive,
+              remote.sessionID.lowercased() == sessionID.lowercased() else { return nil }
+        remote.state = "idle"; remote.startedAt = startedAt
+        remote.updatedAt = max(endedAt, remote.updatedAt)
+        remote.leaseHeldUntil = nil
+        return remote
+    }
+    // The actual recording start. A packet without one is closed at the earliest
+    // moment it proves the recording existed.
+    static func manualStart(_ remote: RecordingPresence) -> Double {
+        remote.startedAt.isFinite && remote.startedAt > 0 && remote.startedAt <= remote.updatedAt ? remote.startedAt : remote.updatedAt
+    }
+    // The one answer to "does a manual recording own this iPhone?". A local recording
+    // needs no lease: it ends only through this app, and it survives a relaunch.
+    static func exclusion(local: RecordingPresence?, remote: RecordingPresence?, ownerID: String?, now: Double) -> ManualRecordingExclusion? {
+        if let local, local.device == RecordingPresence.iPhone, local.isActive {
+            return ManualRecordingExclusion(device: local.device, sessionID: local.sessionID, activity: local.activity, state: local.state,
+                                            startedAt: local.startedAt, heardRecently: true, leaseEndsAt: nil)
+        }
+        guard let remote = automaticOwner(remote, ownerID: ownerID, now: now) else { return nil }
+        let anchor = leaseAnchor(remote)
+        return ManualRecordingExclusion(device: remote.device, sessionID: remote.sessionID, activity: remote.activity, state: remote.state,
+                                        startedAt: manualStart(remote), heardRecently: now - anchor <= freshness,
+                                        leaseEndsAt: anchor + automaticOwnershipLease)
+    }
+    // Where an open automatic draft must end, or nil when it can stay open. A
+    // terminal packet can arrive first, so a finished interval closes a draft too.
+    static func closingStart(exclusion: ManualRecordingExclusion?, remote: RecordingPresence?, ownerID: String?,
+                             draftStartedAt: Double?, settledStartedAt: Double?, unfinishedClosure: Double? = nil, now: Double) -> Double? {
+        guard let opened = [draftStartedAt, settledStartedAt].compactMap({ $0 }).min() else { return nil }
+        if let exclusion { return exclusion.startedAt }
+        if let interval = completedInterval(remote, ownerID: ownerID, now: now), opened < interval.upperBound { return interval.lowerBound }
+        // A closure that failed still has to happen after its owner has gone.
+        return unfinishedClosure
     }
     static func completedInterval(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> ClosedRange<Double>? {
         guard let remote, remote.device == RecordingPresence.watch, remote.state == "idle",
@@ -315,6 +379,11 @@ enum CrossDeviceRecording {
     // already said the recording ended.
     static func merged(_ current: RecordingPresence?, _ incoming: RecordingPresence) -> RecordingPresence {
         guard let current, current.device == incoming.device else { return incoming }
+        // The same packet again, by another route, keeps its first arrival time.
+        if current.updatedAt == incoming.updatedAt, current.state == incoming.state, current.sessionID == incoming.sessionID { return current }
+        // A later idle says nothing new, and must not erase the finished interval that
+        // keeps delayed fixes out and closes a draft whose save failed.
+        if current.state == "idle", !current.sessionID.isEmpty, incoming.state == "idle", incoming.sessionID.isEmpty { return current }
         if current.updatedAt > incoming.updatedAt { return current }
         // At an equal timestamp termination wins, independently of delivery order.
         if current.updatedAt == incoming.updatedAt {
@@ -326,6 +395,96 @@ enum CrossDeviceRecording {
     }
     static func overlapSeconds(_ startA: Double, _ endA: Double, _ startB: Double, _ endB: Double) -> Double {
         max(0, min(endA, endB) - max(startA, startB))
+    }
+}
+
+// MARK: - Manual recording exclusion
+
+// One manual recording, on either device, owns this iPhone. There is one of these at
+// most, and the automatic engine runs only while there is none.
+struct ManualRecordingExclusion: Equatable {
+    var device: String
+    var sessionID: String
+    var activity: String
+    var state: String
+    var startedAt: Double
+    // False once a Watch has gone quiet: still owned, now on the bounded lease.
+    var heardRecently: Bool
+    var leaseEndsAt: Double?
+
+    func sameSession(as other: ManualRecordingExclusion) -> Bool { device == other.device && sessionID == other.sessionID }
+}
+
+enum ManualExclusionRelease: String, Equatable {
+    case finished = "the manual recording ended"
+    case leaseExpired = "nothing was heard from Apple Watch for the whole ownership lease"
+    case ownerChanged = "the recording does not belong to this account"
+}
+
+enum ManualExclusionChange: Equatable {
+    case none
+    case acquired(ManualRecordingExclusion)
+    case transferred(ManualRecordingExclusion)
+    case wentQuiet, heardAgain
+    case released(ManualExclusionRelease)
+    // Only these change which services should run.
+    var changesServices: Bool {
+        switch self {
+        case .acquired, .transferred, .released: return true
+        case .none, .wentQuiet, .heardAgain: return false
+        }
+    }
+}
+
+// Rebuilt from the local recording and the persisted Watch presence, so it needs no
+// storage of its own: a relaunch re-derives the same owner and suspends again.
+struct ManualExclusionGate: Equatable {
+    private(set) var current: ManualRecordingExclusion?
+
+    mutating func update(local: RecordingPresence?, remote: RecordingPresence?, ownerID: String?, now: Double) -> ManualExclusionChange {
+        let previous = current
+        let next = CrossDeviceRecording.exclusion(local: local, remote: remote, ownerID: ownerID, now: now)
+        current = next
+        switch (previous, next) {
+        case (nil, nil): return .none
+        case (nil, let next?): return .acquired(next)
+        case (let previous?, nil):
+            guard previous.device == RecordingPresence.watch else { return .released(.finished) }
+            return .released(Self.reason(remote, ownerID: ownerID))
+        case (let previous?, let next?):
+            if !previous.sameSession(as: next) { return .transferred(next) }
+            if previous.heardRecently == next.heardRecently { return .none }
+            return next.heardRecently ? .heardAgain : .wentQuiet
+        }
+    }
+    private static func reason(_ remote: RecordingPresence?, ownerID: String?) -> ManualExclusionRelease {
+        guard let remote, remote.device == RecordingPresence.watch else { return .finished }
+        if remote.isActive == false { return .finished }
+        if let claimed = WatchOwnership.normalize(remote.ownerID), claimed != WatchOwnership.normalize(ownerID) { return .ownerChanged }
+        return .leaseExpired
+    }
+}
+
+// What may run while a manual recording owns the iPhone. Detection never does.
+// Significant change stays because it is the only wake left once the Watch is out of
+// reach: it delivers no route, starts no check, and is what lets a locked iPhone
+// notice the end of a recording or the lease, and a relaunch find this state again.
+struct ManualExclusionServices: Equatable {
+    enum Location: String, Equatable { case manualRecording, liveSharing, off }
+
+    var location: Location
+    var motion: Bool
+    var significantChange: Bool
+    let visits = false
+    let placeRegions = false
+    let departureChecks = false
+    let lowPowerStandby = false
+    let passiveRest = false
+
+    static func plan(phoneManual: Bool, phoneRecording: Bool, liveSharing: Bool, automaticPermitted: Bool) -> ManualExclusionServices {
+        ManualExclusionServices(location: phoneRecording ? .manualRecording : liveSharing ? .liveSharing : .off,
+                                motion: phoneManual || liveSharing,
+                                significantChange: automaticPermitted || liveSharing)
     }
 }
 

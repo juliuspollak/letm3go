@@ -216,7 +216,8 @@ extension LocationRecorder {
         RecordingHealth.services(requested: automaticAvailable && significantLocationRequested && visitMonitoringRequested,
             significantSupported: CLLocationManager.significantLocationChangeMonitoringAvailable(),
             regionsSupported: CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
-            regionsHeld: manager.monitoredRegions.count, monitoringFailed: monitoringFailures.active)
+            regionsHeld: manager.monitoredRegions.count, monitoringFailed: monitoringFailures.active,
+            manualExclusion: automaticPermitted && manualExclusion.current != nil)
     }
     var recordingHealthSnapshot: [String: Any] {
         let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
@@ -279,7 +280,7 @@ extension LocationRecorder {
     }
     func reconcileServiceSession(_ reason: String) {
         guard #available(iOS 18.0, *) else { serviceSessionState = "unsupported"; return }
-        let wanted = automaticAvailable && passiveRestEnabled && manager.authorizationStatus == .authorizedAlways
+        let wanted = automaticPermitted && passiveRestEnabled && manager.authorizationStatus == .authorizedAlways
         let foreground = UIApplication.shared.applicationState == .active
         if wanted {
             // A session created in the background (or reported insufficiently in

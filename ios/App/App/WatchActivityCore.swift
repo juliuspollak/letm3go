@@ -1594,6 +1594,10 @@ final class WatchInboxStore {
         return WatchInboxState()
     }
 
+    // Before the first unlock after a restart the file exists but cannot be read.
+    // That is not an empty inbox: the caller loads again later instead of adopting it.
+    var unreadable: Bool { backend.exists(inboxPath) && (try? backend.read(inboxPath)) == nil }
+
     // Throws so the caller never acknowledges a ride the phone has not stored.
     func save(_ state: WatchInboxState) throws {
         try backend.createDirectory(directory)

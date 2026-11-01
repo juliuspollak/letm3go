@@ -222,10 +222,12 @@ struct RecordingHealthReport: Equatable {
 enum RecordingHealth {
     // What the recorder can show about its wake-ups. `registered` means iOS lists
     // a region as monitored; significant changes and visits offer no such proof.
-    static func services(requested: Bool, significantSupported: Bool, regionsSupported: Bool, regionsHeld: Int, monitoringFailed: Bool) -> String {
+    static func services(requested: Bool, significantSupported: Bool, regionsSupported: Bool, regionsHeld: Int, monitoringFailed: Bool, manualExclusion: Bool = false) -> String {
         if !significantSupported || !regionsSupported { return "unsupported" }
         // Checked first: a failure is still open when the request state changes.
         if monitoringFailed { return "failed" }
+        // Deliberately stopped for a manual recording, which is not a fault to report.
+        if manualExclusion { return "manualRecording" }
         if !requested { return "notRequested" }
         return regionsHeld > 0 ? "registered" : "requested"
     }

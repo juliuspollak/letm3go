@@ -23,7 +23,7 @@ export const RECORDING_ISSUES={
 const LOCATION={always:'Always',whenInUse:'While Using the App',denied:'Denied',restricted:'Restricted',notDetermined:'Not requested'};
 const MOTION={authorized:'Allowed',denied:'Denied',restricted:'Restricted',notDetermined:'Not requested',unavailable:'Unavailable'};
 const REFRESH={available:'On',denied:'Off',restricted:'Restricted'};
-const SERVICES={registered:'Requested · iOS holds a place wake-up',requested:'Requested from iOS',notRequested:'Not requested',failed:'iOS reported a problem',unsupported:'Not supported'};
+const SERVICES={registered:'Requested · iOS holds a place wake-up',requested:'Requested from iOS',notRequested:'Not requested',failed:'iOS reported a problem',unsupported:'Not supported',manualRecording:'Paused for a manual recording'};
 export const healthRows=health=>[
  ['Automatic Tracking',health.automaticEnabled?'On':'Off'],
  ['Location Services',health.locationServices?'On':'Off'],

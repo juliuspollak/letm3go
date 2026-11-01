@@ -3649,6 +3649,389 @@ do {
     check(checkpoint.acknowledgements?.count == 100, "receipt history stays bounded")
 }
 
+// MARK: Manual recording exclusion: one manual recording owns the iPhone
+//
+// The recorder's CoreLocation glue cannot run here, so this drives the same decisions
+// in the order LocationRecorder makes them: the real gate, presence merge, persisted
+// inbox, detector, draft closure and service plan. Only wake-ups are simulated. A
+// fix counts as detection work only if it reaches the detector.
+final class ManualOwnershipPhone {
+    let owner: String
+    var gate = ManualExclusionGate()
+    var inbox = Data()
+    var heard: RecordingPresence?
+    var local: RecordingPresence?
+    var detector = AutomaticDetector()
+    var draft: RecordedActivity?
+    var settled: RecordedActivity?
+    var history: [RecordedActivity] = []
+    var detectorFixes = 0, rejectedFixes = 0, publishedFixes = 0
+    var liveSharing = false
+    var failSaves = false
+    var unfinishedClosure: Double?
+    var releases: [ManualExclusionRelease] = []
+    var changes: [ManualExclusionChange] = []
+    init(owner: String) { self.owner = owner; persist() }
+    var excluded: Bool { gate.current != nil }
+    // Stands for every automatic entry path: all of them ask automaticAvailable.
+    var engineRunning: Bool { !excluded }
+    var services: ManualExclusionServices {
+        .plan(phoneManual: local != nil, phoneRecording: local?.state == "recording", liveSharing: liveSharing, automaticPermitted: true)
+    }
+    func persist() { var state = WatchInboxState(); state.recording = heard; inbox = try! JSONEncoder().encode(state) }
+    // reconcileManualExclusion: every wake-up goes through this.
+    func reconcile(_ now: Double) {
+        if let held = CrossDeviceRecording.confirmingExpiry(heard, now: now) { heard = held; persist() }
+        let change = gate.update(local: local, remote: heard, ownerID: owner, now: now)
+        if change != .none { changes.append(change) }
+        if case .released(let reason) = change { releases.append(reason); detector.reset() }
+        if case .acquired = change { detector.reset() }
+        guard let start = CrossDeviceRecording.closingStart(exclusion: gate.current, remote: heard, ownerID: owner,
+            draftStartedAt: draft?.startedAt, settledStartedAt: settled?.startedAt, unfinishedClosure: unfinishedClosure, now: now) else { return }
+        if failSaves { unfinishedClosure = start; return }
+        unfinishedClosure = nil
+        if let open = draft {
+            var closed = ManualDraftClosure.truncated(open, before: start)
+            closed.finish(at: max(closed.startedAt, closed.points.last?.timestamp ?? closed.startedAt))
+            if closed.points.count >= 2, closed.measuredDistance >= 25 { history.append(closed) }
+            draft = nil
+        }
+        if let stop = settled {
+            if let kept = JourneySplit.kept(stop, before: start) { history.append(kept) }
+            else if (stop.endedAt ?? 0) <= start { history.append(stop) }
+            settled = nil
+        }
+        detector.reset()
+    }
+    // WatchSessionManager.receive, by any WatchConnectivity route.
+    func hear(_ presence: RecordingPresence, at now: Double) {
+        var stamped = presence; stamped.heardAt = now
+        heard = CrossDeviceRecording.merged(heard, stamped)
+        persist(); reconcile(now)
+    }
+    // handleObservations then processAutomatic: sharing first, the engine after.
+    func fix(_ sample: GPSPoint, motion: MotionEvidence, at now: Double) {
+        if liveSharing { publishedFixes += 1 }
+        reconcile(now)
+        guard engineRunning, !failSaves, !CrossDeviceRecording.excludesAutomaticFix(sample.timestamp, remote: heard, ownerID: owner, now: now) else { rejectedFixes += 1; return }
+        detectorFixes += 1
+        let event = detector.observe(sample, motion: motion, manualActive: false, now: sample.timestamp, activity: draft?.activity ?? "Driving")
+        if event == "depart", let first = detector.candidate.first {
+            var trip = RecordedActivity(activity: "Driving", startedAt: first.timestamp, resumedAt: first.timestamp, title: "Drive")
+            trip.recordingMode = "automatic"
+            for point in detector.candidate { _ = trip.accept(point, now: point.timestamp) }
+            draft = trip
+        } else if var trip = draft, trip.accept(sample, now: sample.timestamp) { draft = trip }
+    }
+    // Termination: memory goes, the inbox file and open drafts stay.
+    func relaunch(at now: Double) {
+        heard = try! JSONDecoder().decode(WatchInboxState.self, from: inbox).recording
+        gate = ManualExclusionGate(); detector = AutomaticDetector()
+        reconcile(now)
+    }
+    func drive(from start: Double, seconds: Double, heardAt delay: Double = 0, step: Double = 4) {
+        var elapsed = 0.0
+        while elapsed <= seconds {
+            let at = start + elapsed
+            fix(drivingFix(-33 + elapsed * 0.00012, at), motion: carMotion(at), at: at + delay)
+            elapsed += step
+        }
+    }
+    func overlapsManual(start: Double, end: Double) -> Bool {
+        (history + [draft, settled].compactMap { $0 }).contains { trip in
+            CrossDeviceRecording.overlapSeconds(start, end, trip.startedAt, trip.points.last?.timestamp ?? trip.startedAt) > 0
+        }
+    }
+}
+func watchPresence(_ owner: String?, state: String = "recording", started: Double, at: Double, id: String = "ride") -> RecordingPresence {
+    RecordingPresence(device: "watch", ownerID: owner, sessionID: id, activity: "Cycling", state: state, startedAt: started, updatedAt: at)
+}
+do {
+    let owner = "manual-owner", start = 100_000.0, lease = CrossDeviceRecording.automaticOwnershipLease
+    let sanity = ManualOwnershipPhone(owner: owner)
+    sanity.drive(from: start, seconds: 120)
+    check(sanity.draft != nil && sanity.detectorFixes > 0, "the simulated phone detects a drive when nothing owns it, so the zero counts below mean something")
+
+    // Before movement: a locked phone hears the start, then the drive happens.
+    let before = ManualOwnershipPhone(owner: owner)
+    before.hear(watchPresence(owner, started: start, at: start + 2), at: start + 2)
+    check(before.excluded && !before.engineRunning, "a Watch start suspends the engine before any movement")
+    before.drive(from: start + 10, seconds: 600)
+    check(before.detectorFixes == 0 && before.rejectedFixes > 0, "no fix reaches detection while a Watch recording owns the phone")
+    check(before.draft == nil && before.history.isEmpty, "no automatic activity starts during a manual recording")
+
+    // During detection: a candidate is forming when the start arrives.
+    let during = ManualOwnershipPhone(owner: owner)
+    during.drive(from: start, seconds: 8)
+    check(during.draft == nil && during.detector.phase == "candidate", "movement is still being checked")
+    during.hear(watchPresence(owner, started: start + 9, at: start + 10), at: start + 10)
+    check(during.detector.phase != "candidate" && during.detector.candidate.isEmpty, "the departure check in progress is abandoned, not left to finish")
+    during.drive(from: start + 12, seconds: 300)
+    check(during.draft == nil && during.history.isEmpty, "an interrupted departure check never becomes an activity")
+
+    // After detection, with the Watch message delayed by ninety seconds.
+    let late = ManualOwnershipPhone(owner: owner)
+    late.drive(from: start, seconds: 240)
+    let openFixes = late.draft?.points.count ?? 0
+    let manualStart = start + 150
+    check(openFixes > 40, "a drive is open and already past the manual start")
+    late.hear(watchPresence(owner, started: manualStart, at: manualStart + 1), at: manualStart + 91)
+    check(late.draft == nil && late.history.count == 1, "the open automatic draft is finalised when the start arrives")
+    let closed = late.history[0]
+    check(closed.points.allSatisfy { $0.timestamp < manualStart } && closed.endedAt! < manualStart, "the draft ends at the actual start, not when the message arrived")
+    check(closed.points.count > 30, "valid GPS before the manual start is preserved")
+    check(!late.overlapsManual(start: manualStart, end: manualStart + 3600), "no automatic activity overlaps the manual recording")
+
+    // A draft that began inside the manual time leaves nothing behind.
+    let inside = ManualOwnershipPhone(owner: owner)
+    inside.drive(from: start, seconds: 120)
+    inside.hear(watchPresence(owner, started: start - 5, at: start + 121), at: start + 121)
+    check(inside.draft == nil && inside.history.isEmpty, "a draft wholly inside the manual recording is discarded")
+
+    // A published stop still open for continuation is trimmed the same way.
+    var stopped = RecordedActivity(activity: "Driving", startedAt: start, resumedAt: start, title: "Drive")
+    stopped.recordingMode = "automatic"
+    for index in 0..<60 { let at = start + Double(index) * 4; _ = stopped.accept(drivingFix(-33 + Double(index) * 0.0005, at), now: at) }
+    stopped.finish(at: start + 236)
+    let settledPhone = ManualOwnershipPhone(owner: owner)
+    settledPhone.settled = stopped
+    settledPhone.hear(watchPresence(owner, started: start + 120, at: start + 300), at: start + 300)
+    check(settledPhone.settled == nil && settledPhone.history.count == 1, "a published stop is closed by the manual start")
+    check(settledPhone.history[0].points.allSatisfy { $0.timestamp < start + 120 } && settledPhone.history[0].points.count >= 2, "a stop reaching past the start is trimmed to it")
+
+    // Locked iPhone: no timer runs. A context waits for the next significant change.
+    let locked = ManualOwnershipPhone(owner: owner)
+    locked.drive(from: start, seconds: 90)
+    var stamped = watchPresence(owner, started: start + 60, at: start + 61); stamped.heardAt = start + 900
+    locked.heard = CrossDeviceRecording.merged(locked.heard, stamped)
+    locked.fix(drivingFix(-32.9, start + 900), motion: carMotion(start + 900), at: start + 900)
+    check(locked.excluded && locked.draft == nil && !locked.overlapsManual(start: start + 60, end: start + 900), "the first wake-up of a locked phone closes the draft at the start")
+
+    // A temporarily unreachable Watch is still recording, across a relaunch too.
+    let away = ManualOwnershipPhone(owner: owner)
+    away.hear(watchPresence(owner, started: start, at: start), at: start)
+    away.reconcile(start + 200)
+    check(away.excluded && away.gate.current?.heardRecently == false && away.changes.last == .wentQuiet, "silence past the live-icon window is not a finished recording")
+    away.relaunch(at: start + 3 * 3600)
+    check(away.excluded && away.gate.current?.startedAt == start, "ownership survives termination and relaunch from the persisted inbox")
+    away.drive(from: start + 3 * 3600, seconds: 120)
+    check(away.detectorFixes == 0 && away.draft == nil, "a relaunched phone stays suspended")
+    away.hear(watchPresence(owner, started: start, at: start + 3 * 3600 + 200), at: start + 3 * 3600 + 200)
+    check(away.gate.current?.heardRecently == true && away.releases.isEmpty, "the Watch coming back confirms the same session without any release")
+
+    // Pause and resume, including a long silent pause.
+    let paused = ManualOwnershipPhone(owner: owner)
+    paused.hear(watchPresence(owner, started: start, at: start + 60), at: start + 60)
+    paused.hear(watchPresence(owner, state: "paused", started: start, at: start + 120), at: start + 120)
+    check(paused.excluded && paused.gate.current?.state == "paused", "a paused Watch recording still owns the session")
+    paused.drive(from: start + 200, seconds: 300)
+    check(paused.detectorFixes == 0 && paused.draft == nil, "movement during a pause records nothing")
+    paused.reconcile(start + 11 * 3600)
+    check(paused.excluded, "a long pause is covered by the lease")
+    paused.hear(watchPresence(owner, started: start, at: start + 11 * 3600 + 5), at: start + 11 * 3600 + 5)
+    check(paused.excluded && paused.releases.isEmpty && paused.changes.filter { if case .acquired = $0 { return true }; return false }.count == 1, "resuming never drops and retakes ownership")
+
+    // Lease expiry: bounded, recovered, and never permanent.
+    let abandoned = ManualOwnershipPhone(owner: owner)
+    abandoned.hear(watchPresence(owner, started: start, at: start), at: start)
+    abandoned.reconcile(start + lease - 1)
+    check(abandoned.excluded, "the lease holds up to its end")
+    abandoned.reconcile(start + lease + 1)
+    check(abandoned.excluded, "silence past the lease is confirmed before it is believed")
+    abandoned.relaunch(at: start + lease + 2)
+    check(abandoned.excluded, "the confirmation survives a relaunch")
+    abandoned.reconcile(start + lease + 1 + CrossDeviceRecording.leaseConfirmation)
+    check(!abandoned.excluded && abandoned.engineRunning && abandoned.releases == [.leaseExpired], "an abandoned session releases just after twelve hours, for a stated reason")
+    abandoned.relaunch(at: start + lease + 70)
+    check(!abandoned.excluded, "a relaunch after expiry does not restore the expired lease")
+    abandoned.drive(from: start + lease + 10, seconds: 120)
+    check(abandoned.draft != nil, "automatic recording works again after an abandoned session")
+    let resurfaced = start + lease + 200
+    abandoned.hear(watchPresence(owner, started: start, at: resurfaced), at: resurfaced)
+    check(abandoned.excluded && abandoned.draft == nil, "a Watch reappearing after the lease takes ownership back")
+    abandoned.hear(watchPresence(nil, state: "idle", started: 0, at: resurfaced + 60, id: ""), at: resurfaced + 60)
+
+    // Completion and cancellation both release immediately.
+    let done = ManualOwnershipPhone(owner: owner)
+    done.hear(watchPresence(owner, started: start, at: start), at: start)
+    done.hear(.idle(device: "watch", ownerID: owner, now: start + 1800), at: start + 1800)
+    check(!done.excluded && done.releases == [.finished], "finishing releases at once and not at the lease")
+    check(done.heard?.startedAt == start && done.heard?.sessionID == "ride", "an end without session fields keeps the interval")
+    done.fix(drivingFix(-33, start + 900), motion: carMotion(start + 900), at: start + 1810)
+    check(done.detectorFixes == 0 && done.rejectedFixes == 1, "a delayed fix from inside the finished recording is not evidence of anything")
+    done.drive(from: start + 1830, seconds: 120)
+    check(done.draft != nil && !done.overlapsManual(start: start, end: start + 1800), "a drive after the finish records normally and cannot reach back")
+
+    // A delayed start cannot undo the finish it preceded.
+    let reordered = ManualOwnershipPhone(owner: owner)
+    reordered.hear(watchPresence(owner, state: "idle", started: start, at: start + 600), at: start + 601)
+    reordered.hear(watchPresence(owner, started: start, at: start + 1), at: start + 610)
+    check(!reordered.excluded, "a late start packet does not resurrect a finished recording")
+
+    // The finish can be the first thing the phone ever hears.
+    let finishFirst = ManualOwnershipPhone(owner: owner)
+    finishFirst.drive(from: start, seconds: 240)
+    finishFirst.hear(watchPresence(owner, state: "idle", started: start + 100, at: start + 200), at: start + 244)
+    check(finishFirst.draft == nil && finishFirst.history.allSatisfy { $0.endedAt! < start + 100 }, "an end packet alone closes an overlapping draft")
+
+    // What cannot be verified holds, for a bounded time, rather than overlapping.
+    let unclaimed = ManualOwnershipPhone(owner: owner)
+    unclaimed.hear(watchPresence(nil, started: start, at: start), at: start)
+    check(unclaimed.excluded, "a Watch recording not yet tied to an account still owns this iPhone")
+    unclaimed.reconcile(start + lease + 1); unclaimed.reconcile(start + lease + 61)
+    check(!unclaimed.excluded, "an unattributed recording is bounded by the same lease")
+    let foreign = ManualOwnershipPhone(owner: owner)
+    foreign.hear(watchPresence("someone-else", started: start, at: start), at: start)
+    check(!foreign.excluded, "another account's recording has no claim on this recorder")
+
+    let aheadClock = ManualOwnershipPhone(owner: owner)
+    aheadClock.hear(watchPresence(owner, started: start + 6 * 3600, at: start + 6 * 3600), at: start)
+    check(aheadClock.excluded, "a Watch clock running ahead does not give up exclusion")
+    aheadClock.reconcile(start + lease + 1); aheadClock.reconcile(start + lease + 61)
+    check(!aheadClock.excluded, "a clock running ahead cannot extend the lease")
+    aheadClock.relaunch(at: start + lease + 62)
+    check(!aheadClock.excluded, "and the arrival time that bounds it is persisted")
+
+    let noStart = ManualOwnershipPhone(owner: owner)
+    noStart.drive(from: start, seconds: 200)
+    noStart.hear(watchPresence(owner, started: 0, at: start + 150), at: start + 201)
+    check(noStart.excluded && noStart.history.allSatisfy { $0.endedAt! < start + 150 } && noStart.draft == nil, "a packet without a start closes at the earliest moment it proves")
+    check(CrossDeviceRecording.manualStart(watchPresence(owner, started: .nan, at: start)) == start, "a malformed start falls back to the packet time")
+
+    // iPhone manual recording: same gate, no lease.
+    let phone = ManualOwnershipPhone(owner: owner)
+    phone.local = RecordingPresence(device: "iphone", ownerID: owner, sessionID: "phone", activity: "Walking", state: "recording", startedAt: start, updatedAt: start)
+    phone.reconcile(start)
+    check(phone.excluded && phone.gate.current?.leaseEndsAt == nil, "an iPhone manual recording takes the same gate")
+    phone.local?.state = "paused"
+    phone.reconcile(start + 2 * lease)
+    check(phone.excluded, "a paused iPhone recording owns the session for as long as it stays open")
+    phone.hear(watchPresence(owner, started: start + 2 * lease, at: start + 2 * lease), at: start + 2 * lease)
+    phone.local = nil
+    phone.reconcile(start + 2 * lease + 1)
+    check(phone.excluded && phone.releases.isEmpty && phone.gate.current?.device == "watch", "finishing on the iPhone hands over to a Watch recording still running")
+
+    // Exactly what runs while suspended.
+    let watchOnly = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: false, automaticPermitted: true)
+    check(watchOnly.location == .off && !watchOnly.motion, "a Watch recording leaves no GPS or motion running on the iPhone")
+    check(watchOnly.significantChange, "significant change stays as the wake that finds the end of a session")
+    check(!watchOnly.visits && !watchOnly.placeRegions && !watchOnly.departureChecks && !watchOnly.lowPowerStandby && !watchOnly.passiveRest, "visits, regions, departure checks, low-power standby and passive rest are all suspended")
+    let watchShared = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: true, automaticPermitted: true)
+    check(watchShared.location == .liveSharing && watchShared.motion && watchShared.significantChange, "live sharing keeps its own location, and motion for its vehicle status")
+    check(!watchShared.visits && !watchShared.departureChecks, "sharing brings no detection back with it")
+    let sharedOff = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: true, automaticPermitted: false)
+    check(sharedOff.location == .liveSharing && sharedOff.significantChange, "sharing is independent of automatic history being off")
+    let phoneRecording = ManualExclusionServices.plan(phoneManual: true, phoneRecording: true, liveSharing: false, automaticPermitted: true)
+    check(phoneRecording.location == .manualRecording && phoneRecording.motion, "an iPhone recording owns the location service")
+    let phonePaused = ManualExclusionServices.plan(phoneManual: true, phoneRecording: false, liveSharing: true, automaticPermitted: true)
+    check(phonePaused.location == .liveSharing, "sharing continues through an iPhone pause")
+    let nothing = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: false, automaticPermitted: false)
+    check(!nothing.significantChange && nothing.location == .off, "with no automatic history or sharing nothing is held")
+
+    // Live sharing keeps publishing through a whole session.
+    let shared = ManualOwnershipPhone(owner: owner)
+    shared.liveSharing = true
+    shared.hear(watchPresence(owner, started: start, at: start), at: start)
+    shared.drive(from: start + 10, seconds: 400)
+    shared.hear(watchPresence(owner, state: "paused", started: start, at: start + 420), at: start + 420)
+    shared.drive(from: start + 430, seconds: 400)
+    check(shared.publishedFixes == 202 && shared.detectorFixes == 0, "household sharing receives every fix while the engine receives none")
+
+    check(RecordingHealth.services(requested: false, significantSupported: true, regionsSupported: true, regionsHeld: 0, monitoringFailed: false, manualExclusion: true) == "manualRecording", "a suspended engine is reported as such")
+    check(RecordingHealth.services(requested: false, significantSupported: true, regionsSupported: true, regionsHeld: 0, monitoringFailed: true, manualExclusion: true) == "failed", "suspension does not hide a real failure")
+
+    // An inbox that cannot be read yet is not an empty inbox.
+    final class LockedInbox: WatchFileBackend {
+        var locked = true
+        let file: Data
+        init(_ file: Data) { self.file = file }
+        func exists(_ url: URL) -> Bool { true }
+        func read(_ url: URL) throws -> Data? { if locked { throw CocoaError(.fileReadNoPermission) }; return file }
+        func write(_ data: Data, to url: URL, protection: Bool) throws {}
+        func append(_ data: Data, to url: URL) throws {}
+        func remove(_ url: URL) throws {}
+        func createDirectory(_ url: URL) throws {}
+        func size(_ url: URL) -> Int { file.count }
+    }
+    var kept = WatchInboxState(); kept.recording = watchPresence(owner, started: start, at: start)
+    let lockedBackend = LockedInbox(try! JSONEncoder().encode(kept))
+    let lockedStore = WatchInboxStore(directory: URL(fileURLWithPath: "/tmp/locked-inbox"), backend: lockedBackend)
+    check(lockedStore.unreadable, "before first unlock the inbox is reported unreadable, not empty")
+    lockedBackend.locked = false
+    check(!lockedStore.unreadable && lockedStore.load().recording == kept.recording, "after unlock the persisted owner is read back")
+
+    // A long session: a Watch that keeps talking is never released.
+    let marathon = ManualOwnershipPhone(owner: owner)
+    var heartbeat = start
+    while heartbeat < start + 30 * 3600 {
+        let state = Int((heartbeat - start) / 3600) % 5 == 4 ? "paused" : "recording"
+        marathon.hear(watchPresence(owner, state: state, started: start, at: heartbeat), at: heartbeat + 1)
+        marathon.fix(drivingFix(-33, heartbeat + 2), motion: carMotion(heartbeat + 2), at: heartbeat + 2)
+        heartbeat += CrossDeviceRecording.heartbeat
+    }
+    check(marathon.excluded && marathon.releases.isEmpty && marathon.detectorFixes == 0 && marathon.draft == nil, "a thirty-hour recording with pauses never releases the iPhone")
+
+    // A suspended iPhone hears only the latest context, on waking hourly.
+    let sleeper = ManualOwnershipPhone(owner: owner)
+    sleeper.hear(watchPresence(owner, started: start, at: start), at: start)
+    for hour in stride(from: 1.0, through: 30.0, by: 1.0) {
+        let at = start + hour * 3600
+        sleeper.hear(watchPresence(owner, started: start, at: at - 20), at: at)
+    }
+    check(sleeper.excluded && sleeper.releases.isEmpty, "renewal does not depend on the iPhone being awake for each heartbeat")
+
+    // Relaunched after thirteen hours: the saved presence looks expired, and a newer
+    // one is still waiting behind WCSession activation.
+    let relaunched = ManualOwnershipPhone(owner: owner)
+    relaunched.hear(watchPresence(owner, started: start, at: start), at: start)
+    let woke = start + 13 * 3600
+    relaunched.relaunch(at: woke)
+    check(relaunched.excluded, "a relaunch does not trust an old saved presence before WatchConnectivity has delivered")
+    relaunched.fix(drivingFix(-33, woke + 1), motion: carMotion(woke + 1), at: woke + 1)
+    check(relaunched.detectorFixes == 0, "the wake-up fix reaches no detection during that confirmation")
+    relaunched.hear(watchPresence(owner, started: start, at: woke - 30), at: woke + 3)
+    relaunched.reconcile(woke + 400)
+    check(relaunched.excluded && relaunched.releases.isEmpty, "the delivered heartbeat clears the confirmation and renews ownership")
+
+    // A second idle must not erase the interval a finish left behind.
+    let repeated = ManualOwnershipPhone(owner: owner)
+    repeated.hear(watchPresence(owner, started: start, at: start), at: start)
+    repeated.hear(.idle(device: "watch", ownerID: owner, now: start + 600), at: start + 600)
+    repeated.hear(.idle(device: "watch", ownerID: owner, now: start + 700), at: start + 700)
+    check(repeated.heard?.sessionID == "ride" && repeated.heard?.updatedAt == start + 600, "a repeated idle keeps the finished interval unchanged")
+    check(CrossDeviceRecording.excludesAutomaticFix(start + 100, remote: repeated.heard, ownerID: owner, now: start + 800), "delayed fixes stay excluded after a repeated idle")
+
+    // The finished ride can reach the iPhone before the end packet does.
+    let rideFirst = ManualOwnershipPhone(owner: owner)
+    rideFirst.hear(watchPresence(owner, started: start, at: start + 500), at: start + 500)
+    check(CrossDeviceRecording.finished(rideFirst.heard, sessionID: "other", startedAt: start, endedAt: start + 900) == nil, "another ride proves nothing about this session")
+    rideFirst.heard = CrossDeviceRecording.finished(rideFirst.heard, sessionID: "RIDE", startedAt: start, endedAt: start + 900)
+    rideFirst.reconcile(start + 901)
+    check(!rideFirst.excluded && rideFirst.releases == [.finished] && rideFirst.heard?.updatedAt == start + 900, "the ride's arrival restores monitoring")
+    rideFirst.drive(from: start + 1000, seconds: 120)
+    check(rideFirst.draft != nil, "and detection works again")
+
+    // Failed finalisation: nothing resumes, nothing is lost, and it recovers.
+    let failing = ManualOwnershipPhone(owner: owner)
+    failing.drive(from: start, seconds: 240)
+    let openDraft = failing.draft!
+    failing.failSaves = true
+    failing.hear(watchPresence(owner, started: start + 150, at: start + 151), at: start + 241)
+    check(failing.draft?.points.count == openDraft.points.count && failing.unfinishedClosure == start + 150, "a failed save keeps the draft whole and remembers where to close it")
+    failing.reconcile(start + 240 + lease); failing.reconcile(start + 300 + lease)
+    check(!failing.excluded && failing.releases == [.leaseExpired], "a failed draft does not hold ownership past the lease")
+    failing.fix(drivingFix(-32, start + 301 + lease), motion: carMotion(start + 301 + lease), at: start + 301 + lease)
+    check(failing.draft?.points.count == openDraft.points.count, "the draft cannot resume across the manual recording while its save keeps failing")
+    failing.failSaves = false
+    failing.reconcile(start + 302 + lease)
+    check(failing.draft == nil && failing.unfinishedClosure == nil && failing.history.count == 1 && failing.history[0].points.allSatisfy { $0.timestamp < start + 150 }, "the next good save closes at the original manual start")
+    failing.drive(from: start + 400 + lease, seconds: 120)
+    check(failing.draft != nil && failing.history.count == 1, "and automatic recording is working again")
+
+    let quietCount = during.detector.candidate.count + before.detector.candidate.count
+    check(quietCount == 0, "no departure buffer survives a session")
+}
+
 // Optional private diagnostic timeline replay. Input contains timestamps and
 // activity labels only, never routes, credentials or health measurements.
 if let index = CommandLine.arguments.firstIndex(of: "--watch-exclusion-replay"), index + 1 < CommandLine.arguments.count {
