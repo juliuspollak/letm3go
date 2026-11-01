@@ -44,7 +44,7 @@ let branch;
 try {
   branch = git('branch', '--show-current');
   if (!branch || ['main','master'].includes(branch)) throw new Error('Start from an isolated feature branch, not main.');
-  if (git('status', '--porcelain')) throw new Error('Working tree must be clean before starting.');
+  if (!dryRun && git('status', '--porcelain')) throw new Error('Working tree must be clean before starting. Use an isolated git worktree to preserve unrelated changes.');
   if (!dryRun) {
     for (const cmd of ['cline', 'codex', 'claude', 'npm']) {
       const r = spawnSync('which', [cmd], { encoding: 'utf8' });
