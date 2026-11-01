@@ -1091,3 +1091,77 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 }
 
 .trip-action-delete{background:#b91c1c}.trip-swipe-actions .trip-action-delete{width:66px;flex:0 0 66px}
+
+/* Activity Experience v2: at-a-glance readout, photo suggestions, sheet detents */
+.activity-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin:0 0 24px;padding:18px 20px;background:var(--surface);border-radius:14px}
+.activity-summary-item{min-width:0}
+.activity-summary-item dt{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);font-weight:700}
+.activity-summary-item dd{margin:6px 0 0;font-family:Manrope,sans-serif;font-size:20px;font-weight:750;letter-spacing:-.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.activity-summary-detail{margin-top:4px;font-size:10px;color:var(--muted);line-height:1.5}
+.photo-suggestions-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.suggestion-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:14px 0}
+.suggestion-toolbar .secondary{font-size:10px;padding:9px 13px}
+.suggestion-toolbar .small-copy{margin:0}
+.suggestion-toolbar .checkbox-label{margin:0 0 0 auto}
+.suggestion-days{display:grid;gap:22px;margin:6px 0 18px}
+.suggestion-day h3{font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+.suggestion-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;list-style:none;margin:0;padding:0}
+.suggestion-grid li{min-width:0}
+.suggestion-grid li.skipped{opacity:.55}
+.suggestion-grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block}
+.suggestion-tile{position:relative;display:block}
+.suggestion-tile input{position:absolute;top:8px;left:8px;width:22px;height:22px;margin:0}
+.suggestion-tile input:not(:checked)+img{outline:1px solid var(--line);outline-offset:-1px;border-radius:10px}
+.suggestion-meta{font-size:11px;font-weight:600;margin-top:8px}
+.suggestion-grid .text-button{margin-left:0;padding-left:0;font-size:10px}
+.suggestion-status{margin-top:12px;font-size:11px;color:var(--muted)}
+.suggestion-failures{margin:6px 0 0;padding-left:18px;font-size:11px;color:var(--danger);line-height:1.6}
+@media(max-width:760px){.suggestion-grid{grid-template-columns:repeat(2,1fr)}.activity-summary{padding:16px}}
+
+/* Activity Experience v2: one stable map plus a coordinated details sheet. The
+   map is sticky (it never scrolls away or re-embeds) and only the sheet's height
+   changes with a detent, so MapKit is repositioned rather than rebuilt. */
+.detail-sheet-page{display:flex;flex-direction:column;min-height:100%;padding-top:0}
+.detail-map-layer{position:sticky;top:0;z-index:0;background:var(--soft);border-radius:18px;overflow:hidden}
+.detail-map-layer .journey-map,.detail-map-layer .journey-map.large{height:min(42vh,370px);min-height:210px;margin:0;border-radius:14px;overflow:hidden}
+.detail-map-layer .map-frame{height:100%}
+.detail-map-layer .first-recording{height:min(42vh,370px);min-height:210px;margin:0;border-radius:18px;justify-content:center}
+.activity-sheet{position:relative;z-index:2;display:flex;flex-direction:column;margin-top:18px;background:var(--surface);border-radius:22px 22px 0 0;box-shadow:0 -14px 44px #1017291f;height:var(--activity-sheet-height,56vh);max-height:calc(100dvh - 140px);transition:height .28s cubic-bezier(.22,.9,.25,1);padding:0 0 calc(18px + env(safe-area-inset-bottom))}
+.activity-sheet-handle{display:flex;align-items:center;justify-content:center;min-height:30px;padding:9px 0 5px;touch-action:none;cursor:grab;border-radius:22px 22px 0 0}
+.activity-sheet-handle:active{cursor:grabbing}
+.activity-sheet-handle:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
+.activity-sheet-grabber{width:44px;height:5px;border-radius:3px;background:var(--line)}
+.activity-sheet-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:6px 21px 10px}
+.activity-sheet-body .detail-story{margin:26px 0 8px}
+.activity-moments{margin:20px 0 8px;padding:18px 20px;background:var(--soft);border-radius:16px;min-width:0}
+.activity-moments-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.activity-moments-head h2{font-size:18px;letter-spacing:-.4px;margin-top:4px}
+.activity-moments-actions{display:flex;gap:8px;flex-wrap:wrap}
+.activity-moments-actions .primary,.activity-moments-actions .secondary{font-size:11px;padding:10px 14px}
+.activity-moments-cover{display:block;width:100%;padding:0;margin:14px 0 10px;border-radius:14px;overflow:hidden}
+.activity-moments-cover img{display:block;width:100%;height:min(32vh,230px);object-fit:cover}
+.activity-moments-empty{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:14px 0 4px;color:var(--muted);font-size:12px}
+.activity-moments-empty p{flex:1 1 170px;min-width:0}
+.activity-moments .photo-strip{margin-bottom:8px}
+/* Phones: the activity takes the whole screen. The map is the top layer and the
+   sheet the bottom layer, so on iOS the native MapKit view never sits over the
+   sheet. A detent only changes the sheet height (and therefore the map's visible
+   height), which the native side handles as a frame resize, not a re-embed. */
+@media(max-width:760px){
+ .detail-sheet-page{position:fixed;top:0;left:0;width:100vw;height:100dvh;z-index:30;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);padding-top:env(safe-area-inset-top)}
+ .detail-map-layer{position:relative;flex:1 1 auto;min-height:140px;border-radius:0;background:var(--soft)}
+ .detail-map-layer .journey-map,.detail-map-layer .journey-map.large,.detail-map-layer .first-recording{height:100%;min-height:0;margin:0;border-radius:0}
+ .activity-sheet{flex:0 0 auto;margin-top:0;border-radius:22px 22px 0 0;padding-bottom:calc(74px + env(safe-area-inset-bottom));max-height:calc(100% - 140px)}
+ .activity-sheet-body{padding:4px 20px 10px}
+}
+@media(min-width:761px){.activity-sheet{height:auto;max-height:none;transition:none}.activity-sheet-body{overflow:visible}.activity-sheet-handle{display:none}}
+@media(prefers-reduced-motion:reduce){.activity-sheet{transition:none}}
+
+/* Photo suggestions: a sticky batch action, a tile that can be previewed without
+   losing the multi-select, and a full-screen preview that stays inside the sheet. */
+.suggestion-actions{position:sticky;bottom:0;z-index:3;background:var(--surface);padding:12px 0 calc(6px + env(safe-area-inset-bottom));margin-top:12px;border-top:1px solid var(--line)}
+.suggestion-tile-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.photo-preview{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;gap:14px;justify-content:center;padding:24px calc(20px + env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));background:#0b1020f2;color:#fff}
+.photo-preview img{max-width:100%;max-height:70vh;object-fit:contain;border-radius:14px;margin:0 auto}
+.photo-preview .muted{color:#e7ebf6cc;text-align:center}
+.photo-preview .detail-actions{justify-content:center}

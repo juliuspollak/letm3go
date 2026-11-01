@@ -53,7 +53,11 @@ extension ManualRecorderPlugin {
         guard let id = call.getString("id"), let assetID = call.getString("assetID") else { call.reject("Missing photo identifier."); return }
         let key = "letm3go-photo-skips-\(id)"
         var skipped = UserDefaults.standard.stringArray(forKey:key) ?? []
-        if !skipped.contains(assetID) { skipped.append(assetID) }
-        UserDefaults.standard.set(skipped,forKey:key); call.resolve(["skipped":true])
+        // Skipping is a local, reversible choice: `skipped: false` removes the
+        // mark so a photo can be considered again without re-adding it manually.
+        let wanted = call.getBool("skipped") ?? true
+        if wanted && !skipped.contains(assetID) { skipped.append(assetID) }
+        if !wanted { skipped.removeAll { $0 == assetID } }
+        UserDefaults.standard.set(skipped,forKey:key); call.resolve(["skipped":wanted])
     }
 }

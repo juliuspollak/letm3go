@@ -1,25 +1,56 @@
 import {act,cleanup,fireEvent,render,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({embed:vi.fn(),update:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn(),forgetOverview:vi.fn()}));
+const mocks=vi.hoisted(()=>({embed:vi.fn(),resize:vi.fn(),update:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn(),forgetOverview:vi.fn()}));
 vi.mock('../lib/appleMaps.js',()=>({appleMaps:mocks,appleMapsAvailable:()=>true,sendOverview:mocks.sendOverview,forgetOverview:mocks.forgetOverview}));
 import AppleMap from './AppleMap.jsx';
 const payload={routes:[[[1,2],[3,4],[5,6]]],pins:[]};
+const BOX={x:10,y:20,top:20,bottom:370,left:10,right:710,width:700,height:350};
+function setScroll(y){Object.defineProperty(window,'scrollY',{value:y,configurable:true,writable:true});}
 beforeEach(()=>{
- for(const name of ['embed','update','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
+ for(const name of ['embed','resize','update','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
  mocks.hide.mockResolvedValue({image:'data:image/jpeg;base64,frozen'});
  mocks.snapshot.mockResolvedValue({image:'data:image/jpeg;base64,test'});
  mocks.open.mockResolvedValue({});mocks.addListener.mockResolvedValue({remove:vi.fn()});
  vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}});
- vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({x:10,y:20,top:20,bottom:370,left:10,right:710,width:700,height:350});
+ vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({...BOX});
+ setScroll(0);
 });
-afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();});
-it('embeds an interactive map and follows scroll events inside the detail scroll container',async()=>{
+afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();setScroll(0);});
+it('keeps one map through a page scroll and moves it in place when the sheet resizes',async()=>{
+ const rect=HTMLElement.prototype.getBoundingClientRect;
  const {container}=render(<div data-testid="scroll"><AppleMap payload={payload}/></div>);
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
- mocks.embed.mockClear();
- fireEvent.scroll(container.firstChild);
- await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({preserveViewport:true})));
+ const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
+ // Wait for the embed to settle (one update follows a successful embed), then
+ // count only what the scroll and the resize add from here on.
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ mocks.embed.mockClear();mocks.update.mockClear();mocks.resize.mockClear();
+ // The page scrolls by 200px: the native map is a subview of the WebView's scroll
+ // view, so it moves on its own. Re-embedding here would re-fit the camera and
+ // repaint every overlay for nothing.
+ setScroll(200);
+ rect.mockReturnValue({...BOX,y:-180,top:-180,bottom:170});
+ await act(async()=>{fireEvent.scroll(window);});
+ expect(mocks.embed).not.toHaveBeenCalled();
+ expect(mocks.resize).not.toHaveBeenCalled();
+ // The details sheet grows, so the map's frame shrinks. Same map, new frame.
+ setScroll(0);
+ rect.mockReturnValue({...BOX,bottom:250,height:230});
+ await act(async()=>{fireEvent.scroll(window);});
+ await waitFor(()=>expect(mocks.resize).toHaveBeenCalledWith(expect.objectContaining({mapID,x:10,y:20,width:700,height:230})));
+ expect(mocks.embed).not.toHaveBeenCalled();
+ expect(mocks.update).not.toHaveBeenCalled();
  expect(container.querySelector('.apple-map-open')).toBeNull();
+});
+it('re-embeds instead of resizing when the native side has no such map',async()=>{
+ const rect=HTMLElement.prototype.getBoundingClientRect;
+ mocks.resize.mockResolvedValueOnce({missing:true});
+ render(<AppleMap payload={payload}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ mocks.embed.mockClear();
+ rect.mockReturnValue({...BOX,bottom:250,height:230});
+ await act(async()=>{fireEvent.scroll(window);});
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({mapID:expect.any(String),height:230})));
 });
 it('moves an existing person in place without re-embedding or taking a new snapshot',async()=>{
  const people=(lng)=>({routes:[],pins:[{id:'people:self',kind:'people',point:[-33.87,lng],title:'You',members:[{id:'self',name:'You',state:'live'}],fit:true}],camera:{key:'people:owner',mode:'all',personId:null,command:2,includeRoutes:false}});

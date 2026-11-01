@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
 import MapControls from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
+import {recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
+import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
 // sent to the native map once per key and the payload names only the key.
@@ -19,6 +21,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const fittedViewport=useRef(null);
  const fittedContent=useRef({positions:false,focus:false});
  const openingFullscreen=useRef(false);
+ const hiddenForDialog=useRef(false);
  const [reopenVersion,setReopenVersion]=useState(0);
  const [embedded,setEmbedded]=useState(false);
  const [preview,setPreview]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -45,7 +48,12 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    .then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
   return()=>{disposed=true;void listener?.remove();};
  },[mapID,hasMapActions]);
- useEffect(()=>()=>{if(appleMapsAvailable()){void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
+ useEffect(()=>()=>{if(appleMapsAvailable()){recordMapEvent('unembed',{reason:'unmount'});void appleMaps.unembed({mapID}).catch(()=>{});void appleMaps.close({mapID}).catch(()=>{});}},[mapID]);
+ // Read-only evidence for the performance notes and for a reviewer on a device:
+ // window.letm3goMapDiagnostics() reports embed/resize/update/snapshot/hide/
+ // unembed counts and frame times. Nothing is uploaded and nothing is sent
+ // unless a diagnostics screen asks for it.
+ useEffect(()=>{if(typeof window==='undefined')return undefined;window.letm3goMapDiagnostics=mapDiagnosticsSnapshot;return()=>{delete window.letm3goMapDiagnostics;};},[]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
  // The people map reports its own camera changes (a gesture, an edge avatar, its
  // Show everyone button) so the requested mode survives a remount.
@@ -96,7 +104,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
  useEffect(()=>{
   if(!appleMapsAvailable()||picker||!embeddedOnce.current)return;
-  void appleMaps.update({...latestContent,mapID}).catch(()=>{});
+  recordMapEvent('update');void appleMaps.update({...latestContent,mapID}).catch(()=>{});
  },[latestContent,mapID,picker,embedded]);
  useEffect(()=>{
   if(!appleMapsAvailable()||picker)return;
@@ -116,28 +124,38 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    if(dialog&&!dialog.contains(surface)&&document.visibilityState!=='hidden'){
     // A sheet or the photo viewer: MapKit would cover it, so hide the map and
     // show a still image of it. It comes back exactly as it was.
-    if(embeddedOnce.current&&previous!=='hidden'){previous='hidden';void appleMaps.hide({mapID,hidden:true}).then(result=>{if(active&&result?.image)setFrozen({src:result.image,height:frozenHeight.current});}).catch(()=>{});}
+    if(embeddedOnce.current&&!hiddenForDialog.current){hiddenForDialog.current=true;recordMapEvent('hide');void appleMaps.hide({mapID,hidden:true}).then(result=>{if(active&&result?.image){setFrozen({src:result.image,height:frozenHeight.current});recordMapEvent('frozen');}}).catch(()=>{});}
     return;
    }
    // The sheet closed: show the live map again (the embed below follows).
-   if(previous==='hidden'){previous='';void appleMaps.hide({mapID,hidden:false}).catch(()=>{});}
+   if(hiddenForDialog.current){hiddenForDialog.current=false;previous='';void appleMaps.hide({mapID,hidden:false}).catch(()=>{});}
    if(document.visibilityState==='hidden'){
     previous='';embeddedOnce.current=false;setEmbedded(false);setFrozen(null);
     void appleMaps.unembed({mapID}).catch(()=>{});return;
    }
-   const box=surface.getBoundingClientRect();
-   const nav=document.querySelector('.mobile-nav');
-   const navTop=nav&&getComputedStyle(nav).display!=='none'?nav.getBoundingClientRect().top:window.innerHeight;
-   const visibleHeight=Math.min(box.height,Math.max(0,navTop-box.top-8));
-   if(box.width<=80||visibleHeight<=80||box.bottom<=0){if(embeddedOnce.current){void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
-   const geometry=[box.x,box.y,box.width,visibleHeight].map(n=>n.toFixed(1)).join(':');
-   if(geometry===previous)return;
-   const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(hasLayers||((!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus)));previous=geometry;
-   frozenHeight.current=visibleHeight;
+   const geometry=surfaceGeometry(surface,window);
+   if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
+   const key=geometryKey(geometry);
+   if(key===previous)return;
+   // A sheet detent, rotation or keyboard changes only the frame. Moving the map
+   // the person is already looking at keeps its camera, overlays, selection and
+   // gestures and costs one frame-sized bridge call instead of a full content
+   // re-apply — this is what makes dragging the details sheet smooth.
+   if(embeddedOnce.current&&previous&&typeof appleMaps.resize==='function'){
+    previous=key;frozenHeight.current=geometry.height;
+    recordMapEvent('resize',{width:geometry.width,height:geometry.height});
+    void appleMaps.resize({mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height})
+     .then(result=>{if(result?.missing){previous='';if(active)mount();}})
+     .catch(()=>{previous='';if(active)mount();});
+    return;
+   }
+   const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(hasLayers||((!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus)));previous=key;
+   frozenHeight.current=geometry.height;
+   recordMapEvent('embed',{preserveViewport});
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...contentRef.current,mapID,x:box.x,y:box.y,width:box.width,height:visibleHeight,preserveViewport};
+    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport};
     if(!arrived)delete request.overview;
     return appleMaps.embed(request).then(result=>({arrived,result}));
    }).then(outcome=>{
@@ -157,14 +175,17 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   };
   // The detail page animates into place; ResizeObserver alone does not see
   // transforms. Follow its initial movement before leaving layout to observers.
-  let frame;const until=performance.now()+500;
-  const settle=()=>{mount();if(active&&performance.now()<until)frame=requestAnimationFrame(settle);};
+  let frame;const until=performance.now()+500;let lastFrameAt=performance.now();
+  const settle=()=>{const now=performance.now();recordMapFrame(now-lastFrameAt);lastFrameAt=now;mount();if(active&&performance.now()<until)frame=requestAnimationFrame(settle);};
   frame=requestAnimationFrame(settle);
   const mutations=new MutationObserver(()=>mount());
   mutations.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','aria-modal','role']});
   const observer=new ResizeObserver(mount);if(mapSurface.current)observer.observe(mapSurface.current);
-  const resized=()=>{previous='';mount();};
+  const resized=()=>mount();
   window.addEventListener('resize',resized);
+  // A page scroll moves the native map with the WebView's own scroll view, so the
+  // listener only has to handle maps inside an inner scroll container. mount()
+  // compares document-space geometry, so an ordinary page scroll costs nothing.
   window.addEventListener('scroll',resized,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',resized,true);document.removeEventListener('visibilitychange',resized);};
