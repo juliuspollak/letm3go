@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {activityCode,activityLabel,activityOptions,sameActivity} from './activityNames.js';
 import {activityChoices,DEFAULT_MAP_VIEW,mapViewJourneys,normaliseMapView} from './mapLayers.js';
-import {mapToolbar,activitySymbol} from './mapToolbar.js';
+import {mapControls,activitySymbol} from './mapToolbar.js';
 import {activityTitle,contextualJourneyTitle} from './activityTitle.js';
 import {categoriesForActivity} from './collection.js';
 import {isTrailActivity} from './mtbLink.js';
@@ -20,7 +20,7 @@ it('deduplicates map choices and matches old recordings and saved filters in eit
  for(const activity of ['MTB','Mountain biking','Mountain Biking'])expect(mapViewJourneys(trips,{...DEFAULT_MAP_VIEW,routes:'all',activity},'2026-10-31').map(t=>t.id)).toEqual(['old','name','capital']);
  const view=normaliseMapView({routes:'all',activity:'Mountain Biking'});
  expect(view.activity).toBe('MTB');
- const options=mapToolbar(view,true,'activity',trips.map(t=>t.activity)).rows.find(r=>r.id==='activity').options;
+ const options=mapControls(view,'filters',trips.map(t=>t.activity)).panel.sections.find(section=>section.id==='activity').options;
  expect(options.filter(o=>o.label==='Mountain biking')).toHaveLength(1);
  expect(options.find(o=>o.label==='Mountain biking').selected).toBe(true);
  expect(options.some(o=>o.label==='MTB')).toBe(false);

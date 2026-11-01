@@ -3564,4 +3564,22 @@ do {
     latency.noteEvidence("old",engine:"established",now:1000)
     check(!latency.isStale(now:1100) && latency.isStale(now:6063),"a departure that never confirmed is not measured against a later one")
 }
+do {
+    for width in [280.0,320.0,375.0,430.0] as [CGFloat] {
+        let frames=mapControlFrames(width:width,top:12,filtersWidth:900,layersWidth:96,height:44)
+        check(frames.filters!.maxX<frames.layers.minX && frames.filters!.minX>=12,"a long filter summary never reaches Layers")
+        check(frames.layers.maxX==width-12 && frames.layers.width==96,"Layers keeps its full label on every width")
+        check(!frames.expand.intersects(frames.layers) && frames.expand.maxX==width-12,"Full screen sits clear of Layers")
+        check(frames.compassTop>=frames.expand.maxY,"the compass appears below Full screen")
+        check(frames.leftColumn>=frames.filters!.maxY,"the date bar starts below Filters")
+        check(frames.filters!.height>=44 && frames.expand.width==44 && frames.expand.height==44,"controls keep a 44 pt target")
+    }
+    let large=mapControlFrames(width:390,top:59,filtersWidth:100,layersWidth:96,height:70)
+    check(large.filters!.width==100 && large.filters!.height==70 && large.expand.minY>=129,"Dynamic Type pushes the column down instead of overlapping")
+    check(mapControlFrames(width:390,top:12,filtersWidth:nil,layersWidth:96,height:44).filters==nil,"Community trails has no Filters control")
+    let chips=wrapMapChips([CGSize(width:100,height:44),CGSize(width:100,height:44),CGSize(width:100,height:44),CGSize(width:400,height:44)],available:220)
+    check(chips.frames[2].minX==0 && chips.frames[2].minY==50,"chips wrap instead of clipping")
+    check(chips.frames[3].width==220 && chips.frames[3].minY==100 && chips.height==144,"a chip wider than the panel is limited to it")
+    check(wrapMapChips([],available:200).height==0,"an empty section takes no space")
+}
 print("\(assertions) native recorder/auth assertions passed")

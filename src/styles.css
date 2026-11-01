@@ -731,10 +731,34 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 @media(max-width:760px){
  .map-page.map-page-people .journey-map.large{height:max(320px,calc(100dvh - 158px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));border-radius:16px}
 }
-/* The web fallback of the native Layers button and the still image shown while
-   a sheet covers the native map. */
-.map-layers-button{position:absolute;z-index:2;top:12px;left:12px;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;min-height:44px;border-radius:22px;background:color-mix(in srgb,var(--surface) 94%,transparent);color:var(--ink);box-shadow:0 1px 6px #0000002e}
-.map-layers-dot{position:absolute;top:9px;right:9px;width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--surface)}
+/* The web fallback of the native controls (AppleMaps.swift draws the same model)
+   and the still image shown while a sheet covers the native map. */
+.map-controls{position:absolute;z-index:3;top:12px;left:12px;right:12px;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.map-controls-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.map-pill,.map-date-bar,.map-panel{pointer-events:auto;background:color-mix(in srgb,var(--surface) 96%,transparent);color:var(--ink);box-shadow:0 1px 6px #0000002e}
+.map-pill{display:inline-flex;align-items:center;gap:6px;min-width:0;min-height:44px;padding:0 14px;border-radius:22px;font-size:14px;font-weight:600}
+.map-pill:first-child:not(:only-child){flex:0 1 auto}
+.map-pill-text{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.map-pill svg{flex:none}
+.map-pill-count,.map-pill-dot{flex:none;background:var(--accent);color:var(--on-accent)}
+.map-pill-count{display:grid;place-items:center;min-width:20px;height:20px;padding:0 5px;border-radius:10px;font-size:12px;font-weight:700}
+.map-pill-dot{width:8px;height:8px;border-radius:50%}
+.map-controls-top>.map-pill:only-child{margin-left:auto}
+.map-date-bar{align-self:flex-start;display:flex;align-items:center;max-width:100%;min-height:44px;border-radius:22px}
+.map-date-bar button{display:grid;place-items:center;min-width:44px;min-height:44px;color:var(--ink);border-radius:22px}
+.map-date-bar button:disabled{opacity:.3}
+.map-date-bar strong{padding:0 2px;font-size:14px;font-weight:600;white-space:nowrap}
+.map-date-bar .map-date-today{padding:0 10px;color:var(--accent);font-size:14px;font-weight:600}
+.map-panel{max-height:min(62dvh,calc(100% - 60px));overflow:auto;padding:6px 14px 14px;border-radius:18px;animation:map-filter-reveal 180ms ease-out}
+.map-panel-head{display:flex;align-items:center;gap:4px;min-height:44px}
+.map-panel-head h2{flex:1;margin:0;font-size:16px;font-weight:650}
+.map-panel-head button{display:grid;place-items:center;min-width:44px;min-height:44px;color:var(--ink);font-size:14px;font-weight:600}
+.map-panel-head .map-panel-reset{color:var(--accent)}
+.map-panel h3{margin:10px 0 6px;color:var(--muted);font-size:12px;font-weight:600}
+.map-panel-options{display:flex;flex-wrap:wrap;gap:6px}
+.map-panel-options button{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 12px;border-radius:22px;background:var(--soft);color:var(--ink);font-size:14px;font-weight:550}
+.map-panel-options button[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}
+.map-pill:focus-visible,.map-date-bar button:focus-visible,.map-panel button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .apple-map-freeze{position:absolute;z-index:1;top:0;left:0;width:100%;object-fit:cover;border-radius:16px;pointer-events:none}
 
 .social-sheet-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px}
@@ -854,7 +878,7 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .trip-date-current input{position:absolute;z-index:1;inset:0;width:100%;height:100%;opacity:0;border:0;padding:0;pointer-events:none}
 @media(pointer:coarse){.trip-date-current input{pointer-events:auto}}
 @keyframes map-filter-reveal{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:translateX(0)}}
-@media(prefers-reduced-motion:reduce){.map-filter-options,.activity-filter-toolbar{animation:none}}
+@media(prefers-reduced-motion:reduce){.map-filter-options,.activity-filter-toolbar,.map-panel{animation:none}}
 
 .map-locate-button[aria-pressed=true]{background:var(--accent);color:white}
 

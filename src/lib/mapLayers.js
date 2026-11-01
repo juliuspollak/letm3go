@@ -1,11 +1,13 @@
-import {activityCode,sameActivity} from './activityNames.js';
+import {activityCode,activityLabel,sameActivity} from './activityNames.js';
 // What the Map tab shows, in one value:
 // - content: 'routes' (your own map) or 'trails' (Community trails). Mutually
 //   exclusive: they are different maps with different tools.
 // - people:  People & places, independent of everything else.
 // - routes:  null, 'today', 'pinned' (favourites) or 'all'. One at a time.
 // - activity / range: advanced filters for the routes; Today has its own range.
-export const DEFAULT_MAP_VIEW=Object.freeze({content:'routes',people:true,routes:null,activity:'',range:'any',day:null});
+// - style:   'standard' or 'satellite', how the map itself is drawn.
+// - archived: whether archived activities are drawn with the routes.
+export const DEFAULT_MAP_VIEW=Object.freeze({content:'routes',people:true,routes:null,activity:'',range:'any',day:null,style:'standard',archived:true});
 export const ROUTE_LAYERS=[['today','Today'],['pinned','Favourites'],['all','All routes']];
 export const RANGE_OPTIONS=[['any','Any time'],['7d','Past 7 days'],['30d','Past 30 days'],['365d','Past year']];
 export const RANGE_DAYS={'7d':7,'30d':30,'365d':365};
@@ -18,7 +20,9 @@ export function normaliseMapView(value){
   routes:ROUTE_LAYERS.some(([id])=>id===view.routes)?view.routes:null,
   activity:typeof view.activity==='string'?activityCode(view.activity.slice(0,60)):'',
   range:RANGE_DAYS[view.range]?view.range:'any',
-  day:validDay(view.day)?view.day:null
+  day:validDay(view.day)?view.day:null,
+  style:view.style==='satellite'?'satellite':'standard',
+  archived:view.archived!==false
  };
 }
 
@@ -27,21 +31,34 @@ export function chooseRouteLayer(view,id){
  return {...view,routes:view.routes===id?null:ROUTE_LAYERS.some(([key])=>key===id)?id:view.routes};
 }
 export const clearMapFilters=view=>({...view,activity:'',range:'any',day:null});
+// Every filter back to its default; how the map is drawn is not a filter.
+export const resetMapFilters=view=>({...DEFAULT_MAP_VIEW,content:view.content,style:view.style});
 
 // Advanced filters only apply to a route layer that supports them.
 export const supportsActivity=view=>view.content==='routes'&&Boolean(view.routes);
 export const supportsRange=view=>view.content==='routes'&&(view.routes==='all'||view.routes==='pinned');
 
-// Anything other than the default view, for the unobtrusive indicator.
-export function activeLayerCount(view){
- return (view.content!=='routes'?1:0)+(view.content==='routes'&&!view.people?1:0)+(view.content==='routes'&&view.routes?1:0)
-  +(supportsActivity(view)&&view.activity?1:0)+(supportsRange(view)&&(view.range!=='any'||view.day)?1:0);
+// Each filter that is changing what the map shows, in panel order. A filter the
+// current route layer ignores is not listed, so the count never overstates.
+export function activeMapFilters(view,archivedCount=0){
+ if(view.content!=='routes')return [];
+ const route=ROUTE_LAYERS.find(([id])=>id===view.routes)?.[1];
+ const range=RANGE_OPTIONS.find(([id])=>id===view.range)?.[1];
+ return [
+  ...(view.people?[]:['People hidden']),
+  ...(route?[route]:[]),
+  ...(supportsRange(view)&&view.day?[dayLabel(view.day)]:supportsRange(view)&&view.range!=='any'?[range]:[]),
+  ...(supportsActivity(view)&&view.activity?[activityLabel(view.activity)]:[]),
+  ...(view.routes&&!view.archived&&archivedCount>0?['Archived hidden']:[]),
+ ];
 }
+export const mapLayersChanged=view=>view.content!=='routes'||view.style!=='standard';
 
-export function mapViewJourneys(journeys,view,today,saved=[],nowMs=Date.now()){
+export function mapViewJourneys(journeys,view,today,saved=[],archivedTrips=[],nowMs=Date.now()){
  if(view.content!=='routes'||!view.routes)return [];
  const sinceSeconds=supportsRange(view)&&RANGE_DAYS[view.range]?nowMs/1000-RANGE_DAYS[view.range]*86400:null;
  return journeys.filter(trip=>{
+  if(!view.archived&&(archivedTrips.includes(trip.id)||trip.segmentIDs?.some(id=>archivedTrips.includes(id))))return false;
   if(view.routes==='today'&&!(trip.date===today||trip.segments?.some(segment=>segment.date===today)))return false;
   if(view.routes==='pinned'&&!(saved.includes(trip.id)||trip.segmentIDs?.some(id=>saved.includes(id))))return false;
   if(supportsRange(view)&&view.day&&!journeyOnDay(trip,view.day))return false;
@@ -71,6 +88,7 @@ export function localDay(date=new Date()){
 export function validDay(day){
  return typeof day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day)&&localDay(new Date(day+'T12:00:00'))===day;
 }
+export const dayLabel=day=>new Date(day+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'});
 export function shiftMapDay(day,amount){const date=new Date(day+'T12:00:00');date.setDate(date.getDate()+amount);return localDay(date);}
 // Test each observed segment separately: a gap between grouped recordings is
 // not evidence of activity on every intervening day. End boundaries are exclusive.

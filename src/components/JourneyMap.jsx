@@ -14,8 +14,8 @@ function withSegments(payload,layers){
  if(!layers)return payload;
  return {...payload,pins:[...payload.pins,...layers.pins],styled:layers.styled,...(layers.muted?{muted:true}:{})};
 }
-export default function JourneyMap({journeys,onPhoto,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,trimRange=null,segmentLayers=null,homePresence=null,livePeople=[],peoplePins=[],embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,onLayers=null,layersActive=0,toolbar=null,onToolbarAction=null}){
- return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={onLocate} locating={locating} onCamera={onCamera} overview={overview} onLayers={onLayers} layersActive={layersActive} toolbar={toolbar} onToolbarAction={onToolbarAction} payload={{...withSegments(mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins,{overview:overview?.key||null}),segmentLayers),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})}} trimRange={trimRange} large={large} onResult={result=>{
+export default function JourneyMap({journeys,onPhoto,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,trimRange=null,segmentLayers=null,homePresence=null,livePeople=[],peoplePins=[],embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,controls=null,onControl=null}){
+ return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={onLocate} locating={locating} onCamera={onCamera} overview={overview} controls={controls} onControl={onControl} payload={{...withSegments(mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins,{overview:overview?.key||null}),segmentLayers),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})}} trimRange={trimRange} large={large} onResult={result=>{
   if(!result?.photoID)return;
   // Only a journey this map was given, and only one that owns the photo.
   const journey=journeys.find(j=>String(j.id)===result.journeyID);

@@ -31,10 +31,10 @@ it('keeps opening the photo directly on single-journey maps',()=>{
  expect(captured.props.payload.pins.filter(pin=>['start','finish'].includes(pin.kind))).toHaveLength(2);
  expect(captured.props.payload).not.toHaveProperty('overview');
 });
-it('names the overview in the payload and passes the Layers control through',()=>{
- const onLayers=vi.fn();
- render(<JourneyMap journeys={[ride,walk]} overview={{key:'d1',levels:[]}} onLayers={onLayers} layersActive={2}/>);
+it('names the overview in the payload and passes the Map controls through',()=>{
+ const onControl=vi.fn(),controls={active:2};
+ render(<JourneyMap journeys={[ride,walk]} overview={{key:'d1',levels:[]}} controls={controls} onControl={onControl}/>);
  expect(captured.props.payload).toMatchObject({overview:'d1',routes:[],gaps:[]});
  expect(captured.props.payload.pins.some(pin=>['start','finish','photo'].includes(pin.kind))).toBe(false);
- expect(captured.props).toMatchObject({onLayers,layersActive:2,overview:{key:'d1'}});
+ expect(captured.props).toMatchObject({controls,onControl,overview:{key:'d1'}});
 });

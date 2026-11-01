@@ -160,17 +160,18 @@ describe('overview transfer',()=>{
 
 it('updates inline native filters on the same live map without hiding or releasing it',async()=>{
  const handlers={};mocks.addListener.mockImplementation((name,callback)=>{handlers[name]=callback;return Promise.resolve({remove:vi.fn()});});
- const onLayers=vi.fn(),onToolbarAction=vi.fn();
- const props={payload,onLayers,onToolbarAction,viewportKey:0};
- const {rerender,container}=render(<AppleMap {...props} toolbar={{open:false,rows:[]}}/>);
+ const onControl=vi.fn();
+ const props={payload,onControl,viewportKey:0};
+ const closed={active:0,style:'standard',layers:{id:'panel:layers'},panel:null};
+ const {rerender,container}=render(<AppleMap {...props} controls={closed}/>);
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
  const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
  mocks.embed.mockClear();mocks.hide.mockClear();mocks.unembed.mockClear();
- rerender(<AppleMap {...props} toolbar={{open:true,category:'calendar',rows:[{id:'calendar'}]}}/>);
- await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({mapID,preserveViewport:true,layers:expect.objectContaining({toolbar:expect.objectContaining({open:true})})})));
- handlers.layersTapped({mapID,action:'day:2026-10-29'});expect(onToolbarAction).toHaveBeenCalledWith('day:2026-10-29');
- handlers.layersTapped({mapID:'other',action:'people'});expect(onToolbarAction).toHaveBeenCalledTimes(1);
- handlers.layersTapped({mapID});expect(onLayers).toHaveBeenCalledTimes(1);
+ rerender(<AppleMap {...props} controls={{...closed,panel:{id:'filters',sections:[]}}}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({mapID,preserveViewport:true,mapStyle:'standard',layers:expect.objectContaining({controls:expect.objectContaining({panel:expect.objectContaining({id:'filters'})})})})));
+ handlers.layersTapped({mapID,action:'day:2026-10-29'});expect(onControl).toHaveBeenCalledWith('day:2026-10-29');
+ handlers.layersTapped({mapID:'other',action:'people'});expect(onControl).toHaveBeenCalledTimes(1);
+ handlers.layersTapped({mapID});expect(onControl).toHaveBeenCalledTimes(1);
  expect(mocks.hide).not.toHaveBeenCalled();expect(mocks.unembed).not.toHaveBeenCalled();expect(container.querySelector('.apple-map-freeze')).toBeNull();
 });
 

@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {DEFAULT_MAP_VIEW,activeLayerCount,activityChoices,chooseRouteLayer,clearMapFilters,loadMapView,mapViewJourneys,normaliseMapView,saveMapView,supportsActivity,supportsRange} from './mapLayers.js';
+import {DEFAULT_MAP_VIEW,activeMapFilters,activityChoices,chooseRouteLayer,clearMapFilters,loadMapView,mapViewJourneys,normaliseMapView,saveMapView,supportsActivity,supportsRange} from './mapLayers.js';
 
 const view=(changes={})=>({...DEFAULT_MAP_VIEW,...changes});
 const DAY=86400;
@@ -14,10 +14,10 @@ afterEach(()=>localStorage.clear());
 
 describe('route layers',()=>{
  it('includes grouped journeys when a segment matches today or a saved activity',()=>{
-  expect(mapViewJourneys(journeys,view({routes:'today'}),'2026-10-27',[],now)).toEqual([journeys[0]]);
-  expect(mapViewJourneys(journeys,view({routes:'pinned'}),'2026-10-27',['recording'],now)).toEqual([journeys[0]]);
-  expect(mapViewJourneys(journeys,view({routes:'all'}),'2026-10-27',[],now)).toEqual(journeys);
-  expect(mapViewJourneys(journeys,view(),'2026-10-27',[],now)).toEqual([]);
+  expect(mapViewJourneys(journeys,view({routes:'today'}),'2026-10-27',[],[],now)).toEqual([journeys[0]]);
+  expect(mapViewJourneys(journeys,view({routes:'pinned'}),'2026-10-27',['recording'],[],now)).toEqual([journeys[0]]);
+  expect(mapViewJourneys(journeys,view({routes:'all'}),'2026-10-27',[],[],now)).toEqual(journeys);
+  expect(mapViewJourneys(journeys,view(),'2026-10-27',[],[],now)).toEqual([]);
  });
  it('keeps one route layer at a time, and choosing it again turns routes off without touching people',()=>{
   const all=chooseRouteLayer(view(),'all');
@@ -27,35 +27,42 @@ describe('route layers',()=>{
   expect(chooseRouteLayer(all,'nonsense').routes).toBe('all');
  });
  it('lets people be shown or hidden independently of routes',()=>{
-  expect(mapViewJourneys(journeys,view({routes:'all',people:false}),'2026-10-27',[],now)).toHaveLength(3);
-  expect(activeLayerCount(view({people:false}))).toBe(1);
+  expect(mapViewJourneys(journeys,view({routes:'all',people:false}),'2026-10-27',[],[],now)).toHaveLength(3);
+  expect(activeMapFilters(view({people:false})).length).toBe(1);
+ });
+ it('hides archived journeys and grouped journeys only when asked, and loads older saved views',()=>{
+  const trips=[{id:'a',date:'2026-10-27'},{id:'b',date:'2026-10-27'},{id:'group',date:'2026-10-27',segmentIDs:['c','d']}];
+  expect(mapViewJourneys(trips,view({routes:'all'}),'2026-10-27',[],['a','c'],now)).toHaveLength(3);
+  expect(mapViewJourneys(trips,view({routes:'all',archived:false}),'2026-10-27',[],['a','c'],now).map(t=>t.id)).toEqual(['b']);
+  expect(normaliseMapView({routes:'all',people:false})).toMatchObject({routes:'all',people:false,style:'standard',archived:true});
+  expect(normaliseMapView({style:'neon',archived:false})).toMatchObject({style:'standard',archived:false});
  });
  it('shows no routes on Community trails',()=>{
-  expect(mapViewJourneys(journeys,view({content:'trails',routes:'all'}),'2026-10-27',[],now)).toEqual([]);
+  expect(mapViewJourneys(journeys,view({content:'trails',routes:'all'}),'2026-10-27',[],[],now)).toEqual([]);
  });
 });
 
 describe('advanced filters',()=>{
  it('filters by activity type and date range where supported',()=>{
-  expect(mapViewJourneys(journeys,view({routes:'all',activity:'Cycling'}),'2026-10-27',[],now).map(j=>j.id)).toEqual(['older','ancient']);
-  expect(mapViewJourneys(journeys,view({routes:'all',range:'30d'}),'2026-10-27',[],now).map(j=>j.id)).toEqual(['group','older']);
-  expect(mapViewJourneys(journeys,view({routes:'all',activity:'Cycling',range:'7d'}),'2026-10-27',[],now).map(j=>j.id)).toEqual(['older']);
+  expect(mapViewJourneys(journeys,view({routes:'all',activity:'Cycling'}),'2026-10-27',[],[],now).map(j=>j.id)).toEqual(['older','ancient']);
+  expect(mapViewJourneys(journeys,view({routes:'all',range:'30d'}),'2026-10-27',[],[],now).map(j=>j.id)).toEqual(['group','older']);
+  expect(mapViewJourneys(journeys,view({routes:'all',activity:'Cycling',range:'7d'}),'2026-10-27',[],[],now).map(j=>j.id)).toEqual(['older']);
  });
  it('only offers filters that do something, and only activity types that exist',()=>{
   expect(supportsActivity(view())).toBe(false);
   expect(supportsRange(view({routes:'today'}))).toBe(false);
   expect(supportsRange(view({routes:'all'}))).toBe(true);
   // Today has its own range: a stale date filter never hides today's routes.
-  expect(mapViewJourneys(journeys,view({routes:'today',range:'7d'}),'2026-10-27',[],now)).toEqual([journeys[0]]);
+  expect(mapViewJourneys(journeys,view({routes:'today',range:'7d'}),'2026-10-27',[],[],now)).toEqual([journeys[0]]);
   expect(activityChoices([...journeys,{activity:''},{activity:null}])).toEqual(['Cycling','Walking']);
  });
  it('clears only the filters and counts what is active for the indicator',()=>{
   const busy=view({routes:'all',activity:'Cycling',range:'7d'});
-  expect(activeLayerCount(view())).toBe(0);
-  expect(activeLayerCount(busy)).toBe(3);
+  expect(activeMapFilters(view()).length).toBe(0);
+  expect(activeMapFilters(busy).length).toBe(3);
   expect(clearMapFilters(busy)).toEqual(view({routes:'all'}));
   // A filter that does not apply is not counted.
-  expect(activeLayerCount(view({activity:'Cycling'}))).toBe(0);
+  expect(activeMapFilters(view({activity:'Cycling'})).length).toBe(0);
  });
 });
 
@@ -86,7 +93,7 @@ describe('selected calendar day',()=>{
   const crossing={id:'night',startedAt:seconds('2026-10-25T23:30:00'),endedAt:seconds('2026-10-26T00:30:00')};
   const grouped={id:'group',segments:[{date:'2026-10-24'},{date:'2026-10-27'}]};
   const ending={id:'boundary',startedAt:seconds('2026-10-25T23:00:00'),endedAt:seconds('2026-10-26T00:00:00')};
-  expect(mapViewJourneys([crossing,grouped,ending],view({routes:'all',day:'2026-10-26',range:'7d'}),'2026-10-30',[],now)).toEqual([crossing]);
+  expect(mapViewJourneys([crossing,grouped,ending],view({routes:'all',day:'2026-10-26',range:'7d'}),'2026-10-30',[],[],now)).toEqual([crossing]);
   expect(mapViewJourneys([crossing],view({routes:'all',day:'2026-10-25'}),'2026-10-30')).toEqual([crossing]);
  });
 });

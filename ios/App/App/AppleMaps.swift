@@ -66,6 +66,13 @@ private final class HighlightLine:MKPolyline {
     var casing=false
 }
 private let brandAccent=UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.65,green:0.71,blue:1,alpha:1) : UIColor(red:0.275,green:0.35,blue:0.85,alpha:1) }
+// A view tag, not a stored reference: the plugin owns this button, the coordinator places it.
+private let mapExpandTag=8801
+private let mapMarkTag=8802
+private func applyMapStyle(_ map:MKMapView,_ style:String) {
+    if #available(iOS 16.0, *) {map.preferredConfiguration=style=="satellite" ? MKHybridMapConfiguration(elevationStyle:.realistic) : MKStandardMapConfiguration(elevationStyle:.realistic)}
+    else {map.mapType=style=="satellite" ? .hybrid : .standard}
+}
 private let onBrandAccent=UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.08,green:0.11,blue:0.22,alpha:1) : .white }
 // Rarely travelled paths are thin and translucent in the app's accent; the most
 // travelled warm up to a bright coral-orange, like a personal heatmap.
@@ -662,9 +669,10 @@ private struct MapContent {
     let camera:CameraIntent?
     // The Map overview's density and photos (sent earlier under this key).
     var overview:OverviewData?
-    // The number of active layers when the map shows the Map layers button.
+    // The number of active filters when the map shows the Map page's controls.
     let layersActive:Int?
-    let toolbar:[String:Any]?
+    let controls:[String:Any]?
+    let mapStyle:String?
     let showsLocate:Bool
     let locating:Bool
     init(_ options:[AnyHashable:Any]) {
@@ -683,7 +691,8 @@ private struct MapContent {
         muted=options["muted"] as? Bool == true
         camera=CameraIntent(options["camera"])
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
-        toolbar=(options["layers"] as? [String:Any])?["toolbar"] as? [String:Any]
+        controls=(options["layers"] as? [String:Any])?["controls"] as? [String:Any]
+        mapStyle=options["mapStyle"] as? String
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
@@ -779,7 +788,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private let controlTop:CGFloat
     var exclusions:()->[CGRect]={[]}
     var onModeChange:((FollowMode,Int)->Void)?
-    let fitPadding=UIEdgeInsets(top:40,left:14,bottom:14,right:54)
+    // Fixed, so a filter or the date bar appearing never moves the camera.
+    let fitPadding:UIEdgeInsets
     // Map overview: density overlays for the current zoom band, clustered photos,
     // the selected photo's highlighted journey and its preview card.
     private var overviewKey:String?
@@ -795,18 +805,23 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private(set) var densityDimmed=false
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
-    private var layersButton:UIButton?
     private var locationButton:UIButton?
-    private var filterViews:[UIView]=[]
-    private var filterToolbarKey:Data?
+    private var controlViews:[UIView]=[]
+    private var controlsKey:Data?
+    private var panelScroll:UIScrollView?
+    private var panelID:String?
+    private var panelTap:UITapGestureRecognizer?
+    private var leftColumnBottom:CGFloat=0
+    private var compassTop:CGFloat?
+    private var appliedStyle:String?
     var onToolbarAction:((String)->Void)?
     private let showsLayers:Bool
     // action ("journey" or "photo"), photo id, journey id
     var onPhotoAction:((String,String,String)->Void)?
-    var onLayers:(()->Void)?
 
     init(map:MKMapView,content:MapContent,controlTop:CGFloat,showsLayers:Bool=false) {
         self.map=map;self.content=content;self.controlTop=controlTop;self.showsLayers=showsLayers
+        fitPadding=UIEdgeInsets(top:showsLayers ? 64 : 40,left:14,bottom:14,right:54)
         super.init()
     }
     var isPeopleMap:Bool {content.camera != nil}
@@ -868,8 +883,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         for (id,pin) in pins where !seen.contains(id) {map.removeAnnotation(pin);pins.removeValue(forKey:id);pinData.removeValue(forKey:id)}
         applyOverview(next.overview)
         updateLocationButton(next.showsLocate && showsLayers)
-        updateLayersButton(next.layersActive)
-        updateFilterToolbar(next.toolbar)
+        if let style=next.mapStyle,style != appliedStyle {applyMapStyle(map,style);appliedStyle=style}
+        updateMapControls(next.controls)
         if isPeopleMap {installControls();applyIntent();plan();layoutIndicators();updateLocationButton(next.showsLocate && showsLayers)}
     }
 
@@ -1011,52 +1026,28 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let pin=selectedPhoto,let photoID=pin.metadata["photoID"] as? String,let journeyID=pin.metadata["journeyID"] as? String else {return}
         onPhotoAction?(action,photoID,journeyID)
     }
-    // MARK: Map layers button (embedded map only)
-    private func updateLayersButton(_ active:Int?) {
-        guard let map=map else {return}
-        guard showsLayers,let active=active else {layersButton?.removeFromSuperview();layersButton=nil;return}
-        let button=layersButton ?? {
-            let created=UIButton(type:.system)
-            created.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
-            created.layer.cornerRadius=20
-            created.setImage(UIImage(systemName:"slider.horizontal.3",withConfiguration:UIImage.SymbolConfiguration(pointSize:16,weight:.semibold)),for:.normal)
-            created.tintColor = .label
-            created.frame=CGRect(x:12,y:12,width:40,height:40)
-            let dot=UIView(frame:CGRect(x:28,y:7,width:7,height:7))
-            dot.backgroundColor=brandAccent;dot.layer.cornerRadius=3.5;dot.isUserInteractionEnabled=false;dot.tag=7
-            created.addSubview(dot)
-            created.addAction(UIAction{[weak self] _ in self?.onLayers?()},for:.touchUpInside)
-            map.addSubview(created)
-            layersButton=created
-            return created
-        }()
-        button.frame.origin.y=max(12,map.safeAreaInsets.top)
-        button.viewWithTag(7)?.isHidden=active==0
-        button.accessibilityLabel=active>0 ? "Map layers, \(active) active" : "Map layers"
-        map.bringSubviewToFront(button)
-    }
-
+    // MARK: Map page controls (embedded map only)
     private func updateLocationButton(_ visible:Bool) {
         guard let map=map else {return}
         guard visible else {locationButton?.removeFromSuperview();locationButton=nil;return}
         let button=locationButton ?? {
             let button=UIButton(type:.system)
             button.backgroundColor = .secondarySystemBackground
-            button.tintColor = .systemBlue
+            button.tintColor = .label
             button.layer.cornerRadius=22
             button.layer.shadowOpacity=0.15;button.layer.shadowRadius=4
             button.setImage(UIImage(systemName:"location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
             button.accessibilityLabel="Show my location"
             button.addAction(UIAction{[weak self,weak button] _ in
-                button?.backgroundColor = .systemBlue;button?.tintColor = .white
+                button?.backgroundColor=brandAccent;button?.tintColor=onBrandAccent
                 self?.onToolbarAction?("locate")
             },for:.touchUpInside)
             map.addSubview(button);locationButton=button
             return button
         }()
         let active=content.locating || (content.camera != nil && planner.mode.personID == "self")
-        button.backgroundColor=active ? .systemBlue : .secondarySystemBackground
-        button.tintColor=active ? .white : .systemBlue
+        button.backgroundColor=active ? brandAccent : .secondarySystemBackground
+        button.tintColor=active ? onBrandAccent : .label
         button.setImage(UIImage(systemName:active ? "location.fill" : "location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
         button.isEnabled = !content.locating
         button.accessibilityValue=content.locating ? "Locating" : active ? "Following you" : nil
@@ -1065,77 +1056,227 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         map.bringSubviewToFront(button)
     }
 
-    // Direct MapKit subviews: only the buttons and scrolling option strips
-    // intercept touches. No full-map container, modal, snapshot or web z-index.
-    private func updateFilterToolbar(_ toolbar:[String:Any]?) {
+    // Direct MapKit subviews: only these controls intercept touches. No full-map
+    // container, modal, snapshot or web z-index, so the map keeps its gestures.
+    // The accent means "applied now", and only inside a panel; see lib/mapToolbar.js.
+    private func updateMapControls(_ controls:[String:Any]?) {
         guard showsLayers,let map=map else {return}
-        let key=try? JSONSerialization.data(withJSONObject:["toolbar":toolbar ?? [:],"width":map.bounds.width,"height":map.bounds.height,"safeTop":map.safeAreaInsets.top],options:[.sortedKeys])
-        guard key != filterToolbarKey else {return}
-        filterToolbarKey=key
-        filterViews.forEach{$0.removeFromSuperview()};filterViews=[]
-        guard let toolbar=toolbar,toolbar["open"] as? Bool == true else {return}
-        let rows=toolbar["rows"] as? [[String:Any]] ?? []
-        let category=toolbar["category"] as? String
+        let traits=map.traitCollection
+        let key=try? JSONSerialization.data(withJSONObject:["controls":controls ?? [:],"width":map.bounds.width,"height":map.bounds.height,"safeTop":map.safeAreaInsets.top,"type":traits.preferredContentSizeCategory.rawValue,"dark":traits.userInterfaceStyle == .dark],options:[.sortedKeys])
+        guard key != controlsKey else {return}
+        controlsKey=key
+        let offset=panelScroll?.contentOffset
+        let previousPanel=panelID
+        controlViews.forEach{$0.removeFromSuperview()};controlViews=[];panelScroll=nil;panelID=nil
+        guard let controls=controls,let layersItem=controls["layers"] as? [String:Any] else {return}
+        installCompass()
         let top=max(12,map.safeAreaInsets.top)
-        layersButton?.frame.origin.y=top
-        func control(_ item:[String:Any],expanded:Bool?=nil)->UIButton {
+        let filtersItem=controls["filters"] as? [String:Any]
+        let filters=filtersItem.map{pill($0,badge:($0["count"] as? NSNumber)?.intValue ?? 0)}
+        let layers=pill(layersItem,badge:0,dot:layersItem["changed"] as? Bool == true)
+        let fit=CGSize(width:max(120,map.bounds.width-24),height:200)
+        let frames=mapControlFrames(width:map.bounds.width,top:top,filtersWidth:filters?.sizeThatFits(fit).width,layersWidth:layers.sizeThatFits(fit).width,height:max(filters?.sizeThatFits(fit).height ?? 44,layers.sizeThatFits(fit).height))
+        if let filters=filters,let frame=frames.filters {
+            filters.frame=frame;positionBadge(filters)
+            map.addSubview(filters);controlViews.append(filters)
+        }
+        layers.frame=frames.layers;positionBadge(layers)
+        map.addSubview(layers);controlViews.append(layers)
+        if let expand=map.viewWithTag(mapExpandTag) {expand.frame=frames.expand;map.bringSubviewToFront(expand)}
+        compassTop=frames.compassTop
+        leftColumnBottom=frames.leftColumn
+        if let date=controls["date"] as? [String:Any] {
+            let bar=dateBar(date,maxWidth:map.bounds.width-80)
+            bar.frame.origin=CGPoint(x:12,y:frames.leftColumn)
+            map.addSubview(bar);controlViews.append(bar)
+            leftColumnBottom=bar.frame.maxY+8
+        }
+        if let panel=controls["panel"] as? [String:Any] {
+            installPanelTap()
+            let id=panel["id"] as? String
+            let card=panelCard(panel,y:frames.leftColumn)
+            map.addSubview(card);controlViews.append(card)
+            panelID=id
+            if id==previousPanel,let offset=offset {panelScroll?.contentOffset=offset}
+            else if !UIAccessibility.isReduceMotionEnabled {card.alpha=0;UIView.animate(withDuration:0.18){card.alpha=1}}
+            if id != previousPanel {UIAccessibility.post(notification:.layoutChanged,argument:card)}
+        }
+        layoutControls()
+        if let chip=chip {map.bringSubviewToFront(chip)}
+        controlViews.forEach{map.bringSubviewToFront($0)}
+    }
+    private func chipFont()->UIFont {UIFontMetrics(forTextStyle:.subheadline).scaledFont(for:.systemFont(ofSize:14,weight:.semibold))}
+    private func capsule(_ item:[String:Any],background:UIColor,foreground:UIColor,trailing:CGFloat=0)->UIButton {
+        var style=UIButton.Configuration.filled()
+        style.baseBackgroundColor=background;style.baseForegroundColor=foreground
+        style.cornerStyle = .capsule
+        style.title=item["text"] as? String
+        if let symbol=item["symbol"] as? String {style.image=UIImage(systemName:symbol,withConfiguration:UIImage.SymbolConfiguration(textStyle:.subheadline))}
+        style.imagePadding=6
+        style.titleLineBreakMode = .byTruncatingTail
+        style.contentInsets=NSDirectionalEdgeInsets(top:6,leading:13,bottom:6,trailing:13+trailing)
+        let font=chipFont()
+        style.titleTextAttributesTransformer=UIConfigurationTextAttributesTransformer { attributes in
+            var updated=attributes;updated.font=font;return updated
+        }
+        let button=UIButton(configuration:style)
+        button.accessibilityLabel=item["label"] as? String
+        button.isEnabled=item["disabled"] as? Bool != true
+        let id=item["id"] as? String ?? ""
+        button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?(id)},for:.touchUpInside)
+        return button
+    }
+    private func pill(_ item:[String:Any],badge:Int,dot:Bool=false)->UIButton {
+        let size=ceil(chipFont().lineHeight)+3
+        let button=capsule(item,background:UIColor.secondarySystemBackground.withAlphaComponent(0.96),foreground:.label,trailing:badge>0 ? size+6 : dot ? 14 : 0)
+        button.layer.shadowColor=UIColor.black.cgColor;button.layer.shadowOpacity=0.16
+        button.layer.shadowRadius=4;button.layer.shadowOffset=CGSize(width:0,height:1)
+        button.accessibilityValue=(item["expanded"] as? Bool)==true ? "Expanded" : "Collapsed"
+        if badge>0 || dot {
+            let mark=UILabel(frame:CGRect(x:0,y:0,width:badge>0 ? size : 8,height:badge>0 ? size : 8))
+            mark.backgroundColor=brandAccent;mark.textColor=onBrandAccent;mark.textAlignment = .center
+            mark.font=UIFontMetrics(forTextStyle:.caption2).scaledFont(for:.systemFont(ofSize:12,weight:.bold))
+            mark.text=badge>0 ? String(badge) : nil
+            mark.layer.cornerRadius=mark.frame.height/2;mark.clipsToBounds=true
+            mark.isUserInteractionEnabled=false;mark.isAccessibilityElement=false;mark.tag=mapMarkTag
+            button.addSubview(mark)
+        }
+        return button
+    }
+    private func positionBadge(_ button:UIButton) {
+        guard let mark=button.viewWithTag(mapMarkTag) else {return}
+        mark.frame.origin=CGPoint(x:button.bounds.width-mark.frame.width-11,y:(button.bounds.height-mark.frame.height)/2)
+    }
+    private func iconButton(_ item:[String:Any])->UIButton {
+        let button=UIButton(type:.system)
+        button.setImage(UIImage(systemName:item["symbol"] as? String ?? "chevron.right",withConfiguration:UIImage.SymbolConfiguration(textStyle:.subheadline,scale:.medium)),for:.normal)
+        button.tintColor = .label
+        button.accessibilityLabel=item["label"] as? String
+        button.isEnabled=item["disabled"] as? Bool != true
+        let id=item["id"] as? String ?? ""
+        button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?(id)},for:.touchUpInside)
+        return button
+    }
+    private func dateBar(_ date:[String:Any],maxWidth:CGFloat)->UIView {
+        let bar=UIView()
+        bar.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.96)
+        bar.layer.shadowColor=UIColor.black.cgColor;bar.layer.shadowOpacity=0.16
+        bar.layer.shadowRadius=4;bar.layer.shadowOffset=CGSize(width:0,height:1)
+        let label=UILabel()
+        label.text=date["label"] as? String;label.font=chipFont();label.adjustsFontForContentSizeCategory=true;label.textColor = .label
+        label.lineBreakMode = .byTruncatingTail
+        label.accessibilityLabel=date["accessibilityLabel"] as? String
+        var items:[(view:UIView,width:CGFloat)]=[]
+        if let previous=date["previous"] as? [String:Any] {items.append((iconButton(previous),44))}
+        items.append((label,ceil(label.intrinsicContentSize.width)+4))
+        if let next=date["next"] as? [String:Any] {items.append((iconButton(next),44))}
+        if let today=date["today"] as? [String:Any] {
             let button=UIButton(type:.system)
-            let selected=item["selected"] as? Bool == true
-            button.backgroundColor=selected ? brandAccent : .secondarySystemBackground
-            button.tintColor=selected ? .white : .label
-            button.setTitleColor(selected ? .white : .label,for:.normal)
-            button.layer.cornerRadius=22
-            button.layer.borderWidth=0.5;button.layer.borderColor=UIColor.separator.cgColor
-            button.layer.shadowColor=UIColor.black.cgColor;button.layer.shadowOpacity=0.12
-            button.layer.shadowRadius=4;button.layer.shadowOffset=CGSize(width:0,height:2)
-            button.accessibilityLabel=item["label"] as? String
-            if selected {button.accessibilityTraits.insert(.selected)}
-            if let expanded=expanded {button.accessibilityValue=expanded ? "Expanded" : "Collapsed"}
-            button.isEnabled=item["disabled"] as? Bool != true
-            if let text=item["text"] as? String {
-                button.setTitle(text,for:.normal)
-                button.titleLabel?.font=UIFont.preferredFont(forTextStyle:.caption1)
-                button.titleLabel?.adjustsFontForContentSizeCategory=true
-            } else {
-                let icon=UIImage(systemName:item["symbol"] as? String ?? "line.3.horizontal.decrease",withConfiguration:UIImage.SymbolConfiguration(pointSize:19)) ?? UIImage(systemName:"figure.walk")
-                button.setImage(icon,for:.normal)
-            }
-            let id=item["id"] as? String ?? ""
+            button.setTitle(today["text"] as? String,for:.normal);button.titleLabel?.font=chipFont();button.tintColor=brandAccent
+            button.accessibilityLabel=today["label"] as? String
+            let id=today["id"] as? String ?? ""
             button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?(id)},for:.touchUpInside)
-            return button
+            items.append((button,max(44,button.intrinsicContentSize.width+12)))
         }
-        var y=top+52
-        for row in rows {
-            let id=row["id"] as? String
-            let options=row["options"] as? [[String:Any]]
-            let button=control(row,expanded:options == nil ? nil : category==id)
-            button.frame=CGRect(x:12,y:y,width:44,height:44)
-            map.addSubview(button);filterViews.append(button)
-            if category==id,let options=options {
-                // Full-width wrapped options: every choice is visible, without
-                // clipped edge buttons or an undiscoverable horizontal scroll.
-                let available=max(44,map.bounds.width-24)
-                let strip=MapFilterOptions(frame:.zero)
-                strip.accessibilityLabel=row["label"] as? String
-                var x:CGFloat=0
-                var optionY:CGFloat=3
-                for item in options {
-                    let option=control(item)
-                    let desired:CGFloat=item["text"] == nil ? 44 : max(76,option.sizeThatFits(CGSize(width:180,height:44)).width+16)
-                    let width=min(available,desired)
-                    if x>0 && x+width>available {x=0;optionY+=50}
-                    option.frame=CGRect(x:x,y:optionY,width:width,height:44)
-                    strip.addSubview(option);x+=width+6
-                }
-                let height=optionY+47
-                strip.frame=CGRect(x:12,y:y+48,width:available,height:height)
-                map.addSubview(strip);filterViews.append(strip)
-                y+=height+48
-                if !UIAccessibility.isReduceMotionEnabled {
-                    strip.alpha=0;UIView.animate(withDuration:0.18){strip.alpha=1}
-                }
-            } else {y+=50}
+        if let clear=date["clear"] as? [String:Any] {items.append((iconButton(clear),44))}
+        let height=max(44,ceil(chipFont().lineHeight)+12)
+        // The label gives way, so the arrows stay on screen at the largest text sizes.
+        let spare=items.reduce(0){$0+$1.width}-maxWidth
+        var x:CGFloat=0
+        for item in items {
+            let width=item.view===label ? max(44,item.width-max(0,spare)) : item.width
+            item.view.frame=CGRect(x:x,y:0,width:width,height:height)
+            bar.addSubview(item.view);x+=width
         }
+        bar.frame=CGRect(x:0,y:0,width:x,height:height)
+        bar.layer.cornerRadius=height/2
+        bar.accessibilityLabel="Selected day"
+        return bar
+    }
+    private func panelCard(_ panel:[String:Any],y:CGFloat)->UIView {
+        guard let map=map else {return UIView()}
+        let width=max(44,map.bounds.width-24)
+        let inner=width-28
+        let card=UIVisualEffectView(effect:UIBlurEffect(style:.systemThickMaterial))
+        card.layer.cornerRadius=18;card.clipsToBounds=true
+        let scroll=UIScrollView()
+        scroll.alwaysBounceVertical=false
+        let title=UILabel()
+        title.text=panel["title"] as? String
+        title.font=UIFont.preferredFont(forTextStyle:.headline);title.adjustsFontForContentSizeCategory=true
+        title.accessibilityTraits = .header
+        let headerHeight=max(44,ceil(title.font.lineHeight)+8)
+        var trailing=width-6
+        let close=iconButton(["id":"panel:close","label":"Close \(panel["title"] as? String ?? "panel")","symbol":"xmark"])
+        trailing-=44;close.frame=CGRect(x:trailing,y:2,width:44,height:headerHeight)
+        scroll.addSubview(close)
+        if let reset=panel["reset"] as? [String:Any] {
+            let button=UIButton(type:.system)
+            button.setTitle(reset["text"] as? String,for:.normal);button.titleLabel?.font=chipFont();button.tintColor=brandAccent
+            button.accessibilityLabel=reset["label"] as? String
+            let id=reset["id"] as? String ?? ""
+            button.addAction(UIAction{[weak self] _ in self?.onToolbarAction?(id)},for:.touchUpInside)
+            let needed=max(44,button.intrinsicContentSize.width+12)
+            trailing-=needed;button.frame=CGRect(x:trailing,y:2,width:needed,height:headerHeight)
+            scroll.addSubview(button)
+        }
+        title.frame=CGRect(x:14,y:2,width:max(44,trailing-20),height:headerHeight)
+        scroll.addSubview(title)
+        var cursor=headerHeight+2
+        for section in panel["sections"] as? [[String:Any]] ?? [] {
+            let heading=UILabel()
+            heading.text=section["label"] as? String
+            heading.font=UIFont.preferredFont(forTextStyle:.caption1);heading.adjustsFontForContentSizeCategory=true
+            heading.textColor = .secondaryLabel;heading.accessibilityTraits = .header
+            let headingHeight=ceil(heading.font.lineHeight)
+            heading.frame=CGRect(x:14,y:cursor+4,width:inner,height:headingHeight)
+            scroll.addSubview(heading)
+            cursor+=headingHeight+9
+            let options=section["options"] as? [[String:Any]] ?? []
+            let chips=options.map { item->UIButton in
+                let selected=item["selected"] as? Bool == true
+                let chip=capsule(item,background:selected ? brandAccent : .tertiarySystemFill,foreground:selected ? onBrandAccent : .label)
+                if selected {chip.accessibilityTraits.insert(.selected)}
+                return chip
+            }
+            let sizes=chips.map{chip->CGSize in
+                let size=chip.sizeThatFits(CGSize(width:inner,height:200))
+                return CGSize(width:max(44,size.width),height:max(44,size.height))
+            }
+            let wrapped=wrapMapChips(sizes,available:inner)
+            for (chip,frame) in zip(chips,wrapped.frames) {
+                chip.frame=frame.offsetBy(dx:14,dy:cursor)
+                scroll.addSubview(chip)
+            }
+            cursor+=wrapped.height+6
+        }
+        cursor+=8
+        // The location button stays reachable below an open panel.
+        let height=min(cursor,max(120,map.bounds.height-map.safeAreaInsets.bottom-y-68))
+        card.frame=CGRect(x:12,y:y,width:width,height:height)
+        scroll.frame=card.bounds
+        scroll.contentSize=CGSize(width:width,height:cursor)
+        card.contentView.addSubview(scroll)
+        panelScroll=scroll
+        return card
+    }
+    // A tap on the bare map closes a panel; it still reaches MapKit, so a marker
+    // selected by the same tap stays selected and nothing else changes.
+    private func installPanelTap() {
+        guard let map=map,panelTap==nil else {return}
+        let tap=UITapGestureRecognizer(target:self,action:#selector(closePanel(_:)))
+        tap.delegate=self;tap.cancelsTouchesInView=false;tap.delaysTouchesEnded=false
+        map.addGestureRecognizer(tap);panelTap=tap
+    }
+    @objc private func closePanel(_ recognizer:UITapGestureRecognizer) {
+        if recognizer.state == .ended,panelID != nil {onToolbarAction?("panel:close")}
+    }
+    private func installCompass() {
+        guard let map=map,compass==nil else {return}
+        map.showsCompass=false
+        let compass=MKCompassButton(mapView:map)
+        compass.compassVisibility = .adaptive
+        map.addSubview(compass);self.compass=compass
     }
 
     // MARK: Camera
@@ -1227,7 +1368,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldRecognizeSimultaneouslyWith other:UIGestureRecognizer)->Bool {true}
     func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldReceive touch:UITouch)->Bool {
         // Taps on our own controls are not map gestures.
-        !(touch.view is UIControl)
+        !(touch.view is UIControl) && !controlViews.contains{touch.view?.isDescendant(of:$0)==true}
     }
     func regionDidChange() {remember();updateDensity();layoutIndicators()}
 
@@ -1246,9 +1387,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             recognizer.delegate=self;recognizer.cancelsTouchesInView=false;recognizer.delaysTouchesEnded=false
             map.addGestureRecognizer(recognizer);recognizers.append(recognizer)
         }
-        let compass=MKCompassButton(mapView:map)
-        compass.compassVisibility = .adaptive
-        map.addSubview(compass);self.compass=compass
+        installCompass()
         var style=UIButton.Configuration.filled()
         style.baseBackgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
         style.baseForegroundColor = .label
@@ -1279,10 +1418,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private func layoutControls() {
         guard let map=map else {return}
         let right=map.bounds.width-16
-        compass?.frame=CGRect(x:right-38,y:controlTop+44,width:40,height:40)
+        compass?.frame=CGRect(x:right-38,y:compassTop ?? controlTop+44,width:40,height:40)
         if let chip=chip,!chip.isHidden {
-            chip.frame.origin=CGPoint(x:showsLayers ? 64 : 12,y:showsLayers ? 12 : controlTop)
-            if showsLayers {chip.frame.size.width=min(chip.frame.width,max(44,map.bounds.width-128))}
+            chip.frame.origin=CGPoint(x:12,y:showsLayers ? leftColumnBottom : controlTop)
+            if showsLayers {chip.frame.size.width=min(chip.frame.width,max(44,map.bounds.width-80))}
         }
     }
     private func updateControls() {
@@ -1318,7 +1457,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             items.append((id,point))
         }
         let size:CGFloat=40
-        var blocked=filterViews.map{$0.frame.insetBy(dx:-4,dy:-4)}
+        var blocked=controlViews.map{$0.frame.insetBy(dx:-4,dy:-4)}
         blocked += [chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
         if let compass=compass,compass.alpha>0.01,!compass.isHidden {blocked.append(compass.frame.insetBy(dx:-4,dy:-4))}
         for view in map.subviews where view is UIButton && !(view is EdgeAvatarButton) && !view.isHidden {blocked.append(view.frame.insetBy(dx:-4,dy:-4))}
@@ -1376,11 +1515,12 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         recognizers.removeAll()
         for button in indicators.values {button.removeFromSuperview()}
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
-        ([chip,compass,card,layersButton,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
-        chip=nil;compass=nil;card=nil;layersButton=nil;locationButton=nil
+        ([chip,compass,card,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
+        chip=nil;compass=nil;card=nil;locationButton=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
-        filterViews.forEach{$0.removeFromSuperview()};filterViews=[];filterToolbarKey=nil
-        onModeChange=nil;onPhotoAction=nil;onLayers=nil;onToolbarAction=nil
+        controlViews.forEach{$0.removeFromSuperview()};controlViews=[];controlsKey=nil;panelScroll=nil;panelID=nil
+        panelTap?.view?.removeGestureRecognizer(panelTap!);panelTap=nil
+        onModeChange=nil;onPhotoAction=nil;onToolbarAction=nil
     }
 }
 
@@ -1614,10 +1754,13 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.embeddedMaps[id]=map
                 let button=UIButton(type:.system)
                 button.setImage(UIImage(systemName:"arrow.up.left.and.arrow.down.right"),for:.normal)
-                button.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
-                button.layer.cornerRadius=18
-                button.frame=CGRect(x:max(0,width-52),y:12,width:36,height:36)
+                button.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.96)
+                button.tintColor = .label
+                button.layer.cornerRadius=22
+                button.layer.shadowOpacity=0.16;button.layer.shadowRadius=4;button.layer.shadowOffset=CGSize(width:0,height:1)
+                button.frame=CGRect(x:max(0,width-56),y:12,width:44,height:44)
                 button.autoresizingMask=[.flexibleLeftMargin]
+                button.tag=mapExpandTag
                 button.accessibilityLabel="Open full screen map"
                 button.addAction(UIAction { [weak self] _ in
                     guard let self=self,let parent=self.bridge?.viewController,parent.presentedViewController==nil else {return}
@@ -1628,6 +1771,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     map.isHidden=true
                     let controller=AppleMapController(content:self.embeddedContent[id] ?? content,picker:false)
                     controller.onCamera={ [weak self] mode,command in self?.reportCamera(id,mode,command) }
+                    controller.onStyle={ [weak self] style in self?.notifyListeners("layersTapped",data:["mapID":id,"action":"style:\(style)"]) }
                     // The full-screen overview continues from this map's view.
                     controller.initialCamera=map.camera.copy() as? MKMapCamera
                     self.presentedMap=controller;self.presentedID=id
@@ -1654,7 +1798,6 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":action])
                 }
                 created.onToolbarAction={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
-                created.onLayers={ [weak self] in self?.notifyListeners("layersTapped",data:["mapID":id]) }
                 self.coordinators[id]=created
                 return created
             }()
@@ -1743,6 +1886,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     private var finished=false
     private var coordinator:MapCoordinator?
     private weak var styles:UISegmentedControl?
+    var onStyle:((String)->Void)?
     init(content:MapContent,picker:Bool){self.content=content;self.picker=picker;super.init(nibName:nil,bundle:nil)}
     // New positions while the full-screen people map is open.
     func update(_ next:MapContent) {if isViewLoaded {coordinator?.apply(next)}}
@@ -1763,7 +1907,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         NSLayoutConstraint.activate([map.leadingAnchor.constraint(equalTo:view.leadingAnchor),map.trailingAnchor.constraint(equalTo:view.trailingAnchor),map.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor),map.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor)])
         navigationItem.leftBarButtonItem=UIBarButtonItem(barButtonSystemItem:.close,target:self,action:#selector(close))
         if picker {navigationItem.rightBarButtonItem=UIBarButtonItem(title:"Use location",style:.done,target:self,action:#selector(confirm));navigationItem.rightBarButtonItem?.isEnabled=false}
-        let styles=UISegmentedControl(items:["Map","Satellite"]);styles.selectedSegmentIndex=0;styles.addTarget(self,action:#selector(styleChanged(_:)),for:.valueChanged);styles.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(styles)
+        let styles=UISegmentedControl(items:["Map","Satellite"]);styles.selectedSegmentIndex=content.mapStyle=="satellite" ? 1 : 0;if let style=content.mapStyle {applyMapStyle(map,style)};styles.addTarget(self,action:#selector(styleChanged(_:)),for:.valueChanged);styles.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(styles)
         styles.backgroundColor = .secondarySystemBackground
         self.styles=styles
         NSLayoutConstraint.activate([styles.centerXAnchor.constraint(equalTo:view.centerXAnchor),styles.topAnchor.constraint(equalTo:map.topAnchor,constant:16),styles.widthAnchor.constraint(equalToConstant:220),styles.heightAnchor.constraint(equalToConstant:36)])
@@ -1812,7 +1956,10 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapViewDidChangeVisibleRegion(_ mapView:MKMapView) {coordinator?.layoutIndicators()}
     @objc func close(){finish(["cancelled":true])}
     @objc func confirm(){if let c=selected {finish(["latitude":c.latitude,"longitude":c.longitude])}}
-    @objc func styleChanged(_ sender:UISegmentedControl){if #available(iOS 16.0, *) {map.preferredConfiguration=sender.selectedSegmentIndex==0 ? MKStandardMapConfiguration(elevationStyle:.realistic) : MKHybridMapConfiguration(elevationStyle:.realistic)} else {map.mapType=sender.selectedSegmentIndex==0 ? .standard : .hybrid}}
+    @objc func styleChanged(_ sender:UISegmentedControl){
+        let style=sender.selectedSegmentIndex==0 ? "standard" : "satellite"
+        applyMapStyle(map,style);onStyle?(style)
+    }
     @objc func pick(_ sender:UITapGestureRecognizer){
         let p=sender.location(in:map)
         // Ignore controls and annotation taps; only bare-map taps reposition a place.
