@@ -4311,6 +4311,22 @@ do {
     try store.save(trimmed!)
     let reloaded = try store.load().first!
     check(reloaded.details?.energy == nil && reloaded.details?.wholeWorkoutEnergy?.active == 100, "saving a trim preserves original measured energy durably under the same ID")
+    var heldSource = source
+    heldSource.details?.unverifiedEnergy = heldSource.details?.energy
+    heldSource.details?.energy = nil
+    let heldTrim = RouteTrimming.trimmed(heldSource, start: 1, end: 2)!
+    try store.save(heldTrim)
+    var heldReload = try store.load().first!
+    check(heldReload.details?.unverifiedWholeWorkoutEnergy?.active == 100, "held whole-workout energy survives trim save and reload")
+    check(heldReload.resolveUnverifiedHeartRate(accept: false), "trimmed held energy can be rejected without held heart rate")
+    check(heldReload.details?.unverifiedWholeWorkoutEnergy == nil && heldReload.details?.unverifiedEnergy == nil, "rejection clears both held energy fields after trim")
+    try store.save(heldReload)
+    let rejectedReload = try store.load().first!
+    check(rejectedReload.details?.unverifiedWholeWorkoutEnergy == nil && rejectedReload.details?.unverifiedEnergy == nil, "rejected energy stays absent after save and reload")
+    var archiveOnly = reloaded
+    let archiveToken = RecorderHistoryFingerprint.token([archiveOnly], owner: "owner")
+    archiveOnly.details?.wholeWorkoutEnergy?.active = 101
+    check(archiveToken != RecorderHistoryFingerprint.token([archiveOnly], owner: "owner"), "whole-workout-only changes invalidate history")
     var tokenRecord = source
     tokenRecord.details?.energy?.state = "pending"
     let energyToken = RecorderHistoryFingerprint.token([tokenRecord], owner: "owner")
@@ -4325,7 +4341,7 @@ do {
     check(heldToken != RecorderHistoryFingerprint.token([tokenRecord], owner: "owner"), "held energy removal invalidates native history even without HR")
     var malformed = try JSONSerialization.jsonObject(with: JSONEncoder().encode(source)) as! [String: Any]
     var metadata = malformed["details"] as! [String: Any]
-    let malformedValues: [Any] = ["bad optional energy", ["schema": 99], ["active": "invalid"]]
+    let malformedValues: [Any] = ["bad optional energy", ["schema": 99, "future": ["readings": [1, 2], "available": true]], ["active": "invalid"], ["schema": 1, "unit": "kcal", "source": "healthkit", "state": "final", "active": "invalid"]]
     for value in malformedValues {
         metadata["energy"] = value; malformed["details"] = metadata
         let data = try JSONSerialization.data(withJSONObject: malformed)
@@ -4336,6 +4352,15 @@ do {
         check(loadedID == source.id, "malformed energy does not take history offline")
         let untouched = try store.readData(name: source.id + ".json")
         check(untouched == data, "decoding optional energy never rewrites stored bytes")
+        var edited = preserved
+        edited.title = "Unrelated title edit"
+        try store.save(edited)
+        let saved = try store.load().first!
+        let rewritten = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
+        let rewrittenDetails = rewritten["details"] as! [String: Any]
+        let originalJSON = try JSONSerialization.data(withJSONObject: [value], options: [.sortedKeys])
+        let rewrittenJSON = try JSONSerialization.data(withJSONObject: [rewrittenDetails["energy"]!], options: [.sortedKeys])
+        check(originalJSON == rewrittenJSON, "unknown optional energy survives unrelated edit save and reload")
     }
     transfer.energy = nil
     check(WatchActivityImport.activity(from: transfer)?.details?.energy == nil, "missing energy is not fabricated")

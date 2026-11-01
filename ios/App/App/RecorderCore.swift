@@ -599,6 +599,32 @@ struct StopInterval: Codable, Equatable {
 // Private measured workout energy. Optional at every persistence boundary so
 // old recordings decode unchanged. Unknown units and invalid values never turn
 // into calories; absence is distinct from a measured zero.
+// Preserve optional data from newer writers across unrelated journal edits.
+// Unsupported values remain opaque and never participate in calorie display.
+indirect enum OpaqueEnergyJSON: Codable, Equatable {
+    case object([String: OpaqueEnergyJSON]), array([OpaqueEnergyJSON]), string(String), number(Decimal), bool(Bool), null
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? c.decode(Decimal.self) { self = .number(v) }
+        else if let v = try? c.decode(String.self) { self = .string(v) }
+        else if let v = try? c.decode([String: OpaqueEnergyJSON].self) { self = .object(v) }
+        else { self = .array(try c.decode([OpaqueEnergyJSON].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .object(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .string(let v): try c.encode(v)
+        case .number(let v): try c.encode(v)
+        case .bool(let v): try c.encode(v)
+        case .null: try c.encodeNil()
+        }
+    }
+}
+
 struct ActivityEnergy: Codable, Equatable {
     var schema = 1
     var unit = "kcal"
@@ -606,10 +632,12 @@ struct ActivityEnergy: Codable, Equatable {
     var state = "pending"
     var active: Double?
     var total: Double?
+    private var opaque: OpaqueEnergyJSON?
 
     enum CodingKeys: String, CodingKey { case schema, unit, source, state, active, total }
     init() {}
     init(from decoder: Decoder) throws {
+        opaque = try? OpaqueEnergyJSON(from: decoder)
         schema = 0; unit = ""; source = ""; state = "unavailable"
         guard let c = try? decoder.container(keyedBy: CodingKeys.self),
               let schema = try? c.decode(Int.self, forKey: .schema), schema == 1,
@@ -619,6 +647,28 @@ struct ActivityEnergy: Codable, Equatable {
         self.schema = schema; self.unit = unit; self.source = source; self.state = state
         active = try? c.decode(Double.self, forKey: .active)
         total = try? c.decode(Double.self, forKey: .total)
+        for key in [CodingKeys.active, .total] where c.contains(key) {
+            if (try? c.decodeNil(forKey: key)) != true, (try? c.decode(Double.self, forKey: key)) == nil {
+                self.schema = 0
+                return
+            }
+        }
+        opaque = nil
+    }
+
+    func encode(to encoder: Encoder) throws {
+        if let opaque { try opaque.encode(to: encoder); return }
+        guard schema != 0 else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath,
+                debugDescription: "Cannot overwrite unsupported energy without its original value"))
+        }
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schema, forKey: .schema)
+        try c.encode(unit, forKey: .unit)
+        try c.encode(source, forKey: .source)
+        try c.encode(state, forKey: .state)
+        try c.encodeIfPresent(active, forKey: .active)
+        try c.encodeIfPresent(total, forKey: .total)
     }
 
     static func kilocalories(_ value: Double?, unit: String) -> Double? {
