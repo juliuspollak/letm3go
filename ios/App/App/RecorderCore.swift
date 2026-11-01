@@ -72,6 +72,7 @@ struct RecordedActivity: Codable {
         guard var metadata = details, let held = metadata.unverifiedHeartRate else { return false }
         if accept { metadata.heartRate = held }
         metadata.unverifiedHeartRate = nil
+        if !accept { metadata.unverifiedEnergy = nil }
         details = metadata
         return true
     }
@@ -352,6 +353,8 @@ enum RouteTrimming {
         trip.updatedAt = Date().timeIntervalSince1970
         let trimmedQuality = trip.routeQualitySummary()
         trip.updateDetails { $0.routeQuality = trimmedQuality }
+        trip.details?.energy = nil
+        trip.details?.unverifiedEnergy = nil
         trip.details?.heartRate = original.details?.heartRate?.trimmed(start: first.timestamp, end: last.timestamp)
         trip.details?.unverifiedHeartRate = original.details?.unverifiedHeartRate?.trimmed(start: first.timestamp, end: last.timestamp)
         // Named endpoints and classification weights reflect the untrimmed
@@ -576,6 +579,44 @@ struct StopInterval: Codable, Equatable {
     var end: Double
 }
 
+// Private measured workout energy. Optional at every persistence boundary so
+// old recordings decode unchanged. Unknown units and invalid values never turn
+// into calories; absence is distinct from a measured zero.
+struct ActivityEnergy: Codable, Equatable {
+    var schema = 1
+    var unit = "kcal"
+    var source = "healthkit"
+    var state = "pending"
+    var active: Double?
+    var total: Double?
+
+    static func kilocalories(_ value: Double?, unit: String) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        let kcal: Double
+        switch unit {
+        case "kcal": kcal = value
+        case "J": kcal = value / 4184
+        case "kJ": kcal = value / 4.184
+        default: return nil
+        }
+        return kcal <= 20_000 ? kcal : nil
+    }
+
+    var validated: ActivityEnergy? {
+        guard schema == 1, source == "healthkit",
+              ["pending", "final", "unavailable"].contains(state),
+              ["kcal", "J", "kJ"].contains(unit) else { return nil }
+        var result = self
+        result.active = Self.kilocalories(active, unit: unit)
+        result.total = Self.kilocalories(total, unit: unit)
+        result.unit = "kcal"
+        if let active = result.active, let total = result.total, total < active { result.total = nil }
+        if state == "unavailable" { result.active = nil; result.total = nil }
+        if state == "final", result.active == nil, result.total == nil { result.state = "unavailable" }
+        return result
+    }
+}
+
 struct ActivityDetails: Codable {
     var description = ""
     var notes = ""
@@ -620,6 +661,10 @@ struct ActivityDetails: Codable {
     // Readings from a ride recorded before the Watch knew any account. Never shown or
     // counted until the person confirms they are theirs, and removed if they say not.
     var unverifiedHeartRate: ActivityHeartRate?
+    // Energy is local/private until an approved backup schema exists. Unverified
+    // body ownership is quarantined independently of heart-rate confirmation.
+    var energy: ActivityEnergy?
+    var unverifiedEnergy: ActivityEnergy?
     var indoor: Bool?
     // Other records on this iPhone covering the same time. Both are kept.
     var overlaps: [WatchOverlap]?

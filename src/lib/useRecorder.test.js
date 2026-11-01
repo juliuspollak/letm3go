@@ -31,3 +31,12 @@ it('refreshes an accepted Watch heart-rate result even from an older native buil
  const result=reconcileRecorderSnapshot({ownerID:'me',trips:[held]},{ownerID:'me',trips:[accepted]});
  expect(result.trips[0]).toBe(accepted);
 });
+
+it('refreshes measured energy values and finalization without changing route or timestamps',()=>{
+ const trip={id:'watch',updatedAt:1,details:{energy:{schema:1,unit:'kcal',source:'healthkit',state:'pending',active:0}}};
+ const previous={ownerID:'me',trips:[trip]};
+ for(const energy of [{...trip.details.energy,active:100},{...trip.details.energy,state:'final'}]){
+  const changed={...trip,details:{energy}};
+  expect(reconcileRecorderSnapshot(previous,{ownerID:'me',trips:[changed]}).trips[0]).toBe(changed);
+ }
+});

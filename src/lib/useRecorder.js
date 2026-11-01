@@ -14,7 +14,7 @@ function tripKey(t){
  // distanceMeters, state) plus everything `updatedAt` reflects (edits, route trim,
  // equipment, photos). The visible-route indices are listed explicitly as defence
  // in case a future trim path forgets to advance `updatedAt`.
- return [t.id,t.source,t.recordingMode,t.title,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length,t.details?.heartRate?.samples?.length,t.details?.unverifiedHeartRate?.samples?.length,t.details?.titleEdited].join(':');
+ return [t.id,t.source,t.recordingMode,t.title,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length,t.details?.heartRate?.samples?.length,t.details?.unverifiedHeartRate?.samples?.length,t.details?.titleEdited,JSON.stringify(t.details?.energy),JSON.stringify(t.details?.unverifiedEnergy)].join(':');
 }
 export function snapshotKey(data){
  if(!data)return '';

@@ -65,7 +65,24 @@ export function elevationGainMeters(trip){
 // number in a plausible range; nothing is derived from heart rate. `source` is
 // only 'watch' when the recording itself says so: a generic trip.calories must
 // never be presented as Apple Watch active energy.
+// Versioned private measured-energy contract; held body data is never read here.
+export function workoutEnergy(trip){
+ const energy=trip?.details?.energy;
+ if(!energy||energy.schema!==1||energy.source!=='healthkit'||!['pending','final','unavailable'].includes(energy.state))return null;
+ const divisor={kcal:1,J:4184,kJ:4.184}[energy.unit];
+ if(!Number.isFinite(divisor))return null;
+ const kcal=value=>finite(value)&&value>=0&&value/divisor<=20000?value/divisor:null;
+ let activeKcal=kcal(energy.active),totalKcal=kcal(energy.total);
+ if(energy.state==='unavailable')activeKcal=totalKcal=null;
+ if(activeKcal!=null&&totalKcal!=null&&totalKcal<activeKcal)totalKcal=null;
+ return {activeKcal,totalKcal,state:energy.state==='final'&&activeKcal==null&&totalKcal==null?'unavailable':energy.state,source:trip.source==='watch'?'watch':null};
+}
+
 export function activeCalories(trip){
+ if(trip?.details?.energy!=null){
+  const energy=workoutEnergy(trip);
+  return energy?.activeKcal!=null?{kcal:Math.round(energy.activeKcal),label:'Active calories',source:energy.source}:null;
+ }
  const details=trip?.details||{};
  // Unitless legacy aliases may contain joules or total rather than active
  // energy. Only explicitly kilocalorie-valued fields can enter this readout.
@@ -105,6 +122,10 @@ export function activitySummary(trip,{unit='km'}={}){
  const heart=heartRateSummary(trip);
  if(heart)entries.push({id:'heart',label:'Avg heart rate',value:`${heart.average} BPM`,detail:heart.maximum?`Max ${heart.maximum} BPM`:null});
  const energy=activeCalories(trip);
- if(energy)entries.push({id:'calories',label:energy.label,value:`${energy.kcal} kcal`,detail:energy.source==='watch'?'From Apple Watch active energy':null});
+ const measured=workoutEnergy(trip);
+ const pending=measured?.state==='pending';
+ if(energy)entries.push({id:'calories',label:energy.label,value:`${energy.kcal} kcal`,detail:pending?'Awaiting workout finalization':energy.source==='watch'?'From Apple Watch active energy':null});
+ if(measured?.totalKcal!=null)entries.push({id:'total-calories',label:'Total calories',value:`${Math.round(measured.totalKcal)} kcal`,detail:pending?'Active + resting; awaiting workout finalization':'Active + resting energy'});
+ if(measured&&measured.activeKcal==null)entries.push({id:'energy-state',label:'Active calories',value:pending?'Pending':'Unavailable',detail:pending?'Awaiting measured workout energy':'No readable measured active energy was saved'});
  return entries;
 }

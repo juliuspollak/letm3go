@@ -4265,4 +4265,45 @@ do {
 check(ActivityPhoto.thumbnailDataURL(nil) == nil, "unavailable thumbnails remain absent")
 check(ActivityPhoto.thumbnailDataURL(Data()) == nil, "empty thumbnail data is not a valid source URL")
 check(ActivityPhoto.thumbnailDataURL(Data([0xff,0xd8,0xff,0xd9])) == "data:image/jpeg;base64,/9j/2Q==", "native JPEG thumbnails include a data URI scheme before crossing the bridge")
+
+// Windows continuation: prepared for macOS execution; never claimed run on Windows.
+do {
+    var measured = ActivityEnergy()
+    measured.state = "final"; measured.unit = "J"; measured.active = 418400; measured.total = 502080
+    let normalized = measured.validated
+    check(normalized?.active == 100 && normalized?.total == 120 && normalized?.unit == "kcal", "measured joules convert explicitly to kcal")
+    measured.unit = "unknown"
+    check(measured.validated == nil, "unknown energy units never become calories")
+    measured.unit = "kcal"; measured.active = 0; measured.total = 10
+    check(measured.validated?.active == 0, "measured zero is retained")
+    measured.active = 100; measured.total = 90
+    check(measured.validated?.total == nil, "total cannot be smaller than active energy")
+    measured.state = "unavailable"
+    check(measured.validated?.active == nil, "unavailable never presents a stale measurement")
+    measured.state = "final"; measured.active = 100; measured.total = 120
+    var transfer = WatchActivityTransfer(id: UUID().uuidString, ownerID: nil, activity: "Walking", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [], energy: measured)
+    let verified = WatchActivityImport.activity(from: transfer, heartRateVerified: true)
+    check(verified?.details?.energy?.active == 100, "verified owner receives private measured energy")
+    var held = WatchActivityImport.activity(from: transfer, heartRateVerified: false)!
+    check(held.details?.energy == nil && held.details?.unverifiedEnergy?.active == 100, "unverified body energy is quarantined")
+    _ = held.resolveUnverifiedHeartRate(accept: true)
+    check(held.details?.energy == nil && held.details?.unverifiedEnergy != nil, "heart-rate consent does not silently authorize energy")
+    held = WatchActivityImport.activity(from: transfer, heartRateVerified: false)!
+    _ = held.resolveUnverifiedHeartRate(accept: false)
+    check(held.details?.unverifiedEnergy == nil, "rejecting body attribution removes held energy")
+    let encoded = try JSONEncoder().encode(transfer)
+    let restored = try JSONDecoder().decode(WatchActivityTransfer.self, from: encoded)
+    check(restored.energy?.active == 100, "energy survives transfer persistence")
+    var legacy = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+    legacy.removeValue(forKey: "energy")
+    let old = try JSONDecoder().decode(WatchActivityTransfer.self, from: JSONSerialization.data(withJSONObject: legacy))
+    check(old.energy == nil && old.id == transfer.id, "legacy Watch transfers decode without energy")
+    var source = verified!
+    source.points = [GPSPoint(latitude: 0, longitude: 0, timestamp: 1000, accuracy: 5, altitude: 0, speed: 1), GPSPoint(latitude: 0, longitude: 0.0001, timestamp: 1010, accuracy: 5, altitude: 0, speed: 1), GPSPoint(latitude: 0, longitude: 0.0002, timestamp: 1020, accuracy: 5, altitude: 0, speed: 1)]
+    let trimmed = RouteTrimming.trimmed(source, start: 1, end: 2)
+    check(trimmed?.details?.energy == nil && source.details?.energy?.active == 100, "trim does not fabricate whole-workout energy or alter the source")
+    transfer.energy = nil
+    check(WatchActivityImport.activity(from: transfer)?.details?.energy == nil, "missing energy is not fabricated")
+}
+
 print("\(assertions) native recorder/auth assertions passed")

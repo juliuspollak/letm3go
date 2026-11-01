@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {activeCalories,activitySummary,durationText,elevationGainMeters,heartRateSummary} from './activitySummary.js';
+import {activeCalories,activitySummary,durationText,elevationGainMeters,heartRateSummary,workoutEnergy} from './activitySummary.js';
 
 describe('activity summary values',()=>{
  it('formats a duration in the largest useful unit',()=>{
@@ -62,4 +62,37 @@ it('rejects untyped energy aliases and distinguishes measured zero from missing 
  expect(activeCalories({source:'watch',calories:100})).toBeNull();
  expect(activeCalories({source:'watch',details:{activeEnergyKcal:0,energySource:'healthkit'}})).toEqual({kcal:0,label:'Active calories',source:'watch'});
  expect(activeCalories({source:'watch',details:{caloriesKcal:100,energySource:'healthkit'}})).toEqual({kcal:100,label:'Calories',source:null});
+});
+
+const measured=(energy={})=>({source:'watch',details:{energy:{schema:1,unit:'kcal',source:'healthkit',state:'final',...energy}}});
+it('renders active and total measured energy separately, preserving measured zero',()=>{
+ const entries=activitySummary(measured({active:0,total:100}));
+ expect(entries.find(e=>e.id==='calories')).toMatchObject({label:'Active calories',value:'0 kcal',detail:'From Apple Watch active energy'});
+ expect(entries.find(e=>e.id==='total-calories')).toMatchObject({label:'Total calories',value:'100 kcal',detail:'Active + resting energy'});
+});
+it.each([['kcal',100],['J',418400],['kJ',418.4]])('converts explicit %s energy to kcal without using HR', (unit,active)=>{
+ expect(activeCalories(measured({unit,active}))).toEqual({kcal:100,label:'Active calories',source:'watch'});
+});
+it('rejects malformed units, nonfinite readings, negative and inconsistent totals',()=>{
+ for(const unit of ['cal','joules','toString',''])expect(workoutEnergy(measured({unit,active:100}))).toBeNull();
+ for(const active of [NaN,Infinity,-1,'100',null])expect(activeCalories(measured({active}))).toBeNull();
+ expect(workoutEnergy(measured({active:100,total:50}))).toMatchObject({activeKcal:100,totalKcal:null});
+ expect(workoutEnergy(measured({schema:2,active:100}))).toBeNull();
+});
+it('distinguishes pending finalization and unavailable energy without alleging permission denial',()=>{
+ const pending=activitySummary(measured({active:80,state:'pending'}));
+ expect(pending.find(e=>e.id==='calories').detail).toBe('Awaiting workout finalization');
+ expect(activitySummary(measured({state:'pending'})).find(e=>e.id==='energy-state').value).toBe('Pending');
+ const missing=activitySummary(measured({state:'unavailable',active:999}));
+ expect(missing.find(e=>e.id==='calories')).toBeUndefined();
+ expect(missing.find(e=>e.id==='energy-state')).toMatchObject({value:'Unavailable',detail:'No readable measured active energy was saved'});
+ expect(activitySummary(measured()).find(e=>e.id==='energy-state').value).toBe('Unavailable');
+});
+it('never renders quarantined body data or falls back from an explicitly unavailable contract',()=>{
+ const held={source:'watch',details:{unverifiedEnergy:measured({active:400}).details.energy}};
+ expect(activeCalories(held)).toBeNull();expect(activitySummary(held)).toEqual([]);
+ const unavailable=measured({state:'unavailable'});unavailable.details.activeEnergyKcal=999;
+ expect(activeCalories(unavailable)).toBeNull();
+ const original=measured({unit:'J',active:418400});const before=JSON.stringify(original);
+ expect(activeCalories(original).kcal).toBe(100);expect(JSON.stringify(original)).toBe(before);
 });

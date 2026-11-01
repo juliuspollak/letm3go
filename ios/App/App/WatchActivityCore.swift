@@ -78,6 +78,7 @@ struct WatchActivityTransfer: Codable, Equatable {
     // Readings from the active time of this ride, in order. Absent from older
     // builds and when the sensor gave nothing: never filled in.
     var heartRate: [WatchHeartRateSample]?
+    var energy: ActivityEnergy?
     var pausePeriods: [WatchPausePeriod]?
     var indoor: Bool?
 
@@ -87,9 +88,10 @@ struct WatchActivityTransfer: Codable, Equatable {
          schema: Int = WatchActivityTransfer.currentSchema, deviceID: String? = nil,
          movingSeconds: Double? = nil, elevationGainMeters: Double? = nil,
          elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil,
-         heartRate: [WatchHeartRateSample]? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil) {
+         heartRate: [WatchHeartRateSample]? = nil, energy: ActivityEnergy? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil) {
         self.schema = schema
         self.heartRate = heartRate
+        self.energy = energy?.validated
         self.pausePeriods = pausePeriods
         self.indoor = indoor
         self.equipmentID = equipment?.id
@@ -142,6 +144,7 @@ extension WatchActivityTransfer {
         equipmentName = try c.decodeIfPresent(String.self, forKey: .equipmentName)
         equipmentKind = try c.decodeIfPresent(String.self, forKey: .equipmentKind)
         heartRate = try? c.decodeIfPresent([WatchHeartRateSample].self, forKey: .heartRate)
+        energy = (try? c.decodeIfPresent(ActivityEnergy.self, forKey: .energy))?.validated
         pausePeriods = try? c.decodeIfPresent([WatchPausePeriod].self, forKey: .pausePeriods)
         indoor = try? c.decodeIfPresent(Bool.self, forKey: .indoor)
     }
@@ -368,7 +371,13 @@ enum WatchActivityImport {
         details.indoor = transfer.indoor == true ? true : nil
         let paused = WatchHeartRate.cleaned(transfer.pausePeriods ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt)
         let series = ActivityHeartRate(samples: WatchHeartRate.cleaned(transfer.heartRate ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt, paused: paused), pausePeriods: paused)
-        if heartRateVerified { details.heartRate = series } else { details.unverifiedHeartRate = series }
+        if heartRateVerified {
+            details.heartRate = series
+            details.energy = transfer.energy?.validated
+        } else {
+            details.unverifiedHeartRate = series
+            details.unverifiedEnergy = transfer.energy?.validated
+        }
         if let ref = transfer.equipmentRef { trip.assignEquipment([ref]) }
         if let trailID = transfer.trailID, UUID(uuidString: trailID) != nil {
             details.mtbTrailID = trailID.lowercased()
