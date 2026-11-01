@@ -150,7 +150,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var sharedActivity: String? {
         let now=Date().timeIntervalSince1970
         let stationaryFor=detector.stationarySince.map{max(0,now-$0)} ?? 0
-        return HouseholdPublisher.activity(journey: automaticTrip?.activity, motion: motion, gps: liveGps,
+        let local = active.map { RecordingPresence(device: RecordingPresence.iPhone, ownerID: ownerID,
+            sessionID: $0.id, activity: $0.activity, state: $0.state, startedAt: $0.startedAt, updatedAt: now) }
+        let selected = CrossDeviceRecording.selectedActivity(local: local, remote: WatchSessionManager.shared.watchRecording, ownerID: ownerID, now: now)
+        return HouseholdPublisher.activity(journey: automaticTrip?.state == "recording" ? automaticTrip?.activity : nil, manual: selected, motion: motion, gps: liveGps,
                                           stationaryFor: stationaryFor, now: now)
     }
     // Explicit live sharing is its own reason to run Core Location. It must not be
@@ -166,7 +169,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Only where the server takes the field. Otherwise it could never count as sent,
     // and every fix would go out as a change of status.
     var shareActivityChanged: Bool {
-        liveShareSendsActivity && liveShareMode=="device" && HouseholdPublisher.activityChanged(sent:liveShareSentActivity,current:sharedActivity)
+        liveShareSendsActivity && HouseholdPublisher.activityChanged(sent:liveShareSentActivity,current:sharedActivity)
     }
     var liveShareInFlight = false
     var liveShareRetryAt: Double = 0
@@ -772,14 +775,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
-        // A confirmation says the phone is still there now, so it carries no old fix time.
+        // A confirmation is observed now, not at its eventual server arrival.
+        // Timestamp it here so a delayed pre-finish confirmation cannot overwrite
+        // a newer activity update from the other publishing path.
         // Session mode sends it too where supported. Migration 13 refuses to
         // re-enable sharing from any position-bearing call; a capture time only
         // orders positions and keeps their true age. An older server returns 404
         // for the field and the existing fallback retries without it.
-        let sentCaptureTime=liveShareSendsCaptureTime && !confirmation
-        if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
-        let sendsActivity=device && liveShareSendsActivity
+        let sentCaptureTime=liveShareSendsCaptureTime
+        if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:confirmation ? Date(timeIntervalSince1970:now) : location.timestamp) }
+        let sendsActivity=liveShareSendsActivity
         let sentActivity=sendsActivity ? activity : nil
         // A nil value is sent deliberately: it clears an activity whose evidence
         // has expired. The server accepts an explicit JSON null.
@@ -999,6 +1004,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if action == "finish" { trips.insert(trip, at: 0); active = nil }
         else { active = trip }
         currentSpeed = 0
+        confirmHouseholdLocation()
         recordDiagnostic("journey","Manual journey \(action == "finish" ? "finished" : action == "pause" ? "paused" : "resumed")",details:["stopKind":action == "pause" || action == "finish" ? "intentional journey stop; not a GPS gap" : "explicit continuation"])
         if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring(); releaseBackgroundSessionIfUnneeded("manual recording \(action == "finish" ? "finished" : "paused")") }
     }
@@ -1120,7 +1126,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let pendingWalk = automaticTrip?.details?.localWalkOrigin != nil
         if let trip = automaticTrip { automaticStateName = pendingWalk ? "checkingWalk" : trip.state == "recording" ? "recording" : "interrupted" }
         else { automaticStateName = settledTripID != nil ? "settled" : detector.phase }
-        return ["ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
+        return ["sharedActivity":sharedActivity as Any? ?? NSNull(), "ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
                 "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .passive ? "passiveRest" : locationMode == .resting ? "restingAtHome" : "locationStandby",

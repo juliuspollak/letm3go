@@ -25,6 +25,7 @@ extension LocationRecorder {
               ["Walking","Running","Cycling","MTB","Driving","Kitesurfing","Hiking","Unknown","Other"].contains(activity) else { throw failure("Enter a title and supported activity type.") }
         var metadata = trip.details ?? ActivityDetails()
         if trip.activity != activity { metadata.userCorrected = true }
+        if trip.title != title { metadata.titleEdited = true; metadata.userCorrected = true }
         metadata.description = String(description.prefix(4000)); metadata.notes = String(notes.prefix(4000))
         metadata.tags = Array(tags.prefix(20)).map { String($0.prefix(60)) }; metadata.collection = String(collection.prefix(100))
         metadata.visibility = "private"
@@ -291,7 +292,7 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager,didUpdateLocations locations: [CLLocation]) {
         guard !finished, let location = locations.last, location.horizontalAccuracy >= 0, abs(location.timestamp.timeIntervalSinceNow) < 30 else { return }
         guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { finished=true; call.reject("Account changed."); return }
-        finished = true; call.resolve(["latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy,"speed":location.speed >= 0 ? location.speed : NSNull(),"timestamp":location.timestamp.timeIntervalSince1970])
+        finished = true; call.resolve(["sharedActivity":LocationRecorder.shared.sharedActivity as Any? ?? NSNull(),"latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy,"speed":location.speed >= 0 ? location.speed : NSNull(),"timestamp":location.timestamp.timeIntervalSince1970])
     }
     func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) { guard !finished else { return }; outcome="Core Location error code \((error as NSError).code)";finished = true; call.reject(error.localizedDescription) }
 }
@@ -384,24 +385,12 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
             guard error==nil,let place=results?.first else {call.reject("Place recognition is unavailable offline. It will retry later.");return}
             let locality=place.locality ?? place.subLocality ?? place.administrativeArea ?? ""
-            let explore=call.getBool("explore")==true
-            let request=MKLocalPointsOfInterestRequest(center:location.coordinate,radius:explore ? 400 : 150)
-            let search=MKLocalSearch(request:request)
-            search.start { response,_ in
-                _ = search
+            PlaceSearch.search(at: location.coordinate) { candidates, partial, lookupErrors in
                 guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
-                let nearby=(response?.mapItems ?? []).filter{($0.placemark.location?.distance(from:location) ?? .infinity)<=(explore ? 200 : 100)}.sorted{($0.placemark.location?.distance(from:location) ?? .infinity)<($1.placemark.location?.distance(from:location) ?? .infinity)}
-                let charger=nearby.contains{$0.pointOfInterestCategory == .evCharger}
-                let firstDistance=nearby.first?.placemark.location?.distance(from:location) ?? .infinity
-                let nextDistance=nearby.dropFirst().first?.placemark.location?.distance(from:location) ?? .infinity
-                let confident=explore ? (firstDistance<=150 && nextDistance-firstDistance>=35) : (firstDistance<=40 && nextDistance-firstDistance>=25)
-                var categories:[String]=[]
-                if confident,let category=nearby.first?.pointOfInterestCategory {
-                    if category == .park || category == .nationalPark {categories=["Park","Nature","Outdoors"]}
-                    else if category == .store {categories=["Shopping"]}
-                    else if category == .restaurant || category == .cafe {categories=["Food"]}
-                }
-                call.resolve(["locality":locality,"region":place.administrativeArea ?? "","nearbyName":confident ? nearby.first?.name ?? "" : "","categories":categories,"possibleCharging":charger,"source":"apple-geocoder-mapkit"])
+                call.resolve(["locality":locality,"region":place.administrativeArea ?? "",
+                    "nearbyName":"","categories":[],"possibleCharging":false,
+                    "candidates":candidates,"lookupVersion":PlaceSearch.version,"partial":partial,"lookupErrors":lookupErrors,
+                    "source":"apple-geocoder-mapkit"])
             }
         }
     }}

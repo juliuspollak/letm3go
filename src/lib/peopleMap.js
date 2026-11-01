@@ -79,3 +79,15 @@ export function cameraFit(people){
  const live=people.filter(p=>p.state==='live');
  return Object.fromEntries(people.map(p=>[p.id,p.state==='live'||!live.length||live.some(l=>distanceMetres(l,p)<=STALE_FIT_METRES)]));
 }
+
+// Current native snapshots resolve manual/Watch authority once on the phone.
+// Older builds fall back only to an explicit local selection or fresh inference.
+export function householdActivity(state,now=Date.now()/1000){
+ const labels={driving:'Driving',walking:'Walking',cycling:'Cycling',running:'Running'};
+ if(Object.hasOwn(state,'sharedActivity'))return labels[state.sharedActivity]||null;
+ const selected=state.active?.state==='recording'?state.active.activity:null;
+ if(selected)return ({Hiking:'Walking',MTB:'Cycling','Road cycling':'Cycling',Walking:'Walking',Running:'Running',Cycling:'Cycling',Driving:'Driving'})[selected]||null;
+ if(state.automaticTrip?.state==='recording')return ({Hiking:'Walking',MTB:'Cycling','Road cycling':'Cycling',Walking:'Walking',Running:'Running',Cycling:'Cycling',Driving:'Driving'})[state.automaticTrip.activity]||null;
+ if(state.motionConfidence!=='high'||!Number.isFinite(state.motionTimestamp)||now-state.motionTimestamp>45||state.motionTimestamp-now>5)return null;
+ return ['Driving','Cycling','Running','Walking'].find(type=>state.motionTypes?.includes(type))||null;
+}

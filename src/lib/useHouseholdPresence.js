@@ -34,6 +34,8 @@ export async function loadOwnArrival(){
  }catch{return null;}
 }
 export function useHouseholdPresence(owner,online,automaticActivity=null,places=[],nativeUploadAt=0){
+ const selectedActivity=useRef(null);
+ useEffect(()=>{selectedActivity.current=({Driving:'driving',Walking:'walking',Cycling:'cycling',Running:'running'})[automaticActivity]||null;},[automaticActivity]);
  const signalled=useRef(false),positionTimes=useRef(new Map()),latencies=useRef([]),latencyReportedAt=useRef(0),nativeUpload=useRef(0),signals=useRef(0),refreshTimes=useRef([]);
  // Only the newest position read may replace state. Two overlapping reads (a
  // signal and a poll) can otherwise apply an older response after a newer one.
@@ -284,7 +286,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   liveConsent.current=true;
   setLiveEnabled(true);setLiveReady(true);
   lastPlaceSentAt.current=0;
-  const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(fix));
+  const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(fix,Object.hasOwn(fix,'sharedActivity')?fix.sharedActivity:selectedActivity.current));
   await refreshLive();
   if(failure){
    setLiveError('Location sharing is on, but the first position could not be sent.');
@@ -330,7 +332,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
     if(!Number.isFinite(position.timestamp)||age>600||age<-5)return;
     delay=publishDelay(position.speed);
     if(!liveConsent.current)return;
-    const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(position));
+    const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(position,Object.hasOwn(position,'sharedActivity')?position.sharedActivity:selectedActivity.current));
     if(failure&&alive){setLiveError('Unable to update live location.');delay=publishDelay(null);}
     if(!failure&&alive)setLastPublishedAt(Date.now());
    }catch{/* Never replace the last confirmed location with a guess. */}

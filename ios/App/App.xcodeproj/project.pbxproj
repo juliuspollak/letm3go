@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E10000000000000000000001 /* PlaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000002; };
 		BB0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002; };
 		BA0000000000000000000001 /* AppleMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA0000000000000000000002; };
 		BD0000000000000000000001 /* MapCameraCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000002; };
@@ -76,6 +77,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E10000000000000000000002 /* PlaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSearch.swift; sourceTree = "<group>"; };
 		BB0000000000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BA0000000000000000000002 /* AppleMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMaps.swift; sourceTree = "<group>"; };
 		BD0000000000000000000002 /* MapCameraCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapCameraCore.swift; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 				B10000000000000000000033 /* WatchRecordingCore.swift */,
 				B30000000000000000000001 /* AutomaticTracking.swift */,
 				B30000000000000000000002 /* ActivityServices.swift */,
+				E10000000000000000000002 /* PlaceSearch.swift */,
 				B30000000000000000000003 /* PhotoSuggestions.swift */,
 				B50000000000000000000001 /* AccountSecurity.swift */,
 				BA0000000000000000000002 /* AppleMaps.swift */,
@@ -334,6 +337,7 @@
 				B20000000000000000000033 /* WatchRecordingCore.swift in Sources */,
 				B40000000000000000000001 /* AutomaticTracking.swift in Sources */,
 				B40000000000000000000002 /* ActivityServices.swift in Sources */,
+				E10000000000000000000001 /* PlaceSearch.swift in Sources */,
 				B40000000000000000000003 /* PhotoSuggestions.swift in Sources */,
 				B60000000000000000000001 /* AccountSecurity.swift in Sources */,
 				BA0000000000000000000001 /* AppleMaps.swift in Sources */,

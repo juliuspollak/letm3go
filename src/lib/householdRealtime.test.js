@@ -71,3 +71,10 @@ it('measures each new position once and skips the first read',()=>{
  expect(latencySummary([3000,1000,2000])).toEqual({latencySamples:3,latencyMedianMs:2000,latencyMaxMs:3000});
  expect(latencySummary([])).toBeNull();
 });
+
+it('fallback publishing carries current coarse selection without health data',()=>{
+ const payload=sharedLocationPayload({latitude:1,longitude:2,accuracy:5,speed:30,sharedActivity:'walking',bpm:140});
+ expect(payload.p_activity).toBe('walking');expect(JSON.stringify(payload)).not.toContain('140');
+ expect(sharedLocationPayload({latitude:1,longitude:2,sharedActivity:null}).p_activity).toBeNull();
+ expect(sharedLocationPayload({latitude:1,longitude:2,sharedActivity:'HealthKit:140'}).p_activity).toBeUndefined();
+});

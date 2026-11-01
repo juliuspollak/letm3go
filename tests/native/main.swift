@@ -3386,6 +3386,25 @@ do {
     check(CrossDeviceRecording.merged(endedLater, watchNow) == endedLater, "a late context cannot revive a finished recording")
     check(CrossDeviceRecording.merged(watchNow, endedLater) == endedLater, "the newest state wins")
     check(CrossDeviceRecording.merged(nil, watchNow) == watchNow, "first word is taken")
+    var walk = watchNow; walk.activity = "Walking"
+    check(CrossDeviceRecording.selectedActivity(local: nil, remote: walk, ownerID: ownerA, now: start + 10) == "Walking", "Watch selection is authoritative")
+    check(CrossDeviceRecording.selectedActivity(local: nil, remote: walk, ownerID: ownerB, now: start + 10) == nil, "household authority cannot cross accounts")
+    check(CrossDeviceRecording.selectedActivity(local: nil, remote: walk, ownerID: ownerA, now: start + 151) == nil, "abandoned Watch authority expires")
+    var pausedWalk = walk; pausedWalk.state = "paused"
+    check(CrossDeviceRecording.selectedActivity(local: nil, remote: pausedWalk, ownerID: ownerA, now: start + 10) == nil, "paused is not an active manual workout")
+    var tiedEnd = walk; tiedEnd.state = "idle"
+    check(CrossDeviceRecording.merged(tiedEnd, walk).state == "idle" && CrossDeviceRecording.merged(walk, tiedEnd).state == "idle", "tied packets cannot resurrect completed workout")
+    var checkpoint = WatchInboxState(); checkpoint.recording = tiedEnd
+    let reopenedCheckpoint = try! JSONDecoder().decode(WatchInboxState.self, from: JSONEncoder().encode(checkpoint))
+    check(CrossDeviceRecording.merged(reopenedCheckpoint.recording, walk).state == "idle", "restart preserves termination against delayed active packet")
+    check((try! JSONDecoder().decode(WatchInboxState.self, from: Data("{\"schema\":1,\"entries\":[]}".utf8))).recording == nil, "old inbox decodes without recording metadata")
+
+    let noisyDrive = MotionEvidence(types: ["Driving"], confidence: "high", timestamp: start, continuous: true)
+    check(HouseholdPublisher.activity(journey: "Driving", manual: "Walking", motion: noisyDrive, now: start + 10) == "walking", "manual walk wins over drive journey and automotive inference")
+    for (selected, expected) in [("Hiking","walking"),("Running","running"),("Cycling","cycling"),("Driving","driving")] {
+        check(HouseholdPublisher.activity(journey: nil, manual: selected, motion: noisyDrive, now: start + 10) == expected, "selected activity reaches household status")
+    }
+
     check(RecordingPresence(dictionary: ["device": "toaster", "state": "recording", "updatedAt": 1.0]) == nil, "unknown device refused")
     var manualTrip = RecordedActivity(activity: "Running", vehicle: nil, startedAt: start + 100, resumedAt: nil, title: "Phone run"); manualTrip.endedAt = start + 400; manualTrip.recordingMode = "manual"
     var brush = manualTrip; brush.id = UUID().uuidString; brush.startedAt = start - 100; brush.endedAt = start + 10

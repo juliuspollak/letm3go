@@ -25,9 +25,14 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private var heardWatchRecording: RecordingPresence?
     // A suspended app misses the delegate call, so the delivered context is read too.
     var watchRecording: RecordingPresence? {
+        loadInbox()
         if WCSession.isSupported(), WCSession.default.activationState == .activated,
            let delivered = RecordingPresence(dictionary: WCSession.default.receivedApplicationContext["recording"]), delivered.device == RecordingPresence.watch {
-            heardWatchRecording = CrossDeviceRecording.merged(heardWatchRecording, delivered)
+            let merged = CrossDeviceRecording.merged(heardWatchRecording, delivered)
+            if heardWatchRecording != merged {
+                heardWatchRecording = merged; state.recording = merged
+                persistInbox()
+            }
         }
         return heardWatchRecording
     }
@@ -100,10 +105,13 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
 
     private func receive(presence value: Any?) {
         guard let presence = RecordingPresence(dictionary: value), presence.device == RecordingPresence.watch else { return }
+        loadInbox()
         let previous = heardWatchRecording
         let merged = CrossDeviceRecording.merged(previous, presence)
         heardWatchRecording = merged
-        guard previous?.state != merged.state else { return }
+        if previous != merged { state.recording = merged; persistInbox() }
+        LocationRecorder.shared.confirmHouseholdLocation()
+        guard previous?.state != merged.state || previous?.activity != merged.activity else { return }
         LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch recording state changed", details: ["watchRecording": merged.state])
         checkConflict(now: Date().timeIntervalSince1970)
         LocationRecorder.shared.notifyJourneyChange()
@@ -134,6 +142,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         guard !loaded else { return }
         loaded = true
         state = store.load()
+        heardWatchRecording = state.recording
     }
 
     // Returns false when the inbox could not be written; callers must not

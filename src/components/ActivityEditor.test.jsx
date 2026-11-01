@@ -27,3 +27,12 @@ it('keeps a saved equipment label when its Collection item is no longer selectab
  expect(screen.getByRole('option',{name:'Sold car (saved with this activity)'})).toBeInTheDocument();
  expect(screen.getByRole('combobox',{name:'Equipment'})).toHaveValue('__saved');
 });
+
+it('editing notes does not turn a generated name into a permanent user title',async()=>{
+ const run=vi.fn().mockResolvedValue({trips:[]});
+ const original='Walking · 1 Nov 2026 at 10:47 am';
+ render(<ActivityEditor trip={{id:'trip',title:'Reserve Walk',recordedTitle:original,generatedTitle:'Reserve Walk',activity:'Walking',tags:[]}} run={run} onSaved={vi.fn()}/>);
+ fireEvent.change(screen.getByLabelText('Notes'),{target:{value:'A quiet walk'}});
+ fireEvent.click(screen.getByRole('button',{name:'Save activity'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('editActivity',expect.objectContaining({title:original,notes:'A quiet walk'})));
+});

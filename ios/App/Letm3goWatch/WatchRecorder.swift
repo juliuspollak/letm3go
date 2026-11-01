@@ -71,6 +71,9 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var pendingStart = false
     private var healthWorkoutSaves = true
     private var waterLock = WatchWaterLockPolicy(automatic: true)
+    private var healthRequestRideID: String?
+    private var collectionFailure = false
+    private var sessionFailure = false
     private var heartRateWaitingSince: Double?
     private var lastHeartRate: WatchHeartRateSample?
     private var lastPresenceAt = 0.0
@@ -353,6 +356,8 @@ final class WatchRecorder: NSObject, ObservableObject {
         heartRateGapOpen = false
         heartRate = .waiting
         heartRateSummary = nil
+        awaitingHealth = false; healthRequestRideID = nil
+        collectionFailure = false; sessionFailure = false
         if !ride.indoor { startLocation() }
         requestHealthAccessThenStartWorkout()
         startTicker()
@@ -387,6 +392,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         heartRate = .waiting
         persist(force: true)
         if !ride.indoor { startLocation() }
+        if collectionFailure || sessionFailure { discardWorkout() }
         if WatchWorkoutLifecycle.startsNewSession(hasSession: workout != nil, recovering: recoveringWorkout) {
             requestHealthAccessThenStartWorkout()
         } else if workout?.state == .paused {
@@ -733,12 +739,17 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // cost a first ride its background recording and its heart rate. Location already
     // runs, so a slow or declined prompt never delays or stops the ride.
     private func requestHealthAccessThenStartWorkout() {
+        guard let rideID = draft?.id, draft?.isRecording == true else { return }
+        guard !awaitingHealth || healthRequestRideID != rideID else { return }
+        healthRequestRideID = rideID
         guard HKHealthStore.isHealthDataAvailable() else {
             WatchDiagnostics.log("health", "HealthKit unavailable on this Watch")
             noWorkoutSession()
             return
         }
         awaitingHealth = true
+        heartRate = .authorizing
+        WatchDiagnostics.log("health", "Health authorization requested")
         var read: Set<HKObjectType> = [HKObjectType.workoutType()]
         for identifier: HKQuantityTypeIdentifier in [.heartRate, .activeEnergyBurned, .distanceCycling, .distanceWalkingRunning, .basalEnergyBurned] {
             if let type = HKQuantityType.quantityType(forIdentifier: identifier) { read.insert(type) }
@@ -746,7 +757,9 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         let share: Set<HKSampleType> = [HKObjectType.workoutType()]
         health.requestAuthorization(toShare: share, read: read) { granted, error in
             Task { @MainActor in
+                guard self.draft?.id == rideID, self.healthRequestRideID == rideID else { return }
                 self.awaitingHealth = false
+                WatchDiagnostics.log("health", "Health authorization completed", ["granted": String(granted), "code": String((error as NSError?)?.code ?? 0)])
                 if !granted || error != nil { WatchDiagnostics.log("health", "HealthKit authorisation not granted") }
                 // Apple does not reveal whether reading was allowed: a declined heart
                 // rate shows up only as silence, which the display reports as such.
@@ -754,6 +767,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                     WatchDiagnostics.log("health", "Workout sharing denied in Health settings")
                 }
                 guard self.draft?.isRecording == true else { return }
+                self.heartRateWaitingSince = Date().timeIntervalSince1970
                 self.startWorkout()
             }
         }
@@ -769,6 +783,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
 
     private func startWorkout() {
         guard HKHealthStore.isHealthDataAvailable(), workout == nil, let ride = draft else { return }
+        collectionFailure = false; sessionFailure = false
         let classification = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor)
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = Self.workoutType(classification.type)
@@ -790,14 +805,25 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
             let rideID = ride.id
             builder.beginCollection(withStart: start) { began, error in
                 guard began, error == nil else {
-                    Task { @MainActor in WatchDiagnostics.log("health", "Workout collection did not begin") }
+                    Task { @MainActor in
+                        guard self.draft?.id == rideID, self.builder === builder else { return }
+                        self.collectionFailure = true
+                        self.heartRate = .collectionFailed
+                        self.status = "Heart rate collection failed · pause and resume to retry"
+                        WatchDiagnostics.log("health", "Workout collection did not begin", ["code": String((error as NSError?)?.code ?? 0)])
+                    }
                     return
                 }
                 // One Letm3go ride is one Health workout, findable by its id.
+                Task { @MainActor in
+                    guard self.draft?.id == rideID, self.builder === builder else { return }
+                    WatchDiagnostics.log("health", "Workout collection started")
+                }
                 builder.addMetadata([HKMetadataKeyExternalUUID: rideID]) { _, _ in }
             }
         } catch {
-            WatchDiagnostics.log("health", "Workout session could not start")
+            sessionFailure = true
+            WatchDiagnostics.log("health", "Workout session could not start", ["code": String((error as NSError).code)])
             noWorkoutSession()
         }
     }
@@ -895,9 +921,11 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         case .paused:
             // The rider paused from the workout controls: pause the ride with the
             // same rules as the in-app button.
-            Task { @MainActor in if WatchWorkoutLifecycle.sessionPaused(rideState: self.draft?.state) == .pauseRide { self.pause() } }
+            Task { @MainActor in guard workoutSession === self.workout else { return }; if WatchWorkoutLifecycle.sessionPaused(rideState: self.draft?.state) == .pauseRide { self.pause() } }
         case .running:
             Task { @MainActor in
+                guard workoutSession === self.workout else { return }
+                WatchDiagnostics.log("health", "Workout session running")
                 switch WatchWorkoutLifecycle.sessionRunning(fromPaused: fromState == .paused, rideState: self.draft?.state) {
                 case .resumeRide: self.resume()
                 case .pauseSession: workoutSession.pause()
@@ -937,8 +965,11 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
         Task { @MainActor in
+            guard workoutSession === self.workout else { return }
+            self.sessionFailure = true
+            self.heartRate = .sessionFailed
             self.status = "Workout stopped: \(message)"
-            WatchDiagnostics.log("health", "Workout session failed")
+            WatchDiagnostics.log("health", "Workout session failed", ["code": String((error as NSError).code)])
         }
     }
 
@@ -948,7 +979,10 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
               let interval = statistics.mostRecentQuantityDateInterval() else { return }
         let sample = WatchHeartRateSample(timestamp: interval.end.timeIntervalSince1970,
                                           bpm: quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute())))
-        Task { @MainActor in self.ingestHeartRate(sample) }
+        Task { @MainActor in
+            guard workoutBuilder === self.builder else { return }
+            self.ingestHeartRate(sample)
+        }
     }
 
     nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
@@ -961,6 +995,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
             heartRateGapOpen = false
             WatchDiagnostics.log("health", "Heart rate readings resumed", ["heartRateSamples": String(ride.heartRate.count)])
         }
+        if ride.heartRate.count == 1 { WatchDiagnostics.log("health", "First heart rate sample received", ["heartRateSamples": "1"]) }
         draft = ride
         lastHeartRate = sample
         heartRate = .live(sample.bpm)
@@ -970,6 +1005,9 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
 
     private func refreshHeartRateDisplay(now: Double) {
         guard isRecording else { return }
+        if awaitingHealth { heartRate = .authorizing; return }
+        if sessionFailure { heartRate = .sessionFailed; return }
+        if collectionFailure { heartRate = .collectionFailed; return }
         let running = workout?.state == .running || workout?.state == .prepared
         heartRate = WatchHeartRate.display(recording: true, sessionRunning: WatchWorkoutLifecycle.sensorExpected(sessionRunning: running, awaitingHealth: awaitingHealth),
                                            last: lastHeartRate, waitingSince: heartRateWaitingSince, now: now)

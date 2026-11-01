@@ -376,7 +376,7 @@ struct WatchRecordingView: View {
             Label("\(Int(bpm.rounded())) BPM", systemImage: "heart.fill")
                 .font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(.red)
                 .accessibilityLabel("Heart rate \(Int(bpm.rounded())) beats per minute")
-        case .waiting, .unavailable:
+        case .waiting, .unavailable, .authorizing, .collectionFailed, .sessionFailed:
             Label(recorder.heartRate.label, systemImage: "heart").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
         case .paused, .off:
             EmptyView()

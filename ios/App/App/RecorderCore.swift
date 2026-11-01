@@ -518,6 +518,7 @@ struct ActivityDetails: Codable {
     var collection = ""
     var visibility = "private"
     var userCorrected = false
+    var titleEdited: Bool?
     var classification = Classification(predicted: "Unknown", confidence: "low", evidence: [])
     var classificationDistances: [String:Double]?
     var trackingNotes: [String]?
@@ -1127,8 +1128,11 @@ enum HouseholdPublisher {
     // unavailable, a sustained vehicle-sized GPS speed supplies the driving word,
     // while a single noisy fix cannot. The status is never derived from speed on
     // the server.
-    static func activity(journey: String?, motion: MotionEvidence, gps: LiveGpsEvidence = LiveGpsEvidence(),
+    static func activity(journey: String?, manual: String? = nil, motion: MotionEvidence, gps: LiveGpsEvidence = LiveGpsEvidence(),
                          stationaryFor: Double = 0, now: Double = Date().timeIntervalSince1970) -> String? {
+        // A user-selected recording is authoritative, including when GPS or
+        // Core Motion momentarily calls a walk automotive or stationary.
+        if let manual { return movement(manual) }
         // With no journey open, a fresh Stationary callback is a direct status
         // change. Inside an open drive, wait for the short stop window so a red
         // light is not hidden; the 120-second activity TTL is never this wait.
@@ -1142,8 +1146,8 @@ enum HouseholdPublisher {
         case "Walking", "Hiking": return "walking"
         default: break
         }
-        guard motion.continuous, motion.confidence != "low",
-              motion.timestamp > 0, now - motion.timestamp <= activityTTL else {
+        guard motion.continuous, motion.confidence == "high",
+              motion.timestamp > 0, now - motion.timestamp <= activityTTL, motion.timestamp - now <= 5 else {
             return gps.driving(now: now) ? "driving" : nil
         }
         if motion.types.contains("Driving") { return "driving" }
@@ -1152,6 +1156,15 @@ enum HouseholdPublisher {
         if motion.types.contains("Walking") { return "walking" }
         if motion.types.contains("Stationary") { return "stationary" }
         return gps.driving(now: now) ? "driving" : nil
+    }
+    static func movement(_ activity: String) -> String? {
+        switch activity {
+        case "Driving": return "driving"
+        case "Walking", "Hiking": return "walking"
+        case "Running": return "running"
+        case "Cycling", "MTB", "Road cycling": return "cycling"
+        default: return nil
+        }
     }
     static func validToken(_ token: String) -> Bool {
         token.count == 64 && token.allSatisfy { $0.isHexDigit && !$0.isUppercase }

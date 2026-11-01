@@ -1,14 +1,17 @@
-import {rankPlaceCandidates,placeTagPolicy} from '../lib/placeTagPolicy.js';
+import {compareRoutes} from '../lib/journeyGeometry.js';
+import {recognitionSampleIndexes,assessRoutePlaces} from '../lib/journeyRecognition.js';
+import {rankPlaceCandidates} from '../lib/placeTagPolicy.js';
 import {useState} from 'react';
 import {recorder} from '../lib/recorder.js';
 import {placeKey} from '../lib/journeyGrouping.js';
 import {Tag,Plus,X} from 'lucide-react';
-export default function JourneyTags({trip,grouping,run}){
+export default function JourneyTags({trip,grouping,run,onActivity}){
  const anchor=trip.segmentIDs?.[0]||trip.id;
  const custom=grouping.metadata.manualTags?.[anchor]||[];
  const [value,setValue]=useState(''),[remember,setRemember]=useState(false),[notice,setNotice]=useState('');
- const [scanning,setScanning]=useState(false),[suggestions,setSuggestions]=useState([]);
+ const [scanning,setScanning]=useState(false),[suggestions,setSuggestions]=useState([]),[visitsOpen,setVisitsOpen]=useState(false);
  const hidden=grouping.metadata.hiddenTags?.[anchor]||[];
+ const destination=grouping.destinations?.find(d=>d.placeID===trip.recognition?.primary?.placeID);
  const autoTags=(trip.tags||[]).filter(t=>!custom.some(c=>c.toLowerCase()===t.toLowerCase()));
  async function scanRoute(){
   if(scanning)return;
@@ -19,9 +22,7 @@ export default function JourneyTags({trip,grouping,run}){
    const points=Array.isArray(segment.points)&&segment.points.length?segment.points:
     (segment.routeSegments||[]).flat().map(p=>Array.isArray(p)?{latitude:p[0],longitude:p[1]}:p);
    if(!points.length)continue;
-   const count=Math.min(placeTagPolicy(trip.activity).route?10:3,points.length);
-   for(let i=0;i<count;i++){
-    const index=Math.round(i*(points.length-1)/Math.max(1,count-1));
+   for(const index of recognitionSampleIndexes({...segment,activity:trip.activity,points})){
     const point=points[index];
     if(placeKey(point)&&!samples.some(item=>placeKey(item.point)===placeKey(point)))samples.push({point,index});
    }
@@ -39,6 +40,8 @@ export default function JourneyTags({trip,grouping,run}){
       place=await recorder.recogniseTripPlace(null,0,point,true);
      }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
     }
+    const assessed=assessRoutePlaces(trip,[place],{hidden});
+    for(const candidate of assessed.candidates){if(!result.some(x=>x.name.toLowerCase()===candidate.name.toLowerCase()))result.push({...candidate,tag:candidate.name,kind:'route',source:place?.source||'Apple Maps'});}
     for(const name of [place?.nearbyName,...(place?.categories||[]),...(place?.nearbyName?[]:[place?.locality])].filter(Boolean)){
      if(typeof name!=='string'||name.length>50||result.some(x=>x.tag.toLowerCase()===name.toLowerCase())||hidden.some(x=>x.toLowerCase()===name.toLowerCase()))continue;
      result.push({tag:name,name,kind:n===samples.length-1?'destination':n===0?'start':'route',point:n,source:place?.source||'Apple Maps'});
@@ -55,6 +58,10 @@ export default function JourneyTags({trip,grouping,run}){
  const canRemember=Number.isFinite(end?.latitude)&&Number.isFinite(end?.longitude)&&typeof run==='function';
  async function save(tags){await grouping.act({type:'manualTags',anchor,tags});}
  return <section className="journey-custom-tags"><h3><Tag size={17}/> Your tags</h3><p className="muted small-copy">Personal tags describe this trip. To recognise a destination on future visits, also save it as a place.</p><div className="tags">{autoTags.map(tag=><span key={tag} className="manual-tag">{tag}<button type="button" aria-label={`Hide tag ${tag}`} disabled={grouping.busy||trip.readOnly} onClick={()=>void grouping.act({type:'hideTag',anchor,tag})}><X size={13}/></button></span>)}{custom.map(tag=><span key={tag} className="manual-tag">{tag}<button type="button" aria-label={`Remove tag ${tag}`} disabled={grouping.busy||trip.readOnly} onClick={()=>void save(custom.filter(t=>t!==tag))}><X size={13}/></button></span>)}</div>
+ {destination&&<details onToggle={e=>setVisitsOpen(e.currentTarget.open)}><summary>{destination.name} — Visited {destination.visits} {destination.visits===1?'time':'times'}</summary>{visitsOpen&&<ul>{destination.activities.map(activity=>{
+  const related=grouping.journeys.find(j=>j.id===activity.id),comparison=related&&related.id!==trip.id?compareRoutes(trip,related):null;
+  return <li key={activity.id}><button type="button" className="text-button" disabled={!onActivity||!related} onClick={()=>onActivity?.(related)}>{activity.title} · {new Date(activity.startedAt*1000).toLocaleDateString('en-AU')}</button>{comparison&&<small>{comparison.similar?'Similar GPS route':comparison.partial?'Partial route overlap':'Same destination; different or unverified route'}</small>}</li>;
+ })}</ul>}</details>}
  {!trip.readOnly&&<div className="tag-review-tools"><button type="button" className="secondary" disabled={scanning||grouping.busy} onClick={()=>void scanRoute()}>{scanning?'Checking route…':'Find more places on this route'}</button>{suggestions.map(s=><div className="tag-suggestion" key={s.tag}><span><strong>{s.tag}</strong><small>{s.source}</small></span><button type="button" onClick={async()=>{if(await grouping.act({type:'manualTags',anchor,tags:[...custom,s.tag]}))setSuggestions(a=>a.filter(x=>x.tag!==s.tag));}} disabled={grouping.busy||custom.length>=20}>Add</button><button type="button" disabled={grouping.busy} onClick={async()=>{if(await grouping.act({type:'hideTag',anchor,tag:s.tag}))setSuggestions(a=>a.filter(x=>x.tag!==s.tag));}}>Skip</button></div>)}{hidden.length>0&&<details><summary>Hidden tags ({hidden.length})</summary>{hidden.map(tag=><button type="button" className="text-button" key={tag} onClick={()=>void grouping.act({type:'restoreTag',anchor,tag})}>Restore {tag}</button>)}</details>}</div>}
  {!trip.readOnly&&<form onSubmit={async e=>{e.preventDefault();setNotice('');const tag=value.trim();if(!tag||custom.some(t=>t.toLowerCase()===tag.toLowerCase()))return;
   if(remember&&canRemember){

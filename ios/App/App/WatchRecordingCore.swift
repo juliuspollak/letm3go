@@ -41,6 +41,9 @@ struct WatchHeartRateSummary: Codable, Equatable {
 enum WatchHeartRateDisplay: Equatable {
     case live(Double)
     case waiting
+    case authorizing
+    case collectionFailed
+    case sessionFailed
     case unavailable
     case paused
     case off
@@ -49,6 +52,9 @@ enum WatchHeartRateDisplay: Equatable {
         switch self {
         case .live(let bpm): return String(Int(bpm.rounded()))
         case .waiting: return "Waiting for Heart Rate"
+        case .authorizing: return "Review Health Permission"
+        case .collectionFailed: return "Heart Rate Collection Failed · Pause and Resume"
+        case .sessionFailed: return "Workout Failed · Pause and Resume"
         case .unavailable: return "Heart Rate Unavailable"
         case .paused: return "Paused"
         case .off: return "—"
@@ -254,6 +260,11 @@ enum CrossDeviceRecording {
               now - remote.updatedAt <= freshness, remote.updatedAt - now <= clockTolerance else { return nil }
         return remote
     }
+    static func selectedActivity(local: RecordingPresence?, remote: RecordingPresence?, ownerID: String?, now: Double) -> String? {
+        if let local = active(local, ownerID: ownerID, now: now), local.state == "recording" { return local.activity }
+        if let remote = active(remote, ownerID: ownerID, now: now), remote.state == "recording" { return remote.activity }
+        return nil
+    }
     static func start(remote: RecordingPresence?, ownerID: String?, now: Double) -> CrossDeviceStart {
         active(remote, ownerID: ownerID, now: now).map(CrossDeviceStart.blocked) ?? .allowed
     }
@@ -268,8 +279,15 @@ enum CrossDeviceRecording {
     // The newest word wins. A context delivered late must not undo a message that
     // already said the recording ended.
     static func merged(_ current: RecordingPresence?, _ incoming: RecordingPresence) -> RecordingPresence {
-        guard let current, current.device == incoming.device, current.updatedAt > incoming.updatedAt else { return incoming }
-        return current
+        guard let current, current.device == incoming.device else { return incoming }
+        if current.updatedAt > incoming.updatedAt { return current }
+        // At an equal timestamp termination wins, independently of delivery order.
+        if current.updatedAt == incoming.updatedAt {
+            if current.state == "idle" { return current }
+            if incoming.state == "idle" { return incoming }
+            if current.state == "paused" { return current }
+        }
+        return incoming
     }
     static func overlapSeconds(_ startA: Double, _ endA: Double, _ startB: Double, _ endB: Double) -> Double {
         max(0, min(endA, endB) - max(startA, startB))

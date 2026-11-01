@@ -1,3 +1,6 @@
+import {metres} from './journeyGeometry.js';
+export {metres} from './journeyGeometry.js';
+import {assessRoutePlaces,destinationTitle,destinationVisits} from './journeyRecognition.js';
 import {activityCode} from './activityNames.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
@@ -6,7 +9,6 @@ import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 export const GROUPING_VERSION=1;
 const moving=t=>(t.activity==='Driving'||t.activity==='Unknown')&&t.endedAt!=null&&t.state!=='recording';
 const point=p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180;
-export function metres(a,b){if(!point(a)||!point(b))return Infinity;const r=Math.PI/180,dlat=(b.latitude-a.latitude)*r,dlon=(b.longitude-a.longitude)*r,x=Math.sin(dlat/2)**2+Math.cos(a.latitude*r)*Math.cos(b.latitude*r)*Math.sin(dlon/2)**2;return 6371000*2*Math.atan2(Math.sqrt(x),Math.sqrt(Math.max(0,1-x)));}
 const edge=(a,b)=>JSON.stringify([a,b]);
 const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
@@ -133,7 +135,10 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   groups.splice(Math.max(a,b),1);groups.splice(Math.min(a,b),1,merged);
  }
  const journeys=groups.map(segments=>{
-  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);return {...s,title:metadata.titles[s.id]||((automaticTitle(s)||s.title===s.activity)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<700):s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,internalStops(s,context)),...routeTags(s,metadata)],[s],metadata),recognisedStops:internalStops(s,context)};}
+  if(segments.length===1){const s=segments[0],from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata);
+   const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
+   const generatedTitle=destinationTitle(s.activity,recognition.primary)||((from.nearbyName||to.nearbyName)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<100):null);
+   return {...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,internalStops(s,context)),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:internalStops(s,context)};}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>internalStops(t,context));
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
@@ -145,7 +150,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  });
  // Place/stop text is indexed for singles as well as grouped journeys.
  for(const j of journeys){const stops=j.stops||j.recognisedStops||[];j.searchIndex=[j.title,j.location,j.collection,j.notes,...(j.tags||[]),...stops.flatMap(s=>[s.name,...s.tags])].filter(Boolean).join(' ').toLowerCase();}
- return {journeys,suggestions};
+ return {journeys,suggestions,destinations:destinationVisits(journeys)};
 }
 export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=[]}){
  if(meta.owner!==owner)throw new Error('Account changed. Grouping was not saved.');

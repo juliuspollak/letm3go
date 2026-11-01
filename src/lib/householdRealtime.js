@@ -19,9 +19,10 @@ export const reconnectDelay=attempt=>Math.min(60000,2000*2**Math.min(5,Math.max(
 // a position later can start travelling by accident. `p_enabled:true` describes an
 // active position update; the server never uses a position-bearing call to turn a
 // disabled sharing row back on. Enabling is a separate status-only consent action.
-export function sharedLocationPayload(fix){
+export function sharedLocationPayload(fix,activity=fix?.sharedActivity){
  const speed=Number.isFinite(fix?.speed)&&fix.speed>=0?Math.max(0,Math.min(250,fix.speed*3.6)):null;
  const payload={p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy,p_speed:speed};
+ if(['driving','walking','cycling','running','stationary'].includes(activity)||activity===null)payload.p_activity=activity;
  // Keep the capture time when it is real. The server uses it for newer-wins and
  // true age; old callers that omit it still work through the function defaults.
  if(Number.isFinite(fix?.timestamp))payload.p_captured_at=new Date(fix.timestamp*1000).toISOString();

@@ -1457,6 +1457,7 @@ struct WatchParkedSummary: Equatable {
 }
 
 struct WatchInboxState: Codable, Equatable {
+    var recording: RecordingPresence?
     var schema = 1
     var entries: [WatchInboxEntry] = []
 

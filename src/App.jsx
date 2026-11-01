@@ -1,3 +1,4 @@
+import {householdActivity} from './lib/peopleMap.js';
 import {activityLabel,activityCode,sameActivity} from './lib/activityNames.js';
 import PersonAvatar from './components/PersonAvatar.jsx';
 import {mapControls,panelChange,toolbarChange} from './lib/mapToolbar.js';
@@ -80,7 +81,6 @@ function PrivateApp(){
  const unit=auth.preferences.distanceUnit||'km';
  const saved=useMemo(()=>auth.preferences.bookmarks||[],[auth.preferences.bookmarks]);
  const recording=useRecorder(session.user.id,auth.rebindRecorder);
- const liveTrip=recording.state.active?.state==='recording'?recording.state.active:recording.state.automaticTrip;
  const [motionClock,setMotionClock]=useState(()=>Date.now());
  useEffect(()=>{
   const updateClock=()=>setMotionClock(Date.now());
@@ -88,14 +88,7 @@ function PrivateApp(){
   document.addEventListener('visibilitychange',updateClock);
   return()=>{clearInterval(interval);document.removeEventListener('visibilitychange',updateClock);};
  },[]);
- const motionFresh=Number.isFinite(recording.state.motionTimestamp)&&Math.abs(motionClock/1000-recording.state.motionTimestamp)<=45&&recording.state.motionConfidence!=='low';
- const motionTypes=motionFresh?recording.state.motionTypes||[]:[];
- const automaticPresenceActivity=liveTrip?.activity==='Driving'?'Driving':
-  motionTypes.includes('Driving')?'Driving':
-  liveTrip?.activity==='Running'||motionTypes.includes('Running')?'Running':
-  ['Cycling','Road cycling','MTB'].includes(activityCode(liveTrip?.activity))||motionTypes.includes('Cycling')?'Cycling':
-  ['Walking','Hiking'].includes(liveTrip?.activity)||motionTypes.includes('Walking')?'Walking':
-  liveTrip?'On the move':null;
+ const automaticPresenceActivity=householdActivity(recording.state,motionClock/1000);
  const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated',automaticPresenceActivity,recording.state.places||[],recording.state.nativeFamilySharing?.lastUploadOkAt||0);
  const friendsLocation=useFriendLocations(session.user.id,auth.status==='authenticated');
  const presenceHidden=!(presence.liveEnabled||friendsLocation.enabled);

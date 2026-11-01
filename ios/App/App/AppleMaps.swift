@@ -590,6 +590,20 @@ private func configurePeopleView(_ view:MKAnnotationView,_ pin:JourneyPin) {
             picture.layer.removeAllAnimations()
         }
     }
+    for child in view.subviews where child.accessibilityIdentifier == "letm3go-person-activity" { child.removeFromSuperview() }
+    if members.count == 1, members[0]["state"] as? String == "live",
+       let movement = members[0]["activity"] as? String,
+       let symbol = ["walking":"figure.walk", "running":"figure.run", "cycling":"bicycle"][movement] {
+        let badge = UIImageView(image: UIImage(systemName: symbol))
+        badge.frame = CGRect(x: centre.x + 10, y: centre.y + 8, width: 22, height: 22)
+        badge.backgroundColor = .systemBackground
+        badge.tintColor = .label
+        badge.contentMode = .scaleAspectFit
+        badge.layer.cornerRadius = 11; badge.clipsToBounds = true
+        badge.accessibilityIdentifier = "letm3go-person-activity"
+        badge.accessibilityLabel = movement
+        view.addSubview(badge)
+    }
     view.canShowCallout=true
     view.displayPriority = .required
     view.zPriority = .max

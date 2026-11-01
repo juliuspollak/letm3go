@@ -1,3 +1,4 @@
+import {householdActivity} from './peopleMap.js';
 import {describe,expect,it} from 'vitest';
 import {ACTIVITIES,STALE_FIT_METRES,cameraFit,formatDuration,personActivity,personLabel,savedPlaceName,secondsAtPlace} from './peopleMap.js';
 import {memberLocationState,peoplePins} from './householdLocation.js';
@@ -155,4 +156,12 @@ describe('camera mode',()=>{
   expect(cameraIntent(initialCamera,'a').key).not.toBe(cameraIntent(initialCamera,'b').key);
   expect(cameraIntent(initialCamera,'a',true).includeRoutes).toBe(true);
  });
+});
+
+it('projects native authority for self and preserves a selected walk on older builds',()=>{
+ expect(householdActivity({sharedActivity:'walking',motionTypes:['Driving'],motionConfidence:'high',motionTimestamp:100},110)).toBe('Walking');
+ expect(householdActivity({active:{state:'recording',activity:'Walking'},motionTypes:['Driving'],motionConfidence:'high',motionTimestamp:100},110)).toBe('Walking');
+ expect(householdActivity({sharedActivity:null,active:{state:'paused',activity:'Walking'}},110)).toBeNull();
+ expect(householdActivity({motionTypes:['Driving'],motionConfidence:'medium',motionTimestamp:100},110)).toBeNull();
+ expect(householdActivity({motionTypes:['Driving'],motionConfidence:'high',motionTimestamp:100},200)).toBeNull();
 });
