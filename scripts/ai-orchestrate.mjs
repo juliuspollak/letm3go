@@ -6,12 +6,15 @@ import { resolve, join } from 'node:path';
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-const task = args.filter(a => !a.startsWith('--')).join(' ').trim();
+const promptIndex = args.indexOf('--prompt-file');
+const promptPath = promptIndex >= 0 ? args[promptIndex + 1] : null;
+const task = promptPath ? readFileSync(resolve(promptPath), 'utf8').trim() :
+  args.filter((a,i) => !a.startsWith('--') && i !== promptIndex + 1).join(' ').trim();
 const dryRun = args.includes('--dry-run');
 const ios = args.includes('--ios');
 const maxCycles = Number(process.env.AI_MAX_CYCLES || 3);
 const maxMinutes = Number(process.env.AI_STEP_TIMEOUT_MINUTES || 30);
-if (!task || !Number.isInteger(maxCycles) || maxCycles < 1 || maxCycles > 5 ||
+if (!task || task.length > 150000 || !Number.isInteger(maxCycles) || maxCycles < 1 || maxCycles > 5 ||
     !Number.isFinite(maxMinutes) || maxMinutes < 1 || maxMinutes > 90) {
   console.error('Usage: node scripts/ai-orchestrate.mjs [--dry-run] [--ios] "feature description"');
   process.exit(2);
@@ -76,6 +79,7 @@ try {
   const schemaPath = join(dir, 'review-schema.json');
   writeFileSync(schemaPath, JSON.stringify(schema));
   const guard = 'Work only in the current isolated branch. Do not push, merge, deploy, edit remote services, run remote SQL, or change production data. Do not disable tests to pass. No secrets in output. Preserve unrelated work.';
+  writeFileSync(join(dir, 'task.md'), task);
   let feedback = '';
   for (let cycle = 1; cycle <= maxCycles; cycle++) {
     console.log('Cycle ' + cycle + '/' + maxCycles);
@@ -89,7 +93,7 @@ try {
     const diff = git('diff', base, 'HEAD', '--stat') + '\n' + git('status', '--short');
     if (!diff.trim()) throw new Error('No implementation changes detected.');
     const reviewOut = join(dir, 'review-' + cycle + '.json');
-    const reviewPrompt = guard + '\nINDEPENDENT READ-ONLY architecture, correctness, security and integration review. ' +
+    const reviewPrompt = guard + '\nReview against ALL original requirements:\n' + task + '\nINDEPENDENT READ-ONLY architecture, correctness, security and integration review. ' +
       'Review all changed files AND directly affected call chains, tests and configuration. ' +
       'Base commit: ' + base + '. Task: ' + task + '. Only pass=true if there are no actionable findings. ' +
       'List reproducible findings with concrete evidence and locations. Do not edit any files.';
@@ -102,7 +106,7 @@ try {
     if (typeof verdict.pass !== 'boolean' || !Array.isArray(verdict.findings)) throw new Error('Incomplete Codex review result.');
     // Independent Claude QA review; text output must parse as the same fail-closed schema.
     // The VS Code Claude Code extension can supply the 'claude' command when installed.
-    const claudePrompt = guard + '\nIndependent QA and risk review; do not modify files or execute commands. ' +
+    const claudePrompt = guard + '\nReview against ALL original requirements:\n' + task + '\nIndependent QA and risk review; do not modify files or execute commands. ' +
       'Task: ' + task + '. Base commit: ' + base + '. Examine affected code and integration paths, missing test coverage, ' +
       'edge cases, iOS/watchOS lifecycle, GPS accuracy, privacy, UX regressions and potential concurrency bugs as applicable. ' +
       'The implementation diff/statistics: ' + diff.slice(0, 10000) + '. ' +
