@@ -37,7 +37,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Native journey changes are pushed to the WebView so History updates without
     // polling or relaunching. Set by the Capacitor plugin.
     var journeyChangeHandler: (() -> Void)?
-    func notifyJourneyChange() { journeyChangeHandler?(); WatchSessionManager.shared.noteRecorderChanged() }
+    func notifyJourneyChange() { journeyChangeHandler?(); WatchSessionManager.shared.noteRecorderChanged(); WatchSessionManager.shared.noteHistoryChanged() }
     var movementTransition = MovementTransition()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
