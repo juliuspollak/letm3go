@@ -1,32 +1,45 @@
-# Letm3go local multi-agent development loop
+# Local three-agent workflow
 
-**Status:** Starter orchestration, not yet executed on the owner's Mac. DeepSeek model selection must be configured in Cline CLI separately. No agent work is automatically pushed, merged, deployed or migrated.
+The runner uses the installed Cline, Codex and Claude Code CLIs in the current isolated Git worktree:
 
-## Setup on Mac
-1. Install Node 24, dependencies (`npm ci`), Xcode CLI tools, Cline CLI, Codex CLI and Claude Code CLI (the official VS Code Claude Code extension can provide the `claude` command).
-2. Run `cline auth` and configure its provider/model to **DeepSeek**. The VS Code extension's model selection may not automatically transfer to a separate Cline CLI profile: verify with a harmless CLI task first.
-3. Run `codex login` and verify `codex exec --sandbox read-only "Say READY"`.
-4. Sign into Claude Code in VS Code and verify `claude -p "Reply READY"` in the integrated terminal. The extension UI itself is not a programmable cross-agent handoff; the CLI is used for orchestration.\n5. Create a clean feature branch based on current main and ensure `git status --short` is empty.
-5. Run from the repository root:
+**Cline / DeepSeek → independent Codex review → independent Claude QA review → deterministic tests → Cline fixes → repeat (at most five cycles).**
+
+## Setup and use
+
+Use Node 24, install dependencies with `npm ci`, and authenticate the CLIs locally:
+
+- `cline auth deepseek`: configure a direct DeepSeek provider and model. The runner reads the saved model from `~/.cline/data/settings/providers.json` and passes `--provider deepseek --model <saved-model>` explicitly. It refuses absent or unauthenticated direct DeepSeek profiles, even if another provider is last used. It never puts API keys on command lines or in reports.
+- `codex login`
+- `claude auth login`
+
+Ensure all three executables are on PATH. For this Mac, Cline needs `export PATH="$HOME/.npm-global/bin:$PATH"`.
+
+From the isolated worktree, run:
 
 ```sh
-node scripts/ai-orchestrate.mjs --dry-run "Improve MTB segment editing"
-node scripts/ai-orchestrate.mjs "Improve MTB segment editing"
-node scripts/ai-orchestrate.mjs --ios "Improve MTB segment editing"
+npm run test:orchestrator
+node scripts/ai-orchestrate.mjs --preflight
+node scripts/ai-orchestrate.mjs --integration-test
+node scripts/ai-orchestrate.mjs --dry-run --task-file /absolute/path/activity-experience-v2.md
+node scripts/ai-orchestrate.mjs --run --task-file /absolute/path/activity-experience-v2.md
 ```
 
-## Behaviour
-- Cline implements and revises on the **current branch**.
-- Codex independently reviews architecture/security/integration in a read-only sandbox with structured JSON findings.\n- Claude Code independently reviews QA risks, regression coverage, edge cases and UI/device acceptance, using a restricted plan-mode CLI session. A valid pass from **both** reviewers is required. Claude failures and findings are fed back to Cline; invalid output stops the run.
-- The orchestrator runs `npm run check` and `npm run test:native` each cycle.
-- `--ios` also performs unsigned iOS sync and simulator-targeted build; **it does not yet run XCUITest UI journeys or Watch/hardware tests**.
-- Codex or Claude findings, and test failures, go back to Cline, up to three attempts (override `AI_MAX_CYCLES=1..5`).
-- Logs and review output are under ignored `.build/ai-orchestrator/<timestamp>/`.
-- Codex passes do **not** mean the UX or hardware behaviour is correct. The pipeline does not automatically approve merge.
+The last command **starts implementation**. It is documented for later use; this infrastructure task does not run Activity Experience v2. Ordinary runs require a clean linked worktree on a feature branch. Local edits, tests and commits are allowed; changing branches stops the run. The orchestrator never invokes push, merge, deployment or remote SQL, and every developer prompt explicitly prohibits them. Use trusted installed CLIs; a Git worktree is not an OS security sandbox.
 
-## Important safety and reliability limitations
-This is a local process runner, **not a sandbox boundary**. Both review prompts enforce read-only behaviour; Claude plan mode and disallowed writing/shell tools are additional protections, not an OS sandbox. Cline's `--auto-approve true` allows tools and commands without intervention. Use a dedicated low-privilege local account/worktree with no production tokens or linked Supabase secrets. Review the scope before enabling auto-approval. Do not allow CLI agents production write credentials.
+## Checks and repair
 
-Claude CLI compatibility and permission flags must be checked against the installed version. The **VS Code extension alone does not enable background cross-agent messaging**.\n\nNo command execution from this chat takes place on your Mac. A successful local dry run does not prove the agents or simulator work. The `--ios` checks compile the app, not visually inspect or tap it. Actual UI automation requires authored XCTest/XCUITest test cases (or an evaluated simulator automation MCP server); these should be added before describing simulator QA as autonomous.
+Both reviewers must return complete structured JSON, have zero findings, and leave the reviewed source unchanged. Codex runs with its read-only sandbox. Claude runs in restricted plan mode with Read/Glob/Grep only; deterministic tests execute directly after Claude's QA review so they have explicit exit codes and logs. Claude's structured-output envelope is checked for successful completion. A successful CLI exit alone cannot approve a task.
 
-A clean working tree is required to avoid overwriting teammates' changes. Review output and deterministic checks gate completion; findings can still be missed. The CLI versions and exact flags should be verified on your installed versions before real use.
+Normal runs execute `npm run check` (lint, Vitest, web build) and `npm run test:native` each cycle. Failed assertions/build checks return to Cline with logs and both reviews. An agent failure, invalid review, missing executable, timeout, output overflow or unavailable required check stops the run. Tests and both reviews run again after every repair. Zero actionable findings and passing checks are required at the same reviewed source revision.
+
+The real integration command works only on an ignored `.build/ai-orchestrator/<run>/fixture/addition.cjs`. Cline first implements addition. The harness saves that implementation and deliberately replaces it with subtraction before the two real reviews. The independent findings and a real failing Node assertion go back to Cline, followed by fresh reviews and assertions. This is a small real handoff test, not app or device acceptance.
+
+## Logs and limits
+
+Each run stores the complete original task, prompts, CLI logs, structured reviews, injected defect evidence (integration only), test output, execution exit codes and final `summary.json` in `.build/ai-orchestrator/<timestamp>/`. Requirements are never truncated in repair or review prompts; stdin avoids command-line length limits. Reports distinguish `DRY_RUN`, `RUNNING`, `REPAIR_REQUIRED`, `VERIFIED` and `BLOCKED`.
+
+`AI_MAX_CYCLES=1..5` sets attempts (default 5). `AI_STEP_TIMEOUT_SECONDS=1..5400` sets each invocation's timeout (default 900 seconds). Each CLI's combined output is limited to 8 MiB. Cancellation and timeout kill the active process group and preserve a blocked report. These are execution limits, **not guaranteed monetary caps**. The runner passes a small environment allowlist instead of inheriting production service keys or Git overrides; installed CLI authentication still uses the user's normal local CLI profiles.
+
+A per-worktree lock prevents overlapping runs. After a crash, inspect the PID in `.build/ai-orchestrator/active.lock`; remove that lock only after confirming the process has exited. There is no automatic resumption or phase framework. Inspect the durable report, commit reviewed partial work if appropriate, and restart with the full specification. Logs are local and ignored; review them before sharing.
+
+Preflight verifies versions, required help flags and the saved DeepSeek profile. Authentication/network failures are verified by actual invocations and stop the run with the exact failed stage and log. `VERIFIED` means both independent reviews and configured checks passed; it does not mean simulator, hardware or manual UX acceptance passed.

@@ -1,157 +1,308 @@
 #!/usr/bin/env node
-// Local-only AI development loop. No push, merge, deployment or remote SQL.
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// Local three-agent loop for an existing isolated Git worktree.
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, closeSync, openSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = process.cwd();
-const args = process.argv.slice(2);
-const promptIndex = args.indexOf('--prompt-file');
-const promptPath = promptIndex >= 0 ? args[promptIndex + 1] : null;
-const task = promptPath ? readFileSync(resolve(promptPath), 'utf8').trim() :
-  args.filter((a,i) => !a.startsWith('--') && i !== promptIndex + 1).join(' ').trim();
-const dryRun = args.includes('--dry-run');
-const ios = args.includes('--ios');
-const maxCycles = Number(process.env.AI_MAX_CYCLES || 3);
-const maxMinutes = Number(process.env.AI_STEP_TIMEOUT_MINUTES || 30);
-if (!task || task.length > 150000 || !Number.isInteger(maxCycles) || maxCycles < 1 || maxCycles > 5 ||
-    !Number.isFinite(maxMinutes) || maxMinutes < 1 || maxMinutes > 90) {
-  console.error('Usage: node scripts/ai-orchestrate.mjs [--dry-run] [--ios] "feature description"');
-  process.exit(2);
+export const schema = {
+  type: 'object', additionalProperties: false, required: ['pass', 'summary', 'findings'],
+  properties: { pass: { type: 'boolean' }, summary: { type: 'string' }, findings: {
+    type: 'array', items: { type: 'object', additionalProperties: false,
+      required: ['severity', 'location', 'evidence', 'required_fix'],
+      properties: Object.fromEntries(['severity', 'location', 'evidence', 'required_fix'].map(k =>
+        [k, k === 'severity' ? { type: 'string', enum: ['P0','P1','P2','P3'] } : { type: 'string', minLength: 1 }])) }
+  } }
+};
+export function verdict(raw) {
+  const v = JSON.parse(raw);
+  if (!v || Object.keys(v).sort().join() !== 'findings,pass,summary' || typeof v.pass !== 'boolean' ||
+      typeof v.summary !== 'string' || !v.summary.trim() || !Array.isArray(v.findings) ||
+      v.pass !== (v.findings.length === 0) || v.findings.some(f => !f ||
+        Object.keys(f).sort().join() !== 'evidence,location,required_fix,severity' ||
+        !['P0','P1','P2','P3'].includes(f.severity) ||
+        !['location','evidence','required_fix'].every(k => typeof f[k] === 'string' && f[k].trim()))) {
+    throw Error('Incomplete or inconsistent review');
+  }
+  return v;
 }
-const out = resolve(root, '.build/ai-orchestrator');
-mkdirSync(out, { recursive: true });
-const runId = new Date().toISOString().replace(/[:.]/g, '-');
-const dir = join(out, runId);
-mkdirSync(dir);
-const log = [];
-function run(cmd, argv, label, { timeout = maxMinutes * 60000 } = {}) {
-  const info = { label, cmd, argv, started: new Date().toISOString() };
-  log.push(info);
-  if (dryRun) { console.log('[DRY RUN]', cmd, argv.join(' ')); info.exit = 0; return { status: 0, stdout: '', stderr: '' }; }
-  const r = spawnSync(cmd, argv, { cwd: root, encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, env: process.env });
-  info.exit = r.status;
-  info.error = r.error?.message;
-  writeFileSync(join(dir, label.replace(/[^a-zA-Z0-9_-]/g, '_') + '.log'),
-    (r.stdout || '') + '\n--- STDERR ---\n' + (r.stderr || '') + '\n' + (r.error?.message || ''));
-  console.log(label + ': ' + (r.error ? 'ERROR ' + r.error.message : 'exit ' + r.status));
-  return r;
+export function bounded(value, fallback, max) {
+  const n = value === undefined ? fallback : Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > max) throw Error('Invalid execution limit');
+  return n;
 }
-function git(...a) {
-  const r = spawnSync('git', a, { cwd: root, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error('git ' + a.join(' ') + ': ' + r.stderr);
+export function commands(role, report, schemaPath, model = 'deepseek-v4-flash', timeout = 900) {
+  if (role === 'developer') return ['cline', ['--json','--yolo','--provider','deepseek','--model',model,
+    '--retries','2','--timeout',String(timeout),'Implement the complete task supplied on stdin.']];
+  if (role === 'codex') return ['codex', ['exec','--ignore-user-config','--ephemeral','--sandbox','read-only',
+    '--skip-git-repo-check','--output-schema',schemaPath,'--output-last-message',report,'-']];
+  return ['claude', ['-p','--restricted','--permission-mode','plan','--permission-prompts','none',
+    '--tools','Read,Glob,Grep','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
+    '--disable-slash-commands','--no-session-persistence',
+    '--output-format','json','--json-schema',JSON.stringify(schema),'Review the complete task supplied on stdin.']];
+}
+export function claudeVerdict(raw) {
+  const result = JSON.parse(raw);
+  if (result.type !== 'result' || result.subtype !== 'success' || result.is_error || !result.structured_output) {
+    throw Error('Claude did not complete its structured review');
+  }
+  return JSON.stringify(verdict(JSON.stringify(result.structured_output)));
+}
+// Deliberately omit inherited service credentials, Git overrides and deployment settings.
+export function agentEnvironment() {
+  return Object.fromEntries(['PATH','HOME','TMPDIR','LANG','LC_ALL','TERM','USER','LOGNAME',
+    'NODE_EXTRA_CA_CERTS'].filter(k => process.env[k]).map(k => [k,process.env[k]]));
+}
+export function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, limit = 8*1024*1024, env = agentEnvironment(), signal: abortSignal }) {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(cmd,args,{ cwd,env,detached:true,stdio:['pipe','pipe','pipe'] });
+    let stdout = '', stderr = '', bytes = 0, failure;
+    const kill = reason => {
+      failure ||= reason;
+      try { process.kill(-child.pid,'SIGKILL'); } catch { /* Already exited. */ }
+    };
+    const cancel = () => kill('Cancelled');
+    process.once('SIGINT',cancel); process.once('SIGTERM',cancel);
+    if (abortSignal?.aborted) cancel(); else abortSignal?.addEventListener('abort',cancel,{once:true});
+    const timer = setTimeout(() => kill('Timeout'),timeout);
+    for (const [stream,key] of [[child.stdout,'stdout'],[child.stderr,'stderr']]) {
+      stream.setEncoding('utf8');
+      stream.on('data',data => {
+        bytes += Buffer.byteLength(data);
+        if (bytes > limit) { kill('Output limit exceeded'); return; }
+        if (key === 'stdout') stdout += data; else stderr += data;
+      });
+    }
+    child.stdin.on('error',() => {});
+    child.stdin.end(input);
+    child.once('error',error => { failure = error.message; });
+    child.once('exit',() => {
+      try { process.kill(-child.pid,'SIGKILL'); } catch { /* No remaining group. */ }
+    });
+    child.once('close',(code,signal) => {
+      abortSignal?.removeEventListener('abort',cancel);
+      clearTimeout(timer); process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel);
+      // Terminate any descendants left behind by a CLI, including on success.
+      try { process.kill(-child.pid,'SIGKILL'); } catch { /* No remaining group. */ }
+      const result = { code,signal,stdout,stderr,error:failure };
+      if (failure) reject(Object.assign(Error(failure),{ result })); else resolveResult(result);
+    });
+  });
+}
+const hash = data => createHash('sha256').update(data).digest('hex');
+export function git(root, ...args) {
+  const r = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 10000, maxBuffer: 32*1024*1024 });
+  if (r.status !== 0 || r.error) throw Error('Git inspection failed');
   return r.stdout.trim();
 }
-function save() { writeFileSync(join(dir, 'summary.json'), JSON.stringify({ task, branch, log }, null, 2)); }
-let branch;
-try {
-  branch = git('branch', '--show-current');
-  if (!branch || ['main','master'].includes(branch)) throw new Error('Start from an isolated feature branch, not main.');
-  if (!dryRun && git('status', '--porcelain')) throw new Error('Working tree must be clean before starting. Use an isolated git worktree to preserve unrelated changes.');
-  if (!dryRun) {
-    for (const cmd of ['cline', 'codex', 'claude', 'npm']) {
-      const r = spawnSync('which', [cmd], { encoding: 'utf8' });
-      if (r.status !== 0) throw new Error(cmd + ' CLI not found on PATH.');
-    }
-  }
-  if (dryRun) {
-    console.log('DRY RUN: would run Cline (configured DeepSeek), Codex architecture review, Claude QA review, web/native checks' + (ios ? ', and unsigned iOS build' : '') + '. No agent commands run.');
-    save(); process.exit(0);
-  }
-  const base = git('merge-base', 'HEAD', 'main');
-  const schema = {
-    type: 'object',
-    additionalProperties: false,
-    required: ['pass', 'summary', 'findings'],
-    properties: {
-      pass: { type: 'boolean' },
-      summary: { type: 'string' },
-      findings: { type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        required: ['severity','location','evidence','required_fix'],
-        properties: {
-          severity: { type:'string', enum:['P0','P1','P2','P3'] },
-          location: { type:'string' }, evidence: { type:'string' }, required_fix: { type:'string' }
-        }
-      } }
-    }
-  };
-  const schemaPath = join(dir, 'review-schema.json');
-  writeFileSync(schemaPath, JSON.stringify(schema));
-  const guard = 'Work only in the current isolated branch. Do not push, merge, deploy, edit remote services, run remote SQL, or change production data. Do not disable tests to pass. No secrets in output. Preserve unrelated work.';
-  writeFileSync(join(dir, 'task.md'), task);
-  let feedback = '';
-  for (let cycle = 1; cycle <= maxCycles; cycle++) {
-    console.log('Cycle ' + cycle + '/' + maxCycles);
-    const prompt = guard + '\nTask: ' + task +
-      '\nImplement through Cline using the configured DeepSeek model. Add targeted regression tests. ' +
-      (feedback ? '\nFix these independently verified issues and test failures:\n' + feedback : '') +
-      '\nDo not declare success without running available checks.';
-    const implement = run('cline', ['--auto-approve','true',prompt], 'cline-' + cycle);
-    if (implement.status !== 0 || implement.error) throw new Error('Cline failed. See run logs.');
-    if (git('branch', '--show-current') !== branch) throw new Error('Cline changed the active branch; stopping.');
-    const diff = git('diff', base, 'HEAD', '--stat') + '\n' + git('status', '--short');
-    if (!diff.trim()) throw new Error('No implementation changes detected.');
-    const reviewOut = join(dir, 'review-' + cycle + '.json');
-    const reviewPrompt = guard + '\nReview against ALL original requirements:\n' + task + '\nINDEPENDENT READ-ONLY architecture, correctness, security and integration review. ' +
-      'Review all changed files AND directly affected call chains, tests and configuration. ' +
-      'Base commit: ' + base + '. Task: ' + task + '. Only pass=true if there are no actionable findings. ' +
-      'List reproducible findings with concrete evidence and locations. Do not edit any files.';
-    const review = run('codex', ['exec','--sandbox','read-only','--output-schema',schemaPath,'--output-last-message',reviewOut,reviewPrompt], 'codex-review-' + cycle);
-    if (review.status !== 0 || review.error || !existsSync(reviewOut)) throw new Error('Codex review failed or missing structured report.');
-    if (git('branch', '--show-current') !== branch) throw new Error('Branch changed during review; stopping.');
-    let verdict;
-    try { verdict = JSON.parse(readFileSync(reviewOut,'utf8')); }
-    catch { throw new Error('Invalid Codex review JSON.'); }
-    if (typeof verdict.pass !== 'boolean' || !Array.isArray(verdict.findings)) throw new Error('Incomplete Codex review result.');
-    // Independent Claude QA review; text output must parse as the same fail-closed schema.
-    // The VS Code Claude Code extension can supply the 'claude' command when installed.
-    const claudePrompt = guard + '\nReview against ALL original requirements:\n' + task + '\nIndependent QA and risk review; do not modify files or execute commands. ' +
-      'Task: ' + task + '. Base commit: ' + base + '. Examine affected code and integration paths, missing test coverage, ' +
-      'edge cases, iOS/watchOS lifecycle, GPS accuracy, privacy, UX regressions and potential concurrency bugs as applicable. ' +
-      'The implementation diff/statistics: ' + diff.slice(0, 10000) + '. ' +
-      'Return ONLY a JSON object with pass (boolean), summary (string), findings (array), ' +
-      'each finding containing severity (P0/P1/P2/P3), location, evidence and required_fix (all strings). ' +
-      'pass=true only with zero actionable findings. If insufficient evidence, pass=false with an explicit finding.';
-    const beforeClaude = git('status','--porcelain');
-    const claude = run('claude', [
-      '-p', '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash',
-      '--output-format', 'text', '--max-turns', '15', claudePrompt
-    ], 'claude-qa-' + cycle);
-    if (claude.status !== 0 || claude.error) throw new Error('Claude QA failed. See run logs.');
-    if (git('branch', '--show-current') !== branch || git('status','--porcelain') !== beforeClaude) {
-      throw new Error('Claude reviewer changed files or branch; stopping.');
-    }
-    let claudeVerdict;
-    try {
-      claudeVerdict = JSON.parse(claude.stdout.trim().replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/g, ''));
-    } catch { throw new Error('Claude QA did not return valid JSON; cannot mark as passed.'); }
-    if (typeof claudeVerdict.pass !== 'boolean' || !Array.isArray(claudeVerdict.findings) ||
-        typeof claudeVerdict.summary !== 'string' ||
-        claudeVerdict.findings.some(f => !['P0','P1','P2','P3'].includes(f.severity) ||
-          !['location','evidence','required_fix'].every(k => typeof f[k] === 'string' && f[k]))) {
-      throw new Error('Incomplete Claude QA review; cannot mark as passed.');
-    }
-    writeFileSync(join(dir, 'claude-review-' + cycle + '.json'), JSON.stringify(claudeVerdict,null,2));
-    const tests = [['npm',['run','check']], ['npm',['run','test:native']]];
-    if (ios) tests.push(['npm',['run','ios:sync']], ['npm',['run','ios:build']]);
-    const failures = [];
-    for (let i=0;i<tests.length;i++) {
-      const [cmd,a] = tests[i];
-      const r = run(cmd,a,'test-'+cycle+'-'+i);
-      if (r.status !== 0 || r.error) failures.push(cmd+' '+a.join(' ')+' failed; see test log test-'+cycle+'-'+i);
-    }
-    if (verdict.pass && verdict.findings.length === 0 && claudeVerdict.pass && claudeVerdict.findings.length === 0 && failures.length === 0) {
-      console.log('PASS: independent review and configured checks. Hardware and UX acceptance still needed.');
-      save(); process.exit(0);
-    }
-    feedback = JSON.stringify({ codexReview: verdict, claudeReview: claudeVerdict, failures }, null, 2);
-    writeFileSync(join(dir, 'feedback-'+cycle+'.json'), feedback);
-    if (cycle === maxCycles) break;
-  }
-  console.error('STOP: did not pass after '+maxCycles+' cycles. See '+dir);
-  save(); process.exit(1);
-} catch(e) {
-  console.error('STOP: '+e.message);
-  save(); process.exit(1);
+export function snapshot(root) {
+  const files = git(root,'ls-files','--cached','--others','--exclude-standard','-z').split('\0').filter(Boolean);
+  return hash(files.sort().map(p => {
+    const file = join(root,p);
+    if (!existsSync(file)) return p + ':DELETED';
+    if (!lstatSync(file).isFile()) throw Error('Symlink or non-file in scope: '+p);
+    return p + ':' + lstatSync(file).mode + ':' + hash(readFileSync(file));
+  }).join('\n'));
 }
+// The same small loop drives real CLIs and deterministic regression tests.
+async function runLifecycle({ task, maxCycles = 5, execute, inspect, persist = () => {} }) {
+  maxCycles = bounded(maxCycles, 5, 5);
+  if (typeof task !== 'string' || !task.trim()) throw Error('Empty requirements');
+  const origin = inspect();
+  let feedback = [];
+  const history = [];
+  for (let cycle = 1; cycle <= maxCycles; cycle++) {
+    const prompt = JSON.stringify({ requirements: task, feedback, cycle,
+      instructions: 'Work only in the current isolated working directory. Audit surrounding code, implement all requirements, add regression tests. Local edits, tests and commits are allowed. Never push, merge, deploy, run remote SQL, change branches, read secrets or disable tests. Do not modify the orchestrator or its evidence. Do not run other AI agents.' });
+    await execute('developer', prompt, cycle);
+    let state = inspect();
+    if (state.branch !== origin.branch) throw Error('Branch changed');
+    const reviewedHead = state.head;
+    if (state.digest === origin.digest && cycle === 1) throw Error('No implementation changes');
+    const reviewed = state.digest;
+    const reviews = [];
+    for (const role of ['codex','claude']) {
+      reviews.push(verdict(await execute(role, JSON.stringify({ requirements: task,
+        instructions: (role === 'codex' ? 'Independent architecture review: inspect surrounding code, cross-layer integration, security, privacy, persistence, concurrency and reliability.' : 'Independent QA review: inspect functional completeness, test validity, edge cases, UX, accessibility and regressions.') + ' Read only. Review the full original requirements and current implementation; report every actionable omission with evidence. Do not infer simulator or hardware success. Do not run other AI agents.',
+        role, base: origin.head }), cycle)));
+      state = inspect();
+      if (state.branch !== origin.branch || state.head !== reviewedHead || state.digest !== reviewed) throw Error('Reviewer modified workspace');
+    }
+    const tests = await execute('tests', '', cycle);
+    state = inspect();
+    if (state.branch !== origin.branch || state.head !== reviewedHead || state.digest !== reviewed) throw Error('Checks modified reviewed source; verification invalid');
+    if (!Array.isArray(tests) || !tests.length || tests.some(t => typeof t.pass !== 'boolean' || !t.name)) throw Error('Missing test evidence');
+    // Deduplicate exact evidence only; preserve the highest severity.
+    const findings = new Map();
+    for (const f of reviews.flatMap(r => r.findings)) {
+      const key = JSON.stringify([f.location,f.evidence,f.required_fix]);
+      if (!findings.has(key) || f.severity < findings.get(key).severity) findings.set(key,f);
+    }
+    feedback = [...findings.values()].sort((a,b) => a.severity.localeCompare(b.severity));
+    feedback.push(...tests.filter(t => !t.pass));
+    history.push({ cycle, reviews, tests, feedback, digest: reviewed });
+    persist({ status: feedback.length ? 'REPAIR_REQUIRED' : 'VERIFIED', history });
+    if (!feedback.length) return { status: 'VERIFIED', history };
+  }
+  return { status: 'BLOCKED', reason: 'Retry limit exhausted', history };
+}
+export async function lifecycle(options) {
+  try {
+    const result = await runLifecycle(options);
+    options.persist?.(result);
+    return result;
+  } catch (error) {
+    options.persist?.({ status: 'BLOCKED', reason: error.message });
+    throw error;
+  }
+}
+export async function preflight(root, signal) {
+  const checks = [['cline',['--help'],['--provider','--model','--yolo','--json','--retries','--timeout']],
+    ['codex',['exec','--help'],['--ignore-user-config','--sandbox','--output-schema','--output-last-message']],
+    ['claude',['--help'],['--restricted','--tools','--json-schema','--permission-prompts']]];
+  const reports = [];
+  for (const [cmd,args,flags] of checks) {
+    const r = await executeProcess(cmd,args,{cwd:root,timeout:30000,limit:1024*1024,signal});
+    const v = await executeProcess(cmd,['--version'],{cwd:root,timeout:30000,limit:1024*1024,signal});
+    reports.push({cmd,version:v.stdout.trim(),compatibleHelp:r.code === 0 && v.code === 0 && flags.every(f => r.stdout.includes(f)),
+      authentication:'NOT_TESTED',error:r.code !== 0 ? r.stderr.slice(0,1000) : undefined,helpHash:hash(r.stdout)});
+  }
+  return reports;
+}
+export function integrationEvidence(history) {
+  const first = history?.[0];
+  if (!first || first.reviews?.length !== 2 || first.reviews.some(r => r.pass ||
+      !r.findings.some(f => /subtract|a\s*-\s*b/i.test(f.evidence+' '+f.required_fix))) ||
+      !first.tests?.some(t => !t.pass)) throw Error('Integration did not prove both reviewers detected the seeded subtraction defect and the first tests failed');
+}
+export function deepseekProfile(home = process.env.HOME) {
+  const path = join(home,'.cline/data/settings/providers.json');
+  if (!existsSync(path)) throw Error('Missing Cline provider settings. Run cline auth deepseek.');
+  const settings = JSON.parse(readFileSync(path,'utf8')).providers?.deepseek?.settings;
+  if (settings?.provider !== 'deepseek' || !/^deepseek-[a-z0-9.-]+$/.test(settings.model || '') || !settings.apiKey) {
+    throw Error('Missing authenticated direct DeepSeek profile. Run cline auth deepseek and choose a DeepSeek model.');
+  }
+  return { provider:'deepseek',model:settings.model };
+}
+async function main() {
+  const args = process.argv.slice(2);
+  const mode = args.shift();
+  if (!['--preflight','--dry-run','--run','--integration-test'].includes(mode)) throw Error('Usage: ai-orchestrate.mjs --preflight | --dry-run --task-file FILE | --run --task-file FILE | --integration-test');
+  const root = process.cwd();
+  if (mode === '--preflight') {
+    const reports = await preflight(root);
+    console.log(JSON.stringify({ reports, deepseek:deepseekProfile() },null,2));
+    if (reports.some(r => !r.compatibleHelp)) process.exitCode = 1;
+    return;
+  }
+  const integration = mode === '--integration-test';
+  if (integration ? args.length : args.length !== 2 || args[0] !== '--task-file') throw Error('Expected --task-file FILE (no arguments for --integration-test)');
+  const task = integration ? 'Create addition.cjs in the current directory. Export a CommonJS function add(a,b) that returns a+b for finite numbers, including negatives and zero. Only edit addition.cjs. Do not commit. The external test harness must pass. Do not modify any test or orchestrator logs.' : readFileSync(resolve(args[1]),'utf8');
+  if (!task.trim()) throw Error('Empty requirements');
+  const maxCycles = bounded(process.env.AI_MAX_CYCLES,5,5);
+  const timeout = bounded(process.env.AI_STEP_TIMEOUT_SECONDS,900,5400)*1000;
+  const branch = git(root,'branch','--show-current');
+  if (!branch || ['main','master'].includes(branch)) throw Error('Isolated feature branch required');
+  if (resolve(root,git(root,'rev-parse','--git-common-dir')) === resolve(root,git(root,'rev-parse','--git-dir'))) throw Error('Run in an isolated linked Git worktree');
+  if (mode === '--run' && git(root,'status','--porcelain')) throw Error('Working tree must be clean; commit local work before starting');
+  const base = git(root,'rev-parse','HEAD');
+  const dir = join(root,'.build','ai-orchestrator',new Date().toISOString().replace(/[:.]/g,'-'));
+  mkdirSync(dir,{ recursive:true,mode:0o700 });
+  const save = (file,value) => writeFileSync(join(dir,file),typeof value === 'string' ? value : JSON.stringify(value,null,2),{mode:0o600});
+  save('requirements.md',task); save('review-schema.json',schema);
+  const report = { status:mode === '--dry-run' ? 'DRY_RUN' : 'RUNNING', branch,base,root,
+    requirementsHash:hash(task),requirementsBytes:Buffer.byteLength(task),maxCycles,timeoutSeconds:timeout/1000,
+    realAgentsExecuted:false,executions:[],history:[],integration,
+    limitations:['Local trusted CLI execution; worktree is not an OS sandbox','Timeouts and cycle limits are not monetary limits','No simulator or hardware acceptance implied'] };
+  const persist = value => {
+    Object.assign(report,value);
+    if (integration && value.history?.length) integrationEvidence(value.history);
+    save('summary.json',report);
+  };
+  persist({});
+  if (mode === '--dry-run') { console.log(JSON.stringify({...report,artifacts:dir},null,2)); return; }
+  const lock = join(root,'.build','ai-orchestrator','active.lock');
+  let lockFd;
+  try { lockFd = openSync(lock,'wx',0o600); writeFileSync(lockFd,String(process.pid)); }
+  catch {
+    const reason = 'Another run holds '+lock+'; if interrupted, verify its PID has exited before removing the stale lock';
+    persist({status:'BLOCKED',reason}); throw Error(reason);
+  }
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.once('SIGINT',cancel); process.once('SIGTERM',cancel);
+  try {
+    const checks = await preflight(root,controller.signal);
+    save('preflight.json',checks);
+    if (checks.some(c => !c.compatibleHelp)) throw Error('CLI preflight failed; see preflight.json');
+    const profile = deepseekProfile(); persist({deepseek:profile});
+    if (!integration) {
+      const scripts = JSON.parse(readFileSync(join(root,'package.json'),'utf8')).scripts;
+      if (!scripts?.check || !scripts?.['test:native']) throw Error('Required npm scripts check and test:native are unavailable');
+    }
+    const cwd = integration ? join(dir,'fixture') : root;
+    if (integration) mkdirSync(cwd);
+    const inspect = () => ({ branch:git(root,'branch','--show-current'),head:git(root,'rev-parse','HEAD'),
+      digest:integration ? hash(existsSync(join(cwd,'addition.cjs')) ? readFileSync(join(cwd,'addition.cjs')) : 'missing') : snapshot(root) });
+    const run = async (cmd,argv,label,input = '') => {
+      console.log(label+': starting');
+      const entry = {label,cmd,argv,started:new Date().toISOString()};
+      report.executions.push(entry); persist({});
+      let result;
+      try { result = await executeProcess(cmd,argv,{cwd,input,timeout,signal:controller.signal}); }
+      catch (error) { result = error.result || {code:null,error:error.message,stdout:'',stderr:''}; }
+      save(label+'.log',(result.stdout || '')+'\n--- STDERR ---\n'+(result.stderr || ''));
+      Object.assign(entry,{code:result.code,error:result.error,signal:result.signal,finished:new Date().toISOString()});
+      persist({}); console.log(label+': '+(result.error || 'exit '+result.code));
+      if (result.error) throw Error(label+': '+result.error);
+      return result;
+    };
+    const execute = async (role,prompt,cycle) => {
+      if (role === 'tests') {
+        const tests = integration ? [[process.execPath,['-e',
+          "const assert=require('node:assert/strict');const add=require('./addition.cjs');for(const [a,b] of [[2,3],[-2,3],[0,0],[-0,-0],[1.5,2.5],[Number.MAX_VALUE,Number.MAX_VALUE]]) assert.equal(add(a,b),a+b);"]]] : [['npm',['run','check']],['npm',['run','test:native']]];
+        const results = [];
+        for (const [cmd,argv] of tests) {
+          const label = 'tests-'+cycle+'-'+results.length;
+          const r = await run(cmd,argv,label);
+          if (r.signal || r.code === null || r.code === 127) throw Error('Required tests could not run: '+label);
+          results.push({name:cmd+' '+argv.join(' '),pass:r.code === 0,log:join(dir,label+'.log'),evidence:(r.stdout+'\n'+r.stderr).slice(-12000)});
+        }
+        return results;
+      }
+      const label = role+'-'+cycle;
+      const output = join(dir,label+'.json');
+      save(label+'-prompt.json',prompt);
+      const [cmd,argv] = commands(role,output,join(dir,'review-schema.json'),profile.model,timeout/1000);
+      report.realAgentsExecuted = true;
+      const result = await run(cmd,argv,label,prompt);
+      if (result.code !== 0) throw Error(label+' failed; see '+label+'.log');
+      if (role === 'developer') {
+        if (integration && cycle === 1) {
+          if (!existsSync(join(cwd,'addition.cjs'))) throw Error('Cline did not implement fixture');
+          save('fixture-before-injection.cjs',readFileSync(join(cwd,'addition.cjs'),'utf8'));
+          writeFileSync(join(cwd,'addition.cjs'),'module.exports = (a,b) => a-b;\n');
+          save('injected-defect.json',{cycle,reason:'Controlled subtraction defect injected after real Cline implementation, before both independent reviews and executable tests'});
+        }
+        return '';
+      }
+      const raw = role === 'codex' ? readFileSync(output,'utf8') : claudeVerdict(result.stdout);
+      save(label+'.json',verdict(raw));
+      return raw;
+    };
+    const result = await lifecycle({task,maxCycles,execute,inspect,persist});
+    persist({...result,finished:new Date().toISOString()});
+    if (result.status !== 'VERIFIED') process.exitCode = 1;
+  } catch (error) {
+    persist({status:'BLOCKED',reason:error.message,finished:new Date().toISOString()});
+    process.exitCode = 1;
+  } finally {
+    process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel);
+    closeSync(lockFd); unlinkSync(lock);
+  }
+  console.log(report.status+': '+(report.reason || 'Both independent reviewers and required tests passed')+'; report: '+join(dir,'summary.json'));
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(e => {
+  console.error('BLOCKED: '+e.message); process.exitCode = 1;
+});

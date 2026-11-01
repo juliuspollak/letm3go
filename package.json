@@ -30,7 +30,7 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run lint && npm test && npm run build",
+    "check": "npm run test:orchestrator && npm run lint && npm test && npm run build",
     "ios:sync": "npm run build && cap sync ios",
     "ios:open": "cap open ios",
     "supabase": "node scripts/supabase.mjs",
@@ -48,7 +48,8 @@
     "test:database": "vitest run tests/database",
     "testflight:check": "node scripts/testflight.mjs preflight",
     "testflight:package": "node scripts/testflight.mjs package",
-    "release:check": "node scripts/check-release.mjs"
+    "release:check": "node scripts/check-release.mjs",
+    "test:orchestrator": "node --test tests/orchestrator/*.node.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",
