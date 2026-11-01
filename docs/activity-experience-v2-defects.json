@@ -1,0 +1,475 @@
+{
+  "version": 1,
+  "applicationRevision": "27273fb55cfc40a99e9dc0286db43cda4641b556",
+  "defects": [
+    {
+      "id": "P01-SHEET",
+      "title": "Real coordinated details sheet",
+      "severity": "P0",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "src/components/ActivitySheet.jsx",
+        "src/components/ActivityDetail.jsx",
+        "src/styles.css"
+      ],
+      "instructions": "Verify the helper is actually integrated. Pointer and keyboard detents, fixed map and safe areas must work; do not count helper-only tests as screen coverage.",
+      "observations": []
+    },
+    {
+      "id": "P01-MOMENTS",
+      "title": "Photo-first cover and gallery entry",
+      "severity": "P0",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "src/components/ActivityMoments.jsx",
+        "src/components/ActivityDetail.jsx"
+      ],
+      "instructions": "Verify actual screen order, cover/empty state and Add Photos near the top; distinguish the separately tracked suggestion-entry defect.",
+      "observations": []
+    },
+    {
+      "id": "P01-PHOTO-IDENTITY",
+      "title": "Durable native photo idempotence",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        3,
+        4
+      ],
+      "files": [
+        "ios/App/App/RecorderCore.swift",
+        "ios/App/App/ActivityServices.swift",
+        "ios/App/App/PhotoSuggestions.swift"
+      ],
+      "instructions": "Native persistence must use source identity before copying bytes; same timestamp is not identity. Verify restart, repeated/lost replies, capacity and owner scoping. Supervisor added optional assetID and duplicate guard before attempt 4; inspect current code, not old reports.",
+      "observations": []
+    },
+    {
+      "id": "P01-CANCEL",
+      "title": "Cancel an in-flight suggestion batch",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        3,
+        4
+      ],
+      "files": [
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/PhotoSuggestions.test.jsx"
+      ],
+      "instructions": "Cancel must be enabled while recording.busy is true. Deferred onImport must finish honestly, then no next import may start. Supervisor supplied this specific regression before final review.",
+      "observations": []
+    },
+    {
+      "id": "P01-PAGING",
+      "title": "Continue empty/missing-thumbnail pages",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        3,
+        4
+      ],
+      "files": [
+        "ios/App/App/PhotoSuggestions.swift",
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/ActivityDetail.jsx"
+      ],
+      "instructions": "Use native nextOffset rather than filtered thumbnail counts; return unavailable metadata rows and leave Load more/Cancel reachable with zero visible rows.",
+      "observations": []
+    },
+    {
+      "id": "P01-PROVENANCE",
+      "title": "Truthful native suggestion provenance",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        3,
+        4
+      ],
+      "files": [
+        "ios/App/App/PhotoSuggestions.swift",
+        "src/lib/photoSuggestions.js"
+      ],
+      "instructions": "Return actual hasLocation/provenance. Having photo GPS does not prove a route-location match. Data URI handling is tracked separately.",
+      "observations": []
+    },
+    {
+      "id": "P01-PHOTO-PINS",
+      "title": "Gallery selection highlights the real embedded pin",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        3,
+        4
+      ],
+      "files": [
+        "src/components/ActivityDetail.jsx",
+        "src/components/JourneyMap.jsx",
+        "src/lib/appleMaps.js",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Verify owner/activity-scoped selected ID reaches BOTH native renderers without selecting a callout or fitting camera. Supervisor corrected the embedded renderer after the last mixed review.",
+      "observations": []
+    },
+    {
+      "id": "P01-THUMBNAIL-URL",
+      "title": "Native thumbnail wire format",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/PhotoSuggestions.swift",
+        "ios/App/App/RecorderCore.swift"
+      ],
+      "instructions": "Bare JPEG base64 is not a URL. Current ActivityPhoto.thumbnailDataURL must produce a data URI, leave unavailable values null, and feed the actual bridge.",
+      "observations": []
+    },
+    {
+      "id": "P01-GALLERY-MEMORY",
+      "title": "Bound accumulated thumbnail and DOM memory",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 3,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        4,
+        5
+      ],
+      "files": [
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/ActivityDetail.jsx",
+        "src/lib/photoSuggestions.js"
+      ],
+      "instructions": "Pagination currently appends all base64 images and renders all rows. Implement a bounded page/window with explicit navigation and stable selection IDs; evict off-window thumbnail payloads and ensure every candidate remains reachable. Test hundreds/thousands, retained bytes/DOM count, revisit, selected imports and partial failures.",
+      "observations": []
+    },
+    {
+      "id": "P01-PICKER-RETRY",
+      "title": "Item-identifiable main-picker outcomes and retry",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "ios/App/App/ActivityServices.swift",
+        "src/components/ActivityDetail.jsx",
+        "src/components/ActivityMoments.jsx"
+      ],
+      "instructions": "Keep explicit user-picked providers/asset identities for failed items within the current owner/activity session, expose per-item outcomes and retry only failures without duplicating successes. Bound resources and clear on account change/cancel. Report genuine progress; aggregated anonymous strings are insufficient.",
+      "observations": []
+    },
+    {
+      "id": "P01-PICKER-MEMORY",
+      "title": "Avoid parallel full-resolution picker image retention",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/ActivityServices.swift"
+      ],
+      "instructions": "The latest order-preserving repair collects every full UIImage in an array. Sequentially load/downsample/persist/release each item or use a fixed small concurrency window. Preserve selection order, capacity, ownership and duplicate outcomes.",
+      "observations": []
+    },
+    {
+      "id": "P01-PICKER-METADATA",
+      "title": "Preserve available picker-only capture metadata",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/ActivityServices.swift"
+      ],
+      "instructions": "UIImage-only loading drops authorized provider metadata when PHAsset cannot be read. Use selected provider data/file metadata without demanding broad Photos access. Preserve actual timestamp/timezone/location when available; never invent missing metadata. Test denied/limited/full access and stripped metadata.",
+      "observations": []
+    },
+    {
+      "id": "P01-LATE-EMBED",
+      "title": "Tear down an embed that completes after unmount",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/AppleMap.jsx",
+        "src/components/AppleMap.test.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Reproduce with a deferred embed promise, unmount before resolution, then resolve. No map may be installed/shown after disposal. Make cleanup idempotent and race-safe, including owner/navigation switch; test strict mode and out-of-order callbacks.",
+      "observations": []
+    },
+    {
+      "id": "P01-CAMERA-RESUME",
+      "title": "Preserve camera across background/resume",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 3,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        4,
+        5
+      ],
+      "files": [
+        "src/components/AppleMap.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Unembed currently destroys the map and foreground fits again. Cache/restore camera by owner and map/content identity, or hide/reveal without destroying; handle background in-flight operations and clear on account change. Verify no refit after resume.",
+      "observations": []
+    },
+    {
+      "id": "P01-CAMERA-FULLSCREEN",
+      "title": "Preserve camera through fullscreen round trip",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/AppleMap.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Fullscreen destroys embedded map and creates a fitted controller without passing camera. Transfer/restore camera explicitly; maintain one authoritative visible map and account-scoped lifecycle. Test a user-panned camera round trip.",
+      "observations": []
+    },
+    {
+      "id": "P01-SUGGESTION-ENTRY",
+      "title": "Reveal/focus suggestions at the prominent entry point",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 3,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        4,
+        5
+      ],
+      "files": [
+        "src/components/ActivityDetail.jsx",
+        "src/components/PhotoSuggestions.jsx"
+      ],
+      "instructions": "Find Photos is high but its result is after every technical control. Put the surface near its trigger or open/focus a dedicated dialog/sheet, with Back, Cancel, keyboard focus and stable selection; do not merely append an unreachable section.",
+      "observations": []
+    },
+    {
+      "id": "P01-MAP-GEOMETRY",
+      "title": "Avoid scroll-derived viewport clipping churn",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "src/lib/mapViewport.js",
+        "src/components/AppleMap.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Reproduce constant document map position while scrolling across bottom nav: geometry key must not change solely due viewport-relative clipping. Separate geometry/content/camera and keep other map consumers correct; add the exact probe and bridge assertions.",
+      "observations": []
+    },
+    {
+      "id": "P01-ROUTE-MEMO",
+      "title": "Keep unchanged long routes off photo/sheet hot paths",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "src/components/ActivityDetail.jsx",
+        "src/components/JourneyMap.jsx",
+        "src/components/AppleMap.jsx"
+      ],
+      "instructions": "Memoize using immutable points/route references rather than whole trip. Photo imports must not rebuild full route/segment layers or serialize unchanged route geometry on sheet/pin-only renders. Add real bridge/render instrumentation assertions, preserve privacy revocation.",
+      "observations": []
+    },
+    {
+      "id": "P01-PREVIEW-FOCUS",
+      "title": "Photo preview is a real keyboard modal",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 4,
+      "failedRepairs": 1,
+      "failedRepairAttempts": [
+        5
+      ],
+      "files": [
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/PhotoSuggestions.test.jsx"
+      ],
+      "instructions": "Move focus inside, trap it, Escape to close, restore original preview-button focus and prevent background interaction. Test keyboard-only flow and preserved selection; aria-modal alone is not implementation.",
+      "observations": []
+    },
+    {
+      "id": "P01-DIAGNOSTICS-REGISTRY",
+      "title": "Independent diagnostic consumer registrations",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 4,
+      "failedRepairs": 1,
+      "failedRepairAttempts": [
+        5
+      ],
+      "files": [
+        "src/lib/mapDiagnostics.js",
+        "src/components/AppleMap.jsx"
+      ],
+      "instructions": "The same snapshot function stored in a Set collapses consumers. Use per-registration ownership/tokens so one unmount cannot remove another consumer. Verify zero consumers cleanup and correct bridge-operation counts.",
+      "observations": []
+    },
+    {
+      "id": "P01-A11Y-TYPE",
+      "title": "Scalable readable type and touch controls",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "src/styles.css",
+        "src/components/ActivitySheet.jsx",
+        "ios/App/App/Info.plist"
+      ],
+      "instructions": "Replace tiny fixed type with a scale-aware design and preserve 44pt controls, small screens, rotation and Reduce Motion. Distinguish code capability from physical VoiceOver/Dynamic Type validation; do not label missing scaling code hardware-only.",
+      "observations": []
+    },
+    {
+      "id": "P01-METRIC-TRUTH",
+      "title": "Truthful units and elevation provenance",
+      "severity": "P2",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 2,
+      "failedRepairAttempts": [
+        3,
+        4
+      ],
+      "files": [
+        "src/lib/activitySummary.js",
+        "src/lib/activitySummary.test.js"
+      ],
+      "instructions": "Check current explicit-kcal/provenance guards, measured zero and missing values, and conservative elevation derivation. Supervisor removed untyped calorie aliases after the mixed review; old reports may be stale. Watch collection remains phase 2.",
+      "observations": []
+    },
+    {
+      "id": "P01-SWIPE-GEOMETRY",
+      "title": "Fixed page positioning and direct drag",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 4,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/SwipeBack.jsx",
+        "src/components/ActivitySheet.jsx",
+        "src/styles.css",
+        "scripts/check-activity-layout.mjs"
+      ],
+      "instructions": "Check the current removal of permanent will-change, fixed-page gesture target and coarse-pointer landscape rule. Actual Chromium synthetic geometry and pointer regression evidence exists; do not confuse it with native device performance.",
+      "observations": []
+    },
+    {
+      "id": "P01-DOC-TRUTH",
+      "title": "No false completion or hardware deferral of software",
+      "severity": "P1",
+      "kind": "software",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 3,
+      "failedRepairAttempts": [
+        3,
+        4,
+        5
+      ],
+      "files": [
+        "docs/activity-experience-v2-progress.md",
+        "docs/activity-experience-v2-release-gates.md",
+        "docs/activity-experience-v2-review-findings.md",
+        "docs/activity-experience-v2-testing.md"
+      ],
+      "instructions": "Reconcile current docs, which were corrected AFTER frozen reviews. Do not repeat a stale docs finding based on the archived version. Only confirmed current contradictions block; full software/hardware distinction must remain explicit.",
+      "observations": []
+    },
+    {
+      "id": "DEVICE-NATIVE-UX",
+      "title": "Physical map/Photos/Watch acceptance",
+      "severity": "P2",
+      "kind": "device",
+      "status": "needs_review",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [],
+      "instructions": "Actual November ride, native frame traces, VoiceOver and Watch battery/HealthKit acceptance are unavailable. This is a DEVICE validation gate, not permission to defer implementable software.",
+      "observations": []
+    }
+  ]
+}
