@@ -96,6 +96,9 @@ final class WatchRecorder: NSObject, ObservableObject {
         if !WatchCatalog.activities.contains(activity) { activity = "MTB" }
         config = WatchStartConfig(activity: activity)
         loadAccountData()
+        WatchConnectivitySession.shared.receiveHistory = { [weak self] synced in
+            Task { @MainActor in self?.applySynced(synced) }
+        }
         permission = Self.permissionLabel(manager.authorizationStatus)
         pendingCount = WatchTransferQueue.shared.pendingCount()
         autoLock = UserDefaults.standard.object(forKey: Self.autoLockKey) as? Bool ?? true
@@ -123,7 +126,17 @@ final class WatchRecorder: NSObject, ObservableObject {
     }
     private func record(_ entry: WatchHistoryEntry) {
         history = WatchHistory.adding(entry, to: history)
+        saveHistory()
+    }
+    private func saveHistory() {
         if let data = try? JSONEncoder().encode(history) { UserDefaults.standard.set(data, forKey: Self.key("history")) }
+    }
+    private func applySynced(_ synced: [WatchHistoryEntry]) {
+        // The owner may have changed in the same delivery.
+        loadAccountData()
+        let outbox = Set(WatchConnectivitySession.shared.outboxEntries().map { $0.id.lowercased() })
+        history = WatchHistory.merged(local: history, synced: synced, outbox: outbox)
+        saveHistory()
     }
     // The equipment last used for an activity, if the watch has a bike list or
     // remembers one.

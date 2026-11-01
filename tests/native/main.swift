@@ -4124,6 +4124,43 @@ do {
     check(quietCount == 0, "no departure buffer survives a session")
 }
 
+// MARK: Watch past activities are rebuilt from the iPhone
+do {
+    func saved(_ id: String, _ at: Double, mode: String = "watch") -> RecordedActivity {
+        var trip = RecordedActivity(activity: "MTB", startedAt: at, resumedAt: nil, title: "Ride")
+        trip.id = id; trip.recordingMode = mode; trip.state = "finished"; trip.endedAt = at + 1800
+        trip.accumulatedSeconds = 1700; trip.distanceMeters = 9000
+        return trip
+    }
+    func row(_ id: String, _ at: Double, queued: Bool = true) -> WatchHistoryEntry {
+        WatchHistoryEntry(id: id, activity: "MTB", startedAt: at, endedAt: at + 60, activeSeconds: 60, distanceMeters: 100, queued: queued)
+    }
+    var bike = saved("a", 1000)
+    bike.equipment = [EquipmentRef(id: "e1", name: "Levo")]
+    var open = saved("open", 3000); open.state = "recording"
+    let list = WatchHistory.synced([saved("old", 500), bike, saved("drive", 2000, mode: "automatic"), saved("phone", 2500, mode: "manual"), open])
+    check(list.map(\.id) == ["a", "old"], "only finished Watch activities go back, newest first")
+    check(list[0].equipmentName == "Levo" && list[0].distanceMeters == 9000 && list[0].activeSeconds == 1700 && list[0].queued, "a synced entry carries what the Past list shows")
+    check(WatchHistory.status(list[0], outbox: []) == .onIPhone, "a synced entry reads as On iPhone")
+    check(WatchHistory.synced((0..<50).map { saved("r\($0)", Double($0) * 10) }).count == WatchHistory.limit, "the list stays bounded")
+    check(WatchHistory.decode(WatchHistory.encode(list)) == list, "the list survives the trip between devices")
+    check(String(data: WatchHistory.encode(list)!, encoding: .utf8)?.contains("latitude") == false, "no route travels with it")
+    check(WatchHistory.decode("not data") == nil, "a malformed list is ignored, not read as empty")
+    check(WatchHistory.decode(WatchHistory.encode([row("", 1), row("ok", 2)])) == [row("ok", 2)], "invalid rows are dropped")
+
+    // A reinstalled Watch starts with nothing and gets everything back.
+    check(WatchHistory.merged(local: [], synced: list, outbox: []) == list, "an empty Watch rebuilds its list")
+    // What only the Watch knows stays.
+    let merged = WatchHistory.merged(local: [row("waiting", 9000), row("short", 8000, queued: false), row("A", 1000)], synced: list, outbox: ["waiting"])
+    check(merged.map(\.id) == ["waiting", "short", "a", "old"], "unsynced and too-short rides stay, and a ride is listed once despite id case")
+    check(WatchHistory.merged(local: [row("deleted", 2000)], synced: list, outbox: []).map(\.id) == ["a", "old"], "a ride deleted on the iPhone leaves the Watch")
+    let full = (0..<WatchHistory.limit).map { row("f\($0)", 1000 + Double($0)) }
+    check(WatchHistory.merged(local: [row("older", 10)] + full, synced: Array(full.prefix(WatchHistory.limit - 1)) + [row("x", 900)], outbox: []).count == WatchHistory.limit, "the merged list stays bounded")
+    check(WatchHistory.merged(local: [row("older", 10)], synced: full, outbox: []).count == WatchHistory.limit, "a full list pushes out the oldest")
+    let pending = (0..<3).map { row("p\($0)", 5000 + Double($0)) }
+    check(WatchHistory.merged(local: pending, synced: [], outbox: ["p0", "p1", "p2"]) == pending.reversed(), "an empty iPhone list never removes rides still waiting")
+}
+
 // Optional private diagnostic timeline replay. Input contains timestamps and
 // activity labels only, never routes, credentials or health measurements.
 if let index = CommandLine.arguments.firstIndex(of: "--watch-exclusion-replay"), index + 1 < CommandLine.arguments.count {

@@ -1789,6 +1789,38 @@ enum WatchHistory {
     static func adding(_ entry: WatchHistoryEntry, to list: [WatchHistoryEntry]) -> [WatchHistoryEntry] {
         Array(([entry] + list.filter { $0.id.lowercased() != entry.id.lowercased() }).sorted { $0.startedAt > $1.startedAt }.prefix(limit))
     }
+    // The iPhone's journal outlives the Watch app, so it is the record of what has
+    // synced. Summaries only: no route and no heart-rate samples go back to the Watch,
+    // and readings still held for the person's answer are left out.
+    static func synced(_ trips: [RecordedActivity]) -> [WatchHistoryEntry] {
+        trips.filter { $0.recordingMode == "watch" && $0.state == "finished" && $0.endedAt != nil }
+            .sorted { $0.startedAt > $1.startedAt }.prefix(limit).map { trip in
+                let bike = trip.equipment?.first
+                return WatchHistoryEntry(id: trip.id, activity: trip.activity, equipmentID: bike?.id, equipmentName: bike?.name ?? trip.vehicle,
+                                         startedAt: trip.startedAt, endedAt: trip.endedAt ?? trip.startedAt, activeSeconds: trip.accumulatedSeconds,
+                                         distanceMeters: trip.distanceMeters, queued: true, averageHeartRate: trip.details?.heartRate?.summary.average,
+                                         maximumHeartRate: trip.details?.heartRate?.summary.maximum, indoor: trip.details?.indoor)
+            }
+    }
+    static func encode(_ entries: [WatchHistoryEntry]) -> Data? { try? JSONEncoder().encode(entries) }
+    static func decode(_ value: Any?) -> [WatchHistoryEntry]? {
+        guard let data = value as? Data, let entries = try? JSONDecoder().decode([WatchHistoryEntry].self, from: data) else { return nil }
+        return Array(entries.filter { !$0.id.isEmpty && $0.id.count <= 100 && $0.startedAt.isFinite && $0.endedAt.isFinite &&
+            $0.endedAt >= $0.startedAt && $0.activeSeconds.isFinite && $0.distanceMeters.isFinite }.prefix(limit))
+    }
+    // The Watch's list after hearing the iPhone's. What has not synced stays, because
+    // only the Watch knows about it. A synced ride the iPhone no longer lists was
+    // deleted there, unless it is simply older than the list reaches.
+    static func merged(local: [WatchHistoryEntry], synced: [WatchHistoryEntry], outbox: Set<String>) -> [WatchHistoryEntry] {
+        let known = Set(synced.map { $0.id.lowercased() })
+        let oldest = synced.count >= limit ? synced.map(\.startedAt).min() : nil
+        let kept = local.filter { entry in
+            let id = entry.id.lowercased()
+            if known.contains(id) { return false }
+            return !entry.queued || outbox.contains(id) || (oldest.map { entry.startedAt < $0 } ?? false)
+        }
+        return Array((kept + synced).sorted { $0.startedAt > $1.startedAt }.prefix(limit))
+    }
     // Derived from the outbox, never stored: an entry still in the outbox is
     // waiting, parked or unreadable; a queued ride no longer there was
     // acknowledged by the phone (saved or a duplicate it already had).

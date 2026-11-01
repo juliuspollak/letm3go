@@ -20,6 +20,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private var ownerID: String?
     private var lastPresence: RecordingPresence?
     private var conflictLogged = false
+    private var sentHistory: Data?
     // The Watch's manual recording, as last heard. Stale presence stops counting on
     // its own (CrossDeviceRecording), so nothing here needs clearing.
     private var heardWatchRecording: RecordingPresence?
@@ -74,8 +75,24 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         // watch can offer them; another account's Collection is never sent.
         let recorder = LocationRecorder.shared
         let equipment = ownerID != nil && recorder.ownerID == ownerID ? WatchEquipmentCatalog.encode(recorder.watchEquipment) : []
-        try? session.updateApplicationContext(["ownerID": ownerID ?? "", "version": 4, "equipment": equipment,
-                                               "recording": currentPresence().dictionary, "acknowledgements": (state.acknowledgements ?? []).map(\.dictionary)])
+        var context: [String: Any] = ["ownerID": ownerID ?? "", "version": 5, "equipment": equipment,
+                                      "recording": currentPresence().dictionary, "acknowledgements": (state.acknowledgements ?? []).map(\.dictionary)]
+        // Left out while the journal is closed: the Watch keeps what it has, and
+        // never mistakes a locked account for one with no activities.
+        if let history = openHistory { context["history"] = history; sentHistory = history }
+        try? session.updateApplicationContext(context)
+    }
+
+    private var openHistory: Data? {
+        let recorder = LocationRecorder.shared
+        guard ownerID != nil, recorder.ownerID == ownerID, recorder.storeOpened else { return nil }
+        return WatchHistory.encode(WatchHistory.synced(recorder.trips))
+    }
+
+    // An activity was imported, changed or deleted.
+    func noteHistoryChanged() {
+        guard WCSession.isSupported(), let history = openHistory, history != sentHistory else { return }
+        sendOwnerContext()
     }
 
     private func currentPresence(now: Double = Date().timeIntervalSince1970) -> RecordingPresence {
@@ -308,6 +325,11 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         // The watch switched pairing. Re-activate so the new watch can deliver.
         session.activate()
     }
+
+    // A reinstalled Watch app starts with nothing until it hears from this iPhone.
+    func sessionWatchStateDidChange(_ session: WCSession) {
+        DispatchQueue.main.async { self.sendOwnerContext() }
+    }
     #endif
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
@@ -333,8 +355,11 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        let value = message["recording"]
-        DispatchQueue.main.async { self.receive(presence: value) }
+        let value = message["recording"], needsHistory = message["needsHistory"] != nil
+        DispatchQueue.main.async {
+            self.receive(presence: value)
+            if needsHistory { self.sendOwnerContext() }
+        }
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {

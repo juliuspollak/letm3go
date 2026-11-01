@@ -27,6 +27,11 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     @Published private(set) var equipment: [WatchEquipment] = []
     // The iPhone's manual recording, as last heard.
     @Published private(set) var remoteRecording: RecordingPresence?
+    // The iPhone's list of synced rides, as last received. WatchRecorder applies it.
+    var receiveHistory: (([WatchHistoryEntry]) -> Void)? {
+        didSet { if let heardHistory { receiveHistory?(heardHistory) } }
+    }
+    private var heardHistory: [WatchHistoryEntry]?
 
     private var inFlight: Set<String> = []
     private var retryTimer: Timer?
@@ -88,6 +93,13 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         }
         if session.isReachable { session.sendMessage(["recording": presence.dictionary], replyHandler: nil, errorHandler: nil) }
         flushDiagnostics()
+    }
+
+    // A fresh install has no context until the iPhone sends one, and the iPhone does
+    // not always know to.
+    private func requestHistory() {
+        guard WCSession.default.activationState == .activated, WCSession.default.isReachable else { return }
+        WCSession.default.sendMessage(["needsHistory": true], replyHandler: nil, errorHandler: nil)
     }
 
     // Queued, so it arrives whenever the phone next wakes. One batch at a time: a
@@ -191,6 +203,12 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
             }
             equipment = Self.storedEquipment(for: owner)
         }
+        // After the owner: the list belongs to the account it arrived with. Absent
+        // while the iPhone's account is closed, and from older phone builds.
+        if owner != nil, let history = WatchHistory.decode(context["history"]) {
+            heardHistory = history
+            receiveHistory?(history)
+        }
         // Older phone builds send no list: the last one received is kept.
         if context.keys.contains("equipment") {
             let received = WatchEquipmentCatalog.decode(context["equipment"])
@@ -272,6 +290,7 @@ extension WatchConnectivitySession: WCSessionDelegate {
             // A manual start may precede WC activation. Send its saved state now
             // rather than waiting for a later 45-second heartbeat.
             if let presence = self.lastPresence { self.announce(presence) }
+            self.requestHistory()
             self.flushDiagnostics()
         }
     }
@@ -300,6 +319,7 @@ extension WatchConnectivitySession: WCSessionDelegate {
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.sendPending()
+            self.requestHistory()
             // Back in range: say where the recording stands rather than wait for the heartbeat.
             if var presence = self.lastPresence, session.isReachable {
                 if presence.isActive { presence.updatedAt = Date().timeIntervalSince1970 }
