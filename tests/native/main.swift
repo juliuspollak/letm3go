@@ -4288,6 +4288,8 @@ do {
     check(held.details?.energy == nil && held.details?.unverifiedEnergy?.active == 100, "unverified body energy is quarantined")
     _ = held.resolveUnverifiedHeartRate(accept: true)
     check(held.details?.energy == nil && held.details?.unverifiedEnergy != nil, "heart-rate consent does not silently authorize energy")
+    check(held.resolveUnverifiedHeartRate(accept: false), "rejection still handles held energy after heart-rate acceptance")
+    check(held.details?.unverifiedEnergy == nil, "accept-then-reject removes held energy")
     held = WatchActivityImport.activity(from: transfer, heartRateVerified: false)!
     _ = held.resolveUnverifiedHeartRate(accept: false)
     check(held.details?.unverifiedEnergy == nil, "rejecting body attribution removes held energy")
@@ -4302,6 +4304,39 @@ do {
     source.points = [GPSPoint(latitude: 0, longitude: 0, timestamp: 1000, accuracy: 5, altitude: 0, speed: 1), GPSPoint(latitude: 0, longitude: 0.0001, timestamp: 1010, accuracy: 5, altitude: 0, speed: 1), GPSPoint(latitude: 0, longitude: 0.0002, timestamp: 1020, accuracy: 5, altitude: 0, speed: 1)]
     let trimmed = RouteTrimming.trimmed(source, start: 1, end: 2)
     check(trimmed?.details?.energy == nil && source.details?.energy?.active == 100, "trim does not fabricate whole-workout energy or alter the source")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = try RecordingStorage(directory: directory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try store.save(source)
+    try store.save(trimmed!)
+    let reloaded = try store.load().first!
+    check(reloaded.details?.energy == nil && reloaded.details?.wholeWorkoutEnergy?.active == 100, "saving a trim preserves original measured energy durably under the same ID")
+    var tokenRecord = source
+    tokenRecord.details?.energy?.state = "pending"
+    let energyToken = RecorderHistoryFingerprint.token([tokenRecord], owner: "owner")
+    tokenRecord.details?.energy?.state = "final"
+    check(energyToken != RecorderHistoryFingerprint.token([tokenRecord], owner: "owner"), "finalization invalidates native history without updatedAt")
+    let finalToken = RecorderHistoryFingerprint.token([tokenRecord], owner: "owner")
+    tokenRecord.details?.energy?.active = 101
+    check(finalToken != RecorderHistoryFingerprint.token([tokenRecord], owner: "owner"), "energy value changes invalidate native history")
+    tokenRecord.details?.unverifiedWholeWorkoutEnergy = measured
+    let heldToken = RecorderHistoryFingerprint.token([tokenRecord], owner: "owner")
+    _ = tokenRecord.resolveUnverifiedHeartRate(accept: false)
+    check(heldToken != RecorderHistoryFingerprint.token([tokenRecord], owner: "owner"), "held energy removal invalidates native history even without HR")
+    var malformed = try JSONSerialization.jsonObject(with: JSONEncoder().encode(source)) as! [String: Any]
+    var metadata = malformed["details"] as! [String: Any]
+    let malformedValues: [Any] = ["bad optional energy", ["schema": 99], ["active": "invalid"]]
+    for value in malformedValues {
+        metadata["energy"] = value; malformed["details"] = metadata
+        let data = try JSONSerialization.data(withJSONObject: malformed)
+        let preserved = try JSONDecoder().decode(RecordedActivity.self, from: data)
+        check(preserved.id == source.id && preserved.details?.energy?.validated == nil, "malformed optional energy does not block journal decoding")
+        try store.writeData(data, name: source.id + ".json")
+        let loadedID = try store.load().first?.id
+        check(loadedID == source.id, "malformed energy does not take history offline")
+        let untouched = try store.readData(name: source.id + ".json")
+        check(untouched == data, "decoding optional energy never rewrites stored bytes")
+    }
     transfer.energy = nil
     check(WatchActivityImport.activity(from: transfer)?.details?.energy == nil, "missing energy is not fabricated")
 }

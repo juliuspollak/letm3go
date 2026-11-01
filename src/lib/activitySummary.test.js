@@ -68,7 +68,7 @@ const measured=(energy={})=>({source:'watch',details:{energy:{schema:1,unit:'kca
 it('renders active and total measured energy separately, preserving measured zero',()=>{
  const entries=activitySummary(measured({active:0,total:100}));
  expect(entries.find(e=>e.id==='calories')).toMatchObject({label:'Active calories',value:'0 kcal',detail:'From Apple Watch active energy'});
- expect(entries.find(e=>e.id==='total-calories')).toMatchObject({label:'Total calories',value:'100 kcal',detail:'Active + resting energy'});
+ expect(entries.find(e=>e.id==='total-calories')).toMatchObject({label:'Total calories',value:'100 kcal',detail:'Measured workout energy'});
 });
 it.each([['kcal',100],['J',418400],['kJ',418.4]])('converts explicit %s energy to kcal without using HR', (unit,active)=>{
  expect(activeCalories(measured({unit,active}))).toEqual({kcal:100,label:'Active calories',source:'watch'});
@@ -95,4 +95,9 @@ it('never renders quarantined body data or falls back from an explicitly unavail
  expect(activeCalories(unavailable)).toBeNull();
  const original=measured({unit:'J',active:418400});const before=JSON.stringify(original);
  expect(activeCalories(original).kcal).toBe(100);expect(JSON.stringify(original)).toBe(before);
+});
+
+it('retains trimmed whole-workout energy privately without showing it for a subset',()=>{
+ const energy={schema:1,unit:'kcal',source:'healthkit',state:'final',active:400,total:500};
+ expect(activitySummary({source:'watch',details:{wholeWorkoutEnergy:energy,unverifiedWholeWorkoutEnergy:energy}})).toEqual([]);
 });

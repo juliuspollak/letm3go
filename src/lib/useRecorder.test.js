@@ -40,3 +40,9 @@ it('refreshes measured energy values and finalization without changing route or 
   expect(reconcileRecorderSnapshot(previous,{ownerID:'me',trips:[changed]}).trips[0]).toBe(changed);
  }
 });
+
+it('drops cached held whole-workout energy after native rejection',()=>{
+ const held={id:'watch',details:{unverifiedWholeWorkoutEnergy:{schema:1,state:'final',active:100}}};
+ const cleared={id:'watch',details:{}};
+ expect(reconcileRecorderSnapshot({ownerID:'me',trips:[held]},{ownerID:'me',trips:[cleared]}).trips[0]).toBe(cleared);
+});

@@ -69,10 +69,16 @@ struct RecordedActivity: Codable {
     }
     // The person's answer about held readings. Returns false when there were none.
     mutating func resolveUnverifiedHeartRate(accept: Bool) -> Bool {
-        guard var metadata = details, let held = metadata.unverifiedHeartRate else { return false }
-        if accept { metadata.heartRate = held }
+        guard var metadata = details else { return false }
+        let held = metadata.unverifiedHeartRate
+        let rejectsHeldEnergy = !accept && (metadata.unverifiedEnergy != nil || metadata.unverifiedWholeWorkoutEnergy != nil)
+        guard held != nil || rejectsHeldEnergy else { return false }
+        if accept, let held { metadata.heartRate = held }
         metadata.unverifiedHeartRate = nil
-        if !accept { metadata.unverifiedEnergy = nil }
+        if !accept {
+            metadata.unverifiedEnergy = nil
+            metadata.unverifiedWholeWorkoutEnergy = nil
+        }
         details = metadata
         return true
     }
@@ -353,6 +359,10 @@ enum RouteTrimming {
         trip.updatedAt = Date().timeIntervalSince1970
         let trimmedQuality = trip.routeQualitySummary()
         trip.updateDetails { $0.routeQuality = trimmedQuality }
+        // A trim overwrites the same journal ID: retain whole-workout source
+        // measurements durably, but never display them as subset energy.
+        trip.details?.wholeWorkoutEnergy = original.details?.energy ?? original.details?.wholeWorkoutEnergy
+        trip.details?.unverifiedWholeWorkoutEnergy = original.details?.unverifiedEnergy ?? original.details?.unverifiedWholeWorkoutEnergy
         trip.details?.energy = nil
         trip.details?.unverifiedEnergy = nil
         trip.details?.heartRate = original.details?.heartRate?.trimmed(start: first.timestamp, end: last.timestamp)
@@ -409,6 +419,11 @@ enum ManualDraftClosure {
 // arrays. Native journal mutation paths advance updatedAt; live/provisional fields
 // are included explicitly. Account identity is part of the cache boundary.
 enum RecorderHistoryFingerprint {
+    private static func energyKey(_ energy: ActivityEnergy?) -> String {
+        guard let energy else { return "absent" }
+        return [String(energy.schema), energy.unit, energy.source, energy.state,
+                energy.active.map { String($0) } ?? "missing", energy.total.map { String($0) } ?? "missing"].joined(separator: ":")
+    }
     static func token(_ trips: [RecordedActivity], owner: String) -> String {
         let rows = trips.map { trip -> [String] in
             var fields = [trip.id, trip.source, trip.title, trip.activity, trip.state, trip.recordingMode ?? ""]
@@ -416,6 +431,8 @@ enum RecorderHistoryFingerprint {
             fields += [String(trip.accumulatedSeconds), String(trip.distanceMeters), String(trip.details?.provisional ?? false), String(trip.details?.continuationEndsAt ?? 0)]
             fields += [String(trip.details?.photos.count ?? 0), String(trip.details?.heartRate?.samples.count ?? 0), String(trip.details?.unverifiedHeartRate?.samples.count ?? 0)]
             fields += [String(trip.details?.visibleRouteStart ?? -1), String(trip.details?.visibleRouteEnd ?? -1), trip.details?.coverPhotoID ?? ""]
+            fields += [energyKey(trip.details?.energy), energyKey(trip.details?.unverifiedEnergy),
+                       energyKey(trip.details?.wholeWorkoutEnergy), energyKey(trip.details?.unverifiedWholeWorkoutEnergy)]
             return fields
         }
         let data = (try? JSONEncoder().encode([[owner]] + rows)) ?? Data()
@@ -590,6 +607,20 @@ struct ActivityEnergy: Codable, Equatable {
     var active: Double?
     var total: Double?
 
+    enum CodingKeys: String, CodingKey { case schema, unit, source, state, active, total }
+    init() {}
+    init(from decoder: Decoder) throws {
+        schema = 0; unit = ""; source = ""; state = "unavailable"
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self),
+              let schema = try? c.decode(Int.self, forKey: .schema), schema == 1,
+              let unit = try? c.decode(String.self, forKey: .unit), ["kcal", "J", "kJ"].contains(unit),
+              let source = try? c.decode(String.self, forKey: .source), source == "healthkit",
+              let state = try? c.decode(String.self, forKey: .state), ["pending", "final", "unavailable"].contains(state) else { return }
+        self.schema = schema; self.unit = unit; self.source = source; self.state = state
+        active = try? c.decode(Double.self, forKey: .active)
+        total = try? c.decode(Double.self, forKey: .total)
+    }
+
     static func kilocalories(_ value: Double?, unit: String) -> Double? {
         guard let value, value.isFinite, value >= 0 else { return nil }
         let kcal: Double
@@ -665,6 +696,10 @@ struct ActivityDetails: Codable {
     // body ownership is quarantined independently of heart-rate confirmation.
     var energy: ActivityEnergy?
     var unverifiedEnergy: ActivityEnergy?
+    // Durable source measurements after destructive route trim. Not rendered
+    // as calories for the resulting route subset and never cloud-backed up.
+    var wholeWorkoutEnergy: ActivityEnergy?
+    var unverifiedWholeWorkoutEnergy: ActivityEnergy?
     var indoor: Bool?
     // Other records on this iPhone covering the same time. Both are kept.
     var overlaps: [WatchOverlap]?

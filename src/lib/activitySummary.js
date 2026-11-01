@@ -125,7 +125,7 @@ export function activitySummary(trip,{unit='km'}={}){
  const measured=workoutEnergy(trip);
  const pending=measured?.state==='pending';
  if(energy)entries.push({id:'calories',label:energy.label,value:`${energy.kcal} kcal`,detail:pending?'Awaiting workout finalization':energy.source==='watch'?'From Apple Watch active energy':null});
- if(measured?.totalKcal!=null)entries.push({id:'total-calories',label:'Total calories',value:`${Math.round(measured.totalKcal)} kcal`,detail:pending?'Active + resting; awaiting workout finalization':'Active + resting energy'});
+ if(measured?.totalKcal!=null)entries.push({id:'total-calories',label:'Total calories',value:`${Math.round(measured.totalKcal)} kcal`,detail:pending?'Awaiting workout finalization':'Measured workout energy'});
  if(measured&&measured.activeKcal==null)entries.push({id:'energy-state',label:'Active calories',value:pending?'Pending':'Unavailable',detail:pending?'Awaiting measured workout energy':'No readable measured active energy was saved'});
  return entries;
 }
