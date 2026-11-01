@@ -4148,6 +4148,15 @@ do {
     check(WatchHistory.decode("not data") == nil, "a malformed list is ignored, not read as empty")
     check(WatchHistory.decode(WatchHistory.encode([row("", 1), row("ok", 2)])) == [row("ok", 2)], "invalid rows are dropped")
 
+    let kinds = WatchHistory.synced([bike], equipment: [WatchEquipment(id: "e1", name: "Levo", kind: "ebike")])
+    check(kinds[0].equipmentKind == "ebike" && kinds[0].config.equipment?.kind == "ebike", "Start Again keeps the kind of bike after a rebuild")
+    check(WatchHistory.encode(list) == WatchHistory.encode(list.map { $0 }), "identical lists encode identically, so nothing is resent")
+    func waiting(_ id: String) -> WatchOutboxEntry {
+        WatchOutboxEntry(id: id, ownerID: nil, activity: "MTB", queuedAt: 1, startedAt: 1, endedAt: 2, pointCount: 0, attempts: 0, nextAttemptAt: 0)
+    }
+    check(WatchHistory.retirable(outbox: [waiting("A"), waiting("not-there")], synced: list) == ["A"], "a ride the iPhone lists is retired by the outbox's own id, others stay")
+    check(WatchHistory.retirable(outbox: [waiting("a")], synced: []).isEmpty, "an empty list retires nothing")
+
     // A reinstalled Watch starts with nothing and gets everything back.
     check(WatchHistory.merged(local: [], synced: list, outbox: []) == list, "an empty Watch rebuilds its list")
     // What only the Watch knows stays.

@@ -206,6 +206,8 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         // After the owner: the list belongs to the account it arrived with. Absent
         // while the iPhone's account is closed, and from older phone builds.
         if owner != nil, let history = WatchHistory.decode(context["history"]) {
+            let saved = WatchHistory.retirable(outbox: outboxEntries(), synced: history)
+            if !saved.isEmpty { acknowledge(saved, status: "duplicate") }
             heardHistory = history
             receiveHistory?(history)
         }

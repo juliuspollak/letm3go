@@ -1792,17 +1792,29 @@ enum WatchHistory {
     // The iPhone's journal outlives the Watch app, so it is the record of what has
     // synced. Summaries only: no route and no heart-rate samples go back to the Watch,
     // and readings still held for the person's answer are left out.
-    static func synced(_ trips: [RecordedActivity]) -> [WatchHistoryEntry] {
+    static func synced(_ trips: [RecordedActivity], equipment: [WatchEquipment] = []) -> [WatchHistoryEntry] {
         trips.filter { $0.recordingMode == "watch" && $0.state == "finished" && $0.endedAt != nil }
             .sorted { $0.startedAt > $1.startedAt }.prefix(limit).map { trip in
                 let bike = trip.equipment?.first
                 return WatchHistoryEntry(id: trip.id, activity: trip.activity, equipmentID: bike?.id, equipmentName: bike?.name ?? trip.vehicle,
+                                         equipmentKind: equipment.first { $0.id == bike?.id }?.kind,
                                          startedAt: trip.startedAt, endedAt: trip.endedAt ?? trip.startedAt, activeSeconds: trip.accumulatedSeconds,
                                          distanceMeters: trip.distanceMeters, queued: true, averageHeartRate: trip.details?.heartRate?.summary.average,
                                          maximumHeartRate: trip.details?.heartRate?.summary.maximum, indoor: trip.details?.indoor)
             }
     }
-    static func encode(_ entries: [WatchHistoryEntry]) -> Data? { try? JSONEncoder().encode(entries) }
+    // Sorted, because the bytes are compared to tell whether anything changed.
+    static func encode(_ entries: [WatchHistoryEntry]) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try? encoder.encode(entries)
+    }
+    // A ride the iPhone lists is in its journal, which is what a lost acknowledgement
+    // would have said. The ids are the outbox's own, whose case can differ.
+    static func retirable(outbox: [WatchOutboxEntry], synced: [WatchHistoryEntry]) -> [String] {
+        let saved = Set(synced.map { $0.id.lowercased() })
+        return outbox.map(\.id).filter { saved.contains($0.lowercased()) }
+    }
     static func decode(_ value: Any?) -> [WatchHistoryEntry]? {
         guard let data = value as? Data, let entries = try? JSONDecoder().decode([WatchHistoryEntry].self, from: data) else { return nil }
         return Array(entries.filter { !$0.id.isEmpty && $0.id.count <= 100 && $0.startedAt.isFinite && $0.endedAt.isFinite &&

@@ -79,19 +79,26 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
                                       "recording": currentPresence().dictionary, "acknowledgements": (state.acknowledgements ?? []).map(\.dictionary)]
         // Left out while the journal is closed: the Watch keeps what it has, and
         // never mistakes a locked account for one with no activities.
-        if let history = openHistory { context["history"] = history; sentHistory = history }
-        try? session.updateApplicationContext(context)
+        let history = openHistory
+        if let history { context["history"] = history }
+        do {
+            try session.updateApplicationContext(context)
+            if let history { sentHistory = history }
+        } catch {}
     }
 
     private var openHistory: Data? {
         let recorder = LocationRecorder.shared
         guard ownerID != nil, recorder.ownerID == ownerID, recorder.storeOpened else { return nil }
-        return WatchHistory.encode(WatchHistory.synced(recorder.trips))
+        return WatchHistory.encode(WatchHistory.synced(recorder.trips, equipment: recorder.watchEquipment))
     }
 
     // An activity was imported, changed or deleted.
     func noteHistoryChanged() {
-        guard WCSession.isSupported(), let history = openHistory, history != sentHistory else { return }
+        // Activation first: this also runs while the recorder is still initialising,
+        // when reading LocationRecorder.shared would deadlock on itself.
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated,
+              let history = openHistory, history != sentHistory else { return }
         sendOwnerContext()
     }
 
