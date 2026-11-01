@@ -205,6 +205,9 @@ extension LocationRecorder {
         endBackgroundSession("the recorder was locked or signed out")
         disableHouseholdLiveSharing(forget: true)
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
+        // Skipped-photo marks carry local Photos asset identifiers. They belong to
+        // the account that made them and must not survive into the next session.
+        PhotoSuggestionSkips.clearAll()
         disableLiveSharing()
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
         adaptive.reset(now:Date().timeIntervalSince1970,reason:"the recorder was locked or signed out");adaptiveEnabled=false;lastLowPowerFixAt=nil;adaptiveViolationsLogged=[];departureLatency.reset();lastDepartureLatency=[:]
