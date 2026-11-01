@@ -217,6 +217,10 @@ struct RecordingPresence: Codable, Equatable {
     // This iPhone's clock when the update arrived. Never sent: it keeps the ownership
     // lease bounded when the two devices disagree about the time.
     var heardAt: Double? = nil
+    // Set when the lease is first seen to have passed. A relaunched or resumed iPhone
+    // reads its saved presence before WatchConnectivity hands over newer ones, so
+    // silence is only believed after this. Never sent, and any new packet clears it.
+    var leaseHeldUntil: Double? = nil
 
     var isActive: Bool { state == "recording" || state == "paused" }
     var deviceName: String { device == Self.watch ? "Apple Watch" : "iPhone" }
@@ -262,6 +266,7 @@ enum CrossDeviceRecording {
     // Watch that is still recording. It can only ever hold for this long, because a
     // clock cannot extend it (leaseAnchor) and nothing is kept beyond it.
     static let automaticOwnershipLease = 12 * 3600.0
+    static let leaseConfirmation = 60.0
 
     // The other device's recording, when it is known, current and this account's.
     static func active(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> RecordingPresence? {
@@ -299,7 +304,24 @@ enum CrossDeviceRecording {
               let owner = WatchOwnership.normalize(ownerID), remote.updatedAt.isFinite else { return nil }
         if let claimed = WatchOwnership.normalize(remote.ownerID), claimed != owner { return nil }
         let anchor = leaseAnchor(remote)
-        guard anchor - now <= clockTolerance, now - anchor <= automaticOwnershipLease else { return nil }
+        guard anchor - now <= clockTolerance, now - anchor <= automaticOwnershipLease || now < (remote.leaseHeldUntil ?? 0) else { return nil }
+        return remote
+    }
+    // The presence with its one bounded confirmation started, or nil if none is due.
+    // Saved with the presence, so repeated relaunches cannot hold the lease open.
+    static func confirmingExpiry(_ remote: RecordingPresence?, now: Double) -> RecordingPresence? {
+        guard var remote, remote.device == RecordingPresence.watch, remote.isActive, remote.leaseHeldUntil == nil,
+              now - leaseAnchor(remote) > automaticOwnershipLease else { return nil }
+        remote.leaseHeldUntil = now + leaseConfirmation
+        return remote
+    }
+    // The finished ride itself proves the recording ended, if its end packet is late.
+    static func finished(_ remote: RecordingPresence?, sessionID: String, startedAt: Double, endedAt: Double) -> RecordingPresence? {
+        guard var remote, remote.device == RecordingPresence.watch, remote.isActive,
+              remote.sessionID.lowercased() == sessionID.lowercased() else { return nil }
+        remote.state = "idle"; remote.startedAt = startedAt
+        remote.updatedAt = max(endedAt, remote.updatedAt)
+        remote.leaseHeldUntil = nil
         return remote
     }
     // The actual recording start. A packet without one is closed at the earliest
@@ -323,11 +345,12 @@ enum CrossDeviceRecording {
     // Where an open automatic draft must end, or nil when it can stay open. A
     // terminal packet can arrive first, so a finished interval closes a draft too.
     static func closingStart(exclusion: ManualRecordingExclusion?, remote: RecordingPresence?, ownerID: String?,
-                             draftStartedAt: Double?, settledStartedAt: Double?, now: Double) -> Double? {
+                             draftStartedAt: Double?, settledStartedAt: Double?, unfinishedClosure: Double? = nil, now: Double) -> Double? {
         guard let opened = [draftStartedAt, settledStartedAt].compactMap({ $0 }).min() else { return nil }
         if let exclusion { return exclusion.startedAt }
-        guard let interval = completedInterval(remote, ownerID: ownerID, now: now), opened < interval.upperBound else { return nil }
-        return interval.lowerBound
+        if let interval = completedInterval(remote, ownerID: ownerID, now: now), opened < interval.upperBound { return interval.lowerBound }
+        // A closure that failed still has to happen after its owner has gone.
+        return unfinishedClosure
     }
     static func completedInterval(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> ClosedRange<Double>? {
         guard let remote, remote.device == RecordingPresence.watch, remote.state == "idle",
@@ -358,6 +381,9 @@ enum CrossDeviceRecording {
         guard let current, current.device == incoming.device else { return incoming }
         // The same packet again, by another route, keeps its first arrival time.
         if current.updatedAt == incoming.updatedAt, current.state == incoming.state, current.sessionID == incoming.sessionID { return current }
+        // A later idle says nothing new, and must not erase the finished interval that
+        // keeps delayed fixes out and closes a draft whose save failed.
+        if current.state == "idle", !current.sessionID.isEmpty, incoming.state == "idle", incoming.sessionID.isEmpty { return current }
         if current.updatedAt > incoming.updatedAt { return current }
         // At an equal timestamp termination wins, independently of delivery order.
         if current.updatedAt == incoming.updatedAt {

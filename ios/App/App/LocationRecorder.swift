@@ -1069,7 +1069,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if let last=locations.last {publishLivePosition(last)}
         // Apply the precision change on the fix that proves movement, not only on
         // the next 30-second reconcile.
-        if liveSharingArmed, active == nil { reconcileLiveSharingLocation() }
+        if liveSharingArmed, active?.state != "recording" { reconcileLiveSharingLocation() }
         if active == nil { processAutomatic(locations,source:source);diagnosticSummary(); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970

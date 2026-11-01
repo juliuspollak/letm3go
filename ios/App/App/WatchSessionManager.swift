@@ -35,6 +35,10 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
                 persistInbox()
             }
         }
+        if let held = CrossDeviceRecording.confirmingExpiry(heardWatchRecording, now: Date().timeIntervalSince1970) {
+            heardWatchRecording = held; state.recording = held
+            persistInbox()
+        }
         return heardWatchRecording
     }
 
@@ -262,6 +266,12 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         guard persistInbox() else {
             state = previous
             return
+        }
+        // The ride can arrive first, and it can be what wakes a locked iPhone.
+        if let ended = CrossDeviceRecording.finished(heardWatchRecording, sessionID: transfer.id, startedAt: transfer.startedAt, endedAt: transfer.endedAt) {
+            heardWatchRecording = ended; state.recording = ended
+            persistInbox()
+            LocationRecorder.shared.reconcileManualExclusion()
         }
         flush()
     }

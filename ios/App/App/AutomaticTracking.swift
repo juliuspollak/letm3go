@@ -31,7 +31,7 @@ extension LocationRecorder {
             // A status change is sent on the motion callback, not only on the next
             // GPS fix or timer tick. This is what removes a car promptly when a
             // drive becomes a genuine stop.
-            if self.liveSharingArmed, self.active == nil {
+            if self.liveSharingArmed, self.active?.state != "recording" {
                 self.confirmHouseholdLocation()
                 if previousMotion.types != types || previousMotion.confidence != confidence {
                     self.reconcileLiveSharingLocation()
@@ -143,7 +143,8 @@ extension LocationRecorder {
         adaptive.shutdown(reason:"a manual recording owns the iPhone")
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil
         automaticSampling=AutomaticSampling();departureEvidence.reset();movementTransition.reset();homeRest.reset();endPassiveRest()
-        stopVisitMonitoring()
+        // iOS keeps visit monitoring through a relaunch, but the flag does not survive.
+        manager.stopMonitoringVisits(); visitMonitoringRequested = false
         for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
         if let ended = monitoringFailures.allStopped() {
             recordDiagnostic("region", "Region monitoring failure closed: monitoring was stopped", details: ["lastMonitoringFailure": ended])
@@ -377,18 +378,27 @@ extension LocationRecorder {
         case .released(let reason):
             lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil
             detector.reset(); movementTransition.reset(); departureEvidence.reset()
+            // Nothing watched the phone meanwhile, so the old place proves nothing.
+            setDwell(nil, reason: "a manual recording ended")
             recordDiagnostic("watch", reason == .leaseExpired ? "Watch ownership lease expired; automatic recording recovered" : "Automatic recording released after Watch ownership ended", details: ["reason": reason.rawValue])
         }
     }
     func closeAutomaticOverlappingManualRecording(_ received: RecordingPresence?, now: Double) -> Bool {
         let settled = settledTripID.flatMap { id in trips.first { $0.id == id } }
+        let closureKey = "letm3go-manual-closure-\(ownerID ?? "locked")"
+        let unfinished = UserDefaults.standard.object(forKey: closureKey) as? Double
         guard let start = CrossDeviceRecording.closingStart(exclusion: manualExclusion.current, remote: received, ownerID: ownerID,
-                draftStartedAt: automaticTrip?.startedAt, settledStartedAt: settled?.startedAt, now: now) else { return true }
+                draftStartedAt: automaticTrip?.startedAt, settledStartedAt: settled?.startedAt, unfinishedClosure: unfinished, now: now) else {
+            UserDefaults.standard.removeObject(forKey: closureKey)
+            return true
+        }
         do {
             let device = manualExclusion.current?.device == RecordingPresence.iPhone ? "iPhone" : "Apple Watch"
             try closeAutomatic(before: start, reason: "Manual recording started on \(device)", trigger: "manualOwnership", event: "\(device) manual recording owns the activity")
+            UserDefaults.standard.removeObject(forKey: closureKey)
             return true
         } catch {
+            UserDefaults.standard.set(start, forKey: closureKey)
             lastError = "Automatic recording stopped for a manual recording; its earlier draft could not be finalised."
             recordDiagnostic("error", "Could not finalise automatic draft for manual ownership", details: ["code": String((error as NSError).code)])
             return false
@@ -1201,7 +1211,7 @@ extension LocationRecorder {
         // external end either (a manual start, tracking switched off).
         if let origin = trip.details?.localWalkOrigin {
             if case .local(let note) = LocalWalk.assess(trip.points, from: origin, ending: true) {
-                try? storage.delete(trip.id)
+                try storage.delete(trip.id)
                 automaticTrip = nil
                 automaticProbeTimer?.invalidate();automaticProbeTimer=nil
                 cleanupContinuationRegion()
@@ -1229,7 +1239,7 @@ extension LocationRecorder {
         // A user-forced finish on a journey without genuine movement must not
         // create an empty activity in history.
         if force, trip.points.count < 2 || trip.distanceMeters < 25 {
-            try? storage.delete(trip.id)
+            try storage.delete(trip.id)
             automaticTrip = nil; settleStateReset(); detector.reset(); movementTransition.reset(); departureEvidence.reset()
             automaticSampling.stop(now:Date().timeIntervalSince1970)
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil

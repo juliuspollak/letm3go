@@ -26,9 +26,9 @@ blocked saving but left detection running.
 
 ## The authority
 
-`ManualExclusionGate` ([WatchRecordingCore.swift:415](../ios/App/App/WatchRecordingCore.swift#L415))
+`ManualExclusionGate` ([WatchRecordingCore.swift:441](../ios/App/App/WatchRecordingCore.swift#L441))
 holds the only answer. `reconcileManualExclusion()`
-([AutomaticTracking.swift:351](../ios/App/App/AutomaticTracking.swift#L351)) updates it,
+([AutomaticTracking.swift:352](../ios/App/App/AutomaticTracking.swift#L352)) updates it,
 closes any open automatic recording and applies a change.
 
 `automaticPermitted` is what the person and iOS allow. `automaticAvailable` is that plus
@@ -49,7 +49,8 @@ the persisted Watch presence, so a relaunch suspends again by itself.
 | Watch clock ahead | Owns; lease measured from arrival on this iPhone |
 | Packet without a usable start time | Owns; drafts close at the packet's time |
 | Finish or cancel received | Released at once |
-| 12 hours with nothing heard | Released with `Watch ownership lease expired`; a later Watch update takes ownership back |
+| 12 hours with nothing heard | Held 60 s more so WatchConnectivity can deliver anything waiting, then released with `Watch ownership lease expired`; a later Watch update takes ownership back |
+| Finished ride file arrives first | Released: the ride proves its session ended |
 
 The lease runs from the earlier of the Watch's timestamp and this iPhone's arrival time,
 so neither a late packet nor a wrong clock can extend it. That is what stops an abandoned
@@ -71,10 +72,10 @@ session disabling automatic tracking permanently.
 | Standard GPS | Off on a Watch recording, unless live sharing runs |
 | Stall recovery, dwell inference, arrival timer | Skipped ([LocationRecorder.swift:580](../ios/App/App/LocationRecorder.swift#L580)) |
 
-Late deliveries stop at the entry points: `beginAutomaticProbe` (:168),
-`reconcileAutomaticSampling` (:211), `processAutomatic` (:414), `transitionTo` (:645),
-`startAutomaticJourney` (:713), `continueSettledAutomatic` (:990), and the region and
-visit callbacks (:1269, :1284, :1297), all in `AutomaticTracking.swift`.
+Late deliveries stop at the entry points: `beginAutomaticProbe` (:169),
+`reconcileAutomaticSampling` (:212), `processAutomatic` (:424), `transitionTo` (:655),
+`startAutomaticJourney` (:723), `continueSettledAutomatic` (:1000), and the region and
+visit callbacks (:1279, :1294, :1307), all in `AutomaticTracking.swift`.
 
 ### Deliberately kept
 
@@ -108,14 +109,18 @@ of it.
 ## Limits
 
 - **Fully offline start.** Until the iPhone hears of a recording it cannot exclude it.
-  An automatic activity already finalised by then is not repaired, because finished
-  history is not modified. The existing overlap notice on Watch import still applies.
+  An automatic activity already finalised by then is not changed. Watch import names
+  overlaps of 60 s or more, and Activity detail shows them on both activities, with
+  Delete on each. The notice ends when either is deleted. Shorter overlaps are not named.
   An activity still open when the start arrives is closed at the actual start.
+- **Out of range for over 12 hours.** With no contact for the whole lease the iPhone
+  cannot tell a long recording from an abandoned one, and automatic recording resumes.
 - **Stationary locked iPhone.** Significant change needs movement. If the Watch finishes
   out of reach, or the lease ends, while the iPhone sits still, monitoring resumes at the
   next wake-up. The first few hundred metres of that next journey can be lost.
 - **Failed draft save.** The draft stays intact and automatic recording stays blocked
-  until the save succeeds, and it is retried on each pass.
+  until the save succeeds. The closing time is saved, so this survives the owner ending
+  and a relaunch, and every pass retries. Monitoring services run meanwhile.
 
 ## Verification
 
@@ -134,15 +139,18 @@ paired iPhone and Apple Watch. In the diagnostic export:
    `Continuous GPS stopped: a manual recording owns the iPhone`. The drive ends before
    the Watch start.
 2. **Lock the iPhone and pause and resume on the Watch while moving.** No `Departure
-   wake-up` or `Automatic departure confirmed` appears.
+   wake-up` or `Automatic departure confirmed` appears. Also leave a Watch recording
+   paused with the wrist down for over 3 minutes and confirm heartbeats still arrive:
+   watchOS may suspend a paused app, which would leave only the 12-hour lease.
 3. **Leave Watch range for over 150 s.** Expect `Apple Watch went quiet; ownership held
    under the lease`, then `Apple Watch heard again` on return.
 4. **Force-quit the iPhone app mid-session and move over a kilometre.** The app relaunches
-   and stays suspended.
+   and stays suspended, and `Visit arrival reported` does not appear.
 5. **With household sharing on,** another phone keeps seeing movement and vehicle status
    throughout.
-6. **Finish on the Watch.** Expect `Automatic recording released after Watch ownership
-   ended`, then `Visit monitoring started`. A later drive records with the iPhone locked.
+6. **Finish on the Watch, with the iPhone locked and suspended, in range and again out of
+   range.** Expect `Automatic recording released after Watch ownership ended`, then
+   `Visit monitoring started`. A later drive records without opening the app.
 7. **Start on the iPhone during a drive.** The drive ends at the start, and no automatic
    activity appears until finish.
 

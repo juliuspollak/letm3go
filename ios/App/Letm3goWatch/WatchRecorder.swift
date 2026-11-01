@@ -286,6 +286,9 @@ final class WatchRecorder: NSObject, ObservableObject {
         WatchDiagnostics.log("watch", "Watch recording restored", ["points": String(ride.points.count), "heartRateSamples": String(ride.heartRate.count)])
         noteHeartSidecar()
         recoverActiveWorkout()
+        // A paused ride only heartbeats from the ticker, and the iPhone's lease
+        // depends on hearing it.
+        startTicker()
         announcePresence(force: true)
     }
 
