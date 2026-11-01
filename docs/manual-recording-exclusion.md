@@ -48,13 +48,33 @@ the persisted Watch presence, so a relaunch suspends again by itself.
 | Watch recording on another account | No claim |
 | Watch clock ahead | Owns; lease measured from arrival on this iPhone |
 | Packet without a usable start time | Owns; drafts close at the packet's time |
-| Finish or cancel received | Released at once |
+| Finish or cancel received and saved | Released at once |
 | 12 hours with nothing heard | Held 60 s more so WatchConnectivity can deliver anything waiting, then released with `Watch ownership lease expired`; a later Watch update takes ownership back |
-| Finished ride file arrives first | Released: the ride proves its session ended |
+| Finished ride file arrives first | Released: the ride proves its session ended. The ride and the finish are one write |
 
 The lease runs from the earlier of the Watch's timestamp and this iPhone's arrival time,
 so neither a late packet nor a wrong clock can extend it. That is what stops an abandoned
 session disabling automatic tracking permanently.
+
+A finish counts only once it is on disk. If the write fails, memory rolls back and the
+session stays owned. The Watch resends an unacknowledged ride, and a delivered context is
+read again on the next pass, so the finish commits when storage recovers.
+
+The finished interval ends at `endedAt`, the workout's real end. `updatedAt` only says how
+fresh a message is, and the two can differ: a failed Watch finish keeps sending heartbeats
+past the end, and an end packet can be sent long after it. Older Watch builds send no
+`endedAt`, so `updatedAt` is used until the ride file corrects it. Once a session has
+ended, a late heartbeat cannot restart it.
+
+## Telling a finish from a recovery
+
+| Diagnostic line | `explicitFinish` | Meaning |
+|---|---|---|
+| `Automatic recording released after Watch ownership ended` | true | Watch reported the finish |
+| `Automatic recording released after iPhone recording ended` | true | iPhone recording finished |
+| `Finished ride confirmed the Watch recording ended` | n/a | The ride file proved the finish; the release line follows |
+| `Watch ownership lease expired; automatic recording recovered` | false | Nothing heard for 12 hours. The recording may still be running |
+| `Automatic recording released: Watch recording belongs to no open account` | false | Account changed |
 
 ## Paths suspended
 
