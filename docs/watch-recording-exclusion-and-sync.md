@@ -1,5 +1,8 @@
 # Watch manual recording excludes phone automatic history
 
+Superseded in part by [manual-recording-exclusion.md](manual-recording-exclusion.md),
+which now owns the exclusion rules for both devices. The sync receipts below still apply.
+
 The phone previously checked Watch presence only when the detector emitted
 `depart`. An automatic journey already open when a Watch workout began could
 continue, resume after a stop, and split into cycling/walking journeys throughout

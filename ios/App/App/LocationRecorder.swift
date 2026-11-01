@@ -126,7 +126,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // No journey, published stop or departure check is open.
     var automaticIdle: Bool { automaticTrip == nil && settledTripID == nil && (automaticSampling.probeUntil ?? 0) <= Date().timeIntervalSince1970 }
     var departureEvidence = DepartureEvidence()
-    var watchAutomaticSuppressed = false
+    // The single authority on whether a manual recording owns this iPhone.
+    var manualExclusion = ManualExclusionGate()
+    var reconcilingManualExclusion = false
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
     // Native background sharing. Friends use the short-lived session token (off
@@ -209,7 +211,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var locationServicesAvailable: Bool { locationServicesCheck.value }
     var locationServicesKnown: Bool { locationServicesCheck.known }
     private var foregroundLocationObserver: NSObjectProtocol?
-    var automaticAvailable: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
+    // What the person and iOS allow, whatever is recording now.
+    var automaticPermitted: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
+    // Whether the automatic engine may run. Every automatic path checks this, so
+    // a manual recording suspends them all without a check of its own.
+    var automaticAvailable: Bool { automaticPermitted && manualExclusion.current == nil }
     func refreshLocationServicesAvailable() {
         guard locationServicesCheck.request() else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -488,7 +494,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Start the session when tracking needs it and the app is in the foreground,
     // the only state in which iOS lets a new session begin.
     func reconcileBackgroundSession(_ reason: String) {
-        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active?.state == "recording",
+        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: active?.state == "recording",
             passiveRest: locationMode == .passive, liveSharing: liveSharingArmed)
         let action = BackgroundSessionPolicy.decide(wanted: wanted, held: backgroundActivitySession != nil,
             foreground: UIApplication.shared.applicationState == .active,
@@ -571,13 +577,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             self.noteExecution("timer")
             if !self.recordingHealthLooked {self.noteRecordingHealth()}
             self.diagnosticSummary()
-            let watchOwnsRecording = self.reconcileWatchRecordingExclusion()
+            let manualOwnsRecording = self.reconcileManualExclusion()
             self.reconcileAutomaticSampling()
-            if !watchOwnsRecording { self.recoverStalledAutomaticGPS() }
+            if !manualOwnsRecording { self.recoverStalledAutomaticGPS() }
             self.confirmHouseholdLocation()
             WatchSessionManager.shared.noteRecorderChanged()
             let now = Date().timeIntervalSince1970
-            guard !watchOwnsRecording else { return }
+            guard !manualOwnsRecording else { return }
             self.checkDwellInference(now:now)
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:now,activity:self.automaticTrip?.activity ?? "Driving") else { return }
@@ -947,10 +953,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard authorized, locationServicesAvailable else { throw failure("Enable location access before starting.") }
         let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
         guard allowed.contains(activity) else { throw failure("Choose a supported activity.") }
-        if automaticTrip != nil { try finishAutomatic(reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started") }
-        if settledTripID != nil { try finishAutomatic(force: true,reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started") }
-        detector.reset()
         let now = Date().timeIntervalSince1970
+        try closeAutomatic(before:now,reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started")
+        detector.reset()
         var trip = RecordedActivity(activity: activity, vehicle: vehicle, startedAt: now, resumedAt: now, title: "\(activity) · \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short))")
         #if targetEnvironment(simulator)
         trip.source = "simulator"
@@ -968,6 +973,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         try storage!.save(trip)
         active = trip; lastError = ""; recoveryMessage = ""; accuracy = nil; lastFixAt = nil
         recordDiagnostic("journey","Manual journey started")
+        reconcileManualExclusion()
         WatchSessionManager.shared.noteRecorderChanged()
         if CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
         beginUpdates()
@@ -1095,7 +1101,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         recordDiagnostic("permission","Location authorization changed")
         refreshLocationServicesAvailable()
         updateIndicatorPolicy()
-        if !automaticAvailable, automaticTrip != nil {
+        if !automaticPermitted, automaticTrip != nil {
             do { try finishAutomatic(reason:"Recording stopped: location permission was revoked",trigger:"updateIndicatorPolicy",event:"location permission was revoked") } catch { lastError = "Automatic recording could not finalize after permission changed: \(error.localizedDescription)" }
         }
         refreshAutomaticMonitoring()
@@ -1130,10 +1136,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let pendingWalk = automaticTrip?.details?.localWalkOrigin != nil
         if let trip = automaticTrip { automaticStateName = pendingWalk ? "checkingWalk" : trip.state == "recording" ? "recording" : "interrupted" }
         else { automaticStateName = settledTripID != nil ? "settled" : detector.phase }
-        return ["sharedActivity":sharedActivity as Any? ?? NSNull(), "ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
+        return ["sharedActivity":sharedActivity as Any? ?? NSNull(), "ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticPermitted,
+                "manualExclusion": manualExclusion.current.map { ["device":$0.device,"state":$0.state,"heardRecently":$0.heardRecently] as [String:Any] } as Any? ?? NSNull(),
                 "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
-                "automaticSampling": !automaticAvailable ? "off" : active != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .passive ? "passiveRest" : locationMode == .resting ? "restingAtHome" : "locationStandby",
+                "automaticSampling": !automaticPermitted ? "off" : manualExclusion.current != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .passive ? "passiveRest" : locationMode == .resting ? "restingAtHome" : "locationStandby",
                 "adaptive":adaptiveSnapshot,
                 "locationMode":locationMode.rawValue,"homeRestSince":homeRest.insideSince as Any? ?? NSNull(),
                 "locationIndicator":["expected":locationIndicator.expected,"reason":locationIndicator.reason],

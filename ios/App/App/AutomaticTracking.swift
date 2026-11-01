@@ -27,7 +27,7 @@ extension LocationRecorder {
                 self.diagnosticLastMotionAt=now
                 self.recordDiagnostic("motion","Motion classification delivered",details:["motionStartedAt":String(activity.startDate.timeIntervalSince1970)])
             }
-            self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970)
+            if self.automaticAvailable { self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970) }
             // A status change is sent on the motion callback, not only on the next
             // GPS fix or timer tick. This is what removes a car promptly when a
             // drive becomes a genuine stop.
@@ -84,8 +84,11 @@ extension LocationRecorder {
         guard storage != nil else { adaptive.shutdown(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once
         // held, it covers departures that begin with the phone locked.
+        // Ownership first, so nothing below starts a service it would have to stop.
+        reconcileManualExclusion(refreshing:true)
         reconcileBackgroundSession("monitoring refresh")
         reconcileServiceSession("monitoring refresh")
+        if manualExclusion.current != nil { suspendAutomaticEngine(); return }
         if !automaticAvailable && liveSharingArmed {
             // Sharing is a separate, explicit reason to track. Automatic History
             // being off (or its permission being unavailable) must not reduce a
@@ -131,8 +134,38 @@ extension LocationRecorder {
             if active?.state != "recording" { stopContinuousLocation(reason:"Continuous GPS stopped: automatic tracking unavailable") }
         }
     }
+    // Stops detection at its source for as long as a manual recording owns the
+    // iPhone. The background and service sessions stay held: iOS cannot start them
+    // again on a locked phone, and detection has to come back without being opened.
+    func suspendAutomaticEngine() {
+        let plan=ManualExclusionServices.plan(phoneManual:active != nil,phoneRecording:active?.state == "recording",
+            liveSharing:liveSharingArmed,automaticPermitted:automaticPermitted)
+        adaptive.shutdown(reason:"a manual recording owns the iPhone")
+        automaticProbeTimer?.invalidate();automaticProbeTimer=nil
+        automaticSampling=AutomaticSampling();departureEvidence.reset();movementTransition.reset();homeRest.reset();endPassiveRest()
+        stopVisitMonitoring()
+        for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
+        if let ended = monitoringFailures.allStopped() {
+            recordDiagnostic("region", "Region monitoring failure closed: monitoring was stopped", details: ["lastMonitoringFailure": ended])
+        }
+        if plan.significantChange { startSignificantMonitoring() } else { stopSignificantMonitoring() }
+        if plan.motion { startMotionUpdates() } else { stopMotionUpdates(); motion = MotionEvidence() }
+        holdSuspendedLocation()
+    }
+    // A running Watch recording leaves only live sharing as a reason for GPS.
+    func holdSuspendedLocation() {
+        let plan=ManualExclusionServices.plan(phoneManual:active != nil,phoneRecording:active?.state == "recording",
+            liveSharing:liveSharingArmed,automaticPermitted:automaticPermitted)
+        switch plan.location {
+        case .manualRecording: locationMode = .off
+        case .liveSharing: reconcileLiveSharingLocation()
+        case .off:
+            locationMode = .off
+            stopContinuousLocation(reason:"Continuous GPS stopped: a manual recording owns the iPhone")
+        }
+    }
     func beginAutomaticProbe(movementBegan:Bool = false, cause:String = "movement", locationWake:Bool = false) {
-        guard !reconcileWatchRecordingExclusion() else { return }
+        guard !reconcileManualExclusion() else { return }
         guard automaticAvailable,active == nil else {
             recordDiagnostic("decision","Departure wake-up ignored",details:["wakeSource":cause,"blockedBy":active != nil ? "a manual recording is running" : "automatic tracking unavailable"])
             return
@@ -175,6 +208,12 @@ extension LocationRecorder {
     }
     func reconcileAutomaticSampling() {
         let now=Date().timeIntervalSince1970
+        if reconcileManualExclusion() {
+            holdSuspendedLocation()
+            reconcilePassiveSessions(now:now)
+            checkAdaptiveInvariants()
+            return
+        }
         if automaticSampling.expire(now:now),automaticTrip == nil {
             // Do not discard buffered departure fixes just because iOS delivered the
             // next one a moment late. If movement is still being observed, grant one
@@ -304,64 +343,80 @@ extension LocationRecorder {
             startRegionMonitoring(region)
         }
     }
-    // All automatic entry paths use the same ownership gate, not only "depart".
-    // Live sharing still consumes location deliveries before processAutomatic.
+    // The one place that decides whether a manual recording owns the iPhone. Every
+    // wake-up, timer, delivery and Watch message comes through here, and every
+    // automatic entry path asks it, so a change is acted on by whichever arrives first.
+    // True while automatic recording must not proceed.
     @discardableResult
-    func reconcileWatchRecordingExclusion() -> Bool {
+    func reconcileManualExclusion(refreshing: Bool = false) -> Bool {
+        guard !reconcilingManualExclusion else { return manualExclusion.current != nil }
+        reconcilingManualExclusion = true
         let now = Date().timeIntervalSince1970
         let received = WatchSessionManager.shared.watchRecording
-        let owner = CrossDeviceRecording.automaticOwner(received, ownerID: ownerID, now: now)
-        let completed = CrossDeviceRecording.completedInterval(received, ownerID: ownerID, now: now)
-        let needsClosing = completed != nil &&
-            ((automaticTrip?.startedAt ?? .infinity) < (completed?.upperBound ?? 0) ||
-             (watchAutomaticSuppressed && settledTripID != nil))
-        guard let remote = owner ?? (needsClosing ? received : nil) else {
-            if watchAutomaticSuppressed {
-                watchAutomaticSuppressed = false
-                detector.reset(); movementTransition.reset(); departureEvidence.reset()
-                recordDiagnostic("watch", "Automatic recording released after Watch ownership ended")
-            }
+        let change = manualExclusion.update(local: active.map(manualPresence), remote: received, ownerID: ownerID, now: now)
+        noteManualExclusion(change)
+        // A draft that cannot be saved stays blocked and is retried on the next pass.
+        let closed = closeAutomaticOverlappingManualRecording(received, now: now)
+        reconcilingManualExclusion = false
+        if change.changesServices, !refreshing { refreshAutomaticMonitoring() }
+        return manualExclusion.current != nil || !closed
+    }
+    func manualPresence(_ trip: RecordedActivity) -> RecordingPresence {
+        RecordingPresence(device: RecordingPresence.iPhone, ownerID: ownerID, sessionID: trip.id, activity: trip.activity,
+                          state: trip.state == "recording" ? "recording" : "paused", startedAt: trip.startedAt, updatedAt: Date().timeIntervalSince1970)
+    }
+    func noteManualExclusion(_ change: ManualExclusionChange) {
+        switch change {
+        case .none: break
+        case .acquired(let owner), .transferred(let owner):
+            let services = ManualExclusionServices.plan(phoneManual: active != nil, phoneRecording: active?.state == "recording", liveSharing: liveSharingArmed, automaticPermitted: automaticPermitted)
+            recordDiagnostic("watch", owner.device == RecordingPresence.watch ? "Automatic recording excluded by Watch ownership" : "Automatic recording excluded by iPhone manual recording",
+                details: ["activity": owner.activity, "manualState": owner.state, "location": services.location.rawValue, "motion": String(services.motion), "significantChange": String(services.significantChange)])
+        case .wentQuiet: recordDiagnostic("watch", "Apple Watch went quiet; ownership held under the lease", details: ["leaseEndsAt": String(manualExclusion.current?.leaseEndsAt ?? 0)])
+        case .heardAgain: recordDiagnostic("watch", "Apple Watch heard again; ownership confirmed")
+        case .released(let reason):
+            lastAutomaticFixAt = nil; lastAutomaticDeliveryAt = nil
+            detector.reset(); movementTransition.reset(); departureEvidence.reset()
+            recordDiagnostic("watch", reason == .leaseExpired ? "Watch ownership lease expired; automatic recording recovered" : "Automatic recording released after Watch ownership ended", details: ["reason": reason.rawValue])
+        }
+    }
+    func closeAutomaticOverlappingManualRecording(_ received: RecordingPresence?, now: Double) -> Bool {
+        let settled = settledTripID.flatMap { id in trips.first { $0.id == id } }
+        guard let start = CrossDeviceRecording.closingStart(exclusion: manualExclusion.current, remote: received, ownerID: ownerID,
+                draftStartedAt: automaticTrip?.startedAt, settledStartedAt: settled?.startedAt, now: now) else { return true }
+        do {
+            let device = manualExclusion.current?.device == RecordingPresence.iPhone ? "iPhone" : "Apple Watch"
+            try closeAutomatic(before: start, reason: "Manual recording started on \(device)", trigger: "manualOwnership", event: "\(device) manual recording owns the activity")
+            return true
+        } catch {
+            lastError = "Automatic recording stopped for a manual recording; its earlier draft could not be finalised."
+            recordDiagnostic("error", "Could not finalise automatic draft for manual ownership", details: ["code": String((error as NSError).code)])
             return false
         }
-        if !watchAutomaticSuppressed {
-            watchAutomaticSuppressed = true
-            recordDiagnostic("watch", "Automatic recording excluded by Watch ownership", details: ["activity": remote.activity])
+    }
+    // Ends whatever automatic recording is open at the manual recording's actual
+    // start. Every genuine fix before it is kept, and nothing after it survives.
+    func closeAutomatic(before start: Double, reason: String, trigger: String, event: String) throws {
+        if let original = automaticTrip {
+            automaticTrip = ManualDraftClosure.truncated(original, before: start)
+            do { try finishAutomatic(force: true, reason: reason, trigger: trigger, event: event) }
+            catch { automaticTrip = original; throw error }
         }
-        do {
-            if let original = automaticTrip {
-                // Close only the open draft, at the last real fix before the
-                // manual start. Completed history is never repaired here.
-                if let kept = JourneySplit.kept(original, before: remote.startedAt) { automaticTrip = kept }
-                else {
-                    var before = original; before.points = original.points.filter { $0.timestamp < remote.startedAt }
-                    before.distanceMeters = before.measuredDistance; automaticTrip = before
-                }
-                do { try finishAutomatic(force: true, reason: "Manual recording started on Apple Watch", trigger: "watchOwnership", event: "Watch manual recording owns the activity") }
-                catch { automaticTrip = original; throw error }
-            }
-            if settledTripID != nil {
-                try finalizeSettledAutomatic(force: true, reason: "Manual recording started on Apple Watch", trigger: "watchOwnership", event: "Watch manual recording owns the activity")
-            }
-        } catch {
-            lastError = "Automatic recording stopped for Apple Watch; its earlier draft could not be finalised."
-            recordDiagnostic("error", "Could not finalise automatic draft for Watch ownership", details: ["code": String((error as NSError).code)])
-            // Do not reopen a failed pre-ride draft, even after the Watch ends.
-            return true
-        }
+        if settledTripID != nil { try finalizeSettledAutomatic(force: true, before: start, reason: reason, trigger: trigger, event: event) }
         detector.reset(); movementTransition.reset(); departureEvidence.reset()
-        automaticSampling.stop(now: now)
+        automaticSampling.stop(now: Date().timeIntervalSince1970)
         automaticProbeTimer?.invalidate(); automaticProbeTimer = nil
         cleanupContinuationRegion()
-        if owner == nil { watchAutomaticSuppressed = false; return false }
-        return true
     }
     func processAutomatic(_ locations: [CLLocation], source: ObservationSource = .standard) {
-        guard automaticAvailable, active == nil, let storage = storage else {diagnosticRejections["rejected.automaticUnavailable",default:0]+=locations.count;return}
-        let now = Date().timeIntervalSince1970
-        if reconcileWatchRecordingExclusion() {
-            diagnosticRejections["rejected.watchManualOwnership", default: 0] += locations.count
+        // Significant-change wake-ups land here: the delivery rechecks ownership and
+        // is dropped, so a suspended engine learns nothing from it but the time.
+        if reconcileManualExclusion() {
+            diagnosticRejections["rejected.manualOwnership", default: 0] += locations.count
             return
         }
+        guard automaticAvailable, active == nil, let storage = storage else {diagnosticRejections["rejected.automaticUnavailable",default:0]+=locations.count;return}
+        let now = Date().timeIntervalSince1970
         let remoteRecording = WatchSessionManager.shared.watchRecording
         // iOS does not wake a suspended app to expire a continuation window, so
         // every wake reconciles the wall clock before processing new fixes.
@@ -587,7 +642,7 @@ extension LocationRecorder {
     // keeps only its own fixes and the new one starts from the fixes that proved
     // the change, so no point is recorded twice and no distance is invented.
     func transitionTo(_ family: JourneyFamily) throws {
-        guard !reconcileWatchRecordingExclusion() else { return }
+        guard !reconcileManualExclusion() else { return }
         guard let current = automaticTrip, let storage = storage,
               let first = movementTransition.candidates.first,
               let last = movementTransition.candidates.last,
@@ -655,7 +710,7 @@ extension LocationRecorder {
     // A journey that starts from already-confirmed movement of one type. Used after
     // a movement-type change so the new journey keeps its real beginning.
     func startAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint], note: String) throws {
-        guard !reconcileWatchRecordingExclusion() else { return }
+        guard !reconcileManualExclusion() else { return }
         guard let storage = storage, let last = points.last,
               var trip = makeAutomaticJourney(family, from: points) else { return }
         trip.details?.trackingNotes = [
@@ -932,7 +987,7 @@ extension LocationRecorder {
     // not a pause: it ends this journey and starts a separate one.
     @discardableResult
     func continueSettledAutomatic(sample: GPSPoint, now: Double) throws -> JourneyContinuation.Decision {
-        guard !reconcileWatchRecordingExclusion() else { return .waiting }
+        guard !reconcileManualExclusion() else { return .waiting }
         guard let id = settledTripID, let settled = settledAt, let storage = storage,
               var trip = trips.first(where: { $0.id == id }), let last = trip.points.last else {
             settleStateReset()
@@ -1030,10 +1085,26 @@ extension LocationRecorder {
     }
     // Clear the continuation marker on the published journey in place. Its record,
     // route and position in history do not change, so nothing is duplicated.
-    func finalizeSettledAutomatic(force: Bool = false, reason: String? = nil, trigger: String = "finalizeSettledAutomatic", event: String = "the journey was already published as stopped") throws {
+    func finalizeSettledAutomatic(force: Bool = false, before manualStart: Double? = nil, reason: String? = nil, trigger: String = "finalizeSettledAutomatic", event: String = "the journey was already published as stopped") throws {
         guard let id = settledTripID, let storage = storage,
               var trip = trips.first(where: { $0.id == id }) else {
             settleStateReset(); cleanupContinuationRegion(); return
+        }
+        // A stop still open for continuation is a draft, not history: a late Watch
+        // start can land inside it. A stop that is all manual time has no route left.
+        if let manualStart, (trip.endedAt ?? trip.points.last?.timestamp ?? trip.startedAt) > manualStart {
+            guard let kept = JourneySplit.kept(trip, before: manualStart) else {
+                try storage.delete(trip.id)
+                trips.removeAll { $0.id == trip.id }
+                settleStateReset(); detector.reset(); movementTransition.reset(); cleanupContinuationRegion()
+                notifyJourneyChange()
+                trackingEvent("Stopped journey discarded: it was entirely inside a manual recording")
+                return
+            }
+            trip = kept
+            let quality = trip.routeQualitySummary()
+            trip.updateDetails { $0.routeQuality = quality }
+            trip.updatedAt = Date().timeIntervalSince1970
         }
         let note = reason ?? (force ? "Journey finished by user" : "Journey completed after the continuation window")
         let lastFix = trip.points.last?.timestamp
@@ -1195,6 +1266,7 @@ extension LocationRecorder {
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         noteExecution("regionExit")
         recordDiagnostic("region","Region exit delivered",details:["reason":regionKind(region)])
+        guard !reconcileManualExclusion() else { return }
         if region.identifier.hasPrefix("letm3go-place-") { homeRest.leave() }
         guard automaticAvailable, active == nil, region.identifier.hasPrefix("letm3go-place-") else { return }
         // An open journey already has precise GPS; a place exit is not a departure.
@@ -1209,6 +1281,7 @@ extension LocationRecorder {
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         noteExecution("regionEnter")
         recordDiagnostic("region","Region entry delivered",details:["reason":regionKind(region)])
+        guard !reconcileManualExclusion() else { return }
         guard automaticAvailable, active == nil else { return }
         finishExpiredContinuation(now:Date().timeIntervalSince1970)
         // A one-shot request on the manager that is already running continuous
@@ -1221,6 +1294,7 @@ extension LocationRecorder {
         noteExecution("visit")
         let now = Date().timeIntervalSince1970
         recordDiagnostic("region",visit.departureDate == .distantFuture ? "Visit arrival reported" : "Visit departure reported")
+        guard !reconcileManualExclusion() else { return }
         if visit.departureDate == .distantFuture {
             finishExpiredContinuation(now:now)
             // A visit is the system's own view that the person is staying here. It
