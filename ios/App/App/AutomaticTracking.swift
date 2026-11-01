@@ -72,7 +72,8 @@ extension LocationRecorder {
         lastAutomaticFixAt = nil
         lastAutomaticDeliveryAt = nil
         UserDefaults.standard.set(enabled,forKey:"letm3go-automatic-\(ownerID ?? "locked")")
-        if enabled { startMotionUpdates() } else { stopMotionUpdates(); motion = MotionEvidence(); detector.reset() }
+        if !enabled { stopMotionUpdates(); motion = MotionEvidence(); detector.reset() }
+        else if manualExclusion.current == nil { startMotionUpdates() }
         refreshAutomaticMonitoring()
         if !enabled { releaseBackgroundSessionIfUnneeded("automatic tracking was switched off") }
     }
@@ -380,7 +381,7 @@ extension LocationRecorder {
             detector.reset(); movementTransition.reset(); departureEvidence.reset()
             // Nothing watched the phone meanwhile, so the old place proves nothing.
             setDwell(nil, reason: "a manual recording ended")
-            recordDiagnostic("watch", reason == .leaseExpired ? "Watch ownership lease expired; automatic recording recovered" : "Automatic recording released after Watch ownership ended", details: ["reason": reason.rawValue])
+            recordDiagnostic("watch", reason.diagnostic, details: ["reason": reason.rawValue, "explicitFinish": String(reason.explicitFinish)])
         }
     }
     func closeAutomaticOverlappingManualRecording(_ received: RecordingPresence?, now: Double) -> Bool {

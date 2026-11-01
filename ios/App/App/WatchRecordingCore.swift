@@ -214,6 +214,10 @@ struct RecordingPresence: Codable, Equatable {
     var state: String
     var startedAt: Double
     var updatedAt: Double
+    // When the workout actually ended. `updatedAt` only says how fresh this message
+    // is: an end packet can be sent long after the end, and a failed Watch finish
+    // keeps sending heartbeats past it. Absent from older Watch builds.
+    var endedAt: Double? = nil
     // This iPhone's clock when the update arrived. Never sent: it keeps the ownership
     // lease bounded when the two devices disagree about the time.
     var heardAt: Double? = nil
@@ -230,8 +234,10 @@ struct RecordingPresence: Codable, Equatable {
         RecordingPresence(device: device, ownerID: ownerID, sessionID: "", activity: "", state: "idle", startedAt: 0, updatedAt: now)
     }
     var dictionary: [String: Any] {
-        ["device": device, "ownerID": ownerID ?? "", "sessionID": sessionID, "activity": activity,
-         "state": state, "startedAt": startedAt, "updatedAt": updatedAt]
+        var value: [String: Any] = ["device": device, "ownerID": ownerID ?? "", "sessionID": sessionID, "activity": activity,
+                                    "state": state, "startedAt": startedAt, "updatedAt": updatedAt]
+        if let endedAt { value["endedAt"] = endedAt }
+        return value
     }
     init(device: String, ownerID: String?, sessionID: String, activity: String, state: String, startedAt: Double, updatedAt: Double) {
         self.device = device; self.ownerID = ownerID; self.sessionID = sessionID; self.activity = activity
@@ -244,6 +250,7 @@ struct RecordingPresence: Codable, Equatable {
         self.init(device: device, ownerID: WatchOwnership.normalize(item["ownerID"] as? String),
                   sessionID: item["sessionID"] as? String ?? "", activity: item["activity"] as? String ?? "",
                   state: state, startedAt: item["startedAt"] as? Double ?? 0, updatedAt: updatedAt)
+        endedAt = item["endedAt"] as? Double
     }
 }
 
@@ -316,13 +323,21 @@ enum CrossDeviceRecording {
         return remote
     }
     // The finished ride itself proves the recording ended, if its end packet is late.
+    // `updatedAt` stays the newest word heard, so a delayed heartbeat stays older; the
+    // interval ends at `endedAt` either way. It also corrects an end packet that
+    // reached this iPhone first without the workout's end time.
     static func finished(_ remote: RecordingPresence?, sessionID: String, startedAt: Double, endedAt: Double) -> RecordingPresence? {
-        guard var remote, remote.device == RecordingPresence.watch, remote.isActive,
+        guard var remote, remote.device == RecordingPresence.watch, remote.isActive || remote.endedAt == nil,
               remote.sessionID.lowercased() == sessionID.lowercased() else { return nil }
-        remote.state = "idle"; remote.startedAt = startedAt
+        remote.state = "idle"; remote.startedAt = startedAt; remote.endedAt = endedAt
         remote.updatedAt = max(endedAt, remote.updatedAt)
         remote.leaseHeldUntil = nil
         return remote
+    }
+    // Ending ownership is the one change that must be on disk before it counts. A
+    // failed write of a renewal only leaves the iPhone holding on to what it had.
+    static func needsDurableCommit(from current: RecordingPresence?, to next: RecordingPresence) -> Bool {
+        current?.isActive == true && !next.isActive
     }
     // The actual recording start. A packet without one is closed at the earliest
     // moment it proves the recording existed.
@@ -358,6 +373,7 @@ enum CrossDeviceRecording {
               !remote.sessionID.isEmpty, remote.startedAt.isFinite, remote.startedAt > 0,
               remote.updatedAt.isFinite, remote.updatedAt >= remote.startedAt,
               remote.updatedAt - now <= clockTolerance else { return nil }
+        if let ended = remote.endedAt, ended.isFinite, ended >= remote.startedAt, ended <= remote.updatedAt { return remote.startedAt...ended }
         return remote.startedAt...remote.updatedAt
     }
     static func excludesAutomaticFix(_ timestamp: Double, remote: RecordingPresence?, ownerID: String?, now: Double) -> Bool {
@@ -384,6 +400,15 @@ enum CrossDeviceRecording {
         // A later idle says nothing new, and must not erase the finished interval that
         // keeps delayed fixes out and closes a draft whose save failed.
         if current.state == "idle", !current.sessionID.isEmpty, incoming.state == "idle", incoming.sessionID.isEmpty { return current }
+        // A session never restarts once it has ended, however late a heartbeat arrives.
+        if current.state == "idle", !current.sessionID.isEmpty, incoming.isActive,
+           current.sessionID.lowercased() == incoming.sessionID.lowercased() { return current }
+        // Whichever route brought the workout's end, a later message cannot lose it.
+        if incoming.state == "idle", incoming.endedAt == nil, let ended = current.endedAt,
+           !incoming.sessionID.isEmpty, current.sessionID.lowercased() == incoming.sessionID.lowercased() {
+            var keeping = incoming; keeping.endedAt = ended
+            return current.updatedAt > incoming.updatedAt ? current : keeping
+        }
         if current.updatedAt > incoming.updatedAt { return current }
         // At an equal timestamp termination wins, independently of delivery order.
         if current.updatedAt == incoming.updatedAt {
@@ -416,9 +441,21 @@ struct ManualRecordingExclusion: Equatable {
 }
 
 enum ManualExclusionRelease: String, Equatable {
-    case finished = "the manual recording ended"
+    case finished = "Apple Watch reported the recording finished"
+    case finishedOnIPhone = "the iPhone recording finished"
     case leaseExpired = "nothing was heard from Apple Watch for the whole ownership lease"
     case ownerChanged = "the recording does not belong to this account"
+
+    // A lease expiry is recovery, not a finish: the recording may still be running.
+    var explicitFinish: Bool { self == .finished || self == .finishedOnIPhone }
+    var diagnostic: String {
+        switch self {
+        case .finished: return "Automatic recording released after Watch ownership ended"
+        case .finishedOnIPhone: return "Automatic recording released after iPhone recording ended"
+        case .leaseExpired: return "Watch ownership lease expired; automatic recording recovered"
+        case .ownerChanged: return "Automatic recording released: Watch recording belongs to no open account"
+        }
+    }
 }
 
 enum ManualExclusionChange: Equatable {
@@ -449,7 +486,7 @@ struct ManualExclusionGate: Equatable {
         case (nil, nil): return .none
         case (nil, let next?): return .acquired(next)
         case (let previous?, nil):
-            guard previous.device == RecordingPresence.watch else { return .released(.finished) }
+            guard previous.device == RecordingPresence.watch else { return .released(.finishedOnIPhone) }
             return .released(Self.reason(remote, ownerID: ownerID))
         case (let previous?, let next?):
             if !previous.sameSession(as: next) { return .transferred(next) }
@@ -458,7 +495,7 @@ struct ManualExclusionGate: Equatable {
         }
     }
     private static func reason(_ remote: RecordingPresence?, ownerID: String?) -> ManualExclusionRelease {
-        guard let remote, remote.device == RecordingPresence.watch else { return .finished }
+        guard let remote, remote.device == RecordingPresence.watch else { return .ownerChanged }
         if remote.isActive == false { return .finished }
         if let claimed = WatchOwnership.normalize(remote.ownerID), claimed != WatchOwnership.normalize(ownerID) { return .ownerChanged }
         return .leaseExpired

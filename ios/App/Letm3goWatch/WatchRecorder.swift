@@ -77,6 +77,8 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var heartRateWaitingSince: Double?
     private var lastHeartRate: WatchHeartRateSample?
     private var lastPresenceAt = 0.0
+    // The last ride handed to the phone, so its end travels with the idle presence.
+    private var handedOff: WatchRideDraft?
     private var heartRateGapOpen = false
     private var awaitingHealth = false
     private var gpsSilent = false
@@ -323,6 +325,7 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     private func beginRide() {
         let now = Date().timeIntervalSince1970
+        handedOff = nil
         if config.activity != activity { config = WatchStartConfig(activity: activity) }
         var ride = WatchRideDraft(activity: activity, startedAt: now, equipment: config.equipment,
                                   ownerID: WatchConnectivitySession.shared.ownerID, indoor: config.indoor == true)
@@ -648,6 +651,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         try? store.markQueued(ride)
         try? store.clear()
         draft = nil
+        handedOff = ride
         state = "finished"
         status = transfer == nil ? "Ride too short to import" : "Saved · waiting for iPhone"
         pendingCount = WatchTransferQueue.shared.pendingCount()
@@ -1083,7 +1087,15 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
 
     private func presence(now: Double) -> RecordingPresence {
         let owner = WatchConnectivitySession.shared.ownerID
-        guard let ride = draft else { return .idle(device: RecordingPresence.watch, ownerID: owner, now: now) }
+        guard let ride = draft else {
+            var idle = RecordingPresence.idle(device: RecordingPresence.watch, ownerID: owner, now: now)
+            // Says when the workout ended, not when this message happened to be sent.
+            if let ended = handedOff {
+                idle.sessionID = ended.id; idle.activity = ended.activity
+                idle.startedAt = ended.startedAt; idle.endedAt = ended.endedAt
+            }
+            return idle
+        }
         return RecordingPresence(device: RecordingPresence.watch, ownerID: ride.ownerID ?? owner, sessionID: ride.id, activity: ride.activity,
                                  state: ride.isRecording ? "recording" : "paused", startedAt: ride.startedAt, updatedAt: now)
     }

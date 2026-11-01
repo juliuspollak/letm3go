@@ -4028,6 +4028,98 @@ do {
     failing.drive(from: start + 400 + lease, seconds: 120)
     check(failing.draft != nil && failing.history.count == 1, "and automatic recording is working again")
 
+    // Finding: a finish must be durable before it counts.
+    let durableDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: durableDirectory) }
+    let failingDisk = FailingWatchBackend()
+    let durableStore = WatchInboxStore(directory: durableDirectory, backend: failingDisk)
+    let ride = watchPresence(owner, started: start, at: start + 3600)
+    var saved = WatchInboxState(); saved.recording = ride
+    try! durableStore.save(saved)
+    func commit(_ next: RecordingPresence, over heard: inout RecordingPresence?, state: inout WatchInboxState) -> Bool {
+        let durable = CrossDeviceRecording.needsDurableCommit(from: heard, to: next)
+        let previous = state
+        state.recording = next
+        let written = (try? durableStore.save(state)) != nil
+        guard written || !durable else { state = previous; return false }
+        heard = next
+        return true
+    }
+    var memory: RecordingPresence? = ride
+    let finish = CrossDeviceRecording.finished(ride, sessionID: "ride", startedAt: start, endedAt: start + 3700)!
+    check(CrossDeviceRecording.needsDurableCommit(from: ride, to: finish), "ending a recording needs a durable write")
+    check(!CrossDeviceRecording.needsDurableCommit(from: ride, to: watchPresence(owner, started: start, at: start + 3800)), "a renewal does not")
+    failingDisk.failWrite = { _ in true }
+    check(!commit(finish, over: &memory, state: &saved), "a failed write refuses the finish")
+    check(memory == ride && saved.recording == ride, "memory and state roll back together")
+    var gateAfterFailure = ManualExclusionGate()
+    _ = gateAfterFailure.update(local: nil, remote: memory, ownerID: owner, now: start + 3710)
+    check(gateAfterFailure.current != nil, "ownership holds while the finish is not durable")
+    var renewal = ride; renewal.updatedAt = start + 3705
+    check(commit(renewal, over: &memory, state: &saved) && memory?.updatedAt == start + 3705, "a heartbeat is still believed while the disk is failing")
+    memory = ride; saved.recording = ride
+    let restarted = WatchInboxStore(directory: durableDirectory, backend: failingDisk).load()
+    check(restarted.recording == ride, "a restart after the failure reads the owned session, not a half-applied finish")
+    var gateAfterRestart = ManualExclusionGate()
+    _ = gateAfterRestart.update(local: nil, remote: restarted.recording, ownerID: owner, now: start + 3720)
+    check(gateAfterRestart.current?.sessionID == "ride", "and suspends again")
+    failingDisk.failWrite = nil
+    var afterRestart = restarted.recording
+    var state2 = restarted
+    let retried = CrossDeviceRecording.finished(afterRestart, sessionID: "ride", startedAt: start, endedAt: start + 3700)!
+    check(commit(retried, over: &afterRestart, state: &state2), "the Watch's resend commits once the disk recovers")
+    let finalState = WatchInboxStore(directory: durableDirectory, backend: failingDisk).load()
+    check(finalState.recording?.state == "idle" && finalState.recording?.endedAt == start + 3700, "and that finish survives a restart")
+    var finalGate = ManualExclusionGate()
+    check(finalGate.update(local: nil, remote: finalState.recording, ownerID: owner, now: start + 3730) == .none && finalGate.current == nil, "so a later launch stays released")
+
+    // Finding: the workout's end is not the time of the last message.
+    let failedFinish = ManualOwnershipPhone(owner: owner)
+    let actualEnd = start + 1800
+    failedFinish.hear(watchPresence(owner, started: start, at: actualEnd - 30), at: actualEnd - 29)
+    failedFinish.hear(watchPresence(owner, state: "paused", started: start, at: actualEnd + 900), at: actualEnd + 901)
+    failedFinish.heard = CrossDeviceRecording.finished(failedFinish.heard, sessionID: "ride", startedAt: start, endedAt: actualEnd)
+    failedFinish.reconcile(actualEnd + 902)
+    check(CrossDeviceRecording.completedInterval(failedFinish.heard, ownerID: owner, now: actualEnd + 902)?.upperBound == actualEnd, "a heartbeat after the end does not extend the interval")
+    check(!CrossDeviceRecording.excludesAutomaticFix(actualEnd + 60, remote: failedFinish.heard, ownerID: owner, now: actualEnd + 902), "a later journey's fixes are not rejected")
+    check(CrossDeviceRecording.excludesAutomaticFix(actualEnd - 60, remote: failedFinish.heard, ownerID: owner, now: actualEnd + 902), "fixes inside the workout still are")
+    failedFinish.drive(from: actualEnd + 950, seconds: 120)
+    check(failedFinish.draft != nil, "the next automatic journey records")
+    failedFinish.hear(watchPresence(owner, state: "paused", started: start, at: actualEnd + 950), at: actualEnd + 1100)
+    check(!failedFinish.excluded && failedFinish.draft != nil, "a heartbeat delayed past the finish cannot restart the session or close the journey")
+
+    var lateIdle = RecordingPresence.idle(device: "watch", ownerID: owner, now: actualEnd + 5400)
+    lateIdle.sessionID = "ride"; lateIdle.startedAt = start; lateIdle.endedAt = actualEnd
+    let lateEnd = ManualOwnershipPhone(owner: owner)
+    lateEnd.hear(watchPresence(owner, started: start, at: actualEnd - 30), at: actualEnd - 29)
+    lateEnd.hear(lateIdle, at: actualEnd + 5401)
+    check(CrossDeviceRecording.completedInterval(lateEnd.heard, ownerID: owner, now: actualEnd + 5401)?.upperBound == actualEnd, "an end packet delayed ninety minutes carries the true end")
+    check(RecordingPresence(dictionary: lateIdle.dictionary)?.endedAt == actualEnd, "the end survives the trip between devices")
+    var restoredIdle = lateEnd.heard
+    restoredIdle = try! JSONDecoder().decode(RecordingPresence.self, from: JSONEncoder().encode(restoredIdle))
+    check(restoredIdle?.endedAt == actualEnd, "and a restart")
+
+    // An older Watch sends no end. The ride file corrects it, in either order.
+    let olderWatch = ManualOwnershipPhone(owner: owner)
+    olderWatch.hear(watchPresence(owner, started: start, at: actualEnd - 30), at: actualEnd - 29)
+    olderWatch.hear(.idle(device: "watch", ownerID: owner, now: actualEnd + 5400), at: actualEnd + 5401)
+    check(olderWatch.heard?.endedAt == nil, "an older end packet has only its send time")
+    olderWatch.heard = CrossDeviceRecording.finished(olderWatch.heard, sessionID: "ride", startedAt: start, endedAt: actualEnd)
+    check(CrossDeviceRecording.completedInterval(olderWatch.heard, ownerID: owner, now: actualEnd + 5402)?.upperBound == actualEnd, "the ride corrects an end packet that came first")
+    var repeatedEnd = olderWatch.heard!; repeatedEnd.endedAt = nil; repeatedEnd.updatedAt = actualEnd + 5500
+    check(CrossDeviceRecording.merged(olderWatch.heard, repeatedEnd).endedAt == actualEnd, "and a later end packet cannot lose it")
+    var badEnd = lateIdle; badEnd.endedAt = start - 100
+    check(CrossDeviceRecording.completedInterval(badEnd, ownerID: owner, now: actualEnd + 5401)?.upperBound == badEnd.updatedAt, "an impossible end is ignored")
+
+    // Diagnostics tell recovery from a finish.
+    check(ManualExclusionRelease.finished.explicitFinish && ManualExclusionRelease.finishedOnIPhone.explicitFinish, "a finish is explicit")
+    check(!ManualExclusionRelease.leaseExpired.explicitFinish && !ManualExclusionRelease.ownerChanged.explicitFinish, "a lease expiry is not reported as a finish")
+    check(Set([ManualExclusionRelease.finished, .finishedOnIPhone, .leaseExpired, .ownerChanged].map(\.diagnostic)).count == 4, "every release has its own diagnostic line")
+    let ownPhone = ManualOwnershipPhone(owner: owner)
+    ownPhone.local = RecordingPresence(device: "iphone", ownerID: owner, sessionID: "phone", activity: "Walking", state: "recording", startedAt: start, updatedAt: start)
+    ownPhone.reconcile(start); ownPhone.local = nil; ownPhone.reconcile(start + 60)
+    check(ownPhone.releases == [.finishedOnIPhone], "an iPhone finish is not reported as a Watch finish")
+
     let quietCount = during.detector.candidate.count + before.detector.candidate.count
     check(quietCount == 0, "no departure buffer survives a session")
 }

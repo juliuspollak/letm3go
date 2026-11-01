@@ -30,10 +30,8 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
            var delivered = RecordingPresence(dictionary: WCSession.default.receivedApplicationContext["recording"]), delivered.device == RecordingPresence.watch {
             delivered.heardAt = Date().timeIntervalSince1970
             let merged = CrossDeviceRecording.merged(heardWatchRecording, delivered)
-            if heardWatchRecording != merged {
-                heardWatchRecording = merged; state.recording = merged
-                persistInbox()
-            }
+            // The context stays delivered, so a failed commit is retried on the next read.
+            if heardWatchRecording != merged { commit(merged) }
         }
         if let held = CrossDeviceRecording.confirmingExpiry(heardWatchRecording, now: Date().timeIntervalSince1970) {
             heardWatchRecording = held; state.recording = held
@@ -108,14 +106,25 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         conflictLogged = conflict
     }
 
+    // A finish that is not on disk has not happened: if it were acted on here, the
+    // relaunch would read the old presence and own the iPhone again.
+    @discardableResult
+    private func commit(_ next: RecordingPresence) -> Bool {
+        let durable = CrossDeviceRecording.needsDurableCommit(from: heardWatchRecording, to: next)
+        let previous = state
+        state.recording = next
+        guard persistInbox() || !durable else { state = previous; return false }
+        heardWatchRecording = next
+        return true
+    }
+
     private func receive(presence value: Any?) {
         guard var presence = RecordingPresence(dictionary: value), presence.device == RecordingPresence.watch else { return }
         loadInbox()
         presence.heardAt = Date().timeIntervalSince1970
         let previous = heardWatchRecording
         let merged = CrossDeviceRecording.merged(previous, presence)
-        heardWatchRecording = merged
-        if previous != merged { state.recording = merged; persistInbox() }
+        if previous != merged, !commit(merged) { return }
         LocationRecorder.shared.reconcileManualExclusion()
         LocationRecorder.shared.confirmHouseholdLocation()
         guard previous?.state != merged.state || previous?.activity != merged.activity else { return }
@@ -261,16 +270,20 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         }
         var next = state
         next.receive(transfer, now: Date().timeIntervalSince1970)
+        // The ride can arrive first, and it can be what wakes a locked iPhone. It and the
+        // finish it proves are one write: the ride is unacknowledged until then, so a
+        // failure leaves the session owned and the Watch sends the ride again.
+        let ended = CrossDeviceRecording.finished(heardWatchRecording, sessionID: transfer.id, startedAt: transfer.startedAt, endedAt: transfer.endedAt)
+        if let ended { next.recording = ended }
         let previous = state
         state = next
         guard persistInbox() else {
             state = previous
             return
         }
-        // The ride can arrive first, and it can be what wakes a locked iPhone.
-        if let ended = CrossDeviceRecording.finished(heardWatchRecording, sessionID: transfer.id, startedAt: transfer.startedAt, endedAt: transfer.endedAt) {
-            heardWatchRecording = ended; state.recording = ended
-            persistInbox()
+        if let ended {
+            heardWatchRecording = ended
+            LocationRecorder.shared.recordDiagnostic("watch", "Finished ride confirmed the Watch recording ended")
             LocationRecorder.shared.reconcileManualExclusion()
         }
         flush()
