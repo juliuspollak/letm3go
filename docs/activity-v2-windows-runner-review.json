@@ -1,0 +1,134 @@
+{
+  "snapshot": ".build/windows-resume/runner-review/manifest.json",
+  "execution": {
+    "code": 0,
+    "signal": null,
+    "finished": "2026-11-01T21:21:09.682Z"
+  },
+  "review": {
+    "pass": false,
+    "summary": "FAIL. This was a static read of the frozen snapshot only. Nothing was executed, the manifest hashes were not recomputed, and every finding comes from code reading, so the runtime behaviour described is predicted, not observed. The patch is not ready for runner use. On macOS the runner never executes test:native, yet it can report VERIFIED. On Windows, descendant cleanup after a normal exit does not work, and a surviving grandchild can hang executeProcess permanently. The Windows orchestrator suite cannot pass as written, so the required check gate cannot go green there. In the ledger, failedRepairs counts assignment rather than repair attempts, mixed cycles drop Codex review of DeepSeek work, 'disputed' closes confirmed defects, static reviewers can close the device gate, and the P01-SHEET fixed-map requirement moved from P0 to P2 by splitting. Launcher shim parsing also assumes every target is Node. This review does not approve app phase 01 and implies no simulator, device, native or Windows acceptance.",
+    "findings": [
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:307,318-321; scripts/ai-launcher.mjs:145-151; package.json:33,45; tests/orchestrator/ai-launcher.node.mjs:111-120",
+        "evidence": "The non-integration test list is only [['npm',['run','check']]]. package.json 'check' runs test:orchestrator, lint, test and build, not test:native. nativeCheckPolicy returns {runnable:true} on macOS, but lines 318-321 only act on !runnable, so no branch ever executes test:native. Line 285 requires the script to exist and never runs it. A macOS run therefore has no deferred entries, and line 178 reports full VERIFIED with no Swift evidence. The test 'native check policy is explicit and never silently skipped' checks only the policy's return value, so it passes while the runner skips the check.",
+        "required_fix": "When native.runnable is true, execute npm run test:native and add its result to the required tests. Make the test list injectable or extract it, then add a regression proving macOS runs both check and test:native, and that a native failure produces REPAIR_REQUIRED."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:74,86-94; scripts/ai-launcher.mjs:161-168; tests/orchestrator/ai-orchestrate.node.mjs:146-149",
+        "evidence": "The promise settles only on 'close', which needs all stdio holders to exit. On Windows, killProcessTree after 'exit' calls taskkill /pid on a dead parent. taskkill fails with process-not-found and cannot walk to orphaned descendants, unlike POSIX group kill. The spawnSync status is ignored, and spawnSync does not throw on a nonzero exit, so the try/catch reports nothing. Reproduction by reading the test at lines 146-149: the parent exits, the grandchild inherits stdout and keeps it open with setInterval, exit-time taskkill is a no-op, the 2000 ms timer's kill('Timeout') is also a no-op, and 'close' never fires. executeProcess hangs without settling and the grandchild leaks. The comment at line 90, 'Terminate any descendants... including on success', is false on Windows. taskkill /T also misses descendants whose intermediate parent has already exited, even in the timeout path.",
+        "required_fix": "Add a bounded settle path: after exit or kill, wait a short grace period, destroy the stdout and stderr streams, then settle and record the failure. Implement real Windows tree containment, for example a Job Object helper, or enumerate descendants while the root is alive. Check the taskkill status and surface any cleanup failure. Add a Windows regression for a surviving orphan that asserts both settlement and process death."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/tests/orchestrator/ai-orchestrate.node.mjs:165,171,176-191",
+        "evidence": "Line 165 uses new URL(...).pathname, which yields /C:/Users/... on Windows. Node then fails to resolve the script, no summary is created, and summary() reaches join(...,undefined) in the lock test. Line 179 writes an extensionless shebang 'cline' that resolveOnPath cannot run as a Windows launcher. Line 180 joins PATH with ':' instead of path.delimiter, so bin is not a valid entry and the real cline may run instead. The marker is then never written, so line 185 fails. Line 186 child.kill('SIGTERM') is a forced termination on Windows, so the handlers at ai-orchestrate.mjs:72,277 never run and the BLOCKED report and lock release cannot occur. npm run check includes test:orchestrator, so the Windows gate fails on every cycle and the runner can never reach VERIFIED_WINDOWS_PARTIAL. The hang at lines 146-149 makes this worse.",
+        "required_fix": "Use fileURLToPath and path.delimiter. Generate a real Windows launcher fixture, such as a .cmd shim with a Node entry. Replace POSIX signal delivery on Windows with a supported cancellation trigger, or test cancellation through a portable harness and state the limits. Do not skip the case without an equivalent Windows lock-release test."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:129,136; scripts/ai-defects.mjs:61; docs/activity-experience-v2-phases/01-defect-convergence.md:15,20-21; tests/orchestrator/ai-defects.node.mjs:41-58",
+        "evidence": "Line 129 sets actors[id]='developer' for every plan.primary defect purely because it was assigned. ai-defects.mjs:61 then increments failedRepairs for each one still open at a new revision. The contract says 'Assignment alone is not evidence that a repair was attempted'. Reproduction: all 15 open defects are assigned, DeepSeek changes the files for one, and the revision changes. All 14 untouched defects count a failed repair, and after two cycles they escalate to Codex with no attempt ever made. The lifecycle test only changes a digest, so it encodes the wrong rule. reconcile also never updates failedRepairAttempts, so that ledger field drifts from failedRepairs.",
+        "required_fix": "Count a failed repair only with per-defect evidence of an attempt, such as an agent-reported defect ID verified against changed files in d.files or a recorded commit. Keep assignment separate from attempt. Update failedRepairAttempts with the revision. Add a regression where one of two assigned defects is untouched and its counter stays unchanged."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:127-138,146,152; docs/activity-experience-v2-phases/01-defect-convergence.md:23-25; tests/orchestrator/ai-defects.node.mjs:41-58",
+        "evidence": "Line 146 selects ['claude'] whenever plan.escalated is non-empty, even if plan.primary is also non-empty and DeepSeek edited code in that cycle. Those DeepSeek defects can then be closed without the Codex architecture review the contract requires ('Ordinary DeepSeek work requires Codex architecture review and independent Claude QA'). The single test covers an escalation-only cycle and has no mixed case.",
+        "required_fix": "Do not combine authors in one approval set. Either run DeepSeek and Codex repairs in separate reviewed cycles, or make approval per-defect so Codex reviews DeepSeek-authored defects and is excluded only from Codex-authored ones. Add a mixed-cycle regression."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-defects.mjs:40,44,57-58,62-63,81,repairPlan:28; docs/activity-experience-v2-defects.json:931",
+        "evidence": "Line 57 maps any resolved/disputed combination to 'disputed', so one reviewer's dispute plus another's 'resolved' closes the defect. blocking() and repairPlan() consider only status 'open', so a disputed software defect stops blocking and line 62 resets its failedRepairs. Line 44 no longer requires reassessment of disputed items, so the state is terminal, and a run can report VERIFIED with a confirmed defect unresolved. Nothing validates the counter-evidence. This contradicts the ledger policy that 'Current open software remains release blocking' and the contract's requirement that unresolved findings stay visible. No test covers it.",
+        "required_fix": "Treat disputed software defects as blocking until an explicit independent adjudication, and keep them in the required-assessment set. Do not reset failedRepairs on dispute. Add tests for dispute plus resolved and for both disputed."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-defects.mjs:40,57,63,81; scripts/ai-orchestrate.mjs:175,178",
+        "evidence": "validateResolutions blocks device_required only for software defects and does not stop 'resolved' or 'disputed' on kind:'device'. If reviewers return resolved for DEVICE-NATIVE-UX, line 57 yields 'resolved' and line 63 retires the physical gate from static reading. blocking() also ignores device defects entirely, so ai-orchestrate.mjs:178 can report plain VERIFIED while a device gate is outstanding. The ledger states the ride, frame trace, VoiceOver and Watch checks have not occurred.",
+        "required_fix": "Reject reviewer status other than device_required for kind:'device', and allow closure only through explicit external evidence outside AI review. Make the terminal status distinct, such as VERIFIED_SOFTWARE_ONLY, while any device gate remains. Add regressions for both."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/docs/activity-experience-v2-defects.json:6-10,19,32-36,900-924; docs/activity-v2-handover-evidence/current-triage.json:3,6-11",
+        "evidence": "The original P01-SHEET P0 instructions say 'Pointer and keyboard detents, fixed map and safe areas must work'. The fixed-map and first safe-area measurement failures are moved to P01-STABLE-MAP as severity P2 and the P0 is marked resolved. The top-level P0 label is retained, but the unmet part of that P0 contract now blocks only at P2. This is a downgrade by splitting, contrary to the policy to preserve original severities. The currentAssessment also cites current-triage.json as source, while that file has status 'confirmed' for P01-SHEET, its evidence text differs, and it contains no P01-STABLE-MAP ID. A supervisor reclassification is therefore attributed to independent triage.",
+        "required_fix": "Keep P01-SHEET confirmed until those conditions pass, or give P01-STABLE-MAP the inherited P0 severity with its split history. Label the split as a supervisor decision rather than independent evidence, and obtain fresh independent assessment. Do not cite the triage file for statuses or IDs it does not contain."
+      },
+      {
+        "severity": "P1",
+        "location": ".build/windows-resume/runner-review/scripts/ai-launcher.mjs:96-102,134-140",
+        "evidence": "parseWindowsCmdShim always returns node plus the final quoted token. npm cmd-shim also emits direct non-Node launchers such as '\"%dp0%\\node_modules\\pkg\\bin\\tool.exe\" %*'. Line 102 then runs node tool.exe, which fails as invalid JavaScript. Node arguments between %_prog% and the script, and SET environment lines in the shim, are silently dropped, so execution differs from the shim. No extension or interpreter check exists, and tests cover only the .js and npm-cli.js forms. Line 140 also passes through any other PATHEXT match, such as .js or .vbs (both can appear in Windows PATHEXT), or an extensionless shell script, to spawn, which cannot run them directly.",
+        "required_fix": "Parse the invocation structurally. Return direct {file:target} for .exe targets, use node only for an explicit %_prog%/node invocation with a JS target, preserve interpreter arguments, and refuse any unsupported form or environment mutation. Restrict accepted extensions at line 140. Add fixtures for exe targets, node flags and unsupported forms."
+      },
+      {
+        "severity": "P2",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:86,91; scripts/ai-launcher.mjs:164-167",
+        "evidence": "Every process, including successful ones, triggers taskkill /pid N /T /F after 'exit' and again after 'close'. The Node process handle has been released by then, so Windows may reuse N. 'close' can occur much later if a descendant holds the pipes. A reused PID causes forced termination of an unrelated process tree. The first session's interruption by broad node killing makes this hazard directly relevant.",
+        "required_fix": "Never issue PID-based forced kills after the handle is released. Terminate only while the root is alive, or use a handle-based containment such as a Job Object. Remove the post-exit and post-close taskkill calls on Windows."
+      },
+      {
+        "severity": "P2",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:65,72,277,371",
+        "evidence": "Cancellation listens only for SIGINT and SIGTERM. Windows does not deliver SIGTERM to a process being terminated, and Ctrl+Break arrives as SIGBREAK, which is unhandled. With spawn detached:true the child is outside the parent's console group and libuv's kill-on-close job. If a supervisor terminates the orchestrator, agent trees survive, the finally block at line 371 does not run, active.lock remains, and the report stays RUNNING.",
+        "required_fix": "Handle SIGBREAK and tie children to orchestrator lifetime on Windows, such as a Job Object with kill-on-close. Validate stale locks by owner PID and start time. Document what a hard kill leaves behind and test it."
+      },
+      {
+        "severity": "P2",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:127,172-175; tests/orchestrator/ai-defects.node.mjs:41-58",
+        "evidence": "Line 127 runs the developer only if cycle 1 or plan.primary is non-empty. If all defects are resolved or escalated but a required test fails, line 175 keeps the failure in feedback, yet no agent is assigned to it in later cycles. The reviewers and tests rerun unchanged until 'Retry limit exhausted'. Cycle 1 can also launch DeepSeek with an empty assignment when every defect is escalated.",
+        "required_fix": "Assign failing required tests to an author explicitly, or fail immediately with a precise reason. Skip the developer when nothing is assigned. Add tests for a failing test with no open defects, and for an escalation-only first cycle."
+      },
+      {
+        "severity": "P2",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:365,373; scripts/ai-launcher.mjs:145-151; docs/activity-experience-v2-phases/01-defect-convergence.md:29-32",
+        "evidence": "VERIFIED_WINDOWS_PARTIAL exits 0, the same as success, and line 373 prints 'Both independent reviewers and required tests passed' despite deferred native checks. That message is also false for Claude-only cycles. No lifecycle test covers deferred results or the partial status, and the runner's main path is not reachable from tests. The contract requires that partial Windows evidence not be labelled as full verification.",
+        "required_fix": "Use a distinct nonzero or explicit partial exit contract, and print the deferred checks and actual approvers. Add a lifecycle test asserting that deferred results never produce VERIFIED and never enter repair feedback."
+      },
+      {
+        "severity": "P2",
+        "location": ".build/windows-resume/runner-review/package.json:33,53; docs/activity-experience-v2-phases/01-defect-convergence.md:29; docs/activity-experience-v2-defects.json:810,824",
+        "evidence": "The contract says to 'Run all Windows-supported checks', but the runner runs only npm run check. test:activity-layout is outside check and is the cited regression for resolved P01-SWIPE-GEOMETRY. It also uses POSIX inline assignment (PLAYWRIGHT_BROWSERS_PATH=... node ...), which fails under cmd.exe. It is neither run nor recorded as deferred, so this is a silent skip.",
+        "required_fix": "Make the script cross-platform and include it in the Windows check set, or record it as explicitly deferred with a reason. Enumerate every required check in the run report."
+      },
+      {
+        "severity": "P2",
+        "location": ".build/windows-resume/runner-review/tests/orchestrator/ai-launcher.node.mjs:122-141",
+        "evidence": "The timeout test uses 400 ms. The child must start Node, spawn a grandchild and write the marker first, and suites run concurrently under node --test. If the kill lands first, line 137 readFileSync throws ENOENT, so the test is timing-dependent on slower Windows machines. Both descendant tests also use a live intermediate parent, so they never exercise success-path cleanup or orphan cases.",
+        "required_fix": "Trigger the timeout only after the marker exists, using an event-driven handshake or a longer timeout. Add a case where the intermediate parent exits before cleanup."
+      },
+      {
+        "severity": "P3",
+        "location": ".build/windows-resume/runner-review/scripts/ai-launcher.mjs:17-19,106-120,128-131; scripts/ai-orchestrate.mjs:57-60; tests/orchestrator/ai-launcher.node.mjs:96",
+        "evidence": "CLAUDE_BINARY and CLAUDE_EXE are not forwarded by windowsEnvironment or agentEnvironment, so the override cannot work in real runner calls. The test passes the variable directly. The override is also ignored when a claude.exe is already on PATH. If home is empty, join('', ...) yields worktree-relative candidates such as .claude\\local\\claude.exe, which an implementer could plant to replace the reviewer binary.",
+        "required_fix": "Forward and honour the override explicitly with precedence, or remove it. Require absolute paths for all candidates and ignore relative ones. Test through agentEnvironment."
+      },
+      {
+        "severity": "P3",
+        "location": ".build/windows-resume/runner-review/scripts/ai-launcher.mjs:66-68,99",
+        "evidence": "String replacement inserts dp0 into String.replace, so a directory containing $-patterns, such as $& or $', corrupts the resolved path. The npm.cmd prefix branch at FOR /F is also dropped, so a globally upgraded npm resolves to the bundled npm-cli.js instead of the version the shim would run.",
+        "required_fix": "Use replacer functions for dp0. Resolve or detect the npm-prefix case and report it, and add tests for both."
+      },
+      {
+        "severity": "P3",
+        "location": ".build/windows-resume/runner-review/scripts/ai-orchestrate.mjs:195-197,293; scripts/ai-launcher.mjs:125-141",
+        "evidence": "Preflight does not resolve npm or git, so a launcher refusal for npm appears only after paid agent cycles. Execution evidence stores only the bare cmd and argv, not the resolved file or prepended entry, so the actual binary that ran cannot be audited.",
+        "required_fix": "Include npm and git in preflight, and record resolved.file and resolved prepend arguments plus version in each execution entry."
+      },
+      {
+        "severity": "P3",
+        "location": ".build/windows-resume/runner-review/scripts/ai-defects.mjs:67-72,82-92; scripts/ai-orchestrate.mjs:264",
+        "evidence": "New-defect intake trusts each reviewer's ID, so two reviewers describing one bug under different IDs become separate ledger entries with independent counters. A new finding with a backslash path or root-level file gets files:[], and assertEscalationScope then rejects every change for that defect. The reconciled ledger is written only to a run-specific defects.json, dropping top-level metadata, while docs retains stale counters, so repeat runs restart from zero unless the operator passes that artifact.",
+        "required_fix": "Normalise locations to forward slashes and handle root files. Add reviewer-ID collision and duplicate handling. Define and document how the authoritative ledger is carried between runs while preserving metadata."
+      },
+      {
+        "severity": "P3",
+        "location": ".build/windows-resume/runner-review/docs/activity-experience-v2-defects.json:858-866; docs/activity-experience-v2-progress.md:9,33,38,43,45,71",
+        "evidence": "P01-DOC-TRUTH currentAssessment still cites rows that no longer say what it reports. For example it says line 71 ticks R8-01 as Done and line 38 says R3-03 Done, but the snapshot shows both unticked and Partial, line 9 now quotes 996 and 1755, and line 43 says Add Selected (N). The entry's validation field implies a static independent assessment at revision 27273fb, yet the document was edited afterwards with no repair record, so the open evidence is stale.",
+        "required_fix": "Reassess P01-DOC-TRUTH against the current progress file with fresh independent evidence, record the supervisor edits as a repair attempt, and either close it or restate only current contradictions."
+      }
+    ]
+  }
+}
