@@ -158,7 +158,7 @@ recovered; automated tests and simulator builds cannot establish its cause.
 
 ## Automated verification
 
-- `npm run check`: ESLint, 871 tests in 134 files (including local database tests),
+- `npm run check`: ESLint, 872 tests in 134 files (including local database tests),
   and the production build pass. Existing bundle-size advisory remains.
 - `npm run test:native`: 1,560 native core assertions pass.
 - `npm run ios:sync` and iOS simulator build pass.
@@ -173,5 +173,9 @@ recovered; automated tests and simulator builds cannot establish its cause.
 
 These results establish code/build behaviour, not physical sensor availability,
 WatchConnectivity delivery under suspension, live household map timing or the
-reported original heart-rate error. Historical POI provider verification remains
-pending explicit approval for transmitting private sampled coordinates to Apple.
+reported original heart-rate error. Historical provider replay results remain in a private local report. Approved
+category-query diagnostics established that a simple parks query succeeds where
+the compound phrase query returns no placemark. The implementation uses that
+category query and keeps provider categories alongside normalised roles. A POI
+explicitly named Car Park cannot become the primary park destination merely
+because its provider category is park. No unsupported visit is promoted.

@@ -10,7 +10,7 @@ export function previewRecognition({owner,activities,metadata=emptyGrouping(owne
  const context={owner,metadata:merged,places,vehicles:[],telemetry:[]};
  const model=buildJourneys(activities,context);
  const report={dryRun:true,queriesPerformed:0,activities:model.journeys.map(t=>({id:t.id,startedAt:t.startedAt,originalTitle:activities.find(a=>a.id===t.id)?.title,proposedTitle:t.title,
-  proposedTags:t.tags,primary:t.recognition?.primary?.name||null,candidates:(t.recognition?.candidates||[]).map(({name,placeID,category,role,confidence,evidence,reason})=>({name,placeID,category,role,confidence,evidence,reason}))})),
+  proposedTags:t.tags,primary:t.recognition?.primary?.name||null,candidates:(t.recognition?.candidates||[]).map(({name,placeID,category,providerCategory,role,confidence,evidence,reason})=>({name,placeID,category,providerCategory,role,confidence,evidence,reason}))})),
   destinations:model.destinations,routeComparisons:[]};
  for(let i=0;i<activities.length;i++)for(let j=i+1;j<activities.length;j++)report.routeComparisons.push({ids:[activities[i].id,activities[j].id],...compareRoutes(activities[i],activities[j])});
  return report;

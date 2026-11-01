@@ -74,3 +74,11 @@ it('reuses stable user-saved destinations without another provider lookup',()=>{
  expect(result.journeys[0].recognition.primary.placeID).toBe('saved:saved-reserve');
  expect(result.destinations[0].visits).toBe(1);
 });
+
+it('does not turn a car park labelled as a park by the provider into the primary destination',()=>{
+ const candidate={...reserve,name:'Example Car Park',category:'park'};
+ const result=assessRoutePlaces(trip,[{candidates:[candidate]}]);
+ expect(result.primary).toBeNull();
+ expect(result.candidates[0].category).toBe('parking');
+ expect(result.candidates[0].providerCategory).toBe('park');
+});

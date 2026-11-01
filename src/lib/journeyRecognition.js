@@ -26,7 +26,9 @@ export function cachedLookup(place,now=Date.now()){
 export function assessRoutePlaces(trip,records=[],{hidden=[]}={}){
  const points=(trip.points||[]).filter(p=>Number.isFinite(p.accuracy)&&p.accuracy>=0&&p.accuracy<=40);
  const excluded=new Set(hidden.map(normalized)),unique=new Map();
- for(const record of records)for(const candidate of record?.candidates||[]){
+ for(const record of records)for(const raw of record?.candidates||[]){
+  const category=/\bcar\s?park(?:ing)?$/i.test(raw?.name||'')?'parking':({'MKPOICategoryHiking':'trail','MKPOICategoryLandmark':'landmark'}[raw?.category]||raw?.category);
+  const candidate={...raw,providerCategory:raw?.providerCategory||raw?.category,category};
   if(!candidate?.name||excluded.has(normalized(candidate.name))||(!candidate.userSaved&&/^(park|reserve|trail|car park|parking|lookout|nature|outdoors)$/i.test(candidate.name.trim())))continue;
   const key=candidate.placeID||`${normalized(candidate.name)}:${candidate.latitude}:${candidate.longitude}`;
   if(!unique.has(key))unique.set(key,candidate);

@@ -13,7 +13,7 @@ enum PlaceSearch {
         let near = MKLocalSearch(request: request)
         near.start { nearby, nearError in
             let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = "parks nature reserves walking trails"
+            request.naturalLanguageQuery = "parks"
             request.region = MKCoordinateRegion(center: coordinate, latitudinalMeters: 4000, longitudinalMeters: 4000)
             request.resultTypes = .pointOfInterest
             let areas = MKLocalSearch(request: request)
