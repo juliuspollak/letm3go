@@ -3,6 +3,45 @@
 Date: 2 November 2026 (Australia/Sydney). Branch: `feature/activity-v2-windows`.
 Transferred checkpoint: `6272027`. **Release remains BLOCKED.** This continuation made implementation changes; it did not finish Activity Experience v2.
 
+## Current continuation: execution approval blocker
+
+The next DeepSeek/Cline invocation was rejected **before execution** by automatic approval review: it requires explicit approval to send orchestration scripts/tests and Watch energy source to `api.deepseek.com`. The user was asked for that specific approval. No retry or indirect model call bypassed the rejection. This is an infrastructure/approval event, not a failed implementation attempt; no per-defect repair counters were incremented. DNS resolves the API hostname, but authenticated DeepSeek connectivity and the real Cline ? Codex ? Claude integration test are **not verified**.
+
+Local implementation continued on work that does not require that source-sharing approval:
+
+- Added structured infrastructure-error classification for Cline JSON error events (including zero-exit network failures), without treating ordinary source/tool prose mentioning those errors as an execution failure. Infrastructure failure stops before repair attribution/reconciliation.
+- Bounded cancellation settlement even when process termination fails; Windows termination refuses exited root PIDs. Added a real sibling-worker survival regression. Automatic Windows agent execution remains guarded because this does not establish full lifetime containment.
+- Preflight records resolved CLI paths and individual infrastructure errors; cancellation retains its original cause. All three installed CLI help/version checks pass: Cline 3.0.74, Codex 0.166.0, Claude Code 2.1.302. Authentication remains NOT_TESTED.
+- Stock Edge checking now invokes the installed native Windows Deno executable.
+- Prepared P3 energy retention: unsupported optional JSON survives unrelated edit/save through an opaque value; values that cannot be safely retained refuse overwrite. Prepared native tests cover unknown/malformed edit/save/reload, held-energy trim/save/reload/reject/save/reload, and whole-workout-only history invalidation. Native source and tests have not been compiled on Windows. The two P3 ledger entries remain confirmed pending independent review/macOS execution.
+
+The Watch producer, cumulative/recovered collection, durable late enrichment, revision/owner/idempotence protocol and complete-pipeline independent reviews are still outstanding. None is claimed complete by these P3 changes. Phase 1 blockers remain intact; no phase-1 repair loop was started. No push, merge, deployment, remote SQL or historical activity mutation occurred.
+
+Validation and exact local commits are recorded in the accompanying continuation result below. Raw logs are under ignored `.build/windows-current/`.
+
+### Continuation result
+
+Local commits:
+
+- `b109528` ? Bound agent cancellation and classify execution infrastructure failures.
+- `1e148ae` ? Preserve unsupported energy on journal edits and extend native coverage.
+
+Current-source validation:
+
+| Check | Actual result |
+| --- | --- |
+| Final orchestration subprocess/ledger suite | PASS: 59/59, 0 failed, 0 skipped; 43.374 seconds; `orchestrator-final-execution.json` records exit 0 |
+| Four measured-energy/summary/recorder/private-backup suites | PASS: 41/41, 4 files, 61.08 seconds; `energy-targeted-execution.json` exit 0 |
+| Final ESLint after correcting preserve-caught-error diagnostic | PASS: exit 0, no diagnostics in `lint-final.log` |
+| Production Vite | Built successfully; existing chunk warning; exact wrapper status is in `build-final-execution.json` |
+| Stock native Windows Edge check | PASS: six entry points, `edge-final-execution.json` exit 0 |
+| Chromium synthetic layout | PASS: portrait and landscape; process exit 0; not native-map acceptance |
+| Full serial Vitest | Still running at this report checkpoint; no final aggregate available. Both local runs show the eight previously recorded Python/POSIX fixture failures. Raw `vitest-full.log` and `vitest-windows.log`; execution sessions 23839 and 8076 remain to be collected. Do not count incomplete runs as passes |
+| Restricted-sandbox orchestration diagnostic | 56 pass / 3 fail; descendant termination was denied and preflight cancellation initially lost its reason. Cause propagation was fixed and final unrestricted suite above passed 59/59. Exact uniquely identified leaked fixture processes were cleaned with creation-time/command/ancestry checks and held process handles; no name-based termination was used |
+| Swift/native, iOS/watchOS builds and HealthKit/device acceptance | DEFERRED to macOS; not attempted on Windows |
+
+No new independent Codex/Claude energy or runner approval was obtained. Historical review findings remain authoritative pending re-review; this checkpoint does not close the whole energy pipeline or either requested priority. Next required macOS verification includes compiling/running the expanded native core suite, iOS/watchOS builds, and HealthKit authorization, interruption/recovery, finalization, offline delivery and account-switch acceptance after producer/protocol implementation.
+
 ## Actual implementation progress
 
 - Continued the transferred implementation. The full master specification was preserved and completed phase-01 sheet/photo/identity work was not restarted.
