@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lifecycle, verdict, bounded, commands, snapshot, executeProcess, claudeVerdict, agentEnvironment, deepseekProfile, integrationEvidence, platformTestCommands } from '../../scripts/ai-orchestrate.mjs';
+import { lifecycle, verdict, bounded, commands, snapshot, executeProcess, executionFailure, claudeVerdict, agentEnvironment, deepseekProfile, integrationEvidence, platformTestCommands } from '../../scripts/ai-orchestrate.mjs';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
@@ -8,6 +8,29 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import {killProcessTree} from '../../scripts/ai-launcher.mjs';
 const pass = JSON.stringify({ pass:true,summary:'Inspected complete implementation',findings:[] });
+test('network and cancellation failures are infrastructure, including zero-exit Cline streams', () => {
+  for (const message of ['ECONNRESET', 'ENOTFOUND api.deepseek.com', 'EAI_AGAIN', 'authentication failed']) {
+    assert.equal(executionFailure({code:0,stdout:JSON.stringify({error:message})}), 'infrastructure');
+  }
+  assert.equal(executionFailure({code:null,error:'Cancelled'}), 'infrastructure');
+  assert.equal(executionFailure({code:1,stderr:'implementation command failed'}), 'agent_execution');
+  assert.equal(executionFailure({code:0,stdout:'completed'}), null);
+  assert.equal(executionFailure({code:0,stdout:JSON.stringify({type:'tool_result',text:'Read documentation mentioning ENOTFOUND and API keys'})}), null);
+});
+test('cancelling an owned worker preserves an unrelated sibling worker', async () => {
+  const sibling = spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});
+  const controller = new AbortController();
+  try {
+    const owned = executeProcess(process.execPath,['-e','setInterval(()=>{},1000)'],{cwd:tmpdir(),signal:controller.signal});
+    controller.abort();
+    await assert.rejects(owned,/Cancelled/);
+    assert.equal(sibling.exitCode,null);
+    assert.doesNotThrow(()=>process.kill(sibling.pid,0));
+  } finally {
+    // This exact ChildProcess was created here; no process enumeration or name-based cleanup.
+    sibling.kill();
+  }
+});
 const fail = JSON.stringify({ pass:false,summary:'Defect found',findings:[{ severity:'P1',location:'add.js:1',evidence:'add(2,3) returns -1 using a-b',required_fix:'Use addition and add regression assertion' }] });
 function harness(overrides = {}) {
   const state = { branch:'test/isolated',head:'abc',digest:'initial' };

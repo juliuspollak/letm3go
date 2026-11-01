@@ -64,8 +64,8 @@ function nodeExeNear(dp0) {
 
 function substituteVars(value, vars, dp0) {
   return value
-    .replace(/%~dp0/gi, dp0)
-    .replace(/%(dp0|~dp0)%/gi, dp0)
+    .replace(/%~dp0/gi, () => dp0)
+    .replace(/%(dp0|~dp0)%/gi, () => dp0)
     .replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (whole, name) => {
       const key = name.toLowerCase();
       return Object.hasOwn(vars, key) ? vars[key] : whole;
@@ -162,6 +162,7 @@ export function killProcessTree(child) {
   const pid = child?.pid;
   if (!pid) return;
   if (process.platform === 'win32') {
+    if (child.exitCode !== null || child.signalCode !== null) return;
     try {
       spawnSync(taskkill(), ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10000 });
     } catch { /* already exited */ }

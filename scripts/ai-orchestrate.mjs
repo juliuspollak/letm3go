@@ -59,15 +59,41 @@ export function agentEnvironment() {
     'NODE_EXTRA_CA_CERTS'].filter(k => process.env[k]).map(k => [k,process.env[k]]));
   return { ...windowsEnvironment(), ...posix };
 }
+export function executionFailure(result) {
+  const runtimeErrors = String(result.stdout || '').split('\n').flatMap(line => {
+    try {
+      const record = JSON.parse(line);
+      if (record.error || record.event?.type === 'error' || record.finishReason === 'error') return [JSON.stringify(record.error || record.event?.error || record.text)];
+    } catch { /* CLI prose is not an error event. */ }
+    return [];
+  });
+  const text = [result.error, result.stderr, ...runtimeErrors].filter(Boolean).join('\n');
+  if (/ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|fetch failed|authentication failed|unauthorized|api key|rate.limit|\b429\b/i.test(text)) return 'infrastructure';
+  if (result.error || result.signal || result.code === null || result.code === 127) return 'infrastructure';
+  return result.code === 0 ? null : 'agent_execution';
+}
 export async function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, limit = 32*1024*1024, env = agentEnvironment(), signal: abortSignal }) {
   const resolved = resolveCommand(cmd, args, env);
   return new Promise((resolveResult, reject) => {
     const child = spawn(resolved.file,resolved.args,{ cwd,env,detached:true,windowsHide:true,stdio:['pipe','pipe','pipe'] });
-    let stdout = '', stderr = '', bytes = 0, failure;
+    let stdout = '', stderr = '', bytes = 0, failure, settled = false, killDeadline;
+    const settle = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      abortSignal?.removeEventListener('abort',cancel);
+      clearTimeout(timer); clearTimeout(killDeadline);
+      process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel);
+      const result = { code,signal,stdout,stderr,error:failure };
+      if (failure) reject(Object.assign(Error(failure),{ result })); else resolveResult(result);
+    };
     const kill = reason => {
       failure ||= reason;
       if(process.platform!=='win32'||(child.exitCode===null&&child.signalCode===null))killProcessTree(child);
-      setTimeout(()=>{child.stdout.destroy();child.stderr.destroy();},2000).unref();
+      killDeadline ||= setTimeout(()=>{
+        child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy();
+        child.unref();
+        settle(child.exitCode,child.signalCode);
+      },2000);
     };
     const cancel = () => kill('Cancelled');
     process.once('SIGINT',cancel); process.once('SIGTERM',cancel);
@@ -98,8 +124,7 @@ export async function executeProcess(cmd, args, { cwd, input = '', timeout = 900
       clearTimeout(timer); process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel);
       // Terminate any descendants left behind by a CLI, including on success.
       if(process.platform!=='win32')killProcessTree(child);
-      const result = { code,signal,stdout,stderr,error:failure };
-      if (failure) reject(Object.assign(Error(failure),{ result })); else resolveResult(result);
+      settle(code,signal);
     });
   });
 }
@@ -215,10 +240,16 @@ export async function preflight(root, signal) {
     ['claude',['--help'],['--restricted','--tools','--json-schema','--permission-mode']]];
   const reports = [];
   for (const [cmd,args,flags] of checks) {
+    const executable = resolveCommand(cmd,args,agentEnvironment());
+    try {
     const r = await executeProcess(cmd,args,{cwd:root,timeout:30000,limit:1024*1024,signal});
     const v = await executeProcess(cmd,['--version'],{cwd:root,timeout:30000,limit:1024*1024,signal});
-    reports.push({cmd,version:v.stdout.trim(),compatibleHelp:r.code === 0 && v.code === 0 && flags.every(f => r.stdout.includes(f)),
+    reports.push({cmd,executable,version:v.stdout.trim(),compatibleHelp:r.code === 0 && v.code === 0 && flags.every(f => r.stdout.includes(f)),
       authentication:'NOT_TESTED',error:r.code !== 0 ? r.stderr.slice(0,1000) : undefined,helpHash:hash(r.stdout)});
+    } catch (error) {
+      reports.push({cmd,executable,compatibleHelp:false,authentication:'NOT_TESTED',failureKind:'infrastructure',error:error.message});
+      if (signal?.aborted) throw Error('Cancelled',{cause:error});
+    }
   }
   return reports;
 }
@@ -317,9 +348,10 @@ async function main() {
       try { result = await executeProcess(cmd,argv,{cwd,input,timeout,signal:controller.signal}); }
       catch (error) { result = error.result || {code:null,error:error.message,stdout:'',stderr:''}; }
       save(label+'.log',(result.stdout || '')+'\n--- STDERR ---\n'+(result.stderr || ''));
-      Object.assign(entry,{code:result.code,error:result.error,signal:result.signal,finished:new Date().toISOString()});
+      Object.assign(entry,{code:result.code,error:result.error,signal:result.signal,failureKind:executionFailure(result),finished:new Date().toISOString()});
       persist({}); console.log(label+': '+(result.error || 'exit '+result.code));
       if (result.error) throw Error(label+': '+result.error);
+      if (entry.failureKind === 'infrastructure') throw Error(label+': infrastructure failure; no code-repair attempt counted');
       return result;
     };
     const execute = async (role,prompt,cycle) => {
