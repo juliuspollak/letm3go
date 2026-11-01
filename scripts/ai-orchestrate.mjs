@@ -46,13 +46,13 @@ try {
   if (!branch || ['main','master'].includes(branch)) throw new Error('Start from an isolated feature branch, not main.');
   if (git('status', '--porcelain')) throw new Error('Working tree must be clean before starting.');
   if (!dryRun) {
-    for (const cmd of ['cline', 'codex', 'npm']) {
+    for (const cmd of ['cline', 'codex', 'claude', 'npm']) {
       const r = spawnSync('which', [cmd], { encoding: 'utf8' });
       if (r.status !== 0) throw new Error(cmd + ' CLI not found on PATH.');
     }
   }
   if (dryRun) {
-    console.log('DRY RUN: would run Cline (configured DeepSeek), Codex review, web/native checks' + (ios ? ', and unsigned iOS build' : '') + '. No agent commands run.');
+    console.log('DRY RUN: would run Cline (configured DeepSeek), Codex architecture review, Claude QA review, web/native checks' + (ios ? ', and unsigned iOS build' : '') + '. No agent commands run.');
     save(); process.exit(0);
   }
   const base = git('merge-base', 'HEAD', 'main');
@@ -100,6 +100,35 @@ try {
     try { verdict = JSON.parse(readFileSync(reviewOut,'utf8')); }
     catch { throw new Error('Invalid Codex review JSON.'); }
     if (typeof verdict.pass !== 'boolean' || !Array.isArray(verdict.findings)) throw new Error('Incomplete Codex review result.');
+    // Independent Claude QA review; text output must parse as the same fail-closed schema.
+    // The VS Code Claude Code extension can supply the 'claude' command when installed.
+    const claudePrompt = guard + '\nIndependent QA and risk review; do not modify files or execute commands. ' +
+      'Task: ' + task + '. Base commit: ' + base + '. Examine affected code and integration paths, missing test coverage, ' +
+      'edge cases, iOS/watchOS lifecycle, GPS accuracy, privacy, UX regressions and potential concurrency bugs as applicable. ' +
+      'The implementation diff/statistics: ' + diff.slice(0, 10000) + '. ' +
+      'Return ONLY a JSON object with pass (boolean), summary (string), findings (array), ' +
+      'each finding containing severity (P0/P1/P2/P3), location, evidence and required_fix (all strings). ' +
+      'pass=true only with zero actionable findings. If insufficient evidence, pass=false with an explicit finding.';
+    const beforeClaude = git('status','--porcelain');
+    const claude = run('claude', [
+      '-p', '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit,Bash',
+      '--output-format', 'text', '--max-turns', '15', claudePrompt
+    ], 'claude-qa-' + cycle);
+    if (claude.status !== 0 || claude.error) throw new Error('Claude QA failed. See run logs.');
+    if (git('branch', '--show-current') !== branch || git('status','--porcelain') !== beforeClaude) {
+      throw new Error('Claude reviewer changed files or branch; stopping.');
+    }
+    let claudeVerdict;
+    try {
+      claudeVerdict = JSON.parse(claude.stdout.trim().replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/g, ''));
+    } catch { throw new Error('Claude QA did not return valid JSON; cannot mark as passed.'); }
+    if (typeof claudeVerdict.pass !== 'boolean' || !Array.isArray(claudeVerdict.findings) ||
+        typeof claudeVerdict.summary !== 'string' ||
+        claudeVerdict.findings.some(f => !['P0','P1','P2','P3'].includes(f.severity) ||
+          !['location','evidence','required_fix'].every(k => typeof f[k] === 'string' && f[k]))) {
+      throw new Error('Incomplete Claude QA review; cannot mark as passed.');
+    }
+    writeFileSync(join(dir, 'claude-review-' + cycle + '.json'), JSON.stringify(claudeVerdict,null,2));
     const tests = [['npm',['run','check']], ['npm',['run','test:native']]];
     if (ios) tests.push(['npm',['run','ios:sync']], ['npm',['run','ios:build']]);
     const failures = [];
@@ -108,11 +137,11 @@ try {
       const r = run(cmd,a,'test-'+cycle+'-'+i);
       if (r.status !== 0 || r.error) failures.push(cmd+' '+a.join(' ')+' failed; see test log test-'+cycle+'-'+i);
     }
-    if (verdict.pass && verdict.findings.length === 0 && failures.length === 0) {
+    if (verdict.pass && verdict.findings.length === 0 && claudeVerdict.pass && claudeVerdict.findings.length === 0 && failures.length === 0) {
       console.log('PASS: independent review and configured checks. Hardware and UX acceptance still needed.');
       save(); process.exit(0);
     }
-    feedback = JSON.stringify({ review: verdict, failures }, null, 2);
+    feedback = JSON.stringify({ codexReview: verdict, claudeReview: claudeVerdict, failures }, null, 2);
     writeFileSync(join(dir, 'feedback-'+cycle+'.json'), feedback);
     if (cycle === maxCycles) break;
   }
