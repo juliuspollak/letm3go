@@ -25,7 +25,7 @@ export function validateLedger(defects){
  return structuredClone(defects).map(d=>({...d,status:d.status==='confirmed'?'open':d.status,observations:d.observations||[]}));
 }
 export function repairPlan(defects){
- const active=defects.filter(d=>d.kind==='software'&&d.status==='open');
+ const active=defects.filter(d=>d.kind==='software'&&['open','disputed'].includes(d.status));
  return {primary:active.filter(d=>d.failedRepairs<2),escalated:active.filter(d=>d.failedRepairs>=2)};
 }
 export function validateResolutions(review,defects){
@@ -37,11 +37,12 @@ export function validateResolutions(review,defects){
   ids.add(r.id);
   const d=defects.find(d=>d.id===r.id);
   if(!d)throw Error('Resolution references unknown defect '+r.id);
+  if(d.kind==='device'&&r.status!=='device_required')throw Error('Static review cannot close an external device gate: '+r.id);
   if(r.status==='device_required'&&d.kind!=='device')throw Error('Software cannot be relabelled as hardware: '+r.id);
   if(r.status==='persists'&&!review.findings.some(f=>f.id===r.id))throw Error('Persistent defect omitted from findings: '+r.id);
   if(['resolved','disputed'].includes(r.status)&&review.findings.some(f=>f.id===r.id))throw Error('Contradictory resolution '+r.id);
  }
- for(const d of defects.filter(d=>d.status==='open'||d.kind==='device'))if(!ids.has(d.id))throw Error('Missing assessment for '+d.id);
+ for(const d of defects.filter(d=>['open','disputed'].includes(d.status)||d.kind==='device'))if(!ids.has(d.id))throw Error('Missing assessment for '+d.id);
  if(review.findings.some(f=>!ID.test(f.id||'')))throw Error('Finding is missing a stable ID');
  return review;
 }
@@ -58,8 +59,8 @@ export function reconcile(defects,reviews,{revision,actors={}}){
    checks.every(x=>['resolved','disputed'].includes(x.status))?'disputed':'device_required';
   d.observations.push({revision,actor:actors[d.id]||null,checks,status:observed});
   if(actors[d.id])d.lastAuthor=actors[d.id];
-  if(observed==='open'&&actors[d.id]==='developer'&&d.lastFailedRevision!==revision){d.failedRepairs++;d.lastFailedRevision=revision;}
-  if(observed==='resolved'||observed==='disputed'){d.priorFailedRepairs=(d.priorFailedRepairs||0)+d.failedRepairs;d.failedRepairs=0;}
+  if(observed==='open'&&actors[d.id]==='developer'&&d.lastFailedRevision!==revision){d.failedRepairs++;d.lastFailedRevision=revision;(d.failedRepairAttempts||=[]).push({revision,actor:'developer'});}
+  if(observed==='resolved'){d.priorFailedRepairs=(d.priorFailedRepairs||0)+d.failedRepairs;d.failedRepairs=0;}
   d.status=observed;
  }
  // Current findings can reopen an old issue, but a second reviewer on the same

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, closeSyn
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {trackedSchema,validateLedger,repairPlan,validateResolutions,reconcile,blocking,assertEscalationScope} from './ai-defects.mjs';
+import {windowsEnvironment,homeDir,resolveCommand,killProcessTree,nativeCheckPolicy} from './ai-launcher.mjs';
 
 export const schema = {
   type: 'object', additionalProperties: false, required: ['pass', 'summary', 'findings'],
@@ -40,7 +41,7 @@ export function commands(role, report, schemaPath, model = 'deepseek-v4-flash', 
   if (role === 'codex') return ['codex', ['exec','--ignore-user-config','--ephemeral','--sandbox','read-only',
     '--skip-git-repo-check','--output-schema',schemaPath,'--output-last-message',report,'-']];
   if(role!=='claude')throw Error('Unknown agent role: '+role);
-  return ['claude', ['-p','--restricted','--permission-mode','plan','--permission-prompts','none',
+  return ['claude', ['-p','--restricted','--permission-mode','plan',
     '--tools','Read,Glob,Grep','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
     '--disable-slash-commands','--no-session-persistence',
     '--output-format','json','--json-schema',JSON.stringify(outputSchema),'Review the complete task supplied on stdin.']];
@@ -54,16 +55,19 @@ export function claudeVerdict(raw) {
 }
 // Deliberately omit inherited service credentials, Git overrides and deployment settings.
 export function agentEnvironment() {
-  return Object.fromEntries(['PATH','HOME','TMPDIR','LANG','LC_ALL','TERM','USER','LOGNAME',
+  const posix = Object.fromEntries(['PATH','HOME','TMPDIR','LANG','LC_ALL','TERM','USER','LOGNAME',
     'NODE_EXTRA_CA_CERTS'].filter(k => process.env[k]).map(k => [k,process.env[k]]));
+  return { ...windowsEnvironment(), ...posix };
 }
-export function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, limit = 32*1024*1024, env = agentEnvironment(), signal: abortSignal }) {
+export async function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, limit = 32*1024*1024, env = agentEnvironment(), signal: abortSignal }) {
+  const resolved = resolveCommand(cmd, args, env);
   return new Promise((resolveResult, reject) => {
-    const child = spawn(cmd,args,{ cwd,env,detached:true,stdio:['pipe','pipe','pipe'] });
+    const child = spawn(resolved.file,resolved.args,{ cwd,env,detached:true,windowsHide:true,stdio:['pipe','pipe','pipe'] });
     let stdout = '', stderr = '', bytes = 0, failure;
     const kill = reason => {
       failure ||= reason;
-      try { process.kill(-child.pid,'SIGKILL'); } catch { /* Already exited. */ }
+      if(process.platform!=='win32'||(child.exitCode===null&&child.signalCode===null))killProcessTree(child);
+      setTimeout(()=>{child.stdout.destroy();child.stderr.destroy();},2000).unref();
     };
     const cancel = () => kill('Cancelled');
     process.once('SIGINT',cancel); process.once('SIGTERM',cancel);
@@ -81,13 +85,19 @@ export function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, l
     child.stdin.end(input);
     child.once('error',error => { failure = error.message; });
     child.once('exit',() => {
-      try { process.kill(-child.pid,'SIGKILL'); } catch { /* No remaining group. */ }
+      if(process.platform!=='win32')killProcessTree(child);
+      else {
+        // A dead PID can already have been reused. Never taskkill it. If an
+        // orphan holds pipes open, fail boundedly rather than hanging forever.
+        const drain=setTimeout(()=>{failure ||= 'Windows descendant cleanup unverified: output pipes survived parent exit';child.stdout.destroy();child.stderr.destroy();},2000);
+        drain.unref();child.once('close',()=>clearTimeout(drain));
+      }
     });
     child.once('close',(code,signal) => {
       abortSignal?.removeEventListener('abort',cancel);
       clearTimeout(timer); process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel);
       // Terminate any descendants left behind by a CLI, including on success.
-      try { process.kill(-child.pid,'SIGKILL'); } catch { /* No remaining group. */ }
+      if(process.platform!=='win32')killProcessTree(child);
       const result = { code,signal,stdout,stderr,error:failure };
       if (failure) reject(Object.assign(Error(failure),{ result })); else resolveResult(result);
     });
@@ -117,15 +127,20 @@ async function runLifecycle({ task, maxCycles = 5, execute, inspect, persist = (
   let ledger=defects?validateLedger(defects):null;
   const history = [];
   for (let cycle = 1; cycle <= maxCycles; cycle++) {
-    const plan=ledger?repairPlan(ledger):null;
+    const proposed=ledger?repairPlan(ledger):null;
+    // Separate authors into separately reviewed cycles; Codex cannot review a
+    // combined patch containing its own escalation changes.
+    const plan=proposed?.primary.length?{...proposed,escalated:[]}:proposed;
+    if(plan&&!plan.primary.length&&!plan.escalated.length&&feedback.some(t=>t.pass===false))throw Error('Required test failed with no assigned repair; explicit triage required');
     const actors={};
     const prompt = JSON.stringify({ requirements: task, feedback, cycle,
       assignedDefects:plan?.primary, deferredToCodex:plan?.escalated.map(d=>d.id),
       repairPolicy:'Reproduce each assigned failure, fix its root cause, add a regression, verify the original scenario. Do not edit the defects assigned to Codex. Do not mark your own work approved.',
       instructions: 'Work only in the current isolated working directory. Audit surrounding code, implement all requirements, add regression tests. Local edits, tests and commits are allowed. Never push, merge, deploy, run remote SQL, change branches, read secrets or disable tests. Do not modify the orchestrator or its evidence. Do not run other AI agents.' });
-    if(!plan||cycle===1||plan.primary.length){
-      await execute('developer',prompt,cycle);
-      if(plan)for(const d of plan.primary)actors[d.id]='developer';
+    if(!plan||plan.primary.length){
+      const authored = await execute('developer',prompt,cycle);
+      // Assignment is not evidence that a repair touched this defect.
+      if(plan)for(const d of plan.primary)if(authored?.changedFiles?.some(file=>d.files.includes(file)))actors[d.id]='developer';
       if(inspect().branch!==origin.branch)throw Error('Branch changed');
       await checkpoint('developer',cycle);
     }
@@ -158,6 +173,9 @@ async function runLifecycle({ task, maxCycles = 5, execute, inspect, persist = (
     state = inspect();
     if (state.branch !== origin.branch || state.head !== reviewedHead || state.digest !== reviewed) throw Error('Checks modified reviewed source; verification invalid');
     if (!Array.isArray(tests) || !tests.length || tests.some(t => typeof t.pass !== 'boolean' || !t.name)) throw Error('Missing test evidence');
+    // Deferred checks (e.g. macOS-only native Apple gates on Windows) are
+    // recorded but never sent back for repair; they block full VERIFIED.
+    const deferred = tests.filter(t => t.deferred);
     // Deduplicate exact evidence only; preserve the highest severity.
     const findings = new Map();
     for (const f of reviews.flatMap(r => r.findings)) {
@@ -165,14 +183,16 @@ async function runLifecycle({ task, maxCycles = 5, execute, inspect, persist = (
       if (!findings.has(key) || f.severity < findings.get(key).severity) findings.set(key,f);
     }
     feedback = [...findings.values()].sort((a,b) => a.severity.localeCompare(b.severity));
-    feedback.push(...tests.filter(t => !t.pass));
+    feedback.push(...tests.filter(t => !t.pass && !t.deferred));
     if(ledger){
       ledger=reconcile(ledger,reviews,{revision:reviewedHead+':'+reviewed,actors});
-      feedback=[...blocking(ledger),...tests.filter(t=>!t.pass)];
+      feedback=[...blocking(ledger),...tests.filter(t=>!t.pass && !t.deferred)];
     }
-    history.push({ cycle, reviews, tests, feedback, digest: reviewed,reviewedCommit:reviewedHead,actors,approvers,ledger });
-    persist({ status: feedback.length ? 'REPAIR_REQUIRED' : 'VERIFIED', history,ledger });
-    if (!feedback.length) return { status: 'VERIFIED', history,ledger };
+    history.push({ cycle, reviews, tests, feedback, deferred, digest: reviewed,reviewedCommit:reviewedHead,actors,approvers,ledger });
+    const externalGates=ledger?.filter(d=>d.kind==='device')||[];
+    const finalStatus = feedback.length ? 'REPAIR_REQUIRED' : (deferred.length||externalGates.length ? 'PARTIAL_DEFERRED' : 'VERIFIED');
+    persist({ status: finalStatus, history,ledger });
+    if (!feedback.length) return { status: finalStatus, history,ledger };
   }
   return { status: 'BLOCKED', reason: 'Retry limit exhausted', history,ledger };
 }
@@ -186,10 +206,13 @@ export async function lifecycle(options) {
     throw error;
   }
 }
+export function platformTestCommands(platform = process.platform) {
+  return [['npm',['run','check']], ...(nativeCheckPolicy(platform).runnable ? [['npm',['run','test:native']]] : [])];
+}
 export async function preflight(root, signal) {
   const checks = [['cline',['--help'],['--provider','--model','--yolo','--json','--retries','--timeout']],
     ['codex',['exec','--help'],['--ignore-user-config','--sandbox','--output-schema','--output-last-message']],
-    ['claude',['--help'],['--restricted','--tools','--json-schema','--permission-prompts']]];
+    ['claude',['--help'],['--restricted','--tools','--json-schema','--permission-mode']]];
   const reports = [];
   for (const [cmd,args,flags] of checks) {
     const r = await executeProcess(cmd,args,{cwd:root,timeout:30000,limit:1024*1024,signal});
@@ -205,7 +228,7 @@ export function integrationEvidence(history) {
       !r.findings.some(f => /subtract|a\s*-\s*b/i.test(f.evidence+' '+f.required_fix))) ||
       !first.tests?.some(t => !t.pass)) throw Error('Integration did not prove both reviewers detected the seeded subtraction defect and the first tests failed');
 }
-export function deepseekProfile(home = process.env.HOME) {
+export function deepseekProfile(home = homeDir()) {
   const path = join(home,'.cline/data/settings/providers.json');
   if (!existsSync(path)) throw Error('Missing Cline provider settings. Run cline auth deepseek.');
   const settings = JSON.parse(readFileSync(path,'utf8')).providers?.deepseek?.settings;
@@ -269,11 +292,14 @@ async function main() {
   }
   const controller = new AbortController();
   const cancel = () => controller.abort();
-  process.once('SIGINT',cancel); process.once('SIGTERM',cancel);
+  const cancelMessage = message => { if(message?.type==='cancel')cancel(); };
+  process.once('SIGINT',cancel); process.once('SIGTERM',cancel); process.once('SIGBREAK',cancel);
+  process.on('message',cancelMessage);
   try {
     const checks = await preflight(root,controller.signal);
     save('preflight.json',checks);
     if (checks.some(c => !c.compatibleHelp)) throw Error('CLI preflight failed; see preflight.json');
+    if(process.platform==='win32')throw Error('Windows automatic agent execution remains BLOCKED pending independent approval of process containment; preflight is diagnostic only');
     const profile = deepseekProfile(); persist({deepseek:profile});
     if (!integration) {
       const scripts = JSON.parse(readFileSync(join(root,'package.json'),'utf8')).scripts;
@@ -298,14 +324,21 @@ async function main() {
     };
     const execute = async (role,prompt,cycle) => {
       if (role === 'tests') {
+        const native = nativeCheckPolicy();
         const tests = integration ? [[process.execPath,['-e',
-          "const assert=require('node:assert/strict');const add=require('./addition.cjs');for(const [a,b] of [[2,3],[-2,3],[0,0],[-0,-0],[1.5,2.5],[Number.MAX_VALUE,Number.MAX_VALUE]]) assert.equal(add(a,b),a+b);"]]] : [['npm',['run','check']],['npm',['run','test:native']]];
+          "const assert=require('node:assert/strict');const add=require('./addition.cjs');for(const [a,b] of [[2,3],[-2,3],[0,0],[-0,-0],[1.5,2.5],[Number.MAX_VALUE,Number.MAX_VALUE]]) assert.equal(add(a,b),a+b);"]]] : platformTestCommands();
         const results = [];
         for (const [cmd,argv] of tests) {
           const label = 'tests-'+cycle+'-'+results.length;
           const r = await run(cmd,argv,label);
           if (r.signal || r.code === null || r.code === 127) throw Error('Required tests could not run: '+label);
           results.push({name:cmd+' '+argv.join(' '),pass:r.code === 0,log:join(dir,label+'.log'),evidence:(r.stdout+'\n'+r.stderr).slice(-12000)});
+        }
+        // Explicit partial-Windows policy: native Apple checks are deferred to
+        // macOS and recorded (never silently skipped) so Windows runs cannot
+        // claim full VERIFIED for Swift/Xcode/iOS/Watch work.
+        if (!integration) {
+          if (!native.runnable) results.push({ name:native.name, pass:false, deferred:true, reason:native.reason });
         }
         return results;
       }
@@ -334,7 +367,7 @@ async function main() {
           writeFileSync(join(cwd,'addition.cjs'),'module.exports = (a,b) => a-b;\n');
           save('injected-defect.json',{cycle,reason:'Controlled subtraction defect injected after real Cline implementation, before both independent reviews and executable tests'});
         }
-        return '';
+        return {changedFiles:report.executions.at(-1).changedFiles};
       }
       const raw = role === 'codex' ? readFileSync(output,'utf8') : claudeVerdict(result.stdout);
       save(label+'.json',verdict(raw));
@@ -355,10 +388,11 @@ async function main() {
     persist({status:'BLOCKED',reason:error.message,finished:new Date().toISOString()});
     process.exitCode = 1;
   } finally {
-    process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel);
+    process.removeListener('SIGINT',cancel); process.removeListener('SIGTERM',cancel); process.removeListener('SIGBREAK',cancel);
+    process.removeListener('message',cancelMessage);
     closeSync(lockFd); unlinkSync(lock);
   }
-  console.log(report.status+': '+(report.reason || 'Both independent reviewers and required tests passed')+'; report: '+join(dir,'summary.json'));
+  console.log(report.status+': '+(report.reason || 'Inspect actual approvers, test results and deferred gates in the report')+'; report: '+join(dir,'summary.json'));
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(e => {
   console.error('BLOCKED: '+e.message); process.exitCode = 1;

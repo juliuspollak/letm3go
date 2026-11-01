@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lifecycle, verdict, bounded, commands, snapshot, executeProcess, claudeVerdict, agentEnvironment, deepseekProfile, integrationEvidence } from '../../scripts/ai-orchestrate.mjs';
+import { lifecycle, verdict, bounded, commands, snapshot, executeProcess, claudeVerdict, agentEnvironment, deepseekProfile, integrationEvidence, platformTestCommands } from '../../scripts/ai-orchestrate.mjs';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
+import {killProcessTree} from '../../scripts/ai-launcher.mjs';
 const pass = JSON.stringify({ pass:true,summary:'Inspected complete implementation',findings:[] });
 const fail = JSON.stringify({ pass:false,summary:'Defect found',findings:[{ severity:'P1',location:'add.js:1',evidence:'add(2,3) returns -1 using a-b',required_fix:'Use addition and add regression assertion' }] });
 function harness(overrides = {}) {
@@ -143,9 +145,20 @@ test('DeepSeek profile validation rejects absent, wrong and unauthenticated prof
   writeFileSync(file,JSON.stringify({providers:{deepseek:{settings:{provider:'deepseek',model:'deepseek-v4-flash',apiKey:'test'}}}}));
   assert.deepEqual(deepseekProfile(home),{provider:'deepseek',model:'deepseek-v4-flash'});
 });
-test('exited CLI cleans descendants holding output pipes without timing out',async () => {
-  const r = await executeProcess(process.execPath,['-e',`require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'}).unref()`],{cwd:tmpdir(),timeout:2000});
-  assert.equal(r.code,0);
+test('exited CLI cleans a confirmed live descendant holding output pipes',async () => {
+  const dir=mkdtempSync(join(tmpdir(),'orphan-regression-')),marker=join(dir,'pid');
+  const childCode="process.send('ready');setInterval(()=>{},1000)";
+  const parentCode=    "const c=require('node:child_process').spawn(process.execPath,['-e',"+JSON.stringify(childCode)+"],{stdio:['ignore',1,2,'ipc']});c.on('message',()=>{require('node:fs').writeFileSync("+JSON.stringify(marker)+",String(c.pid));process.exit(0)});";
+  try {
+    const r=await executeProcess(process.execPath,['-e',parentCode],{cwd:dir,timeout:30000});
+    assert.equal(r.code,0);
+    assert.ok(existsSync(marker),'a real descendant started before parent exit');
+    const pid=Number(readFileSync(marker,'utf8'));let alive=true;try{process.kill(pid,0);}catch{alive=false;}
+    assert.equal(alive,false,'inherited output pipe owner must be terminated');
+  } finally {
+    // Only this fixture's own confirmed child, never process-name cleanup.
+    if(existsSync(marker))killProcessTree({pid:Number(readFileSync(marker,'utf8'))});
+  }
 });
 test('integration refuses reviewers missing the seed or a test that never failed',() => {
   const first = {reviews:[JSON.parse(fail),JSON.parse(fail)],tests:[{pass:false}]};
@@ -162,7 +175,7 @@ function cliWorkspace() {
   execFileSync('git',['-C',source,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','fixture']);
   execFileSync('git',['-C',source,'worktree','add','-qb','test/fixture',cwd],{stdio:'pipe'});
   const artifacts = join(cwd,'.build/ai-orchestrator'); mkdirSync(artifacts,{recursive:true});
-  const script = new URL('../../scripts/ai-orchestrate.mjs',import.meta.url).pathname;
+  const script = fileURLToPath(new URL('../../scripts/ai-orchestrate.mjs',import.meta.url));
   const summary = () => JSON.parse(readFileSync(join(artifacts,readdirSync(artifacts).find(p => p !== 'active.lock'),'summary.json'),'utf8'));
   return {base,cwd,artifacts,script,summary};
 }
@@ -177,14 +190,15 @@ test('SIGTERM during actual preflight records BLOCKED and releases run lock',asy
   const w = cliWorkspace(), bin = join(w.base,'bin'), marker = join(w.base,'preflight-started');
   mkdirSync(bin);
   writeFileSync(join(bin,'cline'),'#!'+process.execPath+'\nrequire("node:fs").writeFileSync('+JSON.stringify(marker)+',"started");setInterval(()=>{},1000);',{mode:0o700});
-  const child = spawn(process.execPath,[w.script,'--integration-test'],{cwd:w.cwd,env:{...agentEnvironment(),PATH:bin+':'+process.env.PATH},stdio:'pipe'});
+  if(process.platform==='win32')writeFileSync(join(bin,'cline.cmd'),'@echo off\r\n"'+process.execPath+'" "%~dp0\\cline" %*\r\n');
+  const child = spawn(process.execPath,[w.script,'--integration-test'],{cwd:w.cwd,env:{...agentEnvironment(),PATH:bin+delimiter+process.env.PATH},stdio:['pipe','pipe','pipe','ipc']});
   const done = new Promise(resolve => child.once('close',resolve));
   try {
     const start = Date.now();
-    while (!existsSync(marker) && Date.now()-start < 5000) await new Promise(r => setTimeout(r,20));
+    while (!existsSync(marker) && Date.now()-start < 30000) await new Promise(r => setTimeout(r,20));
     assert.ok(existsSync(marker),'preflight actually started');
-    child.kill('SIGTERM');
-    const code = await Promise.race([done,new Promise((_,reject) => { const timer=setTimeout(()=>reject(Error('Cancellation hung')),5000); timer.unref(); })]);
+    if(process.platform==='win32')child.send({type:'cancel'});else child.kill('SIGTERM');
+    const code = await Promise.race([done,new Promise((_,reject) => { const timer=setTimeout(()=>reject(Error('Cancellation hung')),30000); timer.unref(); })]);
     assert.equal(code,1); assert.equal(w.summary().status,'BLOCKED');
     assert.match(w.summary().reason,/Cancelled/); assert.equal(existsSync(join(w.artifacts,'active.lock')),false);
   } finally { child.kill('SIGKILL'); }
@@ -193,4 +207,14 @@ test('SIGTERM during actual preflight records BLOCKED and releases run lock',asy
 test('large real CLI output fits the bounded long-task allowance',async () => {
   const r = await executeProcess(process.execPath,['-e','process.stdout.write("x".repeat(9*1024*1024))'],{cwd:tmpdir()});
   assert.equal(r.code,0); assert.equal(Buffer.byteLength(r.stdout),9*1024*1024);
+});
+
+test('platform checks preserve the macOS native suite and explicitly defer it on Windows',()=>{
+ assert.deepEqual(platformTestCommands('darwin'),[['npm',['run','check']],['npm',['run','test:native']]]);
+ assert.deepEqual(platformTestCommands('win32'),[['npm',['run','check']]]);
+});
+test('deferred native checks terminate partial without consuming another implementation cycle',async()=>{
+ const h=harness({execute:async({execute},role,...args)=>role==='tests'?[{name:'web',pass:true},{name:'native',pass:false,deferred:true,reason:'Requires macOS'}]:['codex','claude'].includes(role)?pass:execute(role,...args)});
+ const r=await lifecycle(h.options);
+ assert.equal(r.status,'PARTIAL_DEFERRED');assert.equal(r.history.length,1);assert.deepEqual(r.history[0].feedback,[]);
 });

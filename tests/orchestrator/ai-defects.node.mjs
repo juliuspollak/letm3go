@@ -44,7 +44,7 @@ test('tracked lifecycle escalates after two actual failed DeepSeek repairs and r
  const result=await lifecycle({task:'Fix the confirmed defect',defects:[defect()],maxCycles:3,inspect:()=>({...state}),
   execute:async(role,prompt,cycle)=>{
    calls.push({role,cycle,prompt});
-   if(['developer','escalation'].includes(role)){state.digest='edit-'+(++generation);return '';}
+   if(['developer','escalation'].includes(role)){state.digest='edit-'+(++generation);return {changedFiles:['src/example.js']};}
    if(role==='tests')return [{name:'regression',pass:cycle===3}];
    const value=review(role,cycle===3?'resolved':'persists');delete value.role;return JSON.stringify(value);
   }});
@@ -60,4 +60,39 @@ test('implementation uses a writable Codex session, reviews use read-only',()=>{
  assert.ok(commands('escalation','out','schema')[1].includes('workspace-write'));
  assert.ok(commands('codex','out','schema')[1].includes('read-only'));
  assert.throws(()=>commands('unknown','out','schema'),/Unknown/);
+});
+
+test('untouched assigned defects do not acquire failed repair credit',async()=>{
+ const one=defect('BUG-ONE'),two={...defect('BUG-TWO'),files:['src/other.js']};let generation=0;
+ const result=await lifecycle({task:'Repair only what was actually changed',defects:[one,two],maxCycles:1,
+ inspect:()=>({head:'head',branch:'feature/test',digest:String(generation)}),
+ execute:async role=>{
+  if(role==='developer'){generation++;return {changedFiles:['src/example.js']};}
+  if(role==='tests')return [{name:'web',pass:true}];
+  const r=review(role);delete r.role;r.findings.push(finding('BUG-TWO'));r.resolutions.push(review(role,'persists','BUG-TWO').resolutions[0]);return JSON.stringify(r);
+ }});
+ assert.equal(result.ledger[0].failedRepairs,1);assert.equal(result.ledger[1].failedRepairs,0);
+ assert.equal(result.ledger[0].failedRepairAttempts.length,1);
+});
+test('disputes keep confirmed software blocking and retain prior repair history',()=>{
+ const d=reconcile([defect('BUG-ONE',2)],[review('codex','disputed'),review('claude','resolved')],{revision:'dispute'});
+ assert.equal(d[0].status,'disputed');assert.equal(d[0].failedRepairs,2);assert.equal(repairPlan(d).escalated.length,1);
+ assert.throws(()=>validateResolutions({...review('claude','resolved'),resolutions:[]},d),/Missing assessment/);
+});
+test('a static reviewer cannot resolve an external device gate',()=>{
+ const device={...defect('DEVICE-NATIVE-UX'),kind:'device',status:'device_required'};
+ assert.throws(()=>validateResolutions(review('claude','resolved','DEVICE-NATIVE-UX'),[device]),/external device gate/);
+});
+test('mixed authors use separate cycles and independent approvals',async()=>{
+ let generation=0;const calls=[];
+ const result=await lifecycle({task:'Separate authors',defects:[defect('BUG-ONE'),defect('BUG-TWO',2)],maxCycles:2,
+ inspect:()=>({head:'head',branch:'feature/test',digest:String(generation)}),execute:async(role,prompt,cycle)=>{
+ calls.push({role,cycle});if(['developer','escalation'].includes(role)){generation++;return {changedFiles:['src/example.js']};}
+ if(role==='tests')return [{name:'web',pass:true}];
+ const a=review(role,'resolved'),b=review(role,cycle===1?'persists':'resolved','BUG-TWO');
+ return JSON.stringify({pass:cycle===2,summary:'Independent combined assessment',findings:b.findings,resolutions:[...a.resolutions,...b.resolutions]});
+ }});
+ assert.equal(result.status,'VERIFIED');assert.equal(calls.some(c=>c.cycle===1&&c.role==='escalation'),false);
+ assert.ok(calls.some(c=>c.cycle===1&&c.role==='codex'));assert.equal(calls.some(c=>c.cycle===2&&c.role==='developer'),false);
+ assert.equal(calls.some(c=>c.cycle===2&&c.role==='codex'),false);
 });
