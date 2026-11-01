@@ -31,6 +31,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     private var inFlight: Set<String> = []
     private var retryTimer: Timer?
     private var lastPresence: RecordingPresence?
+    private var lastQueuedPresence: RecordingPresence?
     private let queue = WatchTransferQueue.shared
 
     private override init() {
@@ -73,11 +74,18 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
 
     // The latest state goes in the context, which survives an unreachable phone;
     // a reachable phone also hears it at once.
-    func announce(_ presence: RecordingPresence) {
+    func announce(_ value: RecordingPresence) {
+        let presence = CrossDeviceRecording.completed(value, previous: lastPresence)
         lastPresence = presence
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
         let session = WCSession.default
         try? session.updateApplicationContext(["recording": presence.dictionary])
+        // Queue transitions as well as context/message delivery. Heartbeats do
+        // not fill the queue; delayed start/end transitions are ordered by time.
+        if lastQueuedPresence?.sessionID != presence.sessionID || lastQueuedPresence?.state != presence.state || lastQueuedPresence?.ownerID != presence.ownerID {
+            session.transferUserInfo(["recording": presence.dictionary])
+            lastQueuedPresence = presence
+        }
         if session.isReachable { session.sendMessage(["recording": presence.dictionary], replyHandler: nil, errorHandler: nil) }
         flushDiagnostics()
     }
@@ -168,6 +176,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     }
 
     private func receive(_ context: [String: Any]) {
+        receiveAcknowledgements(context["acknowledgements"])
         if let presence = RecordingPresence(dictionary: context["recording"]), presence.device == RecordingPresence.iPhone {
             remoteRecording = CrossDeviceRecording.merged(remoteRecording, presence)
         }
@@ -211,10 +220,19 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     // The outbox as it stands, for the history list's sync status.
     func outboxEntries() -> [WatchOutboxEntry] { queue.outbox.loadIndex() }
 
+    private func receiveAcknowledgements(_ value: Any?) {
+        for receipt in WatchAcknowledgement.decode(value) {
+            // Repeated context snapshots are idempotent and do not overwrite
+            // another ride's status or resurrect an already-cleared outbox item.
+            if queue.contains(receipt.id) { acknowledge([receipt.id], status: receipt.status) }
+        }
+    }
+
     // `saved`, `duplicate` and `rejected` retire the ride. `parked` means the phone
     // kept the payload but cannot attribute it to the open account: the ride stays on
     // the watch without being retried, waiting for the rider to resolve it.
-    private func acknowledge(_ ids: [String], status: String) {
+    private func acknowledge(_ incomingIDs: [String], status: String) {
+        let ids = incomingIDs.filter { queue.contains($0) }
         guard !ids.isEmpty else { return }
         var removedAny = false
         var clearFailed = false
@@ -235,6 +253,9 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         default: lastMessage = clearFailed ? "Saved on iPhone · clearing the Watch copy failed" : "iPhone saved this ride"
         }
         refreshCounts()
+        WatchDiagnostics.log("watch", "Watch import acknowledgement received", ["status": status])
+        if removedAny { WatchDiagnostics.log("watch", "Watch imported payload retired", ["status": status]) }
+        if clearFailed { WatchDiagnostics.log("watch", "Watch payload retirement failed; retained for retry") }
         if removedAny { sendPending() }
     }
 }
@@ -248,13 +269,20 @@ extension WatchConnectivitySession: WCSessionDelegate {
             self.reconcileQueue()
             self.rejoinTransfers()
             self.receive(context)
+            // A manual start may precede WC activation. Send its saved state now
+            // rather than waiting for a later 45-second heartbeat.
+            if let presence = self.lastPresence { self.announce(presence) }
             self.flushDiagnostics()
         }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        guard let presence = RecordingPresence(dictionary: message["recording"]), presence.device == RecordingPresence.iPhone else { return }
-        DispatchQueue.main.async { self.remoteRecording = CrossDeviceRecording.merged(self.remoteRecording, presence) }
+        DispatchQueue.main.async {
+            self.receiveAcknowledgements(message["acknowledgements"])
+            if let presence = RecordingPresence(dictionary: message["recording"]), presence.device == RecordingPresence.iPhone {
+                self.remoteRecording = CrossDeviceRecording.merged(self.remoteRecording, presence)
+            }
+        }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -273,8 +301,8 @@ extension WatchConnectivitySession: WCSessionDelegate {
         DispatchQueue.main.async {
             self.sendPending()
             // Back in range: say where the recording stands rather than wait for the heartbeat.
-            if var presence = self.lastPresence, presence.isActive, session.isReachable {
-                presence.updatedAt = Date().timeIntervalSince1970
+            if var presence = self.lastPresence, session.isReachable {
+                if presence.isActive { presence.updatedAt = Date().timeIntervalSince1970 }
                 self.announce(presence)
             }
         }

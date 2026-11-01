@@ -1456,11 +1456,41 @@ struct WatchParkedSummary: Equatable {
     var parkedAt: Double
 }
 
+// A durable application-level receipt, distinct from WC file delivery. It contains
+// no route or health data and travels only to the paired Watch.
+struct WatchAcknowledgement: Codable, Equatable {
+    var id: String
+    var status: String
+    var at: Double
+    var dictionary: [String: Any] { ["id": id, "status": status, "at": at] }
+    static let statuses: Set<String> = ["saved", "duplicate", "rejected", "parked"]
+    static func decode(_ value: Any?) -> [WatchAcknowledgement] {
+        guard let values = value as? [[String: Any]] else { return [] }
+        return values.prefix(100).compactMap { item in
+            guard let id = item["id"] as? String, !id.isEmpty, id.count <= 100,
+                  let status = item["status"] as? String, statuses.contains(status),
+                  let at = item["at"] as? Double, at.isFinite else { return nil }
+            return WatchAcknowledgement(id: id, status: status, at: at)
+        }
+    }
+}
+
 struct WatchInboxState: Codable, Equatable {
     var recording: RecordingPresence?
+    var acknowledgements: [WatchAcknowledgement]?
     var schema = 1
     var entries: [WatchInboxEntry] = []
 
+    mutating func acknowledge(_ groups: [(status: String, ids: [String])], at: Double) {
+        var receipts = acknowledgements ?? []
+        for group in groups where WatchAcknowledgement.statuses.contains(group.status) {
+            for id in group.ids where !id.isEmpty && id.count <= 100 {
+                receipts.removeAll { $0.id == id }
+                receipts.append(WatchAcknowledgement(id: id, status: group.status, at: at))
+            }
+        }
+        acknowledgements = Array(receipts.suffix(100))
+    }
     var active: [WatchInboxEntry] { entries.filter { !$0.isParked } }
     var parked: [WatchInboxEntry] { entries.filter(\.isParked) }
 

@@ -252,6 +252,10 @@ enum CrossDeviceRecording {
     static let heartbeat = 45.0
     static let freshness = 150.0
     static let clockTolerance = 60.0
+    // Ownership is deliberately longer than live-icon freshness. Going out of
+    // range must not grant the phone permission to record a second activity.
+    // Explicit completion releases immediately; an abandoned session is bounded.
+    static let automaticOwnershipLease = 12 * 3600.0
 
     // The other device's recording, when it is known, current and this account's.
     static func active(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> RecordingPresence? {
@@ -274,7 +278,38 @@ enum CrossDeviceRecording {
         return other.sessionID.lowercased() != localSession.lowercased()
     }
     static func suppressesAutomaticStart(remote: RecordingPresence?, ownerID: String?, now: Double) -> Bool {
-        active(remote, ownerID: ownerID, now: now)?.device == RecordingPresence.watch
+        automaticOwner(remote, ownerID: ownerID, now: now) != nil
+    }
+    static func automaticOwner(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> RecordingPresence? {
+        guard let remote, remote.device == RecordingPresence.watch, remote.isActive,
+              let owner = WatchOwnership.normalize(ownerID), WatchOwnership.normalize(remote.ownerID) == owner,
+              !remote.sessionID.isEmpty, remote.startedAt.isFinite, remote.startedAt > 0,
+              remote.startedAt <= remote.updatedAt, remote.updatedAt - now <= clockTolerance,
+              now - remote.updatedAt <= automaticOwnershipLease else { return nil }
+        return remote
+    }
+    static func completedInterval(_ remote: RecordingPresence?, ownerID: String?, now: Double) -> ClosedRange<Double>? {
+        guard let remote, remote.device == RecordingPresence.watch, remote.state == "idle",
+              let owner = WatchOwnership.normalize(ownerID), WatchOwnership.normalize(remote.ownerID) == owner,
+              !remote.sessionID.isEmpty, remote.startedAt.isFinite, remote.startedAt > 0,
+              remote.updatedAt.isFinite, remote.updatedAt >= remote.startedAt,
+              remote.updatedAt - now <= clockTolerance else { return nil }
+        return remote.startedAt...remote.updatedAt
+    }
+    static func excludesAutomaticFix(_ timestamp: Double, remote: RecordingPresence?, ownerID: String?, now: Double) -> Bool {
+        if automaticOwner(remote, ownerID: ownerID, now: now) != nil { return true }
+        return completedInterval(remote, ownerID: ownerID, now: now)?.contains(timestamp) == true
+    }
+    // Retain the completed interval, including when an older peer sends an idle
+    // packet without session fields. Delayed GPS inside it must not start a trip.
+    static func completed(_ incoming: RecordingPresence, previous: RecordingPresence?) -> RecordingPresence {
+        guard incoming.state == "idle", incoming.sessionID.isEmpty,
+              let previous, previous.isActive, previous.device == incoming.device,
+              previous.ownerID == incoming.ownerID,
+              incoming.updatedAt - previous.updatedAt <= automaticOwnershipLease else { return incoming }
+        var result = incoming
+        result.sessionID = previous.sessionID; result.startedAt = previous.startedAt; result.activity = previous.activity
+        return result
     }
     // The newest word wins. A context delivered late must not undo a message that
     // already said the recording ended.
@@ -284,10 +319,10 @@ enum CrossDeviceRecording {
         // At an equal timestamp termination wins, independently of delivery order.
         if current.updatedAt == incoming.updatedAt {
             if current.state == "idle" { return current }
-            if incoming.state == "idle" { return incoming }
+            if incoming.state == "idle" { return completed(incoming, previous: current) }
             if current.state == "paused" { return current }
         }
-        return incoming
+        return completed(incoming, previous: current)
     }
     static func overlapSeconds(_ startA: Double, _ endA: Double, _ startB: Double, _ endB: Double) -> Double {
         max(0, min(endA, endB) - max(startA, startB))

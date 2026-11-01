@@ -115,6 +115,7 @@ extension LocationRecorder {
         // A stopped journey is a published record, not an unfinished one: it is
         // restored as a journey that may still be continued.
         trips = records.filter { $0.state == "finished" || $0.isProvisional }
+        watchAutomaticSuppressed = false
         active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil
         detector.reset();departureEvidence.reset();movementTransition.reset()
         dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""

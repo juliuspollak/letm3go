@@ -38,7 +38,6 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // polling or relaunching. Set by the Capacitor plugin.
     var journeyChangeHandler: (() -> Void)?
     func notifyJourneyChange() { journeyChangeHandler?(); WatchSessionManager.shared.noteRecorderChanged() }
-    var watchSuppressionLoggedAt: Double = 0
     var movementTransition = MovementTransition()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
@@ -127,6 +126,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // No journey, published stop or departure check is open.
     var automaticIdle: Bool { automaticTrip == nil && settledTripID == nil && (automaticSampling.probeUntil ?? 0) <= Date().timeIntervalSince1970 }
     var departureEvidence = DepartureEvidence()
+    var watchAutomaticSuppressed = false
     var automaticProbeTimer: Timer?
     var automaticEnabled = false
     // Native background sharing. Friends use the short-lived session token (off
@@ -571,11 +571,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             self.noteExecution("timer")
             if !self.recordingHealthLooked {self.noteRecordingHealth()}
             self.diagnosticSummary()
+            let watchOwnsRecording = self.reconcileWatchRecordingExclusion()
             self.reconcileAutomaticSampling()
-            self.recoverStalledAutomaticGPS()
+            if !watchOwnsRecording { self.recoverStalledAutomaticGPS() }
             self.confirmHouseholdLocation()
             WatchSessionManager.shared.noteRecorderChanged()
             let now = Date().timeIntervalSince1970
+            guard !watchOwnsRecording else { return }
             self.checkDwellInference(now:now)
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
             guard self.automaticTrip != nil, self.detector.shouldArrive(now:now,activity:self.automaticTrip?.activity ?? "Driving") else { return }

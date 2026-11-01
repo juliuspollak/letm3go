@@ -3601,4 +3601,68 @@ do {
     check(chips.frames[3].width==220 && chips.frames[3].minY==100 && chips.height==144,"a chip wider than the panel is limited to it")
     check(wrapMapChips([],available:200).height==0,"an empty section takes no space")
 }
+// Manual Watch ownership spans every automatic path, including an open drive.
+do {
+    let owner = "watch-exclusion-owner", start = 10_000.0
+    let watch = RecordingPresence(device: "watch", ownerID: owner, sessionID: "manual-bike", activity: "Cycling", state: "recording", startedAt: start, updatedAt: start)
+    for elapsed in [0.0, 180, 1800, 7200] {
+        check(CrossDeviceRecording.suppressesAutomaticStart(remote: watch, ownerID: owner, now: start + elapsed), "a known manual workout excludes phone automation even after icon freshness expires")
+        for _ in ["depart", "continue", "transition", "restore", "timer"] {
+            check(CrossDeviceRecording.excludesAutomaticFix(start + elapsed, remote: watch, ownerID: owner, now: start + elapsed), "all automatic observations during Watch ownership are excluded")
+        }
+    }
+    check(CrossDeviceRecording.active(watch, ownerID: owner, now: start + 180) == nil, "live icon freshness remains independent of exclusive recording ownership")
+    var paused = watch; paused.state = "paused"
+    check(CrossDeviceRecording.suppressesAutomaticStart(remote: paused, ownerID: owner, now: start + 180), "pausing a manual workout does not start incidental automatic activities")
+    check(!CrossDeviceRecording.suppressesAutomaticStart(remote: watch, ownerID: "someone-else", now: start), "another account cannot suppress this recorder")
+    check(!CrossDeviceRecording.suppressesAutomaticStart(remote: watch, ownerID: owner, now: start + CrossDeviceRecording.automaticOwnershipLease + 1), "abandoned ownership is bounded")
+    let ended = CrossDeviceRecording.merged(watch, .idle(device: "watch", ownerID: owner, now: start + 7200))
+    check(ended.sessionID == watch.sessionID && ended.startedAt == start && ended.state == "idle", "completion retains the manual interval even from an older Watch")
+    let longAbandonedIdle = CrossDeviceRecording.merged(watch, .idle(device: "watch", ownerID: owner, now: start + CrossDeviceRecording.automaticOwnershipLease + 1))
+    check(longAbandonedIdle.sessionID.isEmpty, "an unidentifiable idle packet after an abandoned lease cannot fabricate a long workout interval")
+
+    check(!CrossDeviceRecording.suppressesAutomaticStart(remote: ended, ownerID: owner, now: start + 7201), "explicit finish releases automation immediately")
+    check(CrossDeviceRecording.completedInterval(ended, ownerID: "another-owner", now: start + 7201) == nil, "foreign completed sessions cannot close this account's draft")
+    check(CrossDeviceRecording.completedInterval(ended, ownerID: owner, now: start - 500) == nil, "a future terminal packet cannot close a current drive")
+    check(CrossDeviceRecording.completedInterval(ended, ownerID: nil, now: start + 7201) == nil, "no account grants no closing authority")
+
+    check(CrossDeviceRecording.excludesAutomaticFix(start + 100, remote: ended, ownerID: owner, now: start + 7201), "delayed GPS during the completed manual interval cannot record a second activity")
+    check(!CrossDeviceRecording.excludesAutomaticFix(start + 7201, remote: ended, ownerID: owner, now: start + 7201), "drive home after the manual end may record normally")
+    check(CrossDeviceRecording.merged(ended, watch) == ended, "delayed start packets cannot reactivate ended ownership")
+    var oldDrive = RecordedActivity(activity: "Driving", startedAt: start - 600, resumedAt: start - 600, title: "Drive")
+    oldDrive.recordingMode = "automatic"
+    oldDrive.points = [GPSPoint(latitude: 1, longitude: 2, timestamp: start-20, accuracy: 5, altitude: 0, speed: 10),
+                      GPSPoint(latitude: 1.001, longitude: 2, timestamp: start-1, accuracy: 5, altitude: 0, speed: 10),
+                      GPSPoint(latitude: 1.002, longitude: 2, timestamp: start+30, accuracy: 5, altitude: 0, speed: 3)]
+    let closed = JourneySplit.kept(oldDrive, before: watch.startedAt)!
+    check(closed.id == oldDrive.id && closed.endedAt == start-1 && closed.points.count == 2, "the approach drive closes at its own pre-workout fix")
+    check(oldDrive.points.count == 3, "closing a draft does not mutate its original value or another activity")
+    var checkpoint = WatchInboxState(); checkpoint.recording = ended
+    checkpoint.acknowledge([("saved", ["manual-bike"])], at: start + 7201)
+    let restored = try! JSONDecoder().decode(WatchInboxState.self, from: JSONEncoder().encode(checkpoint))
+    check(restored.recording == ended && restored.acknowledgements?.first?.status == "saved", "restart retains ownership termination and durable import receipt together")
+    check(WatchAcknowledgement.decode(restored.acknowledgements!.map(\.dictionary)) == restored.acknowledgements!, "context and immediate-message receipts use the same validated format")
+    check(WatchAcknowledgement.decode([["id":"manual-bike", "status":"unknown", "at":start]]).isEmpty, "unknown acknowledgement cannot delete a Watch payload")
+    checkpoint.acknowledge([("duplicate", ["manual-bike"])], at: start + 7210)
+    check(checkpoint.acknowledgements?.count == 1 && checkpoint.acknowledgements?.first?.status == "duplicate", "duplicate import receipt is idempotent")
+    checkpoint.acknowledge([("saved", (0..<150).map { "receipt-\($0)" })], at: start + 7300)
+    check(checkpoint.acknowledgements?.count == 100, "receipt history stays bounded")
+}
+
+// Optional private diagnostic timeline replay. Input contains timestamps and
+// activity labels only, never routes, credentials or health measurements.
+if let index = CommandLine.arguments.firstIndex(of: "--watch-exclusion-replay"), index + 1 < CommandLine.arguments.count {
+    let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+    let input = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let start = input["manualStart"] as! Double, end = input["manualEnd"] as! Double
+    let remote = RecordingPresence(device: "watch", ownerID: "private-replay", sessionID: "private-manual", activity: "Cycling", state: "recording", startedAt: start, updatedAt: start)
+    let completed = CrossDeviceRecording.merged(remote, .idle(device: "watch", ownerID: "private-replay", now: end))
+    let journeys = input["automaticJourneys"] as! [[String: Any]]
+    let excluded = journeys.filter { journey in
+        let at = journey["startedAt"] as! Double
+        return CrossDeviceRecording.excludesAutomaticFix(at, remote: at < end ? remote : completed, ownerID: "private-replay", now: at)
+    }.count
+    check(excluded == input["expectedExcludedStarts"] as! Int, "private historical automatic starts inside Watch ownership are all excluded")
+    print("Private replay: \(excluded) overlapping automatic starts excluded; completed recordings unchanged.")
+}
 print("\(assertions) native recorder/auth assertions passed")

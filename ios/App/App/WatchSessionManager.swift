@@ -72,7 +72,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         let recorder = LocationRecorder.shared
         let equipment = ownerID != nil && recorder.ownerID == ownerID ? WatchEquipmentCatalog.encode(recorder.watchEquipment) : []
         try? session.updateApplicationContext(["ownerID": ownerID ?? "", "version": 4, "equipment": equipment,
-                                               "recording": currentPresence().dictionary])
+                                               "recording": currentPresence().dictionary, "acknowledgements": (state.acknowledgements ?? []).map(\.dictionary)])
     }
 
     private func currentPresence(now: Double = Date().timeIntervalSince1970) -> RecordingPresence {
@@ -110,6 +110,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         let merged = CrossDeviceRecording.merged(previous, presence)
         heardWatchRecording = merged
         if previous != merged { state.recording = merged; persistInbox() }
+        LocationRecorder.shared.reconcileWatchRecordingExclusion()
         LocationRecorder.shared.confirmHouseholdLocation()
         guard previous?.state != merged.state || previous?.activity != merged.activity else { return }
         LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch recording state changed", details: ["watchRecording": merged.state])
@@ -192,6 +193,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
                 next.noteAttempt(id, error: nil, now: now)
             }
         }
+        next.acknowledge(acks, at: now)
         guard next != state else {
             send(acks)
             return
@@ -204,6 +206,9 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
             state = previous
             return
         }
+        if !acks.isEmpty {
+            LocationRecorder.shared.recordDiagnostic("watch", "Watch import acknowledgement saved", details: ["retainedCount": String(acks.reduce(0) { $0 + $1.ids.count })])
+        }
         send(acks)
     }
 
@@ -214,6 +219,12 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         let session = WCSession.default
         guard WCSession.isSupported(), session.activationState == .activated else { return }
         let at = Date().timeIntervalSince1970
+        // Context survives an unreachable Watch; a reachable Watch hears the
+        // durable outcome immediately, without waiting for queued userInfo.
+        sendOwnerContext()
+        if session.isReachable {
+            session.sendMessage(["acknowledgements": (state.acknowledgements ?? []).map(\.dictionary)], replyHandler: nil, errorHandler: nil)
+        }
         for group in acks {
             session.transferUserInfo(["acks": group.ids, "status": group.status, "at": at])
         }
@@ -231,6 +242,9 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         // only make the watch retry a ride that can never be imported.
         if let issue = WatchActivityImport.issue(with: transfer) {
             LocationRecorder.shared.recordDiagnostic("watch", "Rejected an Apple Watch activity", details: ["reason": issue])
+            let previous = state
+            state.acknowledge([("rejected", [transfer.id])], at: Date().timeIntervalSince1970)
+            guard persistInbox() else { state = previous; return }
             send([("rejected", [transfer.id])])
             return
         }
@@ -280,7 +294,7 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     }
 
     func sessionReachabilityDidChange(_ session: WCSession) {
-        DispatchQueue.main.async { if session.isReachable { self.noteRecorderChanged(force: true) } }
+        DispatchQueue.main.async { if session.isReachable { self.noteRecorderChanged(force: true); self.sendOwnerContext(); self.flush() } }
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -294,7 +308,10 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
-        let value = userInfo["diagnostics"]
-        DispatchQueue.main.async { self.receive(diagnostics: value) }
+        let value = userInfo["diagnostics"], presence = userInfo["recording"]
+        DispatchQueue.main.async {
+            self.receive(presence: presence)
+            self.receive(diagnostics: value)
+        }
     }
 }
