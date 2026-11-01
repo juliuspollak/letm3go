@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
@@ -6,6 +6,6 @@ export default defineConfig(({ mode }) => {
   return {
     envPrefix: 'VITE_',
     plugins: [react()],
-    test: { maxWorkers: 4, environment: 'jsdom', setupFiles: ['./src/test/setup.js'], clearMocks: true },
+    test: { exclude: [...configDefaults.exclude, '**/.build/**'], maxWorkers: 4, environment: 'jsdom', setupFiles: ['./src/test/setup.js'], clearMocks: true },
   };
 });

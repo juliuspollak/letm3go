@@ -1,4 +1,4 @@
-import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({rpc:vi.fn()}));
 vi.mock('../lib/supabase.js',()=>({supabase:mock}));
@@ -9,7 +9,14 @@ beforeEach(()=>{mock.rpc.mockImplementation(async name=>({data:name==='my_friend
 afterEach(cleanup);
 it('renders the same person tile and authorised photo in Friends and Household',async()=>{
  const photos={person:photo};
- render(<><div data-testid="friends"><Friends personPhotos={photos}/></div><div data-testid="household"><Household personPhotos={photos}/></div></>);
+ // Both screens defer their initial RPC load with a zero-delay timer. Flush
+ // that scheduling boundary before expensive role queries on cold Windows DOMs.
+ vi.useFakeTimers();
+ try {
+  render(<><div data-testid="friends"><Friends personPhotos={photos}/></div><div data-testid="household"><Household personPhotos={photos}/></div></>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+ } finally {vi.useRealTimers();}
+ expect(mock.rpc).toHaveBeenCalledWith('my_friends',undefined);
  const tiles=[];
  for(const view of ['friends','household']){
   const avatar=await within(screen.getByTestId(view)).findByRole('img',{name:'Alex avatar'});
