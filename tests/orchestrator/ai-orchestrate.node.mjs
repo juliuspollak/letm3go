@@ -189,3 +189,8 @@ test('SIGTERM during actual preflight records BLOCKED and releases run lock',asy
     assert.match(w.summary().reason,/Cancelled/); assert.equal(existsSync(join(w.artifacts,'active.lock')),false);
   } finally { child.kill('SIGKILL'); }
 });
+
+test('large real CLI output fits the bounded long-task allowance',async () => {
+  const r = await executeProcess(process.execPath,['-e','process.stdout.write("x".repeat(9*1024*1024))'],{cwd:tmpdir()});
+  assert.equal(r.code,0); assert.equal(Buffer.byteLength(r.stdout),9*1024*1024);
+});

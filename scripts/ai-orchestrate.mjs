@@ -54,7 +54,7 @@ export function agentEnvironment() {
   return Object.fromEntries(['PATH','HOME','TMPDIR','LANG','LC_ALL','TERM','USER','LOGNAME',
     'NODE_EXTRA_CA_CERTS'].filter(k => process.env[k]).map(k => [k,process.env[k]]));
 }
-export function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, limit = 8*1024*1024, env = agentEnvironment(), signal: abortSignal }) {
+export function executeProcess(cmd, args, { cwd, input = '', timeout = 900000, limit = 32*1024*1024, env = agentEnvironment(), signal: abortSignal }) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(cmd,args,{ cwd,env,detached:true,stdio:['pipe','pipe','pipe'] });
     let stdout = '', stderr = '', bytes = 0, failure;
