@@ -1,3 +1,5 @@
+> Historical Mac checkpoint. Current Windows development, reviews, commits and outstanding gates are recorded in [activity-v2-windows-progress.md](activity-v2-windows-progress.md). The original handover below remains historical evidence.
+
 # Activity Experience v2 — Windows handover
 
 ## Stop state and source identity

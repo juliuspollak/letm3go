@@ -21,6 +21,8 @@ Required remaining work:
 2. Deliver final energy that becomes available after the durable route is queued. Existing outbox/import is idempotent by ride ID and intentionally discards duplicate bodies; blindly re-enqueuing an enriched payload cannot implement this. Design a separately owned/versioned enrichment protocol without delaying route persistence or rewriting older activities.
 3. Add explicit user consent for held energy where body ownership was not verified; no automatic promotion from heart-rate consent.
 4. Add real lifecycle/finalization/permissions/retransmission/account-switch tests and native builds on macOS. Review pending versus unavailable behavior against actual authorized data. The November ride's exact cause remains unknown.
-5. Obtain independent Claude QA of this Codex-authored slice. All remaining phase-01 blockers and phases 03–04 remain outstanding.
+5. Independent Claude QA of this Codex-authored receiver slice has completed with a narrow static pass and two P3 follow-ups; full phase-02/native verification remains outstanding. All phase-01 blockers and phases 03–04 remain outstanding.
 
 Independent Claude review of the first energy snapshot: FAIL (three P1, one P2, one P3). The report is retained in `docs/activity-v2-windows-energy-review.json`. Codex follow-up addresses durable trim retention, independent rejection cleanup, native history invalidation, neutral total-energy wording and tolerant optional journal decode. Fresh independent recheck and native macOS execution are still required; these author claims do not close findings.
+
+Final independent recheck at e748057: all five initial findings closed as scoped, with a narrow static pass and two P3 follow-ups retained in the ledger. This is not a strict zero-findings runner verdict or phase-02 acceptance. See `docs/activity-v2-windows-energy-recheck.json` and the Windows progress report. Native assertions remain unexecuted until macOS.

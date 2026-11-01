@@ -1,0 +1,19 @@
+{
+  "sourceCommit": "b69aee03d7dfa4f313fe84874a1290932094f623",
+  "snapshot": ".build/windows-resume/test-infra-review/manifest.json",
+  "execution": {
+    "code": 0,
+    "signal": null,
+    "finished": "2026-11-01T22:05:36.386Z"
+  },
+  "review": {
+    "pass": true,
+    "summary": "No actionable findings in the two test-infrastructure changes, by static reading of the .build/windows-resume/test-infra-review snapshot at b69aee0. No tests or commands were run, and no runtime behaviour is claimed.\n\nvite.config.js: `...configDefaults.exclude` is preserved and only `**/.build/**` is added. That pattern matches a dot-directory named exactly `.build`, so it does not cover src/ suites or similar names such as `build/`. Other test settings in the line (maxWorkers, jsdom, setupFiles, clearMocks) are present.\n\nPeopleBubbles.test.jsx, timers:\n- `useFakeTimers` is enabled before render, so the effects' zero-delay timers land on the fake clock.\n- `advanceTimersByTimeAsync(0)` inside `act` fires the only two timers in the supplied source: Friends.jsx:27 and Household.jsx:37. A pattern search of both files, including their long lines, found no other timer calls.\n- `finally` restores real timers even if render or the flush throws, and that happens before any real-time `findByRole`, so the fake clock cannot leak into later tests or stall RTL polling.\n- Both timers have fired by cleanup, so `clearTimeout` there is a harmless no-op.\n\nPeopleBubbles.test.jsx, assertions:\n- `toHaveBeenCalledWith('my_friends',undefined)` matches the real call shape: Friends.jsx:25-26 passes `params` as undefined. `clearMocks` isolates call history, so it cannot pass on calls from another test.\n- The test still requires avatars from both screens. Each depends on real RPC data (my_friends; my_household then household_members), so a load failure fails the test rather than producing a false positive.\n- The class, photo src, tile className and child-structure assertions are all present. The other four tests contain no fake timers and keep their own assertions.\n\nLimits of this review:\n- The manifest's SHA-256 hashes were not recomputed, because no commands were allowed.\n- The parent version of the test was not in the snapshot, so 'every previous assertion retained' was checked against the current file and the task description, not a diff.\n- .gitignore and the Vitest version were outside the snapshot, so the 'ignored' status of .build and Vitest's default faked-API set were not checked. No Household or Friends flow here relies on queueMicrotask inside the flush for the assertions to hold, since `findByRole` runs on real timers afterwards.\n- Child components (PeopleGrid, PersonAvatar) were not supplied, so their timers were not inspected.\n\nThis narrow result does not imply release, phase02, native/macOS or runner approval.",
+    "findings": []
+  },
+  "supervisorHashCheck": {
+    "currentAndFrozenMatchedBeforeFinalDocumentation": true,
+    "files": 4,
+    "reviewerDidNotExecuteChecks": true
+  }
+}

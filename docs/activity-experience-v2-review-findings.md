@@ -176,3 +176,9 @@ Independently recognized implemented repairs include the actual detent sheet, ph
   }
 }
 ```
+
+## Windows independent review continuation
+
+Current evidence and local commits: `docs/activity-v2-windows-progress.md`. Full clean Vitest: 9 failed | 937 passed | 60 skipped (1006); serial database/App: 154 passed (154). Orchestrator 57/57, lint, web build, Chromium synthetic geometry and native Windows Deno type-checks passed. Native Swift/Xcode/iOS/watchOS/simulator checks remain deferred to macOS.
+
+Independent runner review failed with 20 findings; follow-up has no fresh full runner approval or real escalation integration acceptance. Energy receiver recheck closed five prior findings as scoped, retaining two P3 follow-ups; full phase 02 sender/finalization/consent/cloud remains incomplete. Test-infrastructure review passed with zero findings. All phase-01 blockers and the disputed sheet classification remain release gates. See the three Windows review JSON reports and current defect ledger. Phases 03–04 remain pending. No push, merge, deployment, remote SQL or historical-data change occurred.

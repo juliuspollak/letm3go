@@ -46,3 +46,9 @@ npm run test:activity-layout
 No actual 1 November Woonona ride was available or inspected. No actual user calories, HR samples, photographs or historical activities were read or modified. No iPhone/Watch hardware acceptance, battery/thermal measurements, VoiceOver interaction, native frame-time traces or simulator UI journeys have been performed. No Watch app build has yet been established for later Watch changes. No production database, deployment, TestFlight, push or merge occurred.
 
 Native builds prove compilation; jsdom and synthetic Chromium tests do not prove smooth MapKit scrolling. Remaining software defects are recorded separately from these external validation gaps. Later phase results must append actual evidence without erasing this history.
+
+## Windows continuation evidence
+
+Current evidence and local commits: `docs/activity-v2-windows-progress.md`. Full clean Vitest: 9 failed | 937 passed | 60 skipped (1006); serial database/App: 154 passed (154). Orchestrator 57/57, lint, web build, Chromium synthetic geometry and native Windows Deno type-checks passed. Native Swift/Xcode/iOS/watchOS/simulator checks remain deferred to macOS.
+
+Independent runner review failed with 20 findings; follow-up has no fresh full runner approval or real escalation integration acceptance. Energy receiver recheck closed five prior findings as scoped, retaining two P3 follow-ups; full phase 02 sender/finalization/consent/cloud remains incomplete. Test-infrastructure review passed with zero findings. All phase-01 blockers and the disputed sheet classification remain release gates. See the three Windows review JSON reports and current defect ledger. Phases 03–04 remain pending. No push, merge, deployment, remote SQL or historical-data change occurred.

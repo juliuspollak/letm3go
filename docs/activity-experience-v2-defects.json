@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "applicationRevision": "27273fb55cfc40a99e9dc0286db43cda4641b556",
+  "applicationRevision": "e748057d644dbc1bec27a675f179ad73a0608374",
   "defects": [
     {
       "id": "P01-SHEET",
@@ -945,6 +945,81 @@
         "releaseBlockingDisagreement": true,
         "review": "docs/activity-v2-windows-runner-review.json"
       }
+    },
+    {
+      "id": "P02-FUTURE-ENERGY-ROUNDTRIP",
+      "title": "Preserve unknown future energy on later saves",
+      "severity": "P3",
+      "kind": "software",
+      "status": "confirmed",
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/RecorderCore.swift",
+        "tests/native/main.swift"
+      ],
+      "instructions": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy.",
+      "observations": [
+        {
+          "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+          "actor": null,
+          "status": "open",
+          "checks": [
+            {
+              "role": "claude",
+              "status": "persists",
+              "location": ".build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:612-622,513-517; change.diff:281-293",
+              "evidence": "`init(from:)` replaces an unrecognised or future energy object with a schema 0 placeholder, and a malformed `active` or `total` becomes nil. Read and load leave the bytes untouched, as the regression asserts. Any later `save` of that record (a title edit, or a trim into `wholeWorkoutEnergy`) re-encodes the placeholder and permanently overwrites the original value. This only arises with future or corrupted data, which current writers do not produce, so it does not reopen finding 5 as scoped ('on read'). The 'never rewrites stored bytes' assertion does cover only read, not save.",
+              "regression_test": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy."
+            }
+          ]
+        }
+      ],
+      "currentAssessment": {
+        "status": "confirmed",
+        "source": "docs/activity-v2-windows-energy-recheck.json",
+        "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+        "location": ".build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:612-622,513-517; change.diff:281-293",
+        "evidence": "`init(from:)` replaces an unrecognised or future energy object with a schema 0 placeholder, and a malformed `active` or `total` becomes nil. Read and load leave the bytes untouched, as the regression asserts. Any later `save` of that record (a title edit, or a trim into `wholeWorkoutEnergy`) re-encodes the placeholder and permanently overwrites the original value. This only arises with future or corrupted data, which current writers do not produce, so it does not reopen finding 5 as scoped ('on read'). The 'never rewrites stored bytes' assertion does cover only read, not save.",
+        "regression_test": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy."
+      }
+    },
+    {
+      "id": "P02-ARCHIVE-NATIVE-COVERAGE",
+      "title": "Complete held-energy archive native regression coverage",
+      "severity": "P3",
+      "kind": "software",
+      "status": "confirmed",
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "tests/native/main.swift"
+      ],
+      "instructions": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change.",
+      "observations": [
+        {
+          "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+          "actor": null,
+          "status": "open",
+          "checks": [
+            {
+              "role": "claude",
+              "status": "persists",
+              "location": "change.diff:262-280; .build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:364-365,78-81",
+              "evidence": "The code is correct on reading, but the new native assertions leave parts of the claims untested. The save/reload regression asserts only verified `wholeWorkoutEnergy`, not `unverifiedWholeWorkoutEnergy`. No test covers trim then reject; the 'held energy removal' check sets the archive by hand and asserts only that the token changed, not that the field is nil. There is also no token assertion for a `wholeWorkoutEnergy`-only change. The doc's 'or after trim archival' claim therefore has no direct regression.",
+              "regression_test": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change."
+            }
+          ]
+        }
+      ],
+      "currentAssessment": {
+        "status": "confirmed",
+        "source": "docs/activity-v2-windows-energy-recheck.json",
+        "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+        "location": "change.diff:262-280; .build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:364-365,78-81",
+        "evidence": "The code is correct on reading, but the new native assertions leave parts of the claims untested. The save/reload regression asserts only verified `wholeWorkoutEnergy`, not `unverifiedWholeWorkoutEnergy`. No test covers trim then reject; the 'held energy removal' check sets the archive by hand and asserts only that the token changed, not that the field is nil. There is also no token assertion for a `wholeWorkoutEnergy`-only change. The doc's 'or after trim archival' claim therefore has no direct regression.",
+        "regression_test": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change."
+      }
     }
   ],
   "reconciliation": {
@@ -954,9 +1029,12 @@
     "policy": "Preserve original severities and provisional history. No unvalidated seed counter authorizes Codex escalation; zero is verified repair count, not assertion that no historical attempts occurred. Current open software remains release blocking. Device gate distinct.",
     "counts": {
       "resolved": 10,
-      "confirmed": 15,
+      "confirmed": 17,
       "device_required": 1
     },
-    "independentGate": "BLOCKED: fresh Claude runner review has 20 findings; split classification is disputed, not independently approved"
-  }
+    "independentGate": "BLOCKED: fresh Claude runner review has 20 findings; split classification is disputed, not independently approved",
+    "note": "Original phase-01 severities/history retained; two newly discovered phase-02 P3 follow-ups have zero failed primary repairs. Qualified static energy pass is not full phase acceptance."
+  },
+  "phase1ApplicationRevision": "27273fb55cfc40a99e9dc0286db43cda4641b556",
+  "windowsCodeCheckpoint": "b69aee03d7dfa4f313fe84874a1290932094f623"
 }
