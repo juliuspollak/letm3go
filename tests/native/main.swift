@@ -1,6 +1,6 @@
 import Foundation
 var assertions = 0
-func check(_ ok: @autoclosure () -> Bool, _ message: String) { assertions += 1; if !ok() { print("CHECK FAILED: \(message)") } }
+func check(_ ok: @autoclosure () -> Bool, _ message: String) { assertions += 1; if !ok() { fatalError(message) } }
 func point(_ latitude: Double, _ timestamp: Double, accuracy: Double = 5) -> GPSPoint { GPSPoint(latitude: latitude, longitude: 151, timestamp: timestamp, accuracy: accuracy, altitude: 20, speed: 1) }
 var trip = RecordedActivity(activity: "Walking", startedAt: 100, resumedAt: 100, title: "Test walk")
 check(trip.accept(point(-33,100), now:100), "first fix")
@@ -4457,10 +4457,12 @@ do {
     } else { check(false, "trimmed enrichment should apply") }
     var unclaimed = WatchActivityImport.activity(from: baseTransfer, heartRateVerified: false)!
     check(unclaimed.details?.unverifiedEnergy != nil && unclaimed.details?.energy == nil, "unclaimed body energy is held")
+    var held = unclaimed
     if case .applied(let heldUpdate) = WatchEnergyImport.apply(enrichment, to: unclaimed, now: 1070) {
+        held = heldUpdate
         check(heldUpdate.details?.unverifiedEnergy?.active == 22 && heldUpdate.details?.energy == nil, "unclaimed enrichment stays held")
     } else { check(false, "unclaimed enrichment held") }
-    var resolved = unclaimed
+    var resolved = held
     check(resolved.resolveUnverifiedEnergy(accept: true), "explicit energy accept")
     check(resolved.details?.energy?.active == 22 && resolved.details?.unverifiedEnergy == nil, "accept moves held energy to the record")
     var rejected = unclaimed
