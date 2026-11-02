@@ -237,13 +237,12 @@ One iOS engineer with a device and Xcode. Ranges, not commitments.
 | WKWebView liveness during `.overFullScreen` | BLOCKED | Needs an iPhone |
 | Broker reliability across background and resume | BLOCKED | Needs an iPhone |
 | iOS version distribution | BLOCKED | Needs App Store Connect access |
-| `b182883` compiles | NOT RUN | Never compiled; it also underlies the rollback screen |
+| `main` passes `test:native` and `ios:build` | PASS | Run 41433452934, on the same tree as `main`; compile only, not device behaviour |
 
 ## Actions requiring approval
 
-1. Run `ios-native-check` on `main`. It already holds `b182883`, and the rollback
-   screen depends on it compiling.
-2. Permission to push the spike branch so that workflow can compile it, or a Mac.
+1. Provide a Mac with Xcode, or permission to push spike branches so CI can compile them.
+2. Run the `b182883` device checklist in `docs/native-apple-maps.md`; the rollback screen depends on it.
 3. Accept or change decisions 1, 5 and 6.
 4. Accept `FloatingPanel` as a candidate dependency.
 5. Provide iPhone access for the spikes, and App Store Connect version data.
