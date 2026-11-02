@@ -308,13 +308,13 @@ extension LocationRecorder {
         case .unclaimed, .importable:
             break
         }
-        guard let targetID = transfer.energyTargetID,
-              let index = trips.firstIndex(where: { ActivityIdentity.matches($0.id, targetID) }) else {
+        guard let targetID = transfer.energyTargetID else { return .rejected("invalid-payload") }
+        // A deleted ride must not be resurrected by a late energy update.
+        if (try? storage!.isDeleted(targetID)) == true { return .duplicate }
+        guard let index = trips.firstIndex(where: { ActivityIdentity.matches($0.id, targetID) }) else {
             // Base ride not received yet: keep the payload and retry, never a phantom ride.
             return .deferred
         }
-        // A deleted ride must not be resurrected by a late energy update.
-        if (try? storage!.isDeleted(targetID)) == true { return .duplicate }
         let trip = trips[index]
         switch WatchEnergyImport.apply(transfer, to: trip, now: Date().timeIntervalSince1970) {
         case .applied(let updated):

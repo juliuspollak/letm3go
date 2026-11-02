@@ -640,6 +640,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         // Only a draft from an earlier build falls back to the current account.
         let owner = ride.ownerCaptured ? ride.ownerID : WatchConnectivitySession.shared.ownerID
         let transfer = ride.transfer(now: now, ownerID: owner, deviceID: WatchDevice.identifier, appVersion: WatchDevice.appVersion)
+        var job: WatchEnergyJob?
         if let transfer {
             do {
                 try WatchTransferQueue.shared.enqueue(transfer)
@@ -647,22 +648,26 @@ final class WatchRecorder: NSObject, ObservableObject {
                 finishFailed(ride, now: now)
                 return
             }
-        }
 
-        // Persist the scoped late-finalization job BEFORE the draft is deleted: the
-        // draft is the only durable copy of the measured sessions, and the job must
-        // survive base-ride receipt/deletion and process death.
-        let job = WatchEnergyJob(
-            rideID: ride.id, revision: 2,
-            ownerID: owner, deviceID: WatchDevice.identifier, appVersion: WatchDevice.appVersion,
-            activity: ride.activity, startedAt: ride.startedAt, endedAt: ride.endedAt ?? now,
-            activeSeconds: ride.duration(at: now), externalUUID: ride.id,
-            sessions: ride.energySessions, energy: ride.energySnapshot, state: "pending", now: now)
-        do {
-            try energyJobs.replace(job)
-        } catch {
-            finishFailed(ride, now: now)
-            return
+            // Persist the scoped late-finalization job BEFORE the draft is deleted: the
+            // draft is the only durable copy of the measured sessions, and the job must
+            // survive base-ride receipt/deletion and process death. No base ride means
+            // no enrichment, so the job exists only when a transfer was enqueued.
+            let energyJob = WatchEnergyJob(
+                rideID: ride.id, revision: 2,
+                ownerID: owner, deviceID: WatchDevice.identifier, appVersion: WatchDevice.appVersion,
+                activity: ride.activity, startedAt: ride.startedAt, endedAt: ride.endedAt ?? now,
+                activeSeconds: ride.duration(at: now), externalUUID: ride.id,
+                sessions: ride.energySessions, energy: ride.energySnapshot, state: "pending", now: now)
+            do {
+                try energyJobs.replace(energyJob)
+                job = energyJob
+            } catch {
+                // Energy must never block finish: the base ride is already queued and
+                // keeps its pending snapshot. A failed job write only drops the late
+                // finalization, never the ride.
+                WatchDiagnostics.log("error", "Energy finalization job could not be written", ["reason": error.localizedDescription])
+            }
         }
 
         // The ride joins the watch's recent list as soon as it is safe.
@@ -694,12 +699,14 @@ final class WatchRecorder: NSObject, ObservableObject {
             "heartRateSamples": String(ride.heartRate.count), "heartRateGaps": String(summary?.gaps ?? 0)])
         announcePresence(force: true)
 
-        finishWorkout { [weak self] saved, reading in
+        finishWorkout { [weak self] saved, reading, collectionEnded in
             guard let self else { return }
             self.finishing = false
             self.status = saved ? "Saved to Health · waiting for iPhone" : "Saved · waiting for iPhone"
             self.pendingCount = WatchTransferQueue.shared.pendingCount()
-            self.finalizeEnergyJob(jobID: job.id, reading: reading)
+            if let job, collectionEnded {
+                self.finalizeEnergyJob(jobID: job.id, reading: reading)
+            }
             WatchConnectivitySession.shared.flushDiagnostics()
         }
     }
@@ -775,8 +782,8 @@ extension WatchRecorder: CLLocationManagerDelegate {
 
 extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
     private static var heartRateType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .heartRate) }
-    private static var activeEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) }
-    private static var basalEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned) }
+    nonisolated private static var activeEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) }
+    nonisolated private static var basalEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned) }
 
     private static func configureDataSource(_ source: HKLiveWorkoutDataSource) {
         for identifier: HKQuantityTypeIdentifier in [.heartRate, .activeEnergyBurned, .basalEnergyBurned] {
@@ -786,7 +793,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
 
     // Cumulative builder statistics for active and resting energy, in kcal. Zero is
     // measured; a missing statistic is a missing reading, never an inferred zero.
-    private static func energyReading(_ builder: HKLiveWorkoutBuilder) -> WatchEnergyReading {
+    nonisolated private static func energyReading(_ builder: HKLiveWorkoutBuilder) -> WatchEnergyReading {
         let active = activeEnergyType.flatMap { builder.statistics(for: $0)?.sumQuantity()?.doubleValue(for: .kilocalorie()) }
         let basal = basalEnergyType.flatMap { builder.statistics(for: $0)?.sumQuantity()?.doubleValue(for: .kilocalorie()) }
         return WatchEnergy.reading(activeKcal: active, basalKcal: basal)
@@ -948,27 +955,29 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // Called by watchOS when it relaunches the app for an interrupted workout.
     func handleWorkoutRecovery() { restore() }
 
-    private func finishWorkout(_ completion: @escaping (Bool, WatchEnergyReading) -> Void) {
+    private func finishWorkout(_ completion: @escaping (Bool, WatchEnergyReading, Bool) -> Void) {
         guard let session = workout, let builder = builder else {
-            completion(false, WatchEnergy.reading(activeKcal: nil, basalKcal: nil))
+            completion(false, WatchEnergy.reading(activeKcal: nil, basalKcal: nil), false)
             return
         }
         workout = nil
         self.builder = nil
         let saves = healthWorkoutSaves
         session.end()
-        builder.endCollection(withEnd: Date()) { _, _ in
-            // After endCollection the cumulative statistics are complete.
+        builder.endCollection(withEnd: Date()) { ended, _ in
+            // After endCollection the cumulative statistics are complete. `ended`
+            // reports whether collection ended so callers can tell a confirmed
+            // reading from none.
             let reading = Self.energyReading(builder)
             guard saves else {
                 builder.discardWorkout()
-                Task { @MainActor in completion(false, reading) }
+                Task { @MainActor in completion(false, reading, ended) }
                 return
             }
             builder.finishWorkout { saved, _ in
                 Task { @MainActor in
                     if saved == nil { WatchDiagnostics.log("health", "Workout was not saved to Health") }
-                    completion(saved != nil, reading)
+                    completion(saved != nil, reading, ended)
                 }
             }
         }
@@ -985,10 +994,10 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // Captures the final statistics of the session that just ended into the ride's
     // durable per-session readings. For a system-ended workout this is the only
     // chance to record that session's complete totals before a replacement session.
-    private func applyFinalEnergy(_ reading: WatchEnergyReading) {
-        guard var ride = draft else { return }
-        ride.applyEnergy(reading)
-        ride.finalizeEnergySession(at: Date().timeIntervalSince1970)
+    private func applyFinalEnergy(_ reading: WatchEnergyReading, rideID: String, sessionID: String) {
+        guard var ride = draft, ride.id == rideID else { return }
+        ride.applyEnergy(reading, sessionID: sessionID)
+        ride.finalizeEnergySession(id: sessionID, at: Date().timeIntervalSince1970)
         draft = ride
         persist(force: true)
     }
@@ -1007,50 +1016,92 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         job.energy = WatchEnergy.finalEnergy(job.sessions)
         job.state = job.energy?.state ?? "unavailable"
         job.finalized = true
-        do {
-            try WatchTransferQueue.shared.enqueue(job.enrichment())
-            job.enqueued = true
-            try energyJobs.remove(id: jobID)
-        } catch {
-            job.attempts += 1
-            job.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: job.attempts)
-            job.lastError = error.localizedDescription
-            try? energyJobs.replace(job)
-            WatchDiagnostics.log("error", "Energy finalization could not be queued", ["reason": "storage"])
-        }
+        enqueueFinalized(job)
         pendingCount = WatchTransferQueue.shared.pendingCount()
         WatchConnectivitySession.shared.sendPending()
+    }
+
+    // Enqueue a finalized job's enrichment and retire its durable record. A failed
+    // enqueue keeps the job finalized && !enqueued for `retryEnergyJobs` to retry;
+    // a failed remove keeps it finalized && enqueued for a later retire. Enqueue is
+    // idempotent by id, so a retry is safe.
+    private func enqueueFinalized(_ job: WatchEnergyJob) {
+        do {
+            try WatchTransferQueue.shared.enqueue(job.enrichment())
+        } catch {
+            var retry = job
+            retry.attempts += 1
+            retry.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: retry.attempts)
+            retry.lastError = error.localizedDescription
+            try? energyJobs.replace(retry)
+            WatchDiagnostics.log("error", "Energy finalization could not be queued", ["reason": "storage"])
+            return
+        }
+        var enqueued = job
+        enqueued.enqueued = true
+        do {
+            try energyJobs.remove(id: job.id)
+        } catch {
+            try? energyJobs.replace(enqueued)
+        }
     }
 
     // Retries failed finalization for jobs created by this producer. Only
     // newly-created pending jobs are queried, using their captured external UUID
     // and time bounds; historical activities are never scanned or backfilled.
     func retryEnergyJobs() {
+        // A foreground refresh during an in-flight finishWorkout would query a workout
+        // that has not been saved yet: wait for the finish to complete.
+        guard !finishing else { return }
         let now = Date().timeIntervalSince1970
         var jobs = energyJobs.load()
         guard !jobs.isEmpty else { return }
         var changed = false
-        for index in jobs.indices where !jobs[index].finalized && jobs[index].nextAttemptAt <= now {
-            jobs[index].attempts += 1
-            jobs[index].nextAttemptAt = now + WatchQueuePolicy.delay(afterAttempts: jobs[index].attempts)
-            changed = true
-            queryFinalEnergy(jobID: jobs[index].id, externalUUID: jobs[index].externalUUID,
-                             startedAt: jobs[index].startedAt, endedAt: jobs[index].endedAt)
+        var removeIDs = Set<String>()
+        for index in jobs.indices {
+            guard let action = jobs[index].nextAction(now: now) else { continue }
+            switch action {
+            case .query:
+                jobs[index].attempts += 1
+                jobs[index].nextAttemptAt = now + WatchQueuePolicy.delay(afterAttempts: jobs[index].attempts)
+                changed = true
+                queryFinalEnergy(jobID: jobs[index].id, externalUUID: jobs[index].externalUUID,
+                                 startedAt: jobs[index].startedAt, endedAt: jobs[index].endedAt)
+            case .enqueue:
+                do {
+                    try WatchTransferQueue.shared.enqueue(jobs[index].enrichment())
+                    jobs[index].enqueued = true
+                } catch {
+                    jobs[index].attempts += 1
+                    jobs[index].nextAttemptAt = now + WatchQueuePolicy.delay(afterAttempts: jobs[index].attempts)
+                    jobs[index].lastError = error.localizedDescription
+                }
+                changed = true
+            case .remove:
+                removeIDs.insert(jobs[index].id)
+                changed = true
+            }
         }
+        if !removeIDs.isEmpty { jobs.removeAll { removeIDs.contains($0.id) } }
         if changed { try? energyJobs.save(jobs) }
+        pendingCount = WatchTransferQueue.shared.pendingCount()
+        WatchConnectivitySession.shared.sendPending()
     }
 
     private func queryFinalEnergy(jobID: String, externalUUID: String, startedAt: Double, endedAt: Double) {
-        guard let uuid = UUID(uuidString: externalUUID),
-              let workoutType = HKObjectType.workoutType() as? HKSampleType else {
+        guard UUID(uuidString: externalUUID) != nil else {
             failEnergyJob(jobID: jobID, reason: "invalid-external-uuid")
             return
         }
-        let byUUID = HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID, allowedValues: [uuid])
+        // The metadata value is stored as the ride id STRING, so the predicate must
+        // match the string, not a UUID. One ride can also save several workouts with
+        // that metadata (system end then replacement): take the latest by end date.
+        let byUUID = HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID, allowedValues: [externalUUID])
         let window = HKQuery.predicateForSamples(withStart: Date(timeIntervalSince1970: startedAt),
                                                  end: Date(timeIntervalSince1970: endedAt), options: [])
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [byUUID, window])
-        let query = HKSampleQuery(sampleType: workoutType, predicate: predicate, limit: 1, sortDescriptors: nil) { [weak self] _, samples, error in
+        let newest = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
+        let query = HKSampleQuery(sampleType: HKObjectType.workoutType(), predicate: predicate, limit: 1, sortDescriptors: [newest]) { [weak self] _, samples, error in
             guard error == nil, let workout = samples?.first as? HKWorkout else {
                 Task { @MainActor in self?.failEnergyJob(jobID: jobID, reason: "no-workout") }
                 return
@@ -1073,16 +1124,16 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         job.attempts += 1
         job.lastError = reason
         if job.attempts >= WatchEnergyJob.retryLimit {
-            job.energy = WatchEnergy.finalEnergy(job.sessions)
-            job.state = job.energy?.state ?? "unavailable"
-            job.finalized = true
-            do {
-                try WatchTransferQueue.shared.enqueue(job.enrichment())
-                job.enqueued = true
-                try energyJobs.remove(id: jobID)
-            } catch {
-                job.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: job.attempts)
-                try? energyJobs.replace(job)
+            // Retries exhausted without a confirmed reading. When any session already
+            // measured a value the base ride carries it as pending, so the job retires
+            // without sending. Only a ride that measured nothing sends unavailable.
+            if let energy = WatchEnergy.exhaustedEnergy(job.sessions) {
+                job.energy = energy
+                job.state = "unavailable"
+                job.finalized = true
+                enqueueFinalized(job)
+            } else {
+                try? energyJobs.remove(id: jobID)
             }
         } else {
             job.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: job.attempts)
@@ -1122,10 +1173,14 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // not observing is never credited to the ride.
     private func systemEndedWorkout(_ ended: HKWorkoutSession, at date: Date) {
         guard !finishing, ended === workout else { return }
-        // Resuming must open a new session: holding the ended one left a resumed ride
-        // with no background time and no heart rate. What was recorded is saved.
-        finishWorkout { [weak self] _, reading in
-            self?.applyFinalEnergy(reading)
+        // Capture the ride and session BEFORE the asynchronous finish: the callback
+        // must apply the ended session's total to that session of that ride, never
+        // to a newer session or a ride that has since been replaced.
+        let rideID = draft?.id
+        let sessionID = draft?.activeEnergySessionID
+        finishWorkout { [weak self] _, reading, _ in
+            guard let self, let rideID, let sessionID else { return }
+            self.applyFinalEnergy(reading, rideID: rideID, sessionID: sessionID)
         }
         WatchDiagnostics.log("health", "Workout session ended by the system")
         guard var ride = draft, ride.isRecording else { return }
@@ -1167,9 +1222,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         }
         guard let activeType = Self.activeEnergyType, let basalType = Self.basalEnergyType,
               collectedTypes.contains(activeType) || collectedTypes.contains(basalType) else { return }
-        let active = workoutBuilder.statistics(for: activeType)?.sumQuantity()?.doubleValue(for: .kilocalorie())
-        let basal = workoutBuilder.statistics(for: basalType)?.sumQuantity()?.doubleValue(for: .kilocalorie())
-        let reading = WatchEnergy.reading(activeKcal: active, basalKcal: basal)
+        let reading = Self.energyReading(workoutBuilder)
         Task { @MainActor in
             guard workoutBuilder === self.builder else { return }
             self.ingestEnergy(reading)

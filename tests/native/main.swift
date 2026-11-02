@@ -4497,4 +4497,94 @@ do {
     check(jobStore.load().isEmpty, "removing a finalized job is durable")
 }
 
+do {
+    // --- Base transfer carries energy (F1) ---
+    var carried = WatchRideDraft(activity: "MTB", startedAt: 1000, ownerID: "owner-1")
+    carried.beginEnergySession(at: 1000)
+    carried.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    carried.finish(at: 1060)
+    let carriedTransfer = carried.transfer(now: 1060, ownerID: "owner-1", deviceID: "device-1", appVersion: "1.0")!
+    check(carriedTransfer.energy?.active == 10 && carriedTransfer.energy?.state == "pending", "the base transfer carries the pending energy snapshot")
+    check(carriedTransfer.energyRevision == 1 && carriedTransfer.energyWorkoutExternalUUID == carried.id, "the base transfer declares its external workout id and first revision")
+}
+
+do {
+    // --- Due/next-action decision (F6) ---
+    var job = WatchEnergyJob(rideID: "ride-1", revision: 2, ownerID: nil, deviceID: nil, appVersion: nil,
+                             activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60,
+                             externalUUID: "ride-1", sessions: [], energy: nil, state: "pending", now: 1000)
+    let due = 1000 + WatchTransferLimits.outageGap
+    check(job.nextAction(now: 999) == nil, "a job is not due before its first attempt")
+    check(job.nextAction(now: due) == .query, "an unfinalized job is queried")
+    job.finalized = true
+    check(job.nextAction(now: due) == .enqueue, "a finalized job not yet enqueued is re-enqueued")
+    job.enqueued = true
+    check(job.nextAction(now: due) == .remove, "an enqueued job only needs its record retired")
+}
+
+do {
+    // --- Session-scoped final reading (F7) ---
+    var scoped = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    scoped.beginEnergySession(at: 1000)
+    let endedID = scoped.activeEnergySessionID!
+    scoped.segment += 1
+    scoped.beginEnergySession(at: 1100)
+    let newerID = scoped.activeEnergySessionID!
+    scoped.applyEnergy(WatchEnergy.reading(activeKcal: 15, basalKcal: 6), sessionID: endedID)
+    scoped.finalizeEnergySession(id: endedID, at: 1090)
+    check(scoped.energySessions.first { $0.id == endedID }?.activeKcal == 15, "the ended session is updated")
+    check(scoped.energySessions.first { $0.id == endedID }?.finalized == true, "the ended session is finalized")
+    check(scoped.energySessions.first { $0.id == newerID }?.activeKcal == nil, "the newer session is untouched")
+    scoped.applyEnergy(WatchEnergy.reading(activeKcal: 99, basalKcal: 99), sessionID: "other-session")
+    check(scoped.energySessions.allSatisfy { $0.activeKcal != 99 }, "a reading for an unknown session is ignored")
+}
+
+do {
+    // --- Final vs exhausted terminal states (F9) ---
+    var confirmed = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    confirmed.beginEnergySession(at: 1000)
+    confirmed.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    check(WatchEnergy.finalEnergy(confirmed.energySessions)?.state == "final", "a confirmed measured session finalizes final")
+    check(WatchEnergy.exhaustedEnergy(confirmed.energySessions) == nil, "an exhausted measured session retires without sending")
+    var empty = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    empty.beginEnergySession(at: 1000)
+    check(WatchEnergy.finalEnergy(empty.energySessions)?.state == "unavailable", "a confirmed session that measured nothing is unavailable")
+    check(WatchEnergy.exhaustedEnergy(empty.energySessions)?.state == "unavailable", "an exhausted session that measured nothing sends unavailable")
+}
+
+do {
+    // --- Invalid values are not measured (F10) ---
+    check(WatchEnergy.reading(activeKcal: Double.nan, basalKcal: 4).activeMeasured == false, "NaN active energy is not measured")
+    check(WatchEnergy.reading(activeKcal: -1, basalKcal: nil).activeMeasured == false, "negative energy is not measured")
+    check(WatchEnergy.reading(activeKcal: WatchEnergy.maximumKcal + 1, basalKcal: nil).activeMeasured == false, "over-limit energy is not measured")
+    check(WatchEnergy.reading(activeKcal: 10, basalKcal: nil).activeMeasured == true, "a valid active energy is measured")
+}
+
+do {
+    // --- Parked summaries exclude energy-only deliveries (F11) ---
+    var inbox = WatchInboxState()
+    let parkedRide = WatchActivityTransfer(id: UUID().uuidString, ownerID: nil, activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [])
+    var parkedEnergy = ActivityEnergy(); parkedEnergy.state = "final"
+    let parkedEnrichment = WatchActivityTransfer(id: UUID().uuidString, ownerID: nil, activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [], schema: 4, energy: parkedEnergy, energyTargetID: "target-1", energyRevision: 2, energyWorkoutExternalUUID: "target-1", energySessionIDs: ["s1"])
+    inbox.receive(parkedRide, now: 1061)
+    inbox.receive(parkedEnrichment, now: 1062)
+    inbox.park(parkedRide.id, reason: "owner-mismatch")
+    inbox.park(parkedEnrichment.id, reason: "owner-mismatch")
+    check(inbox.parked.count == 2, "both deliveries are parked")
+    let summaries = inbox.summaries()
+    check(summaries.count == 1 && summaries[0].id == parkedRide.id, "parked energy-only deliveries are not listed as rides")
+}
+
+do {
+    // --- Job store drops an earlier job for the same ride (F12) ---
+    let dedupeDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: dedupeDirectory) }
+    let dedupeStore = WatchEnergyJobStore(directory: dedupeDirectory)
+    let firstJob = WatchEnergyJob(rideID: "ride-1", revision: 2, ownerID: nil, deviceID: nil, appVersion: nil, activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, externalUUID: "ride-1", sessions: [], energy: nil, state: "pending", now: 1000)
+    try dedupeStore.replace(firstJob)
+    let secondJob = WatchEnergyJob(rideID: "ride-1", revision: 2, ownerID: nil, deviceID: nil, appVersion: nil, activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, externalUUID: "ride-1", sessions: [], energy: nil, state: "pending", now: 1000)
+    try dedupeStore.replace(secondJob)
+    check(dedupeStore.load().count == 1, "a replacement job drops any earlier job for the same ride")
+}
+
 print("\(assertions) native recorder/auth assertions passed")

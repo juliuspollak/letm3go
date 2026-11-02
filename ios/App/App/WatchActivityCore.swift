@@ -700,14 +700,22 @@ struct WatchRideDraft {
     }
 
     mutating func applyEnergy(_ reading: WatchEnergyReading) {
-        guard let id = activeEnergySessionID,
-              let index = energySessions.firstIndex(where: { $0.id == id }) else { return }
+        guard let id = activeEnergySessionID else { return }
+        applyEnergy(reading, sessionID: id)
+    }
+
+    mutating func applyEnergy(_ reading: WatchEnergyReading, sessionID: String) {
+        guard let index = energySessions.firstIndex(where: { $0.id == sessionID }) else { return }
         energySessions[index] = WatchEnergy.applying(reading, to: energySessions[index])
     }
 
     mutating func finalizeEnergySession(at now: Double) {
-        guard let id = activeEnergySessionID,
-              let index = energySessions.firstIndex(where: { $0.id == id }) else { return }
+        guard let id = activeEnergySessionID else { return }
+        finalizeEnergySession(id: id, at: now)
+    }
+
+    mutating func finalizeEnergySession(id: String, at now: Double) {
+        guard let index = energySessions.firstIndex(where: { $0.id == id }) else { return }
         energySessions[index] = WatchEnergy.finalizing(energySessions[index], endedAt: now)
     }
 
@@ -842,8 +850,9 @@ struct WatchRideDraft {
             elevationGainMeters: metrics.elevationGainMeters, elevationLossMeters: metrics.elevationLossMeters,
             appVersion: appVersion, equipment: equipment,
             heartRate: heartRate.isEmpty ? nil : heartRate,
+            energy: energySnapshot,
             pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods, indoor: indoor ? true : nil,
-            energy: energySnapshot, energyRevision: 1,
+            energyRevision: 1,
             energyWorkoutExternalUUID: id,
             energySessionIDs: energySessions.isEmpty ? nil : energySessions.map { $0.id })
     }
@@ -1651,7 +1660,7 @@ struct WatchInboxState: Codable, Equatable {
     }
 
     func summaries() -> [WatchParkedSummary] {
-        parked.map { entry in
+        parked.filter { !$0.transfer.isEnergyEnrichment }.map { entry in
             WatchParkedSummary(id: entry.transfer.id, activity: entry.transfer.activity,
                                startedAt: entry.transfer.startedAt, endedAt: entry.transfer.endedAt,
                                pointCount: entry.transfer.points.count,
@@ -1756,8 +1765,10 @@ enum WatchEnergy {
     }
 
     static func reading(activeKcal: Double?, basalKcal: Double?) -> WatchEnergyReading {
-        WatchEnergyReading(activeKcal: kilocalories(activeKcal), basalKcal: kilocalories(basalKcal),
-                           activeMeasured: activeKcal != nil, basalMeasured: basalKcal != nil)
+        let active = kilocalories(activeKcal)
+        let basal = kilocalories(basalKcal)
+        return WatchEnergyReading(activeKcal: active, basalKcal: basal,
+                                  activeMeasured: active != nil, basalMeasured: basal != nil)
     }
 
     // A repeated cumulative total from the same builder replaces, never adds.
@@ -1808,15 +1819,33 @@ enum WatchEnergy {
         return energy
     }
 
-    // Finalization may legitimately have measured nothing (no permission or no
-    // samples): report that honestly as unavailable rather than pending forever.
+    // A session measured something only when a sanitised reading landed in it.
+    static func measuredAny(_ sessions: [WatchEnergySession]) -> Bool {
+        sessions.contains { $0.activeMeasured || $0.basalMeasured }
+    }
+
+    // Confirmed finalization (endCollection succeeded or a workout was found):
+    // report final only when something was actually measured, otherwise
+    // unavailable rather than a fabricated final.
     static func finalEnergy(_ sessions: [WatchEnergySession]) -> ActivityEnergy? {
-        if sessions.isEmpty {
+        guard measuredAny(sessions) else {
             var unavailable = ActivityEnergy()
             unavailable.state = "unavailable"
             return unavailable
         }
         return activityEnergy(sessions, state: "final")
+    }
+
+    // Retries exhausted without confirmation: a session that already measured a
+    // value is carried by the base ride as pending, so the job retires without
+    // sending. Only a ride that measured nothing sends an honest unavailable.
+    static func exhaustedEnergy(_ sessions: [WatchEnergySession]) -> ActivityEnergy? {
+        guard measuredAny(sessions) else {
+            var unavailable = ActivityEnergy()
+            unavailable.state = "unavailable"
+            return unavailable
+        }
+        return nil
     }
 }
 
@@ -1873,7 +1902,7 @@ struct WatchEnergyJob: Codable, Equatable {
         finalized = false
         enqueued = false
         attempts = 0
-        nextAttemptAt = now
+        nextAttemptAt = now + WatchTransferLimits.outageGap
         lastError = nil
     }
 
@@ -1886,6 +1915,23 @@ struct WatchEnergyJob: Codable, Equatable {
             energyTargetID: rideID, energyRevision: revision,
             energyWorkoutExternalUUID: externalUUID,
             energySessionIDs: sessions.isEmpty ? nil : sessions.map { $0.id })
+    }
+
+    enum Action: Equatable {
+        case query
+        case enqueue
+        case remove
+    }
+
+    // The next durable step for this job, once it is due. Unfinalized jobs still
+    // need a HealthKit query; a finalized job that never made it to the outbox is
+    // re-enqueued (enqueue is idempotent by id); one already enqueued only needs
+    // its durable record retired.
+    func nextAction(now: Double) -> Action? {
+        guard nextAttemptAt <= now else { return nil }
+        if !finalized { return .query }
+        if !enqueued { return .enqueue }
+        return .remove
     }
 }
 
@@ -1916,7 +1962,7 @@ final class WatchEnergyJobStore {
 
     func replace(_ job: WatchEnergyJob) throws {
         var jobs = load()
-        jobs.removeAll { $0.id == job.id }
+        jobs.removeAll { $0.id == job.id || $0.rideID == job.rideID }
         jobs.append(job)
         try save(jobs)
     }
