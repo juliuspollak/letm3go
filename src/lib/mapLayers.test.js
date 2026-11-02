@@ -1,7 +1,7 @@
 import {afterEach,describe,expect,it} from 'vitest';
 import {DEFAULT_MAP_VIEW,activeMapFilters,activityChoices,chooseRouteLayer,clearMapFilters,loadMapView,mapViewJourneys,normaliseMapView,saveMapView,supportsActivity,supportsRange} from './mapLayers.js';
 
-const view=(changes={})=>({...DEFAULT_MAP_VIEW,...changes});
+const view=(changes={})=>({...DEFAULT_MAP_VIEW,routes:null,...changes});
 const DAY=86400;
 const now=Date.parse('2026-10-27T12:00:00Z');
 const at=days=>now/1000-days*DAY;
@@ -95,5 +95,16 @@ describe('selected calendar day',()=>{
   const ending={id:'boundary',startedAt:seconds('2026-10-25T23:00:00'),endedAt:seconds('2026-10-26T00:00:00')};
   expect(mapViewJourneys([crossing,grouped,ending],view({routes:'all',day:'2026-10-26',range:'7d'}),'2026-10-30',[],[],now)).toEqual([crossing]);
   expect(mapViewJourneys([crossing],view({routes:'all',day:'2026-10-25'}),'2026-10-30')).toEqual([crossing]);
+ });
+});
+
+describe('the default map view',()=>{
+ it('opens on today\'s routes',()=>expect(normaliseMapView(null).routes).toBe('today'));
+ it('moves an old saved default to Today once',()=>expect(normaliseMapView({routes:null,style:'satellite'})).toMatchObject({routes:'today',style:'satellite'}));
+ it('keeps a real choice made before the change',()=>expect(normaliseMapView({routes:'all'}).routes).toBe('all'));
+ it('keeps routes off once the person turns them off',()=>{
+  const off=chooseRouteLayer(normaliseMapView(null),'today');
+  expect(off.routes).toBeNull();
+  expect(normaliseMapView(JSON.parse(JSON.stringify(off))).routes).toBeNull();
  });
 });

@@ -21,7 +21,7 @@ it('keeps rolling preferences and favourites while selecting days, and ignores d
  expect(toolbarChange({...original,routes:null},'day:2026-10-01').routes).toBe('all');
  expect(toolbarChange(toolbarChange(day,'mode:trails'),'mode:routes')).toEqual(day);
 });
-const controls=(view,panel=null,archived=0)=>mapControls({...DEFAULT_MAP_VIEW,...view},panel,[],'2026-10-30',archived);
+const controls=(view,panel=null,archived=0)=>mapControls({...DEFAULT_MAP_VIEW,routes:null,...view},panel,[],'2026-10-30',archived);
 it('offers a date bar only while routes are limited to one day',()=>{
  expect(controls({}).date).toBeNull();
  expect(controls({routes:'all'}).date).toBeNull();

@@ -34,3 +34,7 @@ export function cameraReducer(state,action){
 export function cameraIntent(state,owner,includeRoutes=false){
  return {key:`people:${owner}`,mode:state.mode,personId:state.personId,command:state.command,includeRoutes};
 }
+
+// The first time the map has your position in a session it moves to you, unless
+// something else has already asked for a view (a chosen person, Show everyone).
+export const shouldFocusSelf=(state,{visible,hasPosition})=>visible&&hasPosition&&state.mode==='all'&&state.command===initialCamera.command;

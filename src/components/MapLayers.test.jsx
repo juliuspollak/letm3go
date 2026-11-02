@@ -3,9 +3,10 @@ import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,expect,it} from 'vitest';
 import MapControls from './MapLayers.jsx';
 import {DEFAULT_MAP_VIEW} from '../lib/mapLayers.js';
+const START={...DEFAULT_MAP_VIEW,routes:null};
 import {mapControls,panelChange,toolbarChange} from '../lib/mapToolbar.js';
 afterEach(cleanup);
-function Preview({initial=DEFAULT_MAP_VIEW,archived=0}){
+function Preview({initial=START,archived=0}){
  const [view,setView]=useState(initial),[panel,setPanel]=useState(null);
  return <><MapControls controls={mapControls(view,panel,['Driving','Walking','MTB','Kitesurfing'],'2026-10-30',archived)} onAction={id=>{if(id.startsWith('panel:'))setPanel(v=>panelChange(v,id));else setView(v=>toolbarChange(v,id));}}/><output data-testid="view">{JSON.stringify(view)}</output></>;
 }
@@ -18,7 +19,7 @@ it('shows two labelled controls and no filter icons until a panel is opened',()=
  expect(screen.queryByRole('group')).toBeNull();
 });
 it('opens, swaps and dismisses panels without a dialog and without changing a selection',()=>{
- render(<Preview initial={{...DEFAULT_MAP_VIEW,routes:'all',activity:'Walking'}}/>);
+ render(<Preview initial={{...START,routes:'all',activity:'Walking'}}/>);
  const before=current();
  click(/^Filters/);expect(screen.getByRole('region',{name:'Filters'})).toBeInTheDocument();expect(screen.queryByRole('dialog')).toBeNull();
  click('Map layers');expect(screen.queryByRole('region',{name:'Filters'})).toBeNull();expect(screen.getByRole('region',{name:'Map layers'})).toBeInTheDocument();
@@ -32,7 +33,7 @@ it('keeps people independent and supports all exclusive route selections and off
  for(const [label,id] of [['Today','today'],['Favourites','pinned'],['All routes','all'],['Off',null]]){click(label);expect(current()).toMatchObject({routes:id,people:false});expect(pressed(label)).toBe('true');}
 });
 it('marks only choices that are applied, and keeps the panel open between them',()=>{
- render(<Preview initial={{...DEFAULT_MAP_VIEW,range:'30d'}}/>);click('Filters');
+ render(<Preview initial={{...START,range:'30d'}}/>);click('Filters');
  // A saved range is not applied while routes are off, so it is not shown as applied.
  expect(pressed('Past 30 days')).toBe('false');expect(pressed('Off')).toBe('true');
  click('All routes');expect(pressed('Past 30 days')).toBe('true');expect(pressed('Any time')).toBe('false');
@@ -40,7 +41,7 @@ it('marks only choices that are applied, and keeps the panel open between them',
  click('Today');expect(pressed('One day')).toBe('false');
 });
 it('steps through days from the date bar and returns to Today without opening a panel',()=>{
- render(<Preview initial={{...DEFAULT_MAP_VIEW,routes:'today'}}/>);
+ render(<Preview initial={{...START,routes:'today'}}/>);
  const bar=()=>within(screen.getByRole('group',{name:'Selected day'}));
  expect(bar().getByRole('button',{name:'Next day'})).toBeDisabled();
  expect(bar().queryByRole('button',{name:'Return to Today'})).toBeNull();
@@ -55,12 +56,12 @@ it('steps through days from the date bar and returns to Today without opening a 
  expect(screen.queryByRole('group',{name:'Selected day'})).toBeNull();
 });
 it('keeps active filters readable with the panel closed',()=>{
- render(<Preview initial={{...DEFAULT_MAP_VIEW,people:false,routes:'all',activity:'MTB',range:'7d'}}/>);
+ render(<Preview initial={{...START,people:false,routes:'all',activity:'MTB',range:'7d'}}/>);
  const button=screen.getByRole('button',{name:'Filters, 4 active: People hidden, All routes, Past 7 days, Mountain biking'});
  expect(button).toHaveTextContent('Filters · People hidden, All routes, Past 7 days, Mountain biking4');
  click(/^Filters/);click('Reset filters');
  expect(current()).toEqual(DEFAULT_MAP_VIEW);
- expect(screen.getByRole('button',{name:'Filters',expanded:true})).toHaveTextContent(/^Filters$/);
+ expect(screen.getByRole('button',{name:'Filters, 1 active: Today',expanded:true})).toBeInTheDocument();
 });
 it('applies recorded activities, map style and Community trails from their own panels',()=>{
  render(<Preview/>);click('Filters');
@@ -73,10 +74,10 @@ it('applies recorded activities, map style and Community trails from their own p
  click('My map');expect(screen.getByRole('button',{name:/^Filters/})).toBeInTheDocument();
 });
 it('offers the archive filter only when something is archived',()=>{
- render(<Preview initial={{...DEFAULT_MAP_VIEW,routes:'all'}} archived={3}/>);click(/^Filters/);
+ render(<Preview initial={{...START,routes:'all'}} archived={3}/>);click(/^Filters/);
  expect(pressed('Archived activities (3)')).toBe('true');
  click('Archived activities (3)');expect(current().archived).toBe(false);
  expect(screen.getByRole('button',{name:/^Filters, 2 active: All routes, Archived hidden/})).toBeInTheDocument();
- cleanup();render(<Preview initial={{...DEFAULT_MAP_VIEW,routes:'all'}}/>);click(/^Filters/);
+ cleanup();render(<Preview initial={{...START,routes:'all'}}/>);click(/^Filters/);
  expect(screen.queryByRole('group',{name:'Archive'})).toBeNull();
 });

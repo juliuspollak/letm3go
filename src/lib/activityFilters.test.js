@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {expect,it,vi} from 'vitest';
-import {activeFilterCount,activityToolbar,canShiftForward,chosenDay,dateLabel,matchesDate,openDatePicker,shiftDate} from './activityFilters.js';
+import {DEFAULT_TRIP_DATE,activeFilterCount,activityToolbar,canShiftForward,chosenDay,dateLabel,matchesDate,openDatePicker,shiftDate} from './activityFilters.js';
 const today='2026-10-30';
 const none={activity:'All activities',date:'all',favourites:false,archived:false,equipment:''};
 const toolbar=over=>activityToolbar({...none,open:true,category:null,activities:['All activities','MTB'],archivedCount:0,sort:'newest',equipmentOptions:[],today,...over});
@@ -69,3 +69,4 @@ it('shows the stored MTB code under its one display name',()=>{
  const [,chip]=toolbar({activity:'MTB'}).rows[1].options;
  expect(chip).toMatchObject({id:'activity:MTB',label:'Mountain biking',selected:true});
 });
+it('opens on the current day',()=>expect(DEFAULT_TRIP_DATE).toBe('today'));

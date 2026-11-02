@@ -4,6 +4,8 @@ import {journeyOnDay,RANGE_DAYS,RANGE_OPTIONS,shiftMapDay,validDay} from './mapL
 // One date selection: 'all', 'today', a calendar day, or a rolling range ('7d').
 // The arrows, the date picker and the filter panel all write this same value, so
 // the latest choice replaces the last and no two date filters can disagree.
+// What the Activities tab opens on.
+export const DEFAULT_TRIP_DATE='today';
 export const chosenDay=(date,today)=>date==='today'?today:validDay(date)?date:null;
 
 export function shiftDate(date,amount,today){

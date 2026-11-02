@@ -7,6 +7,9 @@ const { identity, recorderHook, mapProps, mapLocationHook }=vi.hoisted(()=>({ide
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
+// These tests browse every activity and route; the defaults have their own tests.
+vi.mock('./lib/activityFilters.js',async original=>({...await original(),DEFAULT_TRIP_DATE:'all'}));
+vi.mock('./lib/mapLayers.js',async original=>{const actual=await original();return {...actual,loadMapView:owner=>({...actual.loadMapView(owner),routes:null})};});
 vi.mock('./lib/useMapLocation.js',()=>({useMapLocation:mapLocationHook}));
 vi.mock('./lib/useRecorder.js',()=>({useRecorder:recorderHook}));
 vi.mock('./components/JourneyMap.jsx',()=>({default:props=>{mapProps.value=props;return <div aria-label="Interactive journey route map"/>;}}));
@@ -167,7 +170,18 @@ it('counts a provisional journey in today totals and last activity',()=>{
 });
 
 
-it('opens the Map showing everyone, map first, rather than centring on the signed-in user',()=>{
+it('moves the map to you the first time your position arrives, once',()=>{
+ mapLocationHook.mockReturnValue({position:{latitude:-34.4,longitude:150.9,accuracy:5,timestamp:1},loading:false,error:'',locate:vi.fn()});
+ signedIn();render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(mapProps.value.camera).toMatchObject({mode:'person',personId:'self'});
+ act(()=>mapProps.value.onCamera({mode:'free',command:mapProps.value.camera.command}));
+ expect(mapProps.value.camera.mode).toBe('free');
+ fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(mapProps.value.camera.mode).toBe('free');
+});
+it('opens the Map showing everyone until your position is known',()=>{
  signedIn();render(<App/>);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();

@@ -7,17 +7,22 @@ import {activityCode,activityLabel,sameActivity} from './activityNames.js';
 // - activity / range: advanced filters for the routes; Today has its own range.
 // - style:   'standard' or 'satellite', how the map itself is drawn.
 // - archived: whether archived activities are drawn with the routes.
-export const DEFAULT_MAP_VIEW=Object.freeze({content:'routes',people:true,routes:null,activity:'',range:'any',day:null,style:'standard',archived:true});
+// A view saved before `version` existed has no real route choice: `null` was simply
+// the old default, so it moves to Today once. After that, `null` means routes off.
+export const MAP_VIEW_VERSION=2;
+export const DEFAULT_MAP_VIEW=Object.freeze({version:MAP_VIEW_VERSION,content:'routes',people:true,routes:'today',activity:'',range:'any',day:null,style:'standard',archived:true});
 export const ROUTE_LAYERS=[['today','Today'],['pinned','Favourites'],['all','All routes']];
 export const RANGE_OPTIONS=[['any','Any time'],['7d','Past 7 days'],['30d','Past 30 days'],['365d','Past year']];
 export const RANGE_DAYS={'7d':7,'30d':30,'365d':365};
 
 export function normaliseMapView(value){
  const view={...DEFAULT_MAP_VIEW,...(value&&typeof value==='object'?value:{})};
+ const migrating=!(value&&typeof value==='object'&&value.version>=MAP_VIEW_VERSION);
  return {
+  version:MAP_VIEW_VERSION,
   content:view.content==='trails'?'trails':'routes',
   people:view.people!==false,
-  routes:ROUTE_LAYERS.some(([id])=>id===view.routes)?view.routes:null,
+  routes:ROUTE_LAYERS.some(([id])=>id===view.routes)?view.routes:migrating?'today':null,
   activity:typeof view.activity==='string'?activityCode(view.activity.slice(0,60)):'',
   range:RANGE_DAYS[view.range]?view.range:'any',
   day:validDay(view.day)?view.day:null,
