@@ -29,17 +29,22 @@ export default function ActivitySheet({initialDetent='medium',onDetentChange,chi
  // The viewport is measured once and again only when it actually changes, so the
  // height below is derived during render instead of being pushed into state from
  // an effect (which would render twice per rotation for no reason).
- const [viewport,setViewport]=useState(viewportHeight);
+ const [viewport,setViewport]=useState(()=>window.innerHeight||0);
  const [dragged,setDragged]=useState(null);
  const height=dragged??sheetHeight(detent,viewport);
  const drag=useRef(null);
 
- // Rotation, a keyboard or a changing address bar is a pure height change: the
- // detent is kept and only the pixels move, so the map never re-fits.
+ // The first render runs before `.detail-sheet-page` has been committed, so the
+ // initial measurement above used the raw window height. A ResizeObserver on that
+ // page corrects the first measurement (and any later safe-area/rotation change)
+ // from a callback, keeping the first full detent inside the page's clipping edge.
  useEffect(()=>{
-  const resized=()=>{setViewport(viewportHeight());setDragged(null);};
-  window.addEventListener('resize',resized);
-  return()=>window.removeEventListener('resize',resized);
+  const measure=()=>{setViewport(viewportHeight());setDragged(null);};
+  const page=typeof document==='undefined'?null:document.querySelector('.detail-sheet-page');
+  const observer=page&&typeof ResizeObserver!=='undefined'?new ResizeObserver(measure):null;
+  observer?.observe(page);
+  window.addEventListener('resize',measure);
+  return()=>{observer?.disconnect();window.removeEventListener('resize',measure);};
  },[]);
 
  function choose(next){

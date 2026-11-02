@@ -39,6 +39,16 @@ it('names the overview in the payload and passes the Map controls through',()=>{
  expect(captured.props).toMatchObject({controls,onControl,overview:{key:'d1'}});
 });
 
+it('reuses the previous route payload when only unrelated props change',()=>{
+ const journeys=[ride];
+ const {rerender}=render(<JourneyMap journeys={journeys}/>);
+ const first=captured.props.payload;
+ // A re-render that does not change the map content must not rebuild the route
+ // payload: long recordings are serialised once and reused across pin selections.
+ rerender(<JourneyMap journeys={journeys} large={false} embeddedEnabled={true}/>);
+ expect(captured.props.payload).toBe(first);
+});
+
 it('highlights only the selected photo while retaining the route and rejecting unrelated photo events',()=>{
  render(<JourneyMap journeys={[ride]} selectedPhotoID="p2"/>);
  expect(captured.props.payload.pins.filter(pin=>pin.selected).map(pin=>pin.photoID)).toEqual(['p2']);

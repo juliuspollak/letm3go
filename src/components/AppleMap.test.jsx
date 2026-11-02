@@ -250,3 +250,26 @@ it('adds a photo through incremental update without re-embedding while preservin
  await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[expect.objectContaining({photoID:'new-photo',selected:true})]})));
  expect(mocks.embed).not.toHaveBeenCalled();
 });
+
+it('tears down an embed that resolves after unmount without leaking the native map',async()=>{
+ let release;
+ mocks.embed.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ const {unmount}=render(<AppleMap payload={payload}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
+ unmount();
+ expect(mocks.unembed).toHaveBeenCalledWith(expect.objectContaining({mapID}));
+ // Resolving the late embed afterwards must not resurrect the native map.
+ await act(async()=>release({}));
+ expect(mocks.unembed).toHaveBeenCalledTimes(1);
+});
+
+it('shows a single live map: the snapshot preview is removed once the native map is embedded',async()=>{
+ const {container}=render(<AppleMap payload={payload}/>);
+ // The fallback snapshot appears before the native map is ready.
+ await waitFor(()=>expect(container.querySelector('img[alt="Apple map preview"]')).not.toBeNull());
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ await waitFor(()=>expect(container.querySelector('.apple-map-preview.native-embedded')).not.toBeNull());
+ // Once the native map owns the frame, the HTML snapshot must not linger under it.
+ expect(container.querySelector('img[alt="Apple map preview"]')).toBeNull();
+});
