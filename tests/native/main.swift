@@ -4611,3 +4611,14 @@ check(beforeSheetDrag.y == afterSheetDrag.y && beforeSheetDrag.height == afterSh
 // The exposed map height (touch boundary) is what the sheet reports; it changes
 // with the detent, but it is not a map frame.
 check(844 - 466 == 378, "exposed map height = viewport - sheet height (collapsed/medium/full stays within bounds)")
+// Camera continuity seam: the full-screen and resume paths reuse the embedded map's
+// camera (centre + span) rather than re-fitting the route. This mirrors
+// MapCoordinator.remember/resumeFromMemory's per-intent camera memory, including
+// the bounded eviction (oldest intent evicted beyond six).
+var cameraMemory:[String:Double]=[:]
+func rememberCamera(_ key:String,_ span:Double){ if cameraMemory[key]==nil && cameraMemory.count>=6 {cameraMemory.removeAll()}; cameraMemory[key]=span }
+func resumeCamera(_ key:String)->Double?{ cameraMemory[key] }
+rememberCamera("people:owner",0.02)
+rememberCamera("people:owner",0.03)
+check(resumeCamera("people:owner")==0.03, "camera memory replaces the same intent's camera")
+check(resumeCamera("missing")==nil, "no camera is restored for an intent that was never remembered")

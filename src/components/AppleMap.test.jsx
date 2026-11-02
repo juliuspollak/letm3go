@@ -291,3 +291,27 @@ it('embeds an overlay map full-bleed and reports the exposed height on detent se
  expect(container.querySelector('.apple-map-preview.native-embedded')).not.toBeNull();
  sheet.remove();
 });
+
+it('keeps the map and its camera across background and resume without unembedding',async()=>{
+ render(<AppleMap payload={payload}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ mocks.embed.mockClear();mocks.unembed.mockClear();
+ Object.defineProperty(document,'visibilityState',{value:'hidden',configurable:true});
+ await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
+ expect(mocks.unembed).not.toHaveBeenCalled();
+ Object.defineProperty(document,'visibilityState',{value:'visible',configurable:true});
+ await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
+ expect(mocks.unembed).not.toHaveBeenCalled();
+ expect(mocks.embed).not.toHaveBeenCalled();
+});
+
+it('opens fullscreen without destroying the embedded map camera',async()=>{
+ const {getByRole}=render(<AppleMap payload={payload}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ mocks.unembed.mockClear();
+ fireEvent.click(getByRole('button',{name:'Open interactive Apple journey map'}));
+ await waitFor(()=>expect(mocks.open).toHaveBeenCalled());
+ expect(mocks.unembed).not.toHaveBeenCalled();
+});

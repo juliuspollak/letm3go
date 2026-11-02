@@ -1907,8 +1907,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
                 button.tintColor = .label
                 button.layer.cornerRadius=22
                 button.layer.shadowOpacity=0.16;button.layer.shadowRadius=4;button.layer.shadowOffset=CGSize(width:0,height:1)
-                button.frame=CGRect(x:max(0,width-56),y:12,width:44,height:44)
-                button.autoresizingMask=[.flexibleLeftMargin]
+                button.frame=overlay ? CGRect(x:max(0,x+width-56),y:y+12,width:44,height:44) : CGRect(x:max(0,width-56),y:12,width:44,height:44)
+                button.autoresizingMask=overlay ? [] : [.flexibleLeftMargin]
                 button.tag=mapExpandTag
                 button.accessibilityLabel="Open full screen map"
                 button.addAction(UIAction { [weak self] _ in
@@ -1937,7 +1937,9 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
                     nav.modalPresentationStyle = .fullScreen
                     parent.present(nav,animated:true)
                 },for:.touchUpInside)
-                map.addSubview(button)
+                // Overlay maps are behind the web view, so the expand button must be
+                // a subview of the web view (above the map) to stay tappable.
+                if overlay { webView.addSubview(button) } else { map.addSubview(button) }
             }
             if !overlay { scroll.bringSubviewToFront(map) }
             let coordinator=self.coordinators[id] ?? {
@@ -2031,9 +2033,24 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
             guard let parent=self.bridge?.viewController,parent.presentedViewController==nil else {call.reject("Close the current screen first");return}
             let controller=AppleMapController(content:MapContent(call.options),picker:call.getBool("picker") ?? false)
             let mapID=call.getString("mapID")
-            if let mapID=mapID {controller.onCamera={ [weak self] mode,command in self?.reportCamera(mapID,mode,command) }}
+            if let mapID=mapID {
+                controller.onCamera={ [weak self] mode,command in self?.reportCamera(mapID,mode,command) }
+                // Continue the full-screen map from the embedded map's current camera
+                // so open/close never re-fits, whatever path triggered presentation.
+                if let embedded=self.embeddedMaps[mapID], !embedded.isHidden {
+                    self.coordinators[mapID]?.remember()
+                    controller.initialCamera=embedded.camera.copy() as? MKMapCamera
+                    embedded.isHidden=true
+                }
+            }
             self.presentedMap=controller;self.presentedID=mapID
-            controller.completion={ result in call.resolve(result) }
+            controller.completion={ [weak self] result in
+                if let mapID=mapID {
+                    self?.coordinators[mapID]?.resumeFromMemory()
+                    self?.embeddedMaps[mapID]?.isHidden=false
+                }
+                call.resolve(result)
+            }
             let navigation=UINavigationController(rootViewController:controller)
             navigation.modalPresentationStyle = .fullScreen
             parent.present(navigation,animated:true)

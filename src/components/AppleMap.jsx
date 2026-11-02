@@ -27,7 +27,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const fittedContent=useRef({positions:false,focus:false});
  const openingFullscreen=useRef(false);
  const hiddenForDialog=useRef(false);
- const [reopenVersion,setReopenVersion]=useState(0);
+ const [reopenVersion]=useState(0);
  const [embedded,setEmbedded]=useState(false);
  const [preview,setPreview]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  // While a sheet or the photo viewer is open the native map is hidden (never
@@ -148,9 +148,10 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    // The sheet closed: show the live map again (the embed below follows).
    if(hiddenForDialog.current){hiddenForDialog.current=false;previous='';void appleMaps.hide({mapID,hidden:false}).catch(()=>{});}
    if(document.visibilityState==='hidden'){
-    previous='';
-    if(embeddedOnce.current){embeddedOnce.current=false;recordMapEvent('unembed',{reason:'hidden'});void appleMaps.unembed({mapID}).catch(()=>{});}
-    setEmbedded(false);setFrozen(null);return;
+    // Do not destroy the map or its camera on background: the native view survives
+    // suspension, and the cached geometry key stays valid, so resume re-measures
+    // and re-fits only if the viewport genuinely changed (handled by resize).
+    return;
    }
    const geometry=surfaceGeometry(surface,window,overlay);
    if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
@@ -250,11 +251,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   setBusy(true);setError('');
   openingFullscreen.current=true;
   try{
-   // MapKit fullscreen presentation can appear blank while another live MKMapView
-   // overlays the Capacitor WebView. Release that view before presenting.
-   if(embeddedOnce.current){recordMapEvent('unembed',{reason:'fullscreen'});embeddedOnce.current=false;}
-   await appleMaps.unembed({mapID}).catch(()=>{});
-   setEmbedded(false);
+   // The native side preserves the embedded map's camera across fullscreen: it
+   // hides the map, opens on the same view, and resumes it on close. This fallback
+   // path (picker/web) never destroys the map, so the camera survives open/close.
    const arrived=overviewKey?await sendOverview(overviewData.current).then(()=>true,()=>false):true;
    const request={...JSON.parse(interactiveData),picker,mapID};
    if(!arrived){delete request.overview;setOverviewFailed(overviewKey);}
@@ -264,9 +263,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    setError('The interactive map could not open. The route preview remains available; please retry.');
   }finally{
    openingFullscreen.current=false;
-   embeddedOnce.current=false;
    setBusy(false);
-   setReopenVersion(v=>v+1);
   }
  }
  return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{!embedded&&preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{controls&&!embedded&&<MapControls controls={controls} onAction={onControl}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&!embedded&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" aria-pressed={locating||(basePayload.camera?.mode==='person'&&basePayload.camera?.personId==='self')} disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{!embedded&&!appleMapsAvailable()&&<PeopleActivityFallback pins={latestContent.pins}/>} {error&&<p role="status" className="notice">{error}</p>}</div>;
