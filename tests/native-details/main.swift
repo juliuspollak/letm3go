@@ -103,15 +103,50 @@ do {
     var laps: [GPSPoint] = []
     for lap in 0..<3 { for step in 0...40 { laps.append(east(Double(lap % 2 == 0 ? step : 40 - step) * 10, 1000 + Double(laps.count) * 4)) } }
     let aSpot = east(100, 0), bSpot = east(200, 0)
-    let aVisits = ActivitySegmentPicker.visits(laps, latitude: aSpot.latitude, longitude: aSpot.longitude, toleranceMeters: 15)
-    let bVisits = ActivitySegmentPicker.visits(laps, latitude: bSpot.latitude, longitude: bSpot.longitude, toleranceMeters: 15)
+    let aTap = ActivitySegmentPicker.tap(laps, latitude: aSpot.latitude, longitude: aSpot.longitude, toleranceMeters: 25)
+    let bTap = ActivitySegmentPicker.tap(laps, latitude: bSpot.latitude, longitude: bSpot.longitude, toleranceMeters: 25)
+    let aVisits = aTap?.visits ?? [], bVisits = bTap?.visits ?? []
     check(aVisits.count == 3 && bVisits.count == 3, "each pass of a spot is its own visit")
-    check(ActivitySegmentPicker.visits(laps, latitude: -30, longitude: 151, toleranceMeters: 15).isEmpty, "a tap off the route finds nothing")
+    check(ActivitySegmentPicker.tap(laps, latitude: -30, longitude: 151, toleranceMeters: 25) == nil, "a tap off the route finds nothing")
     let ways = ActivitySegmentPicker.traversals(starts: aVisits, finishes: bVisits)
     check(ways.count == 2, "out, back and out again passes A then B only twice")
     check(ways.allSatisfy { $0.end - $0.start == 10 }, "a 1-minute section is exact, however long the ride")
     check(ActivitySegmentPicker.traversals(starts: [50], finishes: [10]).isEmpty, "a finish before the start is no traversal")
     check(ActivitySegmentPicker.traversals(starts: [10, 20], finishes: [30]) == [.init(start: 20, end: 30)], "one lap is never two")
+    // A 2-hour ride at one fix a second, three laps of about 40 minutes.
+    let long: [GPSPoint] = (0..<7200).map { second in
+        let lap = second / 2400, along = Double(second % 2400) * 1.4
+        return east(lap % 2 == 0 ? along : 3360 - along, 5000 + Double(second))
+    }
+    let oneA = east(1000, 0), oneB = east(1084, 0)
+    let longStarts = ActivitySegmentPicker.tap(long, latitude: oneA.latitude, longitude: oneA.longitude, toleranceMeters: 25)!
+    let longEnds = ActivitySegmentPicker.tap(long, latitude: oneB.latitude, longitude: oneB.longitude, toleranceMeters: 25)!
+    let longWays = ActivitySegmentPicker.traversals(starts: longStarts.visits, finishes: longEnds.visits)
+    check(longStarts.visits.count == 3 && longWays.count == 2, "a short stretch of a long ride is found on every lap in that direction")
+    check(longWays.allSatisfy { abs(long[$0.end].timestamp - long[$0.start].timestamp - 60) <= 2 }, "a one-minute section of a two-hour ride is exact")
+    check(NamedSegments.problem(start: longWays[0].start, end: longWays[0].end, points: long, automatic: false) == nil, "a one-minute section can be saved")
+    let widened = ActivitySegmentPicker.window(start: longWays[0].start, end: longWays[0].end, count: long.count)
+    check(widened.upperBound - widened.lowerBound <= 200, "the slider covers minutes, not the whole ride")
+    // Only the line that is drawn counts, not the fixes at its ends.
+    let sparse = [east(0, 100), east(400, 130), east(800, 160)]
+    let midway = east(200, 0)
+    check(ActivitySegmentPicker.tap(sparse, latitude: midway.latitude, longitude: midway.longitude, toleranceMeters: 25) != nil, "a tap on the line between sparse fixes counts")
+    // A neighbouring leg within reach of the finger is not another lap.
+    let leg = { (north: Double, metres: Double, time: Double) in GPSPoint(latitude: -33 + north / 111195, longitude: 151 + metres / 93000, timestamp: time, accuracy: 5, altitude: 0, speed: 3) }
+    var switchback: [GPSPoint] = []
+    for step in 0...30 { switchback.append(leg(0, Double(step) * 10, 2000 + Double(switchback.count) * 4)) }
+    for step in 0...10 { switchback.append(leg(Double(step) * 12, 300, 2000 + Double(switchback.count) * 4)) }
+    for step in 0...30 { switchback.append(leg(120, 300 - Double(step) * 10, 2000 + Double(switchback.count) * 4)) }
+    let onLeg = leg(0, 150, 0)
+    let legTap = ActivitySegmentPicker.tap(switchback, latitude: onLeg.latitude, longitude: onLeg.longitude, toleranceMeters: 150)!
+    check(legTap.visits == [legTap.closest] && legTap.closest == 15, "a nearby leg is not a phantom lap")
+    // Hidden parts of a recording cannot be picked.
+    check(ActivitySegmentPicker.tap(laps, latitude: aSpot.latitude, longitude: aSpot.longitude, toleranceMeters: 25, within: 0...40)?.visits.count == 1, "a hidden lap is not offered")
+    // Long lines stay within what the map draws.
+    let drawn = ActivityMapDraft.line(long)
+    check(drawn.count == ActivityMapDraft.linePoints && drawn.first! == [long[0].latitude, long[0].longitude] && drawn.last! == [long[7199].latitude, long[7199].longitude], "a long line is thinned and keeps both ends")
+    check(ActivityMapDraft.routes(long, visible: nil).allSatisfy { $0.count <= 5000 }, "no draft line is cut by the map")
+    check(ActivitySegmentPicker.window(start: 0, end: 0, count: 0) == 0...0, "an empty recording has a safe window")
     check(ActivitySegmentPicker.window(start: 1000, end: 1012, count: 5000) == 980...1032, "the slider closes in on a short section")
     check(ActivitySegmentPicker.window(start: 5, end: 500, count: 600) == 0...599, "the window stays within the recording")
     let picked = ActivityMapDraft.picking(start: 1).mapOptions(base: base, points: fixes)

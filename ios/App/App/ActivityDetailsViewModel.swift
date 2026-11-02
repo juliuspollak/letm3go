@@ -27,7 +27,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     }
     enum Picking: Equatable {
         case start
-        case finish(starts: [Int])
+        case finish(starts: [Int], marker: Int)
     }
     struct PhotoFocus: Identifiable, Equatable { let id: String }
 
@@ -67,7 +67,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     var draft: ActivityMapDraft? {
         if let segmentDraft {
             if case .start? = segmentDraft.picking { return .picking(start: nil) }
-            if case .finish(let starts)? = segmentDraft.picking { return .picking(start: starts.first) }
+            if case .finish(_, let marker)? = segmentDraft.picking { return .picking(start: marker) }
             return .segment(start: segmentDraft.start, end: segmentDraft.end, editingID: segmentDraft.existing ? segmentDraft.segmentID : nil)
         }
         if let trimDraft { return .trim(start: trimDraft.start, end: trimDraft.end) }
@@ -78,6 +78,8 @@ final class ActivityDetailsViewModel: ObservableObject {
         let another = next.activityID != presentation.activityID
         presentation = next
         points = service.points(activityID: next.activityID)
+        // The recording changed under an open editor: its indices no longer name fixes.
+        if let current = segmentDraft, current.end >= points.count || current.window.upperBound >= max(1, points.count) { cancelSegment() }
         guard another else { return }
         // Drafts, messages and open forms belonged to the previous activity.
         trimDraft = nil; trimming = false; segmentDraft = nil; pickProblem = ""; message = ""; errorMessage = ""; sheet = nil; photoFocus = nil; deleting = false
@@ -174,14 +176,17 @@ final class ActivityDetailsViewModel: ObservableObject {
         onPanel?(.collapsed)
     }
     func editSegment(_ segment: ActivityPresentation.Segment) {
+        guard segment.endIndex < points.count, segment.startIndex < segment.endIndex else { errorMessage = "This segment's recording has changed."; return }
         segmentDraft = SegmentDraft(segmentID: segment.id, name: segment.name, start: segment.startIndex, end: segment.endIndex, existing: true,
                                     window: ActivitySegmentPicker.window(start: segment.startIndex, end: segment.endIndex, count: points.count))
         onDraft?(draft)
         onPanel?(.medium)
     }
     var pickingOnMap: Bool { segmentDraft?.picking != nil }
+    // The part of the recording shown on the map; the rest stays out of reach.
+    var visibleRange: ClosedRange<Int>? { presentation.trim.flatMap { $0.start < $0.end && $0.pointCount == points.count ? $0.start...$0.end : nil } }
     func repickSegment() {
-        guard var current = segmentDraft else { return }
+        guard var current = segmentDraft, points.count >= 2 else { return }
         current.picking = .start; current.choices = []; current.window = 0...(points.count - 1)
         pickProblem = ""
         segmentDraft = current
@@ -191,14 +196,16 @@ final class ActivityDetailsViewModel: ObservableObject {
     // A tap on the map, as a coordinate and how far a finger's width reaches there.
     func pickOnMap(latitude: Double, longitude: Double, toleranceMeters: Double) {
         guard var current = segmentDraft, let picking = current.picking else { return }
-        let visits = ActivitySegmentPicker.visits(points, latitude: latitude, longitude: longitude, toleranceMeters: toleranceMeters)
-        guard !visits.isEmpty else { pickProblem = "That spot isn't on this route. Tap on the line."; return }
+        guard let tap = ActivitySegmentPicker.tap(points, latitude: latitude, longitude: longitude, toleranceMeters: toleranceMeters, within: visibleRange) else {
+            pickProblem = "That spot isn't on this route. Tap on the line."
+            return
+        }
         pickProblem = ""
         switch picking {
         case .start:
-            current.picking = .finish(starts: visits)
-        case .finish(let starts):
-            let choices = ActivitySegmentPicker.traversals(starts: starts, finishes: visits)
+            current.picking = .finish(starts: tap.visits, marker: tap.closest)
+        case .finish(let starts, _):
+            let choices = ActivitySegmentPicker.traversals(starts: starts, finishes: tap.visits)
             guard let first = choices.first else { pickProblem = "The ride never went from the start to that spot. Tap further along, or Start over."; return }
             current.picking = nil
             current.choices = choices.count > 1 ? choices : []
@@ -240,7 +247,7 @@ final class ActivityDetailsViewModel: ObservableObject {
         segmentDraft = current
         onDraft?(draft)
     }
-    func cancelSegment() { segmentDraft = nil; pickProblem = ""; onDraft?(draft); onPanel?(.medium) }
+    func cancelSegment() { segmentDraft = nil; pickProblem = ""; errorMessage = ""; onDraft?(draft); onPanel?(.medium) }
     func setSegment(start: Int, end: Int) {
         guard var current = segmentDraft else { return }
         current.start = start; current.end = end

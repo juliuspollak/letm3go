@@ -334,22 +334,38 @@ enum ActivityMapDraft: Equatable {
 
     static let selectionColor = "#FF2D55"
 
-    private static func line(_ points: [GPSPoint]) -> [[Double]] { points.map { [$0.latitude, $0.longitude] } }
+    static func routes(_ points: [GPSPoint], visible: ClosedRange<Int>?) -> [[[Double]]] {
+        guard !points.isEmpty else { return [] }
+        let range = visible.map { $0.clamped(to: 0...(points.count - 1)) } ?? 0...(points.count - 1)
+        return NamedSegments.runs(points[range]).filter { $0.count > 1 }.map { line($0) }
+    }
+
+    // The map keeps 5000 points of a line and 60 lines; a draft redraws on every tick.
+    static let linePoints = 1500
+    static let savedLines = 50, selectionLines = 10
+    static func line(_ points: [GPSPoint], limit: Int = linePoints) -> [[Double]] {
+        guard points.count > limit else { return points.map { [$0.latitude, $0.longitude] } }
+        let step = Double(points.count - 1) / Double(limit - 1)
+        return (0..<limit).map { let p = points[Int((Double($0) * step).rounded())]; return [p.latitude, p.longitude] }
+    }
 
     // The map while a range is being chosen. Same content as
     // lib/appleMaps.withTrimRange and lib/namedSegments.segmentLayers.
-    func mapOptions(base: [String: Any], points: [GPSPoint]) -> [String: Any] {
+    // `visible` is the part of the recording the person shows on the map, and
+    // `routes` the already prepared line of it, so a tick does not walk the whole ride.
+    func mapOptions(base: [String: Any], points: [GPSPoint], visible: ClosedRange<Int>? = nil, routes prepared: [[[Double]]]? = nil) -> [String: Any] {
         var options = base
         let pins = base["pins"] as? [[String: Any]] ?? []
         switch self {
         case .trim(let start, let end):
             guard start >= 0, end < points.count, start < end else { return base }
-            var routes: [[[Double]]] = []
+            var runs: [[GPSPoint]] = []
             var segment: Int?
             for point in points[start...end] {
-                if point.segment != segment { routes.append([]); segment = point.segment }
-                routes[routes.count - 1].append([point.latitude, point.longitude])
+                if point.segment != segment { runs.append([]); segment = point.segment }
+                runs[runs.count - 1].append(point)
             }
+            let routes = runs.map { Self.line($0) }
             guard let first = routes.first?.first, let last = routes.last?.last else { return base }
             options["routes"] = routes
             options["pins"] = pins.filter { !["start", "finish"].contains($0["kind"] as? String ?? "") } +
@@ -362,13 +378,14 @@ enum ActivityMapDraft: Equatable {
             options["pins"] = kept
         case .segment(let start, let end, let editingID):
             guard start >= 0, end < points.count, start < end else { return base }
-            options["routes"] = NamedSegments.runs(points[...]).filter { $0.count > 1 }.map(Self.line)
+            options["routes"] = prepared ?? Self.routes(points, visible: visible)
             options["muted"] = true
             let editing = editingID.map { $0.lowercased() }
-            var styled = (base["styled"] as? [[String: Any]] ?? []).filter { ($0["segmentID"] as? String)?.lowercased() != editing }.map { line -> [String: Any] in
+            var styled = (base["styled"] as? [[String: Any]] ?? []).filter { ($0["segmentID"] as? String)?.lowercased() != editing }.prefix(Self.savedLines).map { line -> [String: Any] in
                 var muted = line; muted["width"] = 4; return muted
             }
-            for run in NamedSegments.runs(points[start...end]) where run.count > 1 {
+            // Drawn last, and never the part of the list the map cuts.
+            for run in NamedSegments.runs(points[start...end]).filter({ $0.count > 1 }).suffix(Self.selectionLines) {
                 styled.append(["points": Self.line(run), "color": Self.selectionColor, "width": 7])
             }
             options["styled"] = styled
@@ -391,22 +408,47 @@ enum ActivitySegmentPicker {
         var start: Int
         var end: Int
     }
-    // The closest fix of each visit to a spot, in time order. Same idea as
-    // routePasses in lib/segmentMatcher.js.
-    static func visits(_ points: [GPSPoint], latitude: Double, longitude: Double, toleranceMeters: Double) -> [Int] {
+    struct Tap: Equatable {
+        // The closest fix of each pass, in time order.
+        var visits: [Int]
+        var closest: Int
+    }
+    // How much further than the nearest pass another may be and still be the same
+    // line. Overlapping laps differ by a few metres; a switchback differs by far more.
+    static let lapSpreadMeters = 25.0
+    private static func distance(to spot: GPSPoint, _ a: GPSPoint, _ b: GPSPoint) -> Double {
+        // Close enough to flat at this scale: the drawn line between two fixes.
+        let scale = cos(spot.latitude * .pi / 180)
+        let ax = (a.longitude - spot.longitude) * scale, ay = a.latitude - spot.latitude
+        let bx = (b.longitude - spot.longitude) * scale, by = b.latitude - spot.latitude
+        let dx = bx - ax, dy = by - ay, length = dx * dx + dy * dy
+        let t = length > 0 ? max(0, min(1, -(ax * dx + ay * dy) / length)) : 0
+        return ((ax + t * dx) * (ax + t * dx) + (ay + t * dy) * (ay + t * dy)).squareRoot() * 111_195
+    }
+    // Same idea as routePasses in lib/segmentMatcher.js, measured to the line that is
+    // drawn, because a tap on the line can be far from the fixes at its ends.
+    static func tap(_ points: [GPSPoint], latitude: Double, longitude: Double, toleranceMeters: Double, within visible: ClosedRange<Int>? = nil) -> Tap? {
+        guard !points.isEmpty else { return nil }
         let spot = GPSPoint(latitude: latitude, longitude: longitude, timestamp: 0, accuracy: 0, altitude: 0, speed: 0)
-        var result: [Int] = []
+        let range = visible.map { $0.clamped(to: 0...(points.count - 1)) } ?? 0...(points.count - 1)
+        var found: [(index: Int, distance: Double)] = []
         var best: (index: Int, distance: Double)?
-        func close() { if let found = best { result.append(found.index) }; best = nil }
-        for (index, point) in points.enumerated() {
-            if index > 0, !NamedSegments.connected(points[index - 1], point) { close() }
-            let distance = point.distance(to: spot)
+        func close() { if let visit = best { found.append(visit) }; best = nil }
+        for index in range {
+            let point = points[index], linked = index > range.lowerBound && NamedSegments.connected(points[index - 1], point)
+            if index > range.lowerBound, !linked { close() }
+            var distance = point.distance(to: spot), nearest = index
+            if linked {
+                let between = Self.distance(to: spot, points[index - 1], point)
+                if between < distance { distance = between; nearest = points[index - 1].distance(to: spot) < point.distance(to: spot) ? index - 1 : index }
+            }
             if distance <= toleranceMeters {
-                if distance < (best?.distance ?? .infinity) { best = (index, distance) }
+                if distance < (best?.distance ?? .infinity) { best = (nearest, distance) }
             } else { close() }
         }
         close()
-        return result
+        guard let nearest = found.min(by: { $0.distance < $1.distance }) else { return nil }
+        return Tap(visits: found.filter { $0.distance <= nearest.distance + lapSpreadMeters }.map(\.index), closest: nearest.index)
     }
     // Each time the ride went from the first spot to the second. The tightest pair
     // wins: a later pass of the start is a new lap, so one lap is never two.
@@ -421,8 +463,9 @@ enum ActivitySegmentPicker {
     }
     // Room around a choice, so short sections can be fine-tuned on a long ride.
     static func window(start: Int, end: Int, count: Int) -> ClosedRange<Int> {
+        guard count > 0 else { return 0...0 }
         let margin = max(20, end - start)
-        return max(0, start - margin)...min(count - 1, end + margin)
+        return max(0, min(count - 1, start - margin))...max(0, min(count - 1, end + margin))
     }
 }
 

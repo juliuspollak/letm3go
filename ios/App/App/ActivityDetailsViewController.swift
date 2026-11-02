@@ -30,6 +30,9 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     private var mapBase: [String: Any]
     private var camera = ActivityMapCameraPolicy()
     private var pendingDraft: ActivityMapDraft?
+    // The muted route of a segment draft, built once per recording.
+    private var preparedRoutes: [[[Double]]]?
+    private var preparedCount = -1
     private var draftTimer: Timer?
     private var placeholder: UIHostingController<ActivityNoRouteView>?
     private weak var hostedWebView: WKWebView?
@@ -258,7 +261,9 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     private func applyDraft() {
         guard let draft = pendingDraft else { return }
         pendingDraft = nil
-        engine.apply(draft.mapOptions(base: mapBase, points: model.points))
+        let points = model.points
+        if preparedCount != points.count { preparedRoutes = ActivityMapDraft.routes(points, visible: model.visibleRange); preparedCount = points.count }
+        engine.apply(draft.mapOptions(base: mapBase, points: points, visible: model.visibleRange, routes: preparedRoutes))
     }
 
     // MARK: Picking on the map
@@ -285,7 +290,8 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
         let reach = mapView.convert(CGPoint(x: point.x + 24, y: point.y), toCoordinateFrom: mapView)
         let metres = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude).distance(from: CLLocation(latitude: reach.latitude, longitude: reach.longitude))
-        model.pickOnMap(latitude: coordinate.latitude, longitude: coordinate.longitude, toleranceMeters: max(12, min(metres, 150)))
+        // A finger's width at this zoom, and never less than GPS can separate.
+        model.pickOnMap(latitude: coordinate.latitude, longitude: coordinate.longitude, toleranceMeters: max(25, metres))
     }
     private func focusMap(start: Int, end: Int) {
         let points = model.points

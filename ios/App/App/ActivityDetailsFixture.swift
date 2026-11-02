@@ -21,8 +21,17 @@ final class ActivityDetailsFixtureService: ActivityDetailsService {
     let route: [GPSPoint]
     init(map: [String: Any]) {
         let line = (map["routes"] as? [[[Double]]] ?? []).flatMap { $0 }
-        route = (line + line.reversed() + line).enumerated().map { index, spot in
-            GPSPoint(latitude: spot[0], longitude: spot[1], timestamp: 1_790_000_000 + Double(index) * 5, accuracy: 5, altitude: 20, speed: 3)
+        // -ActivityDetailsFixtureLong: two hours at a fix a second, like a Watch ride.
+        let perLap = UserDefaults.standard.bool(forKey: "ActivityDetailsFixtureLong") ? 2400 : line.count
+        let lap: [[Double]] = (0..<perLap).compactMap { step in
+            guard let first = line.first, let last = line.last else { return nil }
+            if perLap == line.count { return line[step] }
+            let share = Double(step) / Double(perLap - 1)
+            return [first[0] + (last[0] - first[0]) * share, first[1] + (last[1] - first[1]) * share]
+        }
+        let step: Double = perLap == line.count ? 5 : 1
+        route = (lap + lap.reversed() + lap).enumerated().map { index, spot in
+            GPSPoint(latitude: spot[0], longitude: spot[1], timestamp: 1_790_000_000 + Double(index) * step, accuracy: 5, altitude: 20, speed: 3)
         }
     }
     func points(activityID: String) -> [GPSPoint] { route }

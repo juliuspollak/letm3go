@@ -6,6 +6,14 @@ export function withSegments(payload,layers){
 }
 // The part of a recording the trim handles keep, split where recording segments
 // change, so a gap is never drawn. Start and Finish move with the handles.
+// The native map draws up to 5000 points per line and cuts the rest, so a long
+// recording is thinned first. Both ends stay, so the line still reaches them.
+export const MAP_LINE_POINTS=4000;
+export function thinLine(line,limit=MAP_LINE_POINTS){
+ if(line.length<=limit)return line;
+ const step=(line.length-1)/(limit-1);
+ return Array.from({length:limit},(_,i)=>line[Math.round(i*step)]);
+}
 export function withTrimRange(payload,trimRange){
  if(!(trimRange?.points?.length>1))return payload;
  const points=trimRange.points.slice(trimRange.start,trimRange.end+1).filter(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
@@ -17,5 +25,5 @@ export function withTrimRange(payload,trimRange){
  }
  const pins=payload.pins.filter(pin=>!['start','finish'].includes(pin.kind));
  pins.push({point:routes[0][0],title:'Start',kind:'start'},{point:routes.at(-1).at(-1),title:'Finish',kind:'finish'});
- return {...payload,routes,pins};
+ return {...payload,routes:routes.map(line=>thinLine(line)),pins};
 }

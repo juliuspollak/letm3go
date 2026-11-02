@@ -122,8 +122,11 @@ struct ActivitySegmentsSection: View {
                     if open == segment.id {
                         DetailFootnote(text: segment.detail)
                         HStack {
-                            Button("Edit") { model.editSegment(segment) }.buttonStyle(DetailButtonStyle())
-                            Button("Rename") { renameText = segment.name; renaming = segment }.buttonStyle(DetailButtonStyle())
+                            // Changing one needs an activity that can have segments.
+                            if s.allowed {
+                                Button("Edit") { model.editSegment(segment) }.buttonStyle(DetailButtonStyle())
+                                Button("Rename") { renameText = segment.name; renaming = segment }.buttonStyle(DetailButtonStyle())
+                            }
                             Button("Delete") { confirming = segment }.buttonStyle(DetailButtonStyle(kind: .destructive))
                         }.disabled(model.busy)
                     }
@@ -157,10 +160,10 @@ struct SegmentEditorCard: View {
         self.model = model; self.draft = draft
         _name = State(initialValue: draft.name)
     }
-    private var problem: NamedSegments.Failure? { NamedSegments.problem(start: draft.start, end: draft.end, points: model.points, automatic: model.automatic) }
     private func lapLabel(_ number: Int, _ lap: ActivitySegmentPicker.Traversal) -> String {
-        let figures = NamedSegments.measure(model.points, start: lap.start, end: lap.end, automatic: model.automatic)
-        return "Lap \(number) · \(ActivityClock.time(model.points, lap.start)) · \(ActivityDetailsFormat.clock(figures.durationSeconds))"
+        let points = model.points
+        guard points.indices.contains(lap.start), points.indices.contains(lap.end) else { return "Lap \(number)" }
+        return "Lap \(number) · \(ActivityClock.time(points, lap.start)) · \(ActivityDetailsFormat.clock(points[lap.end].timestamp - points[lap.start].timestamp))"
     }
     var body: some View {
         if let picking = draft.picking { pickingCard(picking) } else { editing }
@@ -189,6 +192,7 @@ struct SegmentEditorCard: View {
     private var editing: some View {
         let points = model.points
         let figures = draft.start < draft.end && draft.end < points.count ? NamedSegments.measure(points, start: draft.start, end: draft.end, automatic: model.automatic) : nil
+        let problem = NamedSegments.problem(start: draft.start, end: draft.end, points: points, automatic: model.automatic)
         return DetailCard(title: draft.existing ? "Edit segment" : "Create segment", symbol: "flag") {
             if draft.choices.count > 1 {
                 Text("You rode this \(draft.choices.count) times. Which one?").font(.subheadline.weight(.semibold))
@@ -215,7 +219,9 @@ struct SegmentEditorCard: View {
             if let gap = figures?.gapSeconds, gap > 0 { DetailFootnote(text: "Includes \(ActivityDetailsFormat.clock(gap)) without GPS; that stretch is not drawn or counted.") }
             if let problem { DetailFootnote(text: problem.message) }
             TextField("Segment name", text: $name).textFieldStyle(.roundedBorder).accessibilityIdentifier("segment.name")
+                .onChange(of: name) { if $0.count > NamedSegments.maximumNameLength { name = String($0.prefix(NamedSegments.maximumNameLength)) } }
             if tried, NamedSegments.cleanName(name) == nil { Text("Name the segment to save it.").font(.footnote).foregroundColor(.red) }
+            if !model.errorMessage.isEmpty { Text(model.errorMessage).font(.footnote).foregroundColor(.red).accessibilityIdentifier("segment.error") }
             HStack {
                 Button("Pick on map") { model.repickSegment() }.buttonStyle(DetailButtonStyle())
                 Button { model.undoSegment() } label: { Image(systemName: "arrow.uturn.backward") }
@@ -279,7 +285,7 @@ struct RangeSlider: View {
     let endLabel: String
     var onBegin: () -> Void = {}
     let onChange: (Int, Int) -> Void
-    @GestureState private var dragging = false
+    @State private var dragging = false
     private let thumb: CGFloat = 28
     var body: some View {
         GeometryReader { geometry in
@@ -300,10 +306,14 @@ struct RangeSlider: View {
             .frame(width: 44, height: 44).contentShape(Rectangle())
             .offset(x: x - (44 - thumb) / 2)
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("range"))
-                .updating($dragging) { _, state, _ in if !state { state = true; DispatchQueue.main.async(execute: onBegin) } }
-                .onChanged { value in set(first + Int(((value.location.x - thumb / 2) / width * CGFloat(last - first)).rounded()).clamped(0, last - first)) })
+                .onEnded { _ in dragging = false }
+                .onChanged { value in
+                    if !dragging { dragging = true; onBegin() }
+                    set(first + Int(((value.location.x - thumb / 2) / width * CGFloat(last - first)).rounded()).clamped(0, last - first))
+                })
             .accessibilityElement().accessibilityLabel(label).accessibilityValue("\(Int(Double(value - first) / Double(max(1, last - first)) * 100)) percent")
             .accessibilityAdjustableAction { direction in
+                onBegin()
                 let step = max(1, (last - first) / 50)
                 adjust(direction == .increment ? step : -step)
             }

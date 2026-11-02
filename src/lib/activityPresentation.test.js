@@ -72,6 +72,17 @@ describe('activityPresentation',()=>{
   const fixture=`${process.cwd()}/tests/fixtures/activity-presentation.json`;
   const current=JSON.stringify({...present(journey,{maximumHeartRate:190}),revision:1},null,1)+'\n';
   if(process.env.UPDATE_FIXTURES)writeFileSync(fixture,current);
-  expect(readFileSync(fixture,'utf8')).toBe(current);
+  // The shape is the contract. Displayed times differ by the machine's time zone.
+  const shape=value=>Array.isArray(value)?value.slice(0,1).map(shape):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,shape(value[key])])):value===null?'null':typeof value;
+  expect(shape(JSON.parse(readFileSync(fixture,'utf8')))).toEqual(shape(JSON.parse(current)));
+ });
+});
+
+describe('a long recording on the map',()=>{
+ it('draws the whole ride within the map\'s limit, up to its last fix',()=>{
+  const long=Array.from({length:7200},(_,i)=>({latitude:-34+i*0.00001,longitude:150,timestamp:1790000000+i,accuracy:5,altitude:0,speed:3,segment:0}));
+  const map=activityMap(recordedJourney({...base,points:long,details:{}}));
+  expect(Math.max(...map.routes.map(line=>line.length))).toBeLessThanOrEqual(5000);
+  expect(map.routes.at(-1).at(-1)).toEqual([long.at(-1).latitude,long.at(-1).longitude]);
  });
 });

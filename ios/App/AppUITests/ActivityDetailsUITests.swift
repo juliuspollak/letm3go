@@ -144,6 +144,42 @@ final class ActivityDetailsUITests: XCTestCase {
         app.buttons["Save Segment"].firstMatch.tap()
         XCTAssertTrue(title.waitForExistence(timeout: 8), "saving returns to the page")
     }
+    func testOneMinuteSegmentOfATwoHourRideWithLaps() {
+        app.terminate()
+        app.launchArguments += ["-ActivityDetailsFixtureLong", "YES"]
+        app.launch()
+        XCTAssertTrue(title.waitForExistence(timeout: 30))
+        Thread.sleep(forTimeInterval: 1)
+        let create = app.buttons["Create Segment"]
+        reach(create); create.tap()
+        XCTAssertTrue(app.staticTexts["Tap where the segment starts"].waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 2)
+        let start = app.otherElements["Start"], finish = app.otherElements["Finish"]
+        XCTAssertTrue(start.exists && finish.exists)
+        let a = CGPoint(x: start.frame.midX, y: start.frame.maxY), b = CGPoint(x: finish.frame.midX, y: finish.frame.maxY)
+        let spot = { (share: CGFloat) in self.point(a.x + (b.x - a.x) * share, a.y + (b.y - a.y) * share) }
+        // The middle of the line, 2.5% of a 40-minute lap apart: about a minute.
+        spot(0.5).tap(); Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(app.staticTexts["Now tap where it ends"].waitForExistence(timeout: 5), "the first tap lands on the line")
+        spot(0.525).tap(); Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'You rode this 2 times'")).firstMatch.waitForExistence(timeout: 5), "both laps that way are offered")
+        shot("long-laps")
+        let laps = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Lap '"))
+        XCTAssertEqual(laps.count, 2)
+        for index in 0..<laps.count {
+            let label = laps.element(boundBy: index).label
+            XCTAssertTrue(label.contains(" min ") || label.hasSuffix(" s"), label)
+            XCTAssertFalse(label.contains(" h "), "a lap is a section, not the ride: \(label)")
+        }
+        laps.element(boundBy: 1).tap(); Thread.sleep(forTimeInterval: 1)
+        shot("long-lap2")
+        app.buttons["Move finish later"].tap()
+        let field = app.textFields["segment.name"]
+        field.tap(); field.typeText("Short climb")
+        Thread.sleep(forTimeInterval: 1)
+        app.buttons["Save Segment"].firstMatch.tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "a one-minute segment saves")
+    }
     func testRouteTrimSaveReturnsToThePage() {
         let choose = app.buttons["Choose visible route"]
         reach(choose); choose.tap()
