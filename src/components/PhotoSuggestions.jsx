@@ -26,6 +26,8 @@ export default function PhotoSuggestions({
 
  const [progress,setProgress]=useState({done:0,total:0});
  const [preview,setPreview]=useState(null);
+ const previewTrigger=useRef(null);
+ const previewDialog=useRef(null);
  const alive=useRef(true);
  const runToken=useRef(null);
  // Re-arm on every effect setup (StrictMode performs setup → cleanup → setup)
@@ -139,6 +141,25 @@ export default function PhotoSuggestions({
  // imported photo leaves the list and its preview closes with it.
  const previewItem=preview?items.find(item=>assetKey(item)===assetKey(preview))||null:null;
  const previewBlocked=previewItem?.skipped===true||(previewItem?duplicateKeys.has(assetKey(previewItem)):false);
+ useEffect(()=>{
+  if(previewItem){
+   const close=previewDialog.current?.querySelector('[data-dialog-close]');
+   if(close)close.focus();
+  }else if(previewTrigger.current){
+   previewTrigger.current.focus();
+   previewTrigger.current=null;
+  }
+ },[previewItem]);
+ function handlePreviewKeyDown(event){
+  if(event.key==='Escape'){event.preventDefault();setPreview(null);return;}
+  if(event.key!=='Tab')return;
+  const dialog=event.currentTarget;
+  const focusables=dialog.querySelectorAll('button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if(!focusables.length)return;
+  const first=focusables[0],last=focusables[focusables.length-1];
+  if(event.shiftKey){if(document.activeElement===first){event.preventDefault();last.focus();}}
+  else if(document.activeElement===last){event.preventDefault();first.focus();}
+ }
  return <section className="photo-suggestions" aria-labelledby="photo-suggestions-heading">
   <div className="photo-suggestions-head">
    <h2 id="photo-suggestions-heading">Photo suggestions</h2>
@@ -182,7 +203,7 @@ export default function PhotoSuggestions({
          <p className="muted small-copy">{confidence.label}</p>
          {!locallyAvailable&&!duplicate&&<p className="muted small-copy">Not downloaded. Download it in Photos, then retry.</p>}
          <div className="suggestion-tile-actions">
-          <button type="button" className="text-button" disabled={working} onClick={()=>setPreview(suggestion)} aria-label={`Preview suggested photo${time?` from ${time}`:''}`}>Preview</button>
+          <button type="button" className="text-button" disabled={working} onClick={event=>{previewTrigger.current=event.currentTarget;setPreview(suggestion);}} aria-label={`Preview suggested photo${time?` from ${time}`:''}`}>Preview</button>
           {suggestion.skipped
            ?<button type="button" className="text-button" disabled={busy||working} aria-label={`Show suggested photo from ${time||'unknown time'} again`} onClick={()=>void skip(key,false)}>Show again</button>
            :<button type="button" className="text-button" disabled={busy||working} aria-label={`Skip suggested photo from ${time||'unknown time'}`} onClick={()=>void skip(key,true)}>Skip</button>}
@@ -207,7 +228,7 @@ export default function PhotoSuggestions({
    {(onClose||working)&&<button type="button" className="secondary" onClick={cancel} disabled={cancelling}>{working?'Cancel import':'Cancel'}</button>}
    {retryable.length>0&&<button type="button" className="secondary" disabled={busy||working} onClick={retryFailed}>Retry {retryable.length} failed</button>}
   </div>
-  {previewItem&&<div className="photo-preview" role="dialog" aria-modal="true" aria-label="Photo preview">
+  {previewItem&&<div className="photo-preview" role="dialog" aria-modal="true" aria-label="Photo preview" ref={previewDialog} onKeyDown={handlePreviewKeyDown}>
    {previewItem.localAvailable===false||!previewItem.thumbnail
     ?<p className="muted small-copy">This photo is in iCloud and has not been downloaded. Download it in Photos to add it to this activity.</p>
     :<PrivateImage src={previewItem.thumbnail} alt=""/>}
@@ -216,7 +237,7 @@ export default function PhotoSuggestions({
     <button type="button" className="secondary" disabled={working||previewBlocked} onClick={()=>setSelected(current=>toggleSelected(current,assetKey(previewItem)))}>
      {previewItem.skipped?'Skipped photo':previewBlocked?'Already added':chosenSelection.has(assetKey(previewItem))?'Deselect photo':'Select photo'}
     </button>
-    <button type="button" className="primary" onClick={()=>setPreview(null)}>Done</button>
+    <button type="button" className="primary" data-dialog-close onClick={()=>setPreview(null)}>Done</button>
    </div>
   </div>}
   {status&&<p role="status" className="suggestion-status">{status}</p>}

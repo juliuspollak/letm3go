@@ -10,22 +10,28 @@ export const MAP_EVENTS=['embed','resize','update','snapshot','hide','unembed','
 // The global reader is installed only while the opt-in flag is set, so a release
 // build does not expose map internals (or pay for them) unless diagnostics were
 // explicitly turned on for a measurement.
-const readers=new Set();
+const readers=new Map();
+let nextReaderToken=0;
 function publish(){
  if(typeof window==='undefined'||!mapDiagnosticsEnabled())return;
  window.__letm3goMapEvents=snapshot();
  window.letm3goMapDiagnostics=()=>{
-  for(const read of readers)try{read();}catch{/* a detached map must not break the reader */}
+  for(const read of readers.values())try{read();}catch{/* a detached map must not break the reader */}
   return window.__letm3goMapEvents=snapshot();
  };
 }
-// Registers one live map with the global reader. Returns a release function; the
-// global is removed with the last map instead of being left pointing at nothing.
+// Registers one live map with the global reader. Each install owns a unique
+// token, so overlapping maps are counted separately and the global is removed
+// with the last live registration instead of being left pointing at nothing.
 export function installMapDiagnostics(read){
  if(!mapDiagnosticsEnabled())return ()=>{};
- readers.add(read);publish();
+ const token=nextReaderToken++;
+ readers.set(token,read);publish();
+ let released=false;
  return ()=>{
-  readers.delete(read);
+  if(released)return;
+  released=true;
+  readers.delete(token);
   if(typeof window!=='undefined'&&!readers.size){
    delete window.letm3goMapDiagnostics;
    delete window.__letm3goMapEvents;
@@ -65,7 +71,7 @@ export function snapshot(){
  };
 }
 export function resetMapDiagnostics(){
- counters.clear();frames.length=0;
+ counters.clear();frames.length=0;readers.clear();
  if(typeof window!=='undefined'){delete window.__letm3goMapEvents;delete window.letm3goMapDiagnostics;}
 }
 // The diagnostics are opt-in and read-only; the UI and the performance notes use

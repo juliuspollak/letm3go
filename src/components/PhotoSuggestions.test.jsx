@@ -157,6 +157,21 @@ describe('photo suggestions',()=>{
   expect(screen.queryByRole('dialog',{name:'Photo preview'})).not.toBeInTheDocument();
   expect(screen.getByText('0 of 2 selected')).toBeInTheDocument();
  });
+it('moves focus into the preview, traps Tab within it and returns focus to the opener on close',()=>{
+ render(<PhotoSuggestions suggestions={[photo('a',at(1,2)),photo('b',at(1,4))]} onImport={vi.fn()}/>);
+ const opener=screen.getAllByRole('button',{name:/Preview suggested photo/})[0];
+ opener.focus();
+ fireEvent.click(opener);
+ const dialog=screen.getByRole('dialog',{name:'Photo preview'});
+ expect(screen.getByRole('button',{name:'Done'})).toHaveFocus();
+ fireEvent.keyDown(dialog,{key:'Tab'});
+ expect(screen.getByRole('button',{name:'Select photo'})).toHaveFocus();
+ fireEvent.keyDown(dialog,{key:'Tab',shiftKey:true});
+ expect(screen.getByRole('button',{name:'Done'})).toHaveFocus();
+ fireEvent.keyDown(dialog,{key:'Escape'});
+ expect(screen.queryByRole('dialog',{name:'Photo preview'})).not.toBeInTheDocument();
+ expect(opener).toHaveFocus();
+});
  it('offers an explicit cancel so leaving the suggestions is never ambiguous',()=>{
   const onClose=vi.fn();
   render(<PhotoSuggestions suggestions={[photo('a',at(1,2))]} onClose={onClose} onImport={vi.fn()}/>);

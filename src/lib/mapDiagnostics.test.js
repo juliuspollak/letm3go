@@ -58,4 +58,41 @@ describe('map lifecycle counters',()=>{
   localStorage.setItem('letm3go-map-diagnostics','1');
   expect(mapDiagnosticsEnabled()).toBe(true);
  });
+it('keeps the global reader while overlapping maps are live and removes it with the last',()=>{
+ localStorage.setItem('letm3go-map-diagnostics','1');
+ let reads=0;
+ const read=()=>{reads+=1;};
+ const first=installMapDiagnostics(read);
+ const second=installMapDiagnostics(read);
+ expect(typeof window.letm3goMapDiagnostics).toBe('function');
+ first();
+ expect(typeof window.letm3goMapDiagnostics).toBe('function');
+ window.letm3goMapDiagnostics();
+ expect(reads).toBe(1);
+ second();
+ expect(window.letm3goMapDiagnostics).toBeUndefined();
+ expect(window.__letm3goMapEvents).toBeUndefined();
+});
+it('ignores a second release of the same handle',()=>{
+ localStorage.setItem('letm3go-map-diagnostics','1');
+ const first=installMapDiagnostics(()=>{});
+ const second=installMapDiagnostics(()=>{});
+ first();first();
+ expect(typeof window.letm3goMapDiagnostics).toBe('function');
+ second();
+ expect(window.letm3goMapDiagnostics).toBeUndefined();
+});
+it('reset clears live registrations so a stale release cannot remove a newer reader',()=>{
+ localStorage.setItem('letm3go-map-diagnostics','1');
+ const stale=installMapDiagnostics(()=>{});
+ expect(typeof window.letm3goMapDiagnostics).toBe('function');
+ resetMapDiagnostics();
+ expect(window.letm3goMapDiagnostics).toBeUndefined();
+ const live=installMapDiagnostics(()=>{});
+ expect(typeof window.letm3goMapDiagnostics).toBe('function');
+ stale();
+ expect(typeof window.letm3goMapDiagnostics).toBe('function');
+ live();
+ expect(window.letm3goMapDiagnostics).toBeUndefined();
+});
 });

@@ -18,6 +18,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const mapSurface=useRef(null);
  const frozenHeight=useRef(0);
  const embeddedOnce=useRef(false);
+ const embedSent=useRef(false);
  const fittedViewport=useRef(null);
  const fittedContent=useRef({positions:false,focus:false});
  const openingFullscreen=useRef(false);
@@ -42,7 +43,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // unembedding it here would drop the camera the sheet is meant to preserve.
  useEffect(()=>()=>{
   if(!appleMapsAvailable())return;
-  if(embeddedOnce.current){recordMapEvent('unembed',{reason:'unmount'});void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>{void appleMaps.close({mapID}).catch(()=>{});});}
+  if(embeddedOnce.current||embedSent.current){recordMapEvent('unembed',{reason:'unmount'});void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>{void appleMaps.close({mapID}).catch(()=>{});});}
   else void appleMaps.close({mapID}).catch(()=>{});
  },[mapID]);
  const locateHandler=useRef(onLocate);useEffect(()=>{locateHandler.current=onLocate;},[onLocate]);
@@ -171,6 +172,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
     if(!active)return null;
     const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport};
     if(!arrived)delete request.overview;
+    embedSent.current=true;
     return appleMaps.embed(request).then(result=>({arrived,result}));
    }).then(outcome=>{
     if(!outcome||!active)return;

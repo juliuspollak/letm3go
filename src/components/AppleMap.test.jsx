@@ -146,6 +146,25 @@ describe('people map camera',()=>{
  });
 });
 
+it('releases a map whose embed was sent but not yet resolved when it unmounts',async()=>{
+ let release;
+ mocks.embed.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ const {unmount}=render(<AppleMap payload={payload}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+ const mapID=mocks.embed.mock.calls[0][0].mapID;
+ unmount();
+ expect(mocks.unembed).toHaveBeenCalledWith({mapID});
+ await waitFor(()=>expect(mocks.close).toHaveBeenCalledWith({mapID}));
+ expect(mocks.unembed.mock.invocationCallOrder[0]).toBeLessThan(mocks.close.mock.invocationCallOrder[0]);
+ await act(async()=>release({}));
+});
+it('only closes a map that was never embedded',()=>{
+ const {unmount}=render(<AppleMap payload={payload} picker/>);
+ unmount();
+ expect(mocks.unembed).not.toHaveBeenCalled();
+ expect(mocks.close).toHaveBeenCalledWith({mapID:expect.any(String)});
+});
+
 describe('overview transfer',()=>{
  const overview={key:'d1',levels:[],photos:[],routes:{}};
  const overviewPayload={routes:[],pins:[],gaps:[],overview:'d1'};
