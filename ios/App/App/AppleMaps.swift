@@ -1539,7 +1539,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
 }
 
 @objc(AppleMapsPlugin)
-public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
+public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDelegate {
     private weak var presentedMap:AppleMapController?
     private var presentedID:String?
     private var embeddedMaps:[String:MKMapView]=[:]
@@ -1547,8 +1547,122 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     private var coordinators:[String:MapCoordinator]=[:]
     // Embedded maps hidden while a sheet or the photo viewer covers them.
     private var hiddenMaps=Set<String>()
+    // Overlay host: a transparent UIView parked behind the WKWebView. Overlay maps
+    // (the Activity Details background) live here so the React sheet can physically
+    // cover them; non-overlay maps (the Map tab) stay in webView.scrollView.
+    private weak var mapHostView:UIView?
+    private var overlayMaps=Set<String>()
+    // The exposed map height (viewport px) reported by the sheet: the overlay map is
+    // touch-interactive only above this line; below it the sheet owns the gesture.
+    private var overlayExposedHeight:[String:Double]=[:]
+    private weak var mapPan:UIPanGestureRecognizer?
+    private weak var mapPinch:UIPinchGestureRecognizer?
+    private weak var mapTap:UITapGestureRecognizer?
     private func coordinator(for map:MKMapView)->MapCoordinator? {coordinators.values.first{$0.map===map}}
     private func mapID(for map:MKMapView)->String? {embeddedMaps.first{$0.value===map}?.key}
+
+    // The Activity Details map is a full-bleed background. It lives in a dedicated
+    // transparent host parked BEHIND the WKWebView so the React sheet can physically
+    // cover it (UIKit z-order: map host < web view < HTML sheet). The web view is
+    // made transparent here; the HTML page paints its own opaque background
+    // everywhere except the overlay map area (html.map-overlay).
+    private func ensureMapHost()->UIView? {
+        guard let parent=self.bridge?.viewController?.view, let webView=self.bridge?.webView else {return nil}
+        if let host=mapHostView, host.superview===parent {return host}
+        let host=UIView(frame:parent.bounds)
+        host.autoresizingMask=[.flexibleWidth,.flexibleHeight]
+        host.backgroundColor = .clear
+        host.isUserInteractionEnabled=true
+        parent.addSubview(host)
+        parent.sendSubviewToBack(host)
+        webView.isOpaque=false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        mapHostView=host
+        installOverlayGestures(on:webView)
+        return host
+    }
+
+    // Overlay maps are behind the web view, so their built-in gestures never see a
+    // touch. These recognisers forward pan/pinch/tap that begin in the exposed
+    // (uncovered) map area; below the sheet the React sheet owns the gesture.
+    private func installOverlayGestures(on webView:WKWebView) {
+        if mapPan == nil {
+            let pan=UIPanGestureRecognizer(target:self,action:#selector(overlayPanned(_:)))
+            pan.cancelsTouchesInView=false
+            pan.delegate=self
+            webView.addGestureRecognizer(pan)
+            mapPan=pan
+        }
+        if mapPinch == nil {
+            let pinch=UIPinchGestureRecognizer(target:self,action:#selector(overlayPinched(_:)))
+            pinch.cancelsTouchesInView=false
+            pinch.delegate=self
+            webView.addGestureRecognizer(pinch)
+            mapPinch=pinch
+        }
+        if mapTap == nil {
+            let tap=UITapGestureRecognizer(target:self,action:#selector(overlayTapped(_:)))
+            tap.cancelsTouchesInView=false
+            tap.delegate=self
+            webView.addGestureRecognizer(tap)
+            mapTap=tap
+        }
+    }
+
+    // Only one overlay map is interactive at a time: the first live overlay whose
+    // exposed area contains the touch. Gestures on the sheet return nil and no-op.
+    private func overlayMap(for gesture:UIGestureRecognizer)->MKMapView? {
+        guard let webView=self.bridge?.webView else {return nil}
+        let point=gesture.location(in:webView)
+        for id in overlayMaps {
+            guard let map=embeddedMaps[id], !map.isHidden else {continue}
+            let exposed=overlayExposedHeight[id] ?? 0
+            if Double(point.y) < exposed {return map}
+        }
+        return nil
+    }
+
+    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        return overlayMap(for:gestureRecognizer) != nil
+    }
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { return true }
+
+    @objc private func overlayPanned(_ pan:UIPanGestureRecognizer) {
+        guard let map=overlayMap(for:pan), let webView=self.bridge?.webView else {return}
+        if pan.state == .began { pan.setTranslation(.zero,in:webView); return }
+        let t=pan.translation(in:webView)
+        let span=map.region.span
+        let h=Double(max(1,Int(map.bounds.height))), w=Double(max(1,Int(map.bounds.width)))
+        var center=map.region.center
+        center.latitude -= Double(t.y)*span.latitudeDelta/h
+        center.longitude -= Double(t.x)*span.longitudeDelta/w
+        map.setRegion(MKCoordinateRegion(center:center,span:span),animated:false)
+        pan.setTranslation(.zero,in:webView)
+    }
+    @objc private func overlayPinched(_ pinch:UIPinchGestureRecognizer) {
+        guard let map=overlayMap(for:pinch) else {return}
+        var region=map.region
+        let s=Double(pinch.scale)
+        region.span.latitudeDelta = min(180,max(0.0001,region.span.latitudeDelta/s))
+        region.span.longitudeDelta = min(360,max(0.0001,region.span.longitudeDelta/s))
+        map.setRegion(region,animated:false)
+        pinch.scale=1
+    }
+    @objc private func overlayTapped(_ tap:UITapGestureRecognizer) {
+        guard let map=overlayMap(for:tap), tap.state == .ended else {return}
+        map.selectedAnnotations.forEach { map.deselectAnnotation($0,animated:false) }
+    }
+
+    // The sheet reports how much of the overlay map stays exposed (viewport px) so
+    // touch forwarding stops at the sheet's top edge.
+    @objc func setOverlayInset(_ call:CAPPluginCall) {
+        if let id=call.getString("mapID") {
+            overlayExposedHeight[id]=call.getDouble("height") ?? 0
+        }
+        call.resolve()
+    }
+
     // The Map overview's density, photos and highlight routes, once per key.
     @objc func setOverview(_ call:CAPPluginCall) {
         let options=call.options ?? [:]
@@ -1585,7 +1699,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     public let identifier="AppleMapsPlugin"
     public let jsName="AppleMaps"
-    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"resize",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise)]
+    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"resize",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverlayInset",returnType:CAPPluginReturnPromise)]
     @objc func setAppearance(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             let dark=call.getString("theme")=="dark"
@@ -1746,6 +1860,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                   let width=call.getDouble("width"),let height=call.getDouble("height"),
                   width>80,height>80 else {call.reject("Map layout unavailable");return}
             var content=MapContent(call.options)
+            let overlay=call.getBool("overlay") ?? false
             let scroll=webView.scrollView
             let previousContent=self.embeddedContent[id]
             // The overview this map already shows stays valid for its key even if
@@ -1757,15 +1872,35 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             let missingOverview=requestedOverview != nil && content.overview==nil
             self.embeddedContent[id]=content
             let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
-            map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
-            map.layer.cornerRadius=16;map.clipsToBounds=true
-            if self.embeddedMaps[id] == nil {
-                map.isZoomEnabled=true;map.isScrollEnabled=true;map.showsCompass=true
-                if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)}
-                map.delegate=self
-                scroll.addSubview(map)
-                scroll.bringSubviewToFront(map)
-                self.embeddedMaps[id]=map
+            let isNew=self.embeddedMaps[id] == nil
+            // Overlay maps live in the fixed host behind the web view and use raw
+            // viewport coordinates; non-overlay maps stay in the scroll view and add
+            // the content offset so they scroll with the page.
+            if overlay {
+                guard let host=self.ensureMapHost() else {call.reject("Map host unavailable");return}
+                map.frame=CGRect(x:x,y:y,width:width,height:height)
+                map.layer.cornerRadius=0;map.clipsToBounds=true
+                if isNew {
+                    map.isZoomEnabled=true;map.isScrollEnabled=true;map.showsCompass=true
+                    if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)}
+                    map.delegate=self
+                    host.addSubview(map)
+                    self.embeddedMaps[id]=map
+                    self.overlayMaps.insert(id)
+                }
+            } else {
+                map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
+                map.layer.cornerRadius=16;map.clipsToBounds=true
+                if isNew {
+                    map.isZoomEnabled=true;map.isScrollEnabled=true;map.showsCompass=true
+                    if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)}
+                    map.delegate=self
+                    scroll.addSubview(map)
+                    scroll.bringSubviewToFront(map)
+                    self.embeddedMaps[id]=map
+                }
+            }
+            if isNew {
                 let button=UIButton(type:.system)
                 button.setImage(UIImage(systemName:"arrow.up.left.and.arrow.down.right"),for:.normal)
                 button.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.96)
@@ -1804,7 +1939,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 },for:.touchUpInside)
                 map.addSubview(button)
             }
-            scroll.bringSubviewToFront(map)
+            if !overlay { scroll.bringSubviewToFront(map) }
             let coordinator=self.coordinators[id] ?? {
                 let created=MapCoordinator(map:map,content:content,controlTop:56,showsLayers:true)
                 created.onModeChange={ [weak self] mode,command in self?.reportCamera(id,mode,command) }
@@ -1862,10 +1997,10 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                   let width=call.getDouble("width"),let height=call.getDouble("height"),
                   width>80,height>80 else {call.resolve(["missing":true]);return}
             let scroll=webView.scrollView
-            // The WebView reports the placeholder in viewport coordinates; the map
-            // is a subview of the scroll view, so the content offset is added here
-            // exactly once, as embed does.
-            let frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
+            // Overlay maps are in the fixed host (viewport coords); non-overlay maps
+            // are subviews of the scroll view and add the content offset exactly once.
+            let overlay=self.overlayMaps.contains(id)
+            let frame=overlay ? CGRect(x:x,y:y,width:width,height:height) : CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
             if map.frame != frame { map.frame=frame }
             map.setNeedsLayout()
             if self.presentedID==id {self.presentedMap?.view.setNeedsLayout()}
@@ -1877,6 +2012,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             if let id=call.getString("mapID"),let map=self.embeddedMaps.removeValue(forKey:id) {
                 self.embeddedContent.removeValue(forKey:id)
                 self.hiddenMaps.remove(id)
+                self.overlayMaps.remove(id)
+                self.overlayExposedHeight.removeValue(forKey:id)
                 self.coordinators.removeValue(forKey:id)?.detach()
                 map.delegate=nil;map.removeFromSuperview()
             }

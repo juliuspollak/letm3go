@@ -49,6 +49,10 @@ export default function ActivityDetail({ownerID,trip,activities,places,vehicles=
  // component. Re-arm the ref so a development session still reports updates;
  // only a real cleanup (or the final StrictMode cleanup) leaves it false.
  useEffect(()=>{mounted.current=true;return ()=>{mounted.current=false;};},[]);
+ // The overlay map lives behind the WKWebView. While this screen is mounted the
+ // html/body background is cleared so the native map shows through the transparent
+ // map host; the details sheet paints its own opaque surface over the bottom.
+ useEffect(()=>{document.documentElement.classList.add('map-overlay');return()=>document.documentElement.classList.remove('map-overlay');},[]);
  const points=useMemo(()=>Array.isArray(trip.points)?trip.points:[],[trip.points]);
  const route=Array.isArray(trip.route)?trip.route:[];
  const pointCount=points.length;
@@ -186,7 +190,7 @@ export default function ActivityDetail({ownerID,trip,activities,places,vehicles=
  const mapJourneys=useMemo(()=>[pointCount>=2?fullPreview:trip],[pointCount,fullPreview,trip]);
  const trimRange=useMemo(()=>local&&pointCount>=2&&!segmentDraft?{start:trimStart,end:trimEnd,points}:null,[local,pointCount,segmentDraft,trimStart,trimEnd,points]);
  const mapCanvas=route.length
-  ?<JourneyMap journeys={mapJourneys} trimRange={trimRange} segmentLayers={layers} onPhoto={showPhoto} selectedPhotoID={selectedPhotoID} large/>
+  ?<JourneyMap journeys={mapJourneys} trimRange={trimRange} segmentLayers={layers} onPhoto={showPhoto} selectedPhotoID={selectedPhotoID} large overlay/>
   :<div className="first-recording"><MapPin/><h2>No GPS route</h2><p>{trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'}</p></div>;
  return <SwipeBack onBack={onBack}><div className="detail detail-sheet-page page-enter">
   <div className="detail-map-layer">{mapCanvas}</div>

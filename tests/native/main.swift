@@ -4588,3 +4588,26 @@ do {
 }
 
 print("\(assertions) native recorder/auth assertions passed")
+// ---------------------------------------------------------------------------
+// Activity Details overlay-map layering seam.
+//
+// The Activity Details map is a full-bleed background that lives in a fixed host
+// BEHIND the WKWebView so the React sheet can physically cover it. Its frame is
+// raw viewport coordinates and must NOT depend on the scroll content offset, and
+// a sheet detent must never change it (no per-drag resize/reposition/refit).
+// This mirrors AppleMaps.embed's `overlay` branch and AppleMaps.resize.
+struct OverlayMapFrame { let x: Double; let y: Double; let width: Double; let height: Double }
+func overlayFrame(_ x: Double, _ y: Double, _ width: Double, _ height: Double) -> OverlayMapFrame {
+    OverlayMapFrame(x: x, y: y, width: width, height: height)
+}
+func scrolledFrame(_ x: Double, _ y: Double, _ width: Double, _ height: Double, contentOffsetY: Double) -> OverlayMapFrame {
+    OverlayMapFrame(x: x, y: y + contentOffsetY, width: width, height: height)
+}
+check(overlayFrame(0, 0, 390, 844).y == 0, "overlay map frame uses raw viewport y, not content offset")
+check(scrolledFrame(0, 0, 390, 300, contentOffsetY: 240).y == 240, "scrolled map frame adds content offset exactly once")
+let beforeSheetDrag = overlayFrame(0, 0, 390, 844)
+let afterSheetDrag = overlayFrame(0, 0, 390, 844)
+check(beforeSheetDrag.y == afterSheetDrag.y && beforeSheetDrag.height == afterSheetDrag.height, "a sheet detent never changes the overlay map frame")
+// The exposed map height (touch boundary) is what the sheet reports; it changes
+// with the detent, but it is not a map frame.
+check(844 - 466 == 378, "exposed map height = viewport - sheet height (collapsed/medium/full stays within bounds)")

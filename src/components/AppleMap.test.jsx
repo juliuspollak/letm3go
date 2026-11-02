@@ -1,13 +1,13 @@
 import {act,cleanup,fireEvent,render,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({embed:vi.fn(),resize:vi.fn(),update:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn(),forgetOverview:vi.fn()}));
+const mocks=vi.hoisted(()=>({embed:vi.fn(),resize:vi.fn(),update:vi.fn(),unembed:vi.fn(),hide:vi.fn(),snapshot:vi.fn(),open:vi.fn(),close:vi.fn(),setOverlayInset:vi.fn(),addListener:vi.fn(),sendOverview:vi.fn(),forgetOverview:vi.fn()}));
 vi.mock('../lib/appleMaps.js',()=>({appleMaps:mocks,appleMapsAvailable:()=>true,sendOverview:mocks.sendOverview,forgetOverview:mocks.forgetOverview}));
 import AppleMap from './AppleMap.jsx';
 const payload={routes:[[[1,2],[3,4],[5,6]]],pins:[]};
 const BOX={x:10,y:20,top:20,bottom:370,left:10,right:710,width:700,height:350};
 function setScroll(y){Object.defineProperty(window,'scrollY',{value:y,configurable:true,writable:true});}
 beforeEach(()=>{
- for(const name of ['embed','resize','update','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
+ for(const name of ['embed','resize','update','unembed','close','sendOverview','setOverlayInset'])mocks[name].mockResolvedValue({});
  mocks.hide.mockResolvedValue({image:'data:image/jpeg;base64,frozen'});
  mocks.snapshot.mockResolvedValue({image:'data:image/jpeg;base64,test'});
  mocks.open.mockResolvedValue({});mocks.addListener.mockResolvedValue({remove:vi.fn()});
@@ -272,4 +272,22 @@ it('shows a single live map: the snapshot preview is removed once the native map
  await waitFor(()=>expect(container.querySelector('.apple-map-preview.native-embedded')).not.toBeNull());
  // Once the native map owns the frame, the HTML snapshot must not linger under it.
  expect(container.querySelector('img[alt="Apple map preview"]')).toBeNull();
+});
+
+it('embeds an overlay map full-bleed and reports the exposed height on detent settle without re-embedding',async()=>{
+ const {container}=render(<AppleMap payload={payload} overlay/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({overlay:true})));
+ await waitFor(()=>expect(mocks.setOverlayInset).toHaveBeenCalled());
+ const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
+ mocks.embed.mockClear();mocks.resize.mockClear();mocks.setOverlayInset.mockClear();
+ // A detent settle mutates the sheet's data-detent attribute. The overlay map must
+ // only report the new exposed height, never re-embed or resize its frame.
+ const sheet=document.createElement('section');sheet.className='activity-sheet';sheet.setAttribute('data-detent','medium');
+ document.body.appendChild(sheet);
+ await act(async()=>{sheet.setAttribute('data-detent','full');});
+ await waitFor(()=>expect(mocks.setOverlayInset).toHaveBeenCalledWith(expect.objectContaining({mapID})));
+ expect(mocks.embed).not.toHaveBeenCalled();
+ expect(mocks.resize).not.toHaveBeenCalled();
+ expect(container.querySelector('.apple-map-preview.native-embedded')).not.toBeNull();
+ sheet.remove();
 });

@@ -10,7 +10,7 @@ import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
 // sent to the native map once per key and the payload names only the key.
 // `controls` (lib/mapToolbar.mapControls) adds the Map page's controls, drawn
 // natively once the map is embedded; their actions come back to `onControl`.
-export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null}){
+export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null,overlay=false}){
  // The payload is derived from props on every render; memoising it keeps the
  // derived serialisation below stable so a re-render that did not change the map
  // content (for example a photo pin selection or an unrelated parent update)
@@ -152,7 +152,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
     if(embeddedOnce.current){embeddedOnce.current=false;recordMapEvent('unembed',{reason:'hidden'});void appleMaps.unembed({mapID}).catch(()=>{});}
     setEmbedded(false);setFrozen(null);return;
    }
-   const geometry=surfaceGeometry(surface,window);
+   const geometry=surfaceGeometry(surface,window,overlay);
    if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const key=geometryKey(geometry);
    if(key===previous){if(origin==='scroll')recordMapEvent('scroll-ignored');return;}
@@ -174,7 +174,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport};
+    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport,overlay};
     if(!arrived)delete request.overview;
     embedSent.current=true;
     return appleMaps.embed(request).then(result=>({arrived,result}));
@@ -220,7 +220,24 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   window.addEventListener('scroll',scrolled,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
- },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
+ },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers,overlay]);
+ // Overlay maps live behind the web view, so the native side needs the sheet's top
+ // edge to route pan/pinch only to the exposed map. Report it once and on each
+ // detent settle (the sheet's data-detent attribute changes only on settle, never
+ // on a drag frame).
+ useEffect(()=>{
+  if(!overlay||!appleMapsAvailable()||!embedded)return;
+  const report=()=>{
+   const sheet=typeof document==='undefined'?null:document.querySelector('.activity-sheet');
+   const top=sheet?.getBoundingClientRect?.().top??0;
+   void appleMaps.setOverlayInset({mapID,height:Math.max(0,Math.round(top))}).catch(()=>{});
+  };
+  report();
+  if(typeof MutationObserver==='undefined'||typeof document==='undefined')return;
+  const watcher=new MutationObserver(report);
+  watcher.observe(document.body,{subtree:true,attributes:true,attributeFilter:['data-detent']});
+  return()=>watcher.disconnect();
+ },[overlay,mapID,embedded]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();
  const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
