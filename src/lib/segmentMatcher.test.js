@@ -1,7 +1,6 @@
 // FILE: src/lib/segmentMatcher.test.js
 import {describe, expect, it} from 'vitest';
 import {SEGMENT_MATCHER_VERSION, SEGMENT_MATCH_SETTINGS, effortStats, matchEfforts, routePasses, samePassRange, segmentDefinition} from './segmentMatcher.js';
-import {segmentStats} from './namedSegments.js';
 
 // Deterministic PRNG (mulberry32): no Math.random anywhere in the fixtures.
 function prng(seed) {
