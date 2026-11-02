@@ -1,0 +1,35 @@
+[
+  {
+    "attempt": 1,
+    "checkpoint": "f83dc47f95b85837d63da2f36c1fa25207d0c249",
+    "expected": "ceaf46a62e005e3da7606508ea6161f2012459f54edf6fc5d841effb58d0ccc0",
+    "recoveredDigest": "ceaf46a62e005e3da7606508ea6161f2012459f54edf6fc5d841effb58d0ccc0",
+    "exactMatch": true,
+    "files": 583,
+    "archivalCommit": "42575df39b732836cf1a965fe2e93c23cc437ec8",
+    "archivalTree": "babf22306c8f02d79be76809f55ae4a1bc5a8e1a",
+    "ref": "refs/ai-audit/activity-v2-attempt-1"
+  },
+  {
+    "attempt": 3,
+    "checkpoint": "23deda8927ed7cc2339e9eaab24367e749961c3b",
+    "expected": "bfa271fcb70d954140038498cfe1a5771837651f86f9a38965017f299a35dc79",
+    "recoveredDigest": "bfa271fcb70d954140038498cfe1a5771837651f86f9a38965017f299a35dc79",
+    "exactMatch": true,
+    "files": 593,
+    "archivalCommit": "4db26014534bee58b0d252aecb84e6feec304f92",
+    "archivalTree": "a528fac29a8e192a0fc31a4db514af0874be1399",
+    "ref": "refs/ai-audit/activity-v2-attempt-3"
+  },
+  {
+    "attempt": 4,
+    "checkpoint": "28e77cb0761576240c6431d07da1c7ef5c1655f2",
+    "expected": "b7182c8bbf1d7c14b871892d8a0154b5733e93ed3dac7fd62ce949a5fb509b7a",
+    "recoveredDigest": "b7182c8bbf1d7c14b871892d8a0154b5733e93ed3dac7fd62ce949a5fb509b7a",
+    "exactMatch": true,
+    "files": 594,
+    "archivalCommit": "1794a082847841534744dbd4d7ed35e757dad5ba",
+    "archivalTree": "3bdbf1fe793b79c5acb5e5a6381f3d50ca17632b",
+    "ref": "refs/ai-audit/activity-v2-attempt-4"
+  }
+]

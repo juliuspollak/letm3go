@@ -50,6 +50,7 @@ export const recorder = {
  openSettings:()=>native.openSettings(),
  requestMotionPermission:()=>native.requestMotionPermission(),
  resolveHeartRate:(id,accept)=>native.resolveHeartRate({id,accept}),
+ resolveEnergy:(id,accept)=>native.resolveEnergy({id,accept}),
  noteHouseholdDelivery:summary=>recorderAvailable()?native.noteHouseholdDelivery(summary).catch(()=>{}):Promise.resolve(),
  // Diagnostics only: a failure here must never affect the warning itself.
  noteRecordingWarning:(action,issue)=>recorderAvailable()?native.noteRecordingWarning({action,issue}).catch(()=>{}):Promise.resolve(),
@@ -81,7 +82,7 @@ export const recorder = {
  addHistorical:trip=>native.addHistorical({...trip,activity:activityCode(trip.activity)}),
  pickPhotos:id=>native.pickPhotos({id}),
  editPhoto:params=>native.editPhoto(params),
- suggestPhotos:(id)=>native.suggestPhotos({id}),
+ suggestPhotos:(id,options={})=>native.suggestPhotos({id,...options}),
  acceptSuggestion:params=>native.acceptSuggestion(params),
  skipSuggestion:params=>native.skipSuggestion(params),
 };

@@ -215,7 +215,15 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         var acks: [(status: String, ids: [String])] = []
         for entry in state.entries where !entry.isParked && entry.nextAttemptAt <= now {
             let id = entry.transfer.id
-            switch LocationRecorder.shared.importWatchActivity(entry.transfer, claimedBy: entry.claimedBy) {
+            let outcome: WatchImportOutcome
+            if entry.transfer.isEnergyEnrichment {
+                // Energy-only payloads are validated by their own path, before the
+                // normal ride import (which would reject a route-less schema 4).
+                outcome = LocationRecorder.shared.importEnergyEnrichment(entry.transfer, claimedBy: entry.claimedBy)
+            } else {
+                outcome = LocationRecorder.shared.importWatchActivity(entry.transfer, claimedBy: entry.claimedBy)
+            }
+            switch outcome {
             case .imported:
                 next.drop(id)
                 acks.append(("saved", [id]))
@@ -280,6 +288,25 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         // the Watch and arrives once this app has been updated.
         if WatchActivityImport.isFromNewerBuild(transfer) {
             LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch activity waits for an iPhone update", details: ["reason": "unsupported-schema"])
+            return
+        }
+        // Energy-only payloads skip the ride-shape validation and enter the inbox so
+        // the energy import path can defer them until their base ride arrives.
+        if transfer.isEnergyEnrichment {
+            if let issue = WatchEnergyImport.structuralIssue(transfer) {
+                LocationRecorder.shared.recordDiagnostic("watch", "Rejected an Apple Watch energy update", details: ["reason": issue])
+                let previous = state
+                state.acknowledge([("rejected", [transfer.id])], at: Date().timeIntervalSince1970)
+                guard persistInbox() else { state = previous; return }
+                send([("rejected", [transfer.id])])
+                return
+            }
+            var next = state
+            next.receive(transfer, now: Date().timeIntervalSince1970)
+            let previous = state
+            state = next
+            guard persistInbox() else { state = previous; return }
+            flush()
             return
         }
         // A corrupt payload is refused before it reaches the inbox: storing it would

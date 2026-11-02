@@ -31,3 +31,24 @@ it('refreshes an accepted Watch heart-rate result even from an older native buil
  const result=reconcileRecorderSnapshot({ownerID:'me',trips:[held]},{ownerID:'me',trips:[accepted]});
  expect(result.trips[0]).toBe(accepted);
 });
+
+it('refreshes measured energy values and finalization without changing route or timestamps',()=>{
+ const trip={id:'watch',updatedAt:1,details:{energy:{schema:1,unit:'kcal',source:'healthkit',state:'pending',active:0}}};
+ const previous={ownerID:'me',trips:[trip]};
+ for(const energy of [{...trip.details.energy,active:100},{...trip.details.energy,state:'final'}]){
+  const changed={...trip,details:{energy}};
+  expect(reconcileRecorderSnapshot(previous,{ownerID:'me',trips:[changed]}).trips[0]).toBe(changed);
+ }
+});
+
+it('drops cached held whole-workout energy after native rejection',()=>{
+ const held={id:'watch',details:{unverifiedWholeWorkoutEnergy:{schema:1,state:'final',active:100}}};
+ const cleared={id:'watch',details:{}};
+ expect(reconcileRecorderSnapshot({ownerID:'me',trips:[held]},{ownerID:'me',trips:[cleared]}).trips[0]).toBe(cleared);
+});
+
+it('refreshes an energy-only revision/consent change even when energy values are unchanged',()=>{
+ const trip={id:'watch',updatedAt:1,details:{energy:{schema:1,unit:'kcal',source:'healthkit',state:'final',active:100},energyBinding:{revision:1,consent:'owner'}}};
+ const revised={...trip,details:{...trip.details,energyBinding:{revision:2,consent:'owner'}}};
+ expect(reconcileRecorderSnapshot({ownerID:'me',trips:[trip]},{ownerID:'me',trips:[revised]}).trips[0]).toBe(revised);
+});

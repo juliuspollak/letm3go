@@ -11,7 +11,7 @@ function gapMetres(a,b){const r=Math.PI/180,dlat=(b[0]-a[0])*r,dlon=(b[1]-a[1])*
 // With `overview` (the key of data already sent by sendOverview), the routes are
 // the density map and the photos come from that data, so no Start/Finish pins
 // and no per-journey lines are added. Single-journey maps keep both.
-export function mapPayload(journeys=[],currentPosition=null,homePresence=null,livePeople=[],peoplePins=[],{overview=null}={}){
+export function mapPayload(journeys=[],currentPosition=null,homePresence=null,livePeople=[],peoplePins=[],{overview=null,selectedPhotoID=null}={}){
  const routes=[],pins=[],gaps=[];
  (overview?[]:journeys.slice(0,50)).forEach(j=>{
   const segments=displaySegments(j).map(s=>s.filter(valid)).filter(s=>s.length);
@@ -27,7 +27,7 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
   }
   const points=segments.flat();
   if(points.length){pins.push({point:points[0],title:'Start',kind:'start'},{point:points.at(-1),title:'Finish',kind:'finish'});}
-  (j.photos||[]).filter(p=>valid(p.point)).forEach(p=>pins.push({point:p.point,title:p.caption||'Journey photo',kind:'photo',journeyID:String(j.id),photoID:String(p.id)}));
+  (j.photos||[]).filter(p=>valid(p.point)).forEach(p=>pins.push({point:p.point,title:p.caption||'Journey photo',kind:'photo',journeyID:String(j.id),photoID:String(p.id),...(selectedPhotoID!=null&&String(p.id)===String(selectedPhotoID)?{selected:true}:{})}));
  });
  if(homePresence&&valid([homePresence.latitude,homePresence.longitude])&&homePresence.count>0)pins.push({point:[homePresence.latitude,homePresence.longitude],title:homePresence.names?.join(', ')||'Family at Home',kind:'home-presence',count:homePresence.count});
  for(const member of livePeople){if(valid([member.latitude,member.longitude]))pins.push({point:[member.latitude,member.longitude],title:`${member.display_name||'Family member'} · ${member.source==='friend'&&member.updated_at?'Last seen '+new Date(member.updated_at).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'}):Number.isFinite(member.speed_kmh)?Math.round(member.speed_kmh)+' km/h':'Recent location'}`,kind:member.source==='friend'?'friend-live':'family-live',speed:member.speed_kmh});}
@@ -35,7 +35,7 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
  for(const pin of peoplePins)if(pin?.kind==='people'&&valid(pin.point)&&Array.isArray(pin.members)&&pin.members.length)pins.push(pin);
  return overview?{routes,pins,gaps,overview}:{routes,pins,gaps};
 }
-export const appleMaps={snapshot:options=>native.snapshot(options),open:options=>native.open(options),close:options=>native.close(options),embed:options=>native.embed(options),update:options=>native.update(options),unembed:options=>native.unembed(options),hide:options=>native.hide(options),addListener:(event,callback)=>native.addListener(event,callback)};
+export const appleMaps={snapshot:options=>native.snapshot(options),open:options=>native.open(options),close:options=>native.close(options),embed:options=>native.embed(options),update:options=>native.update(options),unembed:options=>native.unembed(options),hide:options=>native.hide(options),resize:options=>native.resize(options),addListener:(event,callback)=>native.addListener(event,callback)};
 
 // The overview is large (density lines, photos, highlight routes), so it crosses
 // the bridge once per key; every embed afterwards names the key only. The native

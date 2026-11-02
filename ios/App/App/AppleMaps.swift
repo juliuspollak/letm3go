@@ -1585,7 +1585,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     public let identifier="AppleMapsPlugin"
     public let jsName="AppleMaps"
-    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise)]
+    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"resize",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise)]
     @objc func setAppearance(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             let dark=call.getString("theme")=="dark"
@@ -1851,6 +1851,27 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve()
         }
     }
+    // Viewport-only update for a sheet drag, rotation or keyboard change: move
+    // and resize the existing MKMapView without re-applying content, refitting the
+    // camera or touching overlays. A full embed is reserved for structure changes.
+    @objc func resize(_ call:CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let id=call.getString("mapID"),let map=self.embeddedMaps[id],
+                  let webView=self.bridge?.webView,
+                  let x=call.getDouble("x"),let y=call.getDouble("y"),
+                  let width=call.getDouble("width"),let height=call.getDouble("height"),
+                  width>80,height>80 else {call.resolve(["missing":true]);return}
+            let scroll=webView.scrollView
+            // The WebView reports the placeholder in viewport coordinates; the map
+            // is a subview of the scroll view, so the content offset is added here
+            // exactly once, as embed does.
+            let frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
+            if map.frame != frame { map.frame=frame }
+            map.setNeedsLayout()
+            if self.presentedID==id {self.presentedMap?.view.setNeedsLayout()}
+            call.resolve(["resized":true])
+        }
+    }
     @objc func unembed(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             if let id=call.getString("mapID"),let map=self.embeddedMaps.removeValue(forKey:id) {
@@ -2026,13 +2047,18 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
            let thumbnail=journalPhotoThumbnail(photoID,size:52) {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
             view.image=thumbnail;view.centerOffset=CGPoint(x:0,y:-24)
+            if (pin.metadata["selected"] as? Bool) == true {
+                view.layer.borderWidth=3;view.layer.borderColor=UIColor.systemOrange.cgColor
+                view.layer.cornerRadius=8
+                view.isAccessibilityElement=true;view.accessibilityTraits=[.button,.selected]
+            }
             view.canShowCallout=true
             view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
             return view
         }
         if kind=="segment" {return segmentMarker(pin)}
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil);marker.canShowCallout=true
-        marker.markerTintColor=kind=="location" ? .systemBlue : routeColor
+        marker.markerTintColor=kind=="location" ? .systemBlue : (kind=="photo" && (pin.metadata["selected"] as? Bool)==true ? .systemOrange : routeColor)
         marker.glyphImage=UIImage(systemName:kind=="photo" ? "photo" : "mappin")
         if kind=="start" || kind=="finish" {marker.markerTintColor = kind=="start" ? .systemGreen : .systemRed;marker.glyphImage=nil;marker.glyphText=kind=="start" ? "S" : "F";marker.displayPriority = .required}
         if kind=="photo" {marker.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)}
@@ -2109,12 +2135,17 @@ extension AppleMapsPlugin: MKMapViewDelegate {
                 let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
                 view.image=thumbnail
                 view.centerOffset=CGPoint(x:0,y:-24)
+                if (pin.metadata["selected"] as? Bool) == true {
+                    view.layer.borderWidth=3;view.layer.borderColor=UIColor.systemPink.cgColor
+                    view.layer.cornerRadius=8
+                    view.isAccessibilityElement=true;view.accessibilityTraits=[.button,.selected]
+                }
                 view.canShowCallout=true
                 view.displayPriority = .required
                 view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
                 return view
             }
-            marker.markerTintColor = .systemOrange
+            marker.markerTintColor = (pin.metadata["selected"] as? Bool)==true ? .systemPink : .systemOrange
             marker.glyphImage=UIImage(systemName:"photo")
         } else if kind=="home-presence" {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)

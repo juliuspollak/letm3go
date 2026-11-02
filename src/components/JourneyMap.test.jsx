@@ -38,3 +38,9 @@ it('names the overview in the payload and passes the Map controls through',()=>{
  expect(captured.props.payload.pins.some(pin=>['start','finish','photo'].includes(pin.kind))).toBe(false);
  expect(captured.props).toMatchObject({controls,onControl,overview:{key:'d1'}});
 });
+
+it('highlights only the selected photo while retaining the route and rejecting unrelated photo events',()=>{
+ render(<JourneyMap journeys={[ride]} selectedPhotoID="p2"/>);
+ expect(captured.props.payload.pins.filter(pin=>pin.selected).map(pin=>pin.photoID)).toEqual(['p2']);
+ expect(captured.props.payload.routes).toEqual(ride.routeSegments);
+});

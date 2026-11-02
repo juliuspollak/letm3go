@@ -135,7 +135,7 @@ extension LocationRecorder {
               ["device", "watch", "simulator"].contains(record.source) else { throw failure("Finish your local recording before deleting it.") }
         let photos = trips.filter { ActivityIdentity.matches($0.id,id) }.flatMap { $0.details?.photos ?? [] }
         try storage.delete(id)
-        UserDefaults.standard.removeObject(forKey:"letm3go-photo-skips-\(id)")
+        PhotoSuggestionSkips.remove(ownerID: ownerID, activityID: id)
         trips.removeAll { ActivityIdentity.matches($0.id,id) }
         // A deleted stopped journey must not be continued or restored later.
         if settledTripID.map({ActivityIdentity.matches($0,id)}) == true { settleStateReset(); cleanupContinuationRegion(); departureEvidence.reset() }
@@ -169,13 +169,21 @@ extension LocationRecorder {
             trip.assignEquipment([EquipmentRef(id: assigned.id, name: assigned.name)])
         } else { trip.vehicleID = nil; trip.vehicle = vehicle }
         trip.recordingMode = "historical"; trip.state = "finished"; trip.endedAt = startedAt+seconds
+        trip.timezone = TimeZone.current.identifier
         trip.accumulatedSeconds = seconds; trip.distanceMeters = meters; trip.details = ActivityDetails(); trip.details?.userCorrected = true
         guard !trip.title.isEmpty else { throw failure("Enter an activity title.") }
         try storage.save(trip); trips.append(trip); trips.sort { $0.startedAt > $1.startedAt }
     }
-    func attachPhoto(tripID: String, image: UIImage, asset: PHAsset?) throws {
+    /// Returns false when the asset is already kept by this activity, so the
+    /// caller can report "already added" instead of claiming a copy happened.
+    @discardableResult
+    func attachPhoto(tripID: String, image: UIImage, asset: PHAsset?, sourceAssetID: String? = nil) throws -> Bool {
         guard let storage = storage, let index = trips.firstIndex(where: { $0.id == tripID }) else { throw failure("Activity not found.") }
         var trip = trips[index]; var details = trip.details ?? ActivityDetails()
+        // Both import entry points execute synchronously on the main queue.
+        // Check before copying bytes, including at capacity and after a lost reply.
+        let identity = sourceAssetID ?? asset?.localIdentifier
+        if details.containsPhotoAsset(identity) { return false }
         guard details.photos.count < 50 else { throw failure("Up to 50 photos per activity are supported.") }
         // Journal-sized original: constrain pixel dimensions before any persistence or upload.
         let scale = min(1, 1920 / max(image.size.width,image.size.height))
@@ -201,11 +209,14 @@ extension LocationRecorder {
         if lat == nil, let point = matchedPhotoPoint(captureTime:time,trip:trip) {
             lat = point.latitude; lon = point.longitude; locationSource = "inferred"
         }
-        details.photos.append(ActivityPhoto(id:id,filename:filename,caption:"",latitude:lat,longitude:lon,captureTime:time,locationSource:locationSource))
+        var photo = ActivityPhoto(id:id,filename:filename,caption:"",latitude:lat,longitude:lon,captureTime:time,locationSource:locationSource)
+        photo.assetID = identity
+        details.photos.append(photo)
         if details.coverPhotoID == nil { details.coverPhotoID = id }
         trip.details = details; trip.updatedAt = Date().timeIntervalSince1970
         do { try storage.save(trip); trips[index] = trip }
         catch { try? FileManager.default.removeItem(at:url); throw error }
+        return true
     }
     // Links a finished ride to a trail (or clears the link) without touching its
     // recorded geometry. The JS layer uses this for "assign trail after the ride".
@@ -283,6 +294,65 @@ extension LocationRecorder {
             return .deferred
         }
     }
+    // Applies an energy-only enrichment (schema 4). It is recognised BEFORE normal
+    // import validation, defers while the base ride has not arrived, honours target
+    // tombstones, and updates ONLY energy metadata (never route/title/photos/equipment).
+    func importEnergyEnrichment(_ transfer: WatchActivityTransfer, claimedBy: String? = nil) -> WatchImportOutcome {
+        guard storage != nil, storeOpened, !accountSuspended, !accountDeleting, let ownerID = ownerID else { return .deferred }
+        guard transfer.isEnergyEnrichment else { return .rejected("invalid-payload") }
+        switch WatchOwnership.decision(transferOwner: transfer.ownerID, claimedBy: claimedBy, currentOwner: ownerID) {
+        case .noAccountOpen:
+            return .deferred
+        case .foreignAccount:
+            return .foreignAccount
+        case .unclaimed, .importable:
+            break
+        }
+        guard let targetID = transfer.energyTargetID else { return .rejected("invalid-payload") }
+        // A deleted ride must not be resurrected by a late energy update.
+        if (try? storage!.isDeleted(targetID)) == true { return .duplicate }
+        guard let index = trips.firstIndex(where: { ActivityIdentity.matches($0.id, targetID) }) else {
+            // Base ride not received yet: keep the payload and retry, never a phantom ride.
+            return .deferred
+        }
+        let trip = trips[index]
+        switch WatchEnergyImport.apply(transfer, to: trip, now: Date().timeIntervalSince1970) {
+        case .applied(let updated):
+            do {
+                try storage!.save(updated)
+                trips[index] = updated
+                recordDiagnostic("watch", "Applied an Apple Watch energy update", details: [
+                    "revision": String(transfer.energyRevision ?? 0),
+                    "state": updated.details?.energy?.state ?? updated.details?.unverifiedEnergy?.state ?? "none"
+                ])
+                notifyJourneyChange()
+                return .imported
+            } catch {
+                lastError = error.localizedDescription
+                return .deferred
+            }
+        case .duplicate:
+            return .duplicate
+        case .rejected(let reason):
+            recordDiagnostic("watch", "Rejected an Apple Watch energy update", details: ["reason": reason])
+            return .rejected(reason)
+        }
+    }
+
+    // The rider's dedicated accept/reject for held measured energy. Heart-rate
+    // acceptance never calls this: only an explicit energy decision may move or
+    // discard the quarantine, and rejection is persisted against late enrichment.
+    func resolveEnergy(id: String, accept: Bool) throws {
+        guard let storage = storage, let index = trips.firstIndex(where: { $0.id == id }) else { throw failure("Activity not found.") }
+        var trip = trips[index]
+        guard trip.resolveUnverifiedEnergy(accept: accept) else { return }
+        trip.updatedAt = Date().timeIntervalSince1970
+        try storage.save(trip)
+        trips[index] = trip
+        recordDiagnostic("watch", accept ? "Held measured energy accepted" : "Held measured energy removed")
+        notifyJourneyChange()
+    }
+
 }
 
 final class PositionRequest: NSObject, CLLocationManagerDelegate {
@@ -486,9 +556,14 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     } }
     @objc func pickPhotos(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
-        guard self.photoCall == nil, let id = call.getString("id"), LocationRecorder.shared.trips.contains(where:{$0.id == id}) else { call.reject("Activity unavailable or photo picker already open."); return }
+        guard self.photoCall == nil, let id = call.getString("id"), let trip = LocationRecorder.shared.trips.first(where:{$0.id == id}) else { call.reject("Activity unavailable or photo picker already open."); return }
+        // The picker is limited to the slots this activity still has, so a person
+        // cannot choose ten photos and discover only five fit after the copies run.
+        let remaining = max(0, 50 - (trip.details?.photos.count ?? 0))
+        guard remaining > 0 else { call.reject("Up to 50 photos per activity are supported."); return }
         self.photoCall = call; self.photoTripID = id; self.photoOwnerID = LocationRecorder.shared.ownerID
-        var configuration = PHPickerConfiguration(photoLibrary:.shared()); configuration.filter = .images; configuration.selectionLimit = 20
+        var configuration = PHPickerConfiguration(photoLibrary:.shared()); configuration.filter = .images
+        configuration.selectionLimit = min(20, remaining)
         let picker = PHPickerViewController(configuration:configuration); picker.delegate = self
         self.bridge?.viewController?.present(picker,animated:true)
     } }
@@ -496,26 +571,46 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         picker.dismiss(animated:true)
         guard let call = photoCall, let id = photoTripID else { return }
         let owner = photoOwnerID
-        let group = DispatchGroup(); var messages: [String] = []
-        for result in results {
-            guard result.itemProvider.canLoadObject(ofClass:UIImage.self) else { continue }
+        let group = DispatchGroup()
+        // Decode concurrently, then import on the main queue in the order the
+        // photos were chosen. Appending from completion callbacks made a
+        // multi-photo import order depend on iCloud timing.
+        var images = [UIImage?](repeating:nil,count:results.count)
+        var failures = [String?](repeating:nil,count:results.count)
+        for (index,result) in results.enumerated() {
+            guard result.itemProvider.canLoadObject(ofClass:UIImage.self) else { failures[index] = "This photo format is not supported."; continue }
             group.enter()
             result.itemProvider.loadObject(ofClass:UIImage.self) { object,error in
                 DispatchQueue.main.async {
                     defer { group.leave() }
-                    guard self.photoOwnerID == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { messages.append("Account changed. Photo was not imported."); return }
-                    guard let image = object as? UIImage else { messages.append(error?.localizedDescription ?? "Unable to read selected image."); return }
-                    let allowed = PHPhotoLibrary.authorizationStatus(for:.readWrite)
-                    let asset = (allowed == .authorized || allowed == .limited) ? result.assetIdentifier.flatMap { PHAsset.fetchAssets(withLocalIdentifiers:[$0],options:nil).firstObject } : nil
-                    do { try LocationRecorder.shared.attachPhoto(tripID:id,image:image,asset:asset) } catch { messages.append(error.localizedDescription) }
+                    guard self.photoOwnerID == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { failures[index] = "Account changed. Photo was not imported."; return }
+                    guard let image = object as? UIImage else { failures[index] = error?.localizedDescription ?? "Unable to read selected image."; return }
+                    images[index] = image
                 }
             }
         }
         group.notify(queue:.main) {
             self.photoCall = nil; self.photoTripID = nil; self.photoOwnerID = nil
             guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { call.reject("Account changed."); return }
-            if !messages.isEmpty { LocationRecorder.shared.lastError = messages.joined(separator:" ") }
-            call.resolve(LocationRecorder.shared.snapshot())
+            let allowed = PHPhotoLibrary.authorizationStatus(for:.readWrite)
+            var added = 0; var duplicates = 0; var failed: [String] = []
+            for index in results.indices {
+                guard let image = images[index] else {
+                    if let message = failures[index] { failed.append(message) }
+                    continue
+                }
+                let result = results[index]
+                let asset = (allowed == .authorized || allowed == .limited) ? result.assetIdentifier.flatMap { PHAsset.fetchAssets(withLocalIdentifiers:[$0],options:nil).firstObject } : nil
+                do {
+                    let inserted = try LocationRecorder.shared.attachPhoto(tripID:id,image:image,asset:asset,sourceAssetID:result.assetIdentifier)
+                    if inserted { added += 1 } else { duplicates += 1 }
+                }
+                catch { failed.append(error.localizedDescription) }
+            }
+            if !failed.isEmpty { LocationRecorder.shared.lastError = failed.joined(separator:" ") }
+            var payload = LocationRecorder.shared.snapshot()
+            payload["photoResults"] = ["selected":results.count,"added":added,"duplicates":duplicates,"failed":failed]
+            call.resolve(payload)
         }
     }
     @objc func editPhoto(_ call: CAPPluginCall) { DispatchQueue.main.async {

@@ -1,0 +1,32 @@
+{
+  "sourceCommit": "e748057d644dbc1bec27a675f179ad73a0608374",
+  "snapshot": ".build/windows-resume/energy-review-repair/manifest.json",
+  "execution": {
+    "code": 0,
+    "signal": null,
+    "finished": "2026-11-01T21:53:44.435Z"
+  },
+  "review": {
+    "pass": true,
+    "summary": "NARROW STATIC PASS for the receiver/data/UI repair slice at e748057 only. This is not approval of full phase02 or of any release. Phase1 and runner release gates remain BLOCKED. Native Swift/Xcode/iOS/watchOS/simulator execution remains DEFERRED to macOS. Live sender collection, the finalization/revision protocol, explicit energy-claim UI and cloud backup remain outstanding and were not treated as defects. Codex authored the repair and this recheck does not stand in for native proof.\n\nOutcome of the five prior findings (all static):\n1. Trim retention (P1): CLOSED. `RouteTrimming.trimmed` (RecorderCore.swift:364-367) copies `energy ?? wholeWorkoutEnergy` and `unverifiedEnergy ?? unverifiedWholeWorkoutEnergy` into archive fields before clearing the display fields, so a second trim keeps the archive. Both fields are Codable properties of `ActivityDetails`, so `RecordingStorage.save` persists them under the same ID. `workoutEnergy` reads only `details.energy`, so the archive is not displayed.\n2. Attribution (P1): CLOSED at API level. `resolveUnverifiedHeartRate` (lines 71-84) no longer gates rejection on held HR. Rejection clears `unverifiedEnergy` and `unverifiedWholeWorkoutEnergy` and returns true after prior acceptance, with no HR, or after trim. Acceptance never moves energy to `energy` and leaves held values in place.\n3. Cache invalidation (P1): CLOSED in the frozen code. The native token (lines 422-435) includes schema, unit, source, state, active and total for all four fields, independent of `updatedAt`. JS `tripKey` also includes all four, so an archive-only change does not reuse the cached trip.\n4. Wording (P2): CLOSED. 'Measured workout energy' and 'Awaiting workout finalization' replace the old text, and no 'Active + resting' wording remains in the snapshot.\n5. Malformed/future optional energy (P3): CLOSED as scoped. `ActivityEnergy.init(from:)` never throws on bad values or wrong container types and yields a schema 0 placeholder. `validated` and JS `workoutEnergy` both reject that placeholder, so it renders nothing and invents no calories. `load()` only decodes and writes nothing. The transfer path still resolves it to nil through `.validated` (WatchActivityCore.swift:147).\n\nRegression review: no blocking regression found. `cloudSync` remains an explicit allowlist, so the archive fields are excluded. Reading found no Swift syntax error: `if accept, let held` matches shorthand already used in the file, the `??` on optionals and the `energyKey` calls look valid, `CodingKeys` matches the properties, and defaults satisfy definite initialization. Assigning `schema = 0` before the guard binds a same-named local should resolve to the member, but only a compiler can confirm it. Two non-blocking P3 items are listed in findings.\n\nActual limits:\n- Static reading only. No code was executed, no test was run, the 42 Windows tests were not reproduced, and manifest SHA-256 hashes were not recomputed. The commit in `change.diff` matches the manifest, and the source hunks I read match the diff.\n- No actual activity was inspected.\n- `tests/native/main.swift` is not in the snapshot, so only the diff hunks were seen. Two things are therefore unconfirmed. `ActivityEnergy` now has a custom init, which removes the memberwise initializer, and any memberwise call in that unseen file would fail to compile. The definition of `measured` and whether `source.id` is a UUID (required by `RecordingStorage.save`) are also not visible, so the new persistence assertions are not confirmed to compile or run.\n- The bridge/plugin callers of trim, `resolveUnverifiedHeartRate` and `historyToken`, the `historyUnchanged` logic and all consent UI are outside the snapshot. Finding 2 is proven at API level only, not as a user-reachable flow. If a caller gates on `unverifiedHeartRate`, rejection stays unreachable. Finding 3 assumes the native side really uses this token.",
+    "findings": [
+      {
+        "severity": "P3",
+        "location": ".build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:612-622,513-517; change.diff:281-293",
+        "evidence": "`init(from:)` replaces an unrecognised or future energy object with a schema 0 placeholder, and a malformed `active` or `total` becomes nil. Read and load leave the bytes untouched, as the regression asserts. Any later `save` of that record (a title edit, or a trim into `wholeWorkoutEnergy`) re-encodes the placeholder and permanently overwrites the original value. This only arises with future or corrupted data, which current writers do not produce, so it does not reopen finding 5 as scoped ('on read'). The 'never rewrites stored bytes' assertion does cover only read, not save.",
+        "required_fix": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy."
+      },
+      {
+        "severity": "P3",
+        "location": "change.diff:262-280; .build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:364-365,78-81",
+        "evidence": "The code is correct on reading, but the new native assertions leave parts of the claims untested. The save/reload regression asserts only verified `wholeWorkoutEnergy`, not `unverifiedWholeWorkoutEnergy`. No test covers trim then reject; the 'held energy removal' check sets the archive by hand and asserts only that the token changed, not that the field is nil. There is also no token assertion for a `wholeWorkoutEnergy`-only change. The doc's 'or after trim archival' claim therefore has no direct regression.",
+        "required_fix": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change."
+      }
+    ]
+  },
+  "supervisorHashCheck": {
+    "currentAndFrozenMatchedBeforeFinalDocumentation": true,
+    "files": 9,
+    "reviewerDidNotExecuteChecks": true
+  }
+}

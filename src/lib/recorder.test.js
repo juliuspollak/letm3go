@@ -9,6 +9,14 @@ it('preserves native provenance and pause gaps without fabricating route points'
  expect(trip.photos).toEqual([]);
  expect(trip.distance).toBe(1);
 });
+it('keeps the activity timezone so photo days are grouped where the trip happened',()=>{
+ // Native stamps the zone each trip was recorded in; UI grouping must not have to
+ // guess from the device's current zone (a trip abroad would shift its days).
+ const trip=recordedJourney({id:'away',startedAt:1000,source:'device',timezone:'Australia/Sydney',title:'Walk',points:[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:0}],distanceMeters:1000,durationSeconds:600});
+ expect(trip.timezone).toBe('Australia/Sydney');
+ // A trip recorded before the field existed simply has none, with no invented value.
+ expect(recordedJourney({id:'old',startedAt:1000,source:'device',title:'Walk',points:[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:0}],distanceMeters:1000,durationSeconds:600}).timezone).toBeUndefined();
+});
 it('exposes a published stop and locates it for the recorder panel',()=>{
  const stopped={id:'stopped',source:'device',recordingMode:'automatic',state:'paused',startedAt:1000,endedAt:1600,distanceMeters:1200,durationSeconds:600,points:[],details:{provisional:true,continuationEndsAt:2800}};
  const journey=recordedJourney(stopped);

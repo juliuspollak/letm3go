@@ -964,6 +964,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             trip.assignEquipment([EquipmentRef(id: assigned.id, name: assigned.name)])
         } else { trip.vehicleID = nil; trip.vehicle = vehicle }
         trip.recordingMode = "manual"
+        trip.timezone = TimeZone.current.identifier
         trip.details = ActivityDetails()
         if trailID != nil {
             // A trail link is optional, but a malformed one is rejected before the
@@ -1240,6 +1241,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "noteHouseholdDelivery", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resolveHeartRate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resolveEnergy", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestMotionPermission", returnType: CAPPluginReturnPromise)
     ]
     // Push native journey changes into the WebView so History, the recorder panel
@@ -1507,6 +1509,13 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }
             do { try LocationRecorder.shared.resolveHeartRate(id: call.getString("id") ?? "", accept: call.getBool("accept") == true); call.resolve(LocationRecorder.shared.snapshot()) }
+            catch { call.reject(error.localizedDescription) }
+        }
+    }
+    @objc func resolveEnergy(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard self.requireAccount(call) else { return }
+            do { try LocationRecorder.shared.resolveEnergy(id: call.getString("id") ?? "", accept: call.getBool("accept") == true); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }
     }

@@ -1,0 +1,52 @@
+
+> letm3go@0.1.0 test:orchestrator
+> node --test tests/orchestrator/*.node.mjs
+
+✔ same snapshot from two reviewers counts once; first discovery is not a failed repair (1.250708ms)
+✔ fresh independent evidence retires an old finding; old reports do not block current code (0.132958ms)
+✔ Codex cannot approve its own repair (0.685291ms)
+✔ missing IDs, inconsistent findings and software-to-hardware reclassification fail closed (0.181708ms)
+✔ a newly introduced regression reopens with no old failed-repair count (0.109ms)
+✔ escalations are restricted to assigned sources and practical adjacent tests (0.201125ms)
+✔ tracked lifecycle escalates after two actual failed DeepSeek repairs and requires Claude approval (0.976541ms)
+✔ implementation uses a writable Codex session, reviews use read-only (0.157709ms)
+✔ defect is independently found, deduplicated, repaired and verified with rerun tests (3.51875ms)
+✔ authentication failed fails closed (0.416834ms)
+✔ CLI failure fails closed (1.548083ms)
+✔ timeout fails closed (0.8785ms)
+✔ cancelled fails closed (0.747791ms)
+✔ invalid JSON stops before tests or success (0.4155ms)
+✔ developer branch switch is rejected (0.371333ms)
+✔ codex branch switch is rejected (0.438791ms)
+✔ claude branch switch is rejected (0.490667ms)
+✔ tests branch switch is rejected (0.538167ms)
+✔ codex content mutation is rejected (0.630708ms)
+✔ claude content mutation is rejected (0.411125ms)
+✔ tests content mutation is rejected (0.398834ms)
+✔ no implementation changes blocks (0.196167ms)
+✔ exhausted retries never reports verified (0.820666ms)
+✔ reviews reject contradictions, empty evidence, extra fields and missing results (0.1145ms)
+✔ limits reject nonfinite, fractional and excessive values (0.069917ms)
+✔ developer explicitly selects DeepSeek in noninteractive mode (0.095584ms)
+✔ snapshot detects changes in files already modified (65.305125ms)
+✔ disposable implementation fixture runs failing and passing executable assertions (64.006167ms)
+✔ missing test evidence and terminal exception are recorded as blocked (0.98625ms)
+✔ developer local commits are allowed (0.719416ms)
+✔ real subprocess nonzero exit retains test evidence (31.069ms)
+✔ real subprocess missing executable, timeout and excessive output fail closed (89.370042ms)
+✔ Claude envelopes must contain a successful complete structured review (0.263042ms)
+✔ inherited production credentials and Git overrides are omitted (0.068667ms)
+✔ DeepSeek profile validation rejects absent, wrong and unauthenticated profiles (1.62775ms)
+✔ exited CLI cleans descendants holding output pipes without timing out (30.754875ms)
+✔ integration refuses reviewers missing the seed or a test that never failed (0.344083ms)
+✔ existing lock produces a BLOCKED final report without removing its owner lock (167.305166ms)
+✔ SIGTERM during actual preflight records BLOCKED and releases run lock (707.584167ms)
+✔ large real CLI output fits the bounded long-task allowance (53.655041ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1287.322792

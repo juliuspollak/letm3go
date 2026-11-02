@@ -1,0 +1,1040 @@
+{
+  "version": 1,
+  "applicationRevision": "e748057d644dbc1bec27a675f179ad73a0608374",
+  "defects": [
+    {
+      "id": "P01-SHEET",
+      "title": "Real coordinated details sheet",
+      "severity": "P0",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/ActivitySheet.jsx",
+        "src/components/ActivityDetail.jsx",
+        "src/styles.css"
+      ],
+      "instructions": "Verify the helper is actually integrated. Pointer and keyboard detents, fixed map and safe areas must work; do not count helper-only tests as screen coverage.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-SHEET",
+        "status": "resolved",
+        "severity": "P0",
+        "evidence": "Original missing integration P0 is resolved by actual ActivitySheet integration. Distinct stable map, initial measurement and handle defects retained under P01-STABLE-MAP; original P0 severity preserved.",
+        "location": "src/components/ActivitySheet.jsx:9-32,79-86; src/components/AppleMap.jsx:154-163,206; src/styles.css:1140-1141,1163-1165; src/components/ActivityDetail.jsx:191-192",
+        "regression_test": "Existing: ActivitySheet.test.jsx 'tracks a pointer without a height transition and restores detent snapping on release'; ActivityDetail.test.jsx 'keeps one map and never re-embeds it when the details sheet moves'. Needed: a screen-level test that a multi-frame drag leaves the native frame unchanged or coalesces resize to settle; a test that the first render uses the safe-area-adjusted height; a 44pt handle assertion.",
+        "source": "docs/activity-v2-windows-handover.md (supervisor split; not a new independent verdict)",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed.",
+        "sourceEvidence": "docs/activity-v2-handover-evidence/current-triage.json"
+      },
+      "supervisorClassification": {
+        "actor": "Codex supervisor",
+        "basis": "Explicit Windows handover instruction to retire the absent-integration P0 and create a distinct current stable-map P2",
+        "independentApproval": "PENDING / DISPUTED by fresh Claude runner review",
+        "releaseBlockingDisagreement": true,
+        "review": "docs/activity-v2-windows-runner-review.json"
+      }
+    },
+    {
+      "id": "P01-MOMENTS",
+      "title": "Photo-first cover and gallery entry",
+      "severity": "P0",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/ActivityMoments.jsx",
+        "src/components/ActivityDetail.jsx"
+      ],
+      "instructions": "Verify actual screen order, cover/empty state and Add Photos near the top; distinguish the separately tracked suggestion-entry defect.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-MOMENTS",
+        "status": "resolved",
+        "severity": "P0",
+        "evidence": "Actual order at ActivityDetail.jsx:194-196 is heading, ActivitySummary, ActivityMoments, ahead of every technical section. With photos, ActivityMoments shows a primary Add photos and Find journey photos in the head (ActivityMoments.jsx:22-25) and the cover at :27-30. Without photos, the empty state offers one-tap Add at :31-38. recordedJourney derives cover only from a real local photo (recorder.js:99), so the dead hero tap the old review mentioned is not reachable for local trips. The separately tracked P01-SUGGESTION-ENTRY defect stays open.",
+        "location": "src/components/ActivityDetail.jsx:194-196; src/components/ActivityMoments.jsx:8-43",
+        "regression_test": "Existing: ActivityDetail.test.jsx 'shows moments above the technical settings so photos are not buried'; src/components/ActivityMoments.test.jsx.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PHOTO-IDENTITY",
+      "title": "Durable native photo idempotence",
+      "severity": "P1",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/RecorderCore.swift",
+        "ios/App/App/ActivityServices.swift",
+        "ios/App/App/PhotoSuggestions.swift"
+      ],
+      "instructions": "Native persistence must use source identity before copying bytes; same timestamp is not identity. Verify restart, repeated/lost replies, capacity and owner scoping. Supervisor added optional assetID and duplicate guard before attempt 4; inspect current code, not old reports.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          3,
+          4
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PHOTO-IDENTITY",
+        "status": "resolved",
+        "severity": "P1",
+        "evidence": "attachPhoto computes identity from sourceAssetID or asset.localIdentifier and returns false through containsPhotoAsset before the capacity guard and before writing bytes (ActivityServices.swift:185-187, write at :205). This works at capacity and after a lost reply. Identity is matched by assetID only, never by timestamp (RecorderCore.swift:2276-2279). It persists as optional ActivityPhoto.assetID (RecorderCore.swift:636) in owner-specific storage. Both entry points run on the main queue with owner guards (PhotoSuggestions.swift:77-80; ActivityServices.swift:533-546). The JS side receives assetID through the ...p spread (recorder.js:98), so 'Already added' works. Two non-blocking notes: images are still decoded before the check, which is tracked by P01-PICKER-MEMORY, and acceptSuggestion discards the Bool at PhotoSuggestions.swift:80, so a repeated accept reports success without creating a second copy. Legacy photos with no assetID cannot be matched, which is correct.",
+        "location": "ios/App/App/ActivityServices.swift:180-219; ios/App/App/RecorderCore.swift:627-638,2275-2280; ios/App/App/PhotoSuggestions.swift:75-82",
+        "regression_test": "Existing: tests/native/main.swift:4253-4263 cover containsPhotoAsset, burst distinctness, restart and owner separation. Needed: a native test driving attachPhoto itself at capacity and for a repeated asset, because the existing checks exercise only the helper.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-CANCEL",
+      "title": "Cancel an in-flight suggestion batch",
+      "severity": "P1",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/PhotoSuggestions.test.jsx"
+      ],
+      "instructions": "Cancel must be enabled while recording.busy is true. Deferred onImport must finish honestly, then no next import may start. Supervisor supplied this specific regression before final review.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          3,
+          4
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-CANCEL",
+        "status": "resolved",
+        "severity": "P1",
+        "evidence": "The Cancel button is disabled only by cancelling, not by busy (PhotoSuggestions.jsx:207). cancel() sets the run token while working (:106). The in-flight await completes and its outcome is recorded (:80-81), then remaining entries become 'cancelled' at :75-78 and the next import never starts. The status line reports the real counts through batchSummary. Cancelled photos lose their selection through selectionAfterBatch (photoSuggestions.js:255-262), but that does not break this defect's contract.",
+        "location": "src/components/PhotoSuggestions.jsx:69-85,105-108,207",
+        "regression_test": "Existing: PhotoSuggestions.test.jsx 'can cancel while the native import is busy and never starts the next photo' (deferred onImport, busy rerender). It could additionally assert the final '1 added · 1 cancelled' status.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PAGING",
+      "title": "Continue empty/missing-thumbnail pages",
+      "severity": "P1",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/PhotoSuggestions.swift",
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/ActivityDetail.jsx"
+      ],
+      "instructions": "Use native nextOffset rather than filtered thumbnail counts; return unavailable metadata rows and leave Load more/Cancel reachable with zero visible rows.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          3,
+          4
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PAGING",
+        "status": "resolved",
+        "severity": "P1",
+        "evidence": "Native computes nextOffset from the page window, not from surviving thumbnails (PhotoSuggestions.swift:37), and returns it at :63. Rows with no thumbnail are kept with null and localAvailable:false (:51-56). ActivityDetail prefers result.nextOffset (ActivityDetail.jsx:107,121-122) and steps over empty pages (:129). Load more and Cancel render outside the !items.length branch, so both stay reachable with zero visible rows (PhotoSuggestions.jsx:151,200-209). The empty copy no longer claims the library is exhausted when hasMore is true (:134-136).",
+        "location": "ios/App/App/PhotoSuggestions.swift:23-63; src/components/ActivityDetail.jsx:107-129; src/components/PhotoSuggestions.jsx:134-136,200-209",
+        "regression_test": "Existing: ActivityDetail.test.jsx 'asks for the next page with the cursor native returned...' and 'steps over an appended page that renders nothing...'; PhotoSuggestions.test.jsx 'does not call a fully imported first page the end of the library' and 'keeps an iCloud-only candidate visible...'. No native test covers the suggestPhotos row or cursor contract.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PROVENANCE",
+      "title": "Truthful native suggestion provenance",
+      "severity": "P1",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/PhotoSuggestions.swift",
+        "src/lib/photoSuggestions.js"
+      ],
+      "instructions": "Return actual hasLocation/provenance. Having photo GPS does not prove a route-location match. Data URI handling is tracked separately.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          3,
+          4
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PROVENANCE",
+        "status": "resolved",
+        "severity": "P1",
+        "evidence": "Native returns hasLocation from asset.location and locationSource 'photo' or 'timestamp' (PhotoSuggestions.swift:56). suggestionConfidence labels this 'Date match · photo GPS' or 'Date match only', and its detail says proximity to the route has not been verified (photoSuggestions.js:79-83). No route-match claim remains.",
+        "location": "ios/App/App/PhotoSuggestions.swift:56; src/lib/photoSuggestions.js:76-83",
+        "regression_test": "Existing: src/lib/photoSuggestions.test.js suggestion label and confidence cases. Needed: a native assertion on the emitted hasLocation and locationSource fields.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PHOTO-PINS",
+      "title": "Gallery selection highlights the real embedded pin",
+      "severity": "P2",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/ActivityDetail.jsx",
+        "src/components/JourneyMap.jsx",
+        "src/lib/appleMaps.js",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Verify owner/activity-scoped selected ID reaches BOTH native renderers without selecting a callout or fitting camera. Supervisor corrected the embedded renderer after the last mixed review.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          3,
+          4
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PHOTO-PINS",
+        "status": "resolved",
+        "severity": "P2",
+        "evidence": "Selection is scoped by owner and activity (ActivityDetail.jsx:28-34), passed to JourneyMap (:188) and stamped selected:true on the matching pin only (appleMaps.js:30). 'selected' is excluded from structureKey and snapshotKey (AppleMap.jsx:116-117), so it travels through update, not embed. Native apply replaces just that annotation because pinID excludes selected (AppleMaps.swift:654-658,876-880), with no selectAnnotation or camera call. The embedded renderer styles it pink (:2138-2142,2148) and the fullscreen renderer orange (:2050-2054,2061).",
+        "location": "src/components/ActivityDetail.jsx:28-34,188; src/lib/appleMaps.js:30; src/components/AppleMap.jsx:116-121; ios/App/App/AppleMaps.swift:876-896,2050-2061,2138-2148",
+        "regression_test": "Existing: JourneyMap.test.jsx:43 (selectedPhotoID) and AppleMap.test.jsx 'adds a photo through incremental update without re-embedding...'. Needed: an ActivityDetail test that selection clears on an owner or activity mismatch.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-THUMBNAIL-URL",
+      "title": "Native thumbnail wire format",
+      "severity": "P1",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/PhotoSuggestions.swift",
+        "ios/App/App/RecorderCore.swift"
+      ],
+      "instructions": "Bare JPEG base64 is not a URL. Current ActivityPhoto.thumbnailDataURL must produce a data URI, leave unavailable values null, and feed the actual bridge.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-THUMBNAIL-URL",
+        "status": "resolved",
+        "severity": "P1",
+        "evidence": "ActivityPhoto.thumbnailDataURL prefixes data:image/jpeg;base64, and returns nil for nil or empty input (RecorderCore.swift:2284-2287). The real bridge row uses it, with NSNull for unavailable values (PhotoSuggestions.swift:51-56). PrivateImage passes any non private-photo: src straight to <img> (PrivateImage.jsx:6-7).",
+        "location": "ios/App/App/RecorderCore.swift:2282-2288; ios/App/App/PhotoSuggestions.swift:51-56; src/components/PrivateImage.jsx:6-7",
+        "regression_test": "Existing: tests/native/main.swift:4265-4267 cover the helper. The suggestPhotos call site itself is not tested.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-GALLERY-MEMORY",
+      "title": "Bound accumulated thumbnail and DOM memory",
+      "severity": "P1",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 3,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/ActivityDetail.jsx",
+        "src/lib/photoSuggestions.js"
+      ],
+      "instructions": "Pagination currently appends all base64 images and renders all rows. Implement a bounded page/window with explicit navigation and stable selection IDs; evict off-window thumbnail payloads and ensure every candidate remains reachable. Test hundreds/thousands, retained bytes/DOM count, revisit, selected imports and partial failures.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-GALLERY-MEMORY",
+        "status": "confirmed",
+        "severity": "P1",
+        "evidence": "setSuggestions appends every page through mergeSuggestionPages with no cap or eviction (ActivityDetail.jsx:119; photoSuggestions.js:63-71). Each row keeps its base64 thumbnail. PhotoSuggestions copies all rows (:36) and renders every tile with no window (:160-194). loading=lazy cannot help because the data URI bytes are already in JS memory. The largest component fixture is about one page.",
+        "location": "src/components/ActivityDetail.jsx:119; src/lib/photoSuggestions.js:63-71; src/components/PhotoSuggestions.jsx:35-41,160-194",
+        "regression_test": "Needed: a PhotoSuggestions and ActivityDetail test with 1000+ candidates asserting bounded retained thumbnail bytes and DOM tiles, reachability of every candidate, thumbnail refetch on revisit, stable selection across eviction, and a selected import with partial failure from an evicted page.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PICKER-RETRY",
+      "title": "Item-identifiable main-picker outcomes and retry",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/ActivityServices.swift",
+        "src/components/ActivityDetail.jsx",
+        "src/components/ActivityMoments.jsx"
+      ],
+      "instructions": "Keep explicit user-picked providers/asset identities for failed items within the current owner/activity session, expose per-item outcomes and retry only failures without duplicating successes. Bound resources and clear on account change/cancel. Report genuine progress; aggregated anonymous strings are insufficient.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PICKER-RETRY",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "The picker returns only selected, added, duplicates and failed:[String] (ActivityServices.swift:537,553). Failure strings carry no item identity, and results and providers are dropped when the callback ends. ActivityDetail joins the strings into a message with no retry action (ActivityDetail.jsx:172-177). The only progress shown is the static 'Adding photos…' (ActivityMoments.jsx:15). Failed images with no error message are silently omitted from failed (ActivityServices.swift:539-541).",
+        "location": "ios/App/App/ActivityServices.swift:511-556; src/components/ActivityDetail.jsx:156-182; src/components/ActivityMoments.jsx:15",
+        "regression_test": "Needed: a native outcome-contract test (per-item identity, bounded retained providers, clearing on account change and cancel) and an ActivityDetail test for partial picker success then retry of failures only, with real progress. Existing 'reports a partially imported photo selection by name...' covers only the aggregate message.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PICKER-MEMORY",
+      "title": "Avoid parallel full-resolution picker image retention",
+      "severity": "P1",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/ActivityServices.swift"
+      ],
+      "instructions": "The latest order-preserving repair collects every full UIImage in an array. Sequentially load/downsample/persist/release each item or use a fixed small concurrency window. Preserve selection order, capacity, ownership and duplicate outcomes.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PICKER-MEMORY",
+        "status": "confirmed",
+        "severity": "P1",
+        "evidence": "All selected providers (up to 20) load with loadObject(ofClass:UIImage.self) at once (ActivityServices.swift:521-532). Decoded UIImages are held in images until the group finishes, and entries are not released after persistence (:519,538-550). attachPhoto then resizes and runs up to five JPEG passes on the main queue (:189-199). Peak memory therefore scales with full-resolution selection size and the main thread is blocked for the batch.",
+        "location": "ios/App/App/ActivityServices.swift:519-532,533-550,189-200",
+        "regression_test": "Needed: a native test with a fake provider that asserts maximum concurrent loads, release before the next item, preserved selection order, capacity and duplicate outcomes, and owner change. Actual memory numbers remain a device measurement; the bound itself is software.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PICKER-METADATA",
+      "title": "Preserve available picker-only capture metadata",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/ActivityServices.swift"
+      ],
+      "instructions": "UIImage-only loading drops authorized provider metadata when PHAsset cannot be read. Use selected provider data/file metadata without demanding broad Photos access. Preserve actual timestamp/timezone/location when available; never invent missing metadata. Test denied/limited/full access and stripped metadata.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PICKER-METADATA",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "Only UIImage is loaded (ActivityServices.swift:524). asset is nil unless Photos is authorized or limited (:536,544). attachPhoto reads capture time and location only from asset (:206-208), so the picker-only path gets time nil and 'unlocated', and matchedPhotoPoint cannot infer a position (:209). No file or data representation or ImageIO metadata is read from the selected provider.",
+        "location": "ios/App/App/ActivityServices.swift:206-212,524,536,544",
+        "regression_test": "Needed: a native metadata-extraction test using fixture images with EXIF time, offset and GPS and with stripped metadata, across denied, limited and full access, proving nothing is invented and no broad Photos request is made.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-LATE-EMBED",
+      "title": "Tear down an embed that completes after unmount",
+      "severity": "P1",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/AppleMap.jsx",
+        "src/components/AppleMap.test.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Reproduce with a deferred embed promise, unmount before resolution, then resolve. No map may be installed/shown after disposal. Make cleanup idempotent and race-safe, including owner/navigation switch; test strict mode and out-of-order callbacks.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-LATE-EMBED",
+        "status": "confirmed",
+        "severity": "P1",
+        "evidence": "embeddedOnce is set only after the embed promise resolves (AppleMap.jsx:177). Unmount cleanup sends unembed only if embeddedOnce is true, otherwise only close (:43-47). Once appleMaps.embed has been sent, the late result is ignored at :176 with no teardown. Native close only dismisses a presented map (AppleMaps.swift:1886-1891), so the MKMapView stays in embeddedMaps and in webView.scrollView above the web content (:1759-1768). The test file has no unmount-before-resolve case; its only related unmount is the embedded case at line 135.",
+        "location": "src/components/AppleMap.jsx:43-47,169-177; ios/App/App/AppleMaps.swift:1759-1768,1875-1891",
+        "regression_test": "Needed in AppleMap.test.jsx: defer mocks.embed, unmount, resolve, and assert unembed for that mapID. Add StrictMode replay, owner or navigation switch, and out-of-order callbacks, and assert cleanup is idempotent.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-CAMERA-RESUME",
+      "title": "Preserve camera across background/resume",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 3,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/AppleMap.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Unembed currently destroys the map and foreground fits again. Cache/restore camera by owner and map/content identity, or hide/reveal without destroying; handle background in-flight operations and clear on account change. Verify no refit after resume.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-CAMERA-RESUME",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "When hidden, JS clears embeddedOnce and calls unembed (AppleMap.jsx:145-148). Native destroys the map, coordinator and embeddedContent (AppleMaps.swift:1875-1882). On resume preserveViewport is false (AppleMap.jsx:166), and previousContent is nil so initialPositions is true and setVisibleMapRect refits (AppleMaps.swift:1825-1828). remember() from detach returns early when content.camera is nil (:1327-1328), so Activity Details maps get no camera memory. The test 'releases the native map on tab change...' covers people-map camera intents only.",
+        "location": "src/components/AppleMap.jsx:145-148,166; ios/App/App/AppleMaps.swift:1327-1331,1526-1527,1825-1829,1875-1883",
+        "regression_test": "Needed: a bridge test that fires visibilitychange hidden then visible on a route map and asserts no unembed or a restored camera, plus a native CameraMemory-style test keyed by owner and content that clears on account change. Confirming no visible refit also needs a device pass.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-CAMERA-FULLSCREEN",
+      "title": "Preserve camera through fullscreen round trip",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 5,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/AppleMap.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Fullscreen destroys embedded map and creates a fitted controller without passing camera. Transfer/restore camera explicitly; maintain one authoritative visible map and account-scoped lifecycle. Test a user-panned camera round trip.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-CAMERA-FULLSCREEN",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "The JS open path unembeds, which destroys the map (AppleMap.jsx:232-233), opens with no camera (:236-238), then resets embeddedOnce and re-embeds without preservation (:243-246). The native expand button does capture initialCamera (AppleMaps.swift:1790), but viewDidLoad applies it only for people or overview maps (:1954-1969). An Activity Details route map falls through to the fit at :1985, and embedded?.resumeFromMemory() is a no-op with no camera intent (:1321-1322). Either way a panned camera does not survive the round trip on this screen.",
+        "location": "src/components/AppleMap.jsx:225-248; ios/App/App/AppleMaps.swift:1779-1804,1892-1904,1954-1985",
+        "regression_test": "Needed: a user-panned round-trip test for both the JS open path and the native expand path on a route map, asserting one visible map and no fit. Existing 'opens the same trimmed route in fullscreen...' checks content only.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-SUGGESTION-ENTRY",
+      "title": "Reveal/focus suggestions at the prominent entry point",
+      "severity": "P1",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 3,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/ActivityDetail.jsx",
+        "src/components/PhotoSuggestions.jsx"
+      ],
+      "instructions": "Find Photos is high but its result is after every technical control. Put the surface near its trigger or open/focus a dedicated dialog/sheet, with Back, Cancel, keyboard focus and stable selection; do not merely append an unreachable section.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-SUGGESTION-ENTRY",
+        "status": "confirmed",
+        "severity": "P1",
+        "evidence": "Find journey photos sits near the top (ActivityMoments.jsx:24,36), but PhotoSuggestions renders at ActivityDetail.jsx:225, after diagnostics, metrics, facts, stops, story and photo management. No scrollIntoView, .focus(), detent change or dialog exists in ActivityDetail, ActivitySheet, ActivityMoments or PhotoSuggestions. .suggestion-actions is sticky only within its own section (styles.css:1173). Search and Add Photos feedback also appears only at line 215 once suggestions close. At line 225 the surface is effectively an appended section.",
+        "location": "src/components/ActivityDetail.jsx:92-131,215,225; src/components/ActivityMoments.jsx:24,36; src/styles.css:1173",
+        "regression_test": "Needed: a journey test from tapping Find journey photos to a visible, focused dedicated surface, with Back, Cancel and Add Selected reachable, keyboard focus returned on close, and selection stable.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-MAP-GEOMETRY",
+      "title": "Avoid scroll-derived viewport clipping churn",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/lib/mapViewport.js",
+        "src/components/AppleMap.jsx",
+        "ios/App/App/AppleMaps.swift"
+      ],
+      "instructions": "Reproduce constant document map position while scrolling across bottom nav: geometry key must not change solely due viewport-relative clipping. Separate geometry/content/camera and keep other map consumers correct; add the exact probe and bridge assertions.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-MAP-GEOMETRY",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "surfaceGeometry derives height from navTop minus viewport-relative box.top (mapViewport.js:14-17), and geometryKey includes height (:33). With a map overlapping the bottom nav, a scroll with a constant document position changes the key and sends a resize (AppleMap.jsx:152-163). If it clips under MAP_MIN_EXTENT, visible goes false and the map is unembedded (:151), losing the camera. The test 'reports the same document position while the page scrolls' has no nav, so it does not cover this case. Activity Details on phones mostly avoids this; other map consumers still use the path.",
+        "location": "src/lib/mapViewport.js:9-34; src/components/AppleMap.jsx:150-163",
+        "regression_test": "Needed in mapViewport.test.js: the same pageY at two scrollY values with navTop set must produce an identical geometry key. Needed in AppleMap.test.jsx: scroll across the nav sends no resize or unembed, and clipping is handled separately from geometry and content.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-ROUTE-MEMO",
+      "title": "Keep unchanged long routes off photo/sheet hot paths",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/ActivityDetail.jsx",
+        "src/components/JourneyMap.jsx",
+        "src/components/AppleMap.jsx"
+      ],
+      "instructions": "Memoize using immutable points/route references rather than whole trip. Photo imports must not rebuild full route/segment layers or serialize unchanged route geometry on sheet/pin-only renders. Add real bridge/render instrumentation assertions, preserve privacy revocation.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-ROUTE-MEMO",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "fullPreview and layers depend on the whole trip (ActivityDetail.jsx:61,69). perform() replaces trip after every import through recordedJourney, which also rebuilds segments (ActivityDetail.jsx:85-86; recorder.js:97), and trip.points comes from a fresh bridge result, so memoizing on the points reference alone would not be enough. JourneyMap rebuilds mapPayload on every render (JourneyMap.jsx:18). AppleMap stringifies and parses the whole payload every render (AppleMap.jsx:97-117), then sends the full route through update (:118-121). Pin-only selection rerenders ActivityDetail and takes this full path. A sheet drag does not, because detent state is local to ActivitySheet. No long-route count test exists.",
+        "location": "src/components/ActivityDetail.jsx:51,61,69,84-87,185; src/components/JourneyMap.jsx:18; src/components/AppleMap.jsx:14,97-121; src/lib/recorder.js:97",
+        "regression_test": "Needed: an instrumented long-track fixture through a multi-photo import and pin selection, asserting recordedRouteSegments and mapPayload counts and that update payloads omit unchanged route geometry, plus a privacy-revocation case for the people-pin update path.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-PREVIEW-FOCUS",
+      "title": "Photo preview is a real keyboard modal",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 4,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/PhotoSuggestions.jsx",
+        "src/components/PhotoSuggestions.test.jsx"
+      ],
+      "instructions": "Move focus inside, trap it, Escape to close, restore original preview-button focus and prevent background interaction. Test keyboard-only flow and preserved selection; aria-modal alone is not implementation.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 1,
+        "failedRepairAttempts": [
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-PREVIEW-FOCUS",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "The preview sets only role=dialog and aria-modal (PhotoSuggestions.jsx:210-221). A search of these components finds no .focus(), focus trap, inert or Escape handling. Focus stays on the obscured Preview button, and the background remains tabbable. On close, Done only clears state (:219), so focus is not restored. If the bottom nav is rendered on this screen it stays above the preview, since it has z-index 500 against page z-index 30 (styles.css:4,1162). The existing test checks only selection.",
+        "location": "src/components/PhotoSuggestions.jsx:185,210-221; src/styles.css:1175",
+        "regression_test": "Needed in PhotoSuggestions.test.jsx: a keyboard-only flow asserting focus enters the dialog, Tab stays inside, Escape closes, focus returns to the originating Preview button, the background is inert and selection is preserved. Existing 'previews a photo full screen...' covers selection only.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-DIAGNOSTICS-REGISTRY",
+      "title": "Independent diagnostic consumer registrations",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 4,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/lib/mapDiagnostics.js",
+        "src/components/AppleMap.jsx"
+      ],
+      "instructions": "The same snapshot function stored in a Set collapses consumers. Use per-registration ownership/tokens so one unmount cannot remove another consumer. Verify zero consumers cleanup and correct bridge-operation counts.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 1,
+        "failedRepairAttempts": [
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-DIAGNOSTICS-REGISTRY",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "readers is a Set (mapDiagnostics.js:13), and every AppleMap registers the same function (AppleMap.jsx:63). Overlapping maps collapse to one entry. The first release deletes it, empties the Set and removes the window globals while another map is live (mapDiagnostics.js:27-32). Counts are also incomplete: the restore call appleMaps.hide({hidden:false}) has no recordMapEvent (AppleMap.jsx:144). The existing test covers a single consumer.",
+        "location": "src/lib/mapDiagnostics.js:13,24-34; src/components/AppleMap.jsx:63,144",
+        "regression_test": "Needed in mapDiagnostics.test.js: two registrations of the same reader, release one, the global remains and reads once; release the other, the global is removed. Needed in AppleMap.test.jsx: dialog restore counts a hide event.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-A11Y-TYPE",
+      "title": "Scalable readable type and touch controls",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/styles.css",
+        "src/components/ActivitySheet.jsx",
+        "ios/App/App/Info.plist"
+      ],
+      "instructions": "Replace tiny fixed type with a scale-aware design and preserve 44pt controls, small screens, rotation and Reduce Motion. Distinguish code capability from physical VoiceOver/Dynamic Type validation; do not label missing scaling code hardware-only.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-A11Y-TYPE",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "New UI uses fixed tiny type: 9px at styles.css:1098; 10px at :1100,1103,1117; 11px at :1116,1118,1119,1151. styles.css has no -apple-system text style or text-size-adjust, so nothing follows iOS Dynamic Type in the WebView. Controls below 44pt remain: the 30px handle (:1141) and 24px tile checkboxes (:1124). Reduce Motion is handled (:1169). Info.plist allows landscape (lines 58-63), but sheetHeight leaves only about 250px at a 390px height, reduced further by the handle and 74px bottom padding (activitySheet.js:11-15; styles.css:1165), and there is no landscape layout. Missing scaling is software; only the physical VoiceOver and Dynamic Type pass is a device check.",
+        "location": "src/styles.css:1098-1103,1116-1119,1124,1141,1151,1165; src/lib/activitySheet.js:5-15; src/components/ActivitySheet.jsx:80; ios/App/App/Info.plist:58-63",
+        "regression_test": "Needed: a check-activity-layout.mjs extension asserting a minimum and scalable font size, 44pt hit targets, and small-portrait and landscape sheet content height using the real stylesheet. Physical Dynamic Type and VoiceOver stay under DEVICE-NATIVE-UX.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-METRIC-TRUTH",
+      "title": "Truthful units and elevation provenance",
+      "severity": "P2",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/lib/activitySummary.js",
+        "src/lib/activitySummary.test.js"
+      ],
+      "instructions": "Check current explicit-kcal/provenance guards, measured zero and missing values, and conservative elevation derivation. Supervisor removed untyped calorie aliases after the mixed review; old reports may be stale. Watch collection remains phase 2.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 2,
+        "failedRepairAttempts": [
+          3,
+          4
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-METRIC-TRUTH",
+        "status": "resolved",
+        "severity": "P2",
+        "evidence": "activeCalories accepts only explicit kcal fields and activeEnergy with activeEnergyUnit==='kcal' (activitySummary.js:72-77). Unitless aliases are gone. Measured zero passes and missing is omitted (:78-83). The Apple Watch attribution needs source watch and energySource healthkit (:80). Elevation uses 4 m hysteresis, ignores invalid or zero altitude, skips low-accuracy fixes, breaks on segment and on gaps over 300 s (:19-61), and is labelled 'Estimated from recorded altitude' when derived (:104). The comment 'Every plausible key is checked' at :64 is stale but does not change behavior. Watch collection stays phase 2.",
+        "location": "src/lib/activitySummary.js:16-61,68-84,102-108",
+        "regression_test": "Existing in activitySummary.test.js: 'rejects untyped energy aliases and distinguishes measured zero from missing energy', 'does not turn altitude jitter, invalid fixes or pauses into climb', 'only attributes calories to Apple Watch when the recording source says watch'.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-SWIPE-GEOMETRY",
+      "title": "Fixed page positioning and direct drag",
+      "severity": "P1",
+      "kind": "software",
+      "status": "resolved",
+      "firstSeenAttempt": 4,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "src/components/SwipeBack.jsx",
+        "src/components/ActivitySheet.jsx",
+        "src/styles.css",
+        "scripts/check-activity-layout.mjs"
+      ],
+      "instructions": "Check the current removal of permanent will-change, fixed-page gesture target and coarse-pointer landscape rule. Actual Chromium synthetic geometry and pointer regression evidence exists; do not confuse it with native device performance.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "P01-SWIPE-GEOMETRY",
+        "status": "resolved",
+        "severity": "P1",
+        "evidence": "The .swipe-back-page wrapper no longer has permanent will-change (styles.css:32). SwipeBack transforms the fixed page (.detail-sheet-page) and sets will-change only during a gesture, clearing it on reset (SwipeBack.jsx:6-7,18). The fixed-page rule also applies to coarse-pointer landscape (styles.css:1161-1165), and the handle has touch-action:none for direct drag (:1141). check-activity-layout.mjs checks both orientations in Chromium and reproduces the old offset in portrait. That evidence is a synthetic CSS fixture, not native performance. SwipeBack.test.jsx renders no .detail-sheet-page, so targeting the fixed page has no unit assertion, and whether the native map tracks the page during a swipe is unproven here.",
+        "location": "src/components/SwipeBack.jsx:6-7,18; src/styles.css:32,1141,1161-1165; scripts/check-activity-layout.mjs:9-20",
+        "regression_test": "Existing: scripts/check-activity-layout.mjs (npm run test:activity-layout); ActivitySheet.test.jsx pointer test. Needed: a SwipeBack.test.jsx case asserting the transform lands on .detail-sheet-page and will-change clears on reset.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-DOC-TRUTH",
+      "title": "No false completion or hardware deferral of software",
+      "severity": "P1",
+      "kind": "software",
+      "status": "confirmed",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "docs/activity-experience-v2-progress.md",
+        "docs/activity-experience-v2-release-gates.md",
+        "docs/activity-experience-v2-review-findings.md",
+        "docs/activity-experience-v2-testing.md"
+      ],
+      "instructions": "Reconcile current docs, which were corrected AFTER frozen reviews. Do not repeat a stale docs finding based on the archived version. Only confirmed current contradictions block; full software/hardware distinction must remain explicit.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 3,
+        "failedRepairAttempts": [
+          3,
+          4,
+          5
+        ],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "status": "confirmed",
+        "severity": "P1",
+        "revision": "Windows working tree after supervisor edits",
+        "source": "docs/activity-v2-windows-runner-review.json",
+        "evidence": "Supervisor corrected several old progress-ledger claims, but fresh Claude review rejects stale evidence attribution and the sheet split. No independent closure is claimed. See originalAssessment for retained Mac findings.",
+        "originalAssessment": {
+          "id": "P01-DOC-TRUTH",
+          "status": "confirmed",
+          "severity": "P2",
+          "evidence": "release-gates.md, review-findings.md and testing.md are current and correctly say BLOCKED, with software separate from hardware. Stale reports about those files should not be repeated. The current contradictions are all in progress.md, which still claims completion or defers software. Line 71 ticks R8-01 [x] 'Done for phase 1', with camera preserved and cleanup on unmount/background, against LATE-EMBED and CAMERA-RESUME. Line 38 says R3-03 Done against release-gates.md:12. Line 37 says capture time is preserved, against the picker-only path. Line 33 says a selected photo cannot highlight its pin, against release-gates.md:16 and AppleMaps.swift:2050,2138. Line 45 sends memory and DOM bounds to a gate R-G5 and line 34 sends Dynamic Type to R-G6, though release-gates.md no longer defines R-G IDs, and line 45 calls thumbnails bounded per page while pages accumulate without limit. Line 43 quotes 'Add N photos' while the UI says 'Add Selected (N)'. Line 9 quotes 995 and 1752 against the frozen 996 and 1755. Severity is P2 because lines 91 and 103 of the same file state these ticks are developer claims and the outcome is BLOCKED, so no reader of the authoritative sections is told the phase passed. The ledger rows should still be corrected.",
+          "location": "docs/activity-experience-v2-progress.md:9,33,34,37,38,43,45,71,91,103; docs/activity-experience-v2-release-gates.md:9-16,26-30",
+          "regression_test": "Needed: a docs check failing when a ledger row is ticked or Done while its ID is listed as open, or when it references an undefined gate or finding ID. Otherwise reconcile manually on the next docs pass.",
+          "source": "docs/activity-v2-handover-evidence/current-triage.json",
+          "revision": "27273fb",
+          "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+        }
+      }
+    },
+    {
+      "id": "DEVICE-NATIVE-UX",
+      "title": "Physical map/Photos/Watch acceptance",
+      "severity": "P2",
+      "kind": "device",
+      "status": "device_required",
+      "firstSeenAttempt": 1,
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [],
+      "instructions": "Actual November ride, native frame traces, VoiceOver and Watch battery/HealthKit acceptance are unavailable. This is a DEVICE validation gate, not permission to defer implementable software.",
+      "observations": [],
+      "historicalProvisionalCounters": {
+        "failedRepairs": 0,
+        "failedRepairAttempts": [],
+        "status": "needs_review",
+        "note": "Unvalidated Mac seed; not eligible for automatic escalation. Distinct attempted repairs require per-revision evidence reconciliation."
+      },
+      "currentAssessment": {
+        "id": "DEVICE-NATIVE-UX",
+        "status": "device_required",
+        "severity": "P2",
+        "evidence": "testing.md:46 and release-gates.md:26-30 state no actual November ride, iPhone or Watch acceptance, native frame traces, VoiceOver session, or battery, thermal or HealthKit validation has occurred. None of these can be established from source. This gate does not cover the software defects above, including A11Y-TYPE, GALLERY-MEMORY and PICKER-MEMORY.",
+        "location": "docs/activity-experience-v2-testing.md:46-48; docs/activity-experience-v2-release-gates.md:26-30",
+        "regression_test": "Manual device acceptance: an actual ride with Photos import, native frame traces during sheet drag and scroll, a VoiceOver and Dynamic Type pass, and Watch battery and HealthKit checks. No automated test replaces this.",
+        "source": "docs/activity-v2-handover-evidence/current-triage.json",
+        "revision": "27273fb",
+        "validation": "Application src/ios/native tests unchanged from reviewed 27273fb at Windows checkpoint 6272027. Static independent assessment, no new tests claimed."
+      }
+    },
+    {
+      "id": "P01-STABLE-MAP",
+      "title": "Stable map during sheet drag and safe-area first measurement",
+      "severity": "P2",
+      "kind": "software",
+      "status": "confirmed",
+      "failedRepairs": 0,
+      "files": [
+        "src/components/ActivitySheet.jsx",
+        "src/components/ActivityDetail.jsx",
+        "src/components/AppleMap.jsx",
+        "src/styles.css"
+      ],
+      "instructions": "Integration is real: ActivitySheet wraps the screen content at ActivityDetail.jsx:192, and pointer and arrow-key detents run through lib/activitySheet.js. Safe-area padding and the fixed page are in styles.css:1162-1165. The P0 'helper not integrated' claim is resolved, but three gaps remain. (1) The map is not fixed: on phones .detail-map-layer is flex:1 1 auto (styles.css:1163) beside the height-driven sheet, so every drag frame and each frame of the .28s height transition (styles.css:1140) changes the surface height. ResizeObserver then calls mount(), which sends appleMaps.resize (AppleMap.jsx:158-163,206). (2) The handle, the only drag target, has min-height:30px (styles.css:1141), below 44pt. (3) useState(viewportHeight) runs in the first render before .detail-sheet-page is committed, so querySelector returns null and the first measurement uses raw innerHeight without the top safe-area subtraction (ActivitySheet.jsx:9-24,32). It is only re-measured on a resize event, so rendered height and aria-valuenow can exceed the CSS max-height clamp at styles.css:1165. Existing ActivitySheet tests are real component tests, but 'exactly one resize' describes an instant jsdom change, not a drag. Required regression: Existing: ActivitySheet.test.jsx 'tracks a pointer without a height transition and restores detent snapping on release'; ActivityDetail.test.jsx 'keeps one map and never re-embeds it when the details sheet moves'. Needed: a screen-level test that a multi-frame drag leaves the native frame unchanged or coalesces resize to settle; a test that the first render uses the safe-area-adjusted height; a 44pt handle assertion.",
+      "observations": [],
+      "splitFrom": "P01-SHEET",
+      "currentAssessment": {
+        "id": "P01-STABLE-MAP",
+        "status": "confirmed",
+        "severity": "P2",
+        "evidence": "Integration is real: ActivitySheet wraps the screen content at ActivityDetail.jsx:192, and pointer and arrow-key detents run through lib/activitySheet.js. Safe-area padding and the fixed page are in styles.css:1162-1165. The P0 'helper not integrated' claim is resolved, but three gaps remain. (1) The map is not fixed: on phones .detail-map-layer is flex:1 1 auto (styles.css:1163) beside the height-driven sheet, so every drag frame and each frame of the .28s height transition (styles.css:1140) changes the surface height. ResizeObserver then calls mount(), which sends appleMaps.resize (AppleMap.jsx:158-163,206). (2) The handle, the only drag target, has min-height:30px (styles.css:1141), below 44pt. (3) useState(viewportHeight) runs in the first render before .detail-sheet-page is committed, so querySelector returns null and the first measurement uses raw innerHeight without the top safe-area subtraction (ActivitySheet.jsx:9-24,32). It is only re-measured on a resize event, so rendered height and aria-valuenow can exceed the CSS max-height clamp at styles.css:1165. Existing ActivitySheet tests are real component tests, but 'exactly one resize' describes an instant jsdom change, not a drag.",
+        "location": "src/components/ActivitySheet.jsx:9-32,79-86; src/components/AppleMap.jsx:154-163,206; src/styles.css:1140-1141,1163-1165; src/components/ActivityDetail.jsx:191-192",
+        "regression_test": "Existing: ActivitySheet.test.jsx 'tracks a pointer without a height transition and restores detent snapping on release'; ActivityDetail.test.jsx 'keeps one map and never re-embeds it when the details sheet moves'. Needed: a screen-level test that a multi-frame drag leaves the native frame unchanged or coalesces resize to settle; a test that the first render uses the safe-area-adjusted height; a 44pt handle assertion.",
+        "source": "docs/activity-v2-windows-handover.md (supervisor split; not a new independent verdict)",
+        "revision": "27273fb",
+        "sourceEvidence": "docs/activity-v2-handover-evidence/current-triage.json"
+      },
+      "supervisorClassification": {
+        "actor": "Codex supervisor",
+        "basis": "Explicit Windows handover instruction to retire the absent-integration P0 and create a distinct current stable-map P2",
+        "independentApproval": "PENDING / DISPUTED by fresh Claude runner review",
+        "releaseBlockingDisagreement": true,
+        "review": "docs/activity-v2-windows-runner-review.json"
+      }
+    },
+    {
+      "id": "P02-FUTURE-ENERGY-ROUNDTRIP",
+      "title": "Preserve unknown future energy on later saves",
+      "severity": "P3",
+      "kind": "software",
+      "status": "confirmed",
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "ios/App/App/RecorderCore.swift",
+        "tests/native/main.swift"
+      ],
+      "instructions": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy.",
+      "observations": [
+        {
+          "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+          "actor": null,
+          "status": "open",
+          "checks": [
+            {
+              "role": "claude",
+              "status": "persists",
+              "location": ".build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:612-622,513-517; change.diff:281-293",
+              "evidence": "`init(from:)` replaces an unrecognised or future energy object with a schema 0 placeholder, and a malformed `active` or `total` becomes nil. Read and load leave the bytes untouched, as the regression asserts. Any later `save` of that record (a title edit, or a trim into `wholeWorkoutEnergy`) re-encodes the placeholder and permanently overwrites the original value. This only arises with future or corrupted data, which current writers do not produce, so it does not reopen finding 5 as scoped ('on read'). The 'never rewrites stored bytes' assertion does cover only read, not save.",
+              "regression_test": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy."
+            }
+          ]
+        }
+      ],
+      "currentAssessment": {
+        "status": "confirmed",
+        "source": "docs/activity-v2-windows-energy-recheck.json",
+        "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+        "location": ".build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:612-622,513-517; change.diff:281-293",
+        "evidence": "`init(from:)` replaces an unrecognised or future energy object with a schema 0 placeholder, and a malformed `active` or `total` becomes nil. Read and load leave the bytes untouched, as the regression asserts. Any later `save` of that record (a title edit, or a trim into `wholeWorkoutEnergy`) re-encodes the placeholder and permanently overwrites the original value. This only arises with future or corrupted data, which current writers do not produce, so it does not reopen finding 5 as scoped ('on read'). The 'never rewrites stored bytes' assertion does cover only read, not save.",
+        "regression_test": "Non-blocking before any future schema bump: keep unknown energy objects verbatim through decode and encode, or refuse to overwrite them on save. Add a load, mutate, save regression. Until then, do not describe this as lossless for future-schema energy."
+      }
+    },
+    {
+      "id": "P02-ARCHIVE-NATIVE-COVERAGE",
+      "title": "Complete held-energy archive native regression coverage",
+      "severity": "P3",
+      "kind": "software",
+      "status": "confirmed",
+      "failedRepairs": 0,
+      "failedRepairAttempts": [],
+      "files": [
+        "tests/native/main.swift"
+      ],
+      "instructions": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change.",
+      "observations": [
+        {
+          "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+          "actor": null,
+          "status": "open",
+          "checks": [
+            {
+              "role": "claude",
+              "status": "persists",
+              "location": "change.diff:262-280; .build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:364-365,78-81",
+              "evidence": "The code is correct on reading, but the new native assertions leave parts of the claims untested. The save/reload regression asserts only verified `wholeWorkoutEnergy`, not `unverifiedWholeWorkoutEnergy`. No test covers trim then reject; the 'held energy removal' check sets the archive by hand and asserts only that the token changed, not that the field is nil. There is also no token assertion for a `wholeWorkoutEnergy`-only change. The doc's 'or after trim archival' claim therefore has no direct regression.",
+              "regression_test": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change."
+            }
+          ]
+        }
+      ],
+      "currentAssessment": {
+        "status": "confirmed",
+        "source": "docs/activity-v2-windows-energy-recheck.json",
+        "revision": "e748057d644dbc1bec27a675f179ad73a0608374",
+        "location": "change.diff:262-280; .build/windows-resume/energy-review-repair/ios/App/App/RecorderCore.swift:364-365,78-81",
+        "evidence": "The code is correct on reading, but the new native assertions leave parts of the claims untested. The save/reload regression asserts only verified `wholeWorkoutEnergy`, not `unverifiedWholeWorkoutEnergy`. No test covers trim then reject; the 'held energy removal' check sets the archive by hand and asserts only that the token changed, not that the field is nil. There is also no token assertion for a `wholeWorkoutEnergy`-only change. The doc's 'or after trim archival' claim therefore has no direct regression.",
+        "regression_test": "Add a native regression that trims a held record, saves and reloads it, asserts `unverifiedWholeWorkoutEnergy` survives, rejects, and asserts the field is nil and is still nil after another save and reload. Add a token assertion for a `wholeWorkoutEnergy` change."
+      }
+    }
+  ],
+  "reconciliation": {
+    "checkpoint": "6272027",
+    "date": "2026-11-02",
+    "source": "27273fb",
+    "policy": "Preserve original severities and provisional history. No unvalidated seed counter authorizes Codex escalation; zero is verified repair count, not assertion that no historical attempts occurred. Current open software remains release blocking. Device gate distinct.",
+    "counts": {
+      "resolved": 10,
+      "confirmed": 17,
+      "device_required": 1
+    },
+    "independentGate": "BLOCKED: fresh Claude runner review has 20 findings; split classification is disputed, not independently approved",
+    "note": "Original phase-01 severities/history retained; two newly discovered phase-02 P3 follow-ups have zero failed primary repairs. Qualified static energy pass is not full phase acceptance."
+  },
+  "phase1ApplicationRevision": "27273fb55cfc40a99e9dc0286db43cda4641b556",
+  "windowsCodeCheckpoint": "b69aee03d7dfa4f313fe84874a1290932094f623"
+}

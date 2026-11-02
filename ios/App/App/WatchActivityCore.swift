@@ -78,8 +78,21 @@ struct WatchActivityTransfer: Codable, Equatable {
     // Readings from the active time of this ride, in order. Absent from older
     // builds and when the sensor gave nothing: never filled in.
     var heartRate: [WatchHeartRateSample]?
+    var energy: ActivityEnergy?
     var pausePeriods: [WatchPausePeriod]?
     var indoor: Bool?
+    // Energy-only enrichment (schema 4). `energyTargetID` identifies the base ride;
+    // `energyRevision` is monotone and starts at 1 on the base ride. These optional
+    // fields leave schema 1–3 payloads byte-compatible.
+    var energyTargetID: String?
+    var energyRevision: Int?
+    var energyWorkoutExternalUUID: String?
+    var energySessionIDs: [String]?
+
+    // 4 is the energy-only enrichment schema. Old phones see `schema > currentSchema`
+    // and defer it instead of importing a phantom ride; normal rides stay schema 3.
+    static let energySchema = 4
+    var isEnergyEnrichment: Bool { schema == WatchActivityTransfer.energySchema }
 
     init(id: String, ownerID: String?, activity: String, startedAt: Double, endedAt: Double,
          activeSeconds: Double, points: [WatchPoint], trailID: String? = nil, trailName: String? = nil,
@@ -87,11 +100,18 @@ struct WatchActivityTransfer: Codable, Equatable {
          schema: Int = WatchActivityTransfer.currentSchema, deviceID: String? = nil,
          movingSeconds: Double? = nil, elevationGainMeters: Double? = nil,
          elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil,
-         heartRate: [WatchHeartRateSample]? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil) {
+         heartRate: [WatchHeartRateSample]? = nil, energy: ActivityEnergy? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil,
+         energyTargetID: String? = nil, energyRevision: Int? = nil,
+         energyWorkoutExternalUUID: String? = nil, energySessionIDs: [String]? = nil) {
         self.schema = schema
         self.heartRate = heartRate
+        self.energy = energy?.validated
         self.pausePeriods = pausePeriods
         self.indoor = indoor
+        self.energyTargetID = energyTargetID
+        self.energyRevision = energyRevision
+        self.energyWorkoutExternalUUID = energyWorkoutExternalUUID
+        self.energySessionIDs = energySessionIDs
         self.equipmentID = equipment?.id
         self.equipmentName = equipment?.name
         self.equipmentKind = equipment?.kind
@@ -142,8 +162,13 @@ extension WatchActivityTransfer {
         equipmentName = try c.decodeIfPresent(String.self, forKey: .equipmentName)
         equipmentKind = try c.decodeIfPresent(String.self, forKey: .equipmentKind)
         heartRate = try? c.decodeIfPresent([WatchHeartRateSample].self, forKey: .heartRate)
+        energy = (try? c.decodeIfPresent(ActivityEnergy.self, forKey: .energy))?.validated
         pausePeriods = try? c.decodeIfPresent([WatchPausePeriod].self, forKey: .pausePeriods)
         indoor = try? c.decodeIfPresent(Bool.self, forKey: .indoor)
+        energyTargetID = try? c.decodeIfPresent(String.self, forKey: .energyTargetID)
+        energyRevision = try? c.decodeIfPresent(Int.self, forKey: .energyRevision)
+        energyWorkoutExternalUUID = try? c.decodeIfPresent(String.self, forKey: .energyWorkoutExternalUUID)
+        energySessionIDs = try? c.decodeIfPresent([String].self, forKey: .energySessionIDs)
     }
     // The bike as an equipment reference, when its fields are usable. Invalid
     // equipment is ignored, never a reason to reject the ride.
@@ -355,6 +380,7 @@ enum WatchActivityImport {
         trip.id = transfer.id.lowercased()
         trip.source = "watch"
         trip.recordingMode = "watch"
+        trip.timezone = TimeZone.current.identifier
         trip.state = "finished"
         trip.endedAt = transfer.endedAt
         // Active time is clamped to the elapsed window: a payload cannot claim
@@ -367,7 +393,27 @@ enum WatchActivityImport {
         details.indoor = transfer.indoor == true ? true : nil
         let paused = WatchHeartRate.cleaned(transfer.pausePeriods ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt)
         let series = ActivityHeartRate(samples: WatchHeartRate.cleaned(transfer.heartRate ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt, paused: paused), pausePeriods: paused)
-        if heartRateVerified { details.heartRate = series } else { details.unverifiedHeartRate = series }
+        if heartRateVerified {
+            details.heartRate = series
+            details.energy = transfer.energy?.validated
+        } else {
+            details.unverifiedHeartRate = series
+            details.unverifiedEnergy = transfer.energy?.validated
+        }
+        // A schema 3 ride from this producer declares the HealthKit workout it came
+        // from; that is the only thing that authorizes a later energy-only update.
+        // Old records without it are never mutated by enrichment.
+        if let externalUUID = transfer.energyWorkoutExternalUUID, UUID(uuidString: externalUUID) != nil {
+            details.energyBinding = WatchEnergyBinding(
+                ownerID: WatchOwnership.normalize(transfer.ownerID),
+                deviceID: transfer.deviceID,
+                startedAt: transfer.startedAt,
+                endedAt: transfer.endedAt,
+                externalUUID: externalUUID,
+                sessionIDs: transfer.energySessionIDs,
+                revision: max(1, transfer.energyRevision ?? 1),
+                consent: heartRateVerified ? "owner" : nil)
+        }
         if let ref = transfer.equipmentRef { trip.assignEquipment([ref]) }
         if let trailID = transfer.trailID, UUID(uuidString: trailID) != nil {
             details.mtbTrailID = trailID.lowercased()
@@ -388,9 +434,10 @@ enum WatchActivityImport {
     }
 
     // A schema newer than this build is not a bad ride: the phone waits for its own
-    // update instead of telling the Watch to give up.
+    // update instead of telling the Watch to give up. Schema 4 (energy-only) is
+    // supported by this build, so only schema > 4 is deferred.
     static func isFromNewerBuild(_ transfer: WatchActivityTransfer) -> Bool {
-        transfer.schema > WatchActivityTransfer.currentSchema
+        transfer.schema > WatchActivityTransfer.energySchema
     }
 
     static func metrics(for transfer: WatchActivityTransfer) -> WatchRideMetrics? {
@@ -492,6 +539,9 @@ enum WatchPaths {
     static var inboxDirectory: URL { base.appendingPathComponent("WatchInbox", isDirectory: true) }
     // Files WatchConnectivity is currently copying; removed once the phone acks.
     static var stagingDirectory: URL { base.appendingPathComponent("Sending", isDirectory: true) }
+    // Durable late-finalization jobs that must survive process death and base ride
+    // deletion until HealthKit finishes and the energy enrichment is enqueued.
+    static var energyJobDirectory: URL { base.appendingPathComponent("EnergyJobs", isDirectory: true) }
 
     static func excludedFromBackup(_ url: URL) {
         var values = URLResourceValues()
@@ -529,6 +579,10 @@ struct WatchRideMeta: Codable, Equatable {
     var pausedAt: Double? = nil
     var pausePeriods: [WatchPausePeriod]? = nil
     var heartRateCount: Int? = nil
+    // Per-workout-session cumulative energy readings, and the id of the session
+    // currently being collected (nil for older drafts or before a workout started).
+    var energySessions: [WatchEnergySession]? = nil
+    var activeEnergySessionID: String? = nil
 }
 
 struct WatchRideDraft {
@@ -551,6 +605,9 @@ struct WatchRideDraft {
     var endedAt: Double?
     var queued: Bool
     private(set) var analyzer: WatchTrackAnalyzer
+    // Per-workout-session cumulative energy, durable across pause/system-end/restart.
+    var energySessions: [WatchEnergySession]
+    var activeEnergySessionID: String?
 
     var points: [WatchPoint] { analyzer.points }
     var metrics: WatchRideMetrics { analyzer.metrics }
@@ -576,6 +633,8 @@ struct WatchRideDraft {
         self.endedAt = nil
         self.queued = false
         self.analyzer = WatchTrackAnalyzer(activity: activity)
+        self.energySessions = []
+        self.activeEnergySessionID = nil
     }
 
     init(meta: WatchRideMeta, points: [WatchPoint], heartRate: [WatchHeartRateSample] = []) {
@@ -603,6 +662,8 @@ struct WatchRideDraft {
         // A fix may carry a later segment than the meta if the process stopped
         // between the two writes; the fixes win.
         segment = max(segment, points.last?.segment ?? 0)
+        energySessions = meta.energySessions ?? []
+        activeEnergySessionID = meta.activeEnergySessionID
     }
 
     var meta: WatchRideMeta {
@@ -612,12 +673,55 @@ struct WatchRideDraft {
                       equipmentID: equipment?.id, equipmentName: equipment?.name, equipmentKind: equipment?.kind,
                       ownerID: ownerID, ownerCaptured: ownerCaptured, indoor: indoor ? true : nil,
                       pausedAt: pausedAt, pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods,
-                      heartRateCount: heartRate.count)
+                      heartRateCount: heartRate.count,
+                      energySessions: energySessions.isEmpty ? nil : energySessions,
+                      activeEnergySessionID: activeEnergySessionID)
     }
 
     // Anything that ran. Too little to keep is reported on screen, never dropped quietly.
     var isKeepable: Bool { points.count >= 2 || !heartRate.isEmpty || activeSeconds >= WatchTransferLimits.minimumSecondsWithoutRoute }
     var heartRateSummary: WatchHeartRateSummary? { WatchHeartRate.summary(heartRate, paused: pausePeriods) }
+
+    // A fresh HK workout session opens a new measured segment with its own identity.
+    mutating func beginEnergySession(at now: Double) {
+        let session = WatchEnergySession(segment: segment, startedAt: now)
+        energySessions.append(session)
+        activeEnergySessionID = session.id
+    }
+
+    // Recovery rejoins the SAME builder: the existing session identity is reused so
+    // later cumulative totals replace, never add, alongside a replacement session.
+    mutating func recoverEnergySession(at now: Double) {
+        guard let id = activeEnergySessionID,
+              let index = energySessions.firstIndex(where: { $0.id == id }), !energySessions[index].finalized else {
+            beginEnergySession(at: now)
+            return
+        }
+    }
+
+    mutating func applyEnergy(_ reading: WatchEnergyReading) {
+        guard let id = activeEnergySessionID else { return }
+        applyEnergy(reading, sessionID: id)
+    }
+
+    mutating func applyEnergy(_ reading: WatchEnergyReading, sessionID: String) {
+        guard let index = energySessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        energySessions[index] = WatchEnergy.applying(reading, to: energySessions[index])
+    }
+
+    mutating func finalizeEnergySession(at now: Double) {
+        guard let id = activeEnergySessionID else { return }
+        finalizeEnergySession(id: id, at: now)
+    }
+
+    mutating func finalizeEnergySession(id: String, at now: Double) {
+        guard let index = energySessions.firstIndex(where: { $0.id == id }) else { return }
+        energySessions[index] = WatchEnergy.finalizing(energySessions[index], endedAt: now)
+    }
+
+    // The snapshot carried on the base ride: available cumulative stats, still
+    // pending final HealthKit finalization.
+    var energySnapshot: ActivityEnergy? { WatchEnergy.activityEnergy(energySessions, state: "pending") }
 
     // A delayed reading from inside a pause belongs to no recorded time.
     @discardableResult
@@ -746,7 +850,11 @@ struct WatchRideDraft {
             elevationGainMeters: metrics.elevationGainMeters, elevationLossMeters: metrics.elevationLossMeters,
             appVersion: appVersion, equipment: equipment,
             heartRate: heartRate.isEmpty ? nil : heartRate,
-            pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods, indoor: indoor ? true : nil)
+            energy: energySnapshot,
+            pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods, indoor: indoor ? true : nil,
+            energyRevision: 1,
+            energyWorkoutExternalUUID: id,
+            energySessionIDs: energySessions.isEmpty ? nil : energySessions.map { $0.id })
     }
 }
 
@@ -1552,7 +1660,7 @@ struct WatchInboxState: Codable, Equatable {
     }
 
     func summaries() -> [WatchParkedSummary] {
-        parked.map { entry in
+        parked.filter { !$0.transfer.isEnergyEnrichment }.map { entry in
             WatchParkedSummary(id: entry.transfer.id, activity: entry.transfer.activity,
                                startedAt: entry.transfer.startedAt, endedAt: entry.transfer.endedAt,
                                pointCount: entry.transfer.points.count,
@@ -1604,6 +1712,351 @@ final class WatchInboxStore {
         try backend.write(try JSONEncoder().encode(state), to: inboxPath, protection: true)
     }
 }
+
+
+// MARK: - Watch measured energy (producer)
+
+// Active and resting (basal) energy come from HKLiveWorkoutBuilder statistics.
+// One ride spans one or more HK workout sessions: a recovered session rejoins the
+// SAME builder, while a replacement session (after the system ended a workout, or
+// a failed collection) is a NEW builder. Each session contributes at most once, so
+// a repeated cumulative total replaces that session's reading instead of adding.
+
+struct WatchEnergySession: Codable, Equatable {
+    var id: String
+    // The ride segment the session began in. A recovered session keeps its original
+    // id and segment; a replacement session gets a fresh id and segment.
+    var segment: Int
+    var startedAt: Double
+    var endedAt: Double?
+    var activeKcal: Double?
+    var basalKcal: Double?
+    var activeMeasured: Bool
+    var basalMeasured: Bool
+    var finalized: Bool
+
+    init(id: String = UUID().uuidString, segment: Int, startedAt: Double) {
+        self.id = id
+        self.segment = segment
+        self.startedAt = startedAt
+        self.endedAt = nil
+        self.activeKcal = nil
+        self.basalKcal = nil
+        self.activeMeasured = false
+        self.basalMeasured = false
+        self.finalized = false
+    }
+}
+
+struct WatchEnergyReading: Equatable {
+    var activeKcal: Double?
+    var basalKcal: Double?
+    var activeMeasured: Bool
+    var basalMeasured: Bool
+}
+
+enum WatchEnergy {
+    static let maximumKcal = 20_000.0
+    static let windowTolerance = 2.0
+
+    static func kilocalories(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0, value <= maximumKcal else { return nil }
+        return value
+    }
+
+    static func reading(activeKcal: Double?, basalKcal: Double?) -> WatchEnergyReading {
+        let active = kilocalories(activeKcal)
+        let basal = kilocalories(basalKcal)
+        return WatchEnergyReading(activeKcal: active, basalKcal: basal,
+                                  activeMeasured: active != nil, basalMeasured: basal != nil)
+    }
+
+    // A repeated cumulative total from the same builder replaces, never adds.
+    static func applying(_ reading: WatchEnergyReading, to session: WatchEnergySession) -> WatchEnergySession {
+        var next = session
+        if reading.activeMeasured {
+            next.activeKcal = reading.activeKcal
+            next.activeMeasured = true
+        }
+        if reading.basalMeasured {
+            next.basalKcal = reading.basalKcal
+            next.basalMeasured = true
+        }
+        return next
+    }
+
+    static func finalizing(_ session: WatchEnergySession, endedAt: Double) -> WatchEnergySession {
+        var next = session
+        next.endedAt = endedAt
+        next.finalized = true
+        return next
+    }
+
+    // A complete aggregate requires every recorded segment to carry the reading.
+    static func activeKcal(_ sessions: [WatchEnergySession]) -> Double? {
+        guard !sessions.isEmpty, sessions.allSatisfy(\.activeMeasured) else { return nil }
+        return sessions.reduce(0) { $0 + ($1.activeKcal ?? 0) }
+    }
+
+    static func basalKcal(_ sessions: [WatchEnergySession]) -> Double? {
+        guard !sessions.isEmpty, sessions.allSatisfy(\.basalMeasured) else { return nil }
+        return sessions.reduce(0) { $0 + ($1.basalKcal ?? 0) }
+    }
+
+    // Total workout energy is active + resting, only when BOTH were measured in
+    // every segment. HKWorkout.totalEnergyBurned is ACTIVE energy, never the sum.
+    static func totalKcal(_ sessions: [WatchEnergySession]) -> Double? {
+        guard let active = activeKcal(sessions), let basal = basalKcal(sessions) else { return nil }
+        return active + basal
+    }
+
+    static func activityEnergy(_ sessions: [WatchEnergySession], state: String) -> ActivityEnergy? {
+        guard !sessions.isEmpty else { return nil }
+        var energy = ActivityEnergy()
+        energy.state = state
+        energy.active = activeKcal(sessions)
+        energy.total = totalKcal(sessions)
+        return energy
+    }
+
+    // A session measured something only when a sanitised reading landed in it.
+    static func measuredAny(_ sessions: [WatchEnergySession]) -> Bool {
+        sessions.contains { $0.activeMeasured || $0.basalMeasured }
+    }
+
+    // Confirmed finalization (endCollection succeeded or a workout was found):
+    // report final only when something was actually measured, otherwise
+    // unavailable rather than a fabricated final.
+    static func finalEnergy(_ sessions: [WatchEnergySession]) -> ActivityEnergy? {
+        guard measuredAny(sessions) else {
+            var unavailable = ActivityEnergy()
+            unavailable.state = "unavailable"
+            return unavailable
+        }
+        return activityEnergy(sessions, state: "final")
+    }
+
+    // Retries exhausted without confirmation: a session that already measured a
+    // value is carried by the base ride as pending, so the job retires without
+    // sending. Only a ride that measured nothing sends an honest unavailable.
+    static func exhaustedEnergy(_ sessions: [WatchEnergySession]) -> ActivityEnergy? {
+        guard measuredAny(sessions) else {
+            var unavailable = ActivityEnergy()
+            unavailable.state = "unavailable"
+            return unavailable
+        }
+        return nil
+    }
+}
+
+
+// A durable late-finalization job, persisted BEFORE the finished ride's only
+// durable copy (the draft) is deleted. It carries the immutable ride/session
+// identity and time bounds so a crash after hand-off but before HealthKit finishes
+// still produces exactly one enrichment, never a scan of historical activities.
+struct WatchEnergyJob: Codable, Equatable {
+    // Bounded retries before an unavailable outcome; never an infinite backoff.
+    static let retryLimit = 8
+    // The energy-only transfer id. Immutable for the lifetime of this revision, so
+    // the outbox/ack machinery never overwrites an in-flight payload under an old ack.
+    var id: String
+    var rideID: String
+    var revision: Int
+    var ownerID: String?
+    var deviceID: String?
+    var appVersion: String?
+    var activity: String
+    var startedAt: Double
+    var endedAt: Double
+    var activeSeconds: Double
+    var externalUUID: String
+    // Per-session cumulative readings captured when the ride finished. The last
+    // session's final statistics are refreshed after HealthKit finishes.
+    var sessions: [WatchEnergySession]
+    var energy: ActivityEnergy?
+    var state: String
+    var finalized: Bool
+    var enqueued: Bool
+    var attempts: Int
+    var nextAttemptAt: Double
+    var lastError: String?
+
+    init(rideID: String, revision: Int, ownerID: String?, deviceID: String?, appVersion: String?,
+         activity: String, startedAt: Double, endedAt: Double, activeSeconds: Double,
+         externalUUID: String, sessions: [WatchEnergySession],
+         energy: ActivityEnergy?, state: String, now: Double) {
+        id = UUID().uuidString
+        self.rideID = rideID
+        self.revision = revision
+        self.ownerID = WatchOwnership.normalize(ownerID)
+        self.deviceID = deviceID
+        self.appVersion = appVersion
+        self.activity = activity
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.activeSeconds = activeSeconds
+        self.externalUUID = externalUUID
+        self.sessions = sessions
+        self.energy = energy?.validated
+        self.state = state
+        finalized = false
+        enqueued = false
+        attempts = 0
+        nextAttemptAt = now + WatchTransferLimits.outageGap
+        lastError = nil
+    }
+
+    func enrichment() -> WatchActivityTransfer {
+        WatchActivityTransfer(
+            id: id, ownerID: ownerID, activity: activity, startedAt: startedAt, endedAt: endedAt,
+            activeSeconds: activeSeconds, points: [],
+            schema: WatchActivityTransfer.energySchema, deviceID: deviceID, appVersion: appVersion,
+            energy: energy, indoor: nil,
+            energyTargetID: rideID, energyRevision: revision,
+            energyWorkoutExternalUUID: externalUUID,
+            energySessionIDs: sessions.isEmpty ? nil : sessions.map { $0.id })
+    }
+
+    enum Action: Equatable {
+        case query
+        case enqueue
+        case remove
+    }
+
+    // The next durable step for this job, once it is due. Unfinalized jobs still
+    // need a HealthKit query; a finalized job that never made it to the outbox is
+    // re-enqueued (enqueue is idempotent by id); one already enqueued only needs
+    // its durable record retired.
+    func nextAction(now: Double) -> Action? {
+        guard nextAttemptAt <= now else { return nil }
+        if !finalized { return .query }
+        if !enqueued { return .enqueue }
+        return .remove
+    }
+}
+
+// Persists pending finalization jobs in a fixed location. One atomically-replaced
+// file so a crash cannot strand a job that outlived its draft.
+final class WatchEnergyJobStore {
+    let directory: URL
+    private let backend: WatchFileBackend
+
+    init(directory: URL, backend: WatchFileBackend = FileWatchBackend()) {
+        self.directory = directory
+        self.backend = backend
+    }
+
+    private var jobsPath: URL { directory.appendingPathComponent("energy-jobs.json") }
+
+    func load() -> [WatchEnergyJob] {
+        guard backend.exists(jobsPath), let data = try? backend.read(jobsPath),
+              let jobs = try? JSONDecoder().decode([WatchEnergyJob].self, from: data) else { return [] }
+        return jobs
+    }
+
+    // Throws so a failed write leaves the caller's durable state intact.
+    func save(_ jobs: [WatchEnergyJob]) throws {
+        try backend.createDirectory(directory)
+        try backend.write(try JSONEncoder().encode(jobs), to: jobsPath, protection: true)
+    }
+
+    func replace(_ job: WatchEnergyJob) throws {
+        var jobs = load()
+        jobs.removeAll { $0.id == job.id || $0.rideID == job.rideID }
+        jobs.append(job)
+        try save(jobs)
+    }
+
+    func remove(id: String) throws {
+        var jobs = load()
+        guard jobs.contains(where: { $0.id == id }) else { return }
+        jobs.removeAll { $0.id == id }
+        try save(jobs)
+    }
+}
+
+
+
+// Pure validation/application of an energy-only enrichment against a base ride.
+// Shared so the phone's importer and the native tests use exactly the same rules.
+enum WatchEnergyImport {
+    enum Outcome {
+        case applied(RecordedActivity)
+        case duplicate
+        case rejected(String)
+    }
+
+    // Structural validation only: enough to reject a payload that can never import,
+    // without looking up the base ride. The owner/device/window/revision checks live
+    // in `apply`.
+    static func structuralIssue(_ transfer: WatchActivityTransfer) -> String? {
+        guard transfer.isEnergyEnrichment else { return "not-energy-enrichment" }
+        guard UUID(uuidString: transfer.id) != nil else { return "invalid-identifier" }
+        guard let targetID = transfer.energyTargetID, UUID(uuidString: targetID) != nil else { return "invalid-target" }
+        guard let revision = transfer.energyRevision, revision >= 1 else { return "invalid-revision" }
+        guard let external = transfer.energyWorkoutExternalUUID, UUID(uuidString: external) != nil else { return "invalid-external-uuid" }
+        return nil
+    }
+
+    static func apply(_ transfer: WatchActivityTransfer, to trip: RecordedActivity, now: Double) -> Outcome {
+        guard transfer.isEnergyEnrichment else { return .rejected("not-energy-enrichment") }
+        guard let targetID = transfer.energyTargetID, ActivityIdentity.matches(targetID, trip.id) else {
+            return .rejected("wrong-target")
+        }
+        guard let revision = transfer.energyRevision, revision >= 1 else { return .rejected("invalid-revision") }
+        guard let externalUUID = transfer.energyWorkoutExternalUUID, UUID(uuidString: externalUUID) != nil else {
+            return .rejected("invalid-external-uuid")
+        }
+        guard let binding = trip.details?.energyBinding else { return .rejected("unbound-target") }
+        guard binding.externalUUID == externalUUID else { return .rejected("wrong-external-uuid") }
+        guard WatchOwnership.normalize(binding.ownerID) == WatchOwnership.normalize(transfer.ownerID) else {
+            return .rejected("wrong-owner")
+        }
+        guard binding.deviceID == transfer.deviceID else { return .rejected("wrong-device") }
+        if let start = binding.startedAt, abs(start - transfer.startedAt) > WatchEnergy.windowTolerance {
+            return .rejected("wrong-window")
+        }
+        if let end = binding.endedAt, abs(end - transfer.endedAt) > WatchEnergy.windowTolerance {
+            return .rejected("wrong-window")
+        }
+        // Stale, out-of-order or repeated revisions never move a record backwards.
+        guard revision > binding.revision else { return .duplicate }
+        guard let energy = transfer.energy?.validated else { return .rejected("invalid-energy") }
+
+        var updated = trip
+        var details = updated.details ?? ActivityDetails()
+        // A trimmed target keeps whole-workout values in the archive; enrichment must
+        // never pretend the updated energy is for the visible subset.
+        let trimmed = details.wholeWorkoutEnergy != nil || details.unverifiedWholeWorkoutEnergy != nil
+        switch binding.consent {
+        case "rejected":
+            return .duplicate
+        case "owner", "claimed":
+            if trimmed {
+                details.wholeWorkoutEnergy = energy
+                details.unverifiedWholeWorkoutEnergy = nil
+            } else {
+                details.energy = energy
+                details.unverifiedEnergy = nil
+            }
+        default:
+            // Still unclaimed: held, never shown, never auto-authorized.
+            if trimmed {
+                details.unverifiedWholeWorkoutEnergy = energy
+            } else {
+                details.unverifiedEnergy = energy
+            }
+        }
+        var nextBinding = binding
+        nextBinding.revision = revision
+        nextBinding.sessionIDs = transfer.energySessionIDs ?? binding.sessionIDs
+        details.energyBinding = nextBinding
+        updated.details = details
+        updated.updatedAt = now
+        return .applied(updated)
+    }
+}
+
 
 // __APPEND__
 

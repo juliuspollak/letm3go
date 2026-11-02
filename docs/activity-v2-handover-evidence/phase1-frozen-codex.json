@@ -1,0 +1,54 @@
+{
+  "pass": false,
+  "summary": "Phase 01 remains incomplete. The frozen source implements substantial repairs, including the sheet, photo-first gallery, data-URI thumbnails, selected native markers, durable asset identity and busy-state cancellation. Remaining software blockers are listed below. This review was read-only; no tests, builds, device interaction or actual November ride inspection were performed. Sections 4–7 remain deferred.",
+  "findings": [
+    {
+      "severity": "P1",
+      "location": "src/components/ActivityDetail.jsx:121; src/lib/photoSuggestions.js:73; src/components/PhotoSuggestions.jsx:171",
+      "evidence": "Every Load more appends base64 thumbnails to the retained suggestions array, and the component renders every accumulated tile. Neither thumbnail retention nor DOM size has a bound. Paging bounds individual bridge responses but does not bound gallery memory.",
+      "required_fix": "Implement bounded thumbnail retention and windowed rendering while preserving lightweight selection metadata. Test hundreds of candidates across repeated page loads and verify retained thumbnails and rendered tiles remain bounded."
+    },
+    {
+      "severity": "P2",
+      "location": "ios/App/App/ActivityServices.swift:514-559; src/components/ActivityDetail.jsx:173",
+      "evidence": "The main picker returns failed items only as anonymous message strings. Native picker results and providers are discarded after completion, and ActivityDetail displays a summary without a retry action. Users cannot identify or retry individual failed selections. This leaves the general import requirements unresolved despite the suggestions retry workflow.",
+      "required_fix": "Return identifiable per-item outcomes and provide a controlled retry path for failed picker items, retaining successes and original ordering. Add integration coverage for partial picker success followed by retry."
+    },
+    {
+      "severity": "P2",
+      "location": "ios/App/App/ActivityServices.swift:544; ios/App/App/ActivityServices.swift:210",
+      "evidence": "With picker-only access, PHAsset is deliberately unavailable. The import passes only UIImage and assetIdentifier; attachPhoto obtains captureTime exclusively from asset.creationDate. Thus the supported permission-free picker path loses the selected original's capture timestamp and available location provenance.",
+      "required_fix": "Read available original metadata through the explicitly selected item provider without requesting full library access. Persist truthful capture time and location provenance, leaving unavailable fields explicitly unknown. Test picker imports without Photos authorization."
+    },
+    {
+      "severity": "P2",
+      "location": "src/components/PhotoSuggestions.jsx:210",
+      "evidence": "The preview declares aria-modal=true but has no focus entry, focus containment, background inertness, Escape handling or focus restoration. Opening it leaves keyboard focus on the obscured Preview button, and Tab can continue through underlying controls.",
+      "required_fix": "Use an accessible dialog with focus entry and containment, Escape dismissal and focus restoration. Add keyboard interaction regression tests."
+    },
+    {
+      "severity": "P2",
+      "location": "src/components/AppleMap.jsx:241; ios/App/App/AppleMaps.swift:1875",
+      "evidence": "Opening fullscreen calls unembed, which removes and destroys the embedded MKMapView. The fullscreen controller receives no initial camera and fits the entire route. Closing fullscreen resets embeddedOnce and re-embeds with preserveViewport=false. A user's zoom and pan are therefore lost across this supported transition.",
+      "required_fix": "Preserve and transfer the actual camera across embedded/fullscreen transitions, or retain the authoritative map instance. Test pan/zoom, fullscreen open/close and return without route refitting."
+    },
+    {
+      "severity": "P2",
+      "location": "src/components/ActivityDetail.jsx:61; src/components/JourneyMap.jsx:18",
+      "evidence": "fullPreview depends on the entire trip object, so each imported photo rebuilds the unchanged route. segmentLayers also depends on trip, JourneyMap reconstructs mapPayload on every render, and AppleMap serializes the complete payload again. Bulk imports still repeatedly process a long Watch track on the UI path.",
+      "required_fix": "Cache geometry independently of photo and metadata changes, stabilize route payload construction and avoid repeated route serialization. Verify construction and serialization counts with a long-track multi-photo import fixture."
+    },
+    {
+      "severity": "P2",
+      "location": "src/lib/mapDiagnostics.js:24; src/components/AppleMap.jsx:156",
+      "evidence": "All maps register the same snapshot function in a Set, so overlapping registrations collapse; unmounting either removes the diagnostics reader while another remains. Dialog restoration calls hide without recording it, and fullscreen native lifecycle operations are not represented consistently. Counters cannot substantiate total lifecycle traffic.",
+      "required_fix": "Use unique registration tokens or reference counts and instrument actual bridge lifecycle operations consistently. Test overlapping map lifetimes and dialog/fullscreen transitions."
+    },
+    {
+      "severity": "P2",
+      "location": "docs/activity-experience-v2-release-gates.md; docs/activity-experience-v2-progress.md:38",
+      "evidence": "Delivery documents remain contradictory and stale: release gates describe implemented pin highlighting as absent, call unbounded gallery memory a hardware gate, and claim no stored-data changes despite persisted assetID/timezone fields. R3-03 is marked done although picker retry is absent. The appended supervisor rejection does not reconcile these claims.",
+      "required_fix": "Reconcile all delivery documents with the frozen implementation and unresolved findings. Record software omissions as blockers, document additive persistence and rollback accurately, and distinguish historical test results from verification of the final reviewed source."
+    }
+  ]
+}

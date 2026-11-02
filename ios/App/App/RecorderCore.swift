@@ -41,6 +41,10 @@ struct RecordedActivity: Codable {
     var distanceMeters: Double = 0
     var source = "device"
     var title: String
+    // Captured when the journey starts, so photo timestamps are described in the
+    // timezone the activity happened in rather than wherever the phone is now.
+    // Optional: older saved journeys predate the field and fall back to the device.
+    var timezone: String?
     var recordingMode: String?
     var details: ActivityDetails?
     var equipment: [EquipmentRef]?
@@ -65,9 +69,39 @@ struct RecordedActivity: Codable {
     }
     // The person's answer about held readings. Returns false when there were none.
     mutating func resolveUnverifiedHeartRate(accept: Bool) -> Bool {
-        guard var metadata = details, let held = metadata.unverifiedHeartRate else { return false }
-        if accept { metadata.heartRate = held }
+        guard var metadata = details else { return false }
+        let held = metadata.unverifiedHeartRate
+        let rejectsHeldEnergy = !accept && (metadata.unverifiedEnergy != nil || metadata.unverifiedWholeWorkoutEnergy != nil)
+        guard held != nil || rejectsHeldEnergy else { return false }
+        if accept, let held { metadata.heartRate = held }
         metadata.unverifiedHeartRate = nil
+        if !accept {
+            metadata.unverifiedEnergy = nil
+            metadata.unverifiedWholeWorkoutEnergy = nil
+            // A combined reject persists the energy refusal so a late enrichment
+            // cannot reintroduce the held reading the rider just removed.
+            metadata.energyBinding?.consent = "rejected"
+        }
+        details = metadata
+        return true
+    }
+    // The rider's dedicated answer about held measured energy. Heart-rate
+    // acceptance never reaches this: only an explicit energy accept or reject may
+    // move or discard the quarantined reading, and a rejection is persisted so a
+    // late enrichment cannot reintroduce it.
+    mutating func resolveUnverifiedEnergy(accept: Bool) -> Bool {
+        guard var metadata = details else { return false }
+        let held = metadata.unverifiedEnergy ?? metadata.unverifiedWholeWorkoutEnergy
+        guard held != nil else { return false }
+        if accept {
+            if metadata.unverifiedEnergy != nil { metadata.energy = metadata.unverifiedEnergy }
+            if metadata.unverifiedWholeWorkoutEnergy != nil { metadata.wholeWorkoutEnergy = metadata.unverifiedWholeWorkoutEnergy }
+            metadata.energyBinding?.consent = "claimed"
+        } else {
+            metadata.energyBinding?.consent = "rejected"
+        }
+        metadata.unverifiedEnergy = nil
+        metadata.unverifiedWholeWorkoutEnergy = nil
         details = metadata
         return true
     }
@@ -348,6 +382,12 @@ enum RouteTrimming {
         trip.updatedAt = Date().timeIntervalSince1970
         let trimmedQuality = trip.routeQualitySummary()
         trip.updateDetails { $0.routeQuality = trimmedQuality }
+        // A trim overwrites the same journal ID: retain whole-workout source
+        // measurements durably, but never display them as subset energy.
+        trip.details?.wholeWorkoutEnergy = original.details?.energy ?? original.details?.wholeWorkoutEnergy
+        trip.details?.unverifiedWholeWorkoutEnergy = original.details?.unverifiedEnergy ?? original.details?.unverifiedWholeWorkoutEnergy
+        trip.details?.energy = nil
+        trip.details?.unverifiedEnergy = nil
         trip.details?.heartRate = original.details?.heartRate?.trimmed(start: first.timestamp, end: last.timestamp)
         trip.details?.unverifiedHeartRate = original.details?.unverifiedHeartRate?.trimmed(start: first.timestamp, end: last.timestamp)
         // Named endpoints and classification weights reflect the untrimmed
@@ -402,6 +442,16 @@ enum ManualDraftClosure {
 // arrays. Native journal mutation paths advance updatedAt; live/provisional fields
 // are included explicitly. Account identity is part of the cache boundary.
 enum RecorderHistoryFingerprint {
+    private static func energyKey(_ energy: ActivityEnergy?) -> String {
+        guard let energy else { return "absent" }
+        return [String(energy.schema), energy.unit, energy.source, energy.state,
+                energy.active.map { String($0) } ?? "missing", energy.total.map { String($0) } ?? "missing"].joined(separator: ":")
+    }
+    private static func bindingKey(_ binding: WatchEnergyBinding?) -> String {
+        guard let binding else { return "absent" }
+        return [binding.ownerID ?? "", binding.deviceID ?? "", binding.externalUUID ?? "",
+                String(binding.revision), binding.consent ?? ""].joined(separator: ":")
+    }
     static func token(_ trips: [RecordedActivity], owner: String) -> String {
         let rows = trips.map { trip -> [String] in
             var fields = [trip.id, trip.source, trip.title, trip.activity, trip.state, trip.recordingMode ?? ""]
@@ -409,6 +459,9 @@ enum RecorderHistoryFingerprint {
             fields += [String(trip.accumulatedSeconds), String(trip.distanceMeters), String(trip.details?.provisional ?? false), String(trip.details?.continuationEndsAt ?? 0)]
             fields += [String(trip.details?.photos.count ?? 0), String(trip.details?.heartRate?.samples.count ?? 0), String(trip.details?.unverifiedHeartRate?.samples.count ?? 0)]
             fields += [String(trip.details?.visibleRouteStart ?? -1), String(trip.details?.visibleRouteEnd ?? -1), trip.details?.coverPhotoID ?? ""]
+            fields += [energyKey(trip.details?.energy), energyKey(trip.details?.unverifiedEnergy),
+                       energyKey(trip.details?.wholeWorkoutEnergy), energyKey(trip.details?.unverifiedWholeWorkoutEnergy)]
+            fields += [bindingKey(trip.details?.energyBinding)]
             return fields
         }
         let data = (try? JSONEncoder().encode([[owner]] + rows)) ?? Data()
@@ -419,6 +472,27 @@ enum RecorderHistoryFingerprint {
 enum ActivityIdentity {
     static func canonical(_ id: String) -> String { UUID(uuidString: id)?.uuidString ?? id }
     static func matches(_ a: String, _ b: String) -> Bool { canonical(a) == canonical(b) }
+}
+
+// Local "not this photo" marks are reversible UI state, but the source asset IDs
+// are private to one person's library. The key therefore includes the signed-in
+// owner, and sign-out clears every mark so the next account can never inherit
+// local photo identifiers from the previous one.
+enum PhotoSuggestionSkips {
+    static let prefix = "letm3go-photo-skips-"
+    static func key(ownerID: String?, activityID: String) -> String {
+        "\(prefix)\((ownerID ?? "anonymous").lowercased())-\(activityID)"
+    }
+    static func legacyKey(activityID: String) -> String { "\(prefix)\(activityID)" }
+    static func remove(ownerID: String?, activityID: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key(ownerID: ownerID, activityID: activityID))
+        defaults.removeObject(forKey: legacyKey(activityID: activityID))
+    }
+    static func clearAll(defaults: UserDefaults = .standard) {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
 }
 
 final class RecordingStorage {
@@ -551,6 +625,127 @@ struct StopInterval: Codable, Equatable {
     var end: Double
 }
 
+// Private measured workout energy. Optional at every persistence boundary so
+// old recordings decode unchanged. Unknown units and invalid values never turn
+// into calories; absence is distinct from a measured zero.
+// Preserve optional data from newer writers across unrelated journal edits.
+// Unsupported values remain opaque and never participate in calorie display.
+indirect enum OpaqueEnergyJSON: Codable, Equatable {
+    case object([String: OpaqueEnergyJSON]), array([OpaqueEnergyJSON]), string(String), number(Decimal), bool(Bool), null
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? c.decode(Decimal.self) { self = .number(v) }
+        else if let v = try? c.decode(String.self) { self = .string(v) }
+        else if let v = try? c.decode([String: OpaqueEnergyJSON].self) { self = .object(v) }
+        else { self = .array(try c.decode([OpaqueEnergyJSON].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .object(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .string(let v): try c.encode(v)
+        case .number(let v): try c.encode(v)
+        case .bool(let v): try c.encode(v)
+        case .null: try c.encodeNil()
+        }
+    }
+}
+
+struct ActivityEnergy: Codable, Equatable {
+    var schema = 1
+    var unit = "kcal"
+    var source = "healthkit"
+    var state = "pending"
+    var active: Double?
+    var total: Double?
+    private var opaque: OpaqueEnergyJSON?
+
+    enum CodingKeys: String, CodingKey { case schema, unit, source, state, active, total }
+    init() {}
+    init(from decoder: Decoder) throws {
+        opaque = try? OpaqueEnergyJSON(from: decoder)
+        schema = 0; unit = ""; source = ""; state = "unavailable"
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self),
+              let schema = try? c.decode(Int.self, forKey: .schema), schema == 1,
+              let unit = try? c.decode(String.self, forKey: .unit), ["kcal", "J", "kJ"].contains(unit),
+              let source = try? c.decode(String.self, forKey: .source), source == "healthkit",
+              let state = try? c.decode(String.self, forKey: .state), ["pending", "final", "unavailable"].contains(state) else { return }
+        self.schema = schema; self.unit = unit; self.source = source; self.state = state
+        active = try? c.decode(Double.self, forKey: .active)
+        total = try? c.decode(Double.self, forKey: .total)
+        for key in [CodingKeys.active, .total] where c.contains(key) {
+            if (try? c.decodeNil(forKey: key)) != true, (try? c.decode(Double.self, forKey: key)) == nil {
+                self.schema = 0
+                return
+            }
+        }
+        opaque = nil
+    }
+
+    func encode(to encoder: Encoder) throws {
+        if let opaque { try opaque.encode(to: encoder); return }
+        guard schema != 0 else {
+            throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath,
+                debugDescription: "Cannot overwrite unsupported energy without its original value"))
+        }
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schema, forKey: .schema)
+        try c.encode(unit, forKey: .unit)
+        try c.encode(source, forKey: .source)
+        try c.encode(state, forKey: .state)
+        try c.encodeIfPresent(active, forKey: .active)
+        try c.encodeIfPresent(total, forKey: .total)
+    }
+
+    static func kilocalories(_ value: Double?, unit: String) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        let kcal: Double
+        switch unit {
+        case "kcal": kcal = value
+        case "J": kcal = value / 4184
+        case "kJ": kcal = value / 4.184
+        default: return nil
+        }
+        return kcal <= 20_000 ? kcal : nil
+    }
+
+    var validated: ActivityEnergy? {
+        guard schema == 1, source == "healthkit",
+              ["pending", "final", "unavailable"].contains(state),
+              ["kcal", "J", "kJ"].contains(unit) else { return nil }
+        var result = self
+        result.active = Self.kilocalories(active, unit: unit)
+        result.total = Self.kilocalories(total, unit: unit)
+        result.unit = "kcal"
+        if let active = result.active, let total = result.total, total < active { result.total = nil }
+        if state == "unavailable" { result.active = nil; result.total = nil }
+        if state == "final", result.active == nil, result.total == nil { result.state = "unavailable" }
+        return result
+    }
+}
+
+
+// Original capture binding for measured energy. Written only on NEW imports from
+// the Watch producer (a schema 3 base ride that declares an external workout id).
+// Old records without a binding are never mutated by late energy enrichment.
+struct WatchEnergyBinding: Codable, Equatable {
+    var ownerID: String?
+    var deviceID: String?
+    var startedAt: Double?
+    var endedAt: Double?
+    var externalUUID: String?
+    var sessionIDs: [String]?
+    var revision: Int = 1
+    // nil: held pending explicit consent; "owner": captured owner verified at
+    // import; "claimed": the rider explicitly accepted held energy; "rejected":
+    // the rider explicitly refused it.
+    var consent: String?
+}
+
+
 struct ActivityDetails: Codable {
     var description = ""
     var notes = ""
@@ -595,6 +790,16 @@ struct ActivityDetails: Codable {
     // Readings from a ride recorded before the Watch knew any account. Never shown or
     // counted until the person confirms they are theirs, and removed if they say not.
     var unverifiedHeartRate: ActivityHeartRate?
+    // Energy is local/private until an approved backup schema exists. Unverified
+    // body ownership is quarantined independently of heart-rate confirmation.
+    var energy: ActivityEnergy?
+    var unverifiedEnergy: ActivityEnergy?
+    // Durable source measurements after destructive route trim. Not rendered
+    // as calories for the resulting route subset and never cloud-backed up.
+    var wholeWorkoutEnergy: ActivityEnergy?
+    var unverifiedWholeWorkoutEnergy: ActivityEnergy?
+    // Binding/revision/consent captured at import; used to validate late enrichment.
+    var energyBinding: WatchEnergyBinding?
     var indoor: Bool?
     // Other records on this iPhone covering the same time. Both are kept.
     var overlaps: [WatchOverlap]?
@@ -607,6 +812,8 @@ struct ActivityPhoto: Codable {
     var longitude: Double?
     var captureTime: Double?
     var locationSource: String
+    // Account-private Photos identity; optional for existing recordings.
+    var assetID: String?
     var publicSelected = false
 }
 
@@ -2243,3 +2450,19 @@ struct LocationDiagnosticExport {
 // The Apple Watch transfer format, validation and queueing live in
 // WatchActivityCore.swift, which is compiled into the iPhone target, the watch
 // target and the native test binary so both sides cannot drift apart.
+
+// Storage is owner-specific. Never infer identical assets from nearby timestamps.
+extension ActivityDetails {
+    func containsPhotoAsset(_ identifier: String?) -> Bool {
+        guard let identifier, !identifier.isEmpty else { return false }
+        return photos.contains { $0.assetID == identifier }
+    }
+}
+
+extension ActivityPhoto {
+    // The bridge consumes URLs, not unlabelled base64 strings.
+    static func thumbnailDataURL(_ jpeg: Data?) -> String? {
+        guard let jpeg, !jpeg.isEmpty else { return nil }
+        return "data:image/jpeg;base64," + jpeg.base64EncodedString()
+    }
+}

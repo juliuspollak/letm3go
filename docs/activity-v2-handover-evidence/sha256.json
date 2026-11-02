@@ -1,0 +1,9 @@
+{
+  "attempt-summary.json": "08e7f7e1ff18c01a60c5d4d562ab37cc43c294a7b9c48de2372fc437c93f8324",
+  "current-triage.json": "87f6d8fbbd49177db79507c71319a5968665fd6572ee40b2fa1c5f8567262284",
+  "defect-ledger-tests.txt": "72b48840412eb22dd14b2b6a1f3bb37ba7cbbf97153a7784b49abe7757e34914",
+  "phase1-frozen-claude.json": "b6cf2d856b1fe063cd4245be34f1b54cb8b50e2596ac6b9d7244d0adc3bdda1f",
+  "phase1-frozen-codex.json": "6ec35bb46950c216fcace43a5a3c2ff68ed7f57e216027bf75b864ea593a39dc",
+  "phase1-frozen-summary.json": "c033f89bab15fdd05f8705b8d3f0dd97112d1374a0f1cac12155232e2256e327",
+  "revision-evidence.json": "7728f71355ba5fde7735737f28f3c8d387c78d54e83f46102bbe1c961cffff4e"
+}
