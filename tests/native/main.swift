@@ -4393,7 +4393,14 @@ do {
     incomplete.segment += 1
     incomplete.beginEnergySession(at: 1200)
     incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: nil))
-    check(WatchEnergy.activeKcal(incomplete.energySessions) == nil, "active energy is unavailable if any segment lacks active")
+    check(WatchEnergy.activeKcal(incomplete.energySessions) == 18, "active energy still sums when only resting is missing")
+    var noActive = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    noActive.beginEnergySession(at: 1000)
+    noActive.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    noActive.segment += 1
+    noActive.beginEnergySession(at: 1200)
+    noActive.applyEnergy(WatchEnergy.reading(activeKcal: nil, basalKcal: 3))
+    check(WatchEnergy.activeKcal(noActive.energySessions) == nil, "active energy is unavailable if any segment lacks active")
     check(WatchEnergy.totalKcal(incomplete.energySessions) == nil, "total is unavailable if any segment lacks resting")
     var zero = WatchRideDraft(activity: "MTB", startedAt: 1000)
     zero.beginEnergySession(at: 1000)
