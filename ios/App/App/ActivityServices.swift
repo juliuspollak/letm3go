@@ -570,67 +570,22 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     public func picker(_ picker: PHPickerViewController,didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated:true)
         guard let call = photoCall, let id = photoTripID else { return }
-        let owner = photoOwnerID
-        let group = DispatchGroup()
-        // Decode concurrently, then import on the main queue in the order the
-        // photos were chosen. Appending from completion callbacks made a
-        // multi-photo import order depend on iCloud timing.
-        var images = [UIImage?](repeating:nil,count:results.count)
-        var failures = [String?](repeating:nil,count:results.count)
-        for (index,result) in results.enumerated() {
-            guard result.itemProvider.canLoadObject(ofClass:UIImage.self) else { failures[index] = "This photo format is not supported."; continue }
-            group.enter()
-            result.itemProvider.loadObject(ofClass:UIImage.self) { object,error in
-                DispatchQueue.main.async {
-                    defer { group.leave() }
-                    guard self.photoOwnerID == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { failures[index] = "Account changed. Photo was not imported."; return }
-                    guard let image = object as? UIImage else { failures[index] = error?.localizedDescription ?? "Unable to read selected image."; return }
-                    images[index] = image
-                }
-            }
-        }
-        group.notify(queue:.main) {
+        LocationRecorder.shared.importPicked(results,tripID:id,owner:photoOwnerID) { outcome in
             self.photoCall = nil; self.photoTripID = nil; self.photoOwnerID = nil
-            guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { call.reject("Account changed."); return }
-            let allowed = PHPhotoLibrary.authorizationStatus(for:.readWrite)
-            var added = 0; var duplicates = 0; var failed: [String] = []
-            for index in results.indices {
-                guard let image = images[index] else {
-                    if let message = failures[index] { failed.append(message) }
-                    continue
-                }
-                let result = results[index]
-                let asset = (allowed == .authorized || allowed == .limited) ? result.assetIdentifier.flatMap { PHAsset.fetchAssets(withLocalIdentifiers:[$0],options:nil).firstObject } : nil
-                do {
-                    let inserted = try LocationRecorder.shared.attachPhoto(tripID:id,image:image,asset:asset,sourceAssetID:result.assetIdentifier)
-                    if inserted { added += 1 } else { duplicates += 1 }
-                }
-                catch { failed.append(error.localizedDescription) }
+            switch outcome {
+            case .failure(let error): call.reject(error.localizedDescription)
+            case .success(let summary):
+                var payload = LocationRecorder.shared.snapshot()
+                payload["photoResults"] = summary.dictionary
+                call.resolve(payload)
             }
-            if !failed.isEmpty { LocationRecorder.shared.lastError = failed.joined(separator:" ") }
-            var payload = LocationRecorder.shared.snapshot()
-            payload["photoResults"] = ["selected":results.count,"added":added,"duplicates":duplicates,"failed":failed]
-            call.resolve(payload)
         }
     }
     @objc func editPhoto(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
-        let r = LocationRecorder.shared
-        guard let storage = r.storage, let index = r.trips.firstIndex(where:{$0.id == call.getString("id")}), var metadata = r.trips[index].details,
-              let photoIndex = metadata.photos.firstIndex(where:{$0.id == call.getString("photoID")}) else { call.reject("Photo not found."); return }
-        let photo = metadata.photos[photoIndex]
-        if call.getBool("remove") == true {
-            metadata.photos.remove(at:photoIndex)
-            if metadata.coverPhotoID == photo.id { metadata.coverPhotoID = metadata.photos.first?.id }
-        } else {
-            metadata.photos[photoIndex].caption = String((call.getString("caption") ?? photo.caption).prefix(500))
-            if call.getBool("cover") == true { metadata.coverPhotoID = photo.id }
-        }
-        var trip = r.trips[index]; trip.details = metadata; trip.updatedAt = Date().timeIntervalSince1970
         do {
-            try storage.save(trip); r.trips[index] = trip
-            if call.getBool("remove") == true { try? FileManager.default.removeItem(at:storage.directory.appendingPathComponent("media").appendingPathComponent(photo.filename)) }
-            call.resolve(r.snapshot())
+            try LocationRecorder.shared.editPhoto(id:call.getString("id") ?? "",photoID:call.getString("photoID") ?? "",caption:call.getString("caption"),cover:call.getBool("cover") == true,remove:call.getBool("remove") == true)
+            call.resolve(LocationRecorder.shared.snapshot())
         } catch { call.reject(error.localizedDescription) }
     } }
 }

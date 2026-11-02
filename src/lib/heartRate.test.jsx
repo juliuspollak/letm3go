@@ -106,7 +106,7 @@ it('keeps no maximum for an unknown account, so none can pass between accounts',
  expect(savedMaximum(undefined)).toBeNull();
 });
 it('gives every activity detail entry point the signed-in account',()=>{
- const uses=['src/App.jsx','src/components/GroupedJourneyDetail.jsx'].flatMap(file=>readFileSync(file,'utf8').match(/<ActivityDetail\b[^>]{0,80}/g));
+ const uses=['src/App.jsx','src/components/GroupedJourneyDetail.jsx'].flatMap(file=>readFileSync(file,'utf8').match(/<ActivityDetailScreen\b[^>]{0,80}/g));
  expect(uses).toHaveLength(2);
  for(const use of uses)expect(use).toContain('ownerID={');
 });

@@ -1,0 +1,112 @@
+import Foundation
+var assertions = 0
+func check(_ ok: @autoclosure () -> Bool, _ message: String) { assertions += 1; if !ok() { fatalError(message) } }
+
+// MARK: Native Activity Details
+do {
+    let fixture = FileManager.default.contents(atPath: "tests/fixtures/activity-presentation.json")!
+    let object = try! JSONSerialization.jsonObject(with: fixture) as! [String: Any]
+    let decoded = try! ActivityPresentation.decode(object)
+    check(decoded.activityID == "22222222-2222-4222-8222-222222222222" && decoded.revision == 1, "presentation identity decodes")
+    check(decoded.summary.first?.value == "5.2 km" && decoded.header.local, "presentation sections decode")
+    check(decoded.photos.ordered.first?.id == "p2" && decoded.photos.items.count == 2, "cover photo leads")
+    check(decoded.heart?.runs?.count ?? 0 > 1 && decoded.heart?.zones?.rows.count == 5, "heart rate and zones decode")
+    check(decoded.segments.items.first?.name == "Rock Garden" && decoded.trim?.pointCount == 60, "segments and trim decode")
+    check(decoded.editor?.types.contains { $0.value == "MTB" } == true && decoded.diagnostics?.report.isEmpty == false, "editor and diagnostics decode")
+    // One damaged section does not close the screen.
+    var damaged = object; damaged["heart"] = "broken"; damaged["photos"] = 5
+    let survivor = try? ActivityPresentation.decode(damaged)
+    check(survivor != nil && survivor?.heart == nil && survivor?.photos.items.isEmpty == true, "a damaged section is dropped alone")
+    var foreign = object; foreign["schema"] = 2
+    check((try? ActivityPresentation.decode(foreign)) == nil, "an unknown schema is refused")
+    var headless = object; headless["header"] = nil
+    check((try? ActivityPresentation.decode(headless)) == nil, "identity is required")
+
+    var gate = ActivityPresentationGate()
+    check(gate.verdict(decoded, ownerID: nil) == .wrongAccount, "no account accepts nothing")
+    check(gate.verdict(decoded, ownerID: "other") == .wrongAccount, "another account is refused")
+    check(gate.verdict(decoded, ownerID: decoded.ownerID.uppercased()) == .accept, "owner match ignores case")
+    gate.accept(decoded)
+    check(gate.verdict(decoded, ownerID: decoded.ownerID) == .stale, "a repeated revision is stale")
+    var newer = decoded; newer.revision = 2
+    check(gate.verdict(newer, ownerID: decoded.ownerID) == .accept, "a newer revision applies")
+    gate.accept(newer)
+    check(gate.verdict(decoded, ownerID: decoded.ownerID) == .stale, "a late older revision cannot replace a newer one")
+
+    var camera = ActivityMapCameraPolicy()
+    check(!camera.recentre(), "nothing to recentre before a fit")
+    check(!camera.shouldFit(activityID: "a", hasRoute: false), "no route, no fit")
+    check(camera.shouldFit(activityID: "a", hasRoute: true), "first route fits")
+    check(!camera.shouldFit(activityID: "a", hasRoute: true), "an activity update keeps the camera")
+    check(camera.recentre(), "recentre stays available")
+    check(camera.shouldFit(activityID: "b", hasRoute: true), "another activity fits")
+
+    check(ActivityPanelLayout.initial(hasRoute: true) == .medium && ActivityPanelLayout.initial(hasRoute: false) == .expanded, "panel opens for its content")
+    check(ActivityPanelLayout.mediumHeight(container: 800) == 416, "medium height")
+    check(ActivityPanelLayout.mapBottomInset(.collapsed, container: 800, safeBottom: 34) == 152, "collapsed inset")
+    check(ActivityPanelLayout.mapBottomInset(.expanded, container: 800, safeBottom: 34) == 416, "an expanded panel fits into the medium map area")
+
+    check(!ActivityWriteGuard.isStale(loaded: 10, current: 10), "same version writes")
+    check(ActivityWriteGuard.isStale(loaded: 10, current: 11), "a newer activity refuses an older form")
+    check(ActivityWriteGuard.isStale(loaded: nil, current: 11), "an unknown loaded version is not trusted")
+    check(!ActivityWriteGuard.isStale(loaded: nil, current: nil), "an activity without versions still saves")
+
+    let tracker = ActivityRequestTracker()
+    var outcomes: [String] = []
+    let record: (ActivityRequestTracker.Outcome) -> Void = { outcome in
+        switch outcome {
+        case .success: outcomes.append("success")
+        case .failure(let text): outcomes.append(text)
+        case .timedOut: outcomes.append("timeout")
+        case .cancelled: outcomes.append("cancelled")
+        }
+    }
+    var reported = ""
+    _ = tracker.begin(id: "1", onProgress: { reported = $0 }, completion: record)
+    tracker.report("1", "half")
+    check(reported == "half", "progress reaches the waiter")
+    check(tracker.finish("1", .success([:])), "a reply ends a request")
+    check(!tracker.finish("1", .failure("late")), "a late reply is ignored")
+    tracker.report("1", "late"); check(reported == "half", "late progress is ignored")
+    _ = tracker.begin(id: "2", completion: record)
+    check(tracker.finish("2", .timedOut) && !tracker.finish("2", .success([:])), "a timed-out request stays ended")
+    _ = tracker.begin(id: "3", completion: record); _ = tracker.begin(id: "4", completion: record)
+    check(tracker.cancelAll().count == 2 && tracker.count == 0, "closing ends everything in flight")
+    check(outcomes == ["success", "timeout", "cancelled", "cancelled"], "every request ends exactly once")
+
+    func fix(_ i: Int, segment: Int = 0) -> GPSPoint { GPSPoint(latitude: -33 + Double(i) * 0.001, longitude: 151, timestamp: 1000 + Double(i) * 5, accuracy: 5, altitude: 0, speed: 1, segment: segment) }
+    let fixes = (0..<10).map { fix($0, segment: $0 < 5 ? 0 : 1) }
+    let base: [String: Any] = ["routes": [[[1.0, 2.0]]], "pins": [["kind": "start", "point": [1.0, 2.0]], ["kind": "photo", "point": [3.0, 4.0]], ["kind": "segment", "id": "segment:s1", "point": [5.0, 6.0]]],
+                               "styled": [["points": [[1.0, 2.0]], "color": "#000000", "width": 6, "segmentID": "s1"], ["points": [[1.0, 2.0]], "color": "#111111", "width": 6, "segmentID": "s2"]]]
+    let trimmed = ActivityMapDraft.trim(start: 3, end: 7).mapOptions(base: base, points: fixes)
+    let trimRoutes = trimmed["routes"] as! [[[Double]]]
+    check(trimRoutes.count == 2 && trimRoutes[0].count == 2 && trimRoutes[1].count == 3, "a trim never joins recording segments")
+    let trimPins = trimmed["pins"] as! [[String: Any]]
+    check(trimPins.filter { $0["kind"] as? String == "start" }.count == 1 && (trimPins.first { $0["kind"] as? String == "start" }?["point"] as? [Double])?[0] == fixes[3].latitude, "Start follows the handle")
+    check(trimPins.contains { $0["kind"] as? String == "photo" }, "photos stay while trimming")
+    check((ActivityMapDraft.trim(start: 7, end: 3).mapOptions(base: base, points: fixes)["routes"] as! [[[Double]]]) == [[[1.0, 2.0]]], "an inverted draft changes nothing")
+    let selected = ActivityMapDraft.segment(start: 1, end: 3, editingID: "S1").mapOptions(base: base, points: fixes)
+    let styled = selected["styled"] as! [[String: Any]]
+    check(selected["muted"] as? Bool == true, "the recording is muted while choosing")
+    check(!styled.contains { $0["segmentID"] as? String == "s1" } && styled.contains { $0["segmentID"] as? String == "s2" }, "the edited segment is left out")
+    check(styled.last?["color"] as? String == ActivityMapDraft.selectionColor && styled.last?["width"] as? Int == 7, "the selection is drawn last")
+    check(!(selected["pins"] as! [[String: Any]]).contains { $0["id"] as? String == "segment:s1" }, "the edited segment label is left out")
+
+    check(NamedSegments.problem(start: 3, end: 2, points: fixes, automatic: false) == .range, "range rule")
+    check(NamedSegments.problem(start: 0, end: 2, points: fixes, automatic: false) == .tooFewPoints, "point rule")
+    let same = (0..<8).map { GPSPoint(latitude: -33, longitude: 151, timestamp: 1000 + Double($0) * 5, accuracy: 5, altitude: 0, speed: 0) }
+    check(NamedSegments.problem(start: 0, end: 7, points: same, automatic: false) == .tooShort, "distance rule")
+    check(NamedSegments.problem(start: 0, end: 4, points: fixes, automatic: false) == nil, "a real section passes")
+
+    check(ActivitySuggestionRules.isDuplicate(assetID: "asset-1", existing: decoded.photos.items), "library identity is a duplicate")
+    check(!ActivitySuggestionRules.isDuplicate(assetID: "", existing: decoded.photos.items), "no identity is not a duplicate")
+    check(ActivitySuggestionRules.remaining(existing: 52) == 0 && ActivitySuggestionRules.remaining(existing: 48) == 2, "photo capacity")
+    check(!ActivitySuggestionRules.retryable("Account changed.") && !ActivitySuggestionRules.retryable("Up to 50 photos per activity are supported."), "hopeless failures are not retried")
+    check(ActivitySuggestionRules.retryable("Photo is not available locally. Download it in Photos, then retry."), "a local-copy failure can retry")
+
+    check(ActivityDetailsFormat.distance(meters: 950, unit: "km") == "950 m", "short distances in metres")
+    check(ActivityDetailsFormat.distance(meters: 5200, unit: "km") == "5.2 km", "km format matches JavaScript")
+    check(ActivityDetailsFormat.distance(meters: 5200, unit: "mi") == "3.2 mi", "mi format matches JavaScript")
+    check(ActivityDetailsFormat.clock(3700) == "1 h 1 min" && ActivityDetailsFormat.clock(65) == "1 min 5 s" && ActivityDetailsFormat.stopwatch(3700) == "1:01:40", "time formats")
+}
+print("activity details: \(assertions) assertions passed")

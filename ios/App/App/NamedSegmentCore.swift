@@ -127,6 +127,15 @@ enum NamedSegments {
         }
     }
 
+    // The rule a range must meet, shared with the live editor.
+    static func problem(start: Int, end: Int, points: [GPSPoint], automatic: Bool) -> Failure? {
+        guard start >= 0, end < points.count, start < end else { return .range }
+        guard end - start + 1 >= minimumPoints else { return .tooFewPoints }
+        let figures = measure(points, start: start, end: end, automatic: automatic)
+        guard figures.observedRuns > 0 else { return .noObservedRoute }
+        return figures.distanceMeters >= minimumMeters ? nil : .tooShort
+    }
+
     // Create a segment, or update the one with the same id (rename or new ends).
     // A repeated submission of the same id therefore never makes a duplicate.
     static func make(id rawID: String, name rawName: String, start: Int, end: Int, points: [GPSPoint], automatic: Bool,
@@ -137,10 +146,8 @@ enum NamedSegments {
         guard start >= 0, end < points.count, start < end else { return .failure(.range) }
         let previous = existing.first { $0.id == id }
         if previous == nil, existing.count >= maximumPerActivity { return .failure(.limit) }
-        guard end - start + 1 >= minimumPoints else { return .failure(.tooFewPoints) }
+        if let failure = problem(start: start, end: end, points: points, automatic: automatic) { return .failure(failure) }
         let figures = measure(points, start: start, end: end, automatic: automatic)
-        guard figures.observedRuns > 0 else { return .failure(.noObservedRoute) }
-        guard figures.distanceMeters >= minimumMeters else { return .failure(.tooShort) }
         let used = Set(existing.filter { $0.id != id }.map { $0.colorIndex })
         let color = previous?.colorIndex ?? (0..<paletteSize).first { !used.contains($0) } ?? existing.count % paletteSize
         return .success(NamedSegment(id: id, name: name, startIndex: start, endIndex: end,

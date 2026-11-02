@@ -1583,6 +1583,13 @@ class JourneyViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(SecureSessionPlugin())
         bridge?.registerPluginInstance(ManualRecorderPlugin())
         bridge?.registerPluginInstance(AppleMapsPlugin())
+        bridge?.registerPluginInstance(ActivityDetailsPlugin())
         _ = LocationRecorder.shared
     }
+    #if DEBUG
+    override func viewDidAppear(_ animated:Bool) {
+        super.viewDidAppear(animated)
+        if ActivityDetailsFixture.enabled {ActivityDetailsFixture.present(over:self)}
+    }
+    #endif
 }

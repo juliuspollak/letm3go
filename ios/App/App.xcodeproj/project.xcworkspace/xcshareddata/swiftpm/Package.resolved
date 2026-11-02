@@ -1,5 +1,5 @@
 {
-  "originHash" : "bd6d9715f0121f13ec60fe05315b46615715a0b9737269c53533e7225549a740",
+  "originHash" : "7fd7047682306b0cf9a5e4c85ea1c9c9cc2afe85ab215a15e11e6e237777b96c",
   "pins" : [
     {
       "identity" : "capacitor-swift-pm",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "4c7f346d16196e21fbe23d4a7a6fc7af62af6742",
         "version" : "8.5.3"
+      }
+    },
+    {
+      "identity" : "floatingpanel",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/scenee/FloatingPanel.git",
+      "state" : {
+        "revision" : "3db567a19ff81d2d3ce00399021ee87a4fccf7e0",
+        "version" : "3.2.4"
       }
     },
     {

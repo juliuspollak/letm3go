@@ -1,9 +1,6 @@
 import {compareRoutes} from '../lib/journeyGeometry.js';
-import {recognitionSampleIndexes,assessRoutePlaces} from '../lib/journeyRecognition.js';
-import {rankPlaceCandidates} from '../lib/placeTagPolicy.js';
+import {scanRoutePlaces} from '../lib/routePlaceScan.js';
 import {useState} from 'react';
-import {recorder} from '../lib/recorder.js';
-import {placeKey} from '../lib/journeyGrouping.js';
 import {Tag,Plus,X} from 'lucide-react';
 export default function JourneyTags({trip,grouping,run,onActivity}){
  const anchor=trip.segmentIDs?.[0]||trip.id;
@@ -16,41 +13,9 @@ export default function JourneyTags({trip,grouping,run,onActivity}){
  async function scanRoute(){
   if(scanning)return;
   setScanning(true);setSuggestions([]);setNotice('Preparing route locations…');
-  const segments=trip.segments?.length?trip.segments:[trip];
-  const samples=[];
-  for(const segment of segments){
-   const points=Array.isArray(segment.points)&&segment.points.length?segment.points:
-    (segment.routeSegments||[]).flat().map(p=>Array.isArray(p)?{latitude:p[0],longitude:p[1]}:p);
-   if(!points.length)continue;
-   for(const index of recognitionSampleIndexes({...segment,activity:trip.activity,points})){
-    const point=points[index];
-    if(placeKey(point)&&!samples.some(item=>placeKey(item.point)===placeKey(point)))samples.push({point,index});
-   }
-  }
-  if(!samples.length){setNotice('This activity has no usable GPS route points to search.');setScanning(false);return;}
-  const result=[],errors=[];
   try{
-   for(let n=0;n<samples.length;n++){
-    setNotice(`Checking place ${n+1} of ${samples.length}…`);
-    const {point}=samples[n],key=placeKey(point);
-    let place=grouping.metadata.places?.[key];
-    if(!place?.nearbyName&&!place?.categories?.length){
-     try{
-      // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
-      place=await recorder.recogniseTripPlace(null,0,point,true);
-     }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
-    }
-    const assessed=assessRoutePlaces(trip,[place],{hidden});
-    for(const candidate of assessed.candidates){if(!result.some(x=>x.name.toLowerCase()===candidate.name.toLowerCase()))result.push({...candidate,tag:candidate.name,kind:'route',source:place?.source||'Apple Maps'});}
-    for(const name of [place?.nearbyName,...(place?.categories||[]),...(place?.nearbyName?[]:[place?.locality])].filter(Boolean)){
-     if(typeof name!=='string'||name.length>50||result.some(x=>x.tag.toLowerCase()===name.toLowerCase())||hidden.some(x=>x.toLowerCase()===name.toLowerCase()))continue;
-     result.push({tag:name,name,kind:n===samples.length-1?'destination':n===0?'start':'route',point:n,source:place?.source||'Apple Maps'});
-    }
-    const visible=rankPlaceCandidates(result,{activity:trip.activity,existing:trip.tags||[],hidden}).map(x=>({...x,tag:x.name}));
-    setSuggestions([...visible]);
-   }
-   const available=rankPlaceCandidates(result,{activity:trip.activity,existing:trip.tags||[],hidden}).map(x=>({...x,tag:x.name}));
-   setNotice(available.length?`Found ${available.length} place suggestions. Review them below.`:errors.length===samples.length?'Place lookup could not run. Check your connection and try again on your iPhone.':errors.length?`No new places found; ${errors.length} lookups failed. Try again with a connection.`:'No additional named places found along this route. You can still add a place name manually.');
+   const result=await scanRoutePlaces(trip,{hidden,places:grouping.metadata.places,onProgress:({notice,suggestions})=>{setNotice(notice);if(suggestions)setSuggestions(suggestions);}});
+   setSuggestions(result.suggestions);setNotice(result.notice);
   }catch(error){setNotice(error?.message||'Place search failed. Please try again.');}
   finally{setScanning(false);}
  }

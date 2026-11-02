@@ -1,6 +1,7 @@
 import { Maximize2, Navigation, Footprints, Bike, Car, Activity } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
+import { withTrimRange } from '../lib/mapContent.js';
 import MapControls from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
 import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
@@ -104,18 +105,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // The whole payload is re-serialised on every movement anyway; the value that
 // matters here is content *structure*, so the heavy string is not kept around and
 // a live position update must not force a new snapshot.
- const interactiveData=useMemo(()=>JSON.stringify(trimRange?.points?.length>1?(()=>{
-  const points=trimRange.points.slice(trimRange.start,trimRange.end+1).filter(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
-  if(points.length<2)return payload;
-  const routes=[];let segment=null;
-  for(const point of points){
-   if(point.segment!==segment){routes.push([]);segment=point.segment;}
-   routes.at(-1).push([point.latitude,point.longitude]);
-  }
-  const pins=payload.pins.filter(pin=>!['start','finish'].includes(pin.kind));
-  pins.push({point:routes[0][0],title:'Start',kind:'start'},{point:routes.at(-1).at(-1),title:'Finish',kind:'finish'});
-  return {...payload,routes,pins};
- })():payload),[payload,trimRange]);
+ const interactiveData=useMemo(()=>JSON.stringify(withTrimRange(payload,trimRange)),[payload,trimRange]);
  // A live position changes the content, not the map's structure. Keep the latest
  // payload in a ref and re-embed only when routes, pins, filters, camera mode or
  // other structure changes; ordinary movement goes through the native incremental

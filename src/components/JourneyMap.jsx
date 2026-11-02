@@ -1,6 +1,7 @@
 import {useMemo} from 'react';
 import AppleMap from './AppleMap.jsx';
 import { mapPayload } from '../lib/appleMaps.js';
+import { withSegments } from '../lib/mapContent.js';
 // `camera` (from mapCamera.cameraIntent) turns on the people map: show everyone,
 // follow a person, free exploring and edge avatars. Without it the map fits its
 // routes as before.
@@ -11,10 +12,6 @@ import { mapPayload } from '../lib/appleMaps.js';
 // come back as `action: 'journey'` or `'photo'`. Elsewhere a photo opens directly.
 // Named segments (namedSegments.segmentLayers): coloured lines above the route,
 // a label per segment, and the recording muted while a section is being chosen.
-function withSegments(payload,layers){
- if(!layers)return payload;
- return {...payload,pins:[...payload.pins,...layers.pins],styled:layers.styled,...(layers.muted?{muted:true}:{})};
-}
 const EMPTY=[];
 export default function JourneyMap({journeys,onPhoto,selectedPhotoID=null,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,trimRange=null,segmentLayers=null,homePresence=null,livePeople=EMPTY,peoplePins=EMPTY,embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,controls=null,onControl=null,overlay=false}){
  // Rebuilding the route payload on every render re-serialises a long recording's

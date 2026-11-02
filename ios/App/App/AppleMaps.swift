@@ -792,6 +792,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var pins:[String:JourneyPin]=[:]
     private var pinData:[String:Data]=[:]
     private var routeKey:Int?
+    private(set) var overlayRebuilds=0
     private var circles:[String:MKCircle]=[:]
     private var indicators:[String:EdgeAvatarButton]=[:]
     private var indicatorData:[String:Data]=[:]
@@ -854,6 +855,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.description);for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         let key=hasher.finalize()
         if key != routeKey {
+            overlayRebuilds+=1
             map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine)})
             for gap in next.gaps {map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))}
             for line in routeOverlays(next) {map.addOverlay(line)}
@@ -2324,5 +2326,114 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             return renderer
         }
         return MKOverlayRenderer(overlay:overlay)
+    }
+}
+
+// MARK: Native Activity Details
+
+// One persistent MKMapView for the native Activity Details screen, drawn by the same
+// coordinator, overlays and annotations as every other map. It has no knowledge of
+// the web view: the screen owns the view and hands content in, and MapCoordinator
+// rebuilds overlays only when the routes themselves change.
+final class ActivityMapEngine:NSObject,MKMapViewDelegate {
+    let map:MKMapView
+    var onPhoto:((String)->Void)?
+    private let coordinator:MapCoordinator
+    init(map:MKMapView) {
+        self.map=map
+        coordinator=MapCoordinator(map:map,content:MapContent([:]),controlTop:56)
+        super.init()
+        map.delegate=self
+        map.isZoomEnabled=true;map.isScrollEnabled=true;map.isRotateEnabled=true;map.isPitchEnabled=true
+        map.showsCompass=true;map.showsScale=false
+        // A map never starts location recording. Only the recorder requests location access.
+        map.showsUserLocation=false
+        if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)}
+    }
+    deinit {coordinator.detach();map.delegate=nil}
+    func apply(_ options:[String:Any]) {coordinator.apply(MapContent(options))}
+    var hasRoute:Bool {!coordinator.content.routes.isEmpty || !coordinator.content.styled.isEmpty}
+    var overlayRebuilds:Int {coordinator.overlayRebuilds}
+    func fit(insets:UIEdgeInsets,animated:Bool) {
+        let content=coordinator.content
+        guard !content.coordinates.isEmpty else {return}
+        map.setVisibleMapRect(content.rect,edgePadding:insets,animated:animated && !UIAccessibility.isReduceMotionEnabled)
+    }
+    func style(_ style:String) {applyMapStyle(map,style)}
+    private func reportPhoto(_ annotation:MKAnnotation?) {
+        guard let pin=annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="photo",let photoID=pin.metadata["photoID"] as? String else {return}
+        onPhoto?(photoID)
+    }
+    func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {reportPhoto(view.annotation)}
+    func mapView(_ mapView:MKMapView,annotationView view:MKAnnotationView,calloutAccessoryControlTapped control:UIControl) {reportPhoto(view.annotation)}
+    func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
+        guard let pin=annotation as? JourneyPin else {return nil}
+        let kind=pin.metadata["kind"] as? String ?? ""
+        if kind=="segment" {return segmentMarker(pin)}
+        if kind=="photo",let photoID=pin.metadata["photoID"] as? String,let thumbnail=journalPhotoThumbnail(photoID,size:52) {
+            let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+            view.image=thumbnail;view.centerOffset=CGPoint(x:0,y:-24);view.canShowCallout=true;view.displayPriority = .required
+            view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
+            view.accessibilityLabel=pin.title ?? "Activity photo"
+            if (pin.metadata["selected"] as? Bool)==true {
+                view.layer.borderWidth=3;view.layer.borderColor=UIColor.systemPink.cgColor;view.layer.cornerRadius=8
+                view.isAccessibilityElement=true;view.accessibilityTraits=[.button,.selected]
+            }
+            return view
+        }
+        let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil);marker.canShowCallout=true
+        if kind=="start" || kind=="finish" {
+            marker.markerTintColor=kind=="start" ? .systemGreen : .systemRed
+            marker.glyphText=kind=="start" ? "S" : "F";marker.displayPriority = .required
+        } else if kind=="photo" {
+            marker.markerTintColor=(pin.metadata["selected"] as? Bool)==true ? .systemPink : .systemOrange
+            marker.glyphImage=UIImage(systemName:"photo")
+        }
+        return marker
+    }
+    func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
+        if let gap=overlay as? GapPolyline {
+            let renderer=MKPolylineRenderer(polyline:gap)
+            renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]
+            return renderer
+        }
+        if let line=overlay as? StyledLine {return styledRenderer(line)}
+        if let route=overlay as? MKPolyline {
+            let renderer=MKPolylineRenderer(polyline:route)
+            renderer.strokeColor=routeColor;renderer.lineWidth=4;renderer.lineCap = .round
+            return renderer
+        }
+        return MKOverlayRenderer(overlay:overlay)
+    }
+}
+
+// Private journal photos for the native screen: read, decrypted and decoded away
+// from the main thread, downsampled to the size shown, cached per account.
+enum ActivityPhotoStore {
+    static func thumbnail(_ photoID:String,size:CGFloat)->UIImage? {cachedJournalPhoto(photoID,size:size,circle:false)}
+    static func loadThumbnail(_ photoID:String,size:CGFloat,done:@escaping(UIImage?)->Void) {
+        if let cached=thumbnail(photoID,size:size) {done(cached);return}
+        guard let file=journalPhotoFile(photoID,size:size,circle:false) else {done(nil);return}
+        let scale=UIScreen.main.scale
+        photoQueue.async {
+            let image=renderJournalPhoto(file,size:size,circle:false,scale:scale)
+            DispatchQueue.main.async {done(image)}
+        }
+    }
+    // The picture itself, no larger than `pixels` along its longest side.
+    static func loadFull(activityID:String,photoID:String,pixels:CGFloat,done:@escaping(UIImage?)->Void) {
+        let recorder=LocationRecorder.shared
+        guard recorder.uiUnlocked,let storage=recorder.storage,
+              let photo=recorder.trips.first(where:{$0.id==activityID})?.details?.photos.first(where:{$0.id==photoID}) else {done(nil);return}
+        let name="media/\(photo.filename)"
+        photoQueue.async {
+            var image:UIImage?
+            if let data=try? storage.readData(name:name),let source=CGImageSourceCreateWithData(data as CFData,nil) {
+                let options:[CFString:Any]=[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceCreateThumbnailWithTransform:true,
+                    kCGImageSourceShouldCacheImmediately:true,kCGImageSourceThumbnailMaxPixelSize:pixels]
+                image=CGImageSourceCreateThumbnailAtIndex(source,0,options as CFDictionary).map{UIImage(cgImage:$0)}
+            }
+            DispatchQueue.main.async {done(image)}
+        }
     }
 }

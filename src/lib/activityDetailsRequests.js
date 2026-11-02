@@ -1,0 +1,84 @@
+import {recordedJourney,recorder} from './recorder.js';
+import {sharingRequest,publishActivity,makeActivityPrivate} from './activitySharing.js';
+import {routeBounds,trailCandidates,trailLinkPayload} from './mtbLink.js';
+import {MTB_ACCESS_LABELS} from './mtb.js';
+import * as mtbApi from './mtbApi.js';
+import {scanRoutePlaces} from './routePlaceScan.js';
+import {saveMaximum} from './heartRate.js';
+import {buildCollectionItem,collectionItemError,categoriesForActivity,COLLECTION_CATEGORIES} from './collection.js';
+
+const trailDistance=m=>Number.isFinite(m)?(m>=1000?`${(m/1000).toFixed(1)} km`:`${Math.round(m)} m`):'Unknown length';
+
+// Everything the native screen cannot do itself, because the session or the rule
+// belongs to JavaScript: supabase-js stays the only owner of the session, so no
+// token crosses to Swift, only the answer. `context` is read at call time, so a
+// reply always reflects the current account and activity. Every operation here is
+// the one the React screen calls.
+export const activityDetailsRequests={
+ async privacyStatus({client,trip}){
+  const result=await sharingRequest(client,'status',trip.id);
+  return {audience:result.audience};
+ },
+ async privacySave({client,trip,auth},{choice}){
+  if(choice==='private'){await makeActivityPrivate(client,trip.id);return {audience:'private',message:'Private. Access to the shared copy has been revoked. Copies others already saved cannot be recalled.'};}
+  await sharingRequest(client,'status',trip.id);
+  const state=await recorder.getState();
+  await publishActivity({client,state,id:trip.id,reviewedTrip:trip,receipts:auth.preferences.syncReceipts||{},checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});
+  return {audience:'public',message:'Public. The reviewed route copy is now available to others. Photos were not published.'};
+ },
+ async groupingAct({grouping},{action}){
+  if(!grouping)throw new Error('Journey details are unavailable.');
+  const ok=await grouping.act(action);
+  if(!ok)throw new Error(grouping.error||'That change could not be saved.');
+  return {};
+ },
+ async scanPlaces({trip,grouping},args,{signal,progress}){
+  const anchor=trip.segmentIDs?.[0]||trip.id;
+  const result=await scanRoutePlaces(trip,{hidden:grouping?.metadata?.hiddenTags?.[anchor]||[],places:grouping?.metadata?.places,signal,onProgress:({notice})=>progress?.(notice)});
+  return {notice:result.notice,suggestions:result.suggestions.map(item=>({tag:item.tag,source:item.source||'Apple Maps'}))};
+ },
+ async rememberPlace({trip,run},{name}){
+  const end=(trip.segments?.at(-1)||trip).points?.at(-1);
+  if(!Number.isFinite(end?.latitude)||!Number.isFinite(end?.longitude))throw new Error('Could not save the destination. No tag was added.');
+  const result=await run('savePlace',{name,kind:'favourite',latitude:end.latitude,longitude:end.longitude,radius:200});
+  if(!result)throw new Error('Could not save the destination. No tag was added.');
+  return {};
+ },
+ async findTrails({trip}){
+  const route=Array.isArray(trip.route)?trip.route:[];
+  const bbox=routeBounds(route);
+  if(!bbox)return {trails:[],note:'This ride has no GPS route to search near.'};
+  const candidates=trailCandidates(await mtbApi.fetchTrails(bbox),route);
+  return {trails:candidates.map(candidate=>({...trailLinkPayload(candidate),id:candidate.id,name:candidate.name,detail:`${trailDistance(candidate.distanceMeters)} · ${candidate.difficulty} · ${MTB_ACCESS_LABELS[candidate.access]||candidate.access}${candidate.startDistanceMeters!=null?` · starts ${trailDistance(candidate.startDistanceMeters)} from this ride`:''}`}))};
+ },
+ async setMaximumHeartRate({ownerID,refreshPresentation},{value}){
+  const maximum=saveMaximum(ownerID,value);
+  refreshPresentation?.();
+  return {maximum};
+ },
+ async equipmentCategories({trip}){
+  const preferred=categoriesForActivity(trip.activity).map(category=>category.id);
+  return {categories:COLLECTION_CATEGORIES.map(category=>({id:category.id,label:category.label,preferred:preferred.includes(category.id)}))};
+ },
+ async addEquipment({addEquipmentItem},{category,name,make,model}){
+  const item=buildCollectionItem({category,name,make,model});
+  const problem=collectionItemError(item);
+  if(problem)throw new Error(problem);
+  if(!await addEquipmentItem?.(item))throw new Error('This item could not be added to your Collection.');
+  return {id:String(item.id)};
+ },
+ async openActivity({activities,grouping,onSource,trip},{id}){
+  const target=(trip.sourceRecords||[]).find(s=>String(s.id)===id)||grouping?.journeys?.find(j=>String(j.id)===id)||activities.find(j=>String(j.id)===id);
+  if(!target||!onSource)throw new Error('That activity is not available.');
+  onSource(target);
+  return {};
+ },
+};
+
+// After a native mutation: the same step the React screen takes after a write.
+export async function acceptNativeMutation({run,onUpdated,onDeleted,activityID,kind}){
+ if(kind==='deleted'){onDeleted?.();return;}
+ const result=await run('getState');
+ const updated=result?.trips?.find(trip=>trip.id===activityID);
+ if(updated)onUpdated?.(recordedJourney(updated));
+}
