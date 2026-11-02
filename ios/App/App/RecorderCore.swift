@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-struct GPSPoint: Codable {
+struct GPSPoint: Codable, Equatable {
     var latitude: Double
     var longitude: Double
     var timestamp: Double

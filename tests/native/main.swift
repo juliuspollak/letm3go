@@ -4312,7 +4312,8 @@ do {
     let reloaded = try store.load().first!
     check(reloaded.details?.energy == nil && reloaded.details?.wholeWorkoutEnergy?.active == 100, "saving a trim preserves original measured energy durably under the same ID")
     var heldSource = source
-    heldSource.details?.unverifiedEnergy = heldSource.details?.energy
+    let heldSourceEnergy = heldSource.details?.energy
+    heldSource.details?.unverifiedEnergy = heldSourceEnergy
     heldSource.details?.energy = nil
     let heldTrim = RouteTrimming.trimmed(heldSource, start: 1, end: 2)!
     try store.save(heldTrim)
@@ -4385,14 +4386,21 @@ do {
     ride.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: 3))
     check(ride.energySessions.count == 2, "a replacement workout opens a new measured segment")
     check(WatchEnergy.activeKcal(ride.energySessions) == 30, "only distinct measured segments are summed")
-    check(WatchEnergy.totalKcal(ride.energySessions) == 43, "total sums active and resting across segments")
+    check(WatchEnergy.totalKcal(ride.energySessions) == 42, "total sums active and resting across segments")
     var incomplete = WatchRideDraft(activity: "MTB", startedAt: 1000)
     incomplete.beginEnergySession(at: 1000)
     incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
     incomplete.segment += 1
     incomplete.beginEnergySession(at: 1200)
     incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: nil))
-    check(WatchEnergy.activeKcal(incomplete.energySessions) == nil, "active energy is unavailable if any segment lacks active")
+    check(WatchEnergy.activeKcal(incomplete.energySessions) == 18, "active energy still sums when only resting is missing")
+    var noActive = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    noActive.beginEnergySession(at: 1000)
+    noActive.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    noActive.segment += 1
+    noActive.beginEnergySession(at: 1200)
+    noActive.applyEnergy(WatchEnergy.reading(activeKcal: nil, basalKcal: 3))
+    check(WatchEnergy.activeKcal(noActive.energySessions) == nil, "active energy is unavailable if any segment lacks active")
     check(WatchEnergy.totalKcal(incomplete.energySessions) == nil, "total is unavailable if any segment lacks resting")
     var zero = WatchRideDraft(activity: "MTB", startedAt: 1000)
     zero.beginEnergySession(at: 1000)
@@ -4439,7 +4447,8 @@ do {
     var trimmedSource = trip
     trimmedSource.details?.visibleRouteStart = 0
     trimmedSource.details?.visibleRouteEnd = 1
-    trimmedSource.details?.wholeWorkoutEnergy = trimmedSource.details?.energy
+    let trimmedSourceEnergy = trimmedSource.details?.energy
+    trimmedSource.details?.wholeWorkoutEnergy = trimmedSourceEnergy
     trimmedSource.details?.energy = nil
     if case .applied(let trimmedUpdated) = WatchEnergyImport.apply(enrichment, to: trimmedSource, now: 1070) {
         check(trimmedUpdated.details?.energy == nil && trimmedUpdated.details?.wholeWorkoutEnergy?.active == 22, "trimmed target keeps whole-workout energy in archives")
