@@ -222,6 +222,7 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
   const along = projection.along;
   if (along < prevAlong - s.progressToleranceMeters) { stop = 'reverse'; break; }
   if (along > prevAlong + s.progressToleranceMeters) { stop = 'jump'; break; }
+  const before = prevAlong;
   refIndex = projection.index;
   prevAlong = along;
   if (along < minAlong) minAlong = along;
@@ -230,8 +231,8 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
   // Stop at the line: the fixes after it belong to whatever comes next, which on
   // continuous laps is the next effort.
   if (entryRefIndex === 0 && along >= lengthMeters - s.referenceSpacingMeters) { stop = 'finished'; break; }
-  // A ride the wrong way ends at the start, for the same reason.
-  if (entryRefIndex > 0 && along <= 0) { stop = 'finished'; break; }
+  // A ride the wrong way ends at the start, or where it turns there, for the same reason.
+  if (entryRefIndex > 0 && (along <= 0 || (along > before && along <= 2 * s.referenceSpacingMeters))) { stop = 'finished'; break; }
   j++;
  }
  if (stop === null) stop = 'end';
