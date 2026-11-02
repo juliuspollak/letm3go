@@ -37,7 +37,8 @@ Status: implemented behind a disabled flag. Not approved for release. Base commi
 
 ## Changes found during validation
 
-- FloatingPanel locks inner scrolling below the expanded position. Segment and route editors therefore replace the page at medium, so the map stays visible while dragging. This is an intentional change from the React layout.
+- FloatingPanel locks a tracked scroll view below the expanded position. Segment and route editors therefore sit directly in the panel at medium, outside the scroll view, so the map stays visible and their buttons receive touches. This is an intentional change from the React layout.
+- The panel uses `.static` content mode. In `.fitToBounds` the SwiftUI content stretched the surface to 2816 pt and nothing scrolled.
 - `setVisibleMapRect` before the map is on screen fits far too wide, so the first fit waits for `viewDidAppear`.
 
 ## Open before approval

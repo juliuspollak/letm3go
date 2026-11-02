@@ -231,7 +231,7 @@ struct RangeSlider: View {
                 Capsule().fill(Color.accentColor).frame(width: max(0, x(end) - x(start)), height: 6).offset(x: x(start) + thumb / 2)
                 handle(label: startLabel, value: start, x: x(start), width: width) { onChange(min($0, end - 1), end) } adjust: { onChange(max(0, min(start + $0, end - 1)), end) }
                 handle(label: endLabel, value: end, x: x(end), width: width) { onChange(start, max($0, start + 1)) } adjust: { onChange(start, min(last, max(end + $0, start + 1))) }
-            }.frame(height: 44)
+            }.frame(height: 44).coordinateSpace(name: "range")
         }.frame(height: 44)
     }
     private func handle(label: String, value: Int, x: CGFloat, width: CGFloat, set: @escaping (Int) -> Void, adjust: @escaping (Int) -> Void) -> some View {
@@ -287,7 +287,7 @@ struct RouteTrimCard: View {
             }
             HStack {
                 Button("Show full route") { model.resetTrim(trim) }.buttonStyle(DetailButtonStyle())
-                Button("Cancel") { model.cancelTrim() }.buttonStyle(DetailButtonStyle())
+                Button("Cancel") { model.cancelTrim() }.buttonStyle(DetailButtonStyle()).accessibilityIdentifier("trim.cancel")
                 Button("Save") { Task { await model.saveTrim(trim) } }
                     .buttonStyle(DetailButtonStyle(kind: .primary)).disabled(model.busy || range.start >= range.end || !changed)
                     .accessibilityLabel("Save visible route")

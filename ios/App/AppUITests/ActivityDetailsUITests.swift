@@ -92,13 +92,20 @@ final class ActivityDetailsUITests: XCTestCase {
         for _ in 0..<10 where !choose.isHittable { drag(from: height * 0.8, to: height * 0.3, speed: .slow) }
         guard choose.isHittable else { return XCTFail("Route section not reachable") }
         choose.tap()
-        let cancel = app.buttons["Cancel"]
+        let cancel = app.buttons["trim.cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
         Thread.sleep(forTimeInterval: 1)
-        XCTAssertTrue(cancel.isHittable)
-        XCTAssertGreaterThan(app.buttons["Show full route"].frame.minY, height * 0.45)
-        cancel.tap()
-        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(app.buttons["Show full route"].frame.minY, height * 0.45, "the map stays above the editor")
+        XCTAssertLessThan(cancel.frame.maxY, height, "the editor fits on screen")
+        cancel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "Cancel returns to the page")
+    }
+    func testControlsLowInThePanelWorkAtMedium() {
+        let cover = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Open cover photo'")).firstMatch
+        XCTAssertTrue(cover.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(cover.frame.minY, height * 0.7, "the control sits low in the panel")
+        point(cover.frame.midX, min(cover.frame.minY + 30, height - 60)).tap()
+        XCTAssertTrue(app.buttons["Close photographs"].waitForExistence(timeout: 5), "a touch at medium opens the photo")
     }
     func testRepeatedPanelMovesKeepTheScreenResponsive() {
         for _ in 0..<5 {

@@ -90,32 +90,14 @@ struct ActivityDetailsRootView: View {
     @ObservedObject var model: ActivityDetailsViewModel
     let trackScrollView: (UIScrollView) -> Void
     var body: some View {
-        ScrollView {
-            // Choosing a range needs the map in view, and the panel only scrolls its
-            // content when expanded, so an editor replaces the page at medium.
+        // Choosing a range needs the map in view. The panel locks a tracked scroll view
+        // below expanded, so an editor sits directly in the panel instead of scrolling.
+        Group {
             if let draft = model.segmentDraft {
                 editor { SegmentEditorCard(model: model, draft: draft).id(draft.segmentID) }
             } else if model.trimming, let trim = model.presentation.trim {
                 editor { RouteTrimCard(model: model, trim: trim) }
-            } else {
-                LazyVStack(alignment: .leading, spacing: DetailStyle.spacing) {
-                    ActivityHeaderSection(model: model).background(ScrollViewReporter(found: trackScrollView))
-                    ActivitySummarySection(items: model.presentation.summary)
-                    ActivityNoticesSection(model: model)
-                    ActivityMomentsSection(model: model)
-                    ActivitySegmentsSection(model: model)
-                    ActivityTrailSection(model: model)
-                    ActivityRouteSection(model: model)
-                    ActivityHeartSection(model: model)
-                    ActivityStorySection(story: model.presentation.story)
-                    ActivityTagsSection(model: model)
-                    ActivityStopsSection(model: model)
-                    ActivityFactsSection(presentation: model.presentation)
-                    ActivityDiagnosticsSection(model: model)
-                    ActivityDangerSection(model: model)
-                }
-                .padding(.horizontal, DetailStyle.margin).padding(.top, 16).padding(.bottom, 40)
-            }
+            } else { page }
         }
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
@@ -129,7 +111,28 @@ struct ActivityDetailsRootView: View {
             ActivityPhotoViewer(model: model, initialID: focus.id)
         }
     }
+    private var page: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: DetailStyle.spacing) {
+                ActivityHeaderSection(model: model).background(ScrollViewReporter(found: trackScrollView))
+                ActivitySummarySection(items: model.presentation.summary)
+                ActivityNoticesSection(model: model)
+                ActivityMomentsSection(model: model)
+                ActivitySegmentsSection(model: model)
+                ActivityTrailSection(model: model)
+                ActivityRouteSection(model: model)
+                ActivityHeartSection(model: model)
+                ActivityStorySection(story: model.presentation.story)
+                ActivityTagsSection(model: model)
+                ActivityStopsSection(model: model)
+                ActivityFactsSection(presentation: model.presentation)
+                ActivityDiagnosticsSection(model: model)
+                ActivityDangerSection(model: model)
+            }
+            .padding(.horizontal, DetailStyle.margin).padding(.top, 16).padding(.bottom, 40)
+        }
+    }
     private func editor<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content().padding(.horizontal, DetailStyle.margin).padding(.top, 16).padding(.bottom, 40)
+        VStack { content(); Spacer(minLength: 0) }.padding(.horizontal, DetailStyle.margin).padding(.top, 16)
     }
 }

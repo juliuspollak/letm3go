@@ -136,16 +136,14 @@ final class ActivityDetailsViewModel: ObservableObject {
 
     func trimRange(_ trim: ActivityPresentation.Trim) -> RangeDraft { trimDraft ?? RangeDraft(start: trim.start, end: trim.end) }
     func startTrim() { trimming = true; onPanel?(.medium) }
-    func cancelTrim() { trimming = false; trimDraft = nil; onDraft?(nil) }
+    func cancelTrim() { trimming = false; trimDraft = nil; onDraft?(nil); onPanel?(.medium) }
     func setTrim(_ range: RangeDraft) { trimDraft = range; onDraft?(draft) }
     func resetTrim(_ trim: ActivityPresentation.Trim) { setTrim(RangeDraft(start: 0, end: trim.pointCount - 1)) }
     func saveTrim(_ trim: ActivityPresentation.Trim) async {
         let range = trimRange(trim)
         guard range.start < range.end else { return }
         if await perform(.setRouteDisplay(start: range.start, end: range.end), success: "Visible map route saved. All original GPS points are preserved.") {
-            trimDraft = nil
-            trimming = false
-            onDraft?(nil)
+            cancelTrim()
         }
     }
 
@@ -164,7 +162,7 @@ final class ActivityDetailsViewModel: ObservableObject {
         onDraft?(draft)
         onPanel?(.medium)
     }
-    func cancelSegment() { segmentDraft = nil; onDraft?(draft) }
+    func cancelSegment() { segmentDraft = nil; onDraft?(draft); onPanel?(.medium) }
     func setSegment(start: Int, end: Int) {
         guard var current = segmentDraft else { return }
         current.start = start; current.end = end
@@ -186,8 +184,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     func saveSegment(name: String) async {
         guard let current = segmentDraft else { return }
         if await perform(.saveSegment(id: current.segmentID, name: name, start: current.start, end: current.end), success: "Segment “\(name)” saved. The recording is unchanged.") {
-            segmentDraft = nil
-            onDraft?(draft)
+            cancelSegment()
         }
     }
     func deleteActivity() async {
