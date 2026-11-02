@@ -106,6 +106,8 @@ final class ActivityDetailsUITests: XCTestCase {
         XCTAssertGreaterThan(cover.frame.minY, height * 0.7, "the control sits low in the panel")
         point(cover.frame.midX, min(cover.frame.minY + 30, height - 60)).tap()
         XCTAssertTrue(app.buttons["Close photographs"].waitForExistence(timeout: 5), "a touch at medium opens the photo")
+        XCTAssertTrue(app.buttons["Remove"].waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
     }
     func testRepeatedPanelMovesKeepTheScreenResponsive() {
         for _ in 0..<5 {

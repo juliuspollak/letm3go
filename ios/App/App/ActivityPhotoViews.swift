@@ -108,6 +108,22 @@ private struct FullPhoto: View {
     }
 }
 
+// Always light text on a dark fill: these sit on a photo, in light mode too.
+private struct PhotoViewerButtonStyle: ButtonStyle {
+    var destructive = false
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(2).multilineTextAlignment(.center)
+            .foregroundColor(.white)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(destructive ? Color.red.opacity(0.9) : Color(white: 0.22), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .opacity(!enabled ? 0.5 : configuration.isPressed ? 0.7 : 1)
+    }
+}
+
 // Photos are viewed, captioned, made the cover and removed here.
 struct ActivityPhotoViewer: View {
     @ObservedObject var model: ActivityDetailsViewModel
@@ -138,17 +154,17 @@ struct ActivityPhotoViewer: View {
                     Text("\(photo.locationSource) · Private").font(.caption).foregroundColor(.white.opacity(0.75))
                     if photos.local {
                         HStack {
-                            Button("Caption") { caption = photo.caption; editing = true }.buttonStyle(DetailButtonStyle())
+                            Button("Caption") { caption = photo.caption; editing = true }.buttonStyle(PhotoViewerButtonStyle())
                             Button("Use as cover") { Task { await model.perform(.editPhoto(id: photo.id, caption: nil, cover: true, remove: false)) } }
-                                .buttonStyle(DetailButtonStyle()).disabled(model.busy || photos.coverID == photo.id)
-                            Button("Remove") { removing = true }.buttonStyle(DetailButtonStyle(kind: .destructive)).disabled(model.busy)
+                                .buttonStyle(PhotoViewerButtonStyle()).disabled(model.busy || photos.coverID == photo.id)
+                            Button("Remove") { removing = true }.buttonStyle(PhotoViewerButtonStyle(destructive: true)).disabled(model.busy)
                         }
                     }
                     if !model.errorMessage.isEmpty { Text(model.errorMessage).font(.footnote).foregroundColor(.red) }
                 }
             }
             .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-            .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
+            .background(LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom).ignoresSafeArea(edges: .bottom))
         }
         .overlay(alignment: .topTrailing) {
             Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").font(.title).foregroundColor(.white) }
