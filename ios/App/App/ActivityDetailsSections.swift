@@ -101,34 +101,44 @@ struct ActivitySegmentsSection: View {
     @State private var renaming: ActivityPresentation.Segment?
     @State private var renameText = ""
     @State private var confirming: ActivityPresentation.Segment?
+    private func counts(_ row: ActivityPresentation.RiddenSegment) -> String {
+        "\(row.thisRide)× this ride · \(row.total)× in all · best \(row.best)"
+    }
     var body: some View {
         let s = model.presentation.segments
         if s.allowed {
             Button { model.startSegment() } label: { Label("Create Segment", systemImage: "flag").frame(maxWidth: .infinity) }
                 .buttonStyle(DetailButtonStyle()).disabled(model.busy)
         }
-        if !s.items.isEmpty {
+        if !s.list.isEmpty {
             DetailCard(title: "Segments", symbol: "flag") {
-                ForEach(s.items) { segment in
-                    Button { open = open == segment.id ? nil : segment.id } label: {
-                        HStack(spacing: 8) {
-                            Circle().fill(Color(hex: segment.color)).frame(width: 12, height: 12).accessibilityHidden(true)
-                            Text(segment.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
-                            Spacer()
-                            Text(segment.summary).font(.footnote).foregroundColor(DetailStyle.muted)
-                        }.frame(minHeight: 36)
-                    }
-                    .accessibilityValue(open == segment.id ? "Expanded" : "Collapsed")
-                    if open == segment.id {
-                        DetailFootnote(text: segment.detail)
-                        HStack {
-                            // Changing one needs an activity that can have segments.
-                            if s.allowed {
-                                Button("Edit") { model.editSegment(segment) }.buttonStyle(DetailButtonStyle())
-                                Button("Rename") { renameText = segment.name; renaming = segment }.buttonStyle(DetailButtonStyle())
+                ForEach(s.list) { row in
+                    Button { open = open == row.id ? nil : row.id } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle().fill(Color(hex: row.color)).frame(width: 12, height: 12).padding(.top, 4).accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
+                                Text(counts(row)).font(.footnote).foregroundColor(DetailStyle.muted)
                             }
-                            Button("Delete") { confirming = segment }.buttonStyle(DetailButtonStyle(kind: .destructive))
-                        }.disabled(model.busy)
+                            Spacer()
+                            Image(systemName: open == row.id ? "chevron.up" : "chevron.down").font(.footnote).foregroundColor(DetailStyle.muted)
+                        }.frame(minHeight: 44)
+                    }
+                    .accessibilityValue(open == row.id ? "Expanded" : "Collapsed")
+                    if open == row.id {
+                        Text("\(row.total) time\(row.total == 1 ? "" : "s") on \(row.rideCount) ride\(row.rideCount == 1 ? "" : "s"), fastest first")
+                            .font(.footnote).foregroundColor(DetailStyle.muted)
+                        ForEach(row.passes) { pass in passRow(pass) }
+                        if row.owned, let segment = s.items.first(where: { $0.id == row.id }) {
+                            HStack {
+                                // Changing one needs an activity that can have segments.
+                                if s.allowed {
+                                    Button("Edit") { model.editSegment(segment) }.buttonStyle(DetailButtonStyle())
+                                    Button("Rename") { renameText = segment.name; renaming = segment }.buttonStyle(DetailButtonStyle())
+                                }
+                                Button("Delete") { confirming = segment }.buttonStyle(DetailButtonStyle(kind: .destructive))
+                            }.disabled(model.busy)
+                        }
                     }
                 }
             }
@@ -149,6 +159,23 @@ struct ActivitySegmentsSection: View {
             }
         }
     }
+    private func passRow(_ pass: ActivityPresentation.SegmentPass) -> some View {
+        Button {
+            guard !pass.current else { return }
+            Task { do { _ = try await model.request("openActivity", args: ["id": pass.activityID]) } catch { model.errorMessage = error.localizedDescription } }
+        } label: {
+            HStack(spacing: 8) {
+                Text("\(pass.rank)").font(.footnote.monospacedDigit()).foregroundColor(DetailStyle.muted).frame(minWidth: 22, alignment: .leading)
+                Text(pass.time).font(.subheadline.weight(.semibold).monospacedDigit()).foregroundColor(.primary)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(pass.current ? "This ride" : pass.title).font(.footnote).foregroundColor(.primary).lineLimit(1)
+                    Text(pass.when).font(.caption).foregroundColor(DetailStyle.muted)
+                }
+                Spacer()
+            }.frame(minHeight: 40)
+        }
+        .accessibilityIdentifier("segment.pass")
+    }
 }
 
 struct SegmentEditorCard: View {
@@ -159,11 +186,6 @@ struct SegmentEditorCard: View {
     init(model: ActivityDetailsViewModel, draft: ActivityDetailsViewModel.SegmentDraft) {
         self.model = model; self.draft = draft
         _name = State(initialValue: draft.name)
-    }
-    private func lapLabel(_ number: Int, _ lap: ActivitySegmentPicker.Traversal) -> String {
-        let points = model.points
-        guard points.indices.contains(lap.start), points.indices.contains(lap.end) else { return "Lap \(number)" }
-        return "Lap \(number) · \(ActivityClock.time(points, lap.start)) · \(ActivityDetailsFormat.clock(points[lap.end].timestamp - points[lap.start].timestamp))"
     }
     var body: some View {
         if let picking = draft.picking { pickingCard(picking) } else { editing }
@@ -194,28 +216,12 @@ struct SegmentEditorCard: View {
         let figures = draft.start < draft.end && draft.end < points.count ? NamedSegments.measure(points, start: draft.start, end: draft.end, automatic: model.automatic) : nil
         let problem = NamedSegments.problem(start: draft.start, end: draft.end, points: points, automatic: model.automatic)
         return DetailCard(title: draft.existing ? "Edit segment" : "Create segment", symbol: "flag") {
-            if draft.choices.count > 1 {
-                Text("You rode this \(draft.choices.count) times. Which one?").font(.subheadline.weight(.semibold))
-                ForEach(Array(draft.choices.enumerated()), id: \.element.id) { index, lap in
-                    Button { model.chooseTraversal(lap) } label: {
-                        HStack {
-                            Image(systemName: lap.start == draft.start ? "checkmark.circle.fill" : "circle")
-                            Text(lapLabel(index + 1, lap)).font(.footnote).foregroundColor(.primary)
-                            Spacer()
-                        }.frame(minHeight: 36)
-                    }
-                    .accessibilityAddTraits(lap.start == draft.start ? .isSelected : [])
-                }
-            }
             RangeSlider(start: draft.start, end: draft.end, first: draft.window.lowerBound, last: draft.window.upperBound, startLabel: "Segment start", endLabel: "Segment finish", onBegin: model.rememberSegmentRange) { model.setSegment(start: $0, end: $1) }
             HStack {
-                NudgeReadout(label: "Start", value: ActivityClock.time(points, draft.start)) { model.nudgeSegment(start: $0) }
-                NudgeReadout(label: "Finish", value: ActivityClock.time(points, draft.end)) { model.nudgeSegment(end: $0) }
+                NudgeReadout(label: "Start") { model.nudgeSegment(start: $0) }
+                NudgeReadout(label: "Finish") { model.nudgeSegment(end: $0) }
             }
-            HStack {
-                ReadoutPair(label: "Distance", value: ActivityDetailsFormat.distance(meters: figures?.distanceMeters ?? 0, unit: model.presentation.unit))
-                ReadoutPair(label: "Duration", value: ActivityDetailsFormat.clock(figures?.durationSeconds ?? 0))
-            }
+            ReadoutPair(label: "Length", value: ActivityDetailsFormat.distance(meters: figures?.distanceMeters ?? 0, unit: model.presentation.unit))
             if let gap = figures?.gapSeconds, gap > 0 { DetailFootnote(text: "Includes \(ActivityDetailsFormat.clock(gap)) without GPS; that stretch is not drawn or counted.") }
             if let problem { DetailFootnote(text: problem.message) }
             TextField("Segment name", text: $name).textFieldStyle(.roundedBorder).accessibilityIdentifier("segment.name")
@@ -240,11 +246,10 @@ struct SegmentEditorCard: View {
 // One GPS fix at a time, for the last few seconds of a short section.
 struct NudgeReadout: View {
     let label: String
-    let value: String
     let move: (Int) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ReadoutPair(label: label, value: value)
+            Text(label).font(.caption).foregroundColor(DetailStyle.muted)
             HStack(spacing: 6) {
                 Button { move(-1) } label: { Image(systemName: "minus") }.buttonStyle(DetailButtonStyle()).accessibilityLabel("Move \(label.lowercased()) earlier")
                 Button { move(1) } label: { Image(systemName: "plus") }.buttonStyle(DetailButtonStyle()).accessibilityLabel("Move \(label.lowercased()) later")

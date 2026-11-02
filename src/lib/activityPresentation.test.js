@@ -2,6 +2,7 @@ import {describe,expect,it} from 'vitest';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {activityMap,activityPresentation,HEART_CHART_SAMPLES,PRESENTATION_SCHEMA} from './activityPresentation.js';
 import {recordedJourney} from './recorder.js';
+import {segmentRides} from './segmentRides.js';
 
 const owner='11111111-1111-4111-8111-111111111111';
 const points=Array.from({length:60},(_,i)=>({latitude:-34.42+i*0.0005,longitude:150.89+i*0.0004,timestamp:1790000000+i*5,accuracy:5,altitude:20+i,speed:3,segment:i<30?0:1}));
@@ -70,7 +71,7 @@ describe('activityPresentation',()=>{
  });
  it('is the contract ActivityDetailsCore.swift decodes',()=>{
   const fixture=`${process.cwd()}/tests/fixtures/activity-presentation.json`;
-  const current=JSON.stringify({...present(journey,{maximumHeartRate:190}),revision:1},null,1)+'\n';
+  const current=JSON.stringify({...present(journey,{maximumHeartRate:190,segmentRides:segmentRides(journey,[journey])}),revision:1},null,1)+'\n';
   if(process.env.UPDATE_FIXTURES)writeFileSync(fixture,current);
   // The shape is the contract. Displayed times differ by the machine's time zone.
   const shape=value=>Array.isArray(value)?value.slice(0,1).map(shape):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,shape(value[key])])):value===null?'null':typeof value;

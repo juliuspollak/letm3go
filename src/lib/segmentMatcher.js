@@ -15,9 +15,9 @@ export const SEGMENT_MATCH_SETTINGS = Object.freeze({
   passToleranceMeters: 30,       // a tap admits fixes within this radius as one visit
   enterToleranceMeters: 30,      // a candidate must begin within this of the start (or finish, reverse)
   finishToleranceMeters: 30,     // a candidate must finish within this of the finish
-  matchToleranceMeters: 30,      // base on-route radius for a single fix
+  matchToleranceMeters: 15,      // base on-route radius for a single fix
   accuracyWidenFactor: 1,        // each metre of horizontal accuracy widens the radius by this
-  maxWidenMeters: 60,            // accuracy widening is capped at base + this
+  maxWidenMeters: 25,            // accuracy widening is capped at base + this
   progressToleranceMeters: 40,   // along-route progress may not go back or jump ahead more than this
   foldToleranceMeters: 10,       // where two arms overlap, a fix this much worse still counts as going forward
   checkpointCount: 20,           // evenly spaced checkpoints sampled for coverage
@@ -83,7 +83,10 @@ export function samePassRange(points, startPass, finishPass) {
   if (near && !inVisit) { visits += 1; inVisit = true; }
   else if (!near) inVisit = false;
  }
- if (visits >= 3) return {problem: 'multiple-laps'};
+ // Between two different places one return to the start is already another lap;
+ // a closed loop visits its start twice in a single lap.
+ const limit = metres(points[start], points[finish]) <= tolerance ? 3 : 2;
+ if (visits >= limit) return {problem: 'multiple-laps'};
  return {start, end: finish};
 }
 
@@ -224,6 +227,11 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
   if (along < minAlong) minAlong = along;
   if (along > maxAlong) maxAlong = along;
   matched.push({index: j, along, offset: projection.offset, timestamp: p.timestamp, accuracy: Number.isFinite(p.accuracy) ? p.accuracy : 0});
+  // Stop at the line: the fixes after it belong to whatever comes next, which on
+  // continuous laps is the next effort.
+  if (entryRefIndex === 0 && along >= lengthMeters - s.referenceSpacingMeters) { stop = 'finished'; break; }
+  // A ride the wrong way ends at the start, for the same reason.
+  if (entryRefIndex > 0 && along <= 0) { stop = 'finished'; break; }
   j++;
  }
  if (stop === null) stop = 'end';
@@ -281,7 +289,7 @@ function buildEffort(points, matched, lengthMeters, s) {
  const meanAccuracy = accuracies.reduce((a, b) => a + b, 0) / accuracies.length;
  const coverage = checkpointCoverage(segment, lengthMeters, s);
  const confidence = confidenceFor(coverage, meanOffsetMeters, meanAccuracy, s);
- return {startIndex, endIndex, startTimestamp, endTimestamp, elapsedSeconds, coverage, meanOffsetMeters, maxOffsetMeters, gapSeconds, confidence};
+ return {startIndex, endIndex, startTimestamp, endTimestamp, elapsedSeconds, coverage, meanOffsetMeters, maxOffsetMeters, meanAccuracyMeters: meanAccuracy, gapSeconds, confidence};
 }
 
 function classify(points, result, lengthMeters, s, nearStart, nearFinish) {
@@ -291,14 +299,15 @@ function classify(points, result, lengthMeters, s, nearStart, nearFinish) {
  const reachedFinish = maxAlong >= lengthMeters - s.finishToleranceMeters;
  const reachedStart = minAlong <= s.enterToleranceMeters;
  if (nearStart) {
-  if (stop === 'reverse') return {reject: {reason: 'reverse', startTimestamp: timestamp}};
-  if (stop === 'jump') return {reject: {reason: 'gap', startTimestamp: timestamp}};
+  // Reaching the finish is decided first: what happens afterwards is not this effort.
   if (reachedFinish) {
    const effort = buildEffort(points, matched, lengthMeters, s);
-   if (effort.meanAccuracy >= s.rejectAccuracyMeters) return {reject: {reason: 'low-accuracy', startTimestamp: timestamp}};
+   if (effort.meanAccuracyMeters >= s.rejectAccuracyMeters) return {reject: {reason: 'low-accuracy', startTimestamp: timestamp}};
    if (effort.coverage < s.checkpointCoverage) return {reject: {reason: 'partial', startTimestamp: timestamp}};
    return {effort};
   }
+  if (stop === 'reverse') return {reject: {reason: 'reverse', startTimestamp: timestamp}};
+  if (stop === 'jump') return {reject: {reason: 'gap', startTimestamp: timestamp}};
   if (stop === 'gap') return {reject: {reason: 'gap', startTimestamp: timestamp}};
   if (stop === 'off-route') return {reject: {reason: 'off-route', startTimestamp: timestamp}};
   return {reject: {reason: 'partial', startTimestamp: timestamp}};

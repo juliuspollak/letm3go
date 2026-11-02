@@ -5,6 +5,7 @@ import {activityPresentation} from '../lib/activityPresentation.js';
 import {acceptNativeMutation,activityDetailsRequests} from '../lib/activityDetailsRequests.js';
 import {nativeDetails} from '../lib/nativeActivityDetails.js';
 import {savedMaximum} from '../lib/heartRate.js';
+import {segmentRides} from '../lib/segmentRides.js';
 
 // While a screen is replaced by the next activity React unmounts and mounts in the
 // same turn. The native screen, its map and its panel survive that hand-over;
@@ -40,7 +41,14 @@ export default function NativeActivityDetail(props){
  // Only what the projection reads, not the grouping object, which is new on every
  // App render: a long route must not be projected again for an unrelated change.
  const metadata=grouping?.metadata,destinations=grouping?.destinations,groupedJourneys=grouping?.journeys;
- const presentation=useMemo(()=>activityPresentation(trip,{ownerID,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
+ // Looked up just after opening, so a long history never delays the screen.
+ const library=journeys||activities||NONE;
+ const [ridden,setRidden]=useState(NONE);
+ useEffect(()=>{
+  const timer=setTimeout(()=>setRidden(segmentRides(trip,library)),0);
+  return()=>clearTimeout(timer);
+ },[trip,library]);
+ const presentation=useMemo(()=>activityPresentation(trip,{ownerID,segmentRides:ridden,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,ridden,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
  // Native requests read the current account, activity and callbacks when they run.
  const context=useRef(null);
  const handlers=useRef(null);

@@ -9,7 +9,7 @@
   "recordedTitle": "Morning ride",
   "activity": "MTB",
   "activityLabel": "Mountain biking",
-  "subtitle": "Mountain biking · 2026-09-22",
+  "subtitle": "Mountain biking · 2026-09-21",
   "location": "Recorded on this iPhone",
   "state": "finished",
   "source": "device",
@@ -2709,6 +2709,30 @@
  },
  "segments": {
   "allowed": true,
+  "ridden": [
+   {
+    "id": "seg-1",
+    "ownerID": "22222222-2222-4222-8222-222222222222",
+    "owned": true,
+    "name": "Rock Garden",
+    "color": "#17A398",
+    "thisRide": 1,
+    "total": 1,
+    "rideCount": 1,
+    "best": "1:30",
+    "passes": [
+     {
+      "id": "22222222-2222-4222-8222-222222222222:1790000010",
+      "activityID": "22222222-2222-4222-8222-222222222222",
+      "rank": 1,
+      "time": "1:30",
+      "when": "21 Sept 2026 · 2:13 pm",
+      "title": "Morning ride",
+      "current": true
+     }
+    ]
+   }
+  ],
   "items": [
    {
     "id": "seg-1",
@@ -2717,7 +2741,7 @@
     "startIndex": 2,
     "endIndex": 20,
     "summary": "900 m · 1 min 30 s",
-    "detail": "12:13:30 am – 12:15:00 am · 19 GPS points · Private"
+    "detail": "2:13:30 pm – 2:15:00 pm · 19 GPS points · Private"
    }
   ]
  },

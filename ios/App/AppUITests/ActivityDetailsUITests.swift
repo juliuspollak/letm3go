@@ -134,15 +134,23 @@ final class ActivityDetailsUITests: XCTestCase {
         tapOnRoute("Start")
         XCTAssertTrue(app.staticTexts["Now tap where it ends"].waitForExistence(timeout: 5), "the first tap is taken")
         tapOnRoute("Finish")
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'You rode this'")).firstMatch.waitForExistence(timeout: 5), "each lap is offered")
-        shot("laps")
         let field = app.textFields["segment.name"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "the editor follows straight on")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'You rode this'")).firstMatch.exists, "no lap is asked for")
         app.buttons["Move finish earlier"].tap()
         field.tap(); field.typeText("Rock")
         Thread.sleep(forTimeInterval: 1)
         app.buttons["Save Segment"].firstMatch.tap()
         XCTAssertTrue(title.waitForExistence(timeout: 8), "saving returns to the page")
+    }
+    func testRiddenSegmentExpandsToEveryPassFastestFirst() {
+        let row = app.buttons.matching(NSPredicate(format: "label CONTAINS 'this ride'")).firstMatch
+        for _ in 0..<8 where !row.isHittable { drag(from: height * 0.8, to: height * 0.3, speed: .slow) }
+        XCTAssertTrue(row.isHittable, "the segment is listed with its counts")
+        row.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'fastest first'")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(identifier: "segment.pass").count, 1)
+        shot("ridden")
     }
     func testOneMinuteSegmentOfATwoHourRideWithLaps() {
         app.terminate()
@@ -162,17 +170,6 @@ final class ActivityDetailsUITests: XCTestCase {
         spot(0.5).tap(); Thread.sleep(forTimeInterval: 1)
         XCTAssertTrue(app.staticTexts["Now tap where it ends"].waitForExistence(timeout: 5), "the first tap lands on the line")
         spot(0.525).tap(); Thread.sleep(forTimeInterval: 1.5)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'You rode this 2 times'")).firstMatch.waitForExistence(timeout: 5), "both laps that way are offered")
-        shot("long-laps")
-        let laps = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Lap '"))
-        XCTAssertEqual(laps.count, 2)
-        for index in 0..<laps.count {
-            let label = laps.element(boundBy: index).label
-            XCTAssertTrue(label.contains(" min ") || label.hasSuffix(" s"), label)
-            XCTAssertFalse(label.contains(" h "), "a lap is a section, not the ride: \(label)")
-        }
-        laps.element(boundBy: 1).tap(); Thread.sleep(forTimeInterval: 1)
-        shot("long-lap2")
         app.buttons["Move finish later"].tap()
         let field = app.textFields["segment.name"]
         field.tap(); field.typeText("Short climb")

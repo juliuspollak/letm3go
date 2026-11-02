@@ -22,7 +22,6 @@ final class ActivityDetailsViewModel: ObservableObject {
         var history: [RangeDraft] = []
         // Tapping the map: nil once the section is chosen.
         var picking: Picking? = nil
-        var choices: [ActivitySegmentPicker.Traversal] = []
         var window: ClosedRange<Int>
     }
     enum Picking: Equatable {
@@ -187,7 +186,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     var visibleRange: ClosedRange<Int>? { presentation.trim.flatMap { $0.start < $0.end && $0.pointCount == points.count ? $0.start...$0.end : nil } }
     func repickSegment() {
         guard var current = segmentDraft, points.count >= 2 else { return }
-        current.picking = .start; current.choices = []; current.window = 0...(points.count - 1)
+        current.picking = .start; current.window = 0...(points.count - 1)
         pickProblem = ""
         segmentDraft = current
         onDraft?(draft)
@@ -206,9 +205,9 @@ final class ActivityDetailsViewModel: ObservableObject {
             current.picking = .finish(starts: tap.visits, marker: tap.closest)
         case .finish(let starts, _):
             let choices = ActivitySegmentPicker.traversals(starts: starts, finishes: tap.visits)
+            // Any pass marks the same stretch of trail; rides through it are counted later.
             guard let first = choices.first else { pickProblem = "The ride never went from the start to that spot. Tap further along, or Start over."; return }
             current.picking = nil
-            current.choices = choices.count > 1 ? choices : []
             segmentDraft = current
             chooseTraversal(first)
             onPanel?(.medium)

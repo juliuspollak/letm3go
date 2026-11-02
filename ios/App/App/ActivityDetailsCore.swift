@@ -101,9 +101,32 @@ struct ActivityPresentation: Decodable, Equatable {
         var summary: String
         var detail: String
     }
+    struct SegmentPass: Decodable, Equatable, Identifiable {
+        var id: String
+        var activityID: String
+        var rank: Int
+        var time: String
+        var when: String
+        var title: String
+        var current: Bool
+    }
+    // A segment this ride went through, and every pass of it anywhere, fastest first.
+    struct RiddenSegment: Decodable, Equatable, Identifiable {
+        var id: String
+        var owned: Bool
+        var name: String
+        var color: String
+        var thisRide: Int
+        var total: Int
+        var rideCount: Int
+        var best: String
+        var passes: [SegmentPass]
+    }
     struct Segments: Decodable, Equatable {
         var allowed: Bool
         var items: [Segment]
+        var ridden: [RiddenSegment]?
+        var list: [RiddenSegment] { ridden ?? [] }
     }
     struct Trail: Decodable, Equatable {
         var linkedID: String?
@@ -253,7 +276,7 @@ struct ActivityPresentation: Decodable, Equatable {
         sources = lossy([Source].self, .sources) ?? []
         photos = lossy(Photos.self, .photos) ?? Photos(coverID: nil, local: false, items: [])
         heart = lossy(Heart.self, .heart)
-        segments = lossy(Segments.self, .segments) ?? Segments(allowed: false, items: [])
+        segments = lossy(Segments.self, .segments) ?? Segments(allowed: false, items: [], ridden: nil)
         trail = lossy(Trail.self, .trail)
         trim = lossy(Trim.self, .trim)
         diagnostics = lossy(Diagnostics.self, .diagnostics)

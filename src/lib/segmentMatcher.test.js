@@ -176,6 +176,36 @@ describe('self-crossing loop and out-and-back', () => {
   expect(routePasses(ride, {latitude: ORIGIN_LAT, longitude: ORIGIN_LON})).toHaveLength(2);
  });
 
+ it('keeps an effort when the rider turns back after the finish', () => {
+  const ride = [];
+  for (let t = 0; t <= 140; t++) ride.push(trailFix(Math.min(700, 5 * t), 0, t));
+  for (let t = 141; t <= 280; t++) ride.push(trailFix(700 - 5 * (t - 140), 0, t));
+  const result = matchEfforts(definition, {id: 'turn', points: ride});
+  expect(result.efforts).toHaveLength(1);
+  expect(result.efforts[0].elapsedSeconds).toBeGreaterThanOrEqual(119);
+  expect(result.efforts[0].elapsedSeconds).toBeLessThanOrEqual(121);
+ });
+
+ it('counts every lap of continuous laps, not every other one', () => {
+  const ride = [];
+  const lap = t => { const place = t % 240; return place <= 120 ? 5 * place : 600 - 5 * (place - 120); };
+  for (let t = 0; t < 720; t++) ride.push(trailFix(lap(t), 0, t));
+  // There and back three times: the outbound passes are the three efforts.
+  expect(matchEfforts(definition, {id: 'laps', points: ride}).efforts).toHaveLength(3);
+ });
+
+ it('does not count a parallel trail 40 m away', () => {
+  const ride = [];
+  for (let t = 0; t <= 120; t++) ride.push(trailFix(5 * t, 40, t, 15));
+  expect(matchEfforts(definition, {id: 'parallel', points: ride}).efforts).toHaveLength(0);
+ });
+
+ it('counts a ride with ordinary GPS wander', () => {
+  const rng = prng(9), ride = [];
+  for (let t = 0; t <= 120; t++) ride.push(trailFix(5 * t, lateralNoise(rng), t));
+  expect(matchEfforts(definition, {id: 'wander', points: ride}).efforts).toHaveLength(1);
+ });
+
  it('still rejects a real U-turn on a straight route', () => {
   const ride = [];
   for (let t = 0; t <= 60; t++) ride.push(trailFix(300 * t / 60, 0, t));

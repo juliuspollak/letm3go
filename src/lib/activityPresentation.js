@@ -123,7 +123,7 @@ function privacySection(trip,places){
  return {title:preview.title,description:preview.description||'',segments:preview.points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
 }
 
-export function activityPresentation(trip,{ownerID,places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
+export function activityPresentation(trip,{ownerID,segmentRides=[],places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
  const points=Array.isArray(trip.points)?trip.points:[];
  const pointCount=points.length;
  const local=deletionIDs(trip).length===1;
@@ -140,7 +140,7 @@ export function activityPresentation(trip,{ownerID,places=[],vehicles=[],groupin
   sources:(trip.sourceRecords||[]).map(s=>({id:String(s.id),label:`View ${s.source==='tesla'?'Tesla':'iPhone'} recording`})),
   photos:{coverID,local,items:photos.map(photo=>({id:String(photo.id),caption:photo.caption||'',locationSource:photo.locationSource||'unlocated',captureTime:photo.captureTime??null,assetID:photo.assetID??null}))},
   heart:heartSection(trip,{unit,maximumHeartRate}),
-  segments:{allowed:segmentsAllowed,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · Private`}))},
+  segments:{allowed:segmentsAllowed,ridden:segmentRides,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · Private`}))},
   trail:canLinkTrail(trip)?{linkedID:trip.trail?.id??null,linkedLabel:trip.trail?trailLinkLabel(trip.trail):null}:null,
   trim:!segmentsBlockedTrim(trip,pointCount)?{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??pointCount-1,pointCount}:null,
   diagnostics:diagnostics(trip),
