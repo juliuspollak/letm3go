@@ -35,7 +35,11 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
  for(const pin of peoplePins)if(pin?.kind==='people'&&valid(pin.point)&&Array.isArray(pin.members)&&pin.members.length)pins.push(pin);
  return overview?{routes,pins,gaps,overview}:{routes,pins,gaps};
 }
-export const appleMaps={snapshot:options=>native.snapshot(options),open:options=>native.open(options),close:options=>native.close(options),embed:options=>native.embed(options),update:options=>native.update(options),unembed:options=>native.unembed(options),hide:options=>native.hide(options),resize:options=>native.resize(options),setOverlayInset:options=>native.setOverlayInset(options),addListener:(event,callback)=>native.addListener(event,callback)};
+export const appleMaps={snapshot:options=>native.snapshot(options),open:options=>native.open(options),close:options=>native.close(options),embed:options=>native.embed(options),update:options=>native.update(options),unembed:options=>native.unembed(options),hide:options=>native.hide(options),resize:options=>native.resize(options),setOverlayInset:options=>native.setOverlayInset(options),reset:()=>native.reset(),addListener:(event,callback)=>native.addListener(event,callback)};
+
+// This page is new, so nothing the native side still holds has an owner: a web
+// content reload runs no React cleanup. Sent before any embed can be.
+if(appleMapsAvailable())Promise.resolve().then(()=>appleMaps.reset()).catch(()=>{});
 
 // The overview is large (density lines, photos, highlight routes), so it crosses
 // the bridge once per key; every embed afterwards names the key only. The native

@@ -1,6 +1,7 @@
 import UIKit
 import MapKit
 import ImageIO
+import WebKit
 import Capacitor
 
 // Empty space between option buttons belongs to the live map.
@@ -66,7 +67,7 @@ private final class HighlightLine:MKPolyline {
     var casing=false
 }
 private let brandAccent=UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.65,green:0.71,blue:1,alpha:1) : UIColor(red:0.275,green:0.35,blue:0.85,alpha:1) }
-// A view tag, not a stored reference: the plugin owns this button, the coordinator places it.
+// The plugin owns this button (expandButtons); the tag lets the coordinator place it.
 private let mapExpandTag=8801
 private let mapMarkTag=8802
 private func applyMapStyle(_ map:MKMapView,_ style:String) {
@@ -901,6 +902,13 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         updateMapControls(next.controls)
         if isPeopleMap {installControls();applyIntent();plan();layoutIndicators();updateLocationButton(next.showsLocate && showsLayers)}
     }
+    // An overlay map fills the screen, so its compass sits below Full screen and
+    // clear of the status bar instead of where MapKit would put it.
+    func placeCompass(top:CGFloat) {
+        installCompass()
+        compassTop=top
+        layoutControls()
+    }
 
     // MARK: Overview
     // Replaced only when the overview key changes, never on a location update.
@@ -1539,7 +1547,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
 }
 
 @objc(AppleMapsPlugin)
-public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDelegate {
+public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     private weak var presentedMap:AppleMapController?
     private var presentedID:String?
     private var embeddedMaps:[String:MKMapView]=[:]
@@ -1547,120 +1555,70 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
     private var coordinators:[String:MapCoordinator]=[:]
     // Embedded maps hidden while a sheet or the photo viewer covers them.
     private var hiddenMaps=Set<String>()
-    // Overlay host: a transparent UIView parked behind the WKWebView. Overlay maps
-    // (the Activity Details background) live here so the React sheet can physically
-    // cover them; non-overlay maps (the Map tab) stay in webView.scrollView.
+    // Each map's Full screen button, so nothing outlives the map it opens.
+    private var expandButtons:[String:UIButton]=[:]
+    // Overlay host: a transparent UIView behind the web view's scroll view (Capacitor
+    // makes the WKWebView the controller's root view). Overlay maps (the Activity
+    // Details background) live here so the React sheet can physically cover them;
+    // non-overlay maps (the Map tab) stay in webView.scrollView.
     private weak var mapHostView:UIView?
     private var overlayMaps=Set<String>()
-    // The exposed map height (viewport px) reported by the sheet: the overlay map is
-    // touch-interactive only above this line; below it the sheet owns the gesture.
-    private var overlayExposedHeight:[String:Double]=[:]
-    private weak var mapPan:UIPanGestureRecognizer?
-    private weak var mapPinch:UIPinchGestureRecognizer?
-    private weak var mapTap:UITapGestureRecognizer?
+    // Where the sheet's top edge is, per map; see MapTouchBoundary. A map with no
+    // boundary yet takes no touches.
+    private var overlayBoundaries:[String:MapTouchBoundary]=[:]
     private func coordinator(for map:MKMapView)->MapCoordinator? {coordinators.values.first{$0.map===map}}
     private func mapID(for map:MKMapView)->String? {embeddedMaps.first{$0.value===map}?.key}
 
-    // The Activity Details map is a full-bleed background. It lives in a dedicated
-    // transparent host parked BEHIND the WKWebView so the React sheet can physically
-    // cover it (UIKit z-order: map host < web view < HTML sheet). The web view is
-    // made transparent here; the HTML page paints its own opaque background
-    // everywhere except the overlay map area (html.map-overlay).
+    // UIKit z-order: map host < web content < HTML sheet. The web view is made
+    // transparent here; the HTML page paints its own opaque background everywhere
+    // except the overlay map area (html.map-overlay).
     private func ensureMapHost()->UIView? {
-        guard let parent=self.bridge?.viewController?.view, let webView=self.bridge?.webView else {return nil}
-        if let host=mapHostView, host.superview===parent {return host}
-        let host=UIView(frame:parent.bounds)
+        guard let webView=self.bridge?.webView as? OverlayTouchWebView else {return nil}
+        if let host=mapHostView, host.superview===webView {return host}
+        let host=UIView(frame:webView.bounds)
         host.autoresizingMask=[.flexibleWidth,.flexibleHeight]
         host.backgroundColor = .clear
         host.isUserInteractionEnabled=true
-        parent.addSubview(host)
-        parent.sendSubviewToBack(host)
+        webView.addSubview(host)
+        webView.sendSubviewToBack(host)
         webView.isOpaque=false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
         mapHostView=host
-        installOverlayGestures(on:webView)
+        webView.overlayTarget={ [weak self, weak webView] point,event in
+            guard let self=self,let webView=webView else {return nil}
+            return self.overlayTarget(at:point,in:webView,event:event)
+        }
         return host
     }
 
-    // Overlay maps are behind the web view, so their built-in gestures never see a
-    // touch. These recognisers forward pan/pinch/tap that begin in the exposed
-    // (uncovered) map area; below the sheet the React sheet owns the gesture.
-    private func installOverlayGestures(on webView:WKWebView) {
-        if mapPan == nil {
-            let pan=UIPanGestureRecognizer(target:self,action:#selector(overlayPanned(_:)))
-            pan.cancelsTouchesInView=false
-            pan.delegate=self
-            webView.addGestureRecognizer(pan)
-            mapPan=pan
-        }
-        if mapPinch == nil {
-            let pinch=UIPinchGestureRecognizer(target:self,action:#selector(overlayPinched(_:)))
-            pinch.cancelsTouchesInView=false
-            pinch.delegate=self
-            webView.addGestureRecognizer(pinch)
-            mapPinch=pinch
-        }
-        if mapTap == nil {
-            let tap=UITapGestureRecognizer(target:self,action:#selector(overlayTapped(_:)))
-            tap.cancelsTouchesInView=false
-            tap.delegate=self
-            webView.addGestureRecognizer(tap)
-            mapTap=tap
-        }
-    }
-
-    // Only one overlay map is interactive at a time: the first live overlay whose
-    // exposed area contains the touch. Gestures on the sheet return nil and no-op.
-    private func overlayMap(for gesture:UIGestureRecognizer)->MKMapView? {
-        guard let webView=self.bridge?.webView else {return nil}
-        let point=gesture.location(in:webView)
+    // The view that receives a touch at this web view point, when that is an overlay
+    // map: MapKit's own hit test, so MapKit's gestures, annotations and callouts see
+    // a real touch. Nil leaves it to the web view, which owns the sheet.
+    private func overlayTarget(at point:CGPoint,in webView:WKWebView,event:UIEvent?)->UIView? {
         for id in overlayMaps {
-            guard let map=embeddedMaps[id], !map.isHidden else {continue}
-            let exposed=overlayExposedHeight[id] ?? 0
-            if Double(point.y) < exposed {return map}
+            guard let map=embeddedMaps[id],!map.isHidden,let boundary=overlayBoundaries[id],
+                  boundary.owner(x:point.x,y:point.y,active:activeOwner(of:event,map:map)) == .map else {continue}
+            return map.hitTest(webView.convert(point,to:map),with:event)
         }
         return nil
     }
-
-    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        return overlayMap(for:gestureRecognizer) != nil
-    }
-    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { return true }
-
-    @objc private func overlayPanned(_ pan:UIPanGestureRecognizer) {
-        guard let map=overlayMap(for:pan), let webView=self.bridge?.webView else {return}
-        if pan.state == .began { pan.setTranslation(.zero,in:webView); return }
-        let t=pan.translation(in:webView)
-        let span=map.region.span
-        let h=Double(max(1,Int(map.bounds.height))), w=Double(max(1,Int(map.bounds.width)))
-        var center=map.region.center
-        center.latitude -= Double(t.y)*span.latitudeDelta/h
-        center.longitude -= Double(t.x)*span.longitudeDelta/w
-        map.setRegion(MKCoordinateRegion(center:center,span:span),animated:false)
-        pan.setTranslation(.zero,in:webView)
-    }
-    @objc private func overlayPinched(_ pinch:UIPinchGestureRecognizer) {
-        guard let map=overlayMap(for:pinch) else {return}
-        var region=map.region
-        let s=Double(pinch.scale)
-        region.span.latitudeDelta = min(180,max(0.0001,region.span.latitudeDelta/s))
-        region.span.longitudeDelta = min(360,max(0.0001,region.span.longitudeDelta/s))
-        map.setRegion(region,animated:false)
-        pinch.scale=1
-    }
-    @objc private func overlayTapped(_ tap:UITapGestureRecognizer) {
-        guard let map=overlayMap(for:tap), tap.state == .ended else {return}
-        map.selectedAnnotations.forEach { map.deselectAnnotation($0,animated:false) }
+    // A finger still down. A new touch has no view yet, so it never counts itself.
+    private func activeOwner(of event:UIEvent?,map:MKMapView)->MapTouchOwner? {
+        let held=event?.allTouches?.filter{$0.view != nil && $0.phase != .ended && $0.phase != .cancelled} ?? []
+        if held.isEmpty {return nil}
+        return held.contains{$0.view?.isDescendant(of:map)==true} ? .map : .web
     }
 
-    // The sheet reports how much of the overlay map stays exposed (viewport px) so
-    // touch forwarding stops at the sheet's top edge.
+    // The sheet reports its top edge while it moves and exactly once it stops.
     @objc func setOverlayInset(_ call:CAPPluginCall) {
-        if let id=call.getString("mapID") {
-            overlayExposedHeight[id]=call.getDouble("height") ?? 0
+        DispatchQueue.main.async {
+            // A report can arrive after the map it describes has gone.
+            if let id=call.getString("mapID"),self.overlayMaps.contains(id) {
+                self.overlayBoundaries[id]=MapTouchBoundary(height:CGFloat(call.getDouble("height") ?? 0),moving:call.getBool("moving") ?? false)
+            }
+            call.resolve()
         }
-        call.resolve()
     }
 
     // The Map overview's density, photos and highlight routes, once per key.
@@ -1699,7 +1657,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
     }
     public let identifier="AppleMapsPlugin"
     public let jsName="AppleMaps"
-    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"resize",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverlayInset",returnType:CAPPluginReturnPromise)]
+    public let pluginMethods:[CAPPluginMethod]=[CAPPluginMethod(name:"setAppearance",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"snapshot",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"open",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"close",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"embed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"resize",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"update",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"unembed",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverview",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"hide",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"setOverlayInset",returnType:CAPPluginReturnPromise),CAPPluginMethod(name:"reset",returnType:CAPPluginReturnPromise)]
     @objc func setAppearance(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             let dark=call.getString("theme")=="dark"
@@ -1888,6 +1846,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
                     self.embeddedMaps[id]=map
                     self.overlayMaps.insert(id)
                 }
+                // A re-created map must not wait for the sheet to move.
+                if let exposed=call.getDouble("exposedHeight") {self.overlayBoundaries[id]=MapTouchBoundary(height:CGFloat(exposed))}
             } else {
                 map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
                 map.layer.cornerRadius=16;map.clipsToBounds=true
@@ -1907,12 +1867,12 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
                 button.tintColor = .label
                 button.layer.cornerRadius=22
                 button.layer.shadowOpacity=0.16;button.layer.shadowRadius=4;button.layer.shadowOffset=CGSize(width:0,height:1)
-                button.frame=overlay ? CGRect(x:max(0,x+width-56),y:y+12,width:44,height:44) : CGRect(x:max(0,width-56),y:12,width:44,height:44)
-                button.autoresizingMask=overlay ? [] : [.flexibleLeftMargin]
+                button.frame=CGRect(x:max(0,width-56),y:12,width:44,height:44)
+                button.autoresizingMask=[.flexibleLeftMargin]
                 button.tag=mapExpandTag
                 button.accessibilityLabel="Open full screen map"
-                button.addAction(UIAction { [weak self] _ in
-                    guard let self=self,let parent=self.bridge?.viewController,parent.presentedViewController==nil else {return}
+                button.addAction(UIAction { [weak self, weak map] _ in
+                    guard let self=self,let map=map,let parent=self.bridge?.viewController,parent.presentedViewController==nil else {return}
                     // Hide the embedded MKMapView while fullscreen MapKit owns the screen.
                     // It otherwise competes for rendering and can leave a blank map.
                     let embedded=self.coordinators[id]
@@ -1937,9 +1897,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
                     nav.modalPresentationStyle = .fullScreen
                     parent.present(nav,animated:true)
                 },for:.touchUpInside)
-                // Overlay maps are behind the web view, so the expand button must be
-                // a subview of the web view (above the map) to stay tappable.
-                if overlay { webView.addSubview(button) } else { map.addSubview(button) }
+                map.addSubview(button)
+                self.expandButtons[id]=button
             }
             if !overlay { scroll.bringSubviewToFront(map) }
             let coordinator=self.coordinators[id] ?? {
@@ -1953,6 +1912,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
                 return created
             }()
             coordinator.apply(content)
+            if overlay {self.placeOverlayControls(id,map:map,webView:webView)}
             // The full-screen map opened from this one shows the same people as they move.
             if self.presentedID==id {self.presentedMap?.update(content)}
             if content.camera == nil {
@@ -2005,20 +1965,42 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
             let frame=overlay ? CGRect(x:x,y:y,width:width,height:height) : CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
             if map.frame != frame { map.frame=frame }
             map.setNeedsLayout()
+            if overlay {self.placeOverlayControls(id,map:map,webView:webView)}
             if self.presentedID==id {self.presentedMap?.view.setNeedsLayout()}
             call.resolve(["resized":true])
         }
     }
+    // Below the status bar, in the full-bleed map's own coordinates.
+    private func placeOverlayControls(_ id:String,map:MKMapView,webView:WKWebView) {
+        guard let button=self.expandButtons[id] else {return}
+        let top=webView.safeAreaInsets.top+12
+        button.frame.origin=CGPoint(x:max(0,map.bounds.width-56),y:top)
+        self.coordinators[id]?.placeCompass(top:top+52)
+    }
+    // Everything the plugin holds for one map, removed together.
+    private func removeMap(_ id:String) {
+        guard let map=self.embeddedMaps.removeValue(forKey:id) else {return}
+        self.embeddedContent.removeValue(forKey:id)
+        self.hiddenMaps.remove(id)
+        self.overlayMaps.remove(id)
+        self.overlayBoundaries.removeValue(forKey:id)
+        self.expandButtons.removeValue(forKey:id)?.removeFromSuperview()
+        self.coordinators.removeValue(forKey:id)?.detach()
+        map.delegate=nil;map.removeFromSuperview()
+    }
     @objc func unembed(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
-            if let id=call.getString("mapID"),let map=self.embeddedMaps.removeValue(forKey:id) {
-                self.embeddedContent.removeValue(forKey:id)
-                self.hiddenMaps.remove(id)
-                self.overlayMaps.remove(id)
-                self.overlayExposedHeight.removeValue(forKey:id)
-                self.coordinators.removeValue(forKey:id)?.detach()
-                map.delegate=nil;map.removeFromSuperview()
-            }
+            if let id=call.getString("mapID") {self.removeMap(id)}
+            call.resolve()
+        }
+    }
+    // A new page has no maps. A web content reload runs no React cleanup, so whatever
+    // the previous page embedded is removed here; otherwise an overlay map nobody
+    // owns would go on taking touches from the top of every screen.
+    @objc func reset(_ call:CAPPluginCall) {
+        DispatchQueue.main.async {
+            Array(self.embeddedMaps.keys).forEach{self.removeMap($0)}
+            self.presentedMap?.close();self.presentedMap=nil;self.presentedID=nil
             call.resolve()
         }
     }
@@ -2055,6 +2037,14 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin, UIGestureRecognizerDe
             navigation.modalPresentationStyle = .fullScreen
             parent.present(navigation,animated:true)
         }
+    }
+}
+// The app's web view. Overlay maps sit behind its web content, which would otherwise
+// take every touch, even where the page is transparent.
+final class OverlayTouchWebView:WKWebView {
+    var overlayTarget:((CGPoint,UIEvent?)->UIView?)?
+    override func hitTest(_ point:CGPoint,with event:UIEvent?)->UIView? {
+        overlayTarget?(point,event) ?? super.hitTest(point,with:event)
     }
 }
 private class JourneyPin:MKPointAnnotation {
@@ -2136,7 +2126,8 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             if let r=metadata["radius"] as? Double,r.isFinite,r>0 {map.addOverlay(MKCircle(center:c,radius:min(r,100000)))}
             if picker {selected=c;navigationItem.rightBarButtonItem?.isEnabled=true}
         }
-        if !content.coordinates.isEmpty {map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:80,left:35,bottom:80,right:35),animated:false)}
+        if let camera=initialCamera {map.setCamera(camera,animated:false)}
+        else if !content.coordinates.isEmpty {map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:80,left:35,bottom:80,right:35),animated:false)}
         else {map.setRegion(MKCoordinateRegion(center:CLLocationCoordinate2D(latitude:0,longitude:0),span:MKCoordinateSpan(latitudeDelta:140,longitudeDelta:300)),animated:false)}
     }
     override func viewDidDisappear(_ animated:Bool){super.viewDidDisappear(animated);coordinator?.remember();if !finished {finished=true;completion?(["cancelled":true])};coordinator?.detach();map.delegate=nil}

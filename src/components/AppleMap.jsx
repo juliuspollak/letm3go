@@ -5,6 +5,11 @@ import MapControls from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
 import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
 import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
+import {createBoundaryReporter} from '../lib/overlayTouch.js';
+
+// How far down the screen an overlay map stays uncovered: the sheet's live top edge.
+const activitySheet=()=>typeof document==='undefined'?null:document.querySelector('.activity-sheet');
+const exposedHeight=sheet=>Math.max(0,Math.round(sheet?.getBoundingClientRect?.().top??0));
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
 // sent to the native map once per key and the payload names only the key.
@@ -175,7 +180,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport,overlay};
+    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport,overlay,...(overlay?{exposedHeight:exposedHeight(activitySheet())}:{})};
     if(!arrived)delete request.overview;
     embedSent.current=true;
     return appleMaps.embed(request).then(result=>({arrived,result}));
@@ -222,22 +227,25 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
  },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers,overlay]);
- // Overlay maps live behind the web view, so the native side needs the sheet's top
- // edge to route pan/pinch only to the exposed map. Report it once and on each
- // detent settle (the sheet's data-detent attribute changes only on settle, never
- // on a drag frame).
+ // Overlay maps live behind the web view, so the native side decides at touch-down
+ // whether a finger belongs to the map or the sheet. The sheet's height changes on
+ // every frame of a drag and of its CSS settle animation, both of which a
+ // ResizeObserver sees and neither of which costs anything while the sheet is idle.
  useEffect(()=>{
   if(!overlay||!appleMapsAvailable()||!embedded)return;
+  const reporter=createBoundaryReporter(state=>appleMaps.setOverlayInset({mapID,...state}));
+  const edge=new ResizeObserver(()=>reporter.update(exposedHeight(activitySheet())));
+  let watched=null;
   const report=()=>{
-   const sheet=typeof document==='undefined'?null:document.querySelector('.activity-sheet');
-   const top=sheet?.getBoundingClientRect?.().top??0;
-   void appleMaps.setOverlayInset({mapID,height:Math.max(0,Math.round(top))}).catch(()=>{});
+   const sheet=activitySheet();
+   if(sheet!==watched){edge.disconnect();if(sheet)edge.observe(sheet);watched=sheet;}
+   reporter.update(exposedHeight(sheet));
   };
   report();
-  if(typeof MutationObserver==='undefined'||typeof document==='undefined')return;
   const watcher=new MutationObserver(report);
   watcher.observe(document.body,{subtree:true,attributes:true,attributeFilter:['data-detent']});
-  return()=>watcher.disconnect();
+  window.addEventListener('resize',report);
+  return()=>{reporter.dispose();edge.disconnect();watcher.disconnect();window.removeEventListener('resize',report);};
  },[overlay,mapID,embedded]);
  const isTrimPreview=Boolean(trimRange);
  const projected=projection.flat();

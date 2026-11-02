@@ -33,3 +33,26 @@ func wrapMapChips(_ sizes:[CGSize],available:CGFloat,spacing:CGFloat=6)->(frames
     }
     return (frames,y+row)
 }
+
+// Who receives a touch that lands on the Activity Details screen. The native map
+// sits behind the web content, so this is decided at touch-down, before UIKit picks
+// a view; the sheet and the map then each run their own gestures undisturbed.
+enum MapTouchOwner:Equatable {case map,web}
+struct MapTouchBoundary:Equatable {
+    // Viewport points above the sheet's top edge.
+    var height:CGFloat
+    // The sheet is being dragged or animated, so height may be slightly old.
+    var moving=false
+    // A flick moves about this far between two reports. While the sheet moves the
+    // doubt falls to the sheet: a late map touch is lost, a sheet touch never is.
+    static let movingGuard:CGFloat=96
+    // SwipeBack listens for touches starting here, as on every other detail page.
+    static let backSwipeEdge:CGFloat=32
+    // active is the surface already holding a finger: every later finger joins it,
+    // so a pinch can cross the sheet's edge and a sheet drag stays exclusive.
+    func owner(x:CGFloat,y:CGFloat,active:MapTouchOwner?)->MapTouchOwner {
+        if let active=active {return active}
+        if x<=Self.backSwipeEdge {return .web}
+        return y<height-(moving ? Self.movingGuard : 0) ? .map : .web
+    }
+}

@@ -1571,6 +1571,9 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
 
 @objc(JourneyViewController)
 class JourneyViewController: CAPBridgeViewController {
+    override func webView(with frame:CGRect,configuration:WKWebViewConfiguration)->WKWebView {
+        OverlayTouchWebView(frame:frame,configuration:configuration)
+    }
     override func capacitorDidLoad() {
         // CSS owns safe-area padding. Native rubber-banding moves the entire
         // web viewport (including fixed navigation) and exposes the view below.
