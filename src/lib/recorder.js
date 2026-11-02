@@ -50,6 +50,7 @@ export const recorder = {
  openSettings:()=>native.openSettings(),
  requestMotionPermission:()=>native.requestMotionPermission(),
  resolveHeartRate:(id,accept)=>native.resolveHeartRate({id,accept}),
+ resolveEnergy:(id,accept)=>native.resolveEnergy({id,accept}),
  noteHouseholdDelivery:summary=>recorderAvailable()?native.noteHouseholdDelivery(summary).catch(()=>{}):Promise.resolve(),
  // Diagnostics only: a failure here must never affect the warning itself.
  noteRecordingWarning:(action,issue)=>recorderAvailable()?native.noteRecordingWarning({action,issue}).catch(()=>{}):Promise.resolve(),

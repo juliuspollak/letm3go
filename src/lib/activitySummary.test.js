@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {activeCalories,activitySummary,durationText,elevationGainMeters,heartRateSummary,workoutEnergy} from './activitySummary.js';
+import {activeCalories,activitySummary,durationText,elevationGainMeters,heartRateSummary,heldEnergy,workoutEnergy} from './activitySummary.js';
 
 describe('activity summary values',()=>{
  it('formats a duration in the largest useful unit',()=>{
@@ -100,4 +100,12 @@ it('never renders quarantined body data or falls back from an explicitly unavail
 it('retains trimmed whole-workout energy privately without showing it for a subset',()=>{
  const energy={schema:1,unit:'kcal',source:'healthkit',state:'final',active:400,total:500};
  expect(activitySummary({source:'watch',details:{wholeWorkoutEnergy:energy,unverifiedWholeWorkoutEnergy:energy}})).toEqual([]);
+});
+
+it('exposes held measured energy for an explicit consent decision without ever counting it',()=>{
+ const energy={schema:1,unit:'kcal',source:'healthkit',state:'final',active:400,total:500};
+ expect(heldEnergy({})).toBeNull();
+ expect(heldEnergy({details:{unverifiedEnergy:energy}})).toEqual({state:'final'});
+ expect(heldEnergy({details:{unverifiedWholeWorkoutEnergy:{...energy,state:'pending'}}})).toEqual({state:'pending'});
+ expect(activeCalories({source:'watch',details:{unverifiedEnergy:energy}})).toBeNull();
 });

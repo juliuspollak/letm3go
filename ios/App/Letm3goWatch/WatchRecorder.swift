@@ -85,6 +85,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var restoredWhileRecording = false
     private var recoveringWorkout = false
     private var heartSidecarLogged = false
+    private let energyJobs = WatchEnergyJobStore(directory: WatchPaths.energyJobDirectory)
 
     override init() {
         super.init()
@@ -260,6 +261,8 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func restore() {
         guard draft == nil else { return }
+        // Retry any finalization jobs left by a previous ride regardless of draft.
+        retryEnergyJobs()
         let restored: WatchRideDraft?
         do {
             restored = try store.loadRestorable()
@@ -334,6 +337,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     func refresh() {
         pendingCount = WatchTransferQueue.shared.pendingCount()
         WatchConnectivitySession.shared.sendPending()
+        retryEnergyJobs()
     }
 
     private func beginRide() {
@@ -645,6 +649,22 @@ final class WatchRecorder: NSObject, ObservableObject {
             }
         }
 
+        // Persist the scoped late-finalization job BEFORE the draft is deleted: the
+        // draft is the only durable copy of the measured sessions, and the job must
+        // survive base-ride receipt/deletion and process death.
+        let job = WatchEnergyJob(
+            rideID: ride.id, revision: 2,
+            ownerID: owner, deviceID: WatchDevice.identifier, appVersion: WatchDevice.appVersion,
+            activity: ride.activity, startedAt: ride.startedAt, endedAt: ride.endedAt ?? now,
+            activeSeconds: ride.duration(at: now), externalUUID: ride.id,
+            sessions: ride.energySessions, energy: ride.energySnapshot, state: "pending", now: now)
+        do {
+            try energyJobs.replace(job)
+        } catch {
+            finishFailed(ride, now: now)
+            return
+        }
+
         // The ride joins the watch's recent list as soon as it is safe.
         let summary = ride.heartRateSummary
         var entry = WatchHistoryEntry(id: ride.id, activity: ride.activity, equipmentID: ride.equipment?.id,
@@ -674,11 +694,12 @@ final class WatchRecorder: NSObject, ObservableObject {
             "heartRateSamples": String(ride.heartRate.count), "heartRateGaps": String(summary?.gaps ?? 0)])
         announcePresence(force: true)
 
-        finishWorkout { [weak self] saved in
+        finishWorkout { [weak self] saved, reading in
             guard let self else { return }
             self.finishing = false
             self.status = saved ? "Saved to Health · waiting for iPhone" : "Saved · waiting for iPhone"
             self.pendingCount = WatchTransferQueue.shared.pendingCount()
+            self.finalizeEnergyJob(jobID: job.id, reading: reading)
             WatchConnectivitySession.shared.flushDiagnostics()
         }
     }
@@ -754,6 +775,22 @@ extension WatchRecorder: CLLocationManagerDelegate {
 
 extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
     private static var heartRateType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .heartRate) }
+    private static var activeEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) }
+    private static var basalEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned) }
+
+    private static func configureDataSource(_ source: HKLiveWorkoutDataSource) {
+        for identifier: HKQuantityTypeIdentifier in [.heartRate, .activeEnergyBurned, .basalEnergyBurned] {
+            if let type = HKQuantityType.quantityType(forIdentifier: identifier) { source.enableCollection(for: type, predicate: nil) }
+        }
+    }
+
+    // Cumulative builder statistics for active and resting energy, in kcal. Zero is
+    // measured; a missing statistic is a missing reading, never an inferred zero.
+    private static func energyReading(_ builder: HKLiveWorkoutBuilder) -> WatchEnergyReading {
+        let active = activeEnergyType.flatMap { builder.statistics(for: $0)?.sumQuantity()?.doubleValue(for: .kilocalorie()) }
+        let basal = basalEnergyType.flatMap { builder.statistics(for: $0)?.sumQuantity()?.doubleValue(for: .kilocalorie()) }
+        return WatchEnergy.reading(activeKcal: active, basalKcal: basal)
+    }
 
     // The session needs the answer: starting it behind the first prompt failed, which
     // cost a first ride its background recording and its heart rate. Location already
@@ -802,19 +839,22 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     }
 
     private func startWorkout() {
-        guard HKHealthStore.isHealthDataAvailable(), workout == nil, let ride = draft else { return }
+        guard HKHealthStore.isHealthDataAvailable(), workout == nil, var ride = draft else { return }
         collectionFailure = false; sessionFailure = false
         let classification = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor)
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = Self.workoutType(classification.type)
         configuration.locationType = ride.indoor ? .indoor : .outdoor
         healthWorkoutSaves = classification.savesToHealth
+        // A fresh workout opens a fresh measured segment. Recovery reuses its id.
+        ride.beginEnergySession(at: Date().timeIntervalSince1970)
+        draft = ride
         do {
             let session = try HKWorkoutSession(healthStore: health, configuration: configuration)
             let builder = session.associatedWorkoutBuilder()
             let source = HKLiveWorkoutDataSource(healthStore: health, workoutConfiguration: configuration)
-            // Heart rate comes from this one source; there is no second query.
-            if let type = Self.heartRateType { source.enableCollection(for: type, predicate: nil) }
+            // Heart rate plus active and resting energy come from this one source.
+            Self.configureDataSource(source)
             builder.dataSource = source
             session.delegate = self
             builder.delegate = self
@@ -862,7 +902,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                     if self.draft?.isRecording == true, self.workout == nil { self.requestHealthAccessThenStartWorkout() }
                     return
                 }
-                guard let ride = self.draft else { session.end(); return }
+                guard var ride = self.draft else { session.end(); return }
                 self.healthWorkoutSaves = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor).savesToHealth
                 session.delegate = self
                 self.workout = session
@@ -870,10 +910,17 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                 builder.delegate = self
                 if builder.dataSource == nil {
                     let source = HKLiveWorkoutDataSource(healthStore: self.health, workoutConfiguration: session.workoutConfiguration)
-                    if let type = Self.heartRateType { source.enableCollection(for: type, predicate: nil) }
+                    Self.configureDataSource(source)
                     builder.dataSource = source
+                } else if let source = builder.dataSource {
+                    // A prior build may have joined without energy collection: enable it
+                    // now so recovered sessions keep producing active and resting energy.
+                    Self.configureDataSource(source)
                 }
                 self.builder = builder
+                // Rejoining the SAME workout keeps the SAME measured segment identity.
+                ride.recoverEnergySession(at: Date().timeIntervalSince1970)
+                self.draft = ride
                 WatchDiagnostics.log("health", "Workout session recovered after an interruption")
                 switch WatchWorkoutLifecycle.afterRecovery(rideWasRecording: self.restoredWhileRecording, sessionRunning: session.state == .running, rideRecordingNow: ride.isRecording) {
                 case .resumeRide: self.resume()
@@ -901,9 +948,9 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // Called by watchOS when it relaunches the app for an interrupted workout.
     func handleWorkoutRecovery() { restore() }
 
-    private func finishWorkout(_ completion: @escaping (Bool) -> Void) {
+    private func finishWorkout(_ completion: @escaping (Bool, WatchEnergyReading) -> Void) {
         guard let session = workout, let builder = builder else {
-            completion(false)
+            completion(false, WatchEnergy.reading(activeKcal: nil, basalKcal: nil))
             return
         }
         workout = nil
@@ -911,15 +958,17 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         let saves = healthWorkoutSaves
         session.end()
         builder.endCollection(withEnd: Date()) { _, _ in
+            // After endCollection the cumulative statistics are complete.
+            let reading = Self.energyReading(builder)
             guard saves else {
                 builder.discardWorkout()
-                Task { @MainActor in completion(false) }
+                Task { @MainActor in completion(false, reading) }
                 return
             }
             builder.finishWorkout { saved, _ in
                 Task { @MainActor in
                     if saved == nil { WatchDiagnostics.log("health", "Workout was not saved to Health") }
-                    completion(saved != nil)
+                    completion(saved != nil, reading)
                 }
             }
         }
@@ -931,6 +980,116 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         self.builder = nil
         session.end()
         builder.discardWorkout()
+    }
+
+    // Captures the final statistics of the session that just ended into the ride's
+    // durable per-session readings. For a system-ended workout this is the only
+    // chance to record that session's complete totals before a replacement session.
+    private func applyFinalEnergy(_ reading: WatchEnergyReading) {
+        guard var ride = draft else { return }
+        ride.applyEnergy(reading)
+        ride.finalizeEnergySession(at: Date().timeIntervalSince1970)
+        draft = ride
+        persist(force: true)
+    }
+
+    // After endCollection and finishWorkout the final statistics are known: refresh
+    // the job's energy, then enqueue the durable energy-only enrichment. A failed
+    // write/queue leaves the job retryable instead of being dropped.
+    private func finalizeEnergyJob(jobID: String, reading: WatchEnergyReading) {
+        var jobs = energyJobs.load()
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        var job = jobs[index]
+        if let sessionIndex = job.sessions.indices.last {
+            job.sessions[sessionIndex] = WatchEnergy.applying(reading, to: job.sessions[sessionIndex])
+            job.sessions[sessionIndex] = WatchEnergy.finalizing(job.sessions[sessionIndex], endedAt: job.endedAt)
+        }
+        job.energy = WatchEnergy.finalEnergy(job.sessions)
+        job.state = job.energy?.state ?? "unavailable"
+        job.finalized = true
+        do {
+            try WatchTransferQueue.shared.enqueue(job.enrichment())
+            job.enqueued = true
+            try energyJobs.remove(id: jobID)
+        } catch {
+            job.attempts += 1
+            job.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: job.attempts)
+            job.lastError = error.localizedDescription
+            try? energyJobs.replace(job)
+            WatchDiagnostics.log("error", "Energy finalization could not be queued", ["reason": "storage"])
+        }
+        pendingCount = WatchTransferQueue.shared.pendingCount()
+        WatchConnectivitySession.shared.sendPending()
+    }
+
+    // Retries failed finalization for jobs created by this producer. Only
+    // newly-created pending jobs are queried, using their captured external UUID
+    // and time bounds; historical activities are never scanned or backfilled.
+    func retryEnergyJobs() {
+        let now = Date().timeIntervalSince1970
+        var jobs = energyJobs.load()
+        guard !jobs.isEmpty else { return }
+        var changed = false
+        for index in jobs.indices where !jobs[index].finalized && jobs[index].nextAttemptAt <= now {
+            jobs[index].attempts += 1
+            jobs[index].nextAttemptAt = now + WatchQueuePolicy.delay(afterAttempts: jobs[index].attempts)
+            changed = true
+            queryFinalEnergy(jobID: jobs[index].id, externalUUID: jobs[index].externalUUID,
+                             startedAt: jobs[index].startedAt, endedAt: jobs[index].endedAt)
+        }
+        if changed { try? energyJobs.save(jobs) }
+    }
+
+    private func queryFinalEnergy(jobID: String, externalUUID: String, startedAt: Double, endedAt: Double) {
+        guard let uuid = UUID(uuidString: externalUUID),
+              let workoutType = HKObjectType.workoutType() as? HKSampleType else {
+            failEnergyJob(jobID: jobID, reason: "invalid-external-uuid")
+            return
+        }
+        let byUUID = HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID, allowedValues: [uuid])
+        let window = HKQuery.predicateForSamples(withStart: Date(timeIntervalSince1970: startedAt),
+                                                 end: Date(timeIntervalSince1970: endedAt), options: [])
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [byUUID, window])
+        let query = HKSampleQuery(sampleType: workoutType, predicate: predicate, limit: 1, sortDescriptors: nil) { [weak self] _, samples, error in
+            guard error == nil, let workout = samples?.first as? HKWorkout else {
+                Task { @MainActor in self?.failEnergyJob(jobID: jobID, reason: "no-workout") }
+                return
+            }
+            let active = Self.activeEnergyType.flatMap { workout.statistics(for: $0)?.sumQuantity()?.doubleValue(for: .kilocalorie()) }
+            let basal = Self.basalEnergyType.flatMap { workout.statistics(for: $0)?.sumQuantity()?.doubleValue(for: .kilocalorie()) }
+            let reading = WatchEnergy.reading(activeKcal: active, basalKcal: basal)
+            Task { @MainActor in self?.finalizeEnergyJob(jobID: jobID, reading: reading) }
+        }
+        health.execute(query)
+    }
+
+    // A bounded, honest outcome: after repeated failures nothing is available, so
+    // the job is finalized as unavailable rather than retrying forever or falsely
+    // claiming the HealthKit permission was denied.
+    private func failEnergyJob(jobID: String, reason: String) {
+        var jobs = energyJobs.load()
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        var job = jobs[index]
+        job.attempts += 1
+        job.lastError = reason
+        if job.attempts >= WatchEnergyJob.retryLimit {
+            job.energy = WatchEnergy.finalEnergy(job.sessions)
+            job.state = job.energy?.state ?? "unavailable"
+            job.finalized = true
+            do {
+                try WatchTransferQueue.shared.enqueue(job.enrichment())
+                job.enqueued = true
+                try energyJobs.remove(id: jobID)
+            } catch {
+                job.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: job.attempts)
+                try? energyJobs.replace(job)
+            }
+        } else {
+            job.nextAttemptAt = Date().timeIntervalSince1970 + WatchQueuePolicy.delay(afterAttempts: job.attempts)
+            try? energyJobs.replace(job)
+        }
+        pendingCount = WatchTransferQueue.shared.pendingCount()
+        WatchConnectivitySession.shared.sendPending()
     }
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState,
@@ -965,7 +1124,9 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         guard !finishing, ended === workout else { return }
         // Resuming must open a new session: holding the ended one left a resumed ride
         // with no background time and no heart rate. What was recorded is saved.
-        finishWorkout { _ in }
+        finishWorkout { [weak self] _, reading in
+            self?.applyFinalEnergy(reading)
+        }
         WatchDiagnostics.log("health", "Workout session ended by the system")
         guard var ride = draft, ride.isRecording else { return }
         let now = date.timeIntervalSince1970
@@ -994,14 +1155,24 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     }
 
     nonisolated func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {
-        guard let type = HKQuantityType.quantityType(forIdentifier: .heartRate), collectedTypes.contains(type),
-              let statistics = workoutBuilder.statistics(for: type), let quantity = statistics.mostRecentQuantity(),
-              let interval = statistics.mostRecentQuantityDateInterval() else { return }
-        let sample = WatchHeartRateSample(timestamp: interval.end.timeIntervalSince1970,
-                                          bpm: quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute())))
+        if let type = HKQuantityType.quantityType(forIdentifier: .heartRate), collectedTypes.contains(type),
+           let statistics = workoutBuilder.statistics(for: type), let quantity = statistics.mostRecentQuantity(),
+           let interval = statistics.mostRecentQuantityDateInterval() {
+            let sample = WatchHeartRateSample(timestamp: interval.end.timeIntervalSince1970,
+                                              bpm: quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute())))
+            Task { @MainActor in
+                guard workoutBuilder === self.builder else { return }
+                self.ingestHeartRate(sample)
+            }
+        }
+        guard let activeType = Self.activeEnergyType, let basalType = Self.basalEnergyType,
+              collectedTypes.contains(activeType) || collectedTypes.contains(basalType) else { return }
+        let active = workoutBuilder.statistics(for: activeType)?.sumQuantity()?.doubleValue(for: .kilocalorie())
+        let basal = workoutBuilder.statistics(for: basalType)?.sumQuantity()?.doubleValue(for: .kilocalorie())
+        let reading = WatchEnergy.reading(activeKcal: active, basalKcal: basal)
         Task { @MainActor in
             guard workoutBuilder === self.builder else { return }
-            self.ingestHeartRate(sample)
+            self.ingestEnergy(reading)
         }
     }
 
@@ -1020,6 +1191,13 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         lastHeartRate = sample
         heartRate = .live(sample.bpm)
         heartRateSummary = ride.heartRateSummary
+        persist(force: false)
+    }
+
+    private func ingestEnergy(_ reading: WatchEnergyReading) {
+        guard var ride = draft, ride.isRecording else { return }
+        ride.applyEnergy(reading)
+        draft = ride
         persist(force: false)
     }
 

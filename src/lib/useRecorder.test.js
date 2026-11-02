@@ -46,3 +46,9 @@ it('drops cached held whole-workout energy after native rejection',()=>{
  const cleared={id:'watch',details:{}};
  expect(reconcileRecorderSnapshot({ownerID:'me',trips:[held]},{ownerID:'me',trips:[cleared]}).trips[0]).toBe(cleared);
 });
+
+it('refreshes an energy-only revision/consent change even when energy values are unchanged',()=>{
+ const trip={id:'watch',updatedAt:1,details:{energy:{schema:1,unit:'kcal',source:'healthkit',state:'final',active:100},energyBinding:{revision:1,consent:'owner'}}};
+ const revised={...trip,details:{...trip.details,energyBinding:{revision:2,consent:'owner'}}};
+ expect(reconcileRecorderSnapshot({ownerID:'me',trips:[trip]},{ownerID:'me',trips:[revised]}).trips[0]).toBe(revised);
+});

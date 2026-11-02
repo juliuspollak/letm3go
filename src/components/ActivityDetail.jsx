@@ -22,6 +22,7 @@ import { recordedRouteSegments } from '../lib/mapGeometry.js';
 import { SUGGESTION_PAGE_SIZE, mergeSuggestionPages, nextSuggestionOffset } from '../lib/photoSuggestions.js';
 import ActivitySummary from './ActivitySummary.jsx';
 import ActivityMoments from './ActivityMoments.jsx';
+import EnergyConsent from './EnergyConsent.jsx';
 import ActivitySheet from './ActivitySheet.jsx';
 import PhotoSuggestions from './PhotoSuggestions.jsx';
 export default function ActivityDetail({ownerID,trip,activities,places,vehicles=[],onEquipment,onBack,onEdit,onPhoto,run,lastError,onUpdated,onDeleted,busy,error,onSource,onStopChange,grouping,unit='km'}){
@@ -193,6 +194,7 @@ export default function ActivityDetail({ownerID,trip,activities,places,vehicles=
    <button className="back text-button" onClick={onBack}><ArrowLeft size={18}/> Back to activities</button>
    <div className="page-heading activity-detail-heading"><div><div className="activity-title-line"><h1>{trip.title}</h1>{local&&<button type="button" className="icon-button activity-title-edit" aria-label="Edit activity" onClick={onEdit} disabled={busy}><Pencil size={17}/></button>}{local&&<ActivityPrivacy trip={trip} places={places||[]}/>}</div><div className="activity-detail-subtitle-row"><p className="activity-detail-subtitle muted">{activityLabel(trip.activity)}{trip.source==='watch'?' · Apple Watch':''} · {trip.date}</p>{trip.state!=='recording'&&onEquipment&&<EquipmentButton trip={trip} items={vehicles} onOpen={onEquipment} disabled={busy}/>}</div><p className="muted"><MapPin size={14}/>{trip.location}</p></div></div>
    <ActivitySummary trip={trip} unit={unit}/>
+   <EnergyConsent trip={trip} busy={busy} onResolve={accept=>perform('resolveEnergy',trip.id,accept)}/>
    <ActivityMoments trip={trip} local={local} busy={busy} adding={addingPhotos} onPhoto={showPhoto} onAddPhotos={addPhotos} onFindPhotos={findSuggestions}/>
    {trip.telemetryIncomplete&&<p className="notice">Route incomplete · Missing telemetry has not been reconstructed.</p>}
    {trip.sourceRecords&&<section className="notice"><h3>Recordings of this drive</h3><p>Both sources are preserved. Photos and notes stay with their originals.</p>{trip.sourceRecords.map(s=><button key={s.id} className="secondary" onClick={()=>onSource?.(s)}>View {s.source==='tesla'?'Tesla':'iPhone'} recording</button>)}</section>}

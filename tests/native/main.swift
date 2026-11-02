@@ -4366,4 +4366,135 @@ do {
     check(WatchActivityImport.activity(from: transfer)?.details?.energy == nil, "missing energy is not fabricated")
 }
 
+
+// Windows continuation (phase 02 producer/persistence/transport): prepared for
+// macOS execution; never claimed run on Windows. These exercise the shared
+// production core (WatchActivityCore) rather than copied algorithms.
+do {
+    // --- Per-session cumulative replacement vs addition ---
+    var ride = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    ride.beginEnergySession(at: 1000)
+    ride.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    ride.applyEnergy(WatchEnergy.reading(activeKcal: 22, basalKcal: 9))
+    check(ride.energySessions.count == 1, "one workout session is one measured segment")
+    check(ride.energySessions[0].activeKcal == 22 && ride.energySessions[0].basalKcal == 9, "repeated builder totals replace, not add")
+    check(WatchEnergy.activeKcal(ride.energySessions) == 22, "active energy sums distinct measured segments")
+    check(WatchEnergy.totalKcal(ride.energySessions) == 31, "total is active plus resting when both measured")
+    ride.segment += 1
+    ride.beginEnergySession(at: 1200)
+    ride.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: 3))
+    check(ride.energySessions.count == 2, "a replacement workout opens a new measured segment")
+    check(WatchEnergy.activeKcal(ride.energySessions) == 30, "only distinct measured segments are summed")
+    check(WatchEnergy.totalKcal(ride.energySessions) == 43, "total sums active and resting across segments")
+    var incomplete = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    incomplete.beginEnergySession(at: 1000)
+    incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    incomplete.segment += 1
+    incomplete.beginEnergySession(at: 1200)
+    incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: nil))
+    check(WatchEnergy.activeKcal(incomplete.energySessions) == nil, "active energy is unavailable if any segment lacks active")
+    check(WatchEnergy.totalKcal(incomplete.energySessions) == nil, "total is unavailable if any segment lacks resting")
+    var zero = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    zero.beginEnergySession(at: 1000)
+    zero.applyEnergy(WatchEnergy.reading(activeKcal: 0, basalKcal: 0))
+    check(WatchEnergy.activeKcal(zero.energySessions) == 0, "measured zero active energy is retained")
+    check(WatchEnergy.totalKcal(zero.energySessions) == 0, "measured zero total energy is retained")
+    check(WatchEnergy.finalEnergy([])?.state == "unavailable", "no measured session finalizes unavailable, not pending")
+    var recovered = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    recovered.beginEnergySession(at: 1000)
+    recovered.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    recovered.recoverEnergySession(at: 2000)
+    check(recovered.energySessions.count == 1, "recovery reuses the same measured segment identity")
+    recovered.applyEnergy(WatchEnergy.reading(activeKcal: 20, basalKcal: 8))
+    check(WatchEnergy.activeKcal(recovered.energySessions) == 20, "recovered cumulative totals still replace")
+}
+
+
+do {
+    // --- Enrichment protocol ---
+    var base = WatchRideDraft(activity: "MTB", startedAt: 1000, ownerID: "owner-1")
+    base.beginEnergySession(at: 1000)
+    base.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    base.finish(at: 1060)
+    let baseTransfer = base.transfer(now: 1060, ownerID: "owner-1", deviceID: "device-1", appVersion: "1.0")!
+    var trip = WatchActivityImport.activity(from: baseTransfer, heartRateVerified: true)!
+    check(trip.details?.energyBinding?.revision == 1 && trip.details?.energyBinding?.consent == "owner", "base import records binding revision and owner consent")
+    var finalEnergy = ActivityEnergy(); finalEnergy.state = "final"; finalEnergy.active = 22; finalEnergy.total = 31
+    var enrichment = WatchActivityTransfer(id: UUID().uuidString, ownerID: "owner-1", activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [], schema: 4, deviceID: "device-1", energy: finalEnergy, energyTargetID: base.id, energyRevision: 2, energyWorkoutExternalUUID: base.id, energySessionIDs: ["s1"])
+    if case .applied(let updated) = WatchEnergyImport.apply(enrichment, to: trip, now: 1070) {
+        check(updated.details?.energy?.active == 22, "enrichment updates only measured energy metadata")
+        check(updated.details?.energyBinding?.revision == 2, "enrichment advances the monotone revision")
+        check(updated.points == trip.points && updated.title == trip.title, "enrichment never touches route or title")
+    } else { check(false, "enrichment should apply") }
+    if case .duplicate = WatchEnergyImport.apply(enrichment, to: trip, now: 1070) {} else { check(false, "stale revision is a duplicate") }
+    var wrongOwner = enrichment; wrongOwner.ownerID = "other"
+    if case .rejected(let reason) = WatchEnergyImport.apply(wrongOwner, to: trip, now: 1070) { check(reason == "wrong-owner", "wrong owner rejected") } else { check(false, "wrong owner") }
+    var wrongDevice = enrichment; wrongDevice.deviceID = "other-device"
+    if case .rejected(let reason) = WatchEnergyImport.apply(wrongDevice, to: trip, now: 1070) { check(reason == "wrong-device", "wrong device rejected") } else { check(false, "wrong device") }
+    var wrongWindow = enrichment; wrongWindow.startedAt = 5000
+    if case .rejected(let reason) = WatchEnergyImport.apply(wrongWindow, to: trip, now: 1070) { check(reason == "wrong-window", "wrong window rejected") } else { check(false, "wrong window") }
+    var oldTrip = trip
+    oldTrip.details?.energyBinding = nil
+    if case .rejected(let reason) = WatchEnergyImport.apply(enrichment, to: oldTrip, now: 1070) { check(reason == "unbound-target", "old record without binding is never mutated") } else { check(false, "unbound") }
+    var trimmedSource = trip
+    trimmedSource.details?.visibleRouteStart = 0
+    trimmedSource.details?.visibleRouteEnd = 1
+    trimmedSource.details?.wholeWorkoutEnergy = trimmedSource.details?.energy
+    trimmedSource.details?.energy = nil
+    if case .applied(let trimmedUpdated) = WatchEnergyImport.apply(enrichment, to: trimmedSource, now: 1070) {
+        check(trimmedUpdated.details?.energy == nil && trimmedUpdated.details?.wholeWorkoutEnergy?.active == 22, "trimmed target keeps whole-workout energy in archives")
+    } else { check(false, "trimmed enrichment should apply") }
+    var unclaimed = WatchActivityImport.activity(from: baseTransfer, heartRateVerified: false)!
+    check(unclaimed.details?.unverifiedEnergy != nil && unclaimed.details?.energy == nil, "unclaimed body energy is held")
+    if case .applied(let heldUpdate) = WatchEnergyImport.apply(enrichment, to: unclaimed, now: 1070) {
+        check(heldUpdate.details?.unverifiedEnergy?.active == 22 && heldUpdate.details?.energy == nil, "unclaimed enrichment stays held")
+    } else { check(false, "unclaimed enrichment held") }
+    var resolved = unclaimed
+    check(resolved.resolveUnverifiedEnergy(accept: true), "explicit energy accept")
+    check(resolved.details?.energy?.active == 22 && resolved.details?.unverifiedEnergy == nil, "accept moves held energy to the record")
+    var rejected = unclaimed
+    check(rejected.resolveUnverifiedEnergy(accept: false), "explicit energy reject")
+    check(rejected.details?.unverifiedEnergy == nil && rejected.details?.energyBinding?.consent == "rejected", "rejection is persisted")
+    if case .duplicate = WatchEnergyImport.apply(enrichment, to: rejected, now: 1071) {} else { check(false, "late update cannot reintroduce rejected energy") }
+    // A combined heart-rate reject also persists the energy refusal.
+    var combinedReject = unclaimed
+    check(combinedReject.resolveUnverifiedHeartRate(accept: false), "combined reject handles held energy")
+    check(combinedReject.details?.energyBinding?.consent == "rejected", "combined reject persists the energy refusal")
+    if case .duplicate = WatchEnergyImport.apply(enrichment, to: combinedReject, now: 1072) {} else { check(false, "late update cannot reintroduce after combined reject") }
+
+    // --- Energy-only outbox unique delivery ack/replay ---
+    let energyOutboxDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: energyOutboxDirectory) }
+    let energyOutbox = WatchOutbox(directory: energyOutboxDirectory)
+    let energyDelivery = WatchActivityTransfer(id: UUID().uuidString, ownerID: "owner-1", activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [], schema: 4, deviceID: "device-1", energy: finalEnergy, energyTargetID: "target-1", energyRevision: 2, energyWorkoutExternalUUID: "target-1", energySessionIDs: ["s1"])
+    let energyEntry = try energyOutbox.enqueue(energyDelivery, now: 1000)
+    check(energyEntry.id == energyDelivery.id, "energy-only delivery enqueues under its own id")
+    _ = try energyOutbox.enqueue(energyDelivery, now: 1001)
+    check(energyOutbox.loadIndex().count == 1, "re-enqueueing the same energy id is a no-op")
+    check(energyOutbox.payloadState(energyDelivery.id) == .ready(energyDelivery), "energy payload is immutable once enqueued")
+    _ = try energyOutbox.noteDelivered(energyDelivery.id, status: "saved", now: 1002)
+    check(!energyOutbox.loadIndex().contains { $0.id == energyDelivery.id }, "acknowledgement retires the energy delivery")
+    check(energyOutbox.payloadState(energyDelivery.id) == .missing, "acked energy delivery is not re-sent")
+}
+
+
+do {
+    // --- Durable job store persistence failure retries ---
+    let jobDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: jobDirectory) }
+    let jobBackend = FailingWatchBackend()
+    let jobStore = WatchEnergyJobStore(directory: jobDirectory, backend: jobBackend)
+    let job = WatchEnergyJob(rideID: "ride-1", revision: 2, ownerID: "owner-1", deviceID: "device-1", appVersion: "1.0", activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, externalUUID: "ride-1", sessions: [], energy: nil, state: "pending", now: 1000)
+    jobBackend.failWrite = { $0.lastPathComponent == "energy-jobs.json" }
+    var jobThrew = false
+    do { try jobStore.replace(job) } catch { jobThrew = true }
+    check(jobThrew, "a failed job write is reported, never assumed")
+    check(jobStore.load().isEmpty, "a failed job write leaves no half-written durable state")
+    jobBackend.failWrite = nil
+    try jobStore.replace(job)
+    check(jobStore.load().count == 1, "job persists once storage recovers")
+    try jobStore.remove(id: job.id)
+    check(jobStore.load().isEmpty, "removing a finalized job is durable")
+}
+
 print("\(assertions) native recorder/auth assertions passed")

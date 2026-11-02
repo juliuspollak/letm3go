@@ -78,7 +78,30 @@ struct RecordedActivity: Codable {
         if !accept {
             metadata.unverifiedEnergy = nil
             metadata.unverifiedWholeWorkoutEnergy = nil
+            // A combined reject persists the energy refusal so a late enrichment
+            // cannot reintroduce the held reading the rider just removed.
+            metadata.energyBinding?.consent = "rejected"
         }
+        details = metadata
+        return true
+    }
+    // The rider's dedicated answer about held measured energy. Heart-rate
+    // acceptance never reaches this: only an explicit energy accept or reject may
+    // move or discard the quarantined reading, and a rejection is persisted so a
+    // late enrichment cannot reintroduce it.
+    mutating func resolveUnverifiedEnergy(accept: Bool) -> Bool {
+        guard var metadata = details else { return false }
+        let held = metadata.unverifiedEnergy ?? metadata.unverifiedWholeWorkoutEnergy
+        guard held != nil else { return false }
+        if accept {
+            if metadata.unverifiedEnergy != nil { metadata.energy = metadata.unverifiedEnergy }
+            if metadata.unverifiedWholeWorkoutEnergy != nil { metadata.wholeWorkoutEnergy = metadata.unverifiedWholeWorkoutEnergy }
+            metadata.energyBinding?.consent = "claimed"
+        } else {
+            metadata.energyBinding?.consent = "rejected"
+        }
+        metadata.unverifiedEnergy = nil
+        metadata.unverifiedWholeWorkoutEnergy = nil
         details = metadata
         return true
     }
@@ -424,6 +447,11 @@ enum RecorderHistoryFingerprint {
         return [String(energy.schema), energy.unit, energy.source, energy.state,
                 energy.active.map { String($0) } ?? "missing", energy.total.map { String($0) } ?? "missing"].joined(separator: ":")
     }
+    private static func bindingKey(_ binding: WatchEnergyBinding?) -> String {
+        guard let binding else { return "absent" }
+        return [binding.ownerID ?? "", binding.deviceID ?? "", binding.externalUUID ?? "",
+                String(binding.revision), binding.consent ?? ""].joined(separator: ":")
+    }
     static func token(_ trips: [RecordedActivity], owner: String) -> String {
         let rows = trips.map { trip -> [String] in
             var fields = [trip.id, trip.source, trip.title, trip.activity, trip.state, trip.recordingMode ?? ""]
@@ -433,6 +461,7 @@ enum RecorderHistoryFingerprint {
             fields += [String(trip.details?.visibleRouteStart ?? -1), String(trip.details?.visibleRouteEnd ?? -1), trip.details?.coverPhotoID ?? ""]
             fields += [energyKey(trip.details?.energy), energyKey(trip.details?.unverifiedEnergy),
                        energyKey(trip.details?.wholeWorkoutEnergy), energyKey(trip.details?.unverifiedWholeWorkoutEnergy)]
+            fields += [bindingKey(trip.details?.energyBinding)]
             return fields
         }
         let data = (try? JSONEncoder().encode([[owner]] + rows)) ?? Data()
@@ -698,6 +727,25 @@ struct ActivityEnergy: Codable, Equatable {
     }
 }
 
+
+// Original capture binding for measured energy. Written only on NEW imports from
+// the Watch producer (a schema 3 base ride that declares an external workout id).
+// Old records without a binding are never mutated by late energy enrichment.
+struct WatchEnergyBinding: Codable, Equatable {
+    var ownerID: String?
+    var deviceID: String?
+    var startedAt: Double?
+    var endedAt: Double?
+    var externalUUID: String?
+    var sessionIDs: [String]?
+    var revision: Int = 1
+    // nil: held pending explicit consent; "owner": captured owner verified at
+    // import; "claimed": the rider explicitly accepted held energy; "rejected":
+    // the rider explicitly refused it.
+    var consent: String?
+}
+
+
 struct ActivityDetails: Codable {
     var description = ""
     var notes = ""
@@ -750,6 +798,8 @@ struct ActivityDetails: Codable {
     // as calories for the resulting route subset and never cloud-backed up.
     var wholeWorkoutEnergy: ActivityEnergy?
     var unverifiedWholeWorkoutEnergy: ActivityEnergy?
+    // Binding/revision/consent captured at import; used to validate late enrichment.
+    var energyBinding: WatchEnergyBinding?
     var indoor: Bool?
     // Other records on this iPhone covering the same time. Both are kept.
     var overlaps: [WatchOverlap]?

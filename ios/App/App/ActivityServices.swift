@@ -294,6 +294,65 @@ extension LocationRecorder {
             return .deferred
         }
     }
+    // Applies an energy-only enrichment (schema 4). It is recognised BEFORE normal
+    // import validation, defers while the base ride has not arrived, honours target
+    // tombstones, and updates ONLY energy metadata (never route/title/photos/equipment).
+    func importEnergyEnrichment(_ transfer: WatchActivityTransfer, claimedBy: String? = nil) -> WatchImportOutcome {
+        guard storage != nil, storeOpened, !accountSuspended, !accountDeleting, let ownerID = ownerID else { return .deferred }
+        guard transfer.isEnergyEnrichment else { return .rejected("invalid-payload") }
+        switch WatchOwnership.decision(transferOwner: transfer.ownerID, claimedBy: claimedBy, currentOwner: ownerID) {
+        case .noAccountOpen:
+            return .deferred
+        case .foreignAccount:
+            return .foreignAccount
+        case .unclaimed, .importable:
+            break
+        }
+        guard let targetID = transfer.energyTargetID,
+              let index = trips.firstIndex(where: { ActivityIdentity.matches($0.id, targetID) }) else {
+            // Base ride not received yet: keep the payload and retry, never a phantom ride.
+            return .deferred
+        }
+        // A deleted ride must not be resurrected by a late energy update.
+        if (try? storage!.isDeleted(targetID)) == true { return .duplicate }
+        let trip = trips[index]
+        switch WatchEnergyImport.apply(transfer, to: trip, now: Date().timeIntervalSince1970) {
+        case .applied(let updated):
+            do {
+                try storage!.save(updated)
+                trips[index] = updated
+                recordDiagnostic("watch", "Applied an Apple Watch energy update", details: [
+                    "revision": String(transfer.energyRevision ?? 0),
+                    "state": updated.details?.energy?.state ?? updated.details?.unverifiedEnergy?.state ?? "none"
+                ])
+                notifyJourneyChange()
+                return .imported
+            } catch {
+                lastError = error.localizedDescription
+                return .deferred
+            }
+        case .duplicate:
+            return .duplicate
+        case .rejected(let reason):
+            recordDiagnostic("watch", "Rejected an Apple Watch energy update", details: ["reason": reason])
+            return .rejected(reason)
+        }
+    }
+
+    // The rider's dedicated accept/reject for held measured energy. Heart-rate
+    // acceptance never calls this: only an explicit energy decision may move or
+    // discard the quarantine, and rejection is persisted against late enrichment.
+    func resolveEnergy(id: String, accept: Bool) throws {
+        guard let storage = storage, let index = trips.firstIndex(where: { $0.id == id }) else { throw failure("Activity not found.") }
+        var trip = trips[index]
+        guard trip.resolveUnverifiedEnergy(accept: accept) else { return }
+        trip.updatedAt = Date().timeIntervalSince1970
+        try storage.save(trip)
+        trips[index] = trip
+        recordDiagnostic("watch", accept ? "Held measured energy accepted" : "Held measured energy removed")
+        notifyJourneyChange()
+    }
+
 }
 
 final class PositionRequest: NSObject, CLLocationManagerDelegate {

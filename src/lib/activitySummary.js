@@ -78,6 +78,15 @@ export function workoutEnergy(trip){
  return {activeKcal,totalKcal,state:energy.state==='final'&&activeKcal==null&&totalKcal==null?'unavailable':energy.state,source:trip.source==='watch'?'watch':null};
 }
 
+// Held measured energy is never shown or counted: it waits for an explicit
+// accept/reject by the person, independent of heart-rate acceptance.
+export function heldEnergy(trip){
+ const held=trip?.details?.unverifiedEnergy??trip?.details?.unverifiedWholeWorkoutEnergy;
+ if(!held)return null;
+ const state=held.state==='pending'?'pending':held.state;
+ return {state};
+}
+
 export function activeCalories(trip){
  if(trip?.details?.energy!=null){
   const energy=workoutEnergy(trip);
