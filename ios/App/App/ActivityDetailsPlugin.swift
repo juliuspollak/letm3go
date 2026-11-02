@@ -58,7 +58,8 @@ public class ActivityDetailsPlugin: CAPPlugin, CAPBridgedPlugin, ActivityDetails
             if let screen, screen.activityID != presentation.activityID { cancelRequests() }
             screen?.update(presentation, map: map)
         case .stale: break
-        case .wrongAccount: close(notify: false)
+        // React must leave the screen too, or it is left with nothing on show.
+        case .wrongAccount: close(notify: true)
         }
         call.resolve()
     }

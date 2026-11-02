@@ -2370,9 +2370,17 @@ final class ActivityMapEngine:NSObject,MKMapViewDelegate {
         guard let pin=annotation as? JourneyPin else {return nil}
         let kind=pin.metadata["kind"] as? String ?? ""
         if kind=="segment" {return segmentMarker(pin)}
-        if kind=="photo",let photoID=pin.metadata["photoID"] as? String,let thumbnail=journalPhotoThumbnail(photoID,size:52) {
+        if kind=="photo",let photoID=pin.metadata["photoID"] as? String {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
-            view.image=thumbnail;view.centerOffset=CGPoint(x:0,y:-24);view.canShowCallout=true;view.displayPriority = .required
+            // Decoded in the background: a pin never reads a photo on the main thread.
+            view.image=overviewPhotoMarker(photoID,size:52,load:false)
+            if cachedJournalPhoto(photoID,size:47,circle:true)==nil {
+                loadJournalPhoto(photoID,size:47,circle:true) { [weak view,weak pin] in
+                    guard let view=view,let pin=pin,view.annotation===pin else {return}
+                    view.image=overviewPhotoMarker(photoID,size:52,load:false)
+                }
+            }
+            view.centerOffset=CGPoint(x:0,y:-24);view.canShowCallout=true;view.displayPriority = .required
             view.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)
             view.accessibilityLabel=pin.title ?? "Activity photo"
             if (pin.metadata["selected"] as? Bool)==true {

@@ -73,13 +73,13 @@ final class ActivityDetailsViewModel: ObservableObject {
 
     // The owner of the screen when a write starts; the result only applies to it.
     @discardableResult
-    func perform(_ mutation: ActivityMutation, success: String? = nil) async -> Bool {
+    func perform(_ mutation: ActivityMutation, success: String? = nil, loadedUpdatedAt: Double?? = nil) async -> Bool {
         guard !busy, !closed else { return false }
         let id = presentation.activityID
         busy = true; errorMessage = ""
         defer { busy = false }
         do {
-            try await service.perform(mutation, activityID: id, ownerID: presentation.ownerID, loadedUpdatedAt: presentation.updatedAt)
+            try await service.perform(mutation, activityID: id, ownerID: presentation.ownerID, loadedUpdatedAt: loadedUpdatedAt ?? presentation.updatedAt)
             if presentation.activityID == id, let success { message = success }
             return true
         } catch {

@@ -22,7 +22,7 @@ extension LocationRecorder {
         guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
         var trip = trips[index]
         guard !title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, title.count <= 150,
-              ["Walking","Running","Cycling","MTB","Driving","Kitesurfing","Hiking","Unknown","Other"].contains(activity) else { throw failure("Enter a title and supported activity type.") }
+              ["Walking","Running","Cycling","MTB","Road cycling","Driving","Kitesurfing","Hiking","Unknown","Other"].contains(activity) else { throw failure("Enter a title and supported activity type.") }
         var metadata = trip.details ?? ActivityDetails()
         if trip.activity != activity { metadata.userCorrected = true }
         if trip.title != title { metadata.titleEdited = true; metadata.userCorrected = true }

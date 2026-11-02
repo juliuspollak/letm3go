@@ -105,3 +105,25 @@ describe('ActivityDetailScreen',()=>{
   expect(mocks.present).not.toHaveBeenCalled();
  });
 });
+describe('a recording in progress',()=>{
+ it('reaches native at most once per interval, ending on the newest fix',async()=>{
+  const recording={id:'r',title:'Fix 0',state:'recording'};
+  const view=render(<NativeActivityDetail {...props} trip={recording}/>);await settle();
+  mocks.update.mockClear();
+  view.rerender(<NativeActivityDetail {...props} trip={{...recording,title:'Fix 1'}}/>);await settle();
+  view.rerender(<NativeActivityDetail {...props} trip={{...recording,title:'Fix 2'}}/>);await settle();
+  expect(mocks.update).not.toHaveBeenCalled();
+  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,2100));});
+  expect(mocks.update).toHaveBeenCalledTimes(1);
+  expect(mocks.update.mock.calls[0][0].title).toBe('Fix 2');
+  await close(view);
+ });
+ it('applies a finished activity at once',async()=>{
+  const recording={id:'r',title:'Ride',state:'recording'};
+  const view=render(<NativeActivityDetail {...props} trip={recording}/>);await settle();
+  mocks.update.mockClear();
+  view.rerender(<NativeActivityDetail {...props} trip={{...recording,state:'finished'}}/>);await settle();
+  expect(mocks.update).toHaveBeenCalledTimes(1);
+  await close(view);
+ });
+});

@@ -6,7 +6,7 @@ export async function sharingRequest(client,action,id,params={}){
  if(error||data?.error||!data)throw new Error('Sharing could not be confirmed. The journeys backend may need deployment. Your last confirmed permission has not been changed in this screen.');
  return data;
 }
-export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip}){
+export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal}){
  const {data:auth,error}=await client.auth.getUser();const owner=auth?.user?.id;
  if(error||!owner||state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('This activity belongs to a different account.');
  const trip=state.trips.find(t=>t.id===id);if(!trip||trip.source!=='device'||!trip.endedAt)throw new Error('Only completed iPhone activities can be shared.');
@@ -15,6 +15,8 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  const {data:current,error:readError}=await client.from('activities').select('revision').eq('id',id).eq('owner_id',owner).single();
  if(readError||!Number.isInteger(current?.revision))throw new Error('The current activity could not be verified.');
  const {data:again,error:accountError}=await client.auth.getUser();if(accountError||again.user?.id!==owner)throw new Error('Account changed. Publication cancelled.');
+ // Last point at which leaving can still stop the activity going public.
+ if(signal?.aborted)throw new Error('Publication cancelled.');
  const result=await sharingRequest(client,'publish',id,{audience:'public',revision:current.revision,placesConfirmed:true,photoIDs:[]});
  if(!result.token)throw new Error('Publication was not confirmed.');
  return {...result,receipts:backup.receipts};

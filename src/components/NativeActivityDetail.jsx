@@ -11,15 +11,28 @@ import ActivityDetail from './ActivityDetail.jsx';
 // same turn. The native screen, its map and its panel survive that hand-over;
 // closing waits a turn so only a real exit closes them.
 const session={owner:0,open:false,closing:null,revision:0};
-// A recording changes with every fix. The newest state always arrives, at most this often.
 const LIVE_UPDATE_MS=2000;
 const NONE=[];
 
 // Same props and the same entry points as ActivityDetail: everything that opens an
 // activity keeps working, and this renders nothing of its own while the native
 // screen covers the web view.
+// A recording changes with every fix. Projecting a long route is the expensive step,
+// so a recording is read at most this often; anything else passes straight through.
+function useLiveTrip(trip){
+ const [held,setHeld]=useState(()=>({trip,at:Date.now()}));
+ const recording=trip.state==='recording'&&held.trip.id===trip.id&&held.trip.state==='recording';
+ useEffect(()=>{
+  if(!recording||held.trip===trip)return;
+  const timer=setTimeout(()=>setHeld({trip,at:Date.now()}),Math.max(0,LIVE_UPDATE_MS-(Date.now()-held.at)));
+  return()=>clearTimeout(timer);
+ },[recording,held,trip]);
+ return recording?held.trip:trip;
+}
+
 export default function NativeActivityDetail(props){
- const {ownerID,trip,activities,journeys,places=NONE,vehicles=NONE,onBack,onDeleted,onUpdated,onSource,run,grouping,unit='km',onAddEquipment}=props;
+ const {ownerID,trip:latest,activities,journeys,places=NONE,vehicles=NONE,onBack,onDeleted,onUpdated,onSource,run,grouping,journeyGrouping,unit='km',onAddEquipment}=props;
+ const trip=useLiveTrip(latest);
  const auth=useAuth();
  const [failed,setFailed]=useState(false);
  const [selectedPhotoID,setSelectedPhotoID]=useState(null);
@@ -33,7 +46,7 @@ export default function NativeActivityDetail(props){
  const context=useRef(null);
  const handlers=useRef(null);
  useEffect(()=>{
-  context.current={client:supabase,trip,ownerID,activities:journeys||activities||[],grouping,run,auth,onSource,addEquipmentItem:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
+  context.current={client:supabase,trip,ownerID,activities:journeys||activities||[],grouping:grouping||journeyGrouping,run,auth,onSource,addEquipmentItem:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
   handlers.current={onBack,onDeleted,onUpdated,run};
  });
 
@@ -75,21 +88,14 @@ export default function NativeActivityDetail(props){
  },[]);
 
  const sent=useRef('');
- const sentAt=useRef(0);
  useEffect(()=>{
   const key=JSON.stringify(presentation);
   if(key===sent.current)return;
-  function send(){
-   sent.current=key;sentAt.current=Date.now();
-   const message={...presentation,revision:++session.revision};
-   if(session.open){void nativeDetails.update(message).catch(()=>{});return;}
-   session.open=true;
-   void nativeDetails.present(message).catch(()=>{session.open=false;disableNativeDetails();setFailed(true);});
-  }
-  const wait=presentation.header.state==='recording'&&session.open?LIVE_UPDATE_MS-(Date.now()-sentAt.current):0;
-  if(wait<=0){send();return;}
-  const timer=setTimeout(send,wait);
-  return()=>clearTimeout(timer);
+  sent.current=key;
+  const message={...presentation,revision:++session.revision};
+  if(session.open){void nativeDetails.update(message).catch(()=>{});return;}
+  session.open=true;
+  void nativeDetails.present(message).catch(()=>{session.open=false;disableNativeDetails();setFailed(true);});
  },[presentation]);
 
  if(failed)return <ActivityDetail {...props}/>;

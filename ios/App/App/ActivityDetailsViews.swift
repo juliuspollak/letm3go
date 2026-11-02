@@ -130,6 +130,8 @@ struct ActivityDetailsRootView: View {
                 ActivityDangerSection(model: model)
             }
             .padding(.horizontal, DetailStyle.margin).padding(.top, 16).padding(.bottom, 40)
+            // Lists and notes held by a section belong to one activity.
+            .id(model.presentation.activityID)
         }
     }
     private func editor<Content: View>(@ViewBuilder content: () -> Content) -> some View {

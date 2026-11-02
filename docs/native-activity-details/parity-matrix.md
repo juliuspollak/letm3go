@@ -44,6 +44,6 @@ No row has been verified on a physical iPhone.
 4. Photo caption, cover and removal live in the viewer rather than a list at the bottom of the page.
 5. Activity Details hides the app's recording warning banner while it covers the web view.
 
-## Known inherited issue
+## Fixed inherited issue
 
-`Road cycling` is offered by both editors, but `updateActivity` rejects it. Native shows the same error as React.
+`Road cycling` was offered by the editor but rejected by `updateActivity`. The recorder now accepts it, which also fixes the React editor.

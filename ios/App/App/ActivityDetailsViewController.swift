@@ -230,7 +230,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         placeholder?.view.isHidden = engine.hasRoute
         if changedActivity {
             placeholder?.rootView = ActivityNoRouteView(text: model.noRouteText)
-            panel.move(to: panelState(ActivityPanelLayout.initial(hasRoute: engine.hasRoute)), animated: false)
+            move(to: ActivityPanelLayout.initial(hasRoute: engine.hasRoute))
         }
         if view.window != nil, camera.shouldFit(activityID: presentation.activityID, hasRoute: engine.hasRoute) { fit(animated: false) }
     }

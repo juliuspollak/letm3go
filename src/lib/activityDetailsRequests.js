@@ -19,11 +19,11 @@ export const activityDetailsRequests={
   const result=await sharingRequest(client,'status',trip.id);
   return {audience:result.audience};
  },
- async privacySave({client,trip,auth},{choice}){
+ async privacySave({client,trip,auth},{choice},{signal}={}){
   if(choice==='private'){await makeActivityPrivate(client,trip.id);return {audience:'private',message:'Private. Access to the shared copy has been revoked. Copies others already saved cannot be recalled.'};}
   await sharingRequest(client,'status',trip.id);
   const state=await recorder.getState();
-  await publishActivity({client,state,id:trip.id,reviewedTrip:trip,receipts:auth.preferences.syncReceipts||{},checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});
+  await publishActivity({client,state,id:trip.id,reviewedTrip:trip,signal,receipts:auth.preferences.syncReceipts||{},checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});
   return {audience:'public',message:'Public. The reviewed route copy is now available to others. Photos were not published.'};
  },
  async groupingAct({grouping},{action}){

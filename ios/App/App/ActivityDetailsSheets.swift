@@ -36,12 +36,10 @@ struct HeartChart: View {
     let end: Double
     let label: String
     @State private var focus: ActivityPresentation.HeartSample?
-    private var low: Double { floor((runs.flatMap { $0 }.map(\.bpm).min() ?? 60) / 10) * 10 }
-    private var high: Double {
-        let top = runs.flatMap { $0 }.map(\.bpm).max() ?? 180
-        return ceil(top / 10) * 10 + (top.truncatingRemainder(dividingBy: 10) == 0 ? 10 : 0)
-    }
     var body: some View {
+        let samples = runs.flatMap { $0 }, values = samples.map(\.bpm), top = values.max() ?? 180
+        let low = floor((values.min() ?? 60) / 10) * 10
+        let high = ceil(top / 10) * 10 + (top.truncatingRemainder(dividingBy: 10) == 0 ? 10 : 0)
         VStack(alignment: .leading, spacing: 4) {
             Group {
                 if let focus {
@@ -83,7 +81,7 @@ struct HeartChart: View {
                 .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { value in
                     guard abs(value.translation.width) > abs(value.translation.height) else { return }
                     let time = start + Double(value.location.x / max(1, size.width)) * (end - start)
-                    focus = runs.flatMap { $0 }.min { abs($0.t - time) < abs($1.t - time) }
+                    focus = samples.min { abs($0.t - time) < abs($1.t - time) }
                 }.onEnded { _ in focus = nil })
             }
             .frame(height: 132)
@@ -129,6 +127,8 @@ struct HeartZonesView: View {
 struct ActivityEditorSheet: View {
     @ObservedObject var model: ActivityDetailsViewModel
     let editor: ActivityPresentation.Editor?
+    // The version these fields were copied from, however far the activity moves on.
+    private let openedAt: Double?
     @State private var title: String
     @State private var activity: String
     @State private var description: String
@@ -143,6 +143,7 @@ struct ActivityEditorSheet: View {
         self.model = model
         let e = model.presentation.editor
         editor = e
+        openedAt = model.presentation.updatedAt
         _title = State(initialValue: e?.title ?? "")
         _activity = State(initialValue: e?.activity ?? "Walking")
         _description = State(initialValue: e?.description ?? "")
@@ -189,9 +190,10 @@ struct ActivityEditorSheet: View {
             description: String(description.prefix(4000)), notes: String(notes.prefix(4000)),
             tags: tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
             collection: String(collection.prefix(100)),
-            vehicle: equipment.isEmpty ? nil : equipment == Self.saved ? e?.vehicle : item?.title, vehicleID: item?.id)
+            vehicle: equipment.isEmpty ? nil : equipment == Self.saved ? e?.vehicle : item?.title,
+            vehicleID: equipment == Self.saved ? e?.vehicleID : item?.id)
         Task {
-            if await model.perform(.edit(edit)) { dismiss() }
+            if await model.perform(.edit(edit), loadedUpdatedAt: .some(openedAt)) { dismiss() }
             else { problem = model.errorMessage.isEmpty ? "Changes were not saved. Review the error and retry." : model.errorMessage }
         }
     }
@@ -389,9 +391,12 @@ struct ActivityPrivacySheet: View {
         Task {
             defer { saving = false }
             do {
-                let result = try await model.request("privacySave", args: ["choice": choice], timeout: 60)
+                let result = try await model.request("privacySave", args: ["choice": choice], timeout: 180)
                 audience = result["audience"] as? String
                 done = result["message"] as? String ?? ""
+            } catch ActivityDetailsError.timedOut {
+                audience = nil
+                problem = "This is taking longer than expected, so the result is not confirmed. Close this and check again before relying on it."
             } catch { audience = nil; problem = error.localizedDescription }
         }
     }

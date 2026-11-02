@@ -266,7 +266,10 @@ struct ActivityPresentation: Decodable, Equatable {
         privacy = lossy(Privacy.self, .privacy)
     }
     static func decode(_ object: [String: Any]) throws -> ActivityPresentation {
-        try JSONDecoder().decode(ActivityPresentation.self, from: JSONSerialization.data(withJSONObject: object))
+        // The map goes straight to the map engine; only the rest is decoded.
+        var fields = object
+        fields.removeValue(forKey: "map")
+        return try JSONDecoder().decode(ActivityPresentation.self, from: JSONSerialization.data(withJSONObject: fields))
     }
 }
 
