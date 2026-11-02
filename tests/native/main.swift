@@ -1,6 +1,6 @@
 import Foundation
 var assertions = 0
-func check(_ ok: @autoclosure () -> Bool, _ message: String) { assertions += 1; if !ok() { print("CHECK FAILED: (message)") } }
+func check(_ ok: @autoclosure () -> Bool, _ message: String) { assertions += 1; if !ok() { print("CHECK FAILED: \(message)") } }
 func point(_ latitude: Double, _ timestamp: Double, accuracy: Double = 5) -> GPSPoint { GPSPoint(latitude: latitude, longitude: 151, timestamp: timestamp, accuracy: accuracy, altitude: 20, speed: 1) }
 var trip = RecordedActivity(activity: "Walking", startedAt: 100, resumedAt: 100, title: "Test walk")
 check(trip.accept(point(-33,100), now:100), "first fix")
