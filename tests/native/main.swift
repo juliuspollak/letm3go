@@ -4312,7 +4312,8 @@ do {
     let reloaded = try store.load().first!
     check(reloaded.details?.energy == nil && reloaded.details?.wholeWorkoutEnergy?.active == 100, "saving a trim preserves original measured energy durably under the same ID")
     var heldSource = source
-    heldSource.details?.unverifiedEnergy = heldSource.details?.energy
+    let heldSourceEnergy = heldSource.details?.energy
+    heldSource.details?.unverifiedEnergy = heldSourceEnergy
     heldSource.details?.energy = nil
     let heldTrim = RouteTrimming.trimmed(heldSource, start: 1, end: 2)!
     try store.save(heldTrim)
@@ -4439,7 +4440,8 @@ do {
     var trimmedSource = trip
     trimmedSource.details?.visibleRouteStart = 0
     trimmedSource.details?.visibleRouteEnd = 1
-    trimmedSource.details?.wholeWorkoutEnergy = trimmedSource.details?.energy
+    let trimmedSourceEnergy = trimmedSource.details?.energy
+    trimmedSource.details?.wholeWorkoutEnergy = trimmedSourceEnergy
     trimmedSource.details?.energy = nil
     if case .applied(let trimmedUpdated) = WatchEnergyImport.apply(enrichment, to: trimmedSource, now: 1070) {
         check(trimmedUpdated.details?.energy == nil && trimmedUpdated.details?.wholeWorkoutEnergy?.active == 22, "trimmed target keeps whole-workout energy in archives")
