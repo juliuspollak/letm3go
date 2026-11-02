@@ -268,11 +268,8 @@ extension LocationRecorder {
         if trips.contains(where: { ActivityIdentity.matches($0.id,activity.id) }) { return .duplicate }
         // A deleted ride must not be resurrected by a late retry from the watch.
         if (try? storage!.isDeleted(activity.id)) == true { return .duplicate }
-        // Offline recordings that share time with this one are named, never merged
-        // or removed: the rider decides which to keep.
         let overlaps = CrossDeviceRecording.overlaps(startedAt: transfer.startedAt, endedAt: transfer.endedAt, id: activity.id,
                                                      trips: trips + [active, automaticTrip].compactMap { $0 }, now: Date().timeIntervalSince1970)
-        if !overlaps.isEmpty { activity.details?.overlaps = overlaps }
         do {
             try storage!.save(activity)
             trips.insert(activity, at: 0)

@@ -115,7 +115,9 @@ do {
     check(ActivitySegmentPicker.window(start: 1000, end: 1012, count: 5000) == 980...1032, "the slider closes in on a short section")
     check(ActivitySegmentPicker.window(start: 5, end: 500, count: 600) == 0...599, "the window stays within the recording")
     let picked = ActivityMapDraft.picking(start: 1).mapOptions(base: base, points: fixes)
-    check((picked["pins"] as! [[String: Any]]).filter { $0["kind"] as? String == "start" }.count == 1, "the first tap is marked")
+    check((picked["pins"] as! [[String: Any]]).filter { $0["kind"] as? String == "start" }.count == 1, "the first tap replaces the route's start pin")
+    check(((picked["pins"] as! [[String: Any]]).first { $0["kind"] as? String == "start" }?["title"] as? String) == "Segment start", "the chosen start is the one shown")
+    check(!(picked["pins"] as! [[String: Any]]).contains { $0["kind"] as? String == "photo" }, "no other pin can take a tap while picking")
     let selectedPins = ActivityMapDraft.segment(start: 1, end: 3, editingID: nil).mapOptions(base: base, points: fixes)["pins"] as! [[String: Any]]
     check(selectedPins.contains { $0["kind"] as? String == "finish" }, "both ends are marked")
 
@@ -132,6 +134,9 @@ do {
     let photographed = automatic(1100, 1200) { $0.details?.photos = [ActivityPhoto(id: "p", filename: "p.jpg", caption: "", latitude: nil, longitude: nil, captureTime: nil, locationSource: "gps")] }
     let covered = CrossDeviceRecording.automaticCovered(startedAt: 1000, endedAt: 8000, trips: [inside, drive, edited, corrected, manual, live, photographed])
     check(covered == [inside.id], "only an untouched automatic recording inside the workout goes")
+    let noted = automatic(1100, 1200) { $0.details?.notes = "Coffee stop" }, tagged = automatic(1100, 1200) { $0.details?.tags = ["x"] }
+    let described = automatic(1100, 1200) { $0.details?.description = "Lovely" }, geared = automatic(1100, 1200) { $0.equipment = [EquipmentRef(id: "b", name: "Bike")] }
+    check(CrossDeviceRecording.automaticCovered(startedAt: 1000, endedAt: 8000, trips: [noted, tagged, described, geared]).isEmpty, "anything the person added keeps an activity")
     check(ActivitySuggestionRules.isDuplicate(assetID: "asset-1", existing: decoded.photos.items), "library identity is a duplicate")
     check(!ActivitySuggestionRules.isDuplicate(assetID: "", existing: decoded.photos.items), "no identity is not a duplicate")
     check(ActivitySuggestionRules.remaining(existing: 52) == 0 && ActivitySuggestionRules.remaining(existing: 48) == 2, "photo capacity")

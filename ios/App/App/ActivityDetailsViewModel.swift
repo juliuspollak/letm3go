@@ -80,7 +80,7 @@ final class ActivityDetailsViewModel: ObservableObject {
         points = service.points(activityID: next.activityID)
         guard another else { return }
         // Drafts, messages and open forms belonged to the previous activity.
-        trimDraft = nil; trimming = false; segmentDraft = nil; message = ""; errorMessage = ""; sheet = nil; photoFocus = nil; deleting = false
+        trimDraft = nil; trimming = false; segmentDraft = nil; pickProblem = ""; message = ""; errorMessage = ""; sheet = nil; photoFocus = nil; deleting = false
         onDraft?(nil)
     }
     func close() { closed = true; sheet = nil; photoFocus = nil }
@@ -167,6 +167,7 @@ final class ActivityDetailsViewModel: ObservableObject {
         guard points.count >= 2 else { return }
         let trim = presentation.trim
         let start = max(0, min(points.count - 2, trim?.start ?? 0)), end = max(start + 1, min(points.count - 1, trim?.end ?? points.count - 1))
+        pickProblem = ""
         segmentDraft = SegmentDraft(segmentID: UUID().uuidString.lowercased(), name: "", start: start, end: end, existing: false, picking: .start, window: 0...(points.count - 1))
         onDraft?(draft)
         // The map is the tool now, so it gets the screen.
@@ -182,6 +183,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     func repickSegment() {
         guard var current = segmentDraft else { return }
         current.picking = .start; current.choices = []; current.window = 0...(points.count - 1)
+        pickProblem = ""
         segmentDraft = current
         onDraft?(draft)
         onPanel?(.collapsed)
@@ -208,6 +210,15 @@ final class ActivityDetailsViewModel: ObservableObject {
         segmentDraft = current
         onDraft?(draft)
     }
+    // The way in without the map: VoiceOver and Switch Control have no line to tap.
+    func chooseWithSliders() {
+        guard var current = segmentDraft else { return }
+        current.picking = nil
+        pickProblem = ""
+        segmentDraft = current
+        onDraft?(draft)
+        onPanel?(.medium)
+    }
     func chooseTraversal(_ choice: ActivitySegmentPicker.Traversal) {
         guard var current = segmentDraft else { return }
         current.start = choice.start; current.end = choice.end; current.history = []
@@ -216,13 +227,20 @@ final class ActivityDetailsViewModel: ObservableObject {
         onDraft?(draft)
         onFocusRange?(choice.start, choice.end)
     }
-    func nudgeSegment(start: Int = 0, end: Int = 0) {
-        guard let current = segmentDraft else { return }
+    // One fix at a time. Only the end named moves, and it stops at the other end.
+    func nudgeSegment(start move: Int = 0, end shift: Int = 0) {
+        guard var current = segmentDraft else { return }
         rememberSegmentRange()
-        let last = points.count - 1
-        setSegment(start: max(0, min(current.start + start, current.end + end - 1)), end: min(last, max(current.end + end, current.start + start + 1)))
+        current = segmentDraft ?? current
+        let start = max(0, min(current.start + move, current.end - 1))
+        let end = min(points.count - 1, max(current.end + shift, current.start + 1))
+        current.start = start; current.end = end
+        // The track follows, so a handle never leaves it.
+        current.window = min(current.window.lowerBound, start)...max(current.window.upperBound, end)
+        segmentDraft = current
+        onDraft?(draft)
     }
-    func cancelSegment() { segmentDraft = nil; onDraft?(draft); onPanel?(.medium) }
+    func cancelSegment() { segmentDraft = nil; pickProblem = ""; onDraft?(draft); onPanel?(.medium) }
     func setSegment(start: Int, end: Int) {
         guard var current = segmentDraft else { return }
         current.start = start; current.end = end

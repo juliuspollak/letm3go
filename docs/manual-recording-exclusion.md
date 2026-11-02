@@ -175,3 +175,12 @@ paired iPhone and Apple Watch. In the diagnostic export:
    activity appears until finish.
 
 No migration, backend change or change to finished activities is part of this work.
+
+## When the Watch's start arrives late
+
+The phone can only stop itself once it has heard that a workout began. If that word is
+delayed, automatic activities can still be created. So when the finished workout
+arrives, `CrossDeviceRecording.automaticCovered` removes finished automatic activities
+at least 80% inside it. One the person has added anything to stays, as does one mostly
+outside the workout, such as the drive to the trailhead. Favourites live in JavaScript
+and are not seen by this check.

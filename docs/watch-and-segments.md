@@ -26,7 +26,7 @@ Status of the evidence:
 |---|---|---|
 | Visible route window | `RouteTrimCard` (native) range slider → `setRouteDisplay` → `details.visibleRouteStart/End` | Non-destructive and cloud-backed in `view_metadata` |
 | Destructive trim | `trimActivity` → `RouteTrimming.trimmed` | Removes fixes |
-| Trail link | `TrailLink.jsx`, `mtbLink.js` → `details.mtbTrailID…` | Links a ride to a community trail |
+| Trail link | `ActivityTrailSection` (native), `mtbLink.js` → `details.mtbTrailID…` | Links a ride to a community trail |
 | Community trails/segments | `mtb_trails`, `mtb_segments` and `*_geometry` tables (`20261102…`, moderation `20261103…`) | Cloud, moderated, creator-owned, visibility `private`/`public` |
 | Personal named sections | — | **Did not exist** |
 

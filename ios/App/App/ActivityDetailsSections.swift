@@ -165,14 +165,25 @@ struct SegmentEditorCard: View {
     var body: some View {
         if let picking = draft.picking { pickingCard(picking) } else { editing }
     }
+    // Fits the collapsed panel, which gives the screen to the map: one row, one hint.
     private func pickingCard(_ picking: ActivityDetailsViewModel.Picking) -> some View {
-        DetailCard(title: picking == .start ? "Tap where the segment starts" : "Now tap where it ends", symbol: "hand.tap") {
-            DetailFootnote(text: model.pickProblem.isEmpty ? "Tap the route on the map. Zoom in first for a precise spot." : model.pickProblem)
-                .accessibilityIdentifier("segment.hint")
-            HStack {
-                if case .finish = picking { Button("Start over") { model.repickSegment() }.buttonStyle(DetailButtonStyle()) }
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(picking == .start ? "Tap where the segment starts" : "Now tap where it ends")
+                    .font(.subheadline.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.85)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 2)
+                if case .finish = picking {
+                    Button { model.repickSegment() } label: { Image(systemName: "arrow.counterclockwise") }
+                        .buttonStyle(DetailButtonStyle()).accessibilityLabel("Start over")
+                } else {
+                    Button { model.chooseWithSliders() } label: { Image(systemName: "slider.horizontal.3") }
+                        .buttonStyle(DetailButtonStyle()).accessibilityLabel("Choose with sliders")
+                }
                 Button("Cancel") { model.cancelSegment() }.buttonStyle(DetailButtonStyle()).accessibilityIdentifier("segment.cancel")
             }
+            DetailFootnote(text: model.pickProblem.isEmpty ? "Tap the route. Zoom in for a precise spot." : model.pickProblem)
+                .accessibilityIdentifier("segment.hint")
         }
     }
     private var editing: some View {

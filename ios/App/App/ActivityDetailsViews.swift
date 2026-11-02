@@ -140,7 +140,7 @@ struct ActivityDetailsRootView: View {
     // At accessibility text sizes an editor is taller than the panel, so it scrolls in
     // a view of its own; the panel only tracks the page's scroll view.
     @ViewBuilder private func editor<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        let card = VStack { content(); Spacer(minLength: 0) }.padding(.horizontal, DetailStyle.margin).padding(.top, 16)
+        let card = VStack { content(); Spacer(minLength: 0) }.padding(.horizontal, DetailStyle.margin).padding(.top, model.pickingOnMap ? 14 : 16)
         if textSize.isAccessibilitySize {
             ScrollView { card.padding(.bottom, 40) }
                 .onAppear(perform: expandForLargeText)

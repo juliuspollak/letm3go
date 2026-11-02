@@ -4621,8 +4621,6 @@ check(scrolledFrame(0, 0, 390, 300, contentOffsetY: 240).y == 240, "scrolled map
 let beforeSheetDrag = overlayFrame(0, 0, 390, 844)
 let afterSheetDrag = overlayFrame(0, 0, 390, 844)
 check(beforeSheetDrag.y == afterSheetDrag.y && beforeSheetDrag.height == afterSheetDrag.height, "a sheet detent never changes the overlay map frame")
-// Touch ownership: the sheet's top edge is the line, it changes with the sheet but
-// is not a map frame, and every doubtful touch belongs to the sheet.
 // Camera continuity seam: the full-screen and resume paths reuse the embedded map's
 // camera (centre + span) rather than re-fitting the route. This mirrors
 // MapCoordinator.remember/resumeFromMemory's per-intent camera memory, including

@@ -356,10 +356,9 @@ enum ActivityMapDraft: Equatable {
                 [["point": first, "title": "Start", "kind": "start"], ["point": last, "title": "Finish", "kind": "finish"]]
         case .picking(let start):
             // Only the route's ends stay: every other pin would take the tap.
-            var kept = pins.filter { ["start", "finish"].contains($0["kind"] as? String ?? "") }
-            if let start, points.indices.contains(start) {
-                kept.append(["point": [points[start].latitude, points[start].longitude], "title": "Segment start", "kind": "start"])
-            }
+            let chosen = start.flatMap { points.indices.contains($0) ? points[$0] : nil }
+            var kept = pins.filter { (chosen == nil ? ["start", "finish"] : ["finish"]).contains($0["kind"] as? String ?? "") }
+            if let chosen { kept.append(["point": [chosen.latitude, chosen.longitude], "title": "Segment start", "kind": "start"]) }
             options["pins"] = kept
         case .segment(let start, let end, let editingID):
             guard start >= 0, end < points.count, start < end else { return base }

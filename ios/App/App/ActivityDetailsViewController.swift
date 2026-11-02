@@ -125,8 +125,9 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
             self.fit(animated: false)
         }
     }
-    private var fitInsets: UIEdgeInsets {
-        let bottom = ActivityPanelLayout.mapBottomInset(panelPosition, container: Double(view.bounds.height), safeBottom: Double(view.safeAreaInsets.bottom))
+    private var fitInsets: UIEdgeInsets { fitInsets(for: panelPosition) }
+    private func fitInsets(for position: ActivityPanelPosition) -> UIEdgeInsets {
+        let bottom = ActivityPanelLayout.mapBottomInset(position, container: Double(view.bounds.height), safeBottom: Double(view.safeAreaInsets.bottom))
         return UIEdgeInsets(top: view.safeAreaInsets.top + 56, left: 28, bottom: CGFloat(bottom) + 24, right: 28)
     }
     private func fit(animated: Bool) { engine.fit(insets: fitInsets, animated: animated) }
@@ -291,7 +292,8 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         guard points.indices.contains(start), points.indices.contains(end) else { return }
         var rect = MKMapRect.null
         for point in points[start...end] { rect = rect.union(MKMapRect(origin: MKMapPoint(CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)), size: MKMapSize(width: 1, height: 1))) }
-        mapView.setVisibleMapRect(rect, edgePadding: fitInsets, animated: !UIAccessibility.isReduceMotionEnabled)
+        // The panel rises to medium as the choice is made.
+        mapView.setVisibleMapRect(rect, edgePadding: fitInsets(for: .medium), animated: !UIAccessibility.isReduceMotionEnabled)
     }
 
     // MARK: Photos

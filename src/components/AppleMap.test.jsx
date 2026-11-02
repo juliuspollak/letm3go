@@ -7,7 +7,7 @@ const payload={routes:[[[1,2],[3,4],[5,6]]],pins:[]};
 const BOX={x:10,y:20,top:20,bottom:370,left:10,right:710,width:700,height:350};
 function setScroll(y){Object.defineProperty(window,'scrollY',{value:y,configurable:true,writable:true});}
 beforeEach(()=>{
- for(const name of ['embed','resize','update','unembed','close','sendOverview','setOverlayInset'])mocks[name].mockResolvedValue({});
+ for(const name of ['embed','resize','update','unembed','close','sendOverview'])mocks[name].mockResolvedValue({});
  mocks.hide.mockResolvedValue({image:'data:image/jpeg;base64,frozen'});
  mocks.snapshot.mockResolvedValue({image:'data:image/jpeg;base64,test'});
  mocks.open.mockResolvedValue({});mocks.addListener.mockResolvedValue({remove:vi.fn()});

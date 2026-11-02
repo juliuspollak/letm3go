@@ -30,7 +30,7 @@ Unless a row says otherwise, nothing here has had structured testing on a physic
 | Tags, hide, restore, scan, remember place | `ActivityTagsSection` | `journeyGrouping`, `routePlaceScan.js` | `groupingAct`, `scanPlaces`, `rememberPlace` | Notice | None |
 | Stops, Not a stop | `ActivityStopsSection` | `journeyGrouping` | `groupingAct` | Inline error | None |
 | Story | `ActivityStorySection` | JS projection | Read | n/a | JS |
-| Recording, provisional, telemetry, indoor, overlap notices | `ActivityNoticesSection` | JS projection | Read | n/a | JS |
+| Recording, provisional, telemetry, indoor notices | `ActivityNoticesSection` | JS projection | Read | n/a | JS |
 | Source recordings, destination history | `openActivity` | `App.jsx` | `setSelected` | Inline error | None |
 | Diagnostics and report copy | `ActivityDiagnosticsSection` | `tripDiagnostics.js` | Read | n/a | Core |
 | Delete | `ActivityDangerSection` | Recorder | `deleteActivity` | Inline error; refused while recording | JS (wrapper), UI (confirmation) |
