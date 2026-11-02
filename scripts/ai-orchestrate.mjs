@@ -36,7 +36,7 @@ export function bounded(value, fallback, max) {
 }
 export function commands(role, report, schemaPath, model = 'deepseek-v4-flash', timeout = 900, outputSchema = schema) {
   if (role === 'developer') return ['cline', ['--json','--yolo','--provider','deepseek','--model',model,
-    '--retries','2','--timeout',String(timeout),'Implement the complete task supplied on stdin.']];
+    '--retries','2','--timeout',String(timeout),'Implement the complete task supplied on stdin. Never terminate, stop, or kill any process (no Stop-Process, taskkill, tasklist, kill, or process enumeration), including unrelated workers; cancellation is owned solely by the coordinator.']];
   if (role === 'escalation') return ['codex',['exec','--ignore-user-config','--ephemeral','--sandbox','workspace-write','-c','approval_policy="never"','--output-last-message',report,'-']];
   if (role === 'codex') return ['codex', ['exec','--ignore-user-config','--ephemeral','--sandbox','read-only',
     '--skip-git-repo-check','--output-schema',schemaPath,'--output-last-message',report,'-']];
@@ -161,7 +161,7 @@ async function runLifecycle({ task, maxCycles = 5, execute, inspect, persist = (
     const prompt = JSON.stringify({ requirements: task, feedback, cycle,
       assignedDefects:plan?.primary, deferredToCodex:plan?.escalated.map(d=>d.id),
       repairPolicy:'Reproduce each assigned failure, fix its root cause, add a regression, verify the original scenario. Do not edit the defects assigned to Codex. Do not mark your own work approved.',
-      instructions: 'Work only in the current isolated working directory. Audit surrounding code, implement all requirements, add regression tests. Local edits, tests and commits are allowed. Never push, merge, deploy, run remote SQL, change branches, read secrets or disable tests. Do not modify the orchestrator or its evidence. Do not run other AI agents.' });
+      instructions: 'Work only in the current isolated working directory. Audit surrounding code, implement all requirements, add regression tests. Local edits, tests and commits are allowed. Never push, merge, deploy, run remote SQL, change branches, read secrets or disable tests. Do not modify the orchestrator or its evidence. Do not run other AI agents. Never terminate, stop, or kill any process (no Stop-Process, taskkill, tasklist, kill, or process enumeration), including unrelated workers; the coordinator owns all cancellation.' });
     if(!plan||plan.primary.length){
       const authored = await execute('developer',prompt,cycle);
       // Assignment is not evidence that a repair touched this defect.
@@ -171,7 +171,7 @@ async function runLifecycle({ task, maxCycles = 5, execute, inspect, persist = (
     }
     if(plan?.escalated.length){
       await execute('escalation',JSON.stringify({requirements:task,cycle,assignedDefects:plan.escalated,
-        instructions:'Engineering escalation: implement ONLY the listed confirmed defects that survived two DeepSeek repairs. Read latest source and reproduce; preserve other work, make minimal root-cause fixes and meaningful regression tests. No branch changes, push, merge, deploy, remote SQL, credentials, test weakening or other agents. Do not edit the orchestrator or ledger. You are the AUTHOR, not an approver. Independent Claude must verify each fix.'}),cycle);
+        instructions:'Engineering escalation: implement ONLY the listed confirmed defects that survived two DeepSeek repairs. Read latest source and reproduce; preserve other work, make minimal root-cause fixes and meaningful regression tests. No branch changes, push, merge, deploy, remote SQL, credentials, test weakening or other agents. Do not edit the orchestrator or ledger. You are the AUTHOR, not an approver. Independent Claude must verify each fix. Never terminate, stop, or kill any process (no Stop-Process, taskkill, tasklist, kill, or process enumeration), including unrelated workers; the coordinator owns all cancellation.'}),cycle);
       for(const d of plan.escalated)actors[d.id]='codex';
       if(inspect().branch!==origin.branch)throw Error('Branch changed');
       await checkpoint('codex-escalation',cycle);

@@ -83,6 +83,47 @@ test('resolves npm.cmd format to npm-cli.js', { skip: !isWindows() }, () => {
   assert.deepEqual(resolved.args, [cli, 'run', 'check']);
 });
 
+test('resolves a direct exe launcher shim without running node', { skip: !isWindows() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'launcher-exe-shim-'));
+  const exe = join(dir, 'node_modules', 'pkg', 'bin', 'tool.exe');
+  mkdirSync(join(dir, 'node_modules', 'pkg', 'bin'), { recursive: true });
+  writeFileSync(exe, 'MZ');
+  writeFileSync(join(dir, 'tool.cmd'), ['@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL',
+    'CALL :find_dp0', 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%dp0%\\node_modules\\pkg\\bin\\tool.exe" %*', '',
+  ].join('\r\n'));
+  const resolved = resolveCommand('tool', ['arg one'], { PATH: dir, Path: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD' });
+  assert.equal(resolved.file, exe);
+  assert.deepEqual(resolved.args, ['arg one']);
+});
+
+test('preserves node flags between node and the JS entry', { skip: !isWindows() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'launcher-node-flags-'));
+  const entry = join(dir, 'node_modules', 'cli', 'bin', 'cli.js');
+  mkdirSync(join(dir, 'node_modules', 'cli', 'bin'), { recursive: true });
+  writeFileSync(entry, '#!/usr/bin/env node\n');
+  writeFileSync(join(dir, 'cli.cmd'), ['@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL',
+    'CALL :find_dp0', 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%dp0%\\node.exe" "--trace-warnings" "%dp0%\\node_modules\\cli\\bin\\cli.js" %*', '',
+  ].join('\r\n'));
+  const resolved = resolveCommand('cli', ['run'], { PATH: dir, Path: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD' });
+  assert.equal(resolved.file, process.execPath);
+  assert.deepEqual(resolved.args, ['--trace-warnings', entry, 'run']);
+});
+
+test('refuses unsupported interpreter shims instead of invoking a shell', { skip: !isWindows() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'launcher-unsupported-'));
+  const script = join(dir, 'script.py');
+  writeFileSync(script, 'print(1)');
+  writeFileSync(join(dir, 'tool.cmd'), ['@ECHO off', 'python.exe "%dp0%\\script.py" %*', '',
+  ].join('\r\n'));
+  assert.throws(() => resolveCommand('tool', [], { PATH: dir, Path: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD' }), /unsupported launcher shim/);
+});
+
+test('refuses non-executable PATHEXT matches instead of spawning them', { skip: !isWindows() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'launcher-non-exec-'));
+  writeFileSync(join(dir, 'tool.js'), 'process.exit(1);');
+  assert.throws(() => resolveCommand('tool', [], { PATH: dir, Path: dir, PATHEXT: '.JS' }), /non-executable/);
+});
+
 test('discovers native Claude exe from override and known locations', { skip: !isWindows() }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'launcher-claude-'));
   const exe = join(dir, 'claude.exe');

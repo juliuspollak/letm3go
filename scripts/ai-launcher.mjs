@@ -7,7 +7,7 @@
 // It also terminates whole process trees on Windows via taskkill.exe.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 export const isWindows = () => process.platform === 'win32';
 
@@ -72,8 +72,20 @@ function substituteVars(value, vars, dp0) {
     });
 }
 
+// Split one `&`-separated command segment into argv, honouring double quotes.
+function tokenizeCmd(command) {
+  const tokens = [];
+  const re = /"([^"]*)"|([^\s]+)/g;
+  let m;
+  while ((m = re.exec(command))) tokens.push(m[1] !== undefined ? m[1] : m[2]);
+  return tokens;
+}
+
 // Parse a Windows .cmd/.bat launcher (npm cmd-shim or npm.cmd/npx.cmd format)
-// and return the Node entry point it would invoke, without running cmd.exe.
+// and return a spawn()-safe { file, prepend } without running cmd.exe. Only
+// Node launchers (explicit node + a real JS entry, preserving node flags) and
+// direct .exe launchers are supported; every other interpreter, unresolved
+// variable or shell construct fails closed (returns null).
 export function parseWindowsCmdShim(cmdFile) {
   const dp0 = dirname(cmdFile);
   const text = readFileSync(cmdFile, 'utf8');
@@ -93,13 +105,38 @@ export function parseWindowsCmdShim(cmdFile) {
     if (line.includes('%*')) invocation = line;
   }
   if (!invocation) return null;
-  const quoted = [...invocation.matchAll(/"([^"]+)"/g)].map(m => m[1]);
-  if (!quoted.length) return null;
-  // The final quoted token is the Node script; the runner supplies its own node.
-  const script = substituteVars(quoted[quoted.length - 1], vars, dp0);
-  const entry = resolve(dp0, script);
-  if (!existsSync(entry)) return null;
-  return { file: nodeExeNear(dp0), prepend: [entry] };
+  // The program invocation is the final `&`-separated segment (the preceding
+  // segments are SETLOCAL/endLocal/title scaffolding, never the program).
+  const command = invocation.split('&').map(s => s.trim()).filter(Boolean).at(-1);
+  if (!command) return null;
+  const rawTokens = tokenizeCmd(command);
+  const tokens = rawTokens.map(t => substituteVars(t, vars, dp0));
+  // `%*` is the caller-argument placeholder and must be the final token.
+  if (tokens.length < 2 || tokens.at(-1) !== '%*') return null;
+  const argv = tokens.slice(0, -1);
+  // Everything except the interpreter must resolve fully; the cmd-shim node
+  // variable may legitimately be unset (its default is `node`).
+  if (argv.slice(1).some(t => t.includes('%'))) return null;
+  const interpreter = argv[0];
+  const interpreterBase = basename(interpreter).toLowerCase();
+  const shimNodeVar = /^%(?:_prog|node_exe)%$/i.test(rawTokens[0]);
+  const nodeLike = interpreterBase === 'node' || interpreterBase === 'node.exe' || shimNodeVar;
+  if (nodeLike) {
+    // Node invocation: the last token is the JS entry; tokens in between are
+    // Node flags that must be preserved verbatim.
+    const entry = argv.at(-1);
+    if (entry === interpreter || /\.(exe|com)$/i.test(entry)) return null;
+    const resolvedEntry = resolve(dp0, entry);
+    if (!existsSync(resolvedEntry)) return null;
+    const nodeFile = /\.exe$/i.test(interpreter) && isAbsolute(interpreter) && existsSync(interpreter)
+      ? interpreter : nodeExeNear(dp0);
+    return { file: nodeFile, prepend: [...argv.slice(1, -1), resolvedEntry] };
+  }
+  // Direct launcher: the interpreter itself is the executable (never a shell).
+  if (!/\.(exe|com)$/i.test(interpreter)) return null;
+  const target = resolve(dp0, interpreter);
+  if (!existsSync(target)) return null;
+  return { file: target, prepend: argv.slice(1) };
 }
 
 // Native Claude Code installs (claude.exe) live outside npm on Windows.
@@ -120,8 +157,9 @@ export function nativeClaudeCandidates(env = process.env) {
 }
 
 // Resolve a bare command to a spawn()-safe { file, args }. On POSIX the command
-// is returned unchanged. On Windows, .exe is used directly, npm-style .cmd/.bat
-// shims are resolved to `node <entry>`, and .ps1 is refused (never a shell).
+// is returned unchanged. On Windows, .exe/.com are used directly, npm-style
+// .cmd/.bat shims are resolved structurally, and anything else (.ps1, .js,
+// .vbs, extensionless scripts) is refused so no shell ever runs it.
 export function resolveCommand(command, args = [], env = process.env) {
   if (!isWindows()) return { file: command, args: [...args] };
   let found = resolveOnPath(command, env);
@@ -133,10 +171,13 @@ export function resolveCommand(command, args = [], env = process.env) {
   const lower = found.toLowerCase();
   if (lower.endsWith('.cmd') || lower.endsWith('.bat')) {
     const parsed = parseWindowsCmdShim(found);
-    if (!parsed) throw Error('Refusing to run ' + found + ' through cmd.exe; install a Node or native executable for ' + command);
+    if (!parsed) throw Error('Refusing to run ' + found + ' through cmd.exe; unsupported launcher shim for ' + command);
     return { file: parsed.file, args: [...parsed.prepend, ...args] };
   }
   if (lower.endsWith('.ps1')) throw Error('Refusing to run ' + found + ' through PowerShell; install a Node or native executable for ' + command);
+  if (!/\.(exe|com)$/i.test(lower)) {
+    throw Error('Refusing to run non-executable ' + found + ' for ' + command + '; install a Node or native executable');
+  }
   return { file: found, args: [...args] };
 }
 
