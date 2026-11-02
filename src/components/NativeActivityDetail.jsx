@@ -3,9 +3,8 @@ import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
 import {activityPresentation} from '../lib/activityPresentation.js';
 import {acceptNativeMutation,activityDetailsRequests} from '../lib/activityDetailsRequests.js';
-import {disableNativeDetails,nativeDetails} from '../lib/nativeActivityDetails.js';
+import {nativeDetails} from '../lib/nativeActivityDetails.js';
 import {savedMaximum} from '../lib/heartRate.js';
-import ActivityDetail from './ActivityDetail.jsx';
 
 // While a screen is replaced by the next activity React unmounts and mounts in the
 // same turn. The native screen, its map and its panel survive that hand-over;
@@ -34,7 +33,7 @@ export default function NativeActivityDetail(props){
  const {ownerID,trip:latest,activities,journeys,places=NONE,vehicles=NONE,onBack,onDeleted,onUpdated,onSource,run,grouping,journeyGrouping,unit='km',onAddEquipment}=props;
  const trip=useLiveTrip(latest);
  const auth=useAuth();
- const [failed,setFailed]=useState(false);
+ const [failure,setFailure]=useState('');
  const [selectedPhotoID,setSelectedPhotoID]=useState(null);
  const [heartVersion,setHeartVersion]=useState(0);
  const maximumHeartRate=useMemo(()=>{void heartVersion;return savedMaximum(ownerID);},[ownerID,heartVersion]);
@@ -95,9 +94,9 @@ export default function NativeActivityDetail(props){
   const message={...presentation,revision:++session.revision};
   if(session.open){void nativeDetails.update(message).catch(()=>{});return;}
   session.open=true;
-  void nativeDetails.present(message).catch(()=>{session.open=false;disableNativeDetails();setFailed(true);});
+  void nativeDetails.present(message).catch(error=>{session.open=false;setFailure(error?.message||'This activity could not be opened.');});
  },[presentation]);
 
- if(failed)return <ActivityDetail {...props}/>;
+ if(failure)return <div className="notice" role="alert"><p>{failure}</p><button type="button" className="secondary" onClick={onBack}>Back to activities</button></div>;
  return <div className="native-activity-detail" aria-hidden="true"/>;
 }

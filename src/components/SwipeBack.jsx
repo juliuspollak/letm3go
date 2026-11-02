@@ -3,7 +3,7 @@ export default function SwipeBack({onBack,children}){
  const root=useRef(null),back=useRef(onBack);
  useEffect(()=>{back.current=onBack;},[onBack]);
  useEffect(()=>{
-  const node=root.current,target=node.querySelector('.detail-sheet-page')||node;let gesture=null,timer=null;
+  const node=root.current,target=node;let gesture=null,timer=null;
   function reset(){gesture=null;target.style.transition='transform 180ms ease-out';target.style.transform='';target.style.willChange='';}
   function start(e){
    if(timer||e.touches.length!==1||document.querySelector('[aria-modal="true"]')||!window.matchMedia('(max-width:760px)').matches)return;

@@ -1,12 +1,8 @@
-import {readFileSync} from 'node:fs';
-import {cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {cleanup} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 vi.mock('../components/ActivityPrivacy.jsx',()=>({default:()=>null}));
 vi.mock('../components/JourneyMap.jsx',()=>({default:()=><div>map</div>}));
 import {heartRateOf,heartRateRuns,routeAt,saveMaximum,savedMaximum,timeInZones} from './heartRate.js';
-import HeartRatePanel from '../components/HeartRatePanel.jsx';
-import ActivityDetail from '../components/ActivityDetail.jsx';
-import {recordedJourney} from './recorder.js';
 import {publicationPreview} from './activityPrivacy.js';
 import {sharedLocationPayload} from './householdRealtime.js';
 afterEach(cleanup);
@@ -42,43 +38,6 @@ it('keeps a personal maximum per account and refuses nonsense',()=>{
  expect(saveMaximum('a',20)).toBeNull();
  expect(savedMaximum('a')).toBeNull();
 });
-it('shows the summary and asks for a maximum instead of assuming one',()=>{
- render(<HeartRatePanel trip={trip} owner="a"/>);
- expect(screen.getByText('140 BPM')).toBeInTheDocument();
- expect(screen.getByText('170 BPM')).toBeInTheDocument();
- expect(screen.getByRole('img',{name:/Heart rate over time/})).toBeInTheDocument();
- expect(screen.getByText('Shaded: paused, not recorded.')).toBeInTheDocument();
- expect(screen.queryByText('Zone 5')).not.toBeInTheDocument();
- fireEvent.change(screen.getByLabelText('Maximum heart rate in BPM'),{target:{value:'190'}});
- fireEvent.click(screen.getByRole('button',{name:'Show zones'}));
- expect(screen.getByText('Zone 5')).toBeInTheDocument();
- expect(screen.getByText(/10% bands of the maximum you entered \(190 BPM\)/)).toBeInTheDocument();
-});
-it('renders nothing rather than a zero when an activity has no readings',()=>{
- const {container}=render(<HeartRatePanel trip={{...trip,details:{}}}/>);
- expect(container).toBeEmptyDOMElement();
- expect(heartRateOf({details:{heartRate:{samples:[],summary:null}}})).toBeNull();
-});
-it('opens an indoor Watch workout with no route',()=>{
- const indoor=recordedJourney({...trip,details:{indoor:true,heartRate}});
- render(<ActivityDetail trip={indoor} places={[]}/>);
- expect(screen.getByText('Indoor activity · no route was recorded.')).toBeInTheDocument();
- expect(screen.getByRole('region',{name:'Heart rate'})).toBeInTheDocument();
-});
-it('names an overlapping recording and keeps both',()=>{
- render(<ActivityDetail trip={recordedJourney({...trip,details:{overlaps:[{activityID:'p',title:'Phone run',kind:'manual',seconds:600}]}})} places={[]}/>);
- expect(screen.getByRole('status')).toHaveTextContent('Phone run · 10 min together. Both are kept');
-});
-it('shows nothing of held readings until the person answers',()=>{
- const onResolve=vi.fn();
- render(<HeartRatePanel trip={{...trip,details:{unverifiedHeartRate:heartRate}}} onResolve={onResolve}/>);
- expect(screen.queryByText('140 BPM')).not.toBeInTheDocument();
- expect(screen.queryByRole('img',{name:/Heart rate/})).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'This was me'}));
- expect(onResolve).toHaveBeenCalledWith(true);
- fireEvent.click(screen.getByRole('button',{name:'Remove it'}));
- expect(onResolve).toHaveBeenLastCalledWith(false);
-});
 it('keeps heart rate out of everything that leaves the phone',()=>{
  expect(JSON.stringify(publicationPreview(trip,[]))).not.toMatch(/heartRate|bpm/i);
  expect(JSON.stringify(sharedLocationPayload({latitude:1,longitude:2,accuracy:3,speed:4,timestamp:5,heartRate:120}))).not.toMatch(/heart/i);
@@ -104,17 +63,4 @@ it('keeps no maximum for an unknown account, so none can pass between accounts',
  expect(localStorage.length).toBe(0);
  localStorage.setItem('letm3go.maximumHeartRate.device','188');
  expect(savedMaximum(undefined)).toBeNull();
-});
-it('gives every activity detail entry point the signed-in account',()=>{
- const uses=['src/App.jsx','src/components/GroupedJourneyDetail.jsx'].flatMap(file=>readFileSync(file,'utf8').match(/<ActivityDetailScreen\b[^>]{0,80}/g));
- expect(uses).toHaveLength(2);
- for(const use of uses)expect(use).toContain('ownerID={');
-});
-it('shows the zones saved for this account from an activity opened with it',()=>{
- saveMaximum('a',190);
- render(<ActivityDetail ownerID="a" trip={recordedJourney(trip)} places={[]}/>);
- expect(screen.getByText('Zone 5')).toBeInTheDocument();
- cleanup();
- render(<ActivityDetail ownerID="b" trip={recordedJourney(trip)} places={[]}/>);
- expect(screen.queryByText('Zone 5')).not.toBeInTheDocument();
 });

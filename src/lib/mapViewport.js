@@ -6,7 +6,7 @@
 // changes (a sheet detent, rotation, keyboard) reposition the map.
 export const MAP_MIN_EXTENT=80;
 
-export function surfaceGeometry(surface,win=typeof window==='undefined'?null:window,overlay=false){
+export function surfaceGeometry(surface,win=typeof window==='undefined'?null:window){
  if(!surface?.getBoundingClientRect||!win)return null;
  const box=surface.getBoundingClientRect();
  const document=win.document;
@@ -14,9 +14,7 @@ export function surfaceGeometry(surface,win=typeof window==='undefined'?null:win
  let navTop=win.innerHeight??box.bottom;
  if(nav&&win.getComputedStyle&&win.getComputedStyle(nav).display!=='none')navTop=nav.getBoundingClientRect().top;
  // The bottom navigation must never cover the map, so the embed stops above it.
- // An overlay map (the Activity Details background) is a full-bleed host behind the
- // web view: its height is the host's own height, never clipped by the tab bar.
- const height=overlay?box.height:Math.min(box.height,Math.max(0,navTop-box.top-8));
+ const height=Math.min(box.height,Math.max(0,navTop-box.top-8));
  const scrollY=win.scrollY??win.pageYOffset??0;
  return {
   x:Math.round(box.x*10)/10,

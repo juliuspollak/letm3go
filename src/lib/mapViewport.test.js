@@ -41,12 +41,6 @@ describe('native map placeholder geometry',()=>{
   const tiny=surfaceGeometry(surface({...box,width:40}),win());
   expect(tiny.visible).toBe(false);
  });
- it('an overlay map host uses its full height and ignores the bottom navigation',()=>{
-  const box={x:0,y:0,top:0,bottom:800,left:0,right:400,width:400,height:800};
-  const geometry=surfaceGeometry(surface(box),win({navTop:700}),true);
-  expect(geometry.height).toBe(800);
-  expect(geometry.visible).toBe(true);
- });
  it('returns nothing instead of throwing when there is no surface or window',()=>{
   expect(surfaceGeometry(null,win())).toBeNull();
   expect(surfaceGeometry(surface({x:0,y:0,width:1,height:1,top:0,bottom:1}),null)).toBeNull();

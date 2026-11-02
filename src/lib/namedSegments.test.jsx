@@ -1,9 +1,8 @@
-import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {cleanup} from '@testing-library/react';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 const mapCalls=vi.hoisted(()=>[]);
 vi.mock('../components/ActivityPrivacy.jsx',()=>({default:()=>null}));
 vi.mock('../components/JourneyMap.jsx',()=>({default:props=>{mapCalls.push(props);return <div aria-label="Activity map"/>;}}));
-import ActivityDetail from '../components/ActivityDetail.jsx';
 import {recordedJourney} from './recorder.js';
 import {SEGMENT_MIN_METRES,canCreateSegments,cleanSegmentName,namedSegments,segmentColor,segmentLayers,segmentRuns,segmentStats} from './namedSegments.js';
 afterEach(()=>{cleanup();mapCalls.length=0;});
@@ -61,71 +60,6 @@ describe('segment rules (mirroring NamedSegmentCore.swift)',()=>{
  });
 });
 
-describe('Create Segment on an activity',()=>{
- const run=vi.fn(async(method,params)=>{
-  if(method!=='saveNamedSegment'&&method!=='deleteNamedSegment')return true;
-  return {trips:[{...ride(),details:{namedSegments:method==='saveNamedSegment'?[saved(params.segmentID,params.name,params.start,params.end)]:[]}}]};
- });
- it('is the whole workflow: open, drag, name, save — without touching the visible route',async()=>{
-  const onUpdated=vi.fn();
-  render(<ActivityDetail trip={ride()} run={run} onUpdated={onUpdated}/>);
-  fireEvent.click(screen.getByRole('button',{name:'Create Segment'}));
-  const editor=screen.getByRole('form',{name:'Create segment'});
-  expect(screen.queryByRole('heading',{name:'Route shown on map'})).toBeNull();
-  // The full route is muted and the selection highlighted on the map.
-  expect(mapCalls.at(-1).segmentLayers.muted).toBe(true);
-  expect(mapCalls.at(-1).trimRange).toBeNull();
-  fireEvent.change(within(editor).getByLabelText('Segment start'),{target:{value:'2'}});
-  fireEvent.change(within(editor).getByLabelText('Segment finish'),{target:{value:'12'}});
-  expect(mapCalls.at(-1).segmentLayers.styled.at(-1).points.length).toBe(11);
-  expect(within(editor).getByText('Distance').nextSibling).toHaveTextContent(/^2\d\d m$/);
-  // The name is mandatory.
-  fireEvent.click(within(editor).getByRole('button',{name:'Save Segment'}));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Name the segment to save it.');
-  expect(run).not.toHaveBeenCalledWith('saveNamedSegment',expect.anything());
-  fireEvent.change(within(editor).getByLabelText('Segment name'),{target:{value:'Rock Garden Descent'}});
-  await act(async()=>{fireEvent.click(within(editor).getByRole('button',{name:'Save Segment'}));});
-  const call=run.mock.calls.find(([method])=>method==='saveNamedSegment')[1];
-  expect(call).toMatchObject({id:'ride',name:'Rock Garden Descent',start:2,end:12});
-  expect(call.segmentID).toMatch(/^[0-9a-f-]{36}$/);
-  expect(run).not.toHaveBeenCalledWith('setRouteDisplay',expect.anything());
-  expect(run).not.toHaveBeenCalledWith('trimActivity',expect.anything());
-  expect(screen.queryByRole('form',{name:'Create segment'})).toBeNull();
-  expect(onUpdated).toHaveBeenCalled();
- });
- it('can undo an accidental handle change and blocks a too-short section',()=>{
-  render(<ActivityDetail trip={ride()} run={run} onUpdated={vi.fn()}/>);
-  fireEvent.click(screen.getByRole('button',{name:'Create Segment'}));
-  const start=screen.getByLabelText('Segment start');
-  fireEvent.pointerDown(start);fireEvent.change(start,{target:{value:'37'}});
-  expect(screen.getByRole('status')).toHaveTextContent('at least 5 GPS points');
-  expect(screen.getByRole('button',{name:'Save Segment'})).toBeDisabled();
-  fireEvent.click(screen.getByRole('button',{name:'Undo handle change'}));
-  expect(screen.getByLabelText('Segment start')).toHaveValue('0');
- });
- it('lists saved segments with Edit, Rename and Delete, none of which changes the recording',async()=>{
-  const trip=ride({details:{namedSegments:[saved('a1b2c3d4-0000-4000-8000-000000000001','Rock Garden Descent',2,12)]}});
-  render(<ActivityDetail trip={trip} run={run} onUpdated={vi.fn()}/>);
-  fireEvent.click(screen.getByRole('button',{name:/Rock Garden Descent/}));
-  fireEvent.click(screen.getByRole('button',{name:'Rename'}));
-  fireEvent.change(screen.getByLabelText('New name'),{target:{value:'Rock Garden'}});
-  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Save name'}));});
-  expect(run).toHaveBeenCalledWith('saveNamedSegment',{id:'ride',segmentID:'a1b2c3d4-0000-4000-8000-000000000001',name:'Rock Garden',start:2,end:12});
-  fireEvent.click(screen.getByRole('button',{name:'Delete'}));
-  expect(screen.getByText(/The recording is not changed/)).toBeInTheDocument();
-  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Delete segment'}));});
-  expect(run).toHaveBeenCalledWith('deleteNamedSegment',{id:'ride',segmentID:'a1b2c3d4-0000-4000-8000-000000000001'});
-  fireEvent.click(screen.getByRole('button',{name:/Rock Garden Descent/}));
-  fireEvent.click(screen.getByRole('button',{name:'Edit'}));
-  expect(screen.getByRole('form',{name:'Edit segment'})).toBeInTheDocument();
-  expect(screen.getByLabelText('Segment name')).toHaveValue('Rock Garden Descent');
- });
- it('is not offered on a drive',()=>{
-  render(<ActivityDetail trip={ride({activity:'Driving'})} run={run} onUpdated={vi.fn()}/>);
-  expect(screen.queryByRole('button',{name:'Create Segment'})).toBeNull();
- });
-});
-
 describe('cloud backup of segments',()=>{
  it('stays off until the migration is applied, and never sends a geometry copy',async()=>{
   const {NAMED_SEGMENT_BACKUP,backupSegments}=await import('./cloudSync.js');
@@ -144,13 +78,5 @@ describe('destructive trimming',()=>{
   expect(segmentsCutByTrim(trip,5,39).map(s=>s.name)).toEqual(['Rock Garden Descent']);
   expect(segmentsCutByTrim(trip,0,35).map(s=>s.name)).toEqual(['Finish']);
   expect(segmentsCutByTrim(trip,2,39)).toEqual([]);
- });
- it('is never reachable from the Activity page, which only changes the visible route',()=>{
-  const run=vi.fn(async()=>true);
-  render(<ActivityDetail trip={ride({details:{namedSegments:[saved('a','A',2,12)]}})} run={run} onUpdated={vi.fn()}/>);
-  fireEvent.change(screen.getByLabelText('Visible route start'),{target:{value:'5'}});
-  fireEvent.click(screen.getByRole('button',{name:'Save visible route'}));
-  expect(run).toHaveBeenCalledWith('setRouteDisplay',{id:'ride',start:5,end:39});
-  expect(run).not.toHaveBeenCalledWith('trimActivity',expect.anything());
  });
 });

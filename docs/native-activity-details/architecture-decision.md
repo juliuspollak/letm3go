@@ -1,6 +1,6 @@
 # Native Activity Details: architecture decision record
 
-Status: implemented behind a disabled flag. Not approved for release. Base commit `d15e501`.
+Status: implemented; the React screen and flag have been removed. Not accepted on a physical device. Base commit `d15e501`.
 
 ## Evidence from the code
 
@@ -23,7 +23,7 @@ Status: implemented behind a disabled flag. Not approved for release. Base commi
 
 ## Data flow
 
-- Open: `ActivityDetailScreen` picks a screen once per launch. `NativeActivityDetail` calls `present`.
+- Open: `ActivityDetailScreen` renders `NativeActivityDetail` on iOS, which calls `present`.
 - Update: any change in React sends `update` with a rising `revision`. `ActivityPresentationGate` drops older revisions and closes on another account.
 - Write: SwiftUI, then `ActivityDetailsService`, then `LocationRecorder`, then a `mutation` event. React re-reads the snapshot, and the projection returns as `update`.
 - JavaScript-owned work: `request` event, then `respond`. `ActivityRequestTracker` ends each request exactly once: answered, timed out or cancelled. Closing the screen or changing activity cancels what is running and aborts it in JavaScript.

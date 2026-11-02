@@ -1,13 +1,12 @@
 # Release, rollback and cleanup
 
-The flag is `VITE_NATIVE_ACTIVITY_DETAILS`, read at build time: `off` (default), `testing` (opt-in from Diagnostics), `on`. It is decided once per launch.
+The React Activity Details screen has been removed. The native screen is the only one on iOS, and there is no flag.
 
-## Before TestFlight (needs approval)
+## Before release (needs approval)
 
-- [ ] Fix or accept the two failures already on `main`: `tests/native/main.swift:4437` and `segmentMatcher.test.js`.
-- [ ] Build with `VITE_NATIVE_ACTIVITY_DETAILS=testing`.
+- [ ] Fix or accept `segmentMatcher.test.js`, which already failed on `main`.
 - [ ] Run the device list below on the oldest supported iPhone and a current one.
-- [ ] Profile with Time Profiler, Allocations and Leaks against the React baseline.
+- [ ] Profile with Time Profiler, Allocations and Leaks.
 - [ ] Test publish and revoke against an isolated backend.
 
 ## Device acceptance
@@ -16,8 +15,4 @@ Map pan, pinch, rotate, pitch and annotation select. Panel drag and detents. Scr
 
 ## Rollback
 
-Ship with the flag `off`. No data format changed, and native writes use the same recorder methods as React, so React reads everything native wrote.
-
-## Cleanup after the observation window
-
-Only after confirming no references remain: `ActivityDetail.jsx`, `ActivitySheet.jsx`, `activitySheet.js`, `overlayTouch.js`, the overlay parts of `AppleMap.jsx` and `AppleMaps.swift`, `OverlayTouchWebView`, `MapTouchBoundary`, and the `map-overlay` CSS. Keep `JourneyMap`, `AppleMap` and the plugin for the Map tab.
+There is no runtime rollback. Reverting means reverting the removal commit, rebuilding and releasing. No data format changed, so a restored React screen reads everything the native screen wrote.

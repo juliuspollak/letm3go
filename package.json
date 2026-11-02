@@ -50,8 +50,7 @@
     "testflight:check": "node scripts/testflight.mjs preflight",
     "testflight:package": "node scripts/testflight.mjs package",
     "release:check": "node scripts/check-release.mjs",
-    "test:orchestrator": "node --test tests/orchestrator/*.node.mjs",
-    "test:activity-layout": "PLAYWRIGHT_BROWSERS_PATH=.build/browser-cache node scripts/check-activity-layout.mjs"
+    "test:orchestrator": "node --test tests/orchestrator/*.node.mjs"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",

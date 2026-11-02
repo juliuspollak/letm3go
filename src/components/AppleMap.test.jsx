@@ -77,12 +77,6 @@ it('hides the native map behind a still image while a web dialog covers it, then
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
  await waitFor(()=>expect(container.querySelector('.apple-map-freeze')).toBeNull());
 });
-it('opens the same trimmed route in fullscreen that is shown in the embedded map',async()=>{
- const points=[{latitude:1,longitude:2,segment:0},{latitude:3,longitude:4,segment:0},{latitude:5,longitude:6,segment:0}];
- const {getByRole}=render(<AppleMap payload={payload} trimRange={{points,start:1,end:2}}/>);
- fireEvent.click(getByRole('button',{name:'Open interactive Apple journey map'}));
- await waitFor(()=>expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({routes:[[[3,4],[5,6]]]})));
-});
 it('fits the first positions arriving after an empty startup and then preserves user navigation',async()=>{
  const {rerender}=render(<AppleMap payload={{routes:[],pins:[]}}/>);
  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
@@ -274,65 +268,6 @@ it('shows a single live map: the snapshot preview is removed once the native map
  expect(container.querySelector('img[alt="Apple map preview"]')).toBeNull();
 });
 
-describe('overlay map touch boundary',()=>{
- let observers;
- const liveSheet=top=>{const sheet=document.createElement('section');sheet.className='activity-sheet';sheet.setAttribute('data-detent','medium');sheet.top=top;sheet.getBoundingClientRect=()=>({top:sheet.top});document.body.appendChild(sheet);return sheet;};
- const frame=()=>act(async()=>{observers.forEach(observer=>observer.fire());});
- beforeEach(()=>{
-  observers=[];
-  vi.stubGlobal('ResizeObserver',class{constructor(callback){this.fire=callback;observers.push(this);}observe(){}disconnect(){}});
- });
- afterEach(()=>{document.querySelectorAll('.activity-sheet').forEach(sheet=>sheet.remove());});
-
- it('sends the real sheet edge with the embed, so a new map is usable at once',async()=>{
-  liveSheet(378);
-  render(<AppleMap payload={payload} overlay/>);
-  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({overlay:true,exposedHeight:378})));
- });
- it('leaves Map tab embeds without a boundary',async()=>{
-  render(<AppleMap payload={payload}/>);
-  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
-  await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
-  expect(mocks.embed.mock.calls[0][0]).not.toHaveProperty('exposedHeight');
-  expect(mocks.setOverlayInset).not.toHaveBeenCalled();
- });
- it('follows the sheet while it moves without re-embedding or resizing the map',async()=>{
-  const sheet=liveSheet(378);
-  const {container}=render(<AppleMap payload={payload} overlay/>);
-  await waitFor(()=>expect(mocks.setOverlayInset).toHaveBeenCalledWith(expect.objectContaining({height:378,moving:false})));
-  const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
-  mocks.embed.mockClear();mocks.resize.mockClear();mocks.setOverlayInset.mockClear();
-  // No data-detent change: this is the middle of a drag, not a settle.
-  sheet.top=300;await frame();
-  await waitFor(()=>expect(mocks.setOverlayInset).toHaveBeenCalledWith({mapID,height:300,moving:true}));
-  await waitFor(()=>expect(mocks.setOverlayInset).toHaveBeenLastCalledWith({mapID,height:300,moving:false}));
-  expect(mocks.embed).not.toHaveBeenCalled();
-  expect(mocks.resize).not.toHaveBeenCalled();
-  expect(container.querySelector('.apple-map-preview.native-embedded')).not.toBeNull();
- });
- it('stops reporting and releases the native map on unmount',async()=>{
-  const sheet=liveSheet(378);
-  const {unmount}=render(<AppleMap payload={payload} overlay/>);
-  await waitFor(()=>expect(mocks.setOverlayInset).toHaveBeenCalled());
-  const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
-  unmount();
-  mocks.setOverlayInset.mockClear();
-  sheet.top=200;sheet.setAttribute('data-detent','full');
-  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,200));});
-  expect(mocks.setOverlayInset).not.toHaveBeenCalled();
-  expect(mocks.unembed).toHaveBeenCalledWith({mapID});
- });
- it('gives each activity its own map and releases the previous one',async()=>{
-  liveSheet(378);
-  const view=render(<AppleMap key="a" payload={payload} overlay/>);
-  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
-  const firstID=mocks.embed.mock.calls[0][0].mapID;
-  view.rerender(<AppleMap key="b" payload={payload} overlay/>);
-  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(2));
-  expect(mocks.embed.mock.calls[1][0].mapID).not.toBe(firstID);
-  expect(mocks.unembed).toHaveBeenCalledWith({mapID:firstID});
- });
-});
 
 it('keeps the map and its camera across background and resume without unembedding',async()=>{
  render(<AppleMap payload={payload}/>);

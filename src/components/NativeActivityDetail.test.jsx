@@ -1,28 +1,24 @@
-import {act,render,screen} from '@testing-library/react';
+import {act,render} from '@testing-library/react';
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 
-const mocks=vi.hoisted(()=>({listeners:{},present:vi.fn(),update:vi.fn(),dismiss:vi.fn(),respond:vi.fn(),disable:vi.fn(),enabled:{value:true},acceptMutation:vi.fn(),operation:vi.fn()}));
+const mocks=vi.hoisted(()=>({listeners:{},present:vi.fn(),update:vi.fn(),dismiss:vi.fn(),respond:vi.fn(),acceptMutation:vi.fn(),operation:vi.fn()}));
 vi.mock('../lib/nativeActivityDetails.js',()=>({
- nativeDetailsEnabled:()=>mocks.enabled.value,disableNativeDetails:mocks.disable,
  nativeDetails:{present:mocks.present,update:mocks.update,dismiss:mocks.dismiss,respond:mocks.respond,addListener:(event,callback)=>{mocks.listeners[event]=callback;return Promise.resolve({remove:vi.fn()});}},
 }));
 vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>({preferences:{}})}));
 vi.mock('../lib/supabase.js',()=>({supabase:{}}));
 vi.mock('../lib/activityPresentation.js',()=>({activityPresentation:trip=>({activityID:trip.id,header:{state:trip.state||'finished'},title:trip.title})}));
 vi.mock('../lib/activityDetailsRequests.js',()=>({acceptNativeMutation:mocks.acceptMutation,activityDetailsRequests:{probe:mocks.operation}}));
-vi.mock('./ActivityDetail.jsx',()=>({default:()=><p>React screen</p>}));
 
 import NativeActivityDetail from './NativeActivityDetail.jsx';
-import ActivityDetailScreen from './ActivityDetailScreen.jsx';
 
 const settle=()=>act(async()=>{await new Promise(resolve=>setTimeout(resolve,5));});
 const trip={id:'a',title:'Ride'};
 const props={ownerID:'o',trip,places:[],run:vi.fn(),onBack:vi.fn(),onUpdated:vi.fn(),onDeleted:vi.fn()};
 
 beforeEach(async()=>{
- for(const mock of [mocks.present,mocks.update,mocks.dismiss,mocks.respond,mocks.disable,mocks.acceptMutation,mocks.operation,props.onBack])mock.mockReset();
+ for(const mock of [mocks.present,mocks.update,mocks.dismiss,mocks.respond,mocks.acceptMutation,mocks.operation,props.onBack])mock.mockReset();
  mocks.present.mockResolvedValue();mocks.update.mockResolvedValue();mocks.dismiss.mockResolvedValue();mocks.respond.mockResolvedValue();
- mocks.enabled.value=true;
 });
 async function open(){const view=render(<NativeActivityDetail {...props}/>);await settle();return view;}
 async function close(view){view.unmount();await settle();}
@@ -88,21 +84,6 @@ describe('NativeActivityDetail',()=>{
   act(()=>mocks.listeners.mutation({activityID:'a',kind:'deleted'}));
   expect(mocks.acceptMutation).toHaveBeenCalledWith(expect.objectContaining({activityID:'a',kind:'deleted'}));
   await close(view);
- });
- it('falls back to the complete React screen when native cannot open',async()=>{
-  mocks.present.mockRejectedValueOnce(new Error('not implemented'));
-  const view=await open();
-  expect(mocks.disable).toHaveBeenCalled();
-  expect(screen.getByText('React screen')).toBeInTheDocument();
-  await close(view);
- });
-});
-describe('ActivityDetailScreen',()=>{
- it('shows only the React screen while the flag is off',()=>{
-  mocks.enabled.value=false;
-  render(<ActivityDetailScreen {...props}/>);
-  expect(screen.getByText('React screen')).toBeInTheDocument();
-  expect(mocks.present).not.toHaveBeenCalled();
  });
 });
 describe('a recording in progress',()=>{

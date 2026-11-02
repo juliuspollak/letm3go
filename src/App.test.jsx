@@ -406,9 +406,6 @@ it('shows an imported Watch ride in Trips and permits opening and deleting it',a
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[ride]},run,busy:false,error:''});
  render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
  fireEvent.click(screen.getByRole('button',{name:'Open Watch bike ride'}));
- expect(screen.getByRole('heading',{name:'Watch bike ride'})).toBeInTheDocument();
- expect(screen.getByText('Recorded on Apple Watch')).toBeInTheDocument();
- expect(screen.getByRole('button',{name:'Delete activity'})).toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Back to activities'}));
  fireEvent.click(screen.getByRole('button',{name:'Delete: Watch bike ride'}));
  expect(run).not.toHaveBeenCalled();

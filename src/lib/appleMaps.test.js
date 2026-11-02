@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { describe,expect,it,vi } from 'vitest';
+import { expect,it,vi } from 'vitest';
 vi.mock('@capacitor/core',()=>({Capacitor:{getPlatform:()=> 'ios'},registerPlugin:()=>({})}));
 import { appleMaps, mapPayload } from './appleMaps.js';
 it('preserves route gaps and forwards photo references without private image paths or GPS timestamps',()=>{
@@ -42,20 +41,3 @@ it('does not label native-size chunks of a detailed continuous route as GPS gaps
 
 // swiftc does not run on every machine that changes this code, and the design rests
 // on these lines: real touches reach MapKit, and a button dies with its map.
-describe('native overlay map source',()=>{
- const swift=readFileSync('ios/App/App/AppleMaps.swift','utf8');
- const controller=readFileSync('ios/App/App/LocationRecorder.swift','utf8');
- it('routes real touches to MapKit instead of translating web gestures into regions',()=>{
-  expect(controller).toContain('OverlayTouchWebView(frame:frame,configuration:configuration)');
-  expect(swift).toContain('return map.hitTest(webView.convert(point,to:map),with:event)');
-  expect(swift).not.toMatch(/overlayPanned|overlayPinched|overlayTapped|installOverlayGestures/);
- });
- it('keeps the Full screen button on its map and removes it with the map',()=>{
-  expect(swift).not.toContain('webView.addSubview(button)');
-  expect(swift).toContain('self.expandButtons.removeValue(forKey:id)?.removeFromSuperview()');
-  expect(swift).toMatch(/func unembed[\s\S]{0,120}self\.removeMap\(id\)/);
- });
- it('never records a boundary for a map that has gone',()=>{
-  expect(swift).toMatch(/func setOverlayInset[\s\S]{0,200}self\.overlayMaps\.contains\(id\)/);
- });
-});

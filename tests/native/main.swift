@@ -4623,17 +4623,6 @@ let afterSheetDrag = overlayFrame(0, 0, 390, 844)
 check(beforeSheetDrag.y == afterSheetDrag.y && beforeSheetDrag.height == afterSheetDrag.height, "a sheet detent never changes the overlay map frame")
 // Touch ownership: the sheet's top edge is the line, it changes with the sheet but
 // is not a map frame, and every doubtful touch belongs to the sheet.
-let settledSheet=MapTouchBoundary(height:378)
-check(settledSheet.owner(x:200,y:377,active:nil) == .map,"a touch above the sheet belongs to the map")
-check(settledSheet.owner(x:200,y:378,active:nil) == .web,"a touch on the sheet's top edge belongs to the sheet")
-check(settledSheet.owner(x:200,y:700,active:nil) == .web,"a touch on the sheet belongs to the sheet")
-check(MapTouchBoundary(height:0).owner(x:200,y:0,active:nil) == .web,"a map with no reported sheet takes no touches")
-check(settledSheet.owner(x:MapTouchBoundary.backSwipeEdge,y:100,active:nil) == .web,"the back-swipe edge stays with the web view")
-let movingSheet=MapTouchBoundary(height:378,moving:true)
-check(movingSheet.owner(x:200,y:378-MapTouchBoundary.movingGuard,active:nil) == .web,"a moving sheet keeps a guard band against a late report")
-check(movingSheet.owner(x:200,y:378-MapTouchBoundary.movingGuard-1,active:nil) == .map,"the map still works above a moving sheet")
-check(settledSheet.owner(x:200,y:700,active:.map) == .map,"a pinch that starts on the map may land its second finger past the edge")
-check(settledSheet.owner(x:200,y:100,active:.web) == .web,"a finger on the sheet keeps the map out of the gesture")
 // Camera continuity seam: the full-screen and resume paths reuse the embedded map's
 // camera (centre + span) rather than re-fitting the route. This mirrors
 // MapCoordinator.remember/resumeFromMemory's per-intent camera memory, including

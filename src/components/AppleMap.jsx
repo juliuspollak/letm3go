@@ -1,22 +1,16 @@
 import { Maximize2, Navigation, Footprints, Bike, Car, Activity } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
-import { withTrimRange } from '../lib/mapContent.js';
 import MapControls from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
 import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
 import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
-import {createBoundaryReporter} from '../lib/overlayTouch.js';
-
-// How far down the screen an overlay map stays uncovered: the sheet's live top edge.
-const activitySheet=()=>typeof document==='undefined'?null:document.querySelector('.activity-sheet');
-const exposedHeight=sheet=>Math.max(0,Math.round(sheet?.getBoundingClientRect?.().top??0));
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
 // sent to the native map once per key and the payload names only the key.
 // `controls` (lib/mapToolbar.mapControls) adds the Map page's controls, drawn
 // natively once the map is embedded; their actions come back to `onControl`.
-export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,trimRange=null,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null,overlay=false}){
+export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null}){
  // The payload is derived from props on every render; memoising it keeps the
  // derived serialisation below stable so a re-render that did not change the map
  // content (for example a photo pin selection or an unrelated parent update)
@@ -44,7 +38,6 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const [overviewFailed,setOverviewFailed]=useState(null);
  const [overviewAttempt,setOverviewAttempt]=useState(0);
  const resent=useRef(new Set());
- const [projection,setProjection]=useState([]);
  const [themeVersion,setThemeVersion]=useState(0);
  useEffect(()=>{const changed=()=>setThemeVersion(v=>v+1);window.addEventListener('letm3go:theme-changed',changed);return()=>window.removeEventListener('letm3go:theme-changed',changed);},[]);
  const [mapID]=useState(newUUID);
@@ -105,7 +98,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // The whole payload is re-serialised on every movement anyway; the value that
 // matters here is content *structure*, so the heavy string is not kept around and
 // a live position update must not force a new snapshot.
- const interactiveData=useMemo(()=>JSON.stringify(withTrimRange(payload,trimRange)),[payload,trimRange]);
+ const interactiveData=useMemo(()=>JSON.stringify(payload),[payload]);
  // A live position changes the content, not the map's structure. Keep the latest
  // payload in a ref and re-embed only when routes, pins, filters, camera mode or
  // other structure changes; ordinary movement goes through the native incremental
@@ -148,7 +141,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
     // and re-fits only if the viewport genuinely changed (handled by resize).
     return;
    }
-   const geometry=surfaceGeometry(surface,window,overlay);
+   const geometry=surfaceGeometry(surface,window);
    if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const key=geometryKey(geometry);
    if(key===previous){if(origin==='scroll')recordMapEvent('scroll-ignored');return;}
@@ -170,7 +163,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport,overlay,...(overlay?{exposedHeight:exposedHeight(activitySheet())}:{})};
+    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport};
     if(!arrived)delete request.overview;
     embedSent.current=true;
     return appleMaps.embed(request).then(result=>({arrived,result}));
@@ -216,34 +209,8 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   window.addEventListener('scroll',scrolled,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
- },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers,overlay]);
- // Overlay maps live behind the web view, so the native side decides at touch-down
- // whether a finger belongs to the map or the sheet. The sheet's height changes on
- // every frame of a drag and of its CSS settle animation, both of which a
- // ResizeObserver sees and neither of which costs anything while the sheet is idle.
- useEffect(()=>{
-  if(!overlay||!appleMapsAvailable()||!embedded)return;
-  const reporter=createBoundaryReporter(state=>appleMaps.setOverlayInset({mapID,...state}));
-  const edge=new ResizeObserver(()=>reporter.update(exposedHeight(activitySheet())));
-  let watched=null;
-  const report=()=>{
-   const sheet=activitySheet();
-   if(sheet!==watched){edge.disconnect();if(sheet)edge.observe(sheet);watched=sheet;}
-   reporter.update(exposedHeight(sheet));
-  };
-  report();
-  const watcher=new MutationObserver(report);
-  watcher.observe(document.body,{subtree:true,attributes:true,attributeFilter:['data-detent']});
-  window.addEventListener('resize',report);
-  return()=>{reporter.dispose();edge.disconnect();watcher.disconnect();window.removeEventListener('resize',report);};
- },[overlay,mapID,embedded]);
- const isTrimPreview=Boolean(trimRange);
- const projected=projection.flat();
- const startIndex=trimRange&&projected.length>1?Math.max(0,Math.min(projected.length-2,Math.round(trimRange.start/(trimRange.points.length-1)*(projected.length-1)))):0;
- const endIndex=trimRange&&projected.length>1?Math.max(startIndex+1,Math.min(projected.length-1,Math.round(trimRange.end/(trimRange.points.length-1)*(projected.length-1)))):0;
- const selected=trimRange&&projected.length>1?projected.slice(startIndex,endIndex+1):[];
- useEffect(()=>{if(selected.length>1)recordMapEvent('overlay',{points:selected.length});},[selected.length]);
- useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...contentRef.current,trimPreview:isTrimPreview,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{recordMapEvent('snapshot');if(alive){setPreview(result.image);setProjection(result.projection||[]);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[snapshotKey,large,themeVersion,isTrimPreview,overviewKey,overviewAttempt,embedded]);
+ },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
+ useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...contentRef.current,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{recordMapEvent('snapshot');if(alive){setPreview(result.image);setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[snapshotKey,large,themeVersion,overviewKey,overviewAttempt,embedded]);
  async function open(){
   if(busy)return;
   setBusy(true);setError('');
@@ -264,7 +231,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    setBusy(false);
   }
  }
- return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} ${isTrimPreview?'trim-preview':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{!embedded&&preview&&<img src={preview} alt="Apple map preview"/>}{trimRange&&selected.length>1&&<svg className="trim-map-overlay" viewBox={`0 0 700 ${large?600:350}`} preserveAspectRatio="none" aria-hidden="true"><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="white" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round"/><polyline points={selected.map(p=>p.join(',')).join(' ')} fill="none" stroke="#4659d9" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>{selected[0]&&<g transform={`translate(${selected[0][0]} ${selected[0][1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-3.5 -6 L5 0 L-3.5 6 Z" fill="white" stroke="white" strokeLinejoin="round" strokeWidth="1.4"/></g>}{selected.at(-1)&&<g transform={`translate(${selected.at(-1)[0]} ${selected.at(-1)[1]})`}><circle r="17" fill="#4659d9" fillOpacity=".17"/><circle r="11" fill="#4659d9" stroke="white" strokeWidth="2.5"/><path d="M-5 -7 V7" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><path d="M-4.5 -7 H5 V3 H-4.5 Z" fill="white"/><path d="M-4.5 -7 H.25 V-2 H-4.5 Z M.25 -2 H5 V3 H.25 Z" fill="#4659d9"/></g>}</svg>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{controls&&!embedded&&<MapControls controls={controls} onAction={onControl}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&!embedded&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" aria-pressed={locating||(basePayload.camera?.mode==='person'&&basePayload.camera?.personId==='self')} disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{!embedded&&!appleMapsAvailable()&&<PeopleActivityFallback pins={latestContent.pins}/>} {error&&<p role="status" className="notice">{error}</p>}</div>;
+ return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{!embedded&&preview&&<img src={preview} alt="Apple map preview"/>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{controls&&!embedded&&<MapControls controls={controls} onAction={onControl}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&!embedded&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" aria-pressed={locating||(basePayload.camera?.mode==='person'&&basePayload.camera?.personId==='self')} disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{!embedded&&!appleMapsAvailable()&&<PeopleActivityFallback pins={latestContent.pins}/>} {error&&<p role="status" className="notice">{error}</p>}</div>;
 }
 
 function PeopleActivityFallback({pins=[]}){

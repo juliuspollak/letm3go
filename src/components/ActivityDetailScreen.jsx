@@ -1,8 +1,8 @@
-import ActivityDetail from './ActivityDetail.jsx';
+import {Capacitor} from '@capacitor/core';
 import NativeActivityDetail from './NativeActivityDetail.jsx';
-import {nativeDetailsEnabled} from '../lib/nativeActivityDetails.js';
 
-// The one place that chooses between the two complete screens.
+// Activity details are a native iPhone screen. A browser (development only) has none.
 export default function ActivityDetailScreen(props){
- return nativeDetailsEnabled()?<NativeActivityDetail {...props}/>:<ActivityDetail {...props}/>;
+ if(Capacitor.getPlatform()==='ios')return <NativeActivityDetail {...props}/>;
+ return <div className="notice"><p>Activity details are available in the iPhone app.</p><button type="button" className="secondary" onClick={props.onBack}>Back to activities</button></div>;
 }

@@ -1,7 +1,6 @@
 import {useMemo} from 'react';
 import AppleMap from './AppleMap.jsx';
 import { mapPayload } from '../lib/appleMaps.js';
-import { withSegments } from '../lib/mapContent.js';
 // `camera` (from mapCamera.cameraIntent) turns on the people map: show everyone,
 // follow a person, free exploring and edge avatars. Without it the map fits its
 // routes as before.
@@ -13,13 +12,13 @@ import { withSegments } from '../lib/mapContent.js';
 // Named segments (namedSegments.segmentLayers): coloured lines above the route,
 // a label per segment, and the recording muted while a section is being chosen.
 const EMPTY=[];
-export default function JourneyMap({journeys,onPhoto,selectedPhotoID=null,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,trimRange=null,segmentLayers=null,homePresence=null,livePeople=EMPTY,peoplePins=EMPTY,embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,controls=null,onControl=null,overlay=false}){
+export default function JourneyMap({journeys,onPhoto,selectedPhotoID=null,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,homePresence=null,livePeople=EMPTY,peoplePins=EMPTY,embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,controls=null,onControl=null}){
  // Rebuilding the route payload on every render re-serialises a long recording's
  // geometry and re-sends it to the native map. Memoise so a photo-pin selection,
  // a camera mode change or an unrelated re-render reuses the previous bytes.
  const overviewKey=overview?.key||null;
- const payload=useMemo(()=>({...withSegments(mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins,{overview:overviewKey,selectedPhotoID}),segmentLayers),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})}),[journeys,currentPosition,homePresence,livePeople,peoplePins,overviewKey,selectedPhotoID,segmentLayers,focusPoint,camera]);
- return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={onLocate} locating={locating} onCamera={onCamera} overview={overview} controls={controls} onControl={onControl} overlay={overlay} payload={payload} trimRange={trimRange} large={large} onResult={result=>{
+ const payload=useMemo(()=>({...mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins,{overview:overviewKey,selectedPhotoID}),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})}),[journeys,currentPosition,homePresence,livePeople,peoplePins,overviewKey,selectedPhotoID,focusPoint,camera]);
+ return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={onLocate} locating={locating} onCamera={onCamera} overview={overview} controls={controls} onControl={onControl} payload={payload} large={large} onResult={result=>{
   if(!result?.photoID)return;
   // Only a journey this map was given, and only one that owns the photo.
   const journey=journeys.find(j=>String(j.id)===result.journeyID);
