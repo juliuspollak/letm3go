@@ -4429,12 +4429,14 @@ do {
     check(trip.details?.energyBinding?.revision == 1 && trip.details?.energyBinding?.consent == "owner", "base import records binding revision and owner consent")
     var finalEnergy = ActivityEnergy(); finalEnergy.state = "final"; finalEnergy.active = 22; finalEnergy.total = 31
     var enrichment = WatchActivityTransfer(id: UUID().uuidString, ownerID: "owner-1", activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [], schema: 4, deviceID: "device-1", energy: finalEnergy, energyTargetID: base.id, energyRevision: 2, energyWorkoutExternalUUID: base.id, energySessionIDs: ["s1"])
+    var enriched = trip
     if case .applied(let updated) = WatchEnergyImport.apply(enrichment, to: trip, now: 1070) {
+        enriched = updated
         check(updated.details?.energy?.active == 22, "enrichment updates only measured energy metadata")
         check(updated.details?.energyBinding?.revision == 2, "enrichment advances the monotone revision")
         check(updated.points == trip.points && updated.title == trip.title, "enrichment never touches route or title")
     } else { check(false, "enrichment should apply") }
-    if case .duplicate = WatchEnergyImport.apply(enrichment, to: trip, now: 1070) {} else { check(false, "stale revision is a duplicate") }
+    if case .duplicate = WatchEnergyImport.apply(enrichment, to: enriched, now: 1070) {} else { check(false, "stale revision is a duplicate") }
     var wrongOwner = enrichment; wrongOwner.ownerID = "other"
     if case .rejected(let reason) = WatchEnergyImport.apply(wrongOwner, to: trip, now: 1070) { check(reason == "wrong-owner", "wrong owner rejected") } else { check(false, "wrong owner") }
     var wrongDevice = enrichment; wrongDevice.deviceID = "other-device"
