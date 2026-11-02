@@ -4312,7 +4312,8 @@ do {
     let reloaded = try store.load().first!
     check(reloaded.details?.energy == nil && reloaded.details?.wholeWorkoutEnergy?.active == 100, "saving a trim preserves original measured energy durably under the same ID")
     var heldSource = source
-    heldSource.details?.unverifiedEnergy = heldSource.details?.energy
+    let heldSourceEnergy = heldSource.details?.energy
+    heldSource.details?.unverifiedEnergy = heldSourceEnergy
     heldSource.details?.energy = nil
     let heldTrim = RouteTrimming.trimmed(heldSource, start: 1, end: 2)!
     try store.save(heldTrim)
@@ -4385,14 +4386,21 @@ do {
     ride.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: 3))
     check(ride.energySessions.count == 2, "a replacement workout opens a new measured segment")
     check(WatchEnergy.activeKcal(ride.energySessions) == 30, "only distinct measured segments are summed")
-    check(WatchEnergy.totalKcal(ride.energySessions) == 43, "total sums active and resting across segments")
+    check(WatchEnergy.totalKcal(ride.energySessions) == 42, "total sums active and resting across segments")
     var incomplete = WatchRideDraft(activity: "MTB", startedAt: 1000)
     incomplete.beginEnergySession(at: 1000)
     incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
     incomplete.segment += 1
     incomplete.beginEnergySession(at: 1200)
     incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: nil))
-    check(WatchEnergy.activeKcal(incomplete.energySessions) == nil, "active energy is unavailable if any segment lacks active")
+    check(WatchEnergy.activeKcal(incomplete.energySessions) == 18, "active energy still sums when only resting is missing")
+    var noActive = WatchRideDraft(activity: "MTB", startedAt: 1000)
+    noActive.beginEnergySession(at: 1000)
+    noActive.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
+    noActive.segment += 1
+    noActive.beginEnergySession(at: 1200)
+    noActive.applyEnergy(WatchEnergy.reading(activeKcal: nil, basalKcal: 3))
+    check(WatchEnergy.activeKcal(noActive.energySessions) == nil, "active energy is unavailable if any segment lacks active")
     check(WatchEnergy.totalKcal(incomplete.energySessions) == nil, "total is unavailable if any segment lacks resting")
     var zero = WatchRideDraft(activity: "MTB", startedAt: 1000)
     zero.beginEnergySession(at: 1000)
@@ -4421,12 +4429,14 @@ do {
     check(trip.details?.energyBinding?.revision == 1 && trip.details?.energyBinding?.consent == "owner", "base import records binding revision and owner consent")
     var finalEnergy = ActivityEnergy(); finalEnergy.state = "final"; finalEnergy.active = 22; finalEnergy.total = 31
     var enrichment = WatchActivityTransfer(id: UUID().uuidString, ownerID: "owner-1", activity: "MTB", startedAt: 1000, endedAt: 1060, activeSeconds: 60, points: [], schema: 4, deviceID: "device-1", energy: finalEnergy, energyTargetID: base.id, energyRevision: 2, energyWorkoutExternalUUID: base.id, energySessionIDs: ["s1"])
+    var enriched = trip
     if case .applied(let updated) = WatchEnergyImport.apply(enrichment, to: trip, now: 1070) {
+        enriched = updated
         check(updated.details?.energy?.active == 22, "enrichment updates only measured energy metadata")
         check(updated.details?.energyBinding?.revision == 2, "enrichment advances the monotone revision")
         check(updated.points == trip.points && updated.title == trip.title, "enrichment never touches route or title")
     } else { check(false, "enrichment should apply") }
-    if case .duplicate = WatchEnergyImport.apply(enrichment, to: trip, now: 1070) {} else { check(false, "stale revision is a duplicate") }
+    if case .duplicate = WatchEnergyImport.apply(enrichment, to: enriched, now: 1070) {} else { check(false, "stale revision is a duplicate") }
     var wrongOwner = enrichment; wrongOwner.ownerID = "other"
     if case .rejected(let reason) = WatchEnergyImport.apply(wrongOwner, to: trip, now: 1070) { check(reason == "wrong-owner", "wrong owner rejected") } else { check(false, "wrong owner") }
     var wrongDevice = enrichment; wrongDevice.deviceID = "other-device"
@@ -4439,17 +4449,20 @@ do {
     var trimmedSource = trip
     trimmedSource.details?.visibleRouteStart = 0
     trimmedSource.details?.visibleRouteEnd = 1
-    trimmedSource.details?.wholeWorkoutEnergy = trimmedSource.details?.energy
+    let trimmedSourceEnergy = trimmedSource.details?.energy
+    trimmedSource.details?.wholeWorkoutEnergy = trimmedSourceEnergy
     trimmedSource.details?.energy = nil
     if case .applied(let trimmedUpdated) = WatchEnergyImport.apply(enrichment, to: trimmedSource, now: 1070) {
         check(trimmedUpdated.details?.energy == nil && trimmedUpdated.details?.wholeWorkoutEnergy?.active == 22, "trimmed target keeps whole-workout energy in archives")
     } else { check(false, "trimmed enrichment should apply") }
     var unclaimed = WatchActivityImport.activity(from: baseTransfer, heartRateVerified: false)!
     check(unclaimed.details?.unverifiedEnergy != nil && unclaimed.details?.energy == nil, "unclaimed body energy is held")
+    var held = unclaimed
     if case .applied(let heldUpdate) = WatchEnergyImport.apply(enrichment, to: unclaimed, now: 1070) {
+        held = heldUpdate
         check(heldUpdate.details?.unverifiedEnergy?.active == 22 && heldUpdate.details?.energy == nil, "unclaimed enrichment stays held")
     } else { check(false, "unclaimed enrichment held") }
-    var resolved = unclaimed
+    var resolved = held
     check(resolved.resolveUnverifiedEnergy(accept: true), "explicit energy accept")
     check(resolved.details?.energy?.active == 22 && resolved.details?.unverifiedEnergy == nil, "accept moves held energy to the record")
     var rejected = unclaimed
