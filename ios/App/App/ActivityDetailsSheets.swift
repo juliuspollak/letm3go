@@ -45,7 +45,7 @@ struct HeartChart: View {
                 if let focus {
                     Text("\(Int(focus.bpm)) BPM").font(.subheadline.weight(.semibold)) +
                         Text("  \(ActivityDetailsFormat.stopwatch(focus.t - start))\(focus.place.isEmpty ? "" : " · \(focus.place)")").font(.footnote)
-                } else { Text("Touch the graph to read a moment").font(.footnote).foregroundColor(.secondary) }
+                } else { Text("Touch the graph to read a moment").font(.footnote).foregroundColor(DetailStyle.muted) }
             }
             GeometryReader { geometry in
                 let size = geometry.size
@@ -86,7 +86,7 @@ struct HeartChart: View {
             }
             .frame(height: 132)
             .accessibilityElement().accessibilityLabel(label).accessibilityAddTraits(.isImage)
-            HStack { Text("0:00"); Spacer(); Text(ActivityDetailsFormat.stopwatch(end - start)) }.font(.caption2).foregroundColor(.secondary)
+            HStack { Text("0:00"); Spacer(); Text(ActivityDetailsFormat.stopwatch(end - start)) }.font(.caption2).foregroundColor(DetailStyle.muted)
         }
     }
 }
@@ -103,7 +103,7 @@ struct HeartZonesView: View {
             ForEach(zones.rows) { zone in
                 HStack(spacing: 8) {
                     Text(zone.name).font(.footnote).frame(width: 56, alignment: .leading)
-                    Text(zone.range).font(.footnote.monospacedDigit()).foregroundColor(.secondary).frame(width: 68, alignment: .leading)
+                    Text(zone.range).font(.footnote.monospacedDigit()).foregroundColor(DetailStyle.muted).frame(width: 68, alignment: .leading)
                     GeometryReader { geometry in
                         Capsule().fill(Color.red.opacity(0.7)).frame(width: max(2, geometry.size.width * zone.share), height: 8).frame(maxHeight: .infinity)
                     }.accessibilityHidden(true)
@@ -222,7 +222,7 @@ struct ActivityEquipmentSheet: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(option.title).foregroundColor(.primary)
-                                    Text(option.archived ? "\(option.detail) · Archived" : option.detail).font(.caption).foregroundColor(.secondary)
+                                    Text(option.archived ? "\(option.detail) · Archived" : option.detail).font(.caption).foregroundColor(DetailStyle.muted)
                                 }
                                 Spacer()
                                 if selected.contains(option.id) { Image(systemName: "checkmark").foregroundColor(.accentColor) }
@@ -482,7 +482,7 @@ struct ActivitySuggestionsSheet: View {
                 ZStack(alignment: .topTrailing) {
                     Color(.tertiarySystemFill)
                     if let image = candidate.image { Image(uiImage: image).resizable().scaledToFill() }
-                    else { Text("Download in Photos").font(.caption2).foregroundColor(.secondary).padding(4) }
+                    else { Text("Download in Photos").font(.caption2).foregroundColor(DetailStyle.muted).padding(4) }
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle").foregroundColor(isSelected ? .accentColor : .white).padding(4)
                 }
                 .frame(height: 104).clipped().clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -490,8 +490,8 @@ struct ActivitySuggestionsSheet: View {
             .disabled(isDuplicate)
             .accessibilityLabel("Photo, \(stamp(candidate.captureTime))")
             .accessibilityAddTraits(isSelected ? .isSelected : [])
-            Text(isDuplicate ? "Already added" : candidate.hasLocation ? "Date match · photo GPS" : "Date match only").font(.caption2).foregroundColor(.secondary)
-            Text(stamp(candidate.captureTime)).font(.caption2).foregroundColor(.secondary)
+            Text(isDuplicate ? "Already added" : candidate.hasLocation ? "Date match · photo GPS" : "Date match only").font(.caption2).foregroundColor(DetailStyle.muted)
+            Text(stamp(candidate.captureTime)).font(.caption2).foregroundColor(DetailStyle.muted)
             if let message = failed[candidate.assetID] { Text(message).font(.caption2).foregroundColor(.red) }
             Button(candidate.skipped ? "Undo skip" : "Skip") { skip(candidate) }.font(.caption2).frame(minHeight: 30)
         }

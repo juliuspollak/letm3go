@@ -20,6 +20,14 @@ final class ActivityDetailsViewModel: ObservableObject {
         var end: Int
         var existing: Bool
         var history: [RangeDraft] = []
+        // Tapping the map: nil once the section is chosen.
+        var picking: Picking? = nil
+        var choices: [ActivitySegmentPicker.Traversal] = []
+        var window: ClosedRange<Int>
+    }
+    enum Picking: Equatable {
+        case start
+        case finish(starts: [Int])
     }
     struct PhotoFocus: Identifiable, Equatable { let id: String }
 
@@ -35,6 +43,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     @Published private(set) var trimming = false
     @Published var segmentDraft: SegmentDraft?
     @Published var deleting = false
+    @Published var pickProblem = ""
 
     let service: ActivityDetailsService
     var onClose: (() -> Void)?
@@ -42,6 +51,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     var onPanel: ((ActivityPanelPosition) -> Void)?
     var onPickPhotos: (() -> Void)?
     var onRecentre: (() -> Void)?
+    var onFocusRange: ((Int, Int) -> Void)?
     private(set) var points: [GPSPoint]
     private var closed = false
 
@@ -55,7 +65,11 @@ final class ActivityDetailsViewModel: ObservableObject {
     var automatic: Bool { service.isAutomatic(activityID: presentation.activityID) }
     var photosRemaining: Int { service.photosRemaining(activityID: presentation.activityID) }
     var draft: ActivityMapDraft? {
-        if let segmentDraft { return .segment(start: segmentDraft.start, end: segmentDraft.end, editingID: segmentDraft.existing ? segmentDraft.segmentID : nil) }
+        if let segmentDraft {
+            if case .start? = segmentDraft.picking { return .picking(start: nil) }
+            if case .finish(let starts)? = segmentDraft.picking { return .picking(start: starts.first) }
+            return .segment(start: segmentDraft.start, end: segmentDraft.end, editingID: segmentDraft.existing ? segmentDraft.segmentID : nil)
+        }
         if let trimDraft { return .trim(start: trimDraft.start, end: trimDraft.end) }
         return nil
     }
@@ -153,14 +167,60 @@ final class ActivityDetailsViewModel: ObservableObject {
         guard points.count >= 2 else { return }
         let trim = presentation.trim
         let start = max(0, min(points.count - 2, trim?.start ?? 0)), end = max(start + 1, min(points.count - 1, trim?.end ?? points.count - 1))
-        segmentDraft = SegmentDraft(segmentID: UUID().uuidString.lowercased(), name: "", start: start, end: end, existing: false)
+        segmentDraft = SegmentDraft(segmentID: UUID().uuidString.lowercased(), name: "", start: start, end: end, existing: false, picking: .start, window: 0...(points.count - 1))
+        onDraft?(draft)
+        // The map is the tool now, so it gets the screen.
+        onPanel?(.collapsed)
+    }
+    func editSegment(_ segment: ActivityPresentation.Segment) {
+        segmentDraft = SegmentDraft(segmentID: segment.id, name: segment.name, start: segment.startIndex, end: segment.endIndex, existing: true,
+                                    window: ActivitySegmentPicker.window(start: segment.startIndex, end: segment.endIndex, count: points.count))
         onDraft?(draft)
         onPanel?(.medium)
     }
-    func editSegment(_ segment: ActivityPresentation.Segment) {
-        segmentDraft = SegmentDraft(segmentID: segment.id, name: segment.name, start: segment.startIndex, end: segment.endIndex, existing: true)
+    var pickingOnMap: Bool { segmentDraft?.picking != nil }
+    func repickSegment() {
+        guard var current = segmentDraft else { return }
+        current.picking = .start; current.choices = []; current.window = 0...(points.count - 1)
+        segmentDraft = current
         onDraft?(draft)
-        onPanel?(.medium)
+        onPanel?(.collapsed)
+    }
+    // A tap on the map, as a coordinate and how far a finger's width reaches there.
+    func pickOnMap(latitude: Double, longitude: Double, toleranceMeters: Double) {
+        guard var current = segmentDraft, let picking = current.picking else { return }
+        let visits = ActivitySegmentPicker.visits(points, latitude: latitude, longitude: longitude, toleranceMeters: toleranceMeters)
+        guard !visits.isEmpty else { pickProblem = "That spot isn't on this route. Tap on the line."; return }
+        pickProblem = ""
+        switch picking {
+        case .start:
+            current.picking = .finish(starts: visits)
+        case .finish(let starts):
+            let choices = ActivitySegmentPicker.traversals(starts: starts, finishes: visits)
+            guard let first = choices.first else { pickProblem = "The ride never went from the start to that spot. Tap further along, or Start over."; return }
+            current.picking = nil
+            current.choices = choices.count > 1 ? choices : []
+            segmentDraft = current
+            chooseTraversal(first)
+            onPanel?(.medium)
+            return
+        }
+        segmentDraft = current
+        onDraft?(draft)
+    }
+    func chooseTraversal(_ choice: ActivitySegmentPicker.Traversal) {
+        guard var current = segmentDraft else { return }
+        current.start = choice.start; current.end = choice.end; current.history = []
+        current.window = ActivitySegmentPicker.window(start: choice.start, end: choice.end, count: points.count)
+        segmentDraft = current
+        onDraft?(draft)
+        onFocusRange?(choice.start, choice.end)
+    }
+    func nudgeSegment(start: Int = 0, end: Int = 0) {
+        guard let current = segmentDraft else { return }
+        rememberSegmentRange()
+        let last = points.count - 1
+        setSegment(start: max(0, min(current.start + start, current.end + end - 1)), end: min(last, max(current.end + end, current.start + start + 1)))
     }
     func cancelSegment() { segmentDraft = nil; onDraft?(draft); onPanel?(.medium) }
     func setSegment(start: Int, end: Int) {

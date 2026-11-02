@@ -40,7 +40,7 @@ export default function NativeActivityDetail(props){
  // Only what the projection reads, not the grouping object, which is new on every
  // App render: a long route must not be projected again for an unrelated change.
  const metadata=grouping?.metadata,destinations=grouping?.destinations,groupedJourneys=grouping?.journeys;
- const presentation=useMemo(()=>activityPresentation(trip,{ownerID,activities,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,activities,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
+ const presentation=useMemo(()=>activityPresentation(trip,{ownerID,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
  // Native requests read the current account, activity and callbacks when they run.
  const context=useRef(null);
  const handlers=useRef(null);

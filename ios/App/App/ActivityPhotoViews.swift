@@ -12,7 +12,7 @@ struct PrivateThumbnail: View {
         ZStack {
             Color(.tertiarySystemFill)
             if let image { Image(uiImage: image).resizable().scaledToFill() }
-            else { Image(systemName: "photo").foregroundColor(.secondary) }
+            else { Image(systemName: "photo").foregroundColor(DetailStyle.muted) }
         }
         .task(id: photoID) {
             let loaded = await service.thumbnail(photoID: photoID, size: size)

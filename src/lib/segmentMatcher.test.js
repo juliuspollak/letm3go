@@ -176,6 +176,13 @@ describe('self-crossing loop and out-and-back', () => {
   expect(routePasses(ride, {latitude: ORIGIN_LAT, longitude: ORIGIN_LON})).toHaveLength(2);
  });
 
+ it('still rejects a real U-turn on a straight route', () => {
+  const ride = [];
+  for (let t = 0; t <= 60; t++) ride.push(trailFix(300 * t / 60, 0, t));
+  for (let t = 61; t <= 120; t++) ride.push(trailFix(300 - 300 * (t - 60) / 60, 0, t));
+  expect(matchEfforts(definition, {id: 'uturn', points: ride}).efforts).toHaveLength(0);
+ });
+
  it('matches an out-and-back traversal once', () => {
   const outBackFix = (along, timestamp, noise) => {
    const east = along <= 300 ? along : 600 - along;

@@ -17,9 +17,13 @@ final class ActivityDetailsFixtureService: ActivityDetailsService {
         default: return [:]
         }
     }
-    let route: [GPSPoint] = (0..<400).map { index in
-        let t = Double(index)
-        return GPSPoint(latitude: -34.42 + t * 0.0004, longitude: 150.89 + sin(t / 40) * 0.01, timestamp: 1_790_000_000 + t * 5, accuracy: 5, altitude: 20 + t / 10, speed: 3)
+    // The route the sample map draws, ridden twice, so a tap on it finds two laps.
+    let route: [GPSPoint]
+    init(map: [String: Any]) {
+        let line = (map["routes"] as? [[[Double]]] ?? []).flatMap { $0 }
+        route = (line + line.reversed() + line).enumerated().map { index, spot in
+            GPSPoint(latitude: spot[0], longitude: spot[1], timestamp: 1_790_000_000 + Double(index) * 5, accuracy: 5, altitude: 20, speed: 3)
+        }
     }
     func points(activityID: String) -> [GPSPoint] { route }
     func isAutomatic(activityID: String) -> Bool { false }
@@ -43,7 +47,7 @@ enum ActivityDetailsFixture {
     static func present(over parent: UIViewController) {
         guard retained == nil, let path, let data = FileManager.default.contents(atPath: path), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let presentation = try? ActivityPresentation.decode(object) else { return }
-        let service = ActivityDetailsFixtureService()
+        let service = ActivityDetailsFixtureService(map: object["map"] as? [String: Any] ?? [:])
         let screen = ActivityDetailsViewController(presentation: presentation, map: object["map"] as? [String: Any] ?? [:], service: service)
         screen.onClose = {}
         retained = screen

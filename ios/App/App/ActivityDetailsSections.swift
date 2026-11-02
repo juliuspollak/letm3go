@@ -16,12 +16,12 @@ struct ActivityHeaderSection: View {
                         .accessibilityLabel("Activity privacy").frame(minWidth: 44, minHeight: 44)
                 }
             }
-            Text(h.subtitle).font(.subheadline).foregroundColor(.secondary)
-            if !h.location.isEmpty { Label(h.location, systemImage: "mappin.and.ellipse").font(.subheadline).foregroundColor(.secondary) }
+            Text(h.subtitle).font(.subheadline).foregroundColor(DetailStyle.muted)
+            if !h.location.isEmpty { Label(h.location, systemImage: "mappin.and.ellipse").font(.subheadline).foregroundColor(DetailStyle.muted) }
             if let equipment = p.equipment, equipment.label != nil || equipment.action != nil {
                 Button { model.sheet = .equipment } label: {
                     Label(equipment.label ?? equipment.action ?? "", systemImage: equipment.label == nil ? "plus" : "bicycle")
-                        .font(.subheadline.weight(.medium))
+                        .font(.subheadline.weight(.medium)).foregroundColor(.primary)
                 }
                 .disabled(!equipment.editable || model.busy).padding(.top, 2)
                 .accessibilityLabel(equipment.label.map { "Equipment: \($0). Change equipment" } ?? equipment.action ?? "")
@@ -38,9 +38,9 @@ struct ActivitySummarySection: View {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.label).font(.caption).foregroundColor(.secondary)
+                        Text(item.label).font(.caption).foregroundColor(DetailStyle.muted)
                         Text(item.value).font(.title3.weight(.semibold).monospacedDigit())
-                        if let detail = item.detail { Text(detail).font(.caption2).foregroundColor(.secondary) }
+                        if let detail = item.detail { Text(detail).font(.caption2).foregroundColor(DetailStyle.muted) }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -115,7 +115,7 @@ struct ActivitySegmentsSection: View {
                             Circle().fill(Color(hex: segment.color)).frame(width: 12, height: 12).accessibilityHidden(true)
                             Text(segment.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
                             Spacer()
-                            Text(segment.summary).font(.footnote).foregroundColor(.secondary)
+                            Text(segment.summary).font(.footnote).foregroundColor(DetailStyle.muted)
                         }.frame(minHeight: 36)
                     }
                     .accessibilityValue(open == segment.id ? "Expanded" : "Collapsed")
@@ -158,15 +158,44 @@ struct SegmentEditorCard: View {
         _name = State(initialValue: draft.name)
     }
     private var problem: NamedSegments.Failure? { NamedSegments.problem(start: draft.start, end: draft.end, points: model.points, automatic: model.automatic) }
+    private func lapLabel(_ number: Int, _ lap: ActivitySegmentPicker.Traversal) -> String {
+        let figures = NamedSegments.measure(model.points, start: lap.start, end: lap.end, automatic: model.automatic)
+        return "Lap \(number) · \(ActivityClock.time(model.points, lap.start)) · \(ActivityDetailsFormat.clock(figures.durationSeconds))"
+    }
     var body: some View {
-        let points = model.points, last = max(1, points.count - 1)
-        let figures = draft.start < draft.end && draft.end < points.count ? NamedSegments.measure(points, start: draft.start, end: draft.end, automatic: model.automatic) : nil
-        DetailCard(title: draft.existing ? "Edit segment" : "Create segment", symbol: "flag") {
-            DetailFootnote(text: "Drag the handles until the highlighted section is right.")
-            RangeSlider(start: draft.start, end: draft.end, last: last, startLabel: "Segment start", endLabel: "Segment finish", onBegin: model.rememberSegmentRange) { model.setSegment(start: $0, end: $1) }
+        if let picking = draft.picking { pickingCard(picking) } else { editing }
+    }
+    private func pickingCard(_ picking: ActivityDetailsViewModel.Picking) -> some View {
+        DetailCard(title: picking == .start ? "Tap where the segment starts" : "Now tap where it ends", symbol: "hand.tap") {
+            DetailFootnote(text: model.pickProblem.isEmpty ? "Tap the route on the map. Zoom in first for a precise spot." : model.pickProblem)
+                .accessibilityIdentifier("segment.hint")
             HStack {
-                ReadoutPair(label: "Start", value: ActivityClock.time(points, draft.start))
-                ReadoutPair(label: "Finish", value: ActivityClock.time(points, draft.end))
+                if case .finish = picking { Button("Start over") { model.repickSegment() }.buttonStyle(DetailButtonStyle()) }
+                Button("Cancel") { model.cancelSegment() }.buttonStyle(DetailButtonStyle()).accessibilityIdentifier("segment.cancel")
+            }
+        }
+    }
+    private var editing: some View {
+        let points = model.points
+        let figures = draft.start < draft.end && draft.end < points.count ? NamedSegments.measure(points, start: draft.start, end: draft.end, automatic: model.automatic) : nil
+        return DetailCard(title: draft.existing ? "Edit segment" : "Create segment", symbol: "flag") {
+            if draft.choices.count > 1 {
+                Text("You rode this \(draft.choices.count) times. Which one?").font(.subheadline.weight(.semibold))
+                ForEach(Array(draft.choices.enumerated()), id: \.element.id) { index, lap in
+                    Button { model.chooseTraversal(lap) } label: {
+                        HStack {
+                            Image(systemName: lap.start == draft.start ? "checkmark.circle.fill" : "circle")
+                            Text(lapLabel(index + 1, lap)).font(.footnote).foregroundColor(.primary)
+                            Spacer()
+                        }.frame(minHeight: 36)
+                    }
+                    .accessibilityAddTraits(lap.start == draft.start ? .isSelected : [])
+                }
+            }
+            RangeSlider(start: draft.start, end: draft.end, first: draft.window.lowerBound, last: draft.window.upperBound, startLabel: "Segment start", endLabel: "Segment finish", onBegin: model.rememberSegmentRange) { model.setSegment(start: $0, end: $1) }
+            HStack {
+                NudgeReadout(label: "Start", value: ActivityClock.time(points, draft.start)) { model.nudgeSegment(start: $0) }
+                NudgeReadout(label: "Finish", value: ActivityClock.time(points, draft.end)) { model.nudgeSegment(end: $0) }
             }
             HStack {
                 ReadoutPair(label: "Distance", value: ActivityDetailsFormat.distance(meters: figures?.distanceMeters ?? 0, unit: model.presentation.unit))
@@ -177,16 +206,33 @@ struct SegmentEditorCard: View {
             TextField("Segment name", text: $name).textFieldStyle(.roundedBorder).accessibilityIdentifier("segment.name")
             if tried, NamedSegments.cleanName(name) == nil { Text("Name the segment to save it.").font(.footnote).foregroundColor(.red) }
             HStack {
-                Button { model.undoSegment() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
+                Button("Pick on map") { model.repickSegment() }.buttonStyle(DetailButtonStyle())
+                Button { model.undoSegment() } label: { Image(systemName: "arrow.uturn.backward") }
                     .buttonStyle(DetailButtonStyle()).disabled(draft.history.isEmpty).accessibilityLabel("Undo handle change")
-                Button("Cancel") { model.cancelSegment() }.buttonStyle(DetailButtonStyle())
-                Button(model.busy ? "Saving…" : "Save Segment") {
+                Button("Cancel") { model.cancelSegment() }.buttonStyle(DetailButtonStyle()).accessibilityIdentifier("segment.cancel")
+                Button(model.busy ? "Saving…" : "Save") {
                     tried = true
                     guard let clean = NamedSegments.cleanName(name), problem == nil else { return }
                     Task { await model.saveSegment(name: clean) }
-                }.buttonStyle(DetailButtonStyle(kind: .primary)).disabled(model.busy || problem != nil)
+                }.buttonStyle(DetailButtonStyle(kind: .primary)).disabled(model.busy || problem != nil).accessibilityLabel("Save Segment")
             }
         }
+    }
+}
+
+// One GPS fix at a time, for the last few seconds of a short section.
+struct NudgeReadout: View {
+    let label: String
+    let value: String
+    let move: (Int) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ReadoutPair(label: label, value: value)
+            HStack(spacing: 6) {
+                Button { move(-1) } label: { Image(systemName: "minus") }.buttonStyle(DetailButtonStyle()).accessibilityLabel("Move \(label.lowercased()) earlier")
+                Button { move(1) } label: { Image(systemName: "plus") }.buttonStyle(DetailButtonStyle()).accessibilityLabel("Move \(label.lowercased()) later")
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -195,7 +241,7 @@ struct ReadoutPair: View {
     let value: String
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.caption).foregroundColor(.secondary)
+            Text(label).font(.caption).foregroundColor(DetailStyle.muted)
             Text(value).font(.subheadline.weight(.medium).monospacedDigit())
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
     }
@@ -215,6 +261,8 @@ enum ActivityClock {
 struct RangeSlider: View {
     let start: Int
     let end: Int
+    // The part of the recording the track covers.
+    var first: Int = 0
     let last: Int
     let startLabel: String
     let endLabel: String
@@ -225,11 +273,12 @@ struct RangeSlider: View {
     var body: some View {
         GeometryReader { geometry in
             let width = max(1, geometry.size.width - thumb)
-            let x = { (index: Int) in CGFloat(index) / CGFloat(max(1, last)) * width }
+            let span = CGFloat(max(1, last - first))
+            let x = { (index: Int) in CGFloat(index - first) / span * width }
             ZStack(alignment: .leading) {
                 Capsule().fill(Color(.tertiarySystemFill)).frame(height: 6).padding(.horizontal, thumb / 2)
                 Capsule().fill(Color.accentColor).frame(width: max(0, x(end) - x(start)), height: 6).offset(x: x(start) + thumb / 2)
-                handle(label: startLabel, value: start, x: x(start), width: width) { onChange(min($0, end - 1), end) } adjust: { onChange(max(0, min(start + $0, end - 1)), end) }
+                handle(label: startLabel, value: start, x: x(start), width: width) { onChange(min($0, end - 1), end) } adjust: { onChange(max(first, min(start + $0, end - 1)), end) }
                 handle(label: endLabel, value: end, x: x(end), width: width) { onChange(start, max($0, start + 1)) } adjust: { onChange(start, min(last, max(end + $0, start + 1))) }
             }.frame(height: 44).coordinateSpace(name: "range")
         }.frame(height: 44)
@@ -241,10 +290,10 @@ struct RangeSlider: View {
             .offset(x: x - (44 - thumb) / 2)
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("range"))
                 .updating($dragging) { _, state, _ in if !state { state = true; DispatchQueue.main.async(execute: onBegin) } }
-                .onChanged { value in set(Int(((value.location.x - thumb / 2) / width * CGFloat(last)).rounded()).clamped(0, last)) })
-            .accessibilityElement().accessibilityLabel(label).accessibilityValue("\(Int(Double(value) / Double(max(1, last)) * 100)) percent")
+                .onChanged { value in set(first + Int(((value.location.x - thumb / 2) / width * CGFloat(last - first)).rounded()).clamped(0, last - first)) })
+            .accessibilityElement().accessibilityLabel(label).accessibilityValue("\(Int(Double(value - first) / Double(max(1, last - first)) * 100)) percent")
             .accessibilityAdjustableAction { direction in
-                let step = max(1, last / 50)
+                let step = max(1, (last - first) / 50)
                 adjust(direction == .increment ? step : -step)
             }
     }
@@ -288,7 +337,8 @@ struct RouteTrimCard: View {
             HStack {
                 Button("Show full route") { model.resetTrim(trim) }.buttonStyle(DetailButtonStyle())
                 Button("Cancel") { model.cancelTrim() }.buttonStyle(DetailButtonStyle()).accessibilityIdentifier("trim.cancel")
-                Button("Save") { Task { await model.saveTrim(trim) } }
+                Button("Save") { Task { await model.saveTrim(trim) } }.accessibilityIdentifier("trim.save")
+                    
                     .buttonStyle(DetailButtonStyle(kind: .primary)).disabled(model.busy || range.start >= range.end || !changed)
                     .accessibilityLabel("Save visible route")
             }
@@ -328,7 +378,7 @@ struct ActivityTrailSection: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(choice.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
-                                    Text(choice.detail).font(.caption).foregroundColor(.secondary)
+                                    Text(choice.detail).font(.caption).foregroundColor(DetailStyle.muted)
                                 }
                                 Spacer()
                                 Image(systemName: choice.id == trail.linkedID ? "checkmark" : "link")
@@ -382,7 +432,7 @@ struct ActivityStorySection: View {
             Text(story.description.isEmpty ? "Add a description to remember the little details." : story.description)
                 .font(.subheadline).foregroundColor(story.description.isEmpty ? .secondary : .primary)
             if !story.notes.isEmpty { Text(story.notes).font(.subheadline) }
-            if !story.tags.isEmpty { Text(story.tags.joined(separator: " · ")).font(.footnote).foregroundColor(.secondary) }
+            if !story.tags.isEmpty { Text(story.tags.joined(separator: " · ")).font(.footnote).foregroundColor(DetailStyle.muted) }
         }
     }
 }
@@ -393,7 +443,7 @@ struct ActivityFactsSection: View {
         DetailCard(title: "About this recording", symbol: "info.circle") {
             HStack(alignment: .top) { ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) } }
             ForEach(presentation.facts?.lines ?? [], id: \.self) { Text($0).font(.footnote) }
-            ForEach(presentation.facts?.evidence ?? [], id: \.self) { Text($0).font(.caption).foregroundColor(.secondary) }
+            ForEach(presentation.facts?.evidence ?? [], id: \.self) { Text($0).font(.caption).foregroundColor(DetailStyle.muted) }
         }
     }
 }
@@ -414,8 +464,8 @@ struct ActivityStopsSection: View {
                                 }.font(.footnote).frame(minHeight: 44)
                             }
                         }
-                        Text(stop.detail).font(.footnote).foregroundColor(.secondary)
-                        if let nearby = stop.nearby { Text("Nearby: \(nearby)").font(.caption).foregroundColor(.secondary) }
+                        Text(stop.detail).font(.footnote).foregroundColor(DetailStyle.muted)
+                        if let nearby = stop.nearby { Text("Nearby: \(nearby)").font(.caption).foregroundColor(DetailStyle.muted) }
                     }
                 }
             }
@@ -436,7 +486,7 @@ struct ActivityDiagnosticsSection: View {
                         Text("Possible recording issues").font(.footnote.weight(.semibold))
                         ForEach(d.warnings, id: \.self) { Text("• \($0)").font(.footnote) }
                     }
-                    ForEach(Array(d.events.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundColor(.secondary) }
+                    ForEach(Array(d.events.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundColor(DetailStyle.muted) }
                     Button("Copy recording report") { UIPasteboard.general.string = d.report; copied = true }.buttonStyle(DetailButtonStyle())
                     if copied { DetailFootnote(text: "Recording report copied.") }
                     DetailFootnote(text: "A trip may be incomplete if iOS wakes the app after departure. No app can recover coordinates that iOS never provided.")
@@ -508,7 +558,7 @@ struct ActivityTagsSection: View {
                         ForEach(destination.activities) { activity in
                             VStack(alignment: .leading) {
                                 Button(activity.title) { open(activity.id) }.disabled(!activity.openable)
-                                if let comparison = activity.comparison { Text(comparison).font(.caption).foregroundColor(.secondary) }
+                                if let comparison = activity.comparison { Text(comparison).font(.caption).foregroundColor(DetailStyle.muted) }
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }.font(.footnote)
@@ -520,7 +570,7 @@ struct ActivityTagsSection: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(suggestion.tag).font(.subheadline.weight(.semibold))
-                                Text(suggestion.source).font(.caption).foregroundColor(.secondary)
+                                Text(suggestion.source).font(.caption).foregroundColor(DetailStyle.muted)
                             }
                             Spacer()
                             Button("Add") { resolve(suggestion, ["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom + [suggestion.tag]]) }.disabled(working || tags.custom.count >= tags.limit)

@@ -19,6 +19,7 @@ export const SEGMENT_MATCH_SETTINGS = Object.freeze({
   accuracyWidenFactor: 1,        // each metre of horizontal accuracy widens the radius by this
   maxWidenMeters: 60,            // accuracy widening is capped at base + this
   progressToleranceMeters: 40,   // along-route progress may not go back or jump ahead more than this
+  foldToleranceMeters: 10,       // where two arms overlap, a fix this much worse still counts as going forward
   checkpointCount: 20,           // evenly spaced checkpoints sampled for coverage
   checkpointToleranceMeters: 10, // a checkpoint is covered by a fix within this along distance
   checkpointCoverage: 0.6,       // minimum fraction of checkpoints an effort must cover
@@ -178,6 +179,17 @@ function projectOrdered(reference, refIndex, p, s) {
  for (let k = lo; k <= hi; k++) {
   const d = metres(reference[k], p);
   if (best === null || d < best.d) best = {index: k, d};
+ }
+ // Out-and-back: at a turnaround both arms lie under the same fix, and the nearest
+ // point can be the arm already ridden. Where going forward fits about as well, it
+ // wins; a real U-turn leaves the forward arm and is still seen as a reversal.
+ if (best.index < refIndex) {
+  let ahead = null;
+  for (let k = refIndex; k <= hi; k++) {
+   const d = metres(reference[k], p);
+   if (ahead === null || d < ahead.d) ahead = {index: k, d};
+  }
+  if (ahead && ahead.d <= best.d + s.foldToleranceMeters) best = ahead;
  }
  const k = best.index;
  let along = reference[k].along;

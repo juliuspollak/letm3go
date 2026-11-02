@@ -98,6 +98,40 @@ do {
     check(NamedSegments.problem(start: 0, end: 7, points: same, automatic: false) == .tooShort, "distance rule")
     check(NamedSegments.problem(start: 0, end: 4, points: fixes, automatic: false) == nil, "a real section passes")
 
+    // Picking a section on the map: one spot passed three times is three visits.
+    let east = { (metres: Double, time: Double) in GPSPoint(latitude: -33, longitude: 151 + metres / 93000, timestamp: time, accuracy: 5, altitude: 0, speed: 3) }
+    var laps: [GPSPoint] = []
+    for lap in 0..<3 { for step in 0...40 { laps.append(east(Double(lap % 2 == 0 ? step : 40 - step) * 10, 1000 + Double(laps.count) * 4)) } }
+    let aSpot = east(100, 0), bSpot = east(200, 0)
+    let aVisits = ActivitySegmentPicker.visits(laps, latitude: aSpot.latitude, longitude: aSpot.longitude, toleranceMeters: 15)
+    let bVisits = ActivitySegmentPicker.visits(laps, latitude: bSpot.latitude, longitude: bSpot.longitude, toleranceMeters: 15)
+    check(aVisits.count == 3 && bVisits.count == 3, "each pass of a spot is its own visit")
+    check(ActivitySegmentPicker.visits(laps, latitude: -30, longitude: 151, toleranceMeters: 15).isEmpty, "a tap off the route finds nothing")
+    let ways = ActivitySegmentPicker.traversals(starts: aVisits, finishes: bVisits)
+    check(ways.count == 2, "out, back and out again passes A then B only twice")
+    check(ways.allSatisfy { $0.end - $0.start == 10 }, "a 1-minute section is exact, however long the ride")
+    check(ActivitySegmentPicker.traversals(starts: [50], finishes: [10]).isEmpty, "a finish before the start is no traversal")
+    check(ActivitySegmentPicker.traversals(starts: [10, 20], finishes: [30]) == [.init(start: 20, end: 30)], "one lap is never two")
+    check(ActivitySegmentPicker.window(start: 1000, end: 1012, count: 5000) == 980...1032, "the slider closes in on a short section")
+    check(ActivitySegmentPicker.window(start: 5, end: 500, count: 600) == 0...599, "the window stays within the recording")
+    let picked = ActivityMapDraft.picking(start: 1).mapOptions(base: base, points: fixes)
+    check((picked["pins"] as! [[String: Any]]).filter { $0["kind"] as? String == "start" }.count == 1, "the first tap is marked")
+    let selectedPins = ActivityMapDraft.segment(start: 1, end: 3, editingID: nil).mapOptions(base: base, points: fixes)["pins"] as! [[String: Any]]
+    check(selectedPins.contains { $0["kind"] as? String == "finish" }, "both ends are marked")
+
+    // Automatic activities a Watch workout covers.
+    func automatic(_ start: Double, _ end: Double, change: ((inout RecordedActivity) -> Void)? = nil) -> RecordedActivity {
+        var trip = RecordedActivity(activity: "Driving", startedAt: start, resumedAt: nil, title: "Driving")
+        trip.recordingMode = "automatic"; trip.state = "finished"; trip.endedAt = end; trip.details = ActivityDetails(); change?(&trip)
+        return trip
+    }
+    let inside = automatic(1100, 1200), drive = automatic(500, 1100), edited = automatic(1100, 1200) { $0.details?.titleEdited = true }
+    let corrected = automatic(1100, 1200) { $0.details?.userCorrected = true }
+    let manual = { () -> RecordedActivity in var t = automatic(1100, 1200); t.recordingMode = "manual"; return t }()
+    let live = { () -> RecordedActivity in var t = automatic(1100, 1200); t.state = "recording"; return t }()
+    let photographed = automatic(1100, 1200) { $0.details?.photos = [ActivityPhoto(id: "p", filename: "p.jpg", caption: "", latitude: nil, longitude: nil, captureTime: nil, locationSource: "gps")] }
+    let covered = CrossDeviceRecording.automaticCovered(startedAt: 1000, endedAt: 8000, trips: [inside, drive, edited, corrected, manual, live, photographed])
+    check(covered == [inside.id], "only an untouched automatic recording inside the workout goes")
     check(ActivitySuggestionRules.isDuplicate(assetID: "asset-1", existing: decoded.photos.items), "library identity is a duplicate")
     check(!ActivitySuggestionRules.isDuplicate(assetID: "", existing: decoded.photos.items), "no identity is not a duplicate")
     check(ActivitySuggestionRules.remaining(existing: 52) == 0 && ActivitySuggestionRules.remaining(existing: 48) == 2, "photo capacity")

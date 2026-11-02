@@ -1,7 +1,9 @@
 # Functional parity matrix
 
-Test key: **JS** vitest, **Core** `test:native:details`, **UI** simulator XCUITest, **None** compiled only.
-No row has been verified on a physical iPhone.
+The React screen has been removed, so this records what the native screen provides and how it is tested.
+
+Test key: **JS** vitest, **Core** `test:native:details`, **UI** simulator XCUITest on sample data, **None** compiled only.
+Unless a row says otherwise, nothing here has had structured testing on a physical iPhone.
 
 | Behaviour | Native implementation | Rule owner | Operation | Failure handling | Test |
 |---|---|---|---|---|---|
@@ -17,9 +19,9 @@ No row has been verified on a physical iPhone.
 | Photos, cover, strip | `ActivityMomentsSection` | JS projection | Read | Placeholder | JS, Core |
 | Add multiple photos | `PHPicker`, `importPicked` | Recorder | `attachPhoto` | Partial results reported | None |
 | Suggestions, paging, batch, skip, stop | `ActivitySuggestionsSheet` | Recorder, `ActivitySuggestionRules` | `suggestionPage`, `acceptSuggestion` | Per-photo failure, retry by staying selected | Core (rules) |
-| Caption, cover, remove | `ActivityPhotoViewer` | Recorder | `editPhoto` | Inline error | None |
-| Create, edit, rename, delete segment | `SegmentEditorCard`, `ActivitySegmentsSection` | `NamedSegmentCore` | `saveNamedSegment`, `deleteNamedSegment` | Inline error | Core, UI (open and type) |
-| Route display window | `RouteTrimCard` | Recorder | `setRouteDisplay` | Inline error | Core, UI (open and cancel) |
+| Caption, cover, remove | `ActivityPhotoViewer` | Recorder | `editPhoto` | Inline error | UI (caption sheet opens) |
+| Create, edit, rename, delete segment | `SegmentEditorCard`, `ActivitySegmentsSection` | `NamedSegmentCore` | `saveNamedSegment`, `deleteNamedSegment` | Inline error | Core, UI (create and save) |
+| Route display window | `RouteTrimCard` | Recorder | `setRouteDisplay` | Inline error | Core, UI (drag, save, cancel) |
 | Trail link | `ActivityTrailSection` | `mtbLink.js`, recorder | `findTrails`, `assignTrail` | Try again | None |
 | Equipment | `ActivityEquipmentSheet` | Recorder | `assignEquipment` | Inline error | JS (projection) |
 | Add to Collection | `ActivityNewEquipmentView` | `collection.js` | `addEquipment` | Inline error | None |
@@ -31,12 +33,14 @@ No row has been verified on a physical iPhone.
 | Recording, provisional, telemetry, indoor, overlap notices | `ActivityNoticesSection` | JS projection | Read | n/a | JS |
 | Source recordings, destination history | `openActivity` | `App.jsx` | `setSelected` | Inline error | None |
 | Diagnostics and report copy | `ActivityDiagnosticsSection` | `tripDiagnostics.js` | Read | n/a | Core |
-| Delete | `ActivityDangerSection` | Recorder | `deleteActivity` | Inline error; refused while recording | JS (wrapper) |
+| Delete | `ActivityDangerSection` | Recorder | `deleteActivity` | Inline error; refused while recording | JS (wrapper), UI (confirmation) |
 | Back, edge swipe, VoiceOver escape | Controller | App state | `closed` | n/a | JS (`closed`) |
 | Activity replaced while open | Same screen and map | Wrapper | `update` | Drafts cleared, requests cancelled | JS |
-| Account change | Plugin | `ActivityPresentationGate` | Close | No write after change | Core |
+| Account change | Plugin | `ActivityPresentationGate` | Close and return to the list | No write after change | Core |
 
-## Intentional changes requiring approval
+## Intentional changes
+
+Shipped on `main`; awaiting product sign-off.
 
 1. Add to Collection in the sheet is a quick add: category, name, brand, model. Photo and category attributes stay in the Collection editor.
 2. Segment and route editors replace the page at medium.

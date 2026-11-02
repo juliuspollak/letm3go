@@ -1,6 +1,5 @@
 import {activityLabel,activityCode} from './activityNames.js';
 import {activitySummary,heldEnergy} from './activitySummary.js';
-import {overlapNotes} from './activityOverlaps.js';
 import {publicationPreview,sourceLabel} from './activityPrivacy.js';
 import {mapPayload} from './appleMaps.js';
 import {withSegments,withTrimRange} from './mapContent.js';
@@ -44,7 +43,7 @@ export function activityMap(trip,{selectedPhotoID=null}={}){
  return local&&points.length>=2?withTrimRange(payload,{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??points.length-1,points}):payload;
 }
 
-function notices(trip,activities){
+function notices(trip){
  const list=[];
  if(trip.telemetryIncomplete)list.push({id:'telemetry',tone:'warning',text:'Route incomplete · Missing telemetry has not been reconstructed.'});
  if(trip.state==='recording')list.push({id:'recording',tone:'live',text:'Automatic recording in progress. This activity updates as GPS arrives and continues in the same journey if movement resumes near a stop.'});
@@ -53,7 +52,6 @@ function notices(trip,activities){
   list.push({id:'provisional',tone:'info',text:`Stopped and saved to History${left?`; ${left} minute${left===1?'':'s'} remain for the same activity near here`:''}. A different activity (walking after parking, or driving after a walk) is saved as its own journey.`});
  }
  if(trip.details?.indoor)list.push({id:'indoor',tone:'info',text:'Indoor activity · no route was recorded.'});
- for(const item of overlapNotes(trip,activities))list.push({id:`overlap:${item.activityID}`,tone:'info',title:'Recorded at the same time as',text:`${item.title} · ${Math.round(item.seconds/60)} min together${item.kind==='automatic'?' · detected automatically':item.kind==='watch'?' · recorded on Apple Watch':''}. Both are kept; delete the one you don’t want.`});
  return list;
 }
 
@@ -125,7 +123,7 @@ function privacySection(trip,places){
  return {title:preview.title,description:preview.description||'',segments:preview.points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
 }
 
-export function activityPresentation(trip,{ownerID,activities,places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
+export function activityPresentation(trip,{ownerID,places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
  const points=Array.isArray(trip.points)?trip.points:[];
  const pointCount=points.length;
  const local=deletionIDs(trip).length===1;
@@ -137,7 +135,7 @@ export function activityPresentation(trip,{ownerID,activities,places=[],vehicles
    subtitle:`${activityLabel(trip.activity)}${trip.source==='watch'?' · Apple Watch':''} · ${trip.date}`,location:trip.location||'',state:trip.state||'finished',source:trip.source||null,local,readOnly:trip.readOnly===true,startedAt:trip.startedAt??null,timeZone:trip.timezone||trip.timeZone||null,noRouteDetail:trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'},
   summary:activitySummary(trip,{unit}).map(({id,label,value,detail})=>({id,label,value,detail:detail||null})),
   metrics:[{label:'Estimated distance',value:distanceText(trip.distance,unit)},{label:'Active duration',value:trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`},{label:'Average speed',value:trip.source?speedLabel(trip.distanceMeters,trip.durationSeconds):'—'}],
-  notices:notices(trip,activities),
+  notices:notices(trip),
   consent:{energy:Boolean(heldEnergy(trip)),heartRate:Boolean(trip.details?.unverifiedHeartRate)},
   sources:(trip.sourceRecords||[]).map(s=>({id:String(s.id),label:`View ${s.source==='tesla'?'Tesla':'iPhone'} recording`})),
   photos:{coverID,local,items:photos.map(photo=>({id:String(photo.id),caption:photo.caption||'',locationSource:photo.locationSource||'unlocated',captureTime:photo.captureTime??null,assetID:photo.assetID??null}))},

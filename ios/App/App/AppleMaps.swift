@@ -2231,6 +2231,8 @@ extension AppleMapsPlugin: MKMapViewDelegate {
 final class ActivityMapEngine:NSObject,MKMapViewDelegate {
     let map:MKMapView
     var onPhoto:((String)->Void)?
+    // While a tap means something else, a pin takes no selection or callout.
+    var ignoresSelection=false
     private let coordinator:MapCoordinator
     init(map:MKMapView) {
         self.map=map
@@ -2257,7 +2259,10 @@ final class ActivityMapEngine:NSObject,MKMapViewDelegate {
         guard let pin=annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="photo",let photoID=pin.metadata["photoID"] as? String else {return}
         onPhoto?(photoID)
     }
-    func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {reportPhoto(view.annotation)}
+    func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        if ignoresSelection {mapView.deselectAnnotation(view.annotation,animated:false);return}
+        reportPhoto(view.annotation)
+    }
     func mapView(_ mapView:MKMapView,annotationView view:MKAnnotationView,calloutAccessoryControlTapped control:UIControl) {reportPhoto(view.annotation)}
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
         guard let pin=annotation as? JourneyPin else {return nil}

@@ -7,6 +7,8 @@ enum DetailStyle {
     static let radius: CGFloat = 14
     static let margin: CGFloat = 16
     static let cardFill = Color(.secondarySystemBackground)
+    // Stronger than the system's secondary label, which fails contrast on the cards.
+    static let muted = Color(.label).opacity(0.8)
 }
 
 struct DetailCard<Content: View>: View {
@@ -37,7 +39,7 @@ struct DetailButtonStyle: ButtonStyle {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(minHeight: 44)
-            .foregroundColor(kind == .primary ? .white : kind == .destructive ? .red : .accentColor)
+            .foregroundColor(kind == .primary ? .white : kind == .destructive ? .red : .primary)
             .background(kind == .primary ? Color.accentColor : Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .opacity(!enabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
     }
@@ -45,16 +47,16 @@ struct DetailButtonStyle: ButtonStyle {
 
 struct DetailFootnote: View {
     let text: String
-    var body: some View { Text(text).font(.footnote).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true) }
+    var body: some View { Text(text).font(.footnote).foregroundColor(DetailStyle.muted).fixedSize(horizontal: false, vertical: true) }
 }
 
 struct ActivityNoRouteView: View {
     let text: (title: String, detail: String)
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: "mappin.slash").font(.largeTitle).foregroundColor(.secondary)
+            Image(systemName: "mappin.slash").font(.largeTitle).foregroundColor(DetailStyle.muted)
             Text(text.title).font(.title3.weight(.semibold))
-            Text(text.detail).font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
+            Text(text.detail).font(.subheadline).foregroundColor(DetailStyle.muted).multilineTextAlignment(.center)
         }
         .padding(.top, 96).padding(.horizontal, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -89,6 +91,7 @@ private struct ScrollViewReporter: UIViewRepresentable {
 struct ActivityDetailsRootView: View {
     @ObservedObject var model: ActivityDetailsViewModel
     let trackScrollView: (UIScrollView) -> Void
+    @Environment(\.dynamicTypeSize) private var textSize
     var body: some View {
         // Choosing a range needs the map in view. The panel locks a tracked scroll view
         // below expanded, so an editor sits directly in the panel instead of scrolling.
@@ -134,7 +137,15 @@ struct ActivityDetailsRootView: View {
             .id(model.presentation.activityID)
         }
     }
-    private func editor<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack { content(); Spacer(minLength: 0) }.padding(.horizontal, DetailStyle.margin).padding(.top, 16)
+    // At accessibility text sizes an editor is taller than the panel, so it scrolls in
+    // a view of its own; the panel only tracks the page's scroll view.
+    @ViewBuilder private func editor<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        let card = VStack { content(); Spacer(minLength: 0) }.padding(.horizontal, DetailStyle.margin).padding(.top, 16)
+        if textSize.isAccessibilitySize {
+            ScrollView { card.padding(.bottom, 40) }
+                .onAppear(perform: expandForLargeText)
+                .onChange(of: model.pickingOnMap) { _ in expandForLargeText() }
+        } else { card }
     }
+    private func expandForLargeText() { if !model.pickingOnMap { model.onPanel?(.expanded) } }
 }

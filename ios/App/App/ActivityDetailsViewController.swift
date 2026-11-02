@@ -21,7 +21,7 @@ private final class ActivityPanelSnapLayout: FloatingPanelLayout {
 // The screen: one MKMapView for its whole life, one panel above it, one SwiftUI
 // hierarchy inside the panel. Panel movement never reaches SwiftUI or the map's
 // content; nothing here rebuilds the map except a real change of route.
-final class ActivityDetailsViewController: UIViewController, FloatingPanelControllerDelegate, PHPickerViewControllerDelegate {
+final class ActivityDetailsViewController: UIViewController, FloatingPanelControllerDelegate, PHPickerViewControllerDelegate, UIGestureRecognizerDelegate {
     private let mapView = MKMapView(frame: .zero)
     private let engine: ActivityMapEngine
     private let model: ActivityDetailsViewModel
@@ -95,7 +95,10 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         mapView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         mapView.accessibilityIdentifier = "activity.map"
         view.addSubview(mapView)
-        engine.onPhoto = { [weak self] photoID in self?.model.showPhoto(photoID) }
+        engine.onPhoto = { [weak self] photoID in
+            guard self?.model.pickingOnMap == false else { return }
+            self?.model.showPhoto(photoID)
+        }
         engine.apply(mapBase)
         installNoRoutePlaceholder()
         installMapControls()
@@ -107,6 +110,8 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         model.onPanel = { [weak self] position in self?.move(to: position) }
         model.onPickPhotos = { [weak self] in self?.presentPicker() }
         model.onRecentre = { [weak self] in self?.recentre() }
+        model.onFocusRange = { [weak self] start, end in self?.focusMap(start: start, end: end) }
+        installMapPicking()
         keyboardObserver = NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, self.presentedViewController == nil, self.panel.state != .full else { return }
             self.panel.move(to: .full, animated: true)
@@ -208,7 +213,10 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     private func move(to position: ActivityPanelPosition) {
         // Content only scrolls when expanded, so anything lower must start from the top.
         if position != .expanded, let scroll = panel.trackingScrollView { scroll.setContentOffset(.zero, animated: false) }
-        panel.move(to: panelState(position), animated: !UIAccessibility.isReduceMotionEnabled)
+        panel.move(to: panelState(position), animated: !UIAccessibility.isReduceMotionEnabled) { [weak self] in
+            // Choosing a section: the whole route, as large as the bigger map allows.
+            if self?.model.pickingOnMap == true { self?.recentre() }
+        }
     }
     func floatingPanelDidChangeState(_ fpc: FloatingPanelController) {
         let position = panelPosition
@@ -236,6 +244,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     }
     // A handle can move on every touch; the map follows at a rate MapKit can draw.
     private func draftChanged(_ draft: ActivityMapDraft?) {
+        engine.ignoresSelection = model.pickingOnMap
         guard let draft else { draftTimer?.invalidate(); draftTimer = nil; pendingDraft = nil; engine.apply(mapBase); return }
         pendingDraft = draft
         guard draftTimer == nil else { return }
@@ -249,6 +258,40 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         guard let draft = pendingDraft else { return }
         pendingDraft = nil
         engine.apply(draft.mapOptions(base: mapBase, points: model.points))
+    }
+
+    // MARK: Picking on the map
+
+    // A second recogniser makes single taps wait out a double tap, so zooming in with
+    // a double tap never drops a marker.
+    private func installMapPicking() {
+        let double = UITapGestureRecognizer(target: nil, action: nil)
+        double.numberOfTapsRequired = 2
+        double.cancelsTouchesInView = false
+        double.delegate = self
+        let tap = UITapGestureRecognizer(target: self, action: #selector(mapTapped(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        tap.require(toFail: double)
+        mapView.addGestureRecognizer(double)
+        mapView.addGestureRecognizer(tap)
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool { model.pickingOnMap }
+    @objc private func mapTapped(_ tap: UITapGestureRecognizer) {
+        guard model.pickingOnMap else { return }
+        let point = tap.location(in: mapView)
+        let coordinate = mapView.convert(point, toCoordinateFrom: mapView)
+        let reach = mapView.convert(CGPoint(x: point.x + 24, y: point.y), toCoordinateFrom: mapView)
+        let metres = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude).distance(from: CLLocation(latitude: reach.latitude, longitude: reach.longitude))
+        model.pickOnMap(latitude: coordinate.latitude, longitude: coordinate.longitude, toleranceMeters: max(12, min(metres, 150)))
+    }
+    private func focusMap(start: Int, end: Int) {
+        let points = model.points
+        guard points.indices.contains(start), points.indices.contains(end) else { return }
+        var rect = MKMapRect.null
+        for point in points[start...end] { rect = rect.union(MKMapRect(origin: MKMapPoint(CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)), size: MKMapSize(width: 1, height: 1))) }
+        mapView.setVisibleMapRect(rect, edgePadding: fitInsets, animated: !UIAccessibility.isReduceMotionEnabled)
     }
 
     // MARK: Photos

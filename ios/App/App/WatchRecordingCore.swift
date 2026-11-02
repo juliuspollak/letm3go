@@ -539,6 +539,21 @@ extension CrossDeviceRecording {
     static let meaningfulOverlap = 60.0
 
     // `trips` includes anything still recording, so an open recording counts up to now.
+    // The phone can only stop itself once it has heard a Watch workout began, and that
+    // word can arrive late. When the finished workout arrives, automatic activities
+    // that ran inside it were never real journeys of their own and are removed. One the
+    // person changed, or added photos to, is theirs and stays; so does one mostly
+    // outside the workout, like the drive to the trailhead.
+    static let coveredShare = 0.8
+    static func automaticCovered(startedAt: Double, endedAt: Double, trips: [RecordedActivity]) -> [String] {
+        trips.compactMap { trip in
+            guard trip.recordingMode == "automatic", trip.source == "device", trip.state != "recording", let ended = trip.endedAt,
+                  trip.details?.userCorrected != true, trip.details?.titleEdited != true, trip.details?.photos.isEmpty != false else { return nil }
+            let length = ended - trip.startedAt
+            guard length > 0 else { return startedAt <= trip.startedAt && trip.startedAt <= endedAt ? trip.id : nil }
+            return overlapSeconds(startedAt, endedAt, trip.startedAt, ended) / length >= coveredShare ? trip.id : nil
+        }
+    }
     static func overlaps(startedAt: Double, endedAt: Double, id: String, trips: [RecordedActivity], now: Double) -> [WatchOverlap] {
         trips.compactMap { trip in
             guard trip.id.lowercased() != id.lowercased(), trip.source != "watch" else { return nil }

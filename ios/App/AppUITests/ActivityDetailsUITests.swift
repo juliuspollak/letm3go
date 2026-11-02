@@ -49,6 +49,8 @@ final class ActivityDetailsUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(settledY(), expanded, "a downward drag from the top returns to the panel")
     }
     func testMapTakesTouchesAboveThePanelWithoutMovingIt() {
+        // Collapsed, so a pinch at the window's centre lands on the map, not the panel.
+        drag(from: settledY() - 10, to: height - 40)
         let before = settledY()
         point(200, 300).press(forDuration: 0.05, thenDragTo: point(80, 200))
         app.windows.firstMatch.pinch(withScale: 1.5, velocity: 2)
@@ -74,6 +76,8 @@ final class ActivityDetailsUITests: XCTestCase {
         for _ in 0..<6 where !create.isHittable { drag(from: height * 0.8, to: height * 0.3, speed: .slow) }
         guard create.isHittable else { return XCTFail("Create Segment not reachable") }
         create.tap()
+        Thread.sleep(forTimeInterval: 1)
+        tapOnRoute("Start"); tapOnRoute("Finish")
         let field = app.textFields["segment.name"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         Thread.sleep(forTimeInterval: 1)
@@ -108,6 +112,105 @@ final class ActivityDetailsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Close photographs"].waitForExistence(timeout: 5), "a touch at medium opens the photo")
         XCTAssertTrue(app.buttons["Remove"].waitForExistence(timeout: 5))
         Thread.sleep(forTimeInterval: 1)
+    }
+    private func shot(_ name: String) { try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: NSTemporaryDirectory() + "\(name).png")) }
+    private func reach(_ element: XCUIElement) {
+        drag(from: height * 0.8, to: height * 0.2, speed: .slow)
+        for _ in 0..<10 where !element.isHittable { drag(from: height * 0.8, to: height * 0.3, speed: .slow) }
+    }
+    // The foot of a pin is the point on the route.
+    private func tapOnRoute(_ name: String) {
+        let marker = app.otherElements[name]
+        XCTAssertTrue(marker.waitForExistence(timeout: 5), name)
+        point(marker.frame.midX, marker.frame.maxY).tap()
+        Thread.sleep(forTimeInterval: 1)
+    }
+    func testSegmentIsPickedByTappingTheMapAndOfferedPerLap() {
+        let create = app.buttons["Create Segment"]
+        reach(create); create.tap()
+        XCTAssertTrue(app.staticTexts["Tap where the segment starts"].waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertGreaterThan(app.staticTexts["Tap where the segment starts"].frame.minY, height * 0.75, "the map gets the screen")
+        tapOnRoute("Start")
+        XCTAssertTrue(app.staticTexts["Now tap where it ends"].waitForExistence(timeout: 5), "the first tap is taken")
+        tapOnRoute("Finish")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'You rode this'")).firstMatch.waitForExistence(timeout: 5), "each lap is offered")
+        shot("laps")
+        let field = app.textFields["segment.name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        app.buttons["Move finish earlier"].tap()
+        field.tap(); field.typeText("Rock")
+        Thread.sleep(forTimeInterval: 1)
+        app.buttons["Save Segment"].firstMatch.tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "saving returns to the page")
+    }
+    func testRouteTrimSaveReturnsToThePage() {
+        let choose = app.buttons["Choose visible route"]
+        reach(choose); choose.tap()
+        let full = app.buttons["Show full route"]
+        XCTAssertTrue(full.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        let handle = app.otherElements["Visible route start"]
+        XCTAssertTrue(handle.exists)
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1, thenDragTo: handle.coordinate(withNormalizedOffset: CGVector(dx: 3, dy: 0.5)))
+        let save = app.buttons["trim.save"]
+        XCTAssertTrue(save.isEnabled, "moving a handle enables Save")
+        save.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "saving returns to the page")
+    }
+    func testPhotoCaptionSheetOpensFromTheViewer() {
+        let cover = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Open cover photo'")).firstMatch
+        XCTAssertTrue(cover.waitForExistence(timeout: 5))
+        point(cover.frame.midX, min(cover.frame.minY + 30, height - 60)).tap()
+        let caption = app.buttons["Caption"]
+        XCTAssertTrue(caption.waitForExistence(timeout: 5)); caption.tap()
+        XCTAssertTrue(app.navigationBars["Photo caption"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["Close photographs"].tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+    }
+    func testDiagnosticsAndDeleteConfirmation() {
+        let delete = app.buttons["Delete activity"]
+        reach(delete); delete.tap()
+        XCTAssertTrue(app.staticTexts["Permanently delete this activity?"].waitForExistence(timeout: 5))
+        shot("delete")
+    }
+    @available(iOS 17.0, *)
+    func testAccessibilityAudit() throws {
+        drag(from: height * 0.8, to: height * 0.2, speed: .slow)
+        var issues: [String] = []
+        try app.performAccessibilityAudit(for: [.sufficientElementDescription, .hitRegion, .dynamicType, .textClipped, .contrast]) { issue in
+            issues.append("\(issue.auditType.rawValue): \(issue.compactDescription) [\(issue.element?.label ?? "-")]")
+            return true
+        }
+        print("AUDIT", issues.count); issues.forEach { print("AUDIT", $0) }
+    }
+    func testDarkAppearance() {
+        XCUIDevice.shared.appearance = .dark
+        addTeardownBlock { XCUIDevice.shared.appearance = .light }
+        Thread.sleep(forTimeInterval: 2)
+        shot("dark")
+        XCTAssertTrue(title.exists)
+    }
+    func testLargestTextSizeKeepsTheEditorsUsable() {
+        app.terminate()
+        app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        XCTAssertTrue(title.waitForExistence(timeout: 30))
+        Thread.sleep(forTimeInterval: 1)
+        shot("large")
+        let choose = app.buttons["Choose visible route"]
+        drag(from: height * 0.8, to: height * 0.2, speed: .slow)
+        for _ in 0..<16 where !choose.isHittable { drag(from: height * 0.85, to: height * 0.25, speed: .fast) }
+        guard choose.isHittable else { return XCTFail("Route section not reachable") }
+        choose.tap()
+        let cancel = app.buttons["trim.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        shot("large-editor")
+        for _ in 0..<5 where cancel.frame.maxY > height - 30 { drag(from: height * 0.9, to: height * 0.65, speed: .slow) }
+        cancel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 8), "the editor can be left at the largest size")
     }
     func testRepeatedPanelMovesKeepTheScreenResponsive() {
         for _ in 0..<5 {

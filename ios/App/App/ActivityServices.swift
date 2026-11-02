@@ -278,6 +278,12 @@ extension LocationRecorder {
             trips.insert(activity, at: 0)
             trips.sort { $0.startedAt > $1.startedAt }
             lastError = ""
+            // Only a workout known to be this account's speaks for this phone's history.
+            if let owner = WatchOwnership.normalize(ownerID), WatchOwnership.normalize(transfer.ownerID) == owner {
+                let covered = CrossDeviceRecording.automaticCovered(startedAt: transfer.startedAt, endedAt: transfer.endedAt, trips: trips)
+                for id in covered { try? deleteActivity(id) }
+                if !covered.isEmpty { recordDiagnostic("watch", "Removed automatic activities recorded during an Apple Watch workout", details: ["count": String(covered.count)]) }
+            }
             recordDiagnostic("watch", "Imported an Apple Watch activity", details: [
                 "points": String(activity.points.count),
                 "trail": activity.details?.mtbTrailID == nil ? "none" : "linked",

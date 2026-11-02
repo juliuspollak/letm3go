@@ -329,6 +329,8 @@ struct ActivityMapCameraPolicy: Equatable {
 enum ActivityMapDraft: Equatable {
     case trim(start: Int, end: Int)
     case segment(start: Int, end: Int, editingID: String?)
+    // Choosing a section on the map: the route as recorded, with the first tap marked.
+    case picking(start: Int?)
 
     static let selectionColor = "#FF2D55"
 
@@ -352,6 +354,13 @@ enum ActivityMapDraft: Equatable {
             options["routes"] = routes
             options["pins"] = pins.filter { !["start", "finish"].contains($0["kind"] as? String ?? "") } +
                 [["point": first, "title": "Start", "kind": "start"], ["point": last, "title": "Finish", "kind": "finish"]]
+        case .picking(let start):
+            // Only the route's ends stay: every other pin would take the tap.
+            var kept = pins.filter { ["start", "finish"].contains($0["kind"] as? String ?? "") }
+            if let start, points.indices.contains(start) {
+                kept.append(["point": [points[start].latitude, points[start].longitude], "title": "Segment start", "kind": "start"])
+            }
+            options["pins"] = kept
         case .segment(let start, let end, let editingID):
             guard start >= 0, end < points.count, start < end else { return base }
             options["routes"] = NamedSegments.runs(points[...]).filter { $0.count > 1 }.map(Self.line)
@@ -364,9 +373,57 @@ enum ActivityMapDraft: Equatable {
                 styled.append(["points": Self.line(run), "color": Self.selectionColor, "width": 7])
             }
             options["styled"] = styled
-            if let editing { options["pins"] = pins.filter { ($0["id"] as? String)?.lowercased() != "segment:\(editing)" } }
+            options["pins"] = pins.filter { pin in
+                !["start", "finish"].contains(pin["kind"] as? String ?? "") && (editing == nil || (pin["id"] as? String)?.lowercased() != "segment:\(editing ?? "")")
+            } + [["point": [points[start].latitude, points[start].longitude], "title": "Start", "kind": "start"],
+                 ["point": [points[end].latitude, points[end].longitude], "title": "Finish", "kind": "finish"]]
         }
         return options
+    }
+}
+
+// MARK: Picking a section on the map
+
+// Turns two taps on the map into stretches of the recording. A ride can pass the same
+// spot many times, so a tap is a list of visits, and two taps can mean several laps.
+enum ActivitySegmentPicker {
+    struct Traversal: Equatable, Identifiable {
+        var id: Int { start }
+        var start: Int
+        var end: Int
+    }
+    // The closest fix of each visit to a spot, in time order. Same idea as
+    // routePasses in lib/segmentMatcher.js.
+    static func visits(_ points: [GPSPoint], latitude: Double, longitude: Double, toleranceMeters: Double) -> [Int] {
+        let spot = GPSPoint(latitude: latitude, longitude: longitude, timestamp: 0, accuracy: 0, altitude: 0, speed: 0)
+        var result: [Int] = []
+        var best: (index: Int, distance: Double)?
+        func close() { if let found = best { result.append(found.index) }; best = nil }
+        for (index, point) in points.enumerated() {
+            if index > 0, !NamedSegments.connected(points[index - 1], point) { close() }
+            let distance = point.distance(to: spot)
+            if distance <= toleranceMeters {
+                if distance < (best?.distance ?? .infinity) { best = (index, distance) }
+            } else { close() }
+        }
+        close()
+        return result
+    }
+    // Each time the ride went from the first spot to the second. The tightest pair
+    // wins: a later pass of the start is a new lap, so one lap is never two.
+    static func traversals(starts: [Int], finishes: [Int]) -> [Traversal] {
+        var result: [Traversal] = []
+        for (position, start) in starts.enumerated() {
+            guard let end = finishes.first(where: { $0 > start }) else { continue }
+            if position + 1 < starts.count, starts[position + 1] < end { continue }
+            result.append(Traversal(start: start, end: end))
+        }
+        return result
+    }
+    // Room around a choice, so short sections can be fine-tuned on a long ride.
+    static func window(start: Int, end: Int, count: Int) -> ClosedRange<Int> {
+        let margin = max(20, end - start)
+        return max(0, start - margin)...min(count - 1, end + margin)
     }
 }
 
