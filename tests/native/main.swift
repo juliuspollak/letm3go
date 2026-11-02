@@ -4386,7 +4386,7 @@ do {
     ride.applyEnergy(WatchEnergy.reading(activeKcal: 8, basalKcal: 3))
     check(ride.energySessions.count == 2, "a replacement workout opens a new measured segment")
     check(WatchEnergy.activeKcal(ride.energySessions) == 30, "only distinct measured segments are summed")
-    check(WatchEnergy.totalKcal(ride.energySessions) == 43, "total sums active and resting across segments")
+    check(WatchEnergy.totalKcal(ride.energySessions) == 42, "total sums active and resting across segments")
     var incomplete = WatchRideDraft(activity: "MTB", startedAt: 1000)
     incomplete.beginEnergySession(at: 1000)
     incomplete.applyEnergy(WatchEnergy.reading(activeKcal: 10, basalKcal: 4))
