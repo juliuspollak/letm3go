@@ -3,7 +3,73 @@
 Date: 2 November 2026 (Australia/Sydney). Branch: `feature/activity-v2-windows`.
 Transferred checkpoint: `6272027`. **Release remains BLOCKED.** This continuation made implementation changes; it did not finish Activity Experience v2.
 
-## Current continuation: execution approval blocker
+## Current continuation: Claude-led workflow (Codex at usage limit)
+
+**Stopped by a genuine blocker: DeepSeek returned `Insufficient Balance` at 12:19 Sydney time.** This is a billing stop, not a network error and not a failed implementation attempt. Claude did not author the open matcher corrections, because each defect has had one DeepSeek attempt, not two.
+
+**Release remains BLOCKED.** Nothing Swift has been compiled: Windows has no Swift toolchain. Every native claim below is static review only.
+
+### Workflow as actually run
+
+- `--yolo` Cline was refused by the Claude Code permission classifier, so it was not used and not worked around. DeepSeek ran in read-only `--plan` mode, returned patches as text, and Claude reviewed and applied them. Files stayed under Claude's control.
+- `scripts/ai-orchestrate.mjs` was not changed by Claude and its Windows block stands. Cline was invoked directly with a timeout and a scoped brief.
+- **Concurrent writer found.** A separate `cline --yolo` DeepSeek session launched by the Codex VS Code extension at 10:59 was already writing to this workspace, and finished at 11:35. It was left to finish and its output became the energy implementation reviewed below. Claude's own energy patch was discarded as superseded (`.build/claude-led/slice-1-attempt-1-result.md`). The Codex app-server was still running at last check, so it could write here again.
+
+### Commits
+
+| Commit | Author | Content | Status |
+| --- | --- | --- | --- |
+| `62b1e3b` | Separate workflow implementer | Runner launcher changes found uncommitted | **Unreviewed**; orchestrator tests pass |
+| `f90c0fe` | DeepSeek (concurrent session) | Watch energy producer, finalization, schema 4 enrichment, consent UI | Reviewed; see next row |
+| `8c42921` | DeepSeek; Claude transcribed two rejected hunks verbatim | Corrections F1-F12 | Claude review passed statically; **not compiled** |
+| `bb4dcc2` | DeepSeek | `P01-LATE-EMBED`, `P01-DIAGNOSTICS-REGISTRY`, `P01-PREVIEW-FOCUS` | Reviewed; 49/49 pass and exactly the 3 new regressions fail on old source |
+| `2dd2952` | DeepSeek | GPS matcher core, not wired to UI | **Not approved**; defects M1-M8 open |
+
+Findings: [e2-energy-review-findings.md](activity-v2-claude-led/e2-energy-review-findings.md), [s1-open-defects.md](activity-v2-claude-led/s1-open-defects.md).
+
+### Watch energy pipeline state
+
+Now wired in source: per-session collection of active and basal energy, durable draft persistence, a durable finalization job, schema 4 energy-only delivery bound by owner, device, window and revision, tombstone handling, journal merge, dedicated consent UI and cache invalidation. Finish never depends on energy storage. A value is sent as `final` only after `endCollection` succeeds or a saved workout is found.
+
+Review caught two build breaks (F1, F2) that no test on Windows could have shown. There may be more; compile first on macOS.
+
+Remaining, not fixed:
+
+- Energy deliveries count in the Watch `pendingCount`, so the Watch can overstate rides waiting (P3).
+- `retryEnergyJobs` and `failEnergyJob` each increment `attempts`, so retries are about half the intended limit (P3).
+- Finishing while a system-ended session's final reading is in flight loses that late reading; the live value is sent instead (P3).
+- `WatchEnergyJobStore.load` treats a corrupt file as empty, so the next save drops those jobs; the base ride is unaffected (P3).
+- A rider claiming a ride on the phone may leave the enrichment owner mismatched with the binding (suspected, unverified).
+- A ride whose finalization is never confirmed shows "Awaiting workout finalization" indefinitely (UX decision pending).
+- `HKWorkout.statistics(for:)`, predicate matching and all recorder paths need real HealthKit verification.
+- Cloud energy backup remains out of scope and unimplemented.
+
+### Phase status
+
+- **Phase 1:** three families closed for web behaviour. Native map release and VoiceOver still need device checks. The other confirmed families stay open: `P01-GALLERY-MEMORY`, `P01-PICKER-RETRY`, `P01-PICKER-MEMORY`, `P01-PICKER-METADATA`, `P01-CAMERA-RESUME`, `P01-CAMERA-FULLSCREEN`, `P01-SUGGESTION-ENTRY`, `P01-MAP-GEOMETRY`, `P01-ROUTE-MEMO`, `P01-A11Y-TYPE`, `P01-DOC-TRUTH`, the stable-map P2 split and `DEVICE-NATIVE-UX`. `docs/activity-experience-v2-defects.json` was not edited.
+- **Phase 3 (GPS):** pure matcher only; 13 of 14 of its tests pass. No map-first editor, storage, schema, native port or history UI. M1-M8 must close first.
+- **Phase 4 (live Watch segments):** not started.
+
+### Validation at `2dd2952`
+
+| Check | Result |
+| --- | --- |
+| Full Vitest, 2 workers | **1019 passed, 9 failed** (1028). 8 are the recorded `scripts/{profile,release,supabase}` Python/POSIX fixture failures; 1 is matcher defect M3 |
+| Orchestrator suite | PASS 63/63 |
+| ESLint | **FAIL**: 1 error, the unused import in `src/lib/segmentMatcher.test.js` (M8) |
+| Vite build | PASS |
+| Swift, Xcode, iOS/watchOS builds, native suite, HealthKit, device | **NOT RUN**; macOS and hardware acceptance required |
+
+At `f90c0fe`, before the matcher was added, Vitest was 1000 passed and 8 failed (1008). The first baseline attempt overlapped the concurrent session and was discarded.
+
+### Next steps
+
+1. Top up the DeepSeek balance, then send `s1-open-defects.md` as the matcher's second attempt.
+2. On macOS, run `npm run test:native` and the iOS and Watch builds before trusting any energy code.
+3. Decide whether Codex should still be active in this workspace.
+4. Independently review `62b1e3b`.
+
+## Earlier continuation: execution approval blocker
 
 The next DeepSeek/Cline invocation was rejected **before execution** by automatic approval review: it requires explicit approval to send orchestration scripts/tests and Watch energy source to `api.deepseek.com`. The user was asked for that specific approval. No retry or indirect model call bypassed the rejection. This is an infrastructure/approval event, not a failed implementation attempt; no per-defect repair counters were incremented. DNS resolves the API hostname, but authenticated DeepSeek connectivity and the real Cline ? Codex ? Claude integration test are **not verified**.
 
