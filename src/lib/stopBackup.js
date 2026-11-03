@@ -1,0 +1,40 @@
+// The existing private backup RPC preserves classification JSONB verbatim. Keep
+// stop annotations in a versioned envelope there: view_metadata has a strict
+// allowlist and cannot carry them without a migration. Never back up transient
+// evidence/provisional state. Route segment boundaries remain authoritative.
+const KEY='journeyStops';
+const MAX_STOPS=1024;
+const verdicts=new Set(['temporaryPause','meaningfulDestination','ambiguous']);
+const confidences=new Set(['low','medium','high']);
+const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
+function interval(value,start,end,destination=false){
+ if(!object(value)||!Number.isFinite(value.start)||!Number.isFinite(value.end)||value.start<start||value.start>end||value.end<value.start||(!destination&&value.end>end))return undefined;
+ const result={start:value.start,end:value.end};
+ if(verdicts.has(value.verdict))result.verdict=value.verdict;
+ if(confidences.has(value.confidence))result.confidence=value.confidence;
+ if(Array.isArray(value.reasons))result.reasons=value.reasons.filter(reason=>typeof reason==='string').slice(0,8).map(reason=>reason.slice(0,300));
+ return result;
+}
+function annotations(value,start,end){
+ const result={};
+ if(Array.isArray(value?.stops)){
+  const stops=value.stops.slice(-MAX_STOPS).map(stop=>interval(stop,start,end)).filter(Boolean);
+  if(stops.length)result.stops=stops;
+ }
+ const destination=interval(value?.destinationStop,start,end,true);
+ if(destination)result.destinationStop=destination;
+ return result;
+}
+export function backupClassification(details,start,end){
+ const classification=object(details?.classification)?{...details.classification}:{predicted:'Unknown',confidence:'low',evidence:[]};
+ delete classification[KEY];
+ const stops=annotations(details,start,end);
+ if(Object.keys(stops).length)classification[KEY]={version:1,...stops};
+ return classification;
+}
+export function restoreClassification(raw,start,end){
+ const classification=object(raw)?{...raw}:{predicted:'Unknown',confidence:'low',evidence:[]};
+ const envelope=classification[KEY];
+ delete classification[KEY];
+ return {classification,...(object(envelope)&&envelope.version===1?annotations(envelope,start,end):{})};
+}

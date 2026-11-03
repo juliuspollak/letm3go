@@ -1,5 +1,5 @@
 import {webcrypto} from 'node:crypto';
-import {describe,expect,it,vi} from 'vitest';
+import {beforeEach,describe,expect,it,vi} from 'vitest';
 
 // What survives the existing cloud backup and restore for the three kinds of stop.
 // Runs the real syncPrivateActivities and restoreCloudJournal against an in-memory
@@ -17,6 +17,7 @@ vi.mock('./supabase.js',()=>{
 vi.mock('./recorder.js',()=>({recorder:{getState:async()=>({ownerID:'owner',trips:[]}),restoreActivity:async activity=>{cloud.restored.push(activity);return {restored:true};},restorePhoto:async()=>({restored:false})}}));
 const {syncPrivateActivities}=await import('./cloudSync.js');
 const {restoreCloudJournal}=await import('./cloudRestore.js');
+const {backupClassification}=await import('./stopBackup.js');
 
 const fix=(t,segment=0,latitude=-33.87+t/1e6)=>({latitude,longitude:151.2,timestamp:t,accuracy:5,altitude:20,speed:12,segment});
 const drive=(id,start,end,points,details={})=>({id,title:'Driving',activity:'Driving',source:'device',recordingMode:'automatic',startedAt:start,endedAt:end,
@@ -30,7 +31,8 @@ const continued=drive('round',5000,7600,[fix(5000),fix(5100),fix(5400,1),fix(550
         {start:5500,end:6400,verdict:'ambiguous',confidence:'low',reasons:['stopped 15 min','no walking, visit or on-foot evidence; the phone may have stayed in the vehicle']}]});
 
 describe('stop metadata through cloud backup and restore',()=>{
- it('keeps destination legs, timing and route breaks; drops only the classification text',async()=>{
+ beforeEach(()=>{cloud.rows=[];cloud.restored=[];});
+ it('keeps destination, temporary and ambiguous verdicts with timing, reasons and route breaks',async()=>{
   const rpc=vi.fn(async(name,{p_payload})=>{cloud.rows.push({...p_payload,sync_fingerprint:'f',revision:1});return {data:1,error:null};});
   const client={auth:{getUser:async()=>({data:{user:{id:'owner'}}})},from:()=>{const c={upsert:()=>c,delete:()=>c,eq:()=>c,then:r=>r({error:null})};return c;},rpc};
   await syncPrivateActivities(client,{ownerID:'owner',trips:[outbound,homeward,continued],places:[]},{},{cryptoImpl:webcrypto});
@@ -46,8 +48,37 @@ describe('stop metadata through cloud backup and restore',()=>{
   expect(byID.round.points.map(p=>p.segment)).toEqual([0,0,1,1,2,2]);
   expect(byID.round.accumulatedSeconds).toBe(continued.durationSeconds);
   expect(byID.round.accumulatedSeconds).toBe(2600-1100);
-  // What is lost: the verdicts and reasons, which stay on the iPhone that recorded them.
-  expect(byID.round.details.stops).toBeUndefined();
-  expect(byID.out.details.destinationStop).toBeUndefined();
+  expect(byID.round.details.stops).toEqual(continued.details.stops);
+  expect(byID.out.details.destinationStop).toEqual(outbound.details.destinationStop);
+  expect(byID.round.details.classification).toEqual({predicted:'Unknown',confidence:'low',evidence:[]});
+  expect(byID.round.details.classification.journeyStops).toBeUndefined();
  });
+ it('restores legacy classification unchanged and ignores malformed or future envelopes',async()=>{
+  const classification={predicted:'Driving',confidence:'high',evidence:['GPS speed']};
+  const row={id:'legacy',activity:'Driving',recording_mode:'automatic',started_at:new Date(1000*1000).toISOString(),ended_at:new Date(2000*1000).toISOString(),route_points:[fix(1000),fix(2000)],classification};
+  cloud.rows=[row,{...row,id:'bad',classification:{...classification,journeyStops:{version:1,stops:[{start:1500,end:1400},{start:900,end:1100},{start:1400,end:Infinity}],destinationStop:{start:'1500',end:2100}}}},
+   {...row,id:'future',classification:{...classification,journeyStops:{version:2,stops:continued.details.stops}}}];
+  await restoreCloudJournal();
+  for(const activity of cloud.restored){
+   expect(activity.details.classification).toEqual(classification);
+   expect(activity.details.stops).toBeUndefined();
+   expect(activity.details.destinationStop).toBeUndefined();
+  }
+ });
+ it('bounds annotations, preserves the normal classifier and never uploads transient evidence',()=>{
+  const stop={start:1200,end:1500,verdict:'ambiguous',confidence:'low',reasons:['a'.repeat(500),17,...Array(10).fill('reason')]};
+  const classification={predicted:'Driving',confidence:'high',evidence:['GPS'],journeyStops:{version:999}};
+  const details={classification,stops:Array(1100).fill(stop),stopEvidence:{private:'transient'},provisional:true};
+  const backed=backupClassification(details,1000,2000);
+  expect(backed.predicted).toBe('Driving');
+  expect(backed.evidence).toEqual(['GPS']);
+  expect(backed.journeyStops.version).toBe(1);
+  expect(backed.journeyStops.stops).toHaveLength(1024);
+  expect(backed.journeyStops.stops[0].reasons).toHaveLength(8);
+  expect(backed.journeyStops.stops[0].reasons[0]).toHaveLength(300);
+  expect(backed.journeyStops.stopEvidence).toBeUndefined();
+  expect(backed.journeyStops.provisional).toBeUndefined();
+  expect(classification.journeyStops.version).toBe(999);
+ });
+
 });
