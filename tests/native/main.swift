@@ -2463,6 +2463,61 @@ do {
     check(passive(confirmed, manual: true) != nil, "manual recording keeps the session")
     check(passive(confirmed, sharing: true) == "location sharing is on", "live sharing blocks passive rest and its session release")
 
+    // Sharing while resting (device test): only at the place viewers already see.
+    func sharingRest(enabled: Bool = true, sharing: Bool = true, automatic: Bool = true, otherwise: Bool = true,
+                     fixAt: Double? = 1000, accuracy: Double? = 20, inside: Bool = true, since: Double? = 900,
+                     activity: Bool = false, pending: Bool = false) -> (allowed: Bool, reason: String) {
+        SharingRest.decide(SharingRestInputs(enabled: enabled, liveSharing: sharing, automaticAvailable: automatic, passiveOtherwiseAllowed: otherwise,
+            sharedFixAt: fixAt, sharedFixAccuracy: accuracy, sharedFixInsidePlace: inside, placeSince: since,
+            activityShared: activity, statusChangePending: pending))
+    }
+    check(sharingRest().allowed, "sharing may rest once the shared position is the verified resting place")
+    check(!sharingRest(enabled: false).allowed, "stationary sharing keeps continuous location unless the device test is on")
+    check(!sharingRest(automatic: false).allowed && sharingRest(automatic: false).reason.contains("Automatic Tracking is off"), "sharing with Automatic Tracking off keeps the established continuous stream")
+    check(!sharingRest(otherwise: false).allowed, "sharing never rests where passive rest itself is not allowed (iOS 17, no service session, unconfirmed rest)")
+    check(!sharingRest(inside: false).allowed, "a shared position outside the resting place is not rested on")
+    check(!sharingRest(fixAt: 500, since: 900).allowed, "a shared position from before the phone settled here is not rested on")
+    check(sharingRest(fixAt: 790, since: 900).allowed, "a position up to two minutes before the settle time is the same arrival")
+    check(!sharingRest(accuracy: 150).allowed && !sharingRest(fixAt: nil).allowed, "a coarse or missing shared position is not rested on")
+    check(!sharingRest(activity: true).allowed && !sharingRest(pending: true).allowed, "a movement status still shown or unsent keeps the stream until it clears")
+    check(!sharingRest(sharing: false).allowed, "without sharing there is nothing to rest")
+    func passiveSharing(_ mayRest: Bool) -> String? {
+        PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: confirmed, alwaysAuthorized: true, preciseAuthorized: true,
+            serviceSessionHeld: true, serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: false,
+            liveSharing: true, sharingMayRest: mayRest))
+    }
+    check(passiveSharing(true) == nil && passiveSharing(false) == "location sharing is on", "sharing allowed to rest no longer blocks passive rest")
+    check(PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: confirmed, alwaysAuthorized: true, preciseAuthorized: true,
+            serviceSessionHeld: true, serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: true,
+            liveSharing: true, sharingMayRest: true)) == "a manual recording is running", "a manual recording still owns location while sharing rests")
+    check(!BackgroundSessionPolicy.wanted(automaticAvailable: true, manualRecording: false, passiveRest: true, liveSharing: false), "sharing that rests does not hold the activity session in passive rest")
+    check(BackgroundSessionPolicy.wanted(automaticAvailable: false, manualRecording: false, passiveRest: false, liveSharing: true), "sharing that holds location still wants the session")
+
+    // False wake-ups: return to passive rest without settling again, bounded.
+    let wake = FalseWakeCandidate(wakeAt: 5000, previousDisturbance: 1000, placeSince: 900)
+    func falseWake(_ candidate: FalseWakeCandidate? = wake, since: Double? = 900, fixAt: Double? = 5100, moving: Bool = false,
+                   journey: Bool = false, restores: [Double] = [], now: Double = 5200) -> Bool {
+        FalseWake.restores(candidate, placeSince: since, placeFixAt: fixAt, motionMoving: moving, journeyOpen: journey, recentRestores: restores, now: now)
+    }
+    check(falseWake(), "a check that finds the phone still at the place restores the rest")
+    check(!falseWake(fixAt: 4900) && !falseWake(fixAt: nil), "only a fix taken after the wake-up proves the phone stayed")
+    check(!falseWake(since: 4000), "a different place is not the rest that was interrupted")
+    check(!falseWake(moving: true), "movement at the end of the check is no false wake-up")
+    check(!falseWake(journey: true), "a journey that began is no false wake-up")
+    check(!falseWake(now: 5000 + 16*60), "a check that ran too long settles the normal way")
+    check(!falseWake(restores: [3000, 4000, 5000]) && falseWake(restores: [1000, 4000, 5000]), "at most three quick returns an hour, so a waking geofence cannot loop")
+    check(!falseWake(nil), "without a wake-up from passive rest nothing is restored")
+
+    // Keep-alive: precise GPS or an open stop without a session; never standby.
+    func keepAlive(precise: Bool = false, stop: Bool = false, session: Bool = false, service: Bool = true, manual: Bool = false, automatic: Bool = true) -> Bool {
+        KeepAlivePolicy.wanted(automaticAvailable: automatic, manualRecording: manual, precise: precise, stopOpen: stop, sessionHeld: session, serviceSessionHeld: service)
+    }
+    check(keepAlive(precise: true) && keepAlive(stop: true), "precise GPS and a published stop keep the app resumable after the session was released")
+    check(!keepAlive(), "plain standby starts no second location stream")
+    check(!keepAlive(precise: true, session: true), "a held activity session needs no keep-alive")
+    check(!keepAlive(precise: true, service: false), "without an Always service session the keep-alive cannot resume the app, so it is not started")
+    check(!keepAlive(precise: true, manual: true) && !keepAlive(stop: true, automatic: false), "manual recordings and Watch ownership never start it")
+
     // Modes, configuration, session and indicator.
     var sampling = AutomaticSampling()
     check(sampling.locationMode(available: true, manualActive: false, automaticRecording: false, now: 0, resting: true, passive: true) == .passive, "passive rest is a mode of its own")

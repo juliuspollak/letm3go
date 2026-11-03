@@ -19,6 +19,8 @@ import UIKit
 // Opening the app restores the activity session until the next confirmed rest.
 extension LocationRecorder {
     static func passiveRestKey(_ owner: String) -> String { "letm3go-passive-rest-off-\(owner)" }
+    // Stored as "on": sharing joining passive rest is a device test, off by default.
+    static func sharingRestKey(_ owner: String) -> String { "letm3go-sharing-rest-on-\(owner)" }
     static let serviceSessionKey = "letm3go-service-session-held"
     // When passive rest began, kept across termination so a wake-up that
     // relaunches the app is still measured as a departure from passive rest.
@@ -47,6 +49,16 @@ extension LocationRecorder {
         reconcileServiceSession("preference changed")
         refreshAutomaticMonitoring()
     }
+    func setSharingRest(_ enabled: Bool) throws {
+        guard let owner = ownerID, storage != nil else { throw failure("Recording storage is unavailable.") }
+        sharingRestEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.sharingRestKey(owner))
+        recordDiagnostic("preference", enabled ? "Release location while resting with sharing on: device test enabled" : "Release location while resting with sharing on: device test disabled")
+        reconcileAutomaticSampling()
+    }
+    // Whether live sharing is what keeps continuous location and the activity
+    // session. False when sharing is off, or when it rests with the phone.
+    var liveSharingHoldsLocation: Bool { liveSharingArmed && !sharingRestAllowed }
 
     var restPlaceKind: RestPlaceKind {
         guard let area = dwell else { return .none }
@@ -90,14 +102,38 @@ extension LocationRecorder {
 
     @discardableResult
     func evaluatePassive() -> Bool {
-        passiveRetainReason = PassiveRestPolicy.retainReason(PassiveRestInputs(
+        var inputs = PassiveRestInputs(
             enabled: passiveRestEnabled, rest: restDecision,
             alwaysAuthorized: manager.authorizationStatus == .authorizedAlways,
             preciseAuthorized: manager.accuracyAuthorization == .fullAccuracy,
             serviceSessionHeld: serviceSession != nil, serviceSessionInUse: !serviceSessionInsufficient,
             significantChanges: significantLocationRequested, exitRegion: registeredPlaceRegion != nil,
-            manualRecording: active != nil, liveSharing: liveSharingArmed)) ?? ""
+            manualRecording: active != nil, liveSharing: false)
+        let otherwiseAllowed = PassiveRestPolicy.retainReason(inputs) == nil
+        evaluateSharingRest(passiveOtherwiseAllowed: otherwiseAllowed)
+        inputs.liveSharing = liveSharingArmed
+        inputs.sharingMayRest = sharingRestAllowed
+        passiveRetainReason = PassiveRestPolicy.retainReason(inputs) ?? ""
         return passiveRetainReason.isEmpty
+    }
+    // The position viewers hold: the household's last accepted send, otherwise
+    // (friends only) the last fix offered for sharing.
+    func evaluateSharingRest(passiveOtherwiseAllowed: Bool) {
+        let shared: GPSPoint? = liveShareToken != nil ? liveShareSentPoint : lastShareFix.map(sharePoint)
+        let decision = SharingRest.decide(SharingRestInputs(
+            enabled: sharingRestEnabled, liveSharing: liveSharingArmed, automaticAvailable: automaticAvailable,
+            passiveOtherwiseAllowed: passiveOtherwiseAllowed,
+            sharedFixAt: shared?.timestamp, sharedFixAccuracy: shared?.accuracy,
+            sharedFixInsidePlace: shared.map { point in dwell?.contains(point) ?? false } ?? false,
+            placeSince: dwell?.since,
+            activityShared: liveShareToken != nil && liveShareSentActivity != nil,
+            statusChangePending: liveShareToken != nil && shareActivityChanged))
+        if decision.allowed != sharingRestAllowed || (liveSharingArmed && decision.reason != sharingRestReason && sharingRestEnabled) {
+            recordDiagnostic("decision", decision.allowed ? "Live sharing may rest with the phone" : "Live sharing keeps continuous location",
+                             details: ["sharingRest": decision.reason])
+        }
+        sharingRestAllowed = decision.allowed
+        sharingRestReason = decision.reason
     }
 
     // A fix inside the current place verifies it for this process.
@@ -136,6 +172,28 @@ extension LocationRecorder {
             "wakeToFirstFixSeconds": String(Int(max(0, sample.timestamp - evidence))), "firstFixAccuracyMeters": String(Int(sample.accuracy))])
     }
     func noteRestDisturbance(now: Double) { restDisturbedAt = now }
+    // A wake-up from passive rest may be false; remember what the rest was so a
+    // check that finds the phone still here can restore it (FalseWake).
+    func noteWakeFromPassive(now: Double) {
+        guard locationMode == .passive, falseWakeCandidate == nil, let since = dwell?.since else { return }
+        falseWakeCandidate = FalseWakeCandidate(wakeAt: now, previousDisturbance: restDisturbedAt, placeSince: since)
+    }
+    // Called when a departure check ends without a journey.
+    func returnFromFalseWake(now: Double) {
+        defer { falseWakeCandidate = nil }
+        guard let candidate = falseWakeCandidate else { return }
+        let restores = FalseWake.restores(candidate, placeSince: dwell?.since, placeFixAt: restPlaceFixAt,
+            motionMoving: AutomaticDetector.credibleMovement(motion, now: now) || departureEvidence.recentMovement(now: now),
+            journeyOpen: automaticTrip != nil || settledTripID != nil, recentRestores: falseWakeRestores, now: now)
+        guard restores else {
+            recordDiagnostic("rest", "Wake-up check ended; rest must settle again", details: ["wakeCheckSeconds": String(Int(max(0, now - candidate.wakeAt)))])
+            return
+        }
+        restDisturbedAt = candidate.previousDisturbance
+        falseWakeRestores = (falseWakeRestores + [now]).filter { now - $0 < 3600 }
+        recordDiagnostic("rest", "False wake-up: the phone is still at the resting place, rest restored", details: [
+            "wakeCheckSeconds": String(Int(max(0, now - candidate.wakeAt))), "restoresThisHour": String(falseWakeRestores.count)])
+    }
 
     // After the mode is applied: release or restore the activity session, run
     // the keep-alive while precise GPS has no session, and account mode time.
@@ -177,6 +235,7 @@ extension LocationRecorder {
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": "off"])
         }
         restDecision = .unconfirmed; passiveRetainReason = "automatic tracking unavailable"; restDisturbedAt = nil
+        falseWakeCandidate = nil; sharingRestAllowed = false; sharingRestReason = "automatic tracking unavailable"
         // The phone may move while tracking is off, so nothing vouches for the place
         // afterwards, and a later wake-up is not a departure from this rest.
         persistPassiveSince(nil); restPlaceFixAt = nil; restPlaceAccuracy = nil
@@ -194,6 +253,7 @@ extension LocationRecorder {
         departurePlace = nil; departureMotionOnsetAt = nil; lastPreciseReason = "none yet"; keepAliveUpdates = 0
         modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
         passiveRestEnabled = true
+        sharingRestEnabled = false; falseWakeRestores = []
     }
 
     // MARK: Recording health
@@ -334,7 +394,9 @@ extension LocationRecorder {
 
     // MARK: Keep-alive for precise GPS without an activity session
     func reconcileKeepAlive(now: Double) {
-        let wanted = automaticAvailable && active == nil && locationMode == .precise && backgroundActivitySession == nil && serviceSession != nil
+        let wanted = KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active != nil,
+            precise: locationMode == .precise, stopOpen: settledTripID != nil && locationMode != .passive,
+            sessionHeld: backgroundActivitySession != nil, serviceSessionHeld: serviceSession != nil)
         guard wanted else {
             if keepAliveTask != nil {
                 keepAliveGeneration += 1
@@ -348,7 +410,7 @@ extension LocationRecorder {
         guard #available(iOS 17.0, *) else { return }
         keepAliveGeneration += 1
         let generation = keepAliveGeneration
-        recordDiagnostic("service", "Journey keep-alive live updates started", details: ["reason": "precise GPS without a background activity session"])
+        recordDiagnostic("service", "Journey keep-alive live updates started", details: ["reason": KeepAlivePolicy.reason(precise: locationMode == .precise)])
         keepAliveTask = Task { @MainActor [weak self] in
             do {
                 for try await _ in CLLocationUpdate.liveUpdates() {
@@ -402,6 +464,9 @@ extension LocationRecorder {
                 "serviceSession": serviceSessionState, "serviceSessionInsufficient": serviceSessionInsufficient,
                 "sessionReleasedAt": sessionReleasedAt as Any? ?? NSNull(), "sessionReleases": sessionReleases,
                 "keepAliveRunning": keepAliveTask != nil, "keepAliveUpdates": keepAliveUpdates,
+                "sharingRest": ["enabled": sharingRestEnabled, "allowed": sharingRestAllowed, "reason": sharingRestReason,
+                                "sharingHoldsLocation": liveSharingHoldsLocation],
+                "falseWakeRestoresThisHour": falseWakeRestores.filter { now - $0 < 3600 }.count,
                 "lastPreciseReason": lastPreciseReason,
                 "modeSeconds": modeClock.totals(now: now).mapValues { Int($0) },
                 "wifi": wifiSnapshot]

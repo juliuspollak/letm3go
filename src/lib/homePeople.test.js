@@ -15,6 +15,15 @@ describe('people on Home',()=>{
   const people=homePeople({household:[member('me','live'),member('Kim','live')],friends:[member('Kim','stale')],selfID:'me'});
   expect(people.map(person=>person.name)).toEqual(['Kim']);
  });
+ it('says a household member was last verified at home with the real age, never that they are home now',()=>{
+  const homePlace={latitude:near.latitude,longitude:near.longitude,radius:100};
+  const [kim]=homePeople({household:[member('Kim','stale',{ageSeconds:1500,source:'household',position:{...near,accuracy:10}})],selfID:'me',selfPosition:here,homePlace});
+  expect(kim.status).toEqual({text:'Last verified at home · 25 min ago',tone:'stale'});
+  const [away]=homePeople({household:[member('Kim','stale',{ageSeconds:1500,source:'household',position:here})],selfID:'me',selfPosition:near,homePlace});
+  expect(away.status.text).toMatch(/^Last seen 25 min ago · /);
+  const [friend]=homePeople({friends:[member('Lee','stale',{ageSeconds:1500,source:'friend',position:near})],selfID:'me',homePlace});
+  expect(friend.status.text).toBe('Last seen 25 min ago');
+ });
  it('gives a home status its own marker',()=>{
   expect(homePeople({household:[member('Kim','live')],selfID:'me',homeFlags:{Kim:true}})[0].status).toEqual({text:'At home',tone:'home'});
  });

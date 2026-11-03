@@ -406,6 +406,11 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setPassiveRest(call.getBool("enabled") ?? true); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
+    // Device test: let live sharing rest with the phone (SharingRest). Off by default.
+    @objc func setSharingRest(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        do { try LocationRecorder.shared.setSharingRest(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
     // Home Wi-Fi: designate the connected network, or forget it. Only match
     // states are ever returned; never a network name or address.
     @objc func setHomeWiFi(_ call: CAPPluginCall) { DispatchQueue.main.async {

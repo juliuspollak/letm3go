@@ -109,6 +109,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var restPlaceAccuracy: Double?
     var keepAliveGeneration = 0
     var keepAliveEndedAt: Double = 0
+    // Device test: live sharing may join passive rest (SharingRest). Off by default.
+    var sharingRestEnabled = false
+    var sharingRestAllowed = false
+    var sharingRestReason = "not evaluated"
+    var falseWakeCandidate: FalseWakeCandidate?
+    var falseWakeRestores: [Double] = []
     static func adaptiveKey(_ owner: String) -> String { "letm3go-adaptive-location-\(owner)" }
     var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
     // Place awareness (see DwellArea). Kept in this account's encrypted storage.
@@ -342,7 +348,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "activeLocationManagers":String((continuousLocationRequested || significantLocationRequested || visitMonitoringRequested || !manager.monitoredRegions.isEmpty ? 1 : 0)+PositionRequest.activeRequests.count),"oneShotRequests":String(PositionRequest.activeRequests.count),
             "liveUpdatesRunning":String(liveUpdatesTask != nil),"householdArmed":String(liveShareToken != nil && now<liveShareTokenExpiresAt-60),
             "liveSharingArmed":String(liveSharingArmed),"liveSharingPublisher":liveShareToken != nil ? "native" : "webview",
-            "liveSharingTracking":String(continuousLocationRequested && liveSharingArmed),"liveSharingSendActivity":String(liveShareSendsActivity),
+            "liveSharingTracking":String(continuousLocationRequested && liveSharingArmed),"liveSharingHoldsLocation":String(liveSharingHoldsLocation),"liveSharingSendActivity":String(liveShareSendsActivity),
             "liveSharingSendCaptureTime":String(liveShareSendsCaptureTime),"lastShareFixAgeSeconds":lastShareFix.map{String(Int(max(0,now-$0.timestamp.timeIntervalSince1970)))} ?? "none",
             "householdStatus":liveShareStatus,"householdLastSuccessAt":String(liveShareLastOkAt),"householdLastAttemptAt":String(liveShareLastSentAt),
             "householdLastSuccessAgeSeconds":liveShareLastOkAt>0 ? String(Int(max(0,now-liveShareLastOkAt))) : "none",
@@ -396,7 +402,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     static let fullContextKinds:Set<String>=["lifecycle","session","rest","journey","preference","error","invariant","recovery","account","detection"]
     static let compactContextKeys:Set<String>=["process","component","appState","locationMode","automaticLocationMode","backgroundSession","continuousLocationRequested",
         "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","passiveRest","wifiMatch","reason","commit","build","adaptiveState",
-        "liveSharingArmed","liveSharingTracking","liveSharingPublisher","liveSharingSendActivity","householdLastSuccessAgeSeconds",
+        "liveSharingArmed","liveSharingHoldsLocation","liveSharingTracking","liveSharingPublisher","liveSharingSendActivity","householdLastSuccessAgeSeconds",
         // Read back from the journal when it is reopened.
         "householdLastSuccessAt","friendLastSuccessAt"]
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
@@ -495,7 +501,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // the only state in which iOS lets a new session begin.
     func reconcileBackgroundSession(_ reason: String) {
         let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: active?.state == "recording",
-            passiveRest: locationMode == .passive, liveSharing: liveSharingArmed)
+            passiveRest: locationMode == .passive, liveSharing: liveSharingHoldsLocation)
         let action = BackgroundSessionPolicy.decide(wanted: wanted, held: backgroundActivitySession != nil,
             foreground: UIApplication.shared.applicationState == .active,
             previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported)
@@ -708,7 +714,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // valid sharing credential is held and the phone is not manually recording
     // (a manual recording already owns precise GPS).
     func reconcileLiveSharingLocation() {
-        guard liveSharingArmed, active?.state != "recording" else { return }
+        // Sharing that rests with the phone leaves location to the automatic
+        // engine, which ends passive rest on any departure evidence.
+        guard liveSharingHoldsLocation, active?.state != "recording" else { return }
         if adaptive.lowPowerRunning { cancelLowPower() }
         runStandard(liveSharingStandardMode(now: Date().timeIntervalSince1970))
         startMotionUpdates()
@@ -749,7 +757,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // phone has not moved since it was taken (and the app is running). Otherwise
     // the household sees the honest last-updated time.
     func confirmHouseholdLocation() {
-        guard let fix=lastShareFix else {return}
+        // Passive rest runs no location service, so nothing vouches for the last fix
+        // being current: viewers keep its real time, never a re-stamped one.
+        guard let fix=lastShareFix, locationMode != .passive else {return}
         // Stopping sends no fix, so the status cannot wait for one. The position is
         // only what it was recently: an old one is not presented as current.
         if shareActivityChanged,
@@ -1205,6 +1215,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPassiveRest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSharingRest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveNamedSegment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteNamedSegment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setHomeWiFi", returnType: CAPPluginReturnPromise),

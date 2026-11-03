@@ -155,14 +155,17 @@ struct PassiveRestInputs: Equatable {
     var exitRegion: Bool
     var manualRecording: Bool
     var liveSharing: Bool = false
+    // SharingRest allows sharing to rest with the phone (see below).
+    var sharingMayRest: Bool = false
 }
 
 enum PassiveRestPolicy {
     static func retainReason(_ i: PassiveRestInputs) -> String? {
         if i.manualRecording { return "a manual recording is running" }
-        // Releasing location while resting would stop the native publisher even
-        // though the person explicitly asked their household to see them.
-        if i.liveSharing { return "location sharing is on" }
+        // Releasing location while resting stops the native publisher, so sharing
+        // keeps it unless SharingRest showed the shared position is already the
+        // verified resting place, which the next real fix replaces.
+        if i.liveSharing && !i.sharingMayRest { return "location sharing is on" }
         guard i.rest.confirmed else { return "rest not confirmed: \(i.rest.reason)" }
         guard i.enabled else { return "releasing location while resting is switched off" }
         guard i.alwaysAuthorized else { return "needs Always location access" }
@@ -172,6 +175,91 @@ enum PassiveRestPolicy {
         guard i.significantChanges else { return "significant-change monitoring is not running" }
         guard i.exitRegion else { return "this place's exit region is not monitored yet" }
         return nil
+    }
+}
+
+// MARK: Sharing while resting
+//
+// Whether live sharing may release continuous location with the rest of the
+// recorder. Only when everything else already allows passive rest, and the last
+// position the household or friends received was taken inside this resting place
+// after the phone settled there. Viewers then keep that position with its real
+// timestamp, which ages honestly; nothing is re-sent as a new observation while
+// passive. A departure wakes the recorder through the same exit region,
+// significant change or visit, and the fresh fixes are published as before.
+// Sharing with Automatic Tracking off has no place verification or departure
+// wake-ups, so it keeps the established continuous stream.
+struct SharingRestInputs: Equatable {
+    var enabled: Bool               // the device-test preference
+    var liveSharing: Bool
+    var automaticAvailable: Bool
+    var passiveOtherwiseAllowed: Bool // PassiveRestPolicy with sharing left out
+    var sharedFixAt: Double?        // capture time of the last published position
+    var sharedFixAccuracy: Double?
+    var sharedFixInsidePlace: Bool
+    var placeSince: Double?
+    var activityShared: Bool        // a movement status is still shown to viewers
+    var statusChangePending: Bool   // a status change has not been sent yet
+}
+
+enum SharingRest {
+    static func decide(_ i: SharingRestInputs) -> (allowed: Bool, reason: String) {
+        guard i.liveSharing else { return (false, "sharing is off") }
+        guard i.enabled else { return (false, "keeps continuous location: releasing it while sharing is a device test that is off") }
+        guard i.automaticAvailable else { return (false, "keeps continuous location: Automatic Tracking is off, so no departure wake-up would follow") }
+        guard i.passiveOtherwiseAllowed else { return (false, "passive rest is not allowed yet") }
+        guard let at = i.sharedFixAt, let accuracy = i.sharedFixAccuracy, accuracy >= 0,
+              accuracy <= RestConfirmation.maximumPlaceAccuracy else { return (false, "no shared position accurate enough to rest on") }
+        guard i.sharedFixInsidePlace, let since = i.placeSince, at >= since - 120 else {
+            return (false, "the last shared position was not taken at this resting place")
+        }
+        guard !i.activityShared, !i.statusChangePending else { return (false, "a movement status is still being shared") }
+        return (true, "the shared position is the verified resting place")
+    }
+}
+
+// MARK: Returning to passive rest after a false wake-up
+//
+// A wake-up from passive rest ends a confirmed rest and starts a bounded
+// departure check. When the check ends without a journey and a fix taken after
+// the wake-up places the phone back inside the same place, with nothing moving,
+// the wake-up was false: the earlier stillness still holds, so the rest clock is
+// restored instead of starting the whole settling period again. At most three
+// times an hour, so a place that keeps waking the phone (a geofence on its edge)
+// settles the long way and cannot loop.
+struct FalseWakeCandidate: Codable, Equatable {
+    var wakeAt: Double
+    var previousDisturbance: Double?
+    var placeSince: Double
+}
+
+enum FalseWake {
+    static let limitPerHour = 3
+    static let maximumCheckSeconds: Double = 15*60
+    static func restores(_ candidate: FalseWakeCandidate?, placeSince: Double?, placeFixAt: Double?,
+                         motionMoving: Bool, journeyOpen: Bool, recentRestores: [Double], now: Double) -> Bool {
+        guard let candidate = candidate, let since = placeSince, since == candidate.placeSince,
+              let fix = placeFixAt, fix >= candidate.wakeAt, !motionMoving, !journeyOpen,
+              now >= candidate.wakeAt, now - candidate.wakeAt <= maximumCheckSeconds else { return false }
+        return recentRestores.filter { now - $0 < 3600 && now >= $0 }.count < limitPerHour
+    }
+}
+
+// MARK: Keep-alive without a background activity session
+//
+// After passive rest the activity session is released, and a backgrounded app
+// cannot start a new one. Precise GPS, and a published stop waiting to see whether
+// the journey continues, still need the app to run, so a liveUpdates stream keeps
+// Core Location resuming it. Ordinary standby does not: it ends in passive rest
+// or in a wake-up, and a second location stream there would cost battery for
+// nothing. Never during a manual recording or the Watch's ownership.
+enum KeepAlivePolicy {
+    static func wanted(automaticAvailable: Bool, manualRecording: Bool, precise: Bool, stopOpen: Bool,
+                       sessionHeld: Bool, serviceSessionHeld: Bool) -> Bool {
+        automaticAvailable && !manualRecording && !sessionHeld && serviceSessionHeld && (precise || stopOpen)
+    }
+    static func reason(precise: Bool) -> String {
+        precise ? "precise GPS without a background activity session" : "a published stop is waiting for a continuation without a background activity session"
     }
 }
 

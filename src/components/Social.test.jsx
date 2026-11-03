@@ -69,6 +69,9 @@ describe('statuses',()=>{
  it('says At home only for a live position',()=>{
   expect(personStatus({state:'live',home:true}).text).toBe('At home');
   expect(personStatus({state:'stale',ageSeconds:600,home:true}).text).toBe('Last seen 10 min ago');
+  // An old position inside Home says where they were last verified, with its age, never that they are there now.
+  expect(personStatus({state:'stale',ageSeconds:1500,verifiedHome:true})).toEqual({text:'Last verified at home · 25 min ago',tone:'stale'});
+  expect(personStatus({state:'live',ageSeconds:30,verifiedHome:true}).text).toBe('Sharing · just now');
   expect(selfStatus({enabled:true,state:'live',home:true}).text).toBe('At home');
   expect(selfStatus({enabled:true,state:'stale',ageSeconds:900,home:true}).text).toBe('Last sent 15 min ago');
   expect(selfStatus({enabled:false,state:'live',home:true}).text).toBe('Not sharing');
