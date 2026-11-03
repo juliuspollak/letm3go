@@ -1465,6 +1465,8 @@ check(!HouseholdPublisher.validEndpoint(URL(string:"https://example.supabase.co/
 check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:500),"a phone parked at Home re-confirms its last fix while location keeps running")
 check(!HouseholdPublisher.canConfirm(continuousRunning:false,resuming:false,fixAt:1000,executingSince:500),"no confirmation without continuous location")
 check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:1200),"after a suspension a new real fix is required before anything is confirmed")
+check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:500,continuousSince:3400),"a fix from before passive rest is never re-confirmed once the stream restarts")
+check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:3500,executingSince:500,continuousSince:3400),"a fix taken by the restarted stream can be confirmed")
 check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:true,fixAt:1000,executingSince:500),"no confirmation while a wake is still being attributed")
 check(HouseholdPublisher.stationaryInterval == 60 && HouseholdPublisher.confirmationInterval == 300,"parked phones publish once a minute and confirm every 5 minutes")
 check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation still keeps a present member inside the 10-minute live window")
@@ -2466,10 +2468,11 @@ do {
     // Sharing while resting (device test): only at the place viewers already see.
     func sharingRest(enabled: Bool = true, sharing: Bool = true, automatic: Bool = true, otherwise: Bool = true,
                      fixAt: Double? = 1000, accuracy: Double? = 20, inside: Bool = true, since: Double? = 900,
-                     activity: Bool = false, pending: Bool = false) -> (allowed: Bool, reason: String) {
-        SharingRest.decide(SharingRestInputs(enabled: enabled, liveSharing: sharing, automaticAvailable: automatic, passiveOtherwiseAllowed: otherwise,
-            sharedFixAt: fixAt, sharedFixAccuracy: accuracy, sharedFixInsidePlace: inside, placeSince: since,
-            activityShared: activity, statusChangePending: pending))
+                     activity: Bool = false, pending: Bool = false, friend: SharedPosition?? = .none) -> (allowed: Bool, reason: String) {
+        var shared: [SharedPosition?] = [fixAt.map { SharedPosition(at: $0, accuracy: accuracy ?? -1, insidePlace: inside) }]
+        if case .some(let friendPosition) = friend { shared.append(friendPosition) }
+        return SharingRest.decide(SharingRestInputs(enabled: enabled, liveSharing: sharing, automaticAvailable: automatic, passiveOtherwiseAllowed: otherwise,
+            shared: shared, placeSince: since, activityShared: activity, statusChangePending: pending))
     }
     check(sharingRest().allowed, "sharing may rest once the shared position is the verified resting place")
     check(!sharingRest(enabled: false).allowed, "stationary sharing keeps continuous location unless the device test is on")
@@ -2481,6 +2484,11 @@ do {
     check(!sharingRest(accuracy: 150).allowed && !sharingRest(fixAt: nil).allowed, "a coarse or missing shared position is not rested on")
     check(!sharingRest(activity: true).allowed && !sharingRest(pending: true).allowed, "a movement status still shown or unsent keeps the stream until it clears")
     check(!sharingRest(sharing: false).allowed, "without sharing there is nothing to rest")
+    check(sharingRest(friend: .some(SharedPosition(at: 1000, accuracy: 15, insidePlace: true))).allowed, "household and friends both holding the resting place may rest")
+    check(!sharingRest(friend: .some(SharedPosition(at: 1000, accuracy: 15, insidePlace: false))).allowed, "friends still holding a street position keep the stream (they never received the place)")
+    check(!sharingRest(friend: .some(nil)).allowed, "an audience that has received nothing keeps the stream")
+    check(!SharingRest.decide(SharingRestInputs(enabled: true, liveSharing: true, automaticAvailable: true, passiveOtherwiseAllowed: true, shared: [],
+        placeSince: 900, activityShared: false, statusChangePending: false)).allowed, "with no audience position known nothing is rested on")
     func passiveSharing(_ mayRest: Bool) -> String? {
         PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: confirmed, alwaysAuthorized: true, preciseAuthorized: true,
             serviceSessionHeld: true, serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: false,
@@ -2507,6 +2515,10 @@ do {
     check(!falseWake(now: 5000 + 16*60), "a check that ran too long settles the normal way")
     check(!falseWake(restores: [3000, 4000, 5000]) && falseWake(restores: [1000, 4000, 5000]), "at most three quick returns an hour, so a waking geofence cannot loop")
     check(!falseWake(nil), "without a wake-up from passive rest nothing is restored")
+    check(!FalseWake.restores(wake, placeSince: 900, placeFixAt: 5100, leftPlaceAt: 5150, motionMoving: false, journeyOpen: false, recentRestores: [], now: 5200),
+          "a phone standing just outside the place after an inside fix has not returned")
+    check(FalseWake.restores(wake, placeSince: 900, placeFixAt: 5160, leftPlaceAt: 5150, motionMoving: false, journeyOpen: false, recentRestores: [], now: 5200),
+          "a newer inside fix after stepping out is a return")
 
     // Keep-alive: precise GPS or an open stop without a session; never standby.
     func keepAlive(precise: Bool = false, stop: Bool = false, session: Bool = false, service: Bool = true, manual: Bool = false, automatic: Bool = true) -> Bool {

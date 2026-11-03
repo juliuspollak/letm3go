@@ -189,17 +189,23 @@ enum PassiveRestPolicy {
 // significant change or visit, and the fresh fixes are published as before.
 // Sharing with Automatic Tracking off has no place verification or departure
 // wake-ups, so it keeps the established continuous stream.
+// The position one audience (household or friends) last accepted.
+struct SharedPosition: Equatable {
+    var at: Double
+    var accuracy: Double
+    var insidePlace: Bool
+}
+
 struct SharingRestInputs: Equatable {
     var enabled: Bool               // the device-test preference
     var liveSharing: Bool
     var automaticAvailable: Bool
     var passiveOtherwiseAllowed: Bool // PassiveRestPolicy with sharing left out
-    var sharedFixAt: Double?        // capture time of the last published position
-    var sharedFixAccuracy: Double?
-    var sharedFixInsidePlace: Bool
+    // One entry per armed audience; nil where that audience has received nothing.
+    var shared: [SharedPosition?]
     var placeSince: Double?
     var activityShared: Bool        // a movement status is still shown to viewers
-    var statusChangePending: Bool   // a status change has not been sent yet
+    var statusChangePending: Bool   // a movement status change has not been sent yet
 }
 
 enum SharingRest {
@@ -208,10 +214,14 @@ enum SharingRest {
         guard i.enabled else { return (false, "keeps continuous location: releasing it while sharing is a device test that is off") }
         guard i.automaticAvailable else { return (false, "keeps continuous location: Automatic Tracking is off, so no departure wake-up would follow") }
         guard i.passiveOtherwiseAllowed else { return (false, "passive rest is not allowed yet") }
-        guard let at = i.sharedFixAt, let accuracy = i.sharedFixAccuracy, accuracy >= 0,
-              accuracy <= RestConfirmation.maximumPlaceAccuracy else { return (false, "no shared position accurate enough to rest on") }
-        guard i.sharedFixInsidePlace, let since = i.placeSince, at >= since - 120 else {
-            return (false, "the last shared position was not taken at this resting place")
+        guard !i.shared.isEmpty else { return (false, "no shared position accurate enough to rest on") }
+        for position in i.shared {
+            guard let p = position, p.accuracy >= 0, p.accuracy <= RestConfirmation.maximumPlaceAccuracy else {
+                return (false, "no shared position accurate enough to rest on")
+            }
+            guard p.insidePlace, let since = i.placeSince, p.at >= since - 120 else {
+                return (false, "the last shared position was not taken at this resting place")
+            }
         }
         guard !i.activityShared, !i.statusChangePending else { return (false, "a movement status is still being shared") }
         return (true, "the shared position is the verified resting place")
@@ -236,10 +246,12 @@ struct FalseWakeCandidate: Codable, Equatable {
 enum FalseWake {
     static let limitPerHour = 3
     static let maximumCheckSeconds: Double = 15*60
-    static func restores(_ candidate: FalseWakeCandidate?, placeSince: Double?, placeFixAt: Double?,
+    // `leftPlaceAt`: the last accurate fix outside the place. The newest evidence
+    // must be inside: a phone standing just beyond the edge has not returned.
+    static func restores(_ candidate: FalseWakeCandidate?, placeSince: Double?, placeFixAt: Double?, leftPlaceAt: Double? = nil,
                          motionMoving: Bool, journeyOpen: Bool, recentRestores: [Double], now: Double) -> Bool {
         guard let candidate = candidate, let since = placeSince, since == candidate.placeSince,
-              let fix = placeFixAt, fix >= candidate.wakeAt, !motionMoving, !journeyOpen,
+              let fix = placeFixAt, fix >= candidate.wakeAt, fix > (leftPlaceAt ?? -Double.greatestFiniteMagnitude), !motionMoving, !journeyOpen,
               now >= candidate.wakeAt, now - candidate.wakeAt <= maximumCheckSeconds else { return false }
         return recentRestores.filter { now - $0 < 3600 && now >= $0 }.count < limitPerHour
     }

@@ -115,6 +115,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var sharingRestReason = "not evaluated"
     var falseWakeCandidate: FalseWakeCandidate?
     var falseWakeRestores: [Double] = []
+    // The position friends last accepted (SharingRest checks every audience).
+    var friendShareSentPoint: GPSPoint?
+    // Last accurate fix inside and outside the current place (FalseWake).
+    var placeInsideAt: Double?
+    var placeOutsideAt: Double?
+    var sharingRestLoggedAt: Double = 0
     static func adaptiveKey(_ owner: String) -> String { "letm3go-adaptive-location-\(owner)" }
     var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
     // Place awareness (see DwellArea). Kept in this account's encrypted storage.
@@ -644,7 +650,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func disableFriendLiveSharing() {
         friendShareToken=nil;friendShareEndpoint=nil;friendShareApiKey=nil
-        friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false;friendShareStatus=""
+        friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false;friendShareStatus="";friendShareSentPoint=nil
         if liveShareToken == nil, active?.state != "recording" { stopContinuousLocation(reason:"Friend location sharing turned off") }
         refreshAutomaticMonitoring()
         releaseBackgroundSessionIfUnneeded("friend location sharing turned off")
@@ -675,6 +681,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
         friendShareInFlight=true;friendShareLastSentAt=now;diagnosticSharingAttempts+=1
+        let sentPoint=sharePoint(location)
         let requestOwner=ownerID
         URLSession.shared.dataTask(with:request){[weak self] _,response,error in
             DispatchQueue.main.async {
@@ -689,7 +696,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                     let failure=error != nil ? "network" : "http \((response as? HTTPURLResponse)?.statusCode ?? 0)"
                     if self.friendShareStatus != failure {self.recordDiagnostic("sharing","Friend location publication failed",details:["reason":failure])}
                     self.friendShareStatus=failure
-                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.friendShareStatus="ok";self.diagnosticSharingSuccesses+=1}
+                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.friendShareStatus="ok";self.diagnosticSharingSuccesses+=1;self.friendShareSentPoint=sentPoint}
             }
         }.resume()
     }
@@ -767,7 +774,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             sendHouseholdLocation(fix,confirmation:true);return
         }
         let continuous=HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
-              resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince)
+              resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince,
+              continuousSince:continuousStartedAt ?? .greatestFiniteMagnitude)
         let stationary=adaptive.lowPowerRunning && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
         guard continuous || stationary else {return}
         sendHouseholdLocation(fix,confirmation:true)

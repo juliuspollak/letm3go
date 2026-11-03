@@ -41,6 +41,8 @@ extension LocationRecorder {
                 if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now),!self.automaticSampling.locationWake {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
                     self.detector.reset()
+                    // A check stopped by stillness also ended without a journey.
+                    self.returnFromFalseWake(now:now)
                     self.reconcileAutomaticSampling()
                 } else if AutomaticDetector.credibleMovement(self.motion,now:now) {
                     self.noteRestDisturbance(now:now)
@@ -478,6 +480,7 @@ extension LocationRecorder {
             homeRest.observe(sample,home:restPlace,now:now)
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
             if noteRestPlaceFix(sample,now:now) {restPlaceNewlyVerified=true}
+            notePlaceObservation(sample,now:now)
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
             // and lets the normal departure detection start a new one.
@@ -887,7 +890,7 @@ extension LocationRecorder {
         guard area != dwell else { return }
         let previous = dwell
         dwell = area
-        restPlaceFixAt = nil; restPlaceAccuracy = nil
+        restPlaceFixAt = nil; restPlaceAccuracy = nil; placeInsideAt = nil; placeOutsideAt = nil
         motionProbeGate.reset()
         leftAreaProbed = false
         if area == nil { dwellInference.reset() }
