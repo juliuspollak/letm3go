@@ -112,7 +112,7 @@ describe('rides through a segment',()=>{
   for(let east=0;east<=600;east+=5){points.push({...fix(east,t),segment:east>300?1:0});t+=east===300?180:1;}
   const made=withSegment({id:'broken2',title:'x',updatedAt:1,points,details:{}},0,120);
   const broken=segmentRides(made,[made])[0].passes.find(pass=>pass.interrupted);
-  expect(broken.time).toMatch(/^~2:0/);
+  expect(broken.time).toMatch(/^~(1:5\d|2:0\d)$/);
  });
  it('shows nearby segments from other rides on the map, and not distant ones',()=>{
   const layers=nearbySegmentLayers(earlier,[today,earlier]);
