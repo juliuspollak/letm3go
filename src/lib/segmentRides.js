@@ -62,7 +62,7 @@ function passesOf({segment,owner,definition},trips){
  const version=`${segment.updatedAt||0}`;
  const passes=[];
  for(const trip of trips){
-  for(const effort of definition?effortsOn(definition,version,trip):[])passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:effort.elapsedSeconds});
+  for(const effort of definition?effortsOn(definition,version,trip):[])passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:effort.elapsedSeconds,interrupted:effort.gapSeconds>0});
  }
  // A section made across a GPS gap cannot be looked for elsewhere, and a segment always
  // counts on the ride that made it.
@@ -87,18 +87,21 @@ function onePerLap(passes,trips){
  return kept;
 }
 
+// A lap with a break in the recording counts as ridden, but its time is not a real time.
+const fastestFirst=(a,b)=>Boolean(a.interrupted)-Boolean(b.interrupted)||a.elapsedSeconds-b.elapsedSeconds||a.startedAt-b.startedAt;
+const bestOf=passes=>{const clean=passes.find(pass=>!pass.interrupted);return clean?clock(clean.elapsedSeconds):'—';};
 const MAX_LISTED=200;
 export function segmentRides(trip,trips){
  const library=riddenTrips(trips);
  if(!trip?.id||!library.length)return [];
  const rows=[];
  for(const entry of allSegments(library)){
-  const passes=passesOf(entry,library).sort((a,b)=>a.elapsedSeconds-b.elapsedSeconds||a.startedAt-b.startedAt);
+  const passes=passesOf(entry,library).sort(fastestFirst);
   const thisRide=passes.filter(pass=>pass.trip.id===trip.id).length;
   if(!thisRide)continue;
   const {segment,owner}=entry;
-  rows.push({id:segment.id,ownerID:String(owner.id),owned:owner.id===trip.id,name:segment.name,color:segmentColor(segment.colorIndex),thisRide,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:clock(passes[0].elapsedSeconds),
-   passes:passes.slice(0,MAX_LISTED).map((pass,index)=>({id:`${pass.trip.id}:${pass.startedAt}`,activityID:String(pass.trip.id),rank:index+1,time:clock(pass.elapsedSeconds),when:`${dayText(pass.startedAt)} · ${timeText(pass.startedAt)}`,title:pass.trip.title||'Activity',current:pass.trip.id===trip.id}))});
+  rows.push({id:segment.id,ownerID:String(owner.id),owned:owner.id===trip.id,name:segment.name,color:segmentColor(segment.colorIndex),thisRide,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:bestOf(passes),
+   passes:passes.slice(0,MAX_LISTED).map((pass,index)=>({id:`${pass.trip.id}:${pass.startedAt}`,activityID:String(pass.trip.id),rank:index+1,time:clock(pass.elapsedSeconds),interrupted:pass.interrupted===true,when:`${dayText(pass.startedAt)} · ${timeText(pass.startedAt)}`,title:pass.trip.title||'Activity',current:pass.trip.id===trip.id}))});
  }
  return rows.sort((a,b)=>a.name.localeCompare(b.name));
 }
@@ -107,9 +110,9 @@ export function segmentRides(trip,trips){
 export function segmentLibrary(trips){
  const library=riddenTrips(trips);
  return allSegments(library).map(entry=>{
-  const passes=passesOf(entry,library).sort((a,b)=>a.elapsedSeconds-b.elapsedSeconds);
+  const passes=passesOf(entry,library).sort(fastestFirst);
   const {segment,owner}=entry;
-  return {id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),activityID:owner.id,activityTitle:owner.title||'Activity',startIndex:segment.startIndex,endIndex:segment.endIndex,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:clock(passes[0].elapsedSeconds),when:dayText(segment.startTimestamp)};
+  return {id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),activityID:owner.id,activityTitle:owner.title||'Activity',startIndex:segment.startIndex,endIndex:segment.endIndex,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:bestOf(passes),when:dayText(segment.startTimestamp)};
  }).sort((a,b)=>a.name.localeCompare(b.name));
 }
 
@@ -124,7 +127,7 @@ export function segmentMatchReport(trip,trips){
   const result=definition?matchEfforts(definition,trip):null;
   const reasons={};
   for(const reject of result?.rejects||[])reasons[reject.reason]=(reasons[reject.reason]||0)+1;
-  lines.push(`${segment.name}${owner.id===trip.id?' (made here)':''}: ${definition?`${Math.round(definition.lengthMeters)} m, ${result.efforts.length} passes, rejected ${JSON.stringify(reasons)}`:'no definition'}`);
+  lines.push(`${segment.name}${owner.id===trip.id?' (made here)':''}: ${definition?`${Math.round(definition.lengthMeters)} m, ${result.efforts.length} passes (${result.efforts.filter(effort=>effort.gapSeconds>0).length} with a recording break), rejected ${JSON.stringify(reasons)}`:'no definition'}`);
  }
  return lines;
 }

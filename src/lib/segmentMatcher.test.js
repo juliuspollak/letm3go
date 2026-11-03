@@ -126,8 +126,8 @@ describe('parallel trail 40 m away', () => {
 describe('GPS gap inside a pass', () => {
  const points = [];
  for (let t = 0; t <= 60; t++) points.push(trailFix(5 * t, 0, t)); // along 0..300
- points.push(trailFix(400, 0, 121)); // 61 s later, 100 m ahead -> unobserved gap
- for (let k = 1; k <= 40; k++) points.push(trailFix(400 + 5 * k, 0, 121 + k)); // along 405..600
+ points.push(trailFix(400, 0, 481)); // 7 minutes later, 100 m ahead -> too long to be the same pass
+ for (let k = 1; k <= 40; k++) points.push(trailFix(400 + 5 * k, 0, 481 + k)); // along 405..600
  it('is a gap reject', () => {
   const result = matchEfforts(definition, {id: 'ride', points});
   expect(result.efforts).toHaveLength(0);

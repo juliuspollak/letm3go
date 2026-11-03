@@ -137,8 +137,8 @@ struct ActivitySegmentsSection: View {
             Task { do { _ = try await model.request("openActivity", args: ["id": pass.activityID]) } catch { model.errorMessage = error.localizedDescription } }
         } label: {
             HStack(spacing: 8) {
-                Text("\(pass.rank)").font(.footnote.monospacedDigit()).foregroundColor(DetailStyle.muted).frame(minWidth: 22, alignment: .leading)
-                Text(pass.time).font(.subheadline.weight(.semibold).monospacedDigit()).foregroundColor(.primary)
+                Text(pass.interrupted == true ? "–" : "\(pass.rank)").font(.footnote.monospacedDigit()).foregroundColor(DetailStyle.muted).frame(minWidth: 22, alignment: .leading)
+                Text(pass.interrupted == true ? "Break" : pass.time).font(.subheadline.weight(.semibold).monospacedDigit()).foregroundColor(.primary)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(pass.current ? "This ride" : pass.title).font(.footnote).foregroundColor(.primary).lineLimit(1)
                     Text(pass.when).font(.caption).foregroundColor(DetailStyle.muted)

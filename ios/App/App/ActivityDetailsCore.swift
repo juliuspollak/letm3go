@@ -106,6 +106,7 @@ struct ActivityPresentation: Decodable, Equatable {
         var activityID: String
         var rank: Int
         var time: String
+        var interrupted: Bool?
         var when: String
         var title: String
         var current: Bool

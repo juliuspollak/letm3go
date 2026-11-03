@@ -21,6 +21,7 @@ export const SEGMENT_MATCH_SETTINGS = Object.freeze({
   progressToleranceMeters: 40,   // along-route progress may not go back or jump ahead more than this
   foldToleranceMeters: 10,       // where two arms overlap, a fix this much worse still counts as going forward
   fastestMetersPerSecond: 30,    // how far ahead sparse fixes may land, per second between them
+  maxGapSeconds: 300,            // a recording break this short does not end a pass that carries on
   outlierSeconds: 20,            // GPS may wander off the line this long without ending a pass
   checkpointCount: 20,           // evenly spaced checkpoints sampled for coverage
   checkpointToleranceMeters: 10, // a checkpoint is covered by a fix within this along distance
@@ -224,11 +225,15 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
  while (j < points.length) {
   const p = points[j];
   if (!usablePoint(p)) { stop = 'leave'; break; }
-  // A repeated timestamp is a quirk of the recording, not a gap in it.
-  if (j > entryIndex && points[j].timestamp > points[j - 1].timestamp && !connected(points[j - 1], points[j])) { stop = 'gap'; break; }
+  // A repeated timestamp is a quirk of the recording, not a gap in it. A short break,
+  // like a Watch pause or lost GPS, does not undo a lap that carries on along the line:
+  // it still counts, and buildEffort records the break so its time is not trusted.
+  if (j > entryIndex && points[j].timestamp > points[j - 1].timestamp && !connected(points[j - 1], points[j]) &&
+      points[j].timestamp - points[j - 1].timestamp > s.maxGapSeconds) { stop = 'gap'; break; }
   // Fixes can be many seconds apart, so how far ahead one may land depends on the time
   // since the last. A wandering fix does not end a pass; staying away does.
   const since = lastTime == null ? 0 : Math.max(0, p.timestamp - lastTime);
+  const resuming = j > entryIndex && p.timestamp > points[j - 1].timestamp && !connected(points[j - 1], p);
   if (!inBounds(p, box)) {
    if (matched.length && since <= s.outlierSeconds) { j++; continue; }
    stop = 'leave'; break;
@@ -236,7 +241,7 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
   const reach = Math.max(s.progressToleranceMeters, since * s.fastestMetersPerSecond);
   const projection = projectOrdered(reference, refIndex, p, s, reach);
   if (projection.offset > perFixTolerance(p, s)) {
-   if (matched.length && since <= s.outlierSeconds) { j++; continue; }
+   if (matched.length && (since <= s.outlierSeconds || resuming)) { j++; continue; }
    stop = 'off-route'; break;
   }
   const along = projection.along;

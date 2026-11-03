@@ -80,6 +80,18 @@ describe('rides through a segment',()=>{
   const auto={...earlier,recordingMode:'automatic',startedAt:500000,endedAt:earlier.points.at(-1).timestamp};
   expect(segmentRides(ownRide,[ownRide,auto])[0]).toMatchObject({thisRide:3,total:4,rideCount:2});
  });
+ it('counts a lap with a break in the recording, without trusting its time',()=>{
+  const points=[];let t=1000;
+  for(let east=0;east<=600;east+=5){points.push(fix(east,t));t+=1;}
+  for(let east=600;east>=0;east-=10){points.push(fix(east,t,300));t+=1;}
+  // The next lap stops recording for 3 minutes halfway round, then carries on.
+  for(let east=0;east<=600;east+=5){points.push({...fix(east,t),segment:east>300?1:0});t+=east===300?180:1;}
+  const made=withSegment({id:'broken',title:'x',updatedAt:1,points,details:{}},0,120);
+  const row=segmentRides(made,[made])[0];
+  expect(row.thisRide).toBe(2);
+  expect(row.best).toMatch(/^(1:59|2:00)$/);
+  expect(row.passes.map(pass=>pass.interrupted)).toEqual([false,true]);
+ });
  it('shows nearby segments from other rides on the map, and not distant ones',()=>{
   const layers=nearbySegmentLayers(earlier,[today,earlier]);
   expect(layers.pins).toHaveLength(1);
