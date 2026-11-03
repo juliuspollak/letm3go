@@ -50,11 +50,8 @@ it('keeps every other member photo when only your own entry was missing',async()
  expect((await screen.findByRole('img',{name:'Julius avatar'})).querySelector('img')).toHaveAttribute('src',photo);
  expect(screen.getByRole('img',{name:'Alex avatar'}).querySelector('img')).toHaveAttribute('src',photo);
 });
-it('shows your profile first in Friends, with your sharing state',async()=>{
- render(<Friends selfName="Julius" selfId="julius" selfAvatar={photo} sharing={{enabled:false,ready:true,onChange:vi.fn()}}/>);
- const you=screen.getByRole('img',{name:'Julius avatar'}).closest('.person-tile');
- expect(you.querySelector('img')).toHaveAttribute('src',photo);
- expect(within(you).getByText('You')).toBeInTheDocument();
- expect(within(you).getByText('Not sharing')).toBeInTheDocument();
+it('lists friends in Friends and leaves you out',async()=>{
+ render(<Friends selfId="julius" selfAvatar={photo} sharing={{enabled:false,ready:true,onChange:vi.fn()}}/>);
  await screen.findByRole('img',{name:'Alex avatar'});
+ expect(screen.queryByText('You')).toBeNull();
 });
