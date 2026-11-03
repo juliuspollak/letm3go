@@ -90,9 +90,6 @@ final class WatchRecorder: NSObject, ObservableObject {
     override init() {
         super.init()
         manager.delegate = self
-        // Every fix the chip can give: tight corners are lost between filtered points.
-        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        manager.distanceFilter = kCLDistanceFilterNone
         manager.activityType = .fitness
         activity = UserDefaults.standard.string(forKey: Self.activityKey) ?? "MTB"
         if !WatchCatalog.activities.contains(activity) { activity = "MTB" }
@@ -533,7 +530,18 @@ final class WatchRecorder: NSObject, ObservableObject {
     // asserted on it on the Watch simulator, even with `location` in WKBackgroundModes,
     // which ends the app the moment a recording starts.
     private func startLocation() {
+        let chosen = precision(for: draft?.activity ?? activity)
+        manager.desiredAccuracy = chosen == .high ? kCLLocationAccuracyBestForNavigation : chosen == .balanced ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = chosen.distanceFilter < 0 ? kCLDistanceFilterNone : chosen.distanceFilter
         manager.startUpdatingLocation()
+    }
+    // Chosen per activity on this Watch, and read again if a recording is restored.
+    private static func precisionKey(_ activity: String) -> String { "watch.precision." + activity }
+    func precision(for activity: String) -> RecordingPrecision {
+        RecordingPrecision.resolved(UserDefaults.standard.string(forKey: Self.precisionKey(activity)), activity: activity)
+    }
+    func setPrecision(_ value: RecordingPrecision, activity: String) {
+        UserDefaults.standard.set(value.rawValue, forKey: Self.precisionKey(activity))
     }
 
     // Whether GPS really keeps arriving with the wrist down can only be seen on a

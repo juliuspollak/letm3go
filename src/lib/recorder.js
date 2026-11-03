@@ -45,7 +45,7 @@ export const recorder = {
  // `trail` is optional and only used when starting a mountain-bike ride from a
  // community trail, so the link survives offline and is saved with the activity.
  // `anyway` is the rider's own decision to record here while another device is recording.
- start:(activity,vehicle,vehicleID,trail,anyway)=>native.start({activity:activityCode(activity),vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(anyway?{anyway:true}:{})}),
+ start:(activity,vehicle,vehicleID,trail,anyway,precision)=>native.start({activity:activityCode(activity),vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(anyway?{anyway:true}:{}),...(precision?{precision}:{})}),
  transition:action=>native.transition({action}),
  openSettings:()=>native.openSettings(),
  requestMotionPermission:()=>native.requestMotionPermission(),

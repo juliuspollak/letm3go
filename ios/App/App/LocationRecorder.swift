@@ -947,7 +947,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         @unknown default: return "unknown"
         }
     }
-    func start(activity: String, vehicle: String?, vehicleID: String? = nil, trailID: String? = nil, trailName: String? = nil, trailSegmentID: String? = nil, trailDistanceMeters: Double? = nil) throws {
+    func start(activity: String, vehicle: String?, vehicleID: String? = nil, trailID: String? = nil, trailName: String? = nil, trailSegmentID: String? = nil, trailDistanceMeters: Double? = nil, precision: String? = nil) throws {
         guard storage != nil else { throw failure("Local storage is unavailable. Recording cannot start safely.") }
         guard active == nil else { throw failure("Finish the existing activity first.") }
         guard authorized, locationServicesAvailable else { throw failure("Enable location access before starting.") }
@@ -966,6 +966,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         trip.recordingMode = "manual"
         trip.timezone = TimeZone.current.identifier
         trip.details = ActivityDetails()
+        trip.details?.recordingPrecision = RecordingPrecision.resolved(precision, activity: activity).rawValue
         if trailID != nil {
             // A trail link is optional, but a malformed one is rejected before the
             // activity starts rather than stored as an unresolvable reference.
@@ -982,8 +983,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func beginUpdates() {
         // Manual recording owns standard updates; the low-power stream stops first.
         adaptive.stopLowPower(reason: "manual recording")
-        applyLocationConfiguration(.manual(activity: active?.activity ?? ""))
-        recordDiagnostic("service","Manual precise location configuration applied",details:["configuration":LocationConfiguration.manual(activity: active?.activity ?? "").label])
+        let configuration = LocationConfiguration.manual(activity: active?.activity ?? "", precision: active?.details?.recordingPrecision.flatMap(RecordingPrecision.init(rawValue:)))
+        applyLocationConfiguration(configuration)
+        recordDiagnostic("service","Manual precise location configuration applied",details:["configuration":configuration.label])
         startContinuousLocation()
         reconcileBackgroundSession("manual recording")
     }
@@ -1498,7 +1500,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject(other.label + ". Finish it there, or choose Start Anyway.", "RECORDING_ELSEWHERE")
                 return
             }
-            do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID"), trailID: call.getString("trailID"), trailName: call.getString("trailName"), trailSegmentID: call.getString("trailSegmentID"), trailDistanceMeters: call.getDouble("trailDistanceMeters")); call.resolve(LocationRecorder.shared.snapshot()) }
+            do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID"), trailID: call.getString("trailID"), trailName: call.getString("trailName"), trailSegmentID: call.getString("trailSegmentID"), trailDistanceMeters: call.getDouble("trailDistanceMeters"), precision: call.getString("precision")); call.resolve(LocationRecorder.shared.snapshot()) }
             catch { call.reject(error.localizedDescription) }
         }
     }

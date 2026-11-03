@@ -2096,6 +2096,37 @@ struct WatchActivityFamily: Equatable, Identifiable {
     var hasSubtypes: Bool { choices.count > 1 }
 }
 
+// How hard GPS works during a recording the person started, chosen per activity on
+// each device. Drives are not offered it: they keep road matching.
+enum RecordingPrecision: String, CaseIterable, Codable {
+    case high, balanced, saver
+    var title: String {
+        switch self {
+        case .high: return "High"
+        case .balanced: return "Balanced"
+        case .saver: return "Battery saver"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .high: return "Holds tight corners. Uses the most battery."
+        case .balanced: return "Good for most activities."
+        case .saver: return "For long days. Corners look rougher."
+        }
+    }
+    static func defaultFor(activity: String) -> RecordingPrecision { activity == "MTB" ? .high : .balanced }
+    static func resolved(_ raw: String?, activity: String) -> RecordingPrecision { raw.flatMap(RecordingPrecision.init(rawValue:)) ?? defaultFor(activity: activity) }
+    static func offered(for activity: String) -> Bool { activity != "Driving" }
+    // Metres between fixes; -1 asks for every fix.
+    var distanceFilter: Double {
+        switch self {
+        case .high: return -1
+        case .balanced: return 5
+        case .saver: return 15
+        }
+    }
+}
+
 enum WatchCatalog {
     static let families: [WatchActivityFamily] = [
         WatchActivityFamily(id: "Walking", title: "Walking", symbol: "figure.walk",

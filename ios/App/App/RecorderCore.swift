@@ -801,6 +801,8 @@ struct ActivityDetails: Codable {
     // Binding/revision/consent captured at import; used to validate late enrichment.
     var energyBinding: WatchEnergyBinding?
     var indoor: Bool?
+    // The GPS setting of a manual recording, so a resume keeps it.
+    var recordingPrecision: String?
     // Other records on this iPhone covering the same time. Both are kept.
     var overlaps: [WatchOverlap]?
 }
@@ -1491,14 +1493,13 @@ struct LocationConfiguration: Equatable {
     var distanceFilter: Double
     var profile: LocationProfile
     var label: String { "\(accuracy.rawValue)/\(Int(distanceFilter))m/\(profile.rawValue)" }
-    // A recording the person started: every fix the chip can give, so tight corners are
-    // not lost between filtered points. It runs only while they are recording. A drive
-    // needs none of that, and keeps road matching.
-    static let everyFix: Double = -1
-    static func manual(activity: String) -> LocationConfiguration {
-        activity == "Driving"
-            ? LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .automotive)
-            : LocationConfiguration(accuracy: .navigation, distanceFilter: everyFix, profile: .fitness)
+    // A recording the person started, at the precision they chose for it. A drive keeps
+    // road matching.
+    static func manual(activity: String, precision: RecordingPrecision? = nil) -> LocationConfiguration {
+        guard RecordingPrecision.offered(for: activity) else { return LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .automotive) }
+        let chosen = precision ?? .defaultFor(activity: activity)
+        let accuracy: LocationAccuracyLevel = chosen == .high ? .navigation : chosen == .balanced ? .best : .tenMetres
+        return LocationConfiguration(accuracy: accuracy, distanceFilter: chosen.distanceFilter, profile: .fitness)
     }
     static func automatic(_ mode: AutomaticLocationMode, journeyOpen: Bool, journeyActivity: String?,
                           drivingMotion: Bool, currentProfile: LocationProfile) -> LocationConfiguration? {

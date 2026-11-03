@@ -268,6 +268,7 @@ struct WatchReadyView: View {
     @Binding var path: [WatchRoute]
     let setup: WatchStartConfig
     @State private var indoor = false
+    @State private var precision = RecordingPrecision.balanced
 
     private func begin(anyway: Bool) {
         var chosen = setup
@@ -287,6 +288,20 @@ struct WatchReadyView: View {
                 }
                 if WatchCatalog.supportsIndoor(setup.activity) {
                     Toggle("Indoor", isOn: $indoor).font(.footnote)
+                }
+                if RecordingPrecision.offered(for: setup.activity), !indoor {
+                    Button {
+                        let all = RecordingPrecision.allCases
+                        precision = all[((all.firstIndex(of: precision) ?? 0) + 1) % all.count]
+                        recorder.setPrecision(precision, activity: setup.activity)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("GPS: \(precision.title)").font(.footnote.weight(.semibold))
+                            Text(precision.detail).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .accessibilityLabel("GPS accuracy, \(precision.title). \(precision.detail)")
+                    .accessibilityHint("Changes to the next option")
                 }
                 if let other = recorder.startBlocked {
                     Label(other.label, systemImage: "iphone").font(.footnote.weight(.semibold)).foregroundStyle(.orange)
@@ -309,7 +324,7 @@ struct WatchReadyView: View {
             }
         }
         .navigationTitle("Ready")
-        .onAppear { indoor = setup.indoor == true }
+        .onAppear { indoor = setup.indoor == true; precision = recorder.precision(for: setup.activity) }
         .onDisappear { recorder.clearStartBlock() }
         // A start waiting for the location prompt opens the recording screen once it begins.
         .onChange(of: recorder.hasRide) { started in if started { path = [.recording] } }

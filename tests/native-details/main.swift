@@ -171,8 +171,11 @@ do {
     check(wide.ingest(WatchRideFix(latitude: -33, longitude: 151, timestamp: 101, accuracy: 55, altitude: 0, speed: 3), now: 101) == .accepted(newSegment: false), "a weak fix is kept")
     check(wide.ingest(WatchRideFix(latitude: -33, longitude: 151, timestamp: 102, accuracy: 90, altitude: 0, speed: 3), now: 102) == .dropped("accuracy"), "a useless fix is not")
 
-    check(LocationConfiguration.manual(activity: "MTB") == LocationConfiguration(accuracy: .navigation, distanceFilter: -1, profile: .fitness), "a ride records every fix")
-    check(LocationConfiguration.manual(activity: "Driving") == LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .automotive), "a drive keeps road matching")
+    check(LocationConfiguration.manual(activity: "MTB") == LocationConfiguration(accuracy: .navigation, distanceFilter: -1, profile: .fitness), "mountain biking defaults to high")
+    check(LocationConfiguration.manual(activity: "Walking") == LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .fitness), "others default to balanced")
+    check(LocationConfiguration.manual(activity: "MTB", precision: .saver) == LocationConfiguration(accuracy: .tenMetres, distanceFilter: 15, profile: .fitness), "a choice wins over the default")
+    check(LocationConfiguration.manual(activity: "Driving", precision: .high) == LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .automotive), "a drive keeps road matching")
+    check(RecordingPrecision.resolved("nonsense", activity: "MTB") == .high && RecordingPrecision.resolved(nil, activity: "Hiking") == .balanced && !RecordingPrecision.offered(for: "Driving"), "unknown values fall back to the default")
 
     // Automatic activities a Watch workout covers.
     func automatic(_ start: Double, _ end: Double, change: ((inout RecordedActivity) -> Void)? = nil) -> RecordedActivity {
