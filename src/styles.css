@@ -816,7 +816,7 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .person-tile-role{padding:1px 7px;border-radius:8px;background:var(--soft);color:var(--muted);font-size:10.5px;font-weight:600}
 .person-dot{position:absolute;right:0;bottom:0;display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;border:2.5px solid var(--surface);box-sizing:content-box;background:var(--soft)}
 .person-dot--live{background:var(--success)}
-.person-dot--stale{background:var(--muted);color:var(--surface)}
+.person-dot--stale{background:var(--muted);color:var(--surface)}.person-dot--home{background:var(--accent);color:var(--on-accent)}
 .person-dot--off{background:var(--surface);box-shadow:inset 0 0 0 2px var(--line)}
 .person-dot--none{display:none}
 .person-dot--issue{background:#e7a33e;color:#fff}

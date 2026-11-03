@@ -53,6 +53,8 @@ import FeedbackSupport from './components/FeedbackSupport.jsx';
 import Garage from './components/Garage.jsx';
 import Places from './components/Places.jsx';
 import ActivityDetailScreen from './components/ActivityDetailScreen.jsx';
+import PeopleGrid from './components/PeopleGrid.jsx';
+import {homePeople} from './lib/homePeople.js';
 import SegmentLibrary from './components/SegmentLibrary.jsx';
 import ActivityEditor from './components/ActivityEditor.jsx';
 import PublicJourney from './components/PublicJourney.jsx';
@@ -63,6 +65,7 @@ import AccountSettings from './components/AccountSettings.jsx';
 import Household from './components/Household.jsx';
 import { useRecorder } from './lib/useRecorder.js';
 import { recorderAvailable, recordedJourney, visibleRecorderJourneys } from './lib/recorder.js';
+const HOME_PEOPLE=6;
 const activities=['All activities','Unknown','Cycling','MTB','Hiking','Walking','Running','Road cycling','Kitesurfing','Driving','Other'];
 export default function App(){
  useEffect(()=>{const theme=localStorage.getItem('letm3go-theme')==='dark'?'dark':'light';document.documentElement.dataset.theme=theme;void setNativeAppearance(theme).catch(()=>{});},[]);
@@ -200,7 +203,7 @@ function PrivateApp(){
  // The open Map panel closes with the page, like any other transient control.
  const [panelTab,setPanelTab]=useState(tab);
  if(panelTab!==tab){setPanelTab(tab);setMapPanel(null);}
- const mapLocation=useMapLocation(session.user.id,tab==='Map',recording.state.permission);
+ const mapLocation=useMapLocation(session.user.id,tab==='Map'||tab==='Home',recording.state.permission);
  const focusedSelf=useRef(false);
  const [segmentEdit,setSegmentEdit]=useState(null);
  const mapHasSelf=Boolean(tab==='Map'&&mapView.content==='routes'&&mapView.people&&mapLocation.position);
@@ -259,6 +262,7 @@ function PrivateApp(){
  })),[friendsLocation.people,motionClock]);
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
+ const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,onSelect:person.position?()=>showOnMap(person.position,person.userId):undefined})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,sharedActivities,unit,showOnMap]);
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
  const onMapCamera=useCallback(event=>dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command}),[]);
  useEffect(()=>{
@@ -380,7 +384,7 @@ function PrivateApp(){
  </section>
  <section className="home-highlight-card">
   <div className="home-highlight-heading"><h2>Friends</h2><button type="button" className="text-button" onClick={()=>{setSocialSection('friends');setTab('Social');}}>See friends <ChevronRight size={15}/></button></div>
-  {friendsLocation.people.length?<div className="home-friends-live">{friendsLocation.people.slice(0,4).map(person=><button type="button" className="home-friends-preview" key={person.user_id} onClick={()=>setTab('Social')}><PersonAvatar name={person.display_name} userId={person.user_id} selfId={session.user.id} selfAvatar={auth.preferences.avatar} photos={peopleAvatars.photos}/><span><strong>{person.display_name}</strong><small>Last known location</small><small>Updated {new Date(person.updated_at).toLocaleTimeString('en-AU',{hour:'numeric',minute:'2-digit'})}</small></span><ChevronRight size={16}/></button>)}</div>:<button type="button" className="home-friends-preview" onClick={()=>setTab('Social')}><span className={`home-friends-avatar ${presenceHidden?'home-presence-hidden':''}`}>{presenceHidden?<EyeOff size={21}/>:<Users size={21}/>}</span><span><strong>No recent shared statuses</strong><small>Friends who opt in appear here when their location is recent.</small><small>{friendsLocation.enabled?'You are sharing with friends':'Your friend location is not shared'}</small></span><ChevronRight size={18}/></button>}
+  {homeFriends.length?<PeopleGrid people={homeFriends} photos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} label="Friends and household"/>:<button type="button" className="home-friends-preview" onClick={()=>setTab('Social')}><span className={`home-friends-avatar ${presenceHidden?'home-presence-hidden':''}`}>{presenceHidden?<EyeOff size={21}/>:<Users size={21}/>}</span><span><strong>No recent shared statuses</strong><small>Friends who opt in appear here when their location is recent.</small><small>{friendsLocation.enabled?'You are sharing with friends':'Your friend location is not shared'}</small></span><ChevronRight size={18}/></button>}
  </section>
  </div>{!grouping.records.length&&<div className="home-welcome"><h2>Your next chapter starts here.</h2><p className="muted">No device recordings yet.</p><p>Enable automatic tracking or start an activity. Your history will appear in Trips, and your routes in Map.</p></div>}</>}
  {tab==='Record'&&<RecorderPanel state={recording.state} run={recording.run} busy={recording.busy} error={recording.error} vehicles={vehicles} onFinished={trip=>{setSelected(trip);setTab('Trips');}}/>}

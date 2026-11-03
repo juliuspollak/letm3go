@@ -1,5 +1,5 @@
 import PersonAvatar from './PersonAvatar.jsx';
-import {Clock3,TriangleAlert} from 'lucide-react';
+import {Clock3,House,TriangleAlert} from 'lucide-react';
 
 // Everyone in Friends and Household: the same avatar, size, status dot and words.
 // A person with a position opens the map on them; anyone else is not a button.
@@ -11,6 +11,7 @@ export default function PeopleGrid({people,photos=null,selfId=null,selfAvatar=nu
 
 function StatusDot({tone}){
  if(tone==='stale')return <span className="person-dot person-dot--stale" aria-hidden="true"><Clock3 size={10} strokeWidth={2.6}/></span>;
+ if(tone==='home')return <span className="person-dot person-dot--home" aria-hidden="true"><House size={10} strokeWidth={2.6}/></span>;
  if(tone==='issue')return <span className="person-dot person-dot--issue" aria-hidden="true"><TriangleAlert size={10} strokeWidth={2.6}/></span>;
  return <span className={`person-dot person-dot--${tone}`} aria-hidden="true"/>;
 }
