@@ -196,10 +196,12 @@ struct RecordedActivity: Codable {
     // Reopen the published stop so nearby movement updates the same record
     // instead of creating a second journey. The stop stays a segment break.
     @discardableResult
-    mutating func continueAfterStop(at now: Double) -> Bool {
+    mutating func continueAfterStop(at now: Double, classification: StopClassification? = nil) -> Bool {
         guard state != "recording", points.count >= 2 else { return false }
         if let stoppedAt = endedAt, now > stoppedAt {
-            updateDetails { $0.stops = Array((($0.stops ?? []) + [StopInterval(start: stoppedAt, end: now)]).suffix(50)) }
+            let stop = StopInterval(start: stoppedAt, end: now, verdict: classification?.verdict.rawValue,
+                                    confidence: classification?.confidence, reasons: classification?.reasons)
+            updateDetails { $0.stops = Array((($0.stops ?? []) + [stop]).suffix(50)) }
         }
         state = "recording"
         resumedAt = now
@@ -207,6 +209,9 @@ struct RecordedActivity: Codable {
         updateDetails { metadata in
             metadata.provisional = nil
             metadata.continuationEndsAt = nil
+            metadata.stopEvidence = nil
+            // A destination that could not be finalised is not one once the drive continues.
+            metadata.destinationStop = nil
         }
         updatedAt = Date().timeIntervalSince1970
         return true
@@ -217,6 +222,7 @@ struct RecordedActivity: Codable {
         updateDetails { metadata in
             metadata.provisional = nil
             metadata.continuationEndsAt = nil
+            metadata.stopEvidence = nil
         }
         // Publishing only paused it. Without this a relaunch sees an interrupted
         // journey and can reopen one that is over.
@@ -619,10 +625,14 @@ struct RouteQuality: Codable, Equatable {
 }
 
 // A confirmed stop that the journey later continued from. Times only: a stop
-// never adds distance or route geometry.
+// never adds distance or route geometry. The verdict and reasons (StopClassifier)
+// are optional, so stops written by earlier builds still decode.
 struct StopInterval: Codable, Equatable {
     var start: Double
     var end: Double
+    var verdict: String? = nil
+    var confidence: String? = nil
+    var reasons: [String]? = nil
 }
 
 // Private measured workout energy. Optional at every persistence boundary so
@@ -771,6 +781,12 @@ struct ActivityDetails: Codable {
     var continuationEndsAt: Double?
     var routeQuality: RouteQuality?
     var stops: [StopInterval]?
+    // Evidence gathered while a published stop is open (StopEvidenceSummary).
+    // Transient: cleared when the stop is continued or the journey completes.
+    var stopEvidence: StopEvidenceSummary?
+    // The stop that ended this journey when it was recognised as a destination,
+    // with its verdict and reasons. The next leg is a separate activity.
+    var destinationStop: StopInterval?
     // Set while an automatic walk that began inside a dwell area is not yet known
     // to be a journey. Such a walk is never shown or published; it is either
     // confirmed (and this is cleared) or discarded as local movement.
@@ -1097,7 +1113,7 @@ struct JourneyContinuation {
         }
         switch stop.family {
         case .driving, .cycling:
-            return "Stopped away from a saved place; movement within \(Int(vehiclePauseWindow/60)) minutes continues this journey"
+            return "Stopped away from a saved place; driving on within \(Int(vehiclePauseWindow/60)) minutes continues this journey unless the stop proves to be a destination"
         case .onFoot:
             return "Stopped on foot; movement within \(Int(onFootPauseWindow/60)) minutes continues this walk"
         case .other:
@@ -1159,6 +1175,220 @@ struct JourneyContinuation {
                           window: Double = window, radius: Double = radius) -> Bool {
         decide(stoppedAt: stoppedAt, now: now, distance: distance, family: family,
                movement: movement, change: nil, window: window, radius: radius) == .resume
+    }
+}
+
+// MARK: Stop evidence
+//
+// What was observed while a published stop was open, kept compactly on the
+// provisional journey so it survives a relaunch. Motion is a list of marks (when a
+// Core Motion state began), never coordinates: displacement is one distance from
+// the stop. Core Motion history replaces every mark inside the range it covers,
+// so a live callback and the same activity read back from history are never
+// counted twice. Bounded to `markLimit` marks.
+struct MotionMark: Codable, Equatable {
+    var at: Double
+    var kind: String       // walking, vehicle, cycling, stationary, unknown
+    var confident: Bool
+}
+
+struct StopEvidenceSummary: Codable, Equatable {
+    var stopStart: Double
+    var marks: [MotionMark] = []
+    var historyCoveredUntil: Double?   // live marks up to here were replaced by history
+    var historyQueriedUntil: Double?   // history was asked for up to here
+    var historyAttemptedAt: Double?
+    var historyTimedOut: Bool?
+    var motion: String = "unknown"           // authorized, denied, unavailable, unknown
+    var onFootDisplacement: Double = 0        // metres from the stop, accurate slow fixes only
+    var displacementFixes: Int = 0
+    var visitAt: Double?
+    var visitDepartureAt: Double?
+    var savedPlaceKind: String?
+    static let markLimit = 120
+
+    init(stopStart: Double, motion: String = "unknown", savedPlaceKind: String? = nil) {
+        self.stopStart = stopStart; self.motion = motion; self.savedPlaceKind = savedPlaceKind
+    }
+    // Every field but the start is optional when decoding, so a later schema
+    // change can never make the journey itself unreadable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stopStart = try c.decode(Double.self, forKey: .stopStart)
+        marks = try c.decodeIfPresent([MotionMark].self, forKey: .marks) ?? []
+        historyCoveredUntil = try c.decodeIfPresent(Double.self, forKey: .historyCoveredUntil)
+        historyQueriedUntil = try c.decodeIfPresent(Double.self, forKey: .historyQueriedUntil)
+        historyAttemptedAt = try c.decodeIfPresent(Double.self, forKey: .historyAttemptedAt)
+        historyTimedOut = try c.decodeIfPresent(Bool.self, forKey: .historyTimedOut)
+        motion = try c.decodeIfPresent(String.self, forKey: .motion) ?? "unknown"
+        onFootDisplacement = try c.decodeIfPresent(Double.self, forKey: .onFootDisplacement) ?? 0
+        displacementFixes = try c.decodeIfPresent(Int.self, forKey: .displacementFixes) ?? 0
+        visitAt = try c.decodeIfPresent(Double.self, forKey: .visitAt)
+        visitDepartureAt = try c.decodeIfPresent(Double.self, forKey: .visitDepartureAt)
+        savedPlaceKind = try c.decodeIfPresent(String.self, forKey: .savedPlaceKind)
+    }
+
+    // A parked car reports automotive together with stationary: that is a stopped
+    // vehicle, not vehicle motion.
+    static func kind(walking: Bool, running: Bool, automotive: Bool, cycling: Bool, stationary: Bool) -> String {
+        if automotive && !stationary { return "vehicle" }
+        if cycling && !stationary { return "cycling" }
+        if walking || running { return "walking" }
+        if stationary || automotive || cycling { return "stationary" }
+        return "unknown"
+    }
+    // A live callback. Ignored where history already covers it, and when it only
+    // repeats the state in force. Returns whether anything changed.
+    @discardableResult
+    mutating func noteLive(_ mark: MotionMark) -> Bool {
+        if let covered = historyCoveredUntil, mark.at <= covered { return false }
+        if let last = marks.last, last.kind == mark.kind, last.confident == mark.confident { return false }
+        if let last = marks.last, mark.at < last.at { return false }
+        marks.append(mark)
+        compact()
+        return true
+    }
+    // Core Motion history for [from, to] is authoritative for that range.
+    // History lags real time, so it is authoritative only up to the last activity
+    // it returned; newer live marks (the walk back to the car) are kept.
+    mutating func applyHistory(_ history: [MotionMark], from: Double, to: Double) {
+        let read = history.filter { $0.at >= from && $0.at <= to }
+        let end = read.map(\.at).max() ?? from
+        let kept = marks.filter { $0.at < from || $0.at > end }
+        marks = (kept + read).sorted { $0.at < $1.at }
+        historyCoveredUntil = max(historyCoveredUntil ?? end, end)
+        historyQueriedUntil = max(historyQueriedUntil ?? to, to)
+        compact()
+    }
+    private mutating func compact() {
+        var merged: [MotionMark] = []
+        for mark in marks {
+            if let last = merged.last, last.kind == mark.kind, last.confident == mark.confident { continue }
+            merged.append(mark)
+        }
+        // The mark in force at the stop start is kept, so its run is not undercounted.
+        marks = merged.count > Self.markLimit ? [merged[0]] + Array(merged.suffix(Self.markLimit - 1)) : merged
+    }
+    // A slow, accurate fix away from the stop: someone on foot with the phone.
+    // Fixes moving at vehicle speed are departure evidence, not a walk.
+    @discardableResult
+    // `speed` is Core Location's raw value: a negative (unknown) speed proves nothing.
+    mutating func noteFix(distance: Double, accuracy: Double, speed: Double) -> Bool {
+        guard distance.isFinite, accuracy >= 0, accuracy <= 30, speed >= 0, speed < 2.6 else { return false }
+        guard distance - accuracy >= 25 else { return false }
+        displacementFixes += 1
+        let before = onFootDisplacement
+        onFootDisplacement = max(onFootDisplacement, distance - accuracy)
+        return onFootDisplacement - before >= 10 || displacementFixes == 2
+    }
+    struct Totals: Equatable {
+        var walking: Double = 0, longestWalk: Double = 0, vehicle: Double = 0, stationary: Double = 0, covered: Double = 0
+        var lastVehicleAt: Double?
+    }
+    // Confident time in each state between the stop and `until`. A mark lasts until
+    // the next one; the state in force at the stop start counts from the start.
+    func totals(until: Double) -> Totals {
+        var t = Totals()
+        let ordered = marks.sorted { $0.at < $1.at }
+        for (index, mark) in ordered.enumerated() {
+            let start = max(mark.at, stopStart)
+            let last = index + 1 >= ordered.count || ordered[index + 1].at >= until
+            let end = min(index + 1 < ordered.count ? ordered[index + 1].at : until, until)
+            guard end > start else { continue }
+            let seconds = end - start
+            t.covered += seconds
+            guard mark.confident else { continue }
+            switch mark.kind {
+            case "walking": t.walking += seconds; t.longestWalk = max(t.longestWalk, seconds)
+            case "vehicle", "cycling":
+                // The drive still in force when the stop began, and the drive away
+                // that reaches the deciding fix, are the journey itself, not the stop.
+                // One vehicle run through the whole stop is a slow queue, not a stop.
+                if (mark.at <= stopStart) != last { continue }
+                t.vehicle += seconds; t.lastVehicleAt = max(t.lastVehicleAt ?? 0, start)
+            case "stationary": t.stationary += seconds
+            default: break
+            }
+        }
+        return t
+    }
+}
+
+enum StopVerdict: String, Codable { case temporaryPause, meaningfulDestination, ambiguous }
+
+struct StopClassification: Codable, Equatable {
+    var verdict: StopVerdict
+    var confidence: String
+    var reasons: [String]
+    var stoppedSeconds: Double
+}
+
+// Whether a stop in a drive was a destination. Deterministic: the same evidence
+// always gives the same answer. Independent sources count separately (Core Motion
+// walking, on-foot GPS displacement, an iOS visit, a saved place), and the longer
+// the stop the less corroboration it needs. Vehicle motion during the stop is
+// congestion or creeping traffic and counts against a destination. Missing
+// evidence never proves a destination: a long stop without it is ambiguous, which
+// keeps the journey continuous but leaves the stop visible. Only drives are split;
+// a ride or a walk keeps its breaks.
+enum StopClassifier {
+    static let pauseSeconds: Double = 3*60
+    static let mediumSeconds: Double = 6*60
+    static let longSeconds: Double = 12*60
+    static let sustainedWalkSeconds: Double = 60
+    static let strongWalkSeconds: Double = 120
+    static let weakWalkSeconds: Double = 30
+    static let footDisplacementMeters: Double = 40
+    static let congestionVehicleSeconds: Double = 60
+
+    static func classify(_ e: StopEvidenceSummary, family: JourneyFamily, now: Double) -> StopClassification {
+        let stopped = max(0, now - e.stopStart)
+        let minutes = Int(stopped / 60)
+        func result(_ verdict: StopVerdict, _ confidence: String, _ reasons: [String]) -> StopClassification {
+            StopClassification(verdict: verdict, confidence: confidence, reasons: reasons, stoppedSeconds: stopped)
+        }
+        if stopped < pauseSeconds { return result(.temporaryPause, "high", ["stopped for under 3 minutes"]) }
+        guard family == .driving else {
+            return stopped < longSeconds
+                ? result(.temporaryPause, "medium", ["a \(JourneyContinuation.label(family)) break of \(minutes) min stays in the activity"])
+                : result(.ambiguous, "low", ["a \(JourneyContinuation.label(family)) break of \(minutes) min; rides and walks keep their breaks"])
+        }
+        let t = e.totals(until: now)
+        var reasons: [String] = []
+        var score = 0, sources = 0
+        let motionKnown = e.motion == "authorized"
+        if !motionKnown { reasons.append("Core Motion \(e.motion == "denied" ? "access denied" : "unavailable")") }
+        else if e.historyTimedOut == true { reasons.append("Core Motion history did not arrive in time; live motion only") }
+        if t.vehicle >= congestionVehicleSeconds && t.walking < weakWalkSeconds {
+            return result(.temporaryPause, "high", reasons + ["vehicle motion for \(Int(t.vehicle))s during the stop: congestion or creeping traffic"])
+        }
+        if t.longestWalk >= sustainedWalkSeconds || t.walking >= strongWalkSeconds {
+            score += 2; sources += 1; reasons.append("walking for \(Int(t.walking))s (longest \(Int(t.longestWalk))s)")
+        } else if t.walking >= weakWalkSeconds {
+            score += 1; sources += 1; reasons.append("brief walking (\(Int(t.walking))s)")
+        }
+        // Displacement is on-foot evidence only where Core Motion saw walking or
+        // cannot answer: a car creeping out of a car park is not a walk.
+        if e.onFootDisplacement >= footDisplacementMeters && e.displacementFixes >= 2 && (t.walking > 0 || !motionKnown) {
+            score += 1; sources += 1; reasons.append("on foot \(Int(e.onFootDisplacement)) m from the stop")
+        }
+        if e.visitAt != nil { score += 1; sources += 1; reasons.append("iOS reported a visit") }
+        if let kind = e.savedPlaceKind { score += 1; sources += 1; reasons.append("at a saved place (\(kind))") }
+        if t.vehicle >= congestionVehicleSeconds {
+            score -= 1; reasons.append("vehicle motion for \(Int(t.vehicle))s conflicts with a destination")
+        }
+        let destination: Bool
+        if stopped >= longSeconds { destination = score >= 2 }
+        else if stopped >= mediumSeconds { destination = score >= 2 && sources >= 2 }
+        else { destination = score >= 3 && sources >= 2 }
+        if destination {
+            return result(.meaningfulDestination, score >= 3 ? "high" : "medium", ["stopped \(minutes) min"] + reasons)
+        }
+        if stopped < mediumSeconds {
+            return result(.temporaryPause, "medium", ["stopped \(minutes) min without enough evidence of a destination"] + reasons)
+        }
+        let missing = score <= 0 ? "no walking, visit or on-foot evidence; the phone may have stayed in the vehicle" : "some evidence of a destination, not enough to split the drive"
+        return result(.ambiguous, "low", ["stopped \(minutes) min", missing] + reasons)
     }
 }
 
@@ -2274,7 +2504,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters sharingRest liveSharingHoldsLocation wakeCheckSeconds restoresThisHour").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters sharingRest liveSharingHoldsLocation wakeCheckSeconds restoresThisHour stopVerdict stopConfidence stoppedSeconds stopReasons heldFixes").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {

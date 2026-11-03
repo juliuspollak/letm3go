@@ -252,7 +252,10 @@ check(JourneyContinuation.decide(stoppedAt:1000,now:1000+JourneyContinuation.veh
 check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.cycling,movement:.driving) == .waiting,"a bicycle is not continued by a drive but its stop stays open")
 check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving) == .resume,"walking into a car continues the walk so the drive can be split out")
 // A stop is separated from a continuation by context, not by elapsed time alone.
-check(JourneyContinuation.window(for:StopContext(family:.driving)) == JourneyContinuation.vehiclePauseWindow,"an unsaved driving stop absorbs congestion and a quick shop")
+// The window still absorbs congestion and lights; whether a quick shop is a
+// destination is now the stop classifier's decision (below), not the window's.
+check(JourneyContinuation.window(for:StopContext(family:.driving)) == JourneyContinuation.vehiclePauseWindow,"an unsaved driving stop keeps a window long enough to absorb congestion")
+check(JourneyContinuation.stopSummary(StopContext(family:.driving)).contains("unless the stop proves to be a destination"),"the stop note says a destination can still end the drive")
 check(JourneyContinuation.window(for:StopContext(family:.onFoot)) == JourneyContinuation.onFootPauseWindow,"an on-foot pause has its own window")
 check(JourneyContinuation.window(for:StopContext(family:.driving,placeKind:"home",placeName:"Home")) == JourneyContinuation.savedPlaceWindow,"arrival at a saved place is a destination")
 check(JourneyContinuation.window(for:StopContext(family:.cycling,placeKind:"favourite",placeName:"Gym")) == JourneyContinuation.savedPlaceWindow,"a saved gym ends a bicycle journey too")
@@ -260,6 +263,111 @@ check(JourneyContinuation.canResume(stoppedAt:1000,now:1000+300,distance:40,fami
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1000+45*60,distance:40,family:.driving,movement:.driving,window:JourneyContinuation.vehiclePauseWindow),"a forty-five minute gym visit starts a new drive home")
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1000+JourneyContinuation.savedPlaceWindow+1,distance:40,family:.driving,movement:.driving,window:JourneyContinuation.savedPlaceWindow),"leaving a saved place after the short window is a new journey")
 check(JourneyContinuation.stopSummary(StopContext(family:.driving,placeKind:"work",placeName:"Work")).contains("Work"),"the stop note names the saved place")
+
+do {
+// Destination stops (StopClassifier). Evidence is motion marks, on-foot displacement,
+// visits and saved places; the verdict is deterministic and explained.
+func stopEvidence(_ start: Double = 1000, motion: String = "authorized", marks: [(Double, String, Bool)] = [],
+                  displacement: Double = 0, fixes: Int = 0, visit: Double? = nil, saved: String? = nil, timedOut: Bool? = nil) -> StopEvidenceSummary {
+    var e = StopEvidenceSummary(stopStart: start, motion: motion, savedPlaceKind: saved)
+    e.applyHistory(marks.map { MotionMark(at: $0.0, kind: $0.1, confident: $0.2) }, from: start - 60, to: start + 7200)
+    e.historyCoveredUntil = nil
+    e.onFootDisplacement = displacement; e.displacementFixes = fixes; e.visitAt = visit; e.historyTimedOut = timedOut
+    return e
+}
+func verdict(_ e: StopEvidenceSummary, minutes: Double, family: JourneyFamily = .driving) -> StopClassification {
+    StopClassifier.classify(e, family: family, now: e.stopStart + minutes*60)
+}
+// Traffic and short stops stay one drive.
+check(verdict(stopEvidence(marks: [(990,"vehicle",true),(1000,"stationary",true)]), minutes: 2).verdict == .temporaryPause, "a two-minute traffic light is a pause")
+check(verdict(stopEvidence(marks: [(990,"vehicle",true),(1100,"stationary",true),(1300,"vehicle",true),(1400,"stationary",true),(1600,"vehicle",true)]), minutes: 15).verdict == .temporaryPause,
+      "fifteen minutes of heavy congestion with vehicle motion is a pause")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true)]), minutes: 15).verdict == .ambiguous, "fifteen still minutes with nothing else is ambiguous, never a destination")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1060,"walking",true),(1100,"stationary",true)]), minutes: 4).verdict == .temporaryPause,
+      "a short collection stop with a brief walk stays one drive")
+// Destinations need corroboration, less of it the longer the stop.
+let shopWalk: [(Double, String, Bool)] = [(1000,"stationary",true),(1030,"walking",true),(1200,"stationary",true),(1700,"walking",true),(1800,"stationary",true),(1880,"walking",true),(1940,"stationary",true)]
+let shop = verdict(stopEvidence(marks: shopWalk, displacement: 120, fixes: 3), minutes: 15)
+check(shop.verdict == .meaningfulDestination && shop.confidence == "high", "a fifteen-minute shop with sustained walking and on-foot displacement is a destination")
+check(shop.reasons.contains { $0.hasPrefix("walking for") } && shop.reasons.contains { $0.hasPrefix("on foot") }, "the destination explains its evidence")
+check(verdict(stopEvidence(marks: shopWalk), minutes: 15).verdict == .meaningfulDestination, "after twelve minutes sustained walking alone is enough")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true)], visit: 1100), minutes: 15).verdict == .ambiguous, "one delayed visit alone never proves a destination")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1070,"stationary",true)], visit: 1100), minutes: 15).verdict == .meaningfulDestination,
+      "a fifteen-minute shop with a corroborated visit (visit plus brief walking) is a destination")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true)]), minutes: 30).verdict == .ambiguous, "the phone left in the car for thirty minutes is ambiguous: nothing shows a visit")
+check(verdict(stopEvidence(marks: [(1000,"walking",true),(1030,"stationary",true)]), minutes: 30).verdict == .ambiguous, "one walking callback is not sustained walking")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], displacement: 60, fixes: 2), minutes: 5).verdict == .meaningfulDestination,
+      "a short stop is a destination only with strong walking and an independent source")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)]), minutes: 5).verdict == .temporaryPause,
+      "a short stop with walking alone stays one drive")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], saved: "home"), minutes: 5).verdict == .meaningfulDestination,
+      "walking at a saved Home is a destination even when short")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], saved: "work"), minutes: 8).reasons.contains("at a saved place (work)"),
+      "a saved Work stop names its place kind, not its name")
+// Conflicting and missing evidence.
+check(verdict(stopEvidence(marks: [(1000,"vehicle",true),(1100,"walking",false),(1200,"vehicle",true),(1500,"stationary",true)]), minutes: 12).verdict == .temporaryPause, "low-confidence walking between vehicle motion is creeping traffic")
+// The car's own arrival and departure are the journey, not motion during the stop.
+let tails = verdict(stopEvidence(marks: [(950,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
+check(tails.verdict == .meaningfulDestination && !tails.reasons.contains { $0.contains("vehicle motion") }, "sitting in the car after parking and driving off before the deciding fix do not veto a destination")
+check(verdict(stopEvidence(marks: [(950,"vehicle",true),(1100,"stationary",true),(1820,"vehicle",true)]), minutes: 15).verdict == .ambiguous, "arrival and departure tails alone are neither congestion nor a destination")
+check(StopEvidenceSummary.kind(walking: false, running: false, automotive: true, cycling: false, stationary: true) == "stationary", "a parked car (automotive and stationary) is not vehicle motion")
+check(verdict(stopEvidence(marks: [(950,"vehicle",true)]), minutes: 15).verdict == .temporaryPause, "one vehicle run through the whole stop is a slow queue")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true)], displacement: 80, fixes: 3, visit: 1100), minutes: 8).verdict == .ambiguous, "displacement without any walking (a car creeping out) is not on-foot evidence")
+let mixed = verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1100,"vehicle",true),(1200,"stationary",true)], displacement: 50, fixes: 2), minutes: 10)
+check(mixed.reasons.contains { $0.contains("conflicts with a destination") }, "vehicle motion during a stop is named as conflicting evidence")
+let denied = verdict(stopEvidence(motion: "denied", displacement: 90, fixes: 3, visit: 1200), minutes: 15)
+check(denied.verdict == .meaningfulDestination && denied.reasons.contains("Core Motion access denied"), "without Motion, displacement and a visit together can still prove a destination")
+check(verdict(stopEvidence(motion: "denied", displacement: 90, fixes: 3), minutes: 15).verdict == .ambiguous, "without Motion, displacement alone is not enough")
+check(verdict(stopEvidence(displacement: 200, fixes: 1), minutes: 15).verdict == .ambiguous, "one displaced fix (poor indoor GPS) is not sustained on-foot displacement")
+check(verdict(stopEvidence(marks: shopWalk, timedOut: true), minutes: 15).reasons.contains("Core Motion history did not arrive in time; live motion only"), "a late Core Motion history is named in the reasons")
+// Rides and walks keep their breaks.
+check(verdict(stopEvidence(marks: shopWalk, displacement: 120, fixes: 3), minutes: 20, family: .cycling).verdict == .ambiguous, "a café stop during a ride is shown, not split")
+check(verdict(stopEvidence(marks: shopWalk), minutes: 4, family: .onFoot).verdict == .temporaryPause, "a walk with a short pause stays one walk")
+// Evidence bookkeeping: no double counting, bounded, survives encoding.
+var live = StopEvidenceSummary(stopStart: 1000)
+check(live.noteLive(MotionMark(at: 1010, kind: "walking", confident: true)), "a live walking mark is recorded")
+check(!live.noteLive(MotionMark(at: 1020, kind: "walking", confident: true)), "a repeated state is not a second mark")
+live.applyHistory([MotionMark(at: 1005, kind: "walking", confident: true), MotionMark(at: 1100, kind: "stationary", confident: true)], from: 940, to: 1200)
+check(live.marks.count == 2 && live.marks.first?.at == 1005, "history replaces the live marks it covers, so a walk is counted once")
+check(!live.noteLive(MotionMark(at: 1090, kind: "walking", confident: true)), "a delayed live callback inside the history range is ignored")
+check(live.noteLive(MotionMark(at: 1250, kind: "walking", confident: true)), "live marks after the history range are kept")
+check(live.totals(until: 1300).walking == 95 + 50, "walking time is the sum of confident walking spans")
+var lagging = StopEvidenceSummary(stopStart: 1000)
+_ = lagging.noteLive(MotionMark(at: 1850, kind: "walking", confident: true))
+lagging.applyHistory([MotionMark(at: 1000, kind: "stationary", confident: true), MotionMark(at: 1800, kind: "stationary", confident: true)], from: 940, to: 1900)
+check(lagging.marks.last == MotionMark(at: 1850, kind: "walking", confident: true) && lagging.historyCoveredUntil == 1800, "history that lags real time keeps the newer live walk")
+check(lagging.historyQueriedUntil == 1900, "the range asked for is remembered, so a parked phone is not queried again every minute")
+let firstMark = live.marks.first
+for i in 0..<400 { _ = live.noteLive(MotionMark(at: 2000 + Double(i), kind: i % 2 == 0 ? "walking" : "stationary", confident: true)) }
+check(live.marks.count <= StopEvidenceSummary.markLimit && live.marks.first == firstMark, "motion evidence is bounded and keeps the state in force at the stop start")
+check(!live.noteFix(distance: 200, accuracy: 80, speed: 1) && !live.noteFix(distance: 200, accuracy: 10, speed: 9) && !live.noteFix(distance: 200, accuracy: 10, speed: -1),
+      "coarse, vehicle-speed or unknown-speed fixes are not on-foot displacement")
+check(live.noteFix(distance: 60, accuracy: 10, speed: 1) && live.onFootDisplacement == 50, "displacement is measured beyond the fix uncertainty")
+let encodedEvidence = try! JSONEncoder().encode(live)
+check(try! JSONDecoder().decode(StopEvidenceSummary.self, from: encodedEvidence) == live, "open-stop evidence survives a relaunch")
+check(!String(decoding: encodedEvidence, as: UTF8.self).contains("latitude"), "stop evidence stores no coordinates")
+// Storage compatibility and lifecycle.
+let oldStop = try! JSONDecoder().decode(StopInterval.self, from: Data(#"{"start":1,"end":2}"#.utf8))
+check(oldStop.verdict == nil && oldStop.reasons == nil, "stops written by earlier builds still decode")
+let sparse = try! JSONDecoder().decode(StopEvidenceSummary.self, from: Data(#"{"stopStart":5}"#.utf8))
+check(sparse.marks.isEmpty && sparse.motion == "unknown", "stop evidence missing newer keys still decodes")
+var shopping = RecordedActivity(activity: "Driving", startedAt: 0, resumedAt: 0, title: "Drive")
+shopping.recordingMode = "automatic"; shopping.details = ActivityDetails()
+for i in 0...12 { _ = shopping.accept(drivingFix(-33 + Double(i)*60/111_320, Double(i)*5), now: Double(i)*5) }
+shopping.publishStop(at: 60, continuationEndsAt: 60 + JourneyContinuation.vehiclePauseWindow)
+shopping.updateDetails { $0.stopEvidence = stopEvidence(60, marks: [(60,"stationary",true)]) }
+let ambiguousStop = verdict(shopping.details!.stopEvidence!, minutes: 15)
+check(shopping.continueAfterStop(at: 960, classification: ambiguousStop), "an ambiguous stop keeps the drive continuous")
+check(shopping.details?.stops?.last?.verdict == "ambiguous" && shopping.details?.stops?.last?.reasons?.isEmpty == false, "the ambiguous stop stays visible with its reasons")
+check(shopping.details?.stopEvidence == nil, "transient evidence is cleared once the stop is decided")
+check(shopping.details?.destinationStop == nil, "a continued drive carries no destination")
+check(shopping.duration(at: 960) == 60, "the stop is not moving time")
+var closing = shopping
+closing.publishStop(at: 1000, continuationEndsAt: 2200)
+closing.updateDetails { $0.stopEvidence = StopEvidenceSummary(stopStart: 1000) }
+closing.completeProvisional()
+check(closing.details?.stopEvidence == nil, "completing a journey compacts its stop evidence away")
+}
 // One journey is one continuous activity. Walking away from a parked car is its
 // own walking journey, so a confirmed change of type ends the drive instead of
 // being absorbed into it or being kept open by a continuation window.

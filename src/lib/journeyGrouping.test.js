@@ -13,6 +13,42 @@ it('groups Sydney → Kew → Coffs Harbour → Gold Coast with preserved origin
  const {activities,meta}=setup(),before=JSON.stringify(activities);const result=build(activities,meta);
  expect(result.journeys).toHaveLength(1);const j=result.journeys[0];expect(j.title).toBe('Driving to Gold Coast');expect(j.segmentIDs).toEqual(['a','b','c']);expect(j.stops.map(s=>s.name)).toEqual(['Kew','Coffs Harbour']);expect(j.stops[0].charging).toBe('possible');expect(j.distanceMeters).toBe(300000);expect(j.durationSeconds).toBe(10800);expect(j.searchIndex).toContain('kew');expect(j.tags).toContain('Kew');expect(j.routeSegments).toEqual(activities.flatMap(activity=>activity.routeSegments));expect(JSON.stringify(activities)).toBe(before);expect(j.segments[0]).toBe(activities[0]);
 });
+it('shows a stop the native recorder kept inside one drive, so a round trip never hides it',()=>{
+ const home=p(-33.86,151.2),shop=p(-33.80,151.25);
+ const t=drive('round',home,home,10000,3600);
+ t.points=[{...home,timestamp:10000},{...shop,timestamp:10600},{...shop,timestamp:10600+900,segment:1},{...home,timestamp:13600,segment:1}]; t.visibleRouteStart=0;t.visibleRouteEnd=3;
+ t.details={...t.details,stops:[{start:10600,end:11500,verdict:'ambiguous',confidence:'low',reasons:['stopped 15 min','no walking, visit or on-foot evidence; the phone may have stayed in the vehicle']},{start:12000,end:12060,verdict:'temporaryPause'}]};
+ const meta=emptyGrouping(owner);const [journey]=build([t],meta).journeys;
+ const stops=journey.recognisedStops.filter(s=>s.id.startsWith('native:'));
+ expect(stops).toHaveLength(1);
+ expect(stops[0]).toMatchObject({startedAt:10600,endedAt:11500,durationSeconds:900,verdict:'ambiguous'});
+ expect(stops[0].tags).toContain('Possible destination');
+ expect(stops[0].reasons[1]).toContain('stayed in the vehicle');
+ const ignored={...meta,stopEdits:{[stops[0].id]:{ignored:true}}};
+ expect(build([t],ignored).journeys[0].recognisedStops.some(s=>s.id===stops[0].id)).toBe(false);
+ expect(build([{...t,details:{...t.details,stops:[{start:10600,end:11500}]}}],meta).journeys[0].recognisedStops.filter(s=>s.id.startsWith('native:'))).toEqual([]);
+ expect(build([{...t,details:{...t.details,stops:[{start:10600,end:11500,verdict:'temporaryPause'}]}}],meta).journeys[0].recognisedStops.filter(s=>s.id.startsWith('native:'))).toEqual([]);
+});
+it('keeps the two legs of a destination stop as separate journeys, not an unexplained Home → Home',()=>{
+ const home=p(-33.86,151.2),shop=p(-33.80,151.25),places=[{id:'h',kind:'home',name:'Home',latitude:home.latitude,longitude:home.longitude,radius:150}];
+ const out=drive('out',home,shop,10000,600),back=drive('back',shop,home,11500,600);
+ out.distanceMeters=8000;back.distanceMeters=8000;
+ out.details={...out.details,destinationStop:{start:10600,end:11500,verdict:'meaningfulDestination',confidence:'high',reasons:['stopped 15 min']}};
+ const result=buildJourneys([out,back],{owner,metadata:emptyGrouping(owner),vehicles,places});
+ expect(result.journeys.map(j=>j.id)).toEqual(['out','back']);
+ // A destination away from Home (shop → second errand) is not offered for re-joining either.
+ const errand=drive('errand',shop,p(-33.75,151.3),11500,600);errand.distanceMeters=8000;
+ const onward=buildJourneys([out,errand],{owner,metadata:emptyGrouping(owner),vehicles,places});
+ expect(onward.journeys).toHaveLength(2);
+ expect(onward.suggestions).toEqual([]);
+ // Automatic drives usually have no vehicle: the destination still keeps them apart.
+ const unnamed=[{...out,vehicle:null,vehicleID:null},{...errand,vehicle:null,vehicleID:null}];
+ const plain=buildJourneys(unnamed,{owner,metadata:emptyGrouping(owner),vehicles,places});
+ expect(plain.journeys).toHaveLength(2);
+ expect(plain.suggestions).toEqual([]);
+ // Without a recognised destination the same pair is still offered as before.
+ expect(buildJourneys(unnamed.map(t=>({...t,details:{...t.details,destinationStop:undefined}})),{owner,metadata:emptyGrouping(owner),vehicles,places}).suggestions).toHaveLength(1);
+});
 it('keeps a published stop out of grouping until it is finalised',()=>{
  const {activities,meta}=setup();
  const stopped={...activities[0],details:{...activities[0].details,provisional:true,continuationEndsAt:activities[0].endedAt+1200}};

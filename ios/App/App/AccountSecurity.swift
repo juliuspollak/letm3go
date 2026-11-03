@@ -204,6 +204,7 @@ extension LocationRecorder {
         // Sign-out and account changes end background capability and the account's
         // ownership boundary; the next account starts its own.
         endBackgroundSession("the recorder was locked or signed out")
+        cancelStopHistoryWait()
         disableHouseholdLiveSharing(forget: true)
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         // Skipped-photo marks carry local Photos asset identifiers. They belong to
@@ -407,7 +408,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard r.uiUnlocked, let id = r.ownerID, call.getString("confirmation") == "DELETE" else { call.reject("Sign in and confirm deletion."); return }
         do {
             let directory = r.storage?.directory
-            r.endBackgroundSession("the local account was deleted"); r.resetPassiveRest(reason:"the local account was deleted"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
+            r.endBackgroundSession("the local account was deleted"); r.cancelStopHistoryWait(); r.resetPassiveRest(reason:"the local account was deleted"); r.disableHouseholdLiveSharing(forget:true); r.stopContinuousLocation(); r.stopSignificantMonitoring(); r.stopVisitMonitoring(); r.stopMotionUpdates()
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
