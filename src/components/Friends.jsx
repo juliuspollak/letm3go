@@ -6,6 +6,7 @@ import PeopleGrid from './PeopleGrid.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
 import {personStatus,selfStatus} from '../lib/personStatus.js';
+import {connectedPeople} from '../lib/people.js';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
 import {Copy,House,MessageCircle,Share2,UserMinus,UserPlus,X} from 'lucide-react';
@@ -18,7 +19,7 @@ import {Copy,House,MessageCircle,Share2,UserMinus,UserPlus,X} from 'lucide-react
 // shown as "sharing off", because this viewer cannot know it. `self.state` is
 // what friends actually received from you (live, stale or waiting), never just
 // the sharing setting.
-export default function Friends({personPhotos={},selfId=null,selfAvatar=null,selfName='You',self=null,sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,onInviteConsumed}){
+export default function Friends({personPhotos={},selfId=null,selfAvatar=null,self=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  const [friends,setFriends]=useState([]),[invite,setInvite]=useState(''),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
  const [adding,setAdding]=useState(Boolean(invitationCode));
@@ -31,16 +32,18 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,sel
  async function copyInvite(){if(!invite)return;setError('');try{await navigator.clipboard.writeText(inviteText);setFeedback('Invitation copied. Paste it into a message.');}catch{setError('Could not copy automatically. Select the invitation code below to copy it.');}}
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
  const closeAdding=()=>setAdding(false);
- const you={id:'self',userId:selfId,name:selfName,self:true,status:selfStatus({enabled:Boolean(sharing?.enabled),state:self?.state,ageSeconds:self?.ageSeconds,home:self?.home,activity:self?.activity,permission,precise})};
- const people=[you,...friends.map(f=>{
-  const location=locations[f.user_id]||null;
-  return {id:f.user_id,userId:f.user_id,name:f.display_name,status:personStatus(location||{state:'unknown'}),onSelect:location?.position&&onShowPerson?()=>onShowPerson(location.position,f.user_id):null};
- })];
+ // Everyone you are connected to, once: you are not in your own list.
+ const everyone=connectedPeople({friends,household,selfID:selfId});
+ const people=everyone.map(person=>{
+  const location=person.household?householdLocations[person.id]||null:locations[person.id]||null;
+  return {id:person.id,userId:person.id,name:person.name,role:person.household?'Household':null,status:personStatus(location||{state:'unknown'}),onSelect:location?.position&&onShowPerson?()=>onShowPerson(location.position,person.id):null};
+ });
  return <section className="social-screen social-friends" aria-label="Friends">
   {sharing&&<LocationSharingRow audience="friends" enabled={sharing.enabled} ready={sharing.ready!==false} error={sharing.error} onChange={sharing.onChange} permission={permission} precise={precise}/>}
-  <div className="social-heading"><h2>Friends</h2>{friends.length>0&&<span className="social-count">{friends.length}</span>}</div>
+  {sharing?.enabled&&<p className="social-hint">Your location: {selfStatus({enabled:true,state:self?.state,ageSeconds:self?.ageSeconds,home:self?.home,activity:self?.activity,permission,precise}).text}</p>}
+  <div className="social-heading"><h2>Friends</h2>{people.length>0&&<span className="social-count">{people.length}</span>}</div>
   <PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Friends"/>
-  {!friends.length&&<p className="social-empty">No friends yet. Add someone to see each other on the map.</p>}
+  {!people.length&&<p className="social-empty">No friends yet. Add someone to see each other on the map.</p>}
   <SocialActions label="Friend actions" actions={[{id:'add',label:'Add friend',icon:UserPlus,onClick:()=>setAdding(true),expanded:adding},onSetHome&&{id:'home',label:hasHome?'Home':'Set Home',icon:House,onClick:onSetHome}]}/>
   {inviteAccepted&&<InviteSharingPrompt kind="friend" busy={shareBusy} error={shareError} onClose={()=>{setInviteAccepted(false);setShareError('');}} onEnable={async()=>{setShareBusy(true);setShareError('');try{if(!onShareLive)throw new Error('Location sharing is unavailable.');await onShareLive();setInviteAccepted(false);setFeedback('Live location sharing is on.');}catch(e){setShareError(e.message||'Could not enable sharing.');}finally{setShareBusy(false);}}}/>}
   {feedback&&!adding&&<p role="status" className="notice">{feedback}</p>}

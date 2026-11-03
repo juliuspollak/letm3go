@@ -126,7 +126,8 @@ describe('Household',()=>{
  });
  it('invites a member only for the organiser, in a sheet',async()=>{
   render(<Household selfId="me"/>);
-  fireEvent.click(await screen.findByRole('button',{name:'Invite'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Add friend'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Share an invitation link instead'}));
   await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('invite_to_household',undefined));
   const sheet=await screen.findByRole('dialog',{name:'Invite to WarillaFamily'});
   expect(within(sheet).getByRole('button',{name:/Share invitation/})).toBeInTheDocument();
@@ -135,7 +136,7 @@ describe('Household',()=>{
   mock.rpc.mockImplementation(household('member'));
   render(<Household selfId="me"/>);
   await screen.findByRole('heading',{name:'WarillaFamily'});
-  expect(screen.queryByRole('button',{name:'Invite'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Add friend'})).toBeNull();
  });
  it('keeps shared vehicles and membership in Settings',async()=>{
   render(<Household selfId="me"/>);
@@ -149,32 +150,43 @@ describe('Household',()=>{
  });
 });
 
+describe('one list of people',()=>{
+ it('shows household members under Friends, marked, and not you',async()=>{
+  render(<Friends selfId="me" household={[{user_id:'me',display_name:'Julius'},{user_id:'kim',display_name:'Kim'}]} householdLocations={{kim:{state:'live',ageSeconds:20,home:true}}}/>);
+  const list=await screen.findByRole('list',{name:'Friends'});
+  expect(within(list).getByText('Kim')).toBeInTheDocument();
+  expect(within(list).getByText('Household')).toBeInTheDocument();
+  expect(within(list).getByText('At home')).toBeInTheDocument();
+  expect(within(list).queryByText('Julius')).toBeNull();
+  expect(within(list).queryByText('You')).toBeNull();
+ });
+});
+
 describe('sharing setting versus delivery',()=>{
- const you=()=>screen.getByRole('img',{name:'Julius avatar'}).closest('.person-tile');
- const friends=(props)=><Friends selfName="Julius" selfId="me" sharing={{enabled:true,ready:true,onChange:vi.fn()}} {...props}/>;
+ const friends=(props)=><Friends selfId="me" sharing={{enabled:true,ready:true,onChange:vi.fn()}} {...props}/>;
  it('does not call the setting alone "Sharing": it needs a position friends received',async()=>{
   const {rerender}=render(friends({self:{state:'waiting'}}));
-  expect(within(you()).getByText('Sharing · waiting to send')).toBeInTheDocument();
+  expect(screen.getByText('Your location: Sharing · waiting to send')).toBeInTheDocument();
   rerender(friends({self:{state:'live',ageSeconds:20}}));
-  expect(within(you()).getByText('Sharing')).toBeInTheDocument();
+  expect(screen.getByText('Your location: Sharing')).toBeInTheDocument();
   rerender(friends({self:{state:'stale',ageSeconds:1500}}));
-  expect(within(you()).getByText('Last sent 25 min ago')).toBeInTheDocument();
+  expect(screen.getByText('Your location: Last sent 25 min ago')).toBeInTheDocument();
   rerender(friends({self:{state:'live',ageSeconds:20},sharing:{enabled:false,ready:true,onChange:vi.fn()}}));
-  expect(within(you()).getByText('Not sharing')).toBeInTheDocument();
+  expect(screen.queryByText(/^Your location:/)).toBeNull();
   // The switch itself still shows the confirmed setting.
   expect(screen.getByRole('switch',{name:'Share my location with friends'})).toHaveAttribute('aria-checked','false');
   await screen.findByText(/No friends yet/);
  });
  it('flags denied or imprecise location while sharing is on, and clears it once iOS settings change',async()=>{
   const {rerender}=render(friends({self:{state:'live'},permission:'denied'}));
-  expect(within(you()).getByText('Location access needed')).toBeInTheDocument();
+  expect(screen.getByText('Your location: Location access needed')).toBeInTheDocument();
   expect(screen.getByRole('status')).toHaveTextContent('Turn on Location and Precise Location');
   rerender(friends({self:{state:'live'},permission:'always',precise:false}));
-  expect(within(you()).getByText('Location access needed')).toBeInTheDocument();
+  expect(screen.getByText('Your location: Location access needed')).toBeInTheDocument();
   // Returning from iOS Settings with access restored (the recorder state refreshes on resume).
   rerender(friends({self:{state:'live'},permission:'always',precise:true}));
   expect(screen.queryByRole('status')).toBeNull();
-  expect(within(you()).getByText('Sharing')).toBeInTheDocument();
+  expect(screen.getByText('Your location: Sharing')).toBeInTheDocument();
   rerender(friends({self:{state:'live'},permission:'whenInUse',precise:true}));
   expect(screen.getByRole('status')).toHaveTextContent('Set Location to Always');
   await screen.findByText(/No friends yet/);

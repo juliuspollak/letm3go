@@ -4,6 +4,7 @@ import {recorderAvailable} from '../lib/recorder.js';
 import DismissibleSheet from './DismissibleSheet.jsx';
 import LocationSharingRow from './LocationSharingRow.jsx';
 import PeopleGrid from './PeopleGrid.jsx';
+import {invitableFriends} from '../lib/people.js';
 import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
 import {personStatus,selfStatus} from '../lib/personStatus.js';
@@ -55,6 +56,20 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
  });
  const inviteMessage=invite&&household?`Join my household on Letm3go: ${invitationLink('household',invite)}\n\nIf the link does not open, enter this code under Social → Household: ${invite}. Expires in 48 hours.`:'';
  async function createInvite(){const data=await request('invite_to_household');if(data){setInvite(data);setCopied(false);setSheet('invite');}}
+ // A household is built from friends, and each one chooses to join.
+ const [friends,setFriends]=useState([]),[invited,setInvited]=useState([]);
+ async function openFriends(){
+  setSheet('friends');setError('');
+  const [list,pending]=await Promise.all([supabase?.rpc('my_friends'),supabase?.rpc('my_household_friend_invites')]);
+  setFriends(list?.data||[]);setInvited((pending?.data||[]).map(row=>row.friend_id));
+ }
+ async function inviteFriend(friend){
+  setBusy(true);setError('');
+  const {error:failed}=await supabase.rpc('invite_friend_to_household',{p_friend:friend.user_id});
+  setBusy(false);
+  if(failed){setError(failed.message||'That invitation could not be sent.');return;}
+  setInvited(current=>[...current,friend.user_id]);
+ }
  return <section className="social-screen household-screen" aria-label="Household">
   {loading&&!household&&<p role="status" className="social-hint">Loading household…</p>}
   {loadError&&<div className="notice" role="alert"><p>{loadError}</p><button type="button" className="secondary full" onClick={()=>setReload(value=>value+1)}>Retry household</button></div>}
@@ -68,9 +83,17 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
    {!membersLoading&&!members.length&&<p className="social-empty">No members available. Reopen to retry.</p>}
    <SocialActions label="Household actions" actions={[
     onOpenMap&&{id:'map',label:'Family map',icon:MapIcon,onClick:onOpenMap},
-    household.role==='owner'&&{id:'invite',label:'Invite',icon:UserPlus,onClick:createInvite,disabled:busy||loading},
+    household.role==='owner'&&{id:'invite',label:'Add friend',icon:UserPlus,onClick:openFriends,disabled:busy||loading},
     {id:'settings',label:'Settings',icon:Settings,onClick:()=>setSheet('settings'),expanded:sheet==='settings'}
    ]}/>
+   {sheet==='friends'&&<div className="modal-backdrop" onClick={closeSheet}><DismissibleSheet label={`Add to ${household.name}`} onClose={closeSheet}>
+    <div className="social-sheet-head"><h2>Add to {household.name}</h2><button type="button" className="icon-button" aria-label="Close" onClick={closeSheet}><X size={20}/></button></div>
+    <p className="social-hint">They get an invitation and choose whether to join. Someone new? Add them as a friend first.</p>
+    {invitableFriends({friends,members,invited}).map(friend=><div className="grouped-row" key={friend.user_id}><span className="social-manage-person">{friend.display_name}</span><button type="button" className="secondary" disabled={busy||friend.invited} onClick={()=>inviteFriend(friend)}>{friend.invited?'Invited':'Invite'}</button></div>)}
+    {!invitableFriends({friends,members,invited}).length&&<p className="social-empty">No friends to add yet.</p>}
+    <button type="button" className="text-button" disabled={busy} onClick={createInvite}>Share an invitation link instead</button>
+    {error&&<p role="alert" className="error">{error}</p>}
+   </DismissibleSheet></div>}
    {sheet==='invite'&&invite&&<div className="modal-backdrop" onClick={closeSheet}><DismissibleSheet label={`Invite to ${household.name}`} onClose={closeSheet}>
     <div className="social-sheet-head"><h2>Invite to {household.name}</h2><button type="button" className="icon-button" aria-label="Close" onClick={closeSheet}><X size={20}/></button></div>
     <p className="social-hint">Share privately. Valid for 48 hours and one use.</p>
