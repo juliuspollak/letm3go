@@ -41,6 +41,13 @@ it('keeps the two legs of a destination stop as separate journeys, not an unexpl
  const onward=buildJourneys([out,errand],{owner,metadata:emptyGrouping(owner),vehicles,places});
  expect(onward.journeys).toHaveLength(2);
  expect(onward.suggestions).toEqual([]);
+ // Automatic drives usually have no vehicle: the destination still keeps them apart.
+ const unnamed=[{...out,vehicle:null,vehicleID:null},{...errand,vehicle:null,vehicleID:null}];
+ const plain=buildJourneys(unnamed,{owner,metadata:emptyGrouping(owner),vehicles,places});
+ expect(plain.journeys).toHaveLength(2);
+ expect(plain.suggestions).toEqual([]);
+ // Without a recognised destination the same pair is still offered as before.
+ expect(buildJourneys(unnamed.map(t=>({...t,details:{...t.details,destinationStop:undefined}})),{owner,metadata:emptyGrouping(owner),vehicles,places}).suggestions).toHaveLength(1);
 });
 it('keeps a published stop out of grouping until it is finalised',()=>{
  const {activities,meta}=setup();

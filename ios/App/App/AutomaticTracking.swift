@@ -437,15 +437,16 @@ extension LocationRecorder {
         // A stop decision is waiting for Core Motion history: later fixes queue
         // behind the deciding one, in order, and none is dropped.
         if var pending = stopHistoryPending {
-            pending.fixes = Array((pending.fixes + locations).suffix(500))
+            if pending.deliveries.reduce(0, { $0 + $1.fixes.count }) + locations.count <= 500 {
+                pending.deliveries.append((locations, Date().timeIntervalSince1970))
+            } else { diagnosticRejections["rejected.heldDeliveryLimit", default: 0] += locations.count }
             stopHistoryPending = pending
             return
         }
-        // Held fixes are judged as of their delivery: fixes queued behind the deciding
-        // one may be newer, so never earlier than the newest of them.
+        // A held delivery is judged as of its own receipt, so a suspension during
+        // the wait does not age it out. Liveness bookkeeping uses the real clock.
         let clock = Date().timeIntervalSince1970
-        let newest = locations.map { $0.timestamp.timeIntervalSince1970 }.max() ?? clock
-        let now = receivedAt.map { min(clock, max($0, newest)) } ?? clock
+        let now = receivedAt.map { min(clock, $0) } ?? clock
         let remoteRecording = WatchSessionManager.shared.watchRecording
         // iOS does not wake a suspended app to expire a continuation window, so
         // every wake reconciles the wall clock before processing new fixes.
@@ -482,7 +483,7 @@ extension LocationRecorder {
             // sparse or coarse delivery rate is not a stalled manager, so it must not
             // trigger a restart.
             // A queued backlog delivered now proves the same, whatever its age.
-            if source == .standard, sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = now }
+            if source == .standard, sample.accuracy >= 0, sample.timestamp <= now + 5 { lastAutomaticDeliveryAt = clock }
             // Cached deliveries from before account/tracking binding must not
             // establish a new account's current place or shorten rest confirmation.
             guard sample.timestamp >= trackingBoundary else {diagnosticReject("beforeTrackingBoundary");continue}
@@ -500,9 +501,10 @@ extension LocationRecorder {
                 if decisionDue, stopHistoryNeeded(now:now), deferForStopHistory(Array(ordered[index...]),source:source,now:now) {
                     break deliveries
                 }
-                // The fix under decision may be the car leaving: never on-foot evidence.
-                if !decisionDue { noteStopFix(sample,rawSpeed:location.speed) }
+                // Fixes that do not continue the drive are on-foot evidence; the one
+                // that resumes or ends it (possibly the car leaving) never is.
                 guard departureEvidence.observe(sample,now:now,minimumDistance:40) else {
+                    noteStopFix(sample,rawSpeed:location.speed)
                     diagnosticReject("settledAwaitingContinuation");continue
                 }
                 // Only a fix good enough to become route geometry may decide a
@@ -520,6 +522,7 @@ extension LocationRecorder {
                         // Movement of another type is not absorbed and does not end
                         // this journey until it is sustained: the driver may still be
                         // beside the car. The published stop stays open.
+                        noteStopFix(sample,rawSpeed:location.speed)
                         diagnosticReject("settledUnconfirmedMovement")
                         continue
                     case .finish:
@@ -1111,7 +1114,7 @@ extension LocationRecorder {
         trip.updateDetails { metadata in
             metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + ["Journey continued after \(Int(max(0,now-settled)))s stopped"]).suffix(24))
         }
-        trip.updatedAt = now
+        trip.updatedAt = Date().timeIntervalSince1970
         try storage.save(trip)
         trips.removeAll { $0.id == trip.id }
         automaticTrip = trip
@@ -1446,7 +1449,7 @@ extension LocationRecorder {
     func stopHistoryNeeded(now: Double) -> Bool {
         guard let evidence = settledEvidence, evidence.motion == "authorized", motionAuthorisation == "authorized" else { return false }
         if let attempted = evidence.historyAttemptedAt, now - attempted < 60, now >= attempted { return false }
-        return (evidence.historyCoveredUntil ?? 0) < now - 60
+        return (evidence.historyQueriedUntil ?? 0) < now - 60
     }
     static let stopHistoryTimeout: Double = 3
     // Returns false when nothing was held; the caller then processes the fixes now.
@@ -1454,7 +1457,7 @@ extension LocationRecorder {
         guard let owner = ownerID, let evidence = settledEvidence else { return false }
         stopHistoryGeneration += 1
         let generation = stopHistoryGeneration, stopStart = evidence.stopStart
-        stopHistoryPending = (owner, fixes, source, generation, now)
+        stopHistoryPending = (owner, [(fixes, now)], source, generation)
         // The wait is short; ask iOS not to suspend the app in the middle of it.
         if stopHistoryTask == .invalid {
             stopHistoryTask = UIApplication.shared.beginBackgroundTask(withName: "stop decision") { [weak self] in self?.endStopHistoryTask() }
@@ -1498,7 +1501,8 @@ extension LocationRecorder {
     func resumeStopDecision(generation: Int, timedOut: Bool) {
         guard let pending = stopHistoryPending, pending.generation == generation else { return }
         stopHistoryPending = nil
-        defer { endStopHistoryTask() }
+        // Ended before re-processing, so any later wait begins its own task.
+        endStopHistoryTask()
         guard ownerID == pending.owner else {
             recordDiagnostic("decision", "Held stop fixes dropped: the account changed")
             return
@@ -1507,7 +1511,11 @@ extension LocationRecorder {
             updateSettledEvidence { $0.historyTimedOut = true; return true }
             recordDiagnostic("decision", "Core Motion history did not arrive in time; deciding with live motion only")
         }
-        processAutomatic(pending.fixes, source: pending.source, receivedAt: pending.receivedAt)
+        for delivery in pending.deliveries {
+            // A delivery that begins another wait queues the rest behind it.
+            if var next = stopHistoryPending { next.deliveries.append(delivery); stopHistoryPending = next; continue }
+            processAutomatic(delivery.fixes, source: pending.source, receivedAt: delivery.receivedAt)
+        }
     }
     func noteStopClassified(_ c: StopClassification) {
         guard c.stoppedSeconds >= StopClassifier.pauseSeconds else { return }

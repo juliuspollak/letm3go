@@ -69,6 +69,13 @@ export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
  const av=vehicle(a,vehicles),bv=vehicle(b,vehicles);
  if(av&&bv&&av!==bv)return {decision:'separate',reason:'Different vehicles'};
  if(!stop)return {decision:'separate',reason:'Overlapping times or disconnected routes'};
+ // The iPhone recognised this stop as a destination and split the drive there.
+ // Decided before vehicle and title checks: automatic drives usually have no
+ // vehicle. A short stop between long drives still groups as a road trip.
+ const destination=a.details?.destinationStop;
+ const longDrive=(a.distanceMeters>=30000&&b.distanceMeters>=30000)||a.distanceMeters>=80000||b.distanceMeters>=80000;
+ if(destination&&Number.isFinite(destination.start)&&Math.abs(destination.start-a.endedAt)<=120&&!(longDrive&&stop.durationSeconds<=90*60))
+  return {decision:'separate',reason:'Destination recognised between these drives'};
  if(a.activity!=='Driving'||b.activity!=='Driving')return {decision:'suggest',reason:'Unclassified journey — confirm both recordings belong to the same drive'};
  if(stop.durationSeconds>24*3600)return {decision:'separate',reason:'More than one day apart'};
  if(['home','work'].includes(stop.kind))return {decision:'separate',reason:`Stopped at ${stop.kind}`};
@@ -81,11 +88,7 @@ export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
  if(!av||!bv)return {decision:'suggest',reason:'Vehicle not identified — confirm these drives belong together'};
  if(metadata.titles[a.id]&&metadata.titles[b.id]&&metadata.titles[a.id]!==metadata.titles[b.id])return {decision:'suggest',reason:'Both journeys have your titles'};
  if(stop.charging==='confirmed'&&stop.durationSeconds<=2*3600)return {decision:'auto',reason:'Confirmed charging between drives'};
- const longDrive=(a.distanceMeters>=30000&&b.distanceMeters>=30000)||a.distanceMeters>=80000||b.distanceMeters>=80000;
  if(longDrive&&stop.durationSeconds<=90*60)return {decision:'auto',reason:stop.charging==='possible'?'Road-trip continuation near charging infrastructure':'Short stop between long drives'};
- // The iPhone recognised this stop as a destination and split the drive there.
- const destination=a.details?.destinationStop;
- if(destination&&Number.isFinite(destination.start)&&Math.abs(destination.start-a.endedAt)<=120)return {decision:'separate',reason:'Destination recognised between these drives'};
  if(stop.durationSeconds<180&&!fromHome)return {decision:'auto',reason:'Brief interruption in the same drive'};
  return {decision:'suggest',reason:'Nearby drives — confirm continuation'};
 }

@@ -1195,7 +1195,8 @@ struct MotionMark: Codable, Equatable {
 struct StopEvidenceSummary: Codable, Equatable {
     var stopStart: Double
     var marks: [MotionMark] = []
-    var historyCoveredUntil: Double?
+    var historyCoveredUntil: Double?   // live marks up to here were replaced by history
+    var historyQueriedUntil: Double?   // history was asked for up to here
     var historyAttemptedAt: Double?
     var historyTimedOut: Bool?
     var motion: String = "unknown"           // authorized, denied, unavailable, unknown
@@ -1216,6 +1217,7 @@ struct StopEvidenceSummary: Codable, Equatable {
         stopStart = try c.decode(Double.self, forKey: .stopStart)
         marks = try c.decodeIfPresent([MotionMark].self, forKey: .marks) ?? []
         historyCoveredUntil = try c.decodeIfPresent(Double.self, forKey: .historyCoveredUntil)
+        historyQueriedUntil = try c.decodeIfPresent(Double.self, forKey: .historyQueriedUntil)
         historyAttemptedAt = try c.decodeIfPresent(Double.self, forKey: .historyAttemptedAt)
         historyTimedOut = try c.decodeIfPresent(Bool.self, forKey: .historyTimedOut)
         motion = try c.decodeIfPresent(String.self, forKey: .motion) ?? "unknown"
@@ -1255,6 +1257,7 @@ struct StopEvidenceSummary: Codable, Equatable {
         let kept = marks.filter { $0.at < from || $0.at > end }
         marks = (kept + read).sorted { $0.at < $1.at }
         historyCoveredUntil = max(historyCoveredUntil ?? end, end)
+        historyQueriedUntil = max(historyQueriedUntil ?? to, to)
         compact()
     }
     private mutating func compact() {
@@ -1300,7 +1303,8 @@ struct StopEvidenceSummary: Codable, Equatable {
             case "vehicle", "cycling":
                 // The drive still in force when the stop began, and the drive away
                 // that reaches the deciding fix, are the journey itself, not the stop.
-                if mark.at <= stopStart || last { continue }
+                // One vehicle run through the whole stop is a slow queue, not a stop.
+                if (mark.at <= stopStart) != last { continue }
                 t.vehicle += seconds; t.lastVehicleAt = max(t.lastVehicleAt ?? 0, start)
             case "stationary": t.stationary += seconds
             default: break

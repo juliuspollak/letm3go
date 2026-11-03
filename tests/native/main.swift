@@ -307,10 +307,11 @@ check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true
 // Conflicting and missing evidence.
 check(verdict(stopEvidence(marks: [(1000,"vehicle",true),(1100,"walking",false),(1200,"vehicle",true),(1500,"stationary",true)]), minutes: 12).verdict == .temporaryPause, "low-confidence walking between vehicle motion is creeping traffic")
 // The car's own arrival and departure are the journey, not motion during the stop.
-let tails = verdict(stopEvidence(marks: [(900,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
+let tails = verdict(stopEvidence(marks: [(950,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
 check(tails.verdict == .meaningfulDestination && !tails.reasons.contains { $0.contains("vehicle motion") }, "sitting in the car after parking and driving off before the deciding fix do not veto a destination")
-check(verdict(stopEvidence(marks: [(900,"vehicle",true),(1100,"stationary",true),(1820,"vehicle",true)]), minutes: 15).verdict == .ambiguous, "arrival and departure tails alone are neither congestion nor a destination")
+check(verdict(stopEvidence(marks: [(950,"vehicle",true),(1100,"stationary",true),(1820,"vehicle",true)]), minutes: 15).verdict == .ambiguous, "arrival and departure tails alone are neither congestion nor a destination")
 check(StopEvidenceSummary.kind(walking: false, running: false, automotive: true, cycling: false, stationary: true) == "stationary", "a parked car (automotive and stationary) is not vehicle motion")
+check(verdict(stopEvidence(marks: [(950,"vehicle",true)]), minutes: 15).verdict == .temporaryPause, "one vehicle run through the whole stop is a slow queue")
 check(verdict(stopEvidence(marks: [(1000,"stationary",true)], displacement: 80, fixes: 3, visit: 1100), minutes: 8).verdict == .ambiguous, "displacement without any walking (a car creeping out) is not on-foot evidence")
 let mixed = verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1100,"vehicle",true),(1200,"stationary",true)], displacement: 50, fixes: 2), minutes: 10)
 check(mixed.reasons.contains { $0.contains("conflicts with a destination") }, "vehicle motion during a stop is named as conflicting evidence")
@@ -335,6 +336,7 @@ var lagging = StopEvidenceSummary(stopStart: 1000)
 _ = lagging.noteLive(MotionMark(at: 1850, kind: "walking", confident: true))
 lagging.applyHistory([MotionMark(at: 1000, kind: "stationary", confident: true), MotionMark(at: 1800, kind: "stationary", confident: true)], from: 940, to: 1900)
 check(lagging.marks.last == MotionMark(at: 1850, kind: "walking", confident: true) && lagging.historyCoveredUntil == 1800, "history that lags real time keeps the newer live walk")
+check(lagging.historyQueriedUntil == 1900, "the range asked for is remembered, so a parked phone is not queried again every minute")
 let firstMark = live.marks.first
 for i in 0..<400 { _ = live.noteLive(MotionMark(at: 2000 + Double(i), kind: i % 2 == 0 ? "walking" : "stationary", confident: true)) }
 check(live.marks.count <= StopEvidenceSummary.markLimit && live.marks.first == firstMark, "motion evidence is bounded and keeps the state in force at the stop start")

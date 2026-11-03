@@ -25,7 +25,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var recoveryMessage = ""
     var motionManager: CMMotionActivityManager?
     // Fixes held while Core Motion history for an open stop is read (bounded wait).
-    var stopHistoryPending: (owner: String, fixes: [CLLocation], source: ObservationSource, generation: Int, receivedAt: Double)?
+    // Each held delivery keeps its own receipt time, so it is judged as of then.
+    var stopHistoryPending: (owner: String, deliveries: [(fixes: [CLLocation], receivedAt: Double)], source: ObservationSource, generation: Int)?
     var stopHistoryTask: UIBackgroundTaskIdentifier = .invalid
     var stopHistoryGeneration = 0
     var motion = MotionEvidence()

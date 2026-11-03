@@ -17,7 +17,7 @@ The evidence is opened when a stop is published (`settleAutomatic`). It is store
   - A parked car (automotive and stationary together) counts as stationary.
   - Limited to 120 marks, always keeping the one in force when the stop began.
   - Live marks are kept in memory and saved with the next fix, visit or history change. They are not saved on every motion flip.
-- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and a known speed < 2.6 m/s. Two such fixes are required. The fix under decision never counts. Displacement counts as evidence only when Core Motion saw some walking or cannot answer.
+- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and a known speed < 2.6 m/s. Two such fixes are required. Only fixes that do not continue the drive count (those below the 40 m departure threshold, or movement left waiting); the fix that resumes or ends it, possibly the car leaving, never does. Displacement counts as evidence only when Core Motion saw some walking or cannot answer.
 - **iOS visit** arrival or departure within 200 m of the stop. A visit that arrived more than 5 minutes before the stop, or ended before it, is ignored.
 - **Saved-place kind** (never its name), Motion permission, and when history was read or timed out.
 
@@ -28,7 +28,7 @@ No coordinates are kept. The evidence is cleared when the stop is continued (`co
 | Stop | Result |
 | --- | --- |
 | Under 3 min | `temporaryPause` |
-| ≥ 60 s of confident vehicle motion and < 30 s walking | `temporaryPause` (congestion, creeping traffic). The drive still in force at the stop start and the drive away up to the deciding fix are not counted |
+| ≥ 60 s of confident vehicle motion and < 30 s walking | `temporaryPause` (congestion, creeping traffic). The drive still in force at the stop start and the drive away up to the deciding fix are not counted, but one vehicle run spanning the whole stop is (a slow queue) |
 | 3–6 min | destination only with strong walking (one confident run ≥ 60 s, or ≥ 120 s total) plus one independent source |
 | 6–12 min | destination with score ≥ 2 from at least 2 independent sources |
 | ≥ 12 min | destination with score ≥ 2 (sustained walking alone qualifies; a visit alone does not) |
@@ -53,7 +53,8 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 
 - Core Motion history is queried for the whole stop. The fixes are then reprocessed in order, on the answer or after 3 s, whichever comes first.
 - Later deliveries queue behind them, up to 500 fixes.
-- A background task asks iOS not to suspend the app during the wait. Held fixes are judged as of their delivery time, so a suspension cannot age them out.
+- A background task asks iOS not to suspend the app during the wait. Each held delivery keeps its own receipt time and is judged as of then, so a suspension cannot age it out.
+- History is queried at most once per range: the range asked for is remembered separately from how far history actually reached, so a parked phone is not re-queried every minute.
 - If nothing can be held (no account), the fixes are processed at once. Sign-out clears the held fixes.
 - A timeout falls back to live evidence and says so in the reasons.
 - History is queried at most once a minute, so this cannot loop.
@@ -64,7 +65,7 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 - `journeyGrouping.nativeStops` shows ambiguous native stops of 3 minutes or more as stops of the activity, tagged **Possible destination**, with their reasons. Traffic pauses, stops recorded by earlier builds and stops in a trimmed-away part of the route are not shown, so existing history is unchanged.
 - Stops can be renamed or ignored through the existing `stopEdits`.
 - A native Home → Home title with an ambiguous stop reads `Home → Home · stopped 15 min`.
-- The two legs of a destination are separate activities. Grouping returns `separate` for them (*Destination recognised between these drives*) instead of suggesting a re-join. Long road trips still group as before.
+- The two legs of a destination are separate activities. Grouping returns `separate` for them (*Destination recognised between these drives*), checked before the vehicle and title rules because automatic drives usually have no vehicle, instead of suggesting a re-join. Long road trips still group as before.
 
 ### Diagnostics
 
@@ -89,6 +90,11 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
   - held fixes were not robust to suspension or sign-out;
   - plus the low items.
 - The tests use realistic arrival and departure tails.
+- A re-review of `831126a` confirmed those fixes and found two new high issues, both fixed in the third commit:
+  - the grouping rule came too late for drives with no vehicle;
+  - excluding pending fixes removed most on-foot evidence.
+- The same re-review found three medium issues, also fixed there: a suspended wait still aged fixes out, history was re-queried every minute, and one vehicle run through a whole stop was ignored.
+- It also raised three low items. The task-ordering and account-deletion symmetry items are fixed. Live motion marks are kept in memory only, so a relaunch loses them until history is read again; that is accepted.
 
 ## Release gate: physical device
 
