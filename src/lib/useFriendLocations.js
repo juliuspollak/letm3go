@@ -1,5 +1,6 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
+import {keepIfSame} from './sameData.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {config} from './config.js';
 import {sharedPosition} from './sharedPosition.js';
@@ -23,8 +24,8 @@ export function useFriendLocations(owner,online){
   try{
    const [setting,locations]=await Promise.all([supabase.rpc('my_friend_location_setting'),supabase.rpc('my_friend_locations')]);
    if(setting.error||locations.error)throw Error('Friend locations are unavailable until the database migration is applied.');
-   setEnabled(setting.data===true&&!hasPendingRevoke(owner));setPeople(locations.data||[]);setError('');setReady(true);
-  }catch(e){setError(e.message);setPeople([]);}
+   setEnabled(setting.data===true&&!hasPendingRevoke(owner));setPeople(keepIfSame(locations.data||[]));setError('');setReady(true);
+  }catch(e){setError(e.message);setPeople(keepIfSame([]));}
  },[owner,online]);
  useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
  const send=useCallback(async()=>{

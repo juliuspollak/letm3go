@@ -68,8 +68,8 @@ describe('advanced filters',()=>{
 
 describe('persistence',()=>{
  it('keeps the map view per account and ignores invalid stored values',()=>{
-  saveMapView('anna',view({routes:'all',people:false}));
-  expect(loadMapView('anna')).toEqual(view({routes:'all',people:false}));
+  saveMapView('anna',view({people:false,style:'satellite',archived:false}));
+  expect(loadMapView('anna')).toEqual(view({routes:'today',people:false,style:'satellite',archived:false}));
   expect(loadMapView('kim')).toEqual(DEFAULT_MAP_VIEW);
   localStorage.setItem('letm3go:map-view:kim','{"content":"elsewhere","routes":"everything","range":"forever","people":"no"}');
   expect(loadMapView('kim')).toEqual(DEFAULT_MAP_VIEW);
@@ -77,14 +77,20 @@ describe('persistence',()=>{
   expect(loadMapView('kim')).toEqual(DEFAULT_MAP_VIEW);
   expect(normaliseMapView(null)).toEqual(DEFAULT_MAP_VIEW);
  });
+ it('always opens the routes on Today, whatever filter was left',()=>{
+  saveMapView('anna',view({routes:'all',range:'7d',day:'2026-10-28',activity:'Walking',style:'satellite'}));
+  expect(loadMapView('anna')).toEqual(view({routes:'today',style:'satellite'}));
+  saveMapView('anna',view({routes:null}));
+  expect(loadMapView('anna').routes).toBe('today');
+ });
 });
 
 describe('selected calendar day',()=>{
  it('loads old rolling preferences unchanged and validates new dates per account',()=>{
   localStorage.setItem('letm3go:map-view:old',JSON.stringify({routes:'pinned',range:'30d',activity:'Walking'}));
-  expect(loadMapView('old')).toEqual(view({routes:'pinned',range:'30d',activity:'Walking'}));
+  expect(normaliseMapView({routes:'pinned',range:'30d',activity:'Walking'})).toEqual(view({routes:'pinned',range:'30d',activity:'Walking'}));
   saveMapView('new',view({routes:'all',day:'2026-10-26',range:'7d'}));
-  expect(loadMapView('new')).toEqual(view({routes:'all',day:'2026-10-26',range:'7d'}));
+  expect(normaliseMapView(view({routes:'all',day:'2026-10-26',range:'7d'}))).toEqual(view({routes:'all',day:'2026-10-26',range:'7d'}));
   expect(loadMapView('old').day).toBeNull();
   expect(normaliseMapView({day:'2026-02-30'}).day).toBeNull();
  });

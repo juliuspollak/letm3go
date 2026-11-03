@@ -1,13 +1,14 @@
 import {activityLabel} from '../lib/activityNames.js';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
+import {keepIfSame} from '../lib/sameData.js';
 export default function FriendTrips({activities=[]}){
  const [feed,setFeed]=useState([]),[published,setPublished]=useState([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const refresh=useCallback(async()=>{
   if(!supabase)return;
   const [a,b]=await Promise.all([supabase.rpc('my_friend_trip_feed'),supabase.rpc('my_published_friend_trip_ids')]);
   if(a.error||b.error){setError('Friend activity feed is unavailable until its database migration is applied.');return;}
-  setFeed(a.data||[]);setPublished((b.data||[]).map(x=>x.trip_id));setError('');
+  setFeed(keepIfSame(a.data||[]));setPublished(keepIfSame((b.data||[]).map(x=>x.trip_id)));setError('');
  },[]);
  useEffect(()=>{
   const initial=setTimeout(()=>void refresh(),0);

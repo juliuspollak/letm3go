@@ -1,5 +1,6 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
+import {keepIfSame} from './sameData.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {config} from './config.js';
 import {sharedPosition} from './sharedPosition.js';
@@ -55,7 +56,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   if(!owner||!online||!supabase)return;
   const [mine,others]=await Promise.all([supabase.rpc('my_presence_settings'),supabase.rpc('my_household_presence')]);
   if(mine.error||others.error){setError('Social presence is unavailable. The database migration may not be deployed.');return;}
-  setSelf(mine.data?.[0]||{sharing_enabled:false});setPeople(others.data||[]);setError('');
+  setSelf(keepIfSame(mine.data?.[0]||{sharing_enabled:false}));setPeople(keepIfSame(others.data||[]));setError('');
  },[owner,online]);
  useEffect(()=>{if(!online)return;const load=()=>{if(document.visibilityState==='visible')void refresh();};const initial=setTimeout(load,0);const timer=setInterval(load,15000);document.addEventListener('visibilitychange',load);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',load);};},[refresh,online]);
  useEffect(()=>{

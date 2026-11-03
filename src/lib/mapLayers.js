@@ -78,10 +78,14 @@ export function activityChoices(journeys){
  return [...new Set(journeys.map(trip=>activityCode(trip.activity)).filter(value=>typeof value==='string'&&value.trim()))].sort((a,b)=>a.localeCompare(b));
 }
 
-// Kept per account on this device, so the map comes back as it was left.
+// Kept per account on this device, so the map comes back as it was left, except that
+// the routes always open on Today: a wider filter chosen earlier lasts until the app
+// is closed, not into the next day.
 const storageKey=owner=>`letm3go:map-view:${owner}`;
 export function loadMapView(owner){
- try{return normaliseMapView(JSON.parse(localStorage.getItem(storageKey(owner))||'null'));}catch{return {...DEFAULT_MAP_VIEW};}
+ let view;
+ try{view=normaliseMapView(JSON.parse(localStorage.getItem(storageKey(owner))||'null'));}catch{view={...DEFAULT_MAP_VIEW};}
+ return {...view,routes:'today',activity:'',range:'any',day:null};
 }
 export function saveMapView(owner,view){
  try{localStorage.setItem(storageKey(owner),JSON.stringify(normaliseMapView(view)));}catch{/* private mode */}
