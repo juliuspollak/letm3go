@@ -48,6 +48,14 @@ it('keeps the two legs of a destination stop as separate journeys, not an unexpl
  expect(plain.suggestions).toEqual([]);
  // Without a recognised destination the same pair is still offered as before.
  expect(buildJourneys(unnamed.map(t=>({...t,details:{...t.details,destinationStop:undefined}})),{owner,metadata:emptyGrouping(owner),vehicles,places}).suggestions).toHaveLength(1);
+ // A long drive the phone split at a 15-minute café still groups as a road trip, with or without a vehicle.
+ const far=p(-32.9,151.7),farther=p(-31.6,152.7);
+ const leg1=drive('leg1',p(-33.86,151.2),far,20000,7200),leg2=drive('leg2',far,farther,20000+7200+900,7200);
+ leg1.details={...leg1.details,destinationStop:{start:27200,end:28100,verdict:'meaningfulDestination',confidence:'medium',reasons:['stopped 15 min']}};
+ for(const legs of [[leg1,leg2],[{...leg1,vehicle:null,vehicleID:null},{...leg2,vehicle:null,vehicleID:null}]]){
+  const trip=buildJourneys(legs,{owner,metadata:emptyGrouping(owner),vehicles,places:[]});
+  expect(trip.journeys).toHaveLength(1);expect(trip.journeys[0].segmentIDs).toEqual(['leg1','leg2']);
+ }
 });
 it('keeps a published stop out of grouping until it is finalised',()=>{
  const {activities,meta}=setup();

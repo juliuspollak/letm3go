@@ -74,8 +74,12 @@ export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
  // vehicle. A short stop between long drives still groups as a road trip.
  const destination=a.details?.destinationStop;
  const longDrive=(a.distanceMeters>=30000&&b.distanceMeters>=30000)||a.distanceMeters>=80000||b.distanceMeters>=80000;
- if(destination&&Number.isFinite(destination.start)&&Math.abs(destination.start-a.endedAt)<=120&&!(longDrive&&stop.durationSeconds<=90*60))
+ if(destination&&Number.isFinite(destination.start)&&Math.abs(destination.start-a.endedAt)<=120){
+  // The phone split a long drive at a stop: as one native activity it would have
+  // been one drive, so it still groups as a road trip, whatever the vehicle.
+  if(longDrive&&stop.durationSeconds<=90*60)return {decision:'auto',reason:'Short stop between long drives'};
   return {decision:'separate',reason:'Destination recognised between these drives'};
+ }
  if(a.activity!=='Driving'||b.activity!=='Driving')return {decision:'suggest',reason:'Unclassified journey — confirm both recordings belong to the same drive'};
  if(stop.durationSeconds>24*3600)return {decision:'separate',reason:'More than one day apart'};
  if(['home','work'].includes(stop.kind))return {decision:'separate',reason:`Stopped at ${stop.kind}`};

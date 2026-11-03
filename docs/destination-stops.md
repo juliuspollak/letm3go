@@ -17,7 +17,7 @@ The evidence is opened when a stop is published (`settleAutomatic`). It is store
   - A parked car (automotive and stationary together) counts as stationary.
   - Limited to 120 marks, always keeping the one in force when the stop began.
   - Live marks are kept in memory and saved with the next fix, visit or history change. They are not saved on every motion flip.
-- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and a known speed < 2.6 m/s. Two such fixes are required. Only fixes that do not continue the drive count (those below the 40 m departure threshold, or movement left waiting); the fix that resumes or ends it, possibly the car leaving, never does. Displacement counts as evidence only when Core Motion saw some walking or cannot answer.
+- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and a known speed < 2.6 m/s, taken while Core Motion reports walking (or cannot answer). Two such fixes are required. Only fixes that do not continue the drive count. Because displacement usually comes from the same walk, it is never the second source a 3–6 minute stop needs.
 - **iOS visit** arrival or departure within 200 m of the stop. A visit that arrived more than 5 minutes before the stop, or ended before it, is ignored.
 - **Saved-place kind** (never its name), Motion permission, and when history was read or timed out.
 
@@ -28,7 +28,7 @@ No coordinates are kept. The evidence is cleared when the stop is continued (`co
 | Stop | Result |
 | --- | --- |
 | Under 3 min | `temporaryPause` |
-| ≥ 60 s of confident vehicle motion and < 30 s walking | `temporaryPause` (congestion, creeping traffic). The drive still in force at the stop start and the drive away up to the deciding fix are not counted, but one vehicle run spanning the whole stop is (a slow queue) |
+| ≥ 60 s of confident vehicle motion and < 30 s walking | `temporaryPause` (congestion, creeping traffic). A vehicle run continues through unknown or low-confidence blips. Runs that begin within 2 min of the stop start or end within 2 min of the deciding fix are the car arriving or leaving and are not counted. One run spanning the whole stop is a slow queue, but only when Core Motion history covered the stop |
 | 3–6 min | destination only with strong walking (one confident run ≥ 60 s, or ≥ 120 s total) plus one independent source |
 | 6–12 min | destination with score ≥ 2 from at least 2 independent sources |
 | ≥ 12 min | destination with score ≥ 2 (sustained walking alone qualifies; a visit alone does not) |
@@ -65,7 +65,7 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 - `journeyGrouping.nativeStops` shows ambiguous native stops of 3 minutes or more as stops of the activity, tagged **Possible destination**, with their reasons. Traffic pauses, stops recorded by earlier builds and stops in a trimmed-away part of the route are not shown, so existing history is unchanged.
 - Stops can be renamed or ignored through the existing `stopEdits`.
 - A native Home → Home title with an ambiguous stop reads `Home → Home · stopped 15 min`.
-- The two legs of a destination are separate activities. Grouping returns `separate` for them (*Destination recognised between these drives*), checked before the vehicle and title rules because automatic drives usually have no vehicle, instead of suggesting a re-join. Long road trips still group as before.
+- The two legs of a destination are separate activities. Grouping returns `separate` for them (*Destination recognised between these drives*), checked before the vehicle and title rules because automatic drives usually have no vehicle, instead of suggesting a re-join. A long drive the phone split at a short stop (both legs ≥ 30 km, or one ≥ 80 km, stop ≤ 90 min) groups automatically as a road trip whatever the vehicle, as it was one native activity before.
 
 ### Diagnostics
 
@@ -77,7 +77,13 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 - **Correction:** an ambiguous stop can be renamed or ignored, but a single native activity cannot be split in the app today. Grouping links and cuts work only between activities. Splitting it is a separate feature.
 - **Backup:** `details.stops`, `stopEvidence` and `destinationStop` are not in the cloud backup projection (`cloudSync.viewMetadata`). A stop's verdict stays on this iPhone. The split itself is backed up, because the two legs are separate activities.
 - **Visits:** iOS often delivers visits late or not at all, so they are only ever supporting evidence.
-- **Process termination during the wait:** if iOS kills the app inside the 3-second wait, the held fixes are lost. Before this change they would have been processed immediately. The background task makes this unlikely, but it is not impossible.
+- **Process termination during the wait:** the held deliveries are written to the account's encrypted store (`stop-held.data`, `HeldStopFixes`) before anything waits.
+  - The next launch replays them once, in order, with their timestamps, receipt times and sources, as soon as automatic tracking is available.
+  - The record is removed before replay, so nothing is delivered twice.
+  - It is bounded to 500 fixes; a larger backlog is decided at once without history.
+  - It is account-scoped, and removed on sign-out, because the next open's tracking boundary would reject every fix anyway.
+  - It is ignored once older than the 45-minute continuation window.
+  - If a manual or Watch recording, or tracking switched off, interrupts the wait, the record stays until automatic tracking is available.
 
 ## Review
 

@@ -30,11 +30,11 @@ While passive, `confirmHouseholdLocation` sends nothing. After passive rest ends
 
 ### Keep-alive
 
-`KeepAlivePolicy.wanted` now also covers a published stop waiting for a continuation, as well as precise GPS, whenever the activity session has been released and an Always service session is held. Ordinary standby was reviewed and left out. It ends in passive rest or a wake-up, and a second location stream there would cost battery with no recording benefit. The keep-alive never runs during manual recording or Watch ownership.
+`KeepAlivePolicy.wanted` now also covers a published stop waiting for a continuation, as well as precise GPS, whenever the activity session has been released and an Always service session is held. Ordinary standby was reviewed and left out. It ends in passive rest or a wake-up, and a second location stream there would cost battery with no recording benefit. With the device test on, it also covers live sharing that holds location after a sharing rest released the session, including during a Watch workout, so a locked phone keeps publishing; that costs a second `liveUpdates` stream until the app is next opened, which the device test must measure. It never runs during an iPhone manual recording, never beside the adaptive low-power stream, and never in passive rest.
 
 ### Presentation
 
-A stale household position inside Home reads **Last verified at home · 25 min ago**. **At home** stays reserved for a live position. Friends are never placed at Home, because Home is shared by the household only.
+A stale household position inside Home reads **Last verified at home · 25 min ago**, with the switch on or off: it is a wording change for any old position, always with its real age. **At home** stays reserved for a live position. Friends are never placed at Home, because Home is shared by the household only.
 
 ### Diagnostics
 
@@ -55,7 +55,7 @@ An adversarial review of `a95e0ea` found five medium and five low issues, all fi
 
 ## Release gate: physical device
 
-Static review and unit tests cannot show any of the following. Install on an iPhone with Always, Precise and Motion on, Automatic Tracking on, household sharing on, and turn on **Tracking & Permissions → Also while sharing location (device test)**.
+Static review and unit tests cannot show any of the following. Install on an iPhone with Always, Precise and Motion on, Automatic Tracking on, household sharing on, and turn on **Tracking & Permissions → Rest improvements, including while sharing (device test)** (its accessibility label is "Release location while resting with sharing on").
 
 1. **Stationary at Home:** leave the phone still for 30 min. Record the location indicator at 0, 20 and 30 min. Expect `Passive rest: Active` and `Sharing while resting: … does not hold location`. A second phone should show **Last verified at home · N min ago**.
 2. **False wake:** walk around inside Home for 2 minutes. Expect *False wake-up … rest restored* and passive again within the check time.

@@ -147,7 +147,7 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
   diagnostics:diagnostics(trip,segmentReport),
   tags:tagSection(trip,grouping,canOpenActivities),
   facts:{lines:factLines(trip,local,pointCount),evidence:trip.classification?.evidence||[]},
-  stops:(trip.recognisedStops||[]).map(stop=>({id:String(stop.id),name:stop.name,tags:stop.tags||[],detail:`${Math.round(stop.durationSeconds/60)} min${stop.charging==='possible'?' · Possible charging':stop.charging==='confirmed'?' · Charging confirmed by vehicle':''}`,nearby:stop.nearbyName||null,canIgnore:!trip.readOnly})),
+  stops:(trip.recognisedStops||[]).map(stop=>({id:String(stop.id),name:stop.name,tags:stop.tags||[],detail:`${Math.round(stop.durationSeconds/60)} min${stop.charging==='possible'?' · Possible charging':stop.charging==='confirmed'?' · Charging confirmed by vehicle':''}${stop.verdict==='ambiguous'&&typeof stop.reasons?.[1]==='string'?` · ${stop.reasons[1]}`:''}`,nearby:stop.nearbyName||null,canIgnore:!trip.readOnly})),
   story:{description:trip.description||'',notes:trip.notes||'',tags:trip.tags||[]},
   editor:{title:trip.title,activity:activityCode(trip.activity||'Walking'),description:trip.description||'',notes:trip.notes||'',tags:(trip.tags||[]).join(', '),collection:trip.collection||'',vehicleID:trip.vehicleID?String(trip.vehicleID):null,vehicle:trip.vehicle||null,
    types:ACTIVITY_TYPES.map(value=>({value,label:activityLabel(value)})),equipment:vehicles.filter(v=>!v.archived).map(v=>({id:String(v.id),title:itemTitle(v)}))},

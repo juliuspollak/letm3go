@@ -233,7 +233,8 @@ extension LocationRecorder {
             reconcileBackgroundSession("passive rest")
         } else if let since = passiveSince {
             passiveSince = nil
-            passiveEndedAt = now
+            // Only the device test can rest with sharing, so only it needs the marker.
+            if sharingRestEnabled { passiveEndedAt = now }
             persistPassiveSince(nil)
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": locationMode.rawValue])
             // In the foreground this starts the session again; in the background
@@ -252,7 +253,8 @@ extension LocationRecorder {
         let now = Date().timeIntervalSince1970
         if let since = passiveSince {
             passiveSince = nil
-            passiveEndedAt = now
+            // Only the device test can rest with sharing, so only it needs the marker.
+            if sharingRestEnabled { passiveEndedAt = now }
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": "off"])
         }
         restDecision = .unconfirmed; passiveRetainReason = "automatic tracking unavailable"; restDisturbedAt = nil

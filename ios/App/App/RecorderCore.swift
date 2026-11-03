@@ -1273,8 +1273,10 @@ struct StopEvidenceSummary: Codable, Equatable {
     // Fixes moving at vehicle speed are departure evidence, not a walk.
     @discardableResult
     // `speed` is Core Location's raw value: a negative (unknown) speed proves nothing.
-    mutating func noteFix(distance: Double, accuracy: Double, speed: Double) -> Bool {
-        guard distance.isFinite, accuracy >= 0, accuracy <= 30, speed >= 0, speed < 2.6 else { return false }
+    // `onFoot`: Core Motion reports walking now, or cannot answer. A slow car
+    // creeping out of its space, before Core Motion says so, is not a walk.
+    mutating func noteFix(distance: Double, accuracy: Double, speed: Double, onFoot: Bool = true) -> Bool {
+        guard onFoot, distance.isFinite, accuracy >= 0, accuracy <= 30, speed >= 0, speed < 2.6 else { return false }
         guard distance - accuracy >= 25 else { return false }
         displacementFixes += 1
         let before = onFootDisplacement
@@ -1287,28 +1289,51 @@ struct StopEvidenceSummary: Codable, Equatable {
     }
     // Confident time in each state between the stop and `until`. A mark lasts until
     // the next one; the state in force at the stop start counts from the start.
+    // Vehicle runs that begin this close to the stop start, or end this close to the
+    // deciding fix, are the car arriving or leaving, not motion during the stop.
+    static let vehicleTailSeconds: Double = 120
+    // Whether Core Motion history answered for the stop up to `until`.
+    func historyCovers(_ until: Double) -> Bool {
+        historyTimedOut != true && (historyQueriedUntil ?? 0) >= until - Self.vehicleTailSeconds
+    }
     func totals(until: Double) -> Totals {
         var t = Totals()
         let ordered = marks.sorted { $0.at < $1.at }
+        struct Span { var start: Double; var end: Double; var kind: String; var confident: Bool }
+        var spans: [Span] = []
         for (index, mark) in ordered.enumerated() {
             let start = max(mark.at, stopStart)
-            let last = index + 1 >= ordered.count || ordered[index + 1].at >= until
             let end = min(index + 1 < ordered.count ? ordered[index + 1].at : until, until)
             guard end > start else { continue }
-            let seconds = end - start
-            t.covered += seconds
+            spans.append(Span(start: start, end: end, kind: mark.kind, confident: mark.confident))
+            t.covered += end - start
             guard mark.confident else { continue }
             switch mark.kind {
-            case "walking": t.walking += seconds; t.longestWalk = max(t.longestWalk, seconds)
-            case "vehicle", "cycling":
-                // The drive still in force when the stop began, and the drive away
-                // that reaches the deciding fix, are the journey itself, not the stop.
-                // One vehicle run through the whole stop is a slow queue, not a stop.
-                if (mark.at <= stopStart) != last { continue }
-                t.vehicle += seconds; t.lastVehicleAt = max(t.lastVehicleAt ?? 0, start)
-            case "stationary": t.stationary += seconds
+            case "walking": t.walking += end - start; t.longestWalk = max(t.longestWalk, end - start)
+            case "stationary": t.stationary += end - start
             default: break
             }
+        }
+        // A vehicle run continues through unknown or low-confidence blips. A run at
+        // the arrival or the departure is the journey itself. One run spanning the
+        // whole stop is a slow queue, but only when history saw the whole stop:
+        // without it the gap between two vehicle callbacks is unobserved.
+        func vehicle(_ s: Span) -> Bool { s.confident && (s.kind == "vehicle" || s.kind == "cycling") }
+        func bridge(_ s: Span) -> Bool { !s.confident || s.kind == "unknown" }
+        var index = 0
+        while index < spans.count {
+            guard vehicle(spans[index]) else { index += 1; continue }
+            var next = index, seconds = 0.0, lastVehicle = index
+            while next < spans.count, vehicle(spans[next]) || bridge(spans[next]) {
+                if vehicle(spans[next]) { seconds += spans[next].end - spans[next].start; lastVehicle = next }
+                next += 1
+            }
+            let arriving = spans[index].start <= stopStart + Self.vehicleTailSeconds
+            let leaving = spans[lastVehicle].end >= until - Self.vehicleTailSeconds
+            if (!arriving && !leaving) || (arriving && leaving && historyCovers(until)) {
+                t.vehicle += seconds; t.lastVehicleAt = max(t.lastVehicleAt ?? 0, spans[lastVehicle].start)
+            }
+            index = next
         }
         return t
     }
@@ -1355,7 +1380,7 @@ enum StopClassifier {
         }
         let t = e.totals(until: now)
         var reasons: [String] = []
-        var score = 0, sources = 0
+        var score = 0, sources = 0, displaced = false
         let motionKnown = e.motion == "authorized"
         if !motionKnown { reasons.append("Core Motion \(e.motion == "denied" ? "access denied" : "unavailable")") }
         else if e.historyTimedOut == true { reasons.append("Core Motion history did not arrive in time; live motion only") }
@@ -1370,7 +1395,7 @@ enum StopClassifier {
         // Displacement is on-foot evidence only where Core Motion saw walking or
         // cannot answer: a car creeping out of a car park is not a walk.
         if e.onFootDisplacement >= footDisplacementMeters && e.displacementFixes >= 2 && (t.walking > 0 || !motionKnown) {
-            score += 1; sources += 1; reasons.append("on foot \(Int(e.onFootDisplacement)) m from the stop")
+            score += 1; sources += 1; displaced = true; reasons.append("on foot \(Int(e.onFootDisplacement)) m from the stop")
         }
         if e.visitAt != nil { score += 1; sources += 1; reasons.append("iOS reported a visit") }
         if let kind = e.savedPlaceKind { score += 1; sources += 1; reasons.append("at a saved place (\(kind))") }
@@ -1380,7 +1405,9 @@ enum StopClassifier {
         let destination: Bool
         if stopped >= longSeconds { destination = score >= 2 }
         else if stopped >= mediumSeconds { destination = score >= 2 && sources >= 2 }
-        else { destination = score >= 3 && sources >= 2 }
+        // A short stop needs a second source independent of the walk; displacement
+        // usually comes from that same walk (to a door 40 m away).
+        else { destination = score >= 3 && sources - (displaced ? 1 : 0) >= 2 }
         if destination {
             return result(.meaningfulDestination, score >= 3 ? "high" : "medium", ["stopped \(minutes) min"] + reasons)
         }
@@ -1430,11 +1457,13 @@ struct HeldStopFixes: Codable, Equatable {
         return true
     }
     // What a launch replays: only this account's own record, deliveries in the
-    // order they arrived and fixes within each in time order.
-    static func replay(_ data: Data?, owner: String?) -> [HeldDelivery] {
+    // order they arrived and fixes within each in time order. A record older than
+    // any continuation window decides nothing any more and replays nothing.
+    static func replay(_ data: Data?, owner: String?, now: Double, maximumAge: Double = JourneyContinuation.window) -> [HeldDelivery] {
         guard let data = data, let owner = owner,
               let held = try? JSONDecoder().decode(HeldStopFixes.self, from: data),
-              held.owner.lowercased() == owner.lowercased() else { return [] }
+              held.owner.lowercased() == owner.lowercased(),
+              let newest = held.deliveries.map(\.receivedAt).max(), now - newest <= maximumAge else { return [] }
         return held.deliveries.map { delivery in
             var sorted = delivery
             sorted.fixes.sort { $0.timestamp < $1.timestamp }

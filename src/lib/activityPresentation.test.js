@@ -17,6 +17,13 @@ const grouping={metadata:{manualTags:{[base.id]:['Mine']},hiddenTags:{[base.id]:
 const present=(trip=journey,options={})=>activityPresentation(trip,{ownerID:owner,places:[],vehicles:[{id:'v1',name:'Trek',category:'bicycle'}],grouping,unit:'km',...options});
 
 describe('activityPresentation',()=>{
+ it('shows an ambiguous native stop with the evidence it lacked',()=>{
+  const stop={id:'native:x:1',name:'Shops',tags:['Possible destination'],durationSeconds:900,charging:'none',verdict:'ambiguous',reasons:['stopped 15 min','no walking, visit or on-foot evidence; the phone may have stayed in the vehicle']};
+  const [shown]=present({...journey,recognisedStops:[stop]}).stops;
+  expect(shown.detail).toBe('15 min · no walking, visit or on-foot evidence; the phone may have stayed in the vehicle');
+  expect(shown.tags).toContain('Possible destination');
+  expect(present({...journey,recognisedStops:[{...stop,verdict:undefined,reasons:undefined}]}).stops[0].detail).toBe('15 min');
+ });
  it('carries the identity native needs to reject stale or foreign updates',()=>{
   const p=present();
   expect(p).toMatchObject({schema:PRESENTATION_SCHEMA,ownerID:owner,activityID:base.id,updatedAt:1790000400});

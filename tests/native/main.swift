@@ -296,7 +296,11 @@ check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true
       "a fifteen-minute shop with a corroborated visit (visit plus brief walking) is a destination")
 check(verdict(stopEvidence(marks: [(1000,"stationary",true)]), minutes: 30).verdict == .ambiguous, "the phone left in the car for thirty minutes is ambiguous: nothing shows a visit")
 check(verdict(stopEvidence(marks: [(1000,"walking",true),(1030,"stationary",true)]), minutes: 30).verdict == .ambiguous, "one walking callback is not sustained walking")
-check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], displacement: 60, fixes: 2), minutes: 5).verdict == .meaningfulDestination,
+// Displacement usually comes from the same walk (to a door 40 m away), so it is not
+// the independent second source a short stop needs: a 3-6 minute pickup stays one drive.
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], displacement: 60, fixes: 2), minutes: 5).verdict == .temporaryPause,
+      "a short pickup with a walk to the door and back stays one drive")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], visit: 1050), minutes: 5).verdict == .meaningfulDestination,
       "a short stop is a destination only with strong walking and an independent source")
 check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)]), minutes: 5).verdict == .temporaryPause,
       "a short stop with walking alone stays one drive")
@@ -305,7 +309,19 @@ check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true
 check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], saved: "work"), minutes: 8).reasons.contains("at a saved place (work)"),
       "a saved Work stop names its place kind, not its name")
 // Conflicting and missing evidence.
-check(verdict(stopEvidence(marks: [(1000,"vehicle",true),(1100,"walking",false),(1200,"vehicle",true),(1500,"stationary",true)]), minutes: 12).verdict == .temporaryPause, "low-confidence walking between vehicle motion is creeping traffic")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1200,"vehicle",true),(1300,"walking",false),(1350,"vehicle",true),(1500,"stationary",true)]), minutes: 12).verdict == .temporaryPause,
+      "low-confidence walking between vehicle motion in the middle of a stop is creeping traffic")
+// Core Motion splits the arrival run with a blip, or re-issues automotive after the GPS stop.
+check(verdict(stopEvidence(marks: [(900,"vehicle",true),(1020,"unknown",false),(1025,"vehicle",true),(1120,"stationary",true),(1150,"walking",true),(1300,"stationary",true)]), minutes: 15).verdict == .meaningfulDestination,
+      "an arrival run split by a blip is still the arrival, not congestion")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1300,"stationary",true),(1780,"vehicle",true),(1850,"stationary",true),(1870,"vehicle",true)]), minutes: 15).verdict == .meaningfulDestination,
+      "reversing out and stopping again before the deciding fix is the departure, not congestion")
+// Without history, two vehicle callbacks around an unobserved stop are not a slow queue.
+var unobserved = StopEvidenceSummary(stopStart: 1000, motion: "authorized")
+_ = unobserved.noteLive(MotionMark(at: 990, kind: "vehicle", confident: true))
+unobserved.visitAt = 1100; unobserved.historyTimedOut = true
+let unobservedVerdict = StopClassifier.classify(unobserved, family: .driving, now: 1900)
+check(unobservedVerdict.verdict != .temporaryPause || unobservedVerdict.confidence != "high", "a stop the phone did not observe is never a confident traffic pause")
 // The car's own arrival and departure are the journey, not motion during the stop.
 let tails = verdict(stopEvidence(marks: [(950,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
 check(tails.verdict == .meaningfulDestination && !tails.reasons.contains { $0.contains("vehicle motion") }, "sitting in the car after parking and driving off before the deciding fix do not veto a destination")
@@ -313,7 +329,7 @@ check(verdict(stopEvidence(marks: [(950,"vehicle",true),(1100,"stationary",true)
 check(StopEvidenceSummary.kind(walking: false, running: false, automotive: true, cycling: false, stationary: true) == "stationary", "a parked car (automotive and stationary) is not vehicle motion")
 check(verdict(stopEvidence(marks: [(950,"vehicle",true)]), minutes: 15).verdict == .temporaryPause, "one vehicle run through the whole stop is a slow queue")
 check(verdict(stopEvidence(marks: [(1000,"stationary",true)], displacement: 80, fixes: 3, visit: 1100), minutes: 8).verdict == .ambiguous, "displacement without any walking (a car creeping out) is not on-foot evidence")
-let mixed = verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1100,"vehicle",true),(1200,"stationary",true)], displacement: 50, fixes: 2), minutes: 10)
+let mixed = verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true),(1300,"vehicle",true),(1400,"stationary",true)], displacement: 50, fixes: 2), minutes: 10)
 check(mixed.reasons.contains { $0.contains("conflicts with a destination") }, "vehicle motion during a stop is named as conflicting evidence")
 let denied = verdict(stopEvidence(motion: "denied", displacement: 90, fixes: 3, visit: 1200), minutes: 15)
 check(denied.verdict == .meaningfulDestination && denied.reasons.contains("Core Motion access denied"), "without Motion, displacement and a visit together can still prove a destination")
@@ -373,24 +389,25 @@ func held(_ t: Double, speed: Double = 1) -> HeldFix {
 }
 var record = HeldStopFixes(owner: "Anna", stopStart: 1000)
 // Stage 1: terminated before anything was held: no record, nothing replayed.
-check(HeldStopFixes.replay(nil, owner: "anna").isEmpty, "with no record nothing is replayed")
+check(HeldStopFixes.replay(nil, owner: "anna", now: 1960).isEmpty, "with no record nothing is replayed")
 // Stage 2: terminated during the wait: the deciding delivery and later ones replay in order.
 check(record.append(HeldDelivery(receivedAt: 1950, source: "standard", fixes: [held(1945), held(1940), held(1948, speed: -1)])), "the deciding delivery is held")
 check(record.append(HeldDelivery(receivedAt: 1952, source: "lowPower", fixes: [held(1951)])), "a later delivery queues behind it")
 let stored = try! JSONEncoder().encode(record)
-let replayed = HeldStopFixes.replay(stored, owner: "anna")
+let replayed = HeldStopFixes.replay(stored, owner: "anna", now: 1960)
 check(replayed.map(\.receivedAt) == [1950, 1952] && replayed.map(\.source) == ["standard", "lowPower"], "deliveries replay in arrival order with their receipt time and source")
 check(replayed[0].fixes.map(\.timestamp) == [1940, 1945, 1948], "fixes replay in time order with original timestamps")
 check(replayed[0].fixes.last?.speed == -1, "an unknown speed stays unknown after replay")
 check(replayed.flatMap(\.fixes).count == 4, "no fix is lost or added")
 // Stage 3: terminated after the record was removed for replay: nothing replays twice.
-check(HeldStopFixes.replay(nil, owner: "anna").isEmpty, "a record removed before replay cannot deliver a fix again")
+check(HeldStopFixes.replay(nil, owner: "anna", now: 1960).isEmpty, "a record removed before replay cannot deliver a fix again")
 // Account scope and bounds.
-check(HeldStopFixes.replay(stored, owner: "kim").isEmpty && HeldStopFixes.replay(stored, owner: nil).isEmpty, "another account never receives held fixes")
-check(HeldStopFixes.replay(Data("null".utf8), owner: "anna").isEmpty && HeldStopFixes.replay(Data("garbage".utf8), owner: "anna").isEmpty, "an unreadable record replays nothing and blocks nothing")
+check(HeldStopFixes.replay(stored, owner: "kim", now: 1960).isEmpty && HeldStopFixes.replay(stored, owner: nil, now: 1960).isEmpty, "another account never receives held fixes")
+check(HeldStopFixes.replay(Data("null".utf8), owner: "anna", now: 1960).isEmpty && HeldStopFixes.replay(Data("garbage".utf8), owner: "anna", now: 1960).isEmpty, "an unreadable record replays nothing and blocks nothing")
 var full = HeldStopFixes(owner: "anna", stopStart: 1000)
 check(full.append(HeldDelivery(receivedAt: 1, source: "standard", fixes: (0..<HeldStopFixes.fixLimit).map { held(Double($0)) })), "up to the limit is held")
 check(!full.append(HeldDelivery(receivedAt: 2, source: "standard", fixes: [held(9999)])) && full.fixCount == HeldStopFixes.fixLimit, "the held record is bounded")
+check(HeldStopFixes.replay(stored, owner: "anna", now: 1952 + JourneyContinuation.window + 1).isEmpty, "a record older than any continuation window replays nothing")
 }
 // One journey is one continuous activity. Walking away from a parked car is its
 // own walking journey, so a confirmed change of type ends the drive instead of
@@ -4859,7 +4876,7 @@ do {
     var holding = HeldStopFixes(owner: "anna", stopStart: parkedAt)
     _ = holding.append(HeldDelivery(receivedAt: returning.timestamp + 1, source: "standard", fixes: [HeldFix(latitude: returning.latitude, longitude: returning.longitude,
         altitude: 0, horizontalAccuracy: returning.accuracy, verticalAccuracy: 5, course: -1, speed: returning.speed, timestamp: returning.timestamp)]))
-    check(HeldStopFixes.replay(try! JSONEncoder().encode(holding), owner: "anna").first?.fixes.first?.timestamp == returning.timestamp, "combined: the deciding fix is replayed after termination")
+    check(HeldStopFixes.replay(try! JSONEncoder().encode(holding), owner: "anna", now: returning.timestamp + 5).first?.fixes.first?.timestamp == returning.timestamp, "combined: the deciding fix is replayed after termination")
     // 9-12. The first leg ends at the shop; the returning fix starts the second leg.
     outbound.updateDetails { $0.destinationStop = StopInterval(start: parkedAt, end: returning.timestamp, verdict: verdict.verdict.rawValue, confidence: verdict.confidence, reasons: verdict.reasons) }
     outbound.completeProvisional()
