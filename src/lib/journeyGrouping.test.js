@@ -59,6 +59,15 @@ it('keeps the two legs of a destination stop as separate journeys, not an unexpl
  // ...but never across a saved Home stop the phone recognised as a destination.
  const homeAt=far,homes=[{id:'h',kind:'home',name:'Home',latitude:homeAt.latitude,longitude:homeAt.longitude,radius:150}];
  expect(buildJourneys([leg1,leg2],{owner,metadata:emptyGrouping(owner),vehicles,places:homes}).journeys).toHaveLength(2);
+ // ...nor across a saved Work stop...
+ const works=[{id:'w',kind:'work',name:'Work',latitude:homeAt.latitude,longitude:homeAt.longitude,radius:150}];
+ const atWork=buildJourneys([leg1,leg2],{owner,metadata:emptyGrouping(owner),vehicles,places:works});
+ expect(atWork.journeys).toHaveLength(2);expect(atWork.suggestions).toEqual([]);
+ // ...nor over two different titles the person gave the legs; the same title still groups.
+ const titled={...emptyGrouping(owner),titles:{leg1:'To the coast',leg2:'Coast to the farm'}};
+ expect(buildJourneys([leg1,leg2],{owner,metadata:titled,vehicles,places:[]}).journeys).toHaveLength(2);
+ const sameTitle={...emptyGrouping(owner),titles:{leg1:'Road trip',leg2:'Road trip'}};
+ expect(buildJourneys([leg1,leg2],{owner,metadata:sameTitle,vehicles,places:[]}).journeys).toHaveLength(1);
 });
 it('keeps a published stop out of grouping until it is finalised',()=>{
  const {activities,meta}=setup();

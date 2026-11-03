@@ -343,7 +343,16 @@ check(lagOnly.totals(until: 1900).vehicle == 0, "arrival lag and departure lag b
 let tails = verdict(stopEvidence(marks: [(950,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
 check(tails.verdict == .meaningfulDestination && !tails.reasons.contains { $0.contains("vehicle motion") }, "sitting in the car after parking and driving off before the deciding fix do not veto a destination")
 check(verdict(stopEvidence(marks: [(950,"vehicle",true),(1100,"stationary",true),(1820,"vehicle",true)]), minutes: 15).verdict == .ambiguous, "arrival and departure tails alone are neither congestion nor a destination")
-check(StopEvidenceSummary.kind(walking: false, running: false, automotive: true, cycling: false, stationary: true) == "stationary", "a parked car (automotive and stationary) is not vehicle motion")
+check(StopEvidenceSummary.kind(walking: false, running: false, automotive: true, cycling: false, stationary: true) == "parkedVehicle", "a stopped car with the phone in it is its own state")
+check(stopEvidence(marks: [(1000,"parkedVehicle",true)]).totals(until: 1900).vehicle == 0, "a stopped car is not vehicle motion")
+// A 15-minute standstill in traffic: Core Motion keeps reporting a stopped vehicle.
+let standstill = verdict(stopEvidence(marks: [(950,"vehicle",true),(1010,"parkedVehicle",true),(1880,"vehicle",true)]), minutes: 15)
+check(standstill.verdict == .temporaryPause && standstill.reasons.contains { $0.contains("traffic standstill") }, "a traffic standstill is a pause, not a possible destination")
+var unseenStandstill = stopEvidence(marks: [(950,"vehicle",true),(1010,"parkedVehicle",true),(1880,"vehicle",true)]); unseenStandstill.historyTimedOut = true
+check(StopClassifier.classify(unseenStandstill, family: .driving, now: 1900).verdict == .ambiguous, "without full history a standstill stays ambiguous, never overstated")
+check(verdict(stopEvidence(marks: [(1000,"parkedVehicle",true),(1100,"walking",true),(1300,"parkedVehicle",true)]), minutes: 15).verdict != .temporaryPause,
+      "someone who walked is not in a traffic standstill")
+check(verdict(stopEvidence(marks: [(1000,"parkedVehicle",true),(1200,"stationary",true)]), minutes: 15).verdict == .ambiguous, "a phone left in a switched-off car (stationary) stays ambiguous")
 check(verdict(stopEvidence(marks: [(950,"vehicle",true)]), minutes: 15).verdict == .temporaryPause, "one vehicle run through the whole stop is a slow queue")
 check(verdict(stopEvidence(marks: [(1000,"stationary",true)], displacement: 80, fixes: 3, visit: 1100), minutes: 8).verdict == .ambiguous, "displacement without any walking (a car creeping out) is not on-foot evidence")
 let mixed = verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true),(1300,"vehicle",true),(1400,"stationary",true)], displacement: 50, fixes: 2), minutes: 10)

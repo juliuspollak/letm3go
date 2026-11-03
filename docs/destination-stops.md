@@ -74,11 +74,17 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 
 ## Limitations
 
-- **Standstill in a jam:** Core Motion reports a stopped car as automotive and stationary, which is mapped to stationary. A 15-minute standstill without vehicle motion in the middle is therefore `ambiguous`: the drive stays continuous, but the stop is shown as a Possible destination with its title suffix.
-- **Runtime hand-off untested in the harness:** the native tests cover every decision. They do not cover `processAutomatic`, `finalizeSettledAutomatic`, the detector or the held-fix replay; those are covered by review and the simulator build only. The combined scenario test is a model built from the same decisions.
+- **Standstill in a jam:** Core Motion reports a stopped car with its engine running as automotive and stationary (`parkedVehicle`).
+  - A stop that is at least 80 % `parkedVehicle`, with no walking and with Core Motion history covering it, is a `temporaryPause` ("a traffic standstill").
+  - Without full history it stays `ambiguous`, so it is never overstated.
+  - A phone left in a switched-off car settles to plain stationary and stays `ambiguous`.
+- **Runtime coverage:** `npm run test:recorder:sim` (`RecorderHarness.swift`) runs the real recorder orchestration in a simulator. It does not cover iOS scheduling, suspension, background sessions keeping a backgrounded app alive, or real Core Location and Core Motion delivery.
 
 - **Correction:** an ambiguous stop can be renamed or ignored, but a single native activity cannot be split in the app today. Grouping links and cuts work only between activities. Splitting it is a separate feature.
-- **Backup:** `details.stops`, `stopEvidence` and `destinationStop` are not in the cloud backup projection (`cloudSync.viewMetadata`). A stop's verdict stays on this iPhone. The split itself is backed up, because the two legs are separate activities.
+- **Backup:** a round-trip test (`stopBackup.test.js`) shows what the existing cloud backup restores.
+  - Restored: destination legs as separate activities with their exact times and routes, a continued drive's stops as route segment breaks, and moving time without the stops.
+  - Not restored: verdicts, confidence and reasons (`details.stops`, `destinationStop`). They stay on the iPhone that recorded them, because the server's `view_metadata` check accepts only five known keys and changing it would need a migration.
+  - Only the explanation is lost, not route or timing data.
 - **Visits:** iOS often delivers visits late or not at all, so they are only ever supporting evidence.
 - **Process termination during the wait:** the held deliveries are written to the account's encrypted store (`stop-held.data`, `HeldStopFixes`) before anything waits.
   - The next launch replays them once, in order, with their timestamps, receipt times and sources, as soon as automatic tracking is available.

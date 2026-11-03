@@ -1235,13 +1235,15 @@ struct StopEvidenceSummary: Codable, Equatable {
         savedPlaceKind = try c.decodeIfPresent(String.self, forKey: .savedPlaceKind)
     }
 
-    // A parked car reports automotive together with stationary: that is a stopped
-    // vehicle, not vehicle motion.
+    // A stopped car with the phone in it reports automotive together with
+    // stationary ("parkedVehicle"): not vehicle motion, but not someone who left
+    // the car either. A phone left in a switched-off car settles to stationary.
     static func kind(walking: Bool, running: Bool, automotive: Bool, cycling: Bool, stationary: Bool) -> String {
         if automotive && !stationary { return "vehicle" }
         if cycling && !stationary { return "cycling" }
         if walking || running { return "walking" }
-        if stationary || automotive || cycling { return "stationary" }
+        if automotive && stationary { return "parkedVehicle" }
+        if stationary || cycling { return "stationary" }
         return "unknown"
     }
     // A live callback. Ignored where history already covers it, and when it only
@@ -1303,7 +1305,7 @@ struct StopEvidenceSummary: Codable, Equatable {
         return (counted.map(\.metres).max() ?? 0, counted.count)
     }
     struct Totals: Equatable {
-        var walking: Double = 0, longestWalk: Double = 0, vehicle: Double = 0, stationary: Double = 0, covered: Double = 0
+        var walking: Double = 0, longestWalk: Double = 0, vehicle: Double = 0, stationary: Double = 0, covered: Double = 0, parkedVehicle: Double = 0
     }
     // Confident time in each state between the stop and `until`. A mark lasts until
     // the next one; the state in force at the stop start counts from the start.
@@ -1329,6 +1331,7 @@ struct StopEvidenceSummary: Codable, Equatable {
             switch mark.kind {
             case "walking": t.walking += end - start; t.longestWalk = max(t.longestWalk, end - start)
             case "stationary": t.stationary += end - start
+            case "parkedVehicle": t.parkedVehicle += end - start
             default: break
             }
         }
@@ -1388,6 +1391,7 @@ enum StopClassifier {
     static let weakWalkSeconds: Double = 30
     static let footDisplacementMeters: Double = 40
     static let congestionVehicleSeconds: Double = 60
+    static let parkedVehicleShare: Double = 0.8
 
     static func classify(_ e: StopEvidenceSummary, family: JourneyFamily, now: Double) -> StopClassification {
         let stopped = max(0, now - e.stopStart)
@@ -1409,6 +1413,12 @@ enum StopClassifier {
         else if e.historyTimedOut == true { reasons.append("Core Motion history did not arrive in time; live motion only") }
         if t.vehicle >= congestionVehicleSeconds && t.walking < weakWalkSeconds {
             return result(.temporaryPause, "high", reasons + ["vehicle motion for \(Int(t.vehicle))s during the stop: congestion or creeping traffic"])
+        }
+        // Core Motion reported a stopped vehicle (engine running) for nearly the whole
+        // stop, nobody walked, and history saw all of it: a traffic standstill, not a
+        // possible destination. Without full history this proves nothing.
+        if t.parkedVehicle >= parkedVehicleShare * stopped && t.walking < weakWalkSeconds && e.historyCovers(now) {
+            return result(.temporaryPause, "medium", reasons + ["Core Motion reported a stopped vehicle for \(Int(t.parkedVehicle / 60)) of \(minutes) min and no walking: a traffic standstill"])
         }
         if t.longestWalk >= sustainedWalkSeconds || t.walking >= strongWalkSeconds {
             score += 2; sources += 1; reasons.append("walking for \(Int(t.walking))s (longest \(Int(t.longestWalk))s)")
