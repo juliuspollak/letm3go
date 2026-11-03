@@ -92,6 +92,28 @@ describe('rides through a segment',()=>{
   expect(row.best).toMatch(/^(1:59|2:00)$/);
   expect(row.passes.map(pass=>pass.interrupted)).toEqual([false,true]);
  });
+ it('does not blame a lap for a pause before it began',()=>{
+  const points=[];let t=1000;
+  const lap=()=>{for(let east=0;east<=600;east+=5){points.push(fix(east,t));t+=1;}for(let east=600;east>=0;east-=10){points.push(fix(east,t,300));t+=1;}};
+  lap();
+  // Waiting at the top of the trail with the recording paused, then riding it.
+  for(let east=-40;east<=10;east+=5){points.push({...fix(east,t),segment:1});t+=1;}
+  t+=120;
+  for(let east=15;east<=600;east+=5){points.push({...fix(east,t),segment:2});t+=1;}
+  const made=withSegment({id:'paused',title:'x',updatedAt:1,points,details:{}},0,120);
+  const row=segmentRides(made,[made])[0];
+  expect(row.thisRide).toBe(2);
+  expect(row.passes.every(pass=>!pass.interrupted)).toBe(true);
+ });
+ it('still shows a time for a lap with a break, marked as estimated',()=>{
+  const points=[];let t=1000;
+  for(let east=0;east<=600;east+=5){points.push(fix(east,t));t+=1;}
+  for(let east=600;east>=0;east-=10){points.push(fix(east,t,300));t+=1;}
+  for(let east=0;east<=600;east+=5){points.push({...fix(east,t),segment:east>300?1:0});t+=east===300?180:1;}
+  const made=withSegment({id:'broken2',title:'x',updatedAt:1,points,details:{}},0,120);
+  const broken=segmentRides(made,[made])[0].passes.find(pass=>pass.interrupted);
+  expect(broken.time).toMatch(/^~2:0/);
+ });
  it('shows nearby segments from other rides on the map, and not distant ones',()=>{
   const layers=nearbySegmentLayers(earlier,[today,earlier]);
   expect(layers.pins).toHaveLength(1);

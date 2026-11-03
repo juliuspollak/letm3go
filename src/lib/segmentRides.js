@@ -62,7 +62,7 @@ function passesOf({segment,owner,definition},trips){
  const version=`${segment.updatedAt||0}`;
  const passes=[];
  for(const trip of trips){
-  for(const effort of definition?effortsOn(definition,version,trip):[])passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:effort.elapsedSeconds,interrupted:effort.gapSeconds>0});
+  for(const effort of definition?effortsOn(definition,version,trip):[])passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:Math.max(0,effort.elapsedSeconds-effort.gapSeconds),interrupted:effort.gapSeconds>0});
  }
  // A section made across a GPS gap cannot be looked for elsewhere, and a segment always
  // counts on the ride that made it.
@@ -101,7 +101,7 @@ export function segmentRides(trip,trips){
   if(!thisRide)continue;
   const {segment,owner}=entry;
   rows.push({id:segment.id,ownerID:String(owner.id),owned:owner.id===trip.id,name:segment.name,color:segmentColor(segment.colorIndex),thisRide,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:bestOf(passes),
-   passes:passes.slice(0,MAX_LISTED).map((pass,index)=>({id:`${pass.trip.id}:${pass.startedAt}`,activityID:String(pass.trip.id),rank:index+1,time:clock(pass.elapsedSeconds),interrupted:pass.interrupted===true,when:`${dayText(pass.startedAt)} · ${timeText(pass.startedAt)}`,title:pass.trip.title||'Activity',current:pass.trip.id===trip.id}))});
+   passes:passes.slice(0,MAX_LISTED).map((pass,index)=>({id:`${pass.trip.id}:${pass.startedAt}`,activityID:String(pass.trip.id),rank:index+1,time:`${pass.interrupted?'~':''}${clock(pass.elapsedSeconds)}`,interrupted:pass.interrupted===true,when:`${dayText(pass.startedAt)} · ${timeText(pass.startedAt)}`,title:pass.trip.title||'Activity',current:pass.trip.id===trip.id}))});
  }
  return rows.sort((a,b)=>a.name.localeCompare(b.name));
 }

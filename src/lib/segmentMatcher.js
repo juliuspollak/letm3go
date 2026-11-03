@@ -248,6 +248,8 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
   if (along < prevAlong - s.progressToleranceMeters) { stop = 'reverse'; break; }
   if (along > prevAlong + reach + s.referenceSpacingMeters) { stop = 'jump'; break; }
   lastTime = p.timestamp;
+  // A break before the lap has got going is waiting at the start, not part of the lap.
+  if (resuming && maxAlong <= s.enterToleranceMeters) { matched.length = 0; minAlong = along; maxAlong = along; }
   const before = prevAlong;
   refIndex = projection.index;
   prevAlong = along;
