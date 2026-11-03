@@ -459,7 +459,8 @@ extension LocationRecorder {
                 pending.deliveries.append((locations, receivedAt ?? Date().timeIntervalSince1970, source))
                 stopHistoryPending = pending
                 recordDiagnostic("decision", "Stop decision made early: too many fixes arrived during the wait")
-                resumeStopDecision(generation: pending.generation, timedOut: true)
+                // Not a timeout: whatever history already arrived still counts.
+                resumeStopDecision(generation: pending.generation, timedOut: false)
             }
             return
         }
@@ -1441,7 +1442,15 @@ extension LocationRecorder {
         // A car creeping out of its space is not someone on foot.
         guard !AutomaticDetector.drivingMotion(motion, now: Date().timeIntervalSince1970) else { return }
         guard let id = settledTripID, let last = trips.first(where: { $0.id == id })?.points.last else { return }
-        updateSettledEvidence { $0.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: rawSpeed, at: sample.timestamp) }
+        // Every qualifying fix is kept (bounded) for judging at the decision; the
+        // journey is saved only when the distance grew meaningfully.
+        var grew = false
+        updateSettledEvidence(save: false) { evidence in
+            let before = evidence.footFixes
+            grew = evidence.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: rawSpeed, at: sample.timestamp)
+            return evidence.footFixes != before
+        }
+        if grew { updateSettledEvidence { _ in true } }
     }
     // iOS's own view that the person stayed somewhere, near this stop.
     func noteStopVisit(_ visit: CLVisit) {
