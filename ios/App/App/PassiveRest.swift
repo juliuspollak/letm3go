@@ -52,6 +52,9 @@ extension LocationRecorder {
     func setSharingRest(_ enabled: Bool) throws {
         guard let owner = ownerID, storage != nil else { throw failure("Recording storage is unavailable.") }
         sharingRestEnabled = enabled
+        // Switching the test off leaves nothing of it behind: no pending false-wake
+        // restore; the keep-alive cases end at the reconcile below.
+        if !enabled { falseWakeCandidate = nil }
         UserDefaults.standard.set(enabled, forKey: Self.sharingRestKey(owner))
         recordDiagnostic("preference", enabled ? "Release location while resting with sharing on: device test enabled" : "Release location while resting with sharing on: device test disabled")
         reconcileAutomaticSampling()
@@ -415,7 +418,9 @@ extension LocationRecorder {
         let wanted = KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active != nil,
             // The open-stop case is part of the device test until it is measured.
             precise: locationMode == .precise, stopOpen: sharingRestEnabled && settledTripID != nil && locationMode != .passive,
-            sessionHeld: backgroundActivitySession != nil, serviceSessionHeld: serviceSession != nil)
+            sessionHeld: backgroundActivitySession != nil, serviceSessionHeld: serviceSession != nil,
+            sharingWithoutSession: sharingRestEnabled && liveSharingHoldsLocation && locationMode != .passive,
+            lowPowerRunning: adaptive.lowPowerRunning)
         guard wanted else {
             if keepAliveTask != nil {
                 keepAliveGeneration += 1
@@ -429,7 +434,7 @@ extension LocationRecorder {
         guard #available(iOS 17.0, *) else { return }
         keepAliveGeneration += 1
         let generation = keepAliveGeneration
-        recordDiagnostic("service", "Journey keep-alive live updates started", details: ["reason": KeepAlivePolicy.reason(precise: locationMode == .precise)])
+        recordDiagnostic("service", "Journey keep-alive live updates started", details: ["reason": KeepAlivePolicy.reason(precise: locationMode == .precise, stopOpen: settledTripID != nil)])
         keepAliveTask = Task { @MainActor [weak self] in
             do {
                 for try await _ in CLLocationUpdate.liveUpdates() {

@@ -87,6 +87,8 @@ extension LocationRecorder {
         // Every path that can change what recording may do comes through here:
         // launch, foreground, authorization and Location Services changes.
         defer { recorderReconciledAvailable = automaticAvailable; noteRecordingHealth() }
+        // Held stop fixes from the last process wait for tracking to be available.
+        defer { if !heldReplayChecked { DispatchQueue.main.async { [weak self] in self?.replayHeldStopFixes() } } }
         updateIndicatorPolicy()
         guard storage != nil else { adaptive.shutdown(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Start the background session while the app is in the foreground; once
@@ -443,13 +445,16 @@ extension LocationRecorder {
             return
         }
         guard automaticAvailable, active == nil, let storage = storage else {diagnosticRejections["rejected.automaticUnavailable",default:0]+=locations.count;return}
+        // Fixes held when the process last ended are older than this delivery.
+        replayHeldStopFixes()
         // A stop decision is waiting for Core Motion history: later fixes queue
         // behind the deciding one, in order, and none is dropped.
         if var pending = stopHistoryPending {
-            if pending.deliveries.reduce(0, { $0 + $1.fixes.count }) + locations.count <= 500 {
+            if pending.deliveries.reduce(0, { $0 + $1.fixes.count }) + locations.count <= HeldStopFixes.fixLimit {
                 pending.deliveries.append((locations, Date().timeIntervalSince1970, source))
+                stopHistoryPending = pending
+                persistHeldStopFixes()
             } else { diagnosticRejections["rejected.heldDeliveryLimit", default: 0] += locations.count }
-            stopHistoryPending = pending
             return
         }
         // A held delivery is judged as of its own receipt, so a suspension during
@@ -1470,6 +1475,12 @@ extension LocationRecorder {
         stopHistoryGeneration += 1
         let generation = stopHistoryGeneration, stopStart = evidence.stopStart
         stopHistoryPending = (owner, [(fixes, now, source)], generation)
+        // Durable before anything waits: a termination during the wait replays them.
+        guard persistHeldStopFixes() else {
+            stopHistoryPending = nil
+            recordDiagnostic("decision", "Stop fixes could not be held safely; deciding without Core Motion history")
+            return false
+        }
         // The wait is short; ask iOS not to suspend the app in the middle of it.
         if stopHistoryTask == .invalid {
             stopHistoryTask = UIApplication.shared.beginBackgroundTask(withName: "stop decision") { [weak self] in self?.endStopHistoryTask() }
@@ -1502,9 +1513,10 @@ extension LocationRecorder {
         UIApplication.shared.endBackgroundTask(stopHistoryTask)
         stopHistoryTask = .invalid
     }
-    // Sign-out or an account change: held fixes belong to the previous account.
+    // Sign-out or an account change: held fixes belong to the previous account. They
+    // stay in that account's store and are replayed when it is next opened.
     func cancelStopHistoryWait() {
-        if stopHistoryPending != nil { recordDiagnostic("decision", "Held stop fixes dropped: the account changed") }
+        if stopHistoryPending != nil { recordDiagnostic("decision", "Held stop fixes kept for the account's next launch") }
         stopHistoryPending = nil; stopHistoryGeneration += 1
         endStopHistoryTask()
     }
@@ -1516,6 +1528,7 @@ extension LocationRecorder {
         // Ended before re-processing, so any later wait begins its own task.
         endStopHistoryTask()
         guard ownerID == pending.owner else {
+            // The store is the other account's; its record stays for its next launch.
             recordDiagnostic("decision", "Held stop fixes dropped: the account changed")
             return
         }
@@ -1523,6 +1536,8 @@ extension LocationRecorder {
             updateSettledEvidence { $0.historyTimedOut = true; return true }
             recordDiagnostic("decision", "Core Motion history did not arrive in time; deciding with live motion only")
         }
+        // Removed before replaying, so nothing can be delivered twice.
+        clearHeldStopFixes()
         for delivery in pending.deliveries {
             // A delivery that begins another wait queues the rest behind it.
             if var next = stopHistoryPending { next.deliveries.append(delivery); stopHistoryPending = next; continue }
@@ -1533,5 +1548,51 @@ extension LocationRecorder {
         guard c.stoppedSeconds >= StopClassifier.pauseSeconds else { return }
         recordDiagnostic("decision", "Stop classified", details: ["stopVerdict": c.verdict.rawValue, "stopConfidence": c.confidence,
             "stoppedSeconds": String(Int(c.stoppedSeconds)), "stopReasons": c.reasons.joined(separator: "; ")])
+    }
+}
+
+// MARK: Durable held stop fixes (HeldStopFixes)
+extension LocationRecorder {
+    static func heldFix(_ l: CLLocation) -> HeldFix {
+        HeldFix(latitude: l.coordinate.latitude, longitude: l.coordinate.longitude, altitude: l.altitude,
+                horizontalAccuracy: l.horizontalAccuracy, verticalAccuracy: l.verticalAccuracy, course: l.course,
+                speed: l.speed, timestamp: l.timestamp.timeIntervalSince1970)
+    }
+    static func location(_ f: HeldFix) -> CLLocation {
+        CLLocation(coordinate: CLLocationCoordinate2D(latitude: f.latitude, longitude: f.longitude), altitude: f.altitude,
+                   horizontalAccuracy: f.horizontalAccuracy, verticalAccuracy: f.verticalAccuracy, course: f.course,
+                   speed: f.speed, timestamp: Date(timeIntervalSince1970: f.timestamp))
+    }
+    @discardableResult
+    func persistHeldStopFixes() -> Bool {
+        guard let storage = storage, let pending = stopHistoryPending else { return false }
+        var held = HeldStopFixes(owner: pending.owner, stopStart: settledEvidence?.stopStart ?? 0)
+        for delivery in pending.deliveries {
+            _ = held.append(HeldDelivery(receivedAt: delivery.receivedAt, source: delivery.source.rawValue, fixes: delivery.fixes.map(Self.heldFix)))
+        }
+        guard let data = try? JSONEncoder().encode(held), (try? storage.writeData(data, name: HeldStopFixes.fileName)) != nil else {
+            recordDiagnostic("error", "Held stop fixes could not be saved")
+            return false
+        }
+        return true
+    }
+    func clearHeldStopFixes() {
+        guard let storage = storage else { return }
+        try? FileManager.default.removeItem(at: storage.directory.appendingPathComponent(HeldStopFixes.fileName))
+    }
+    // Once per account open, when automatic tracking can take the fixes and no wait
+    // of this process owns the record. Removed before replay: never delivered twice.
+    func replayHeldStopFixes() {
+        guard !heldReplayChecked, stopHistoryPending == nil, automaticAvailable, active == nil, let storage = storage else { return }
+        heldReplayChecked = true
+        let url = storage.directory.appendingPathComponent(HeldStopFixes.fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let deliveries = HeldStopFixes.replay(try? storage.readData(name: HeldStopFixes.fileName), owner: ownerID)
+        clearHeldStopFixes()
+        recordDiagnostic("recovery", "Stop fixes held when the app last stopped were replayed",
+                         details: ["heldFixes": String(deliveries.reduce(0) { $0 + $1.fixes.count })])
+        for delivery in deliveries {
+            processAutomatic(delivery.fixes.map(Self.location), source: ObservationSource(rawValue: delivery.source) ?? .standard, receivedAt: delivery.receivedAt)
+        }
     }
 }

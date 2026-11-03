@@ -121,6 +121,9 @@ extension LocationRecorder {
         detector.reset();departureEvidence.reset();movementTransition.reset()
         dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
         restoreDwell()
+        // Fixes held for a stop decision when the process last ended are replayed
+        // once automatic tracking is available again.
+        heldReplayChecked = false
         let openedAt = Date().timeIntervalSince1970
         // Load the journal before the recovery step so its decisions are recorded.
         loadRecorderDiagnostics()

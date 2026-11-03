@@ -367,6 +367,30 @@ closing.publishStop(at: 1000, continuationEndsAt: 2200)
 closing.updateDetails { $0.stopEvidence = StopEvidenceSummary(stopStart: 1000) }
 closing.completeProvisional()
 check(closing.details?.stopEvidence == nil, "completing a journey compacts its stop evidence away")
+// Fixes held for a stop decision survive termination at every stage.
+func held(_ t: Double, speed: Double = 1) -> HeldFix {
+    HeldFix(latitude: -33, longitude: 151, altitude: 0, horizontalAccuracy: 8, verticalAccuracy: 5, course: -1, speed: speed, timestamp: t)
+}
+var record = HeldStopFixes(owner: "Anna", stopStart: 1000)
+// Stage 1: terminated before anything was held: no record, nothing replayed.
+check(HeldStopFixes.replay(nil, owner: "anna").isEmpty, "with no record nothing is replayed")
+// Stage 2: terminated during the wait: the deciding delivery and later ones replay in order.
+check(record.append(HeldDelivery(receivedAt: 1950, source: "standard", fixes: [held(1945), held(1940), held(1948, speed: -1)])), "the deciding delivery is held")
+check(record.append(HeldDelivery(receivedAt: 1952, source: "lowPower", fixes: [held(1951)])), "a later delivery queues behind it")
+let stored = try! JSONEncoder().encode(record)
+let replayed = HeldStopFixes.replay(stored, owner: "anna")
+check(replayed.map(\.receivedAt) == [1950, 1952] && replayed.map(\.source) == ["standard", "lowPower"], "deliveries replay in arrival order with their receipt time and source")
+check(replayed[0].fixes.map(\.timestamp) == [1940, 1945, 1948], "fixes replay in time order with original timestamps")
+check(replayed[0].fixes.last?.speed == -1, "an unknown speed stays unknown after replay")
+check(replayed.flatMap(\.fixes).count == 4, "no fix is lost or added")
+// Stage 3: terminated after the record was removed for replay: nothing replays twice.
+check(HeldStopFixes.replay(nil, owner: "anna").isEmpty, "a record removed before replay cannot deliver a fix again")
+// Account scope and bounds.
+check(HeldStopFixes.replay(stored, owner: "kim").isEmpty && HeldStopFixes.replay(stored, owner: nil).isEmpty, "another account never receives held fixes")
+check(HeldStopFixes.replay(Data("null".utf8), owner: "anna").isEmpty && HeldStopFixes.replay(Data("garbage".utf8), owner: "anna").isEmpty, "an unreadable record replays nothing and blocks nothing")
+var full = HeldStopFixes(owner: "anna", stopStart: 1000)
+check(full.append(HeldDelivery(receivedAt: 1, source: "standard", fixes: (0..<HeldStopFixes.fixLimit).map { held(Double($0)) })), "up to the limit is held")
+check(!full.append(HeldDelivery(receivedAt: 2, source: "standard", fixes: [held(9999)])) && full.fixCount == HeldStopFixes.fixLimit, "the held record is bounded")
 }
 // One journey is one continuous activity. Walking away from a parked car is its
 // own walking journey, so a confirmed change of type ends the drive instead of
@@ -2637,6 +2661,13 @@ do {
     check(!keepAlive(precise: true, session: true), "a held activity session needs no keep-alive")
     check(!keepAlive(precise: true, service: false), "without an Always service session the keep-alive cannot resume the app, so it is not started")
     check(!keepAlive(precise: true, manual: true) && !keepAlive(stop: true, automatic: false), "manual recordings and Watch ownership never start it")
+    check(KeepAlivePolicy.wanted(automaticAvailable: false, manualRecording: false, precise: false, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, sharingWithoutSession: true),
+          "sharing that holds location after a sharing rest keeps the app resumable, including while the Watch owns a workout")
+    check(!KeepAlivePolicy.wanted(automaticAvailable: true, manualRecording: false, precise: true, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, lowPowerRunning: true),
+          "never a second liveUpdates stream beside the low-power one")
+    check(!KeepAlivePolicy.wanted(automaticAvailable: false, manualRecording: true, precise: false, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, sharingWithoutSession: true),
+          "an iPhone manual recording holds its own session, so no keep-alive")
+    check(KeepAlivePolicy.reason(precise: false, stopOpen: false).contains("live sharing"), "the keep-alive says which case it covers")
 
     // Modes, configuration, session and indicator.
     var sampling = AutomaticSampling()
@@ -4775,7 +4806,78 @@ do {
     check(dedupeStore.load().count == 1, "a replacement job drops any earlier job for the same ride")
 }
 
-print("\(assertions) native recorder/auth assertions passed")
+// MARK: Combined scenario (Change A + Change B), decision by decision
+// Home -> drive to an unsaved shop -> 15 min inside -> drive home -> rest at Home,
+// household sharing on, device test on and off. The runtime glue between these
+// decisions is not testable here; this proves the decisions agree with each other.
+do {
+    func homeRest(_ now: Double, disturbed: Double? = nil) -> RestDecision {
+        RestConfirmation.decide(RestInputs(place: .home, placeSince: 0, lastDisturbanceAt: disturbed, placeAccuracy: 10, placeVerified: true,
+            idle: true, recentMovement: false, motionMoving: false, wifi: .unknown, now: now))
+    }
+    func passiveAllowed(_ rest: RestDecision, sharingMayRest: Bool) -> Bool {
+        PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: rest, alwaysAuthorized: true, preciseAuthorized: true, serviceSessionHeld: true,
+            serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: false, liveSharing: true, sharingMayRest: sharingMayRest)) == nil
+    }
+    func sharing(_ rest: RestDecision, testOn: Bool, sharedAt: Double = 600) -> Bool {
+        let otherwise = PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: rest, alwaysAuthorized: true, preciseAuthorized: true, serviceSessionHeld: true,
+            serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: false)) == nil
+        return SharingRest.decide(SharingRestInputs(enabled: testOn, liveSharing: true, automaticAvailable: true, passiveOtherwiseAllowed: otherwise,
+            shared: [SharedPosition(at: sharedAt, accuracy: 10, insidePlace: true)], placeSince: 0, activityShared: false, statusChangePending: false)).allowed
+    }
+    // 1-3. Still at Home for 25 min: with the test on, sharing rests and passive rest may begin.
+    let atHome = homeRest(1500)
+    check(atHome.confirmed && sharing(atHome, testOn: true) && passiveAllowed(atHome, sharingMayRest: true), "combined: Home rest with sharing goes passive when the device test is on")
+    check(!sharing(atHome, testOn: false) && !passiveAllowed(atHome, sharingMayRest: false), "combined: with the test off, sharing keeps location exactly as before")
+    check(!BackgroundSessionPolicy.wanted(automaticAvailable: true, manualRecording: false, passiveRest: true, liveSharing: false), "combined: the session is released in passive rest")
+    // 4-5. Leaving Home disturbs the rest: sharing holds location again and the drive is precise.
+    let leaving = homeRest(5000, disturbed: 5000)
+    check(!leaving.confirmed && !sharing(leaving, testOn: true), "combined: a departure makes sharing hold location again")
+    check(KeepAlivePolicy.wanted(automaticAvailable: true, manualRecording: false, precise: true, stopOpen: false, sessionHeld: false, serviceSessionHeld: true),
+          "combined: the drive started without a session is kept resumable")
+    check(!HouseholdPublisher.canConfirm(continuousRunning: true, resuming: false, fixAt: 600, executingSince: 0, continuousSince: 5000),
+          "combined: the old Home fix is never re-sent as current once passive rest ended")
+    // 6. Drive to the shop and park: a provisional stop.
+    var outbound = RecordedActivity(activity: "Driving", startedAt: 5010, resumedAt: 5010, title: "Drive")
+    outbound.recordingMode = "automatic"; outbound.details = ActivityDetails()
+    for i in 0...20 { check(outbound.accept(drivingFix(-33 + Double(i)*120/111_320, 5010 + Double(i)*10), now: 5010 + Double(i)*10), "combined: outbound fix recorded") }
+    let parkedAt = 5210.0
+    outbound.publishStop(at: parkedAt, continuationEndsAt: parkedAt + JourneyContinuation.vehiclePauseWindow)
+    // 7. Evidence while inside: arrival tail, walking in, stationary, walking out, departure tail.
+    var evidence = StopEvidenceSummary(stopStart: parkedAt, motion: "authorized")
+    evidence.applyHistory([MotionMark(at: parkedAt - 30, kind: "vehicle", confident: true), MotionMark(at: parkedAt + 40, kind: "walking", confident: true),
+                           MotionMark(at: parkedAt + 200, kind: "stationary", confident: true), MotionMark(at: parkedAt + 820, kind: "walking", confident: true),
+                           MotionMark(at: parkedAt + 880, kind: "vehicle", confident: true)], from: parkedAt - 60, to: parkedAt + 905)
+    outbound.updateDetails { $0.stopEvidence = evidence }
+    // 8. The returning fix inside the continuation radius: decided before it is appended.
+    let returning = drivingFix(-33 + 20*120/111_320 + 10/111_320, parkedAt + 905)
+    let movement = JourneyContinuation.decide(stoppedAt: parkedAt, now: returning.timestamp, distance: 10, family: .driving, movement: .driving,
+                                              window: JourneyContinuation.vehiclePauseWindow)
+    let verdict = StopClassifier.classify(outbound.details!.stopEvidence!, family: .driving, now: returning.timestamp)
+    check(movement == .resume && verdict.verdict == .meaningfulDestination, "combined: a 15-minute shop with walking in and out is a destination, despite arrival and departure motion")
+    // The held deciding fix survives a termination during the history wait.
+    var holding = HeldStopFixes(owner: "anna", stopStart: parkedAt)
+    _ = holding.append(HeldDelivery(receivedAt: returning.timestamp + 1, source: "standard", fixes: [HeldFix(latitude: returning.latitude, longitude: returning.longitude,
+        altitude: 0, horizontalAccuracy: returning.accuracy, verticalAccuracy: 5, course: -1, speed: returning.speed, timestamp: returning.timestamp)]))
+    check(HeldStopFixes.replay(try! JSONEncoder().encode(holding), owner: "anna").first?.fixes.first?.timestamp == returning.timestamp, "combined: the deciding fix is replayed after termination")
+    // 9-12. The first leg ends at the shop; the returning fix starts the second leg.
+    outbound.updateDetails { $0.destinationStop = StopInterval(start: parkedAt, end: returning.timestamp, verdict: verdict.verdict.rawValue, confidence: verdict.confidence, reasons: verdict.reasons) }
+    outbound.completeProvisional()
+    var homeward = RecordedActivity(activity: "Driving", startedAt: returning.timestamp, resumedAt: returning.timestamp, title: "Drive")
+    homeward.recordingMode = "automatic"; homeward.details = ActivityDetails()
+    check(homeward.accept(returning, now: returning.timestamp), "combined: the returning fix belongs to the second leg")
+    for i in 1...20 { _ = homeward.accept(drivingFix(returning.latitude - Double(i)*120/111_320, returning.timestamp + Double(i)*10), now: returning.timestamp + Double(i)*10) }
+    check(outbound.state == "finished" && outbound.points.last!.timestamp <= parkedAt && outbound.details?.stopEvidence == nil, "combined: the first leg ends at the shop with its geometry and no leftover evidence")
+    check(outbound.details?.destinationStop?.end == returning.timestamp && outbound.details?.destinationStop?.verdict == "meaningfulDestination", "combined: the shop stop keeps its timing and reason")
+    let outboundTimes = Set(outbound.points.map(\.timestamp)), homewardTimes = Set(homeward.points.map(\.timestamp))
+    check(outboundTimes.isDisjoint(with: homewardTimes) && homeward.points.first?.timestamp == returning.timestamp, "combined: no fix is in both legs")
+    check(outbound.duration(at: returning.timestamp) == parkedAt - 5010, "combined: the shop stop is not moving time")
+    // 14. Back home and still again: rest is re-earned, then passive rest is allowed again.
+    let backHome = homeRest(returning.timestamp + 200 + 1300, disturbed: returning.timestamp + 200)
+    check(backHome.confirmed && sharing(backHome, testOn: true, sharedAt: returning.timestamp + 200), "combined: returning Home permits passive rest again")
+    // The same day with the test off: sharing never rests; the stop decision is the same.
+    check(!sharing(backHome, testOn: false, sharedAt: returning.timestamp + 200), "combined: with the test off sharing keeps location on return")
+}
 // ---------------------------------------------------------------------------
 // Activity Details overlay-map layering seam.
 //
@@ -4807,3 +4909,4 @@ rememberCamera("people:owner",0.02)
 rememberCamera("people:owner",0.03)
 check(resumeCamera("people:owner")==0.03, "camera memory replaces the same intent's camera")
 check(resumeCamera("missing")==nil, "no camera is restored for an intent that was never remembered")
+print("\(assertions) native recorder/auth assertions passed")

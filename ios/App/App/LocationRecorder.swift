@@ -28,6 +28,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Each held delivery keeps its own receipt time, so it is judged as of then.
     var stopHistoryPending: (owner: String, deliveries: [(fixes: [CLLocation], receivedAt: Double, source: ObservationSource)], generation: Int)?
     var stopHistoryTask: UIBackgroundTaskIdentifier = .invalid
+    // False until this account's held stop fixes (HeldStopFixes) have been replayed.
+    var heldReplayChecked = true
     var stopHistoryGeneration = 0
     var motion = MotionEvidence()
     var detector = AutomaticDetector()

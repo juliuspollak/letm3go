@@ -1392,6 +1392,57 @@ enum StopClassifier {
     }
 }
 
+// MARK: Fixes held for a stop decision
+//
+// While Core Motion history is read for a stop decision (at most a few seconds),
+// the deciding fix and later deliveries wait. They are written to the account's
+// encrypted store first, so a process that iOS terminates during the wait loses
+// nothing: the next launch of the same account replays them, in order, with their
+// original timestamps and receipt times. The record is removed before replay, so a
+// replay can never deliver a fix twice. Bounded to `fixLimit` fixes.
+struct HeldFix: Codable, Equatable {
+    var latitude: Double
+    var longitude: Double
+    var altitude: Double
+    var horizontalAccuracy: Double
+    var verticalAccuracy: Double
+    var course: Double
+    var speed: Double          // raw Core Location value; negative means unknown
+    var timestamp: Double
+}
+struct HeldDelivery: Codable, Equatable {
+    var receivedAt: Double
+    var source: String
+    var fixes: [HeldFix]
+}
+struct HeldStopFixes: Codable, Equatable {
+    var owner: String
+    var stopStart: Double
+    var deliveries: [HeldDelivery] = []
+    static let fileName = "stop-held.data"
+    static let fixLimit = 500
+    var fixCount: Int { deliveries.reduce(0) { $0 + $1.fixes.count } }
+    // False when the delivery would pass the bound; it is then not held (and is
+    // processed or counted as rejected by the caller, never silently kept).
+    mutating func append(_ delivery: HeldDelivery) -> Bool {
+        guard fixCount + delivery.fixes.count <= Self.fixLimit else { return false }
+        deliveries.append(delivery)
+        return true
+    }
+    // What a launch replays: only this account's own record, deliveries in the
+    // order they arrived and fixes within each in time order.
+    static func replay(_ data: Data?, owner: String?) -> [HeldDelivery] {
+        guard let data = data, let owner = owner,
+              let held = try? JSONDecoder().decode(HeldStopFixes.self, from: data),
+              held.owner.lowercased() == owner.lowercased() else { return [] }
+        return held.deliveries.map { delivery in
+            var sorted = delivery
+            sorted.fixes.sort { $0.timestamp < $1.timestamp }
+            return sorted
+        }.filter { !$0.fixes.isEmpty }
+    }
+}
+
 // A relaunch cannot trust in-memory state, so the recovery decision is derived
 // from the persisted records: at most one published stop can still be continued,
 // and every other provisional journey is complete.
