@@ -1413,14 +1413,7 @@ extension LocationRecorder {
 // a relaunch and leaves with the account's own records. Only meaningful changes
 // are saved; no coordinates are kept.
 extension LocationRecorder {
-    var motionAuthorisation: String {
-        guard CMMotionActivityManager.isActivityAvailable() else { return "unavailable" }
-        switch CMMotionActivityManager.authorizationStatus() {
-        case .authorized: return "authorized"
-        case .denied, .restricted: return "denied"
-        default: return "unknown"
-        }
-    }
+    var motionAuthorisation: String { motionHistory.authorisation }
     var settledEvidence: StopEvidenceSummary? {
         guard let id = settledTripID else { return nil }
         return trips.first { $0.id == id }?.details?.stopEvidence
@@ -1504,18 +1497,11 @@ extension LocationRecorder {
         }
         updateSettledEvidence(save: false) { $0.historyAttemptedAt = now; $0.historyTimedOut = nil; return true }
         recordDiagnostic("decision", "Stop decision waits for Core Motion history", details: ["stoppedSeconds": String(Int(max(0, now - stopStart))), "heldFixes": String(fixes.count)])
-        if motionManager == nil { motionManager = CMMotionActivityManager() }
         let from = stopStart - 60
-        motionManager?.queryActivityStarting(from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: now), to: .main) { [weak self] activities, error in
+        motionHistory.query(from: from, to: now) { [weak self] marks in
             guard let self = self else { return }
             // Applied even after the timeout, for a later decision on the same stop.
-            if error == nil, let activities = activities, self.ownerID == owner, self.settledEvidence?.stopStart == stopStart {
-                let marks = activities.map { activity in
-                    MotionMark(at: activity.startDate.timeIntervalSince1970,
-                               kind: StopEvidenceSummary.kind(walking: activity.walking, running: activity.running, automotive: activity.automotive,
-                                                              cycling: activity.cycling, stationary: activity.stationary),
-                               confident: activity.confidence != .low)
-                }
+            if let marks = marks, self.ownerID == owner, self.settledEvidence?.stopStart == stopStart {
                 self.updateSettledEvidence { $0.applyHistory(marks, from: from, to: now); return true }
             }
             self.resumeStopDecision(generation: generation, timedOut: false)
@@ -1571,13 +1557,12 @@ extension LocationRecorder {
         }
         // Removed before replaying, so nothing can be delivered twice.
         clearHeldStopFixes()
+        // Every delivery goes through processAutomatic. If one begins another wait,
+        // the rest join it through the same queue: saved before anything waits, and
+        // past the bound the wait ends early, so nothing is held only in memory.
         for delivery in pending.deliveries {
-            // A delivery that begins another wait queues the rest behind it.
-            if var next = stopHistoryPending { next.deliveries.append(delivery); stopHistoryPending = next; continue }
             processAutomatic(delivery.fixes, source: delivery.source, receivedAt: delivery.receivedAt)
         }
-        // Deliveries queued behind a new wait are on disk too.
-        if stopHistoryPending != nil { persistHeldStopFixes() }
     }
     func noteStopClassified(_ c: StopClassification) {
         guard c.stoppedSeconds >= StopClassifier.pauseSeconds else { return }
@@ -1633,6 +1618,36 @@ extension LocationRecorder {
                          details: ["heldFixes": String(deliveries.reduce(0) { $0 + $1.fixes.count })])
         for delivery in deliveries {
             processAutomatic(delivery.fixes.map(Self.location), source: ObservationSource(rawValue: delivery.source) ?? .standard, receivedAt: delivery.receivedAt)
+        }
+    }
+}
+
+// Where Core Motion history and its permission come from: Core Motion in the app,
+// a controlled source in the DEBUG recorder harness (RecorderHarness.swift).
+// Answers on the main queue; nil marks means no answer.
+protocol MotionHistorySource: AnyObject {
+    var authorisation: String { get }
+    func query(from: Double, to: Double, completion: @escaping ([MotionMark]?) -> Void)
+}
+final class CoreMotionHistory: MotionHistorySource {
+    private lazy var manager = CMMotionActivityManager()
+    var authorisation: String {
+        guard CMMotionActivityManager.isActivityAvailable() else { return "unavailable" }
+        switch CMMotionActivityManager.authorizationStatus() {
+        case .authorized: return "authorized"
+        case .denied, .restricted: return "denied"
+        default: return "unknown"
+        }
+    }
+    func query(from: Double, to: Double, completion: @escaping ([MotionMark]?) -> Void) {
+        manager.queryActivityStarting(from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to), to: .main) { activities, error in
+            guard error == nil, let activities = activities else { completion(nil); return }
+            completion(activities.map { activity in
+                MotionMark(at: activity.startDate.timeIntervalSince1970,
+                           kind: StopEvidenceSummary.kind(walking: activity.walking, running: activity.running, automotive: activity.automotive,
+                                                          cycling: activity.cycling, stationary: activity.stationary),
+                           confident: activity.confidence != .low)
+            })
         }
     }
 }

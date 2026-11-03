@@ -28,6 +28,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Each held delivery keeps its own receipt time, so it is judged as of then.
     var stopHistoryPending: (owner: String, deliveries: [(fixes: [CLLocation], receivedAt: Double, source: ObservationSource)], generation: Int)?
     var stopHistoryTask: UIBackgroundTaskIdentifier = .invalid
+    var motionHistory: MotionHistorySource = CoreMotionHistory()
     // False until this account's held stop fixes (HeldStopFixes) have been replayed.
     var heldReplayChecked = true
     var stopHistoryGeneration = 0
@@ -1617,6 +1618,7 @@ class JourneyViewController: CAPBridgeViewController {
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
         if ActivityDetailsFixture.enabled {ActivityDetailsFixture.present(over:self)}
+        if RecorderHarness.enabled {RecorderHarness.run()}
     }
     #endif
 }
