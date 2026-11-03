@@ -10,14 +10,16 @@ const AGE=seconds=>seconds!=null&&seconds<60?'just now':formatAge(seconds);
 // Shared coarse statuses that are worth showing in place of "Sharing".
 const MOVING=['Driving','Walking','Running','Cycling'];
 
-export function personStatus({state,ageSeconds=null,home=false,activity=null}){
+// `verifiedHome`: an old position that was inside Home. It says where the person
+// was last verified, with its real age; it never claims they are there now.
+export function personStatus({state,ageSeconds=null,home=false,activity=null,verifiedHome=false}){
  switch(state){
   case 'live':
    if(home)return {text:'At home',tone:'live'};
    return {text:`${MOVING.includes(activity)?activity:'Sharing'} · ${AGE(ageSeconds)}`,tone:'live'};
   // An old position is never presented as current, and never as "sharing off":
   // the person may simply be out of signal.
-  case 'stale':return {text:`Last seen ${formatAge(ageSeconds)}`,tone:'stale'};
+  case 'stale':return {text:verifiedHome?`Last verified at home · ${formatAge(ageSeconds)}`:`Last seen ${formatAge(ageSeconds)}`,tone:'stale'};
   case 'waiting':return {text:'Waiting for location',tone:'none'};
   case 'off':return {text:'Not sharing',tone:'off'};
   // Sharing state not known to this viewer (a friend with no recent position).

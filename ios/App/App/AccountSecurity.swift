@@ -100,6 +100,7 @@ extension LocationRecorder {
         automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(ownerID!)")
         adaptiveEnabled = UserDefaults.standard.bool(forKey:Self.adaptiveKey(ownerID!))
         passiveRestEnabled = !UserDefaults.standard.bool(forKey:Self.passiveRestKey(ownerID!))
+        sharingRestEnabled = UserDefaults.standard.bool(forKey:Self.sharingRestKey(ownerID!))
         restoreAdaptiveRecovery()
         preferences = AccountPreferences()
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
@@ -366,7 +367,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
-                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
+                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.sharingRestEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.sharingRestKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
                 } catch { r.uiUnlocked = false; call.reject("Unable to open this account’s private storage. Local data is preserved.") }
             }
         }.resume()
@@ -413,7 +414,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             r.diagnosticWriter.flush()
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
-            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveRecoveryKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.passiveRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
+            UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.sharingRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.adaptiveRecoveryKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.passiveRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }
     } }
 }

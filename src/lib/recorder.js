@@ -62,6 +62,8 @@ export const recorder = {
  setAdaptiveLocation:enabled=>native.setAdaptiveLocation({enabled}),
  // Passive rest: release location and the background session while settled.
  setPassiveRest:enabled=>native.setPassiveRest({enabled}),
+ // Device test: live sharing may rest with the phone. Off by default.
+ setSharingRest:enabled=>native.setSharingRest({enabled}),
  // Home Wi-Fi: 'designate' the connected network, or 'forget' it. Native code
  // returns only match states, never the network name.
  setHomeWiFi:action=>native.setHomeWiFi({action}),

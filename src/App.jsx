@@ -15,7 +15,7 @@ import Friends from './components/Friends.jsx';
 import FriendTrips from './components/FriendTrips.jsx';
 import HouseholdTrips from './components/HouseholdTrips.jsx';
 import {useHouseholdPresence} from './lib/useHouseholdPresence.js';
-import {LIVE_SECONDS,memberLocationState,peoplePins,memberActivities} from './lib/householdLocation.js';
+import {LIVE_SECONDS,atHome,memberLocationState,peoplePins,memberActivities} from './lib/householdLocation.js';
 import {useHomePresence} from './lib/useHomePresence.js';
 import {cameraIntent,cameraReducer,initialCamera,shouldFocusSelf} from './lib/mapCamera.js';
 import {secondsAtPlace} from './lib/peopleMap.js';
@@ -251,9 +251,9 @@ function PrivateApp(){
  const selfFix=mapLocation.position;
  const selfAtHome=homeFlags.self===true&&Boolean(selfFix)&&Number.isFinite(selfFix.timestamp)&&motionClock/1000-selfFix.timestamp<=LIVE_SECONDS;
  const householdLocationProps=useMemo(()=>({
-  memberLocations:Object.fromEntries(householdMembers.map(m=>[m.user_id,{state:m.state,ageSeconds:m.ageSeconds,position:m.position,home:homeFlags[m.user_id]===true&&m.state==='live',activity:sharedActivities[m.user_id]||null}])),
+  memberLocations:Object.fromEntries(householdMembers.map(m=>[m.user_id,{state:m.state,ageSeconds:m.ageSeconds,position:m.position,home:homeFlags[m.user_id]===true&&m.state==='live',verifiedHome:m.state==='stale'&&atHome(false,m.position,homePlace),activity:sharedActivities[m.user_id]||null}])),
   selfLocation:{state:selfLocationState.state,ageSeconds:selfLocationState.ageSeconds,home:selfLocationState.state==='live'&&selfAtHome,activity:presence.self?.activity_label||null}
- }),[householdMembers,homeFlags,sharedActivities,selfLocationState.state,selfLocationState.ageSeconds,selfAtHome,presence.self?.activity_label]);
+ }),[householdMembers,homeFlags,homePlace,sharedActivities,selfLocationState.state,selfLocationState.ageSeconds,selfAtHome,presence.self?.activity_label]);
  // What friends actually received from you: confirmed sends, not the setting.
  const friendSentAt=friendsLocation.lastSentAt||0;
  const friendSelf=!friendsLocation.enabled||!friendSentAt?{state:'waiting',ageSeconds:null}:{state:motionClock-friendSentAt<=LIVE_SECONDS*1000?'live':'stale',ageSeconds:Math.max(0,Math.round((motionClock-friendSentAt)/1000))};
@@ -265,7 +265,7 @@ function PrivateApp(){
  })),[friendsLocation.people,motionClock]);
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
- const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,onSelect:person.position?()=>showOnMap(person.position,person.userId):undefined})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,sharedActivities,unit,showOnMap]);
+ const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,onSelect:person.position?()=>showOnMap(person.position,person.userId):undefined})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit,showOnMap]);
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
  const onMapCamera=useCallback(event=>dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command}),[]);
  useEffect(()=>{

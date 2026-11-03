@@ -1,6 +1,6 @@
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const native=vi.hoisted(()=>({currentPosition:vi.fn(),setPassiveRest:vi.fn(),setHomeWiFi:vi.fn()}));
+const native=vi.hoisted(()=>({currentPosition:vi.fn(),setPassiveRest:vi.fn(),setSharingRest:vi.fn(),setHomeWiFi:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{getPlatform:()=>'ios'},registerPlugin:()=>native}));
 import {recorder} from './recorder.js';
 import {passiveRows} from './passiveRestDiagnostics.js';
@@ -22,6 +22,10 @@ describe('native bridge',()=>{
   expect(native.setPassiveRest).toHaveBeenCalledWith({enabled:false});
   expect(native.setHomeWiFi.mock.calls).toEqual([[{action:'designate'}],[{action:'forget'}]]);
  });
+ it('sends only the sharing device-test switch',async()=>{
+  await recorder.setSharingRest(true);
+  expect(native.setSharingRest).toHaveBeenCalledWith({enabled:true});
+ });
 });
 
 describe('passive rest rows',()=>{
@@ -42,12 +46,31 @@ describe('passive rest rows',()=>{
   expect(row(rows,'Time per location mode (since app start)')).toBe('precise 5 min · passive 1 h');
   expect(row(rows,'Departure from rest')).toBe('woken by place region exit · movement began 140 s earlier · first GPS 9 s after waking · route began ~180 m beyond the place');
  });
+ it('say whether live sharing holds location and why',()=>{
+  const rows=passiveRows({passiveRest:passive({sharingRest:{enabled:false,allowed:false,reason:'keeps continuous location: releasing it while sharing is a device test that is off',sharingHoldsLocation:true},falseWakeRestoresThisHour:2})});
+  expect(row(rows,'Sharing while resting')).toBe('Off · sharing keeps continuous location · keeps continuous location: releasing it while sharing is a device test that is off');
+  expect(row(rows,'False wake-ups restored this hour')).toBe('2');
+  expect(row(passiveRows({passiveRest:passive({sharingRest:{enabled:true,allowed:true,reason:'the shared position is the verified resting place',sharingHoldsLocation:false}})}),'Sharing while resting'))
+   .toBe('Device test on · sharing does not hold location · the shared position is the verified resting place');
+ });
  it('treat unavailable Wi-Fi as unavailable, not as disconnected',()=>{
   expect(row(passiveRows({passiveRest:passive({wifi:{configured:true,match:'unavailable'}})}),'Home Wi-Fi')).toBe('Wi-Fi unavailable');
  });
 });
 
 describe('Tracking & Permissions controls',()=>{
+ it('offer the sharing device test off by default, only while passive rest is on',()=>{
+  const run=vi.fn();
+  const sharingRest={enabled:false,allowed:false,reason:'sharing is off',sharingHoldsLocation:false};
+  const state={permission:'always',automaticEnabled:true,storageReady:true,places:[],passiveRest:passive({sharingRest})};
+  const {rerender}=render(<TrackingPermissions recording={{state,run}} onBack={vi.fn()}/>);
+  const toggle=screen.getByRole('switch',{name:'Release location while resting with sharing on'});
+  expect(toggle).toHaveAttribute('aria-checked','false');
+  fireEvent.click(toggle);
+  expect(run).toHaveBeenCalledWith('setSharingRest',true);
+  rerender(<TrackingPermissions recording={{state:{...state,passiveRest:passive({enabled:false,sharingRest})},run}} onBack={vi.fn()}/>);
+  expect(screen.getByRole('switch',{name:'Release location while resting with sharing on'})).toBeDisabled();
+ });
  it('switch passive rest and designate Home Wi-Fi only once Home is saved',()=>{
   const run=vi.fn();
   const state={permission:'always',automaticEnabled:true,storageReady:true,places:[],passiveRest:passive()};

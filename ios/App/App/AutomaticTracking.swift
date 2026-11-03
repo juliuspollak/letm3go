@@ -41,6 +41,8 @@ extension LocationRecorder {
                 if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now),!self.automaticSampling.locationWake {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
                     self.detector.reset()
+                    // A check stopped by stillness also ended without a journey.
+                    self.returnFromFalseWake(now:now)
                     self.reconcileAutomaticSampling()
                 } else if AutomaticDetector.credibleMovement(self.motion,now:now) {
                     self.noteRestDisturbance(now:now)
@@ -178,7 +180,9 @@ extension LocationRecorder {
         if (automaticSampling.probeUntil ?? .greatestFiniteMagnitude)<=now,automaticTrip == nil,settledTripID == nil {
             detector.reset();departureLatency.reset()
         }
-        // Any departure evidence ends a confirmed rest; it must be re-earned.
+        // Any departure evidence ends a confirmed rest; it must be re-earned, unless
+        // the check proves the wake-up false (FalseWake).
+        noteWakeFromPassive(now:now)
         noteRestDisturbance(now:now); lastProbeCause=cause
         if automaticTrip == nil || settledAt != nil {
             let wasIdle=(automaticSampling.probeUntil ?? 0)<=now
@@ -231,6 +235,7 @@ extension LocationRecorder {
                 automaticSampling.endEpisode(now:now)
                 noteJourneyPossiblyMissed()
                 departureLatency.reset()
+                returnFromFalseWake(now:now)
                 trackingEvent(observing ? "Departure check budget spent; returning to location standby until the next movement" : "Departure check expired; returning to location standby")
             }
         }
@@ -245,11 +250,15 @@ extension LocationRecorder {
         // as soon as rest is confirmed, so it is registered before rest goes passive.
         evaluateRest(now:now)
         var passive=passiveRestAllowed
+        // A journey that began is no false wake-up.
+        if automaticTrip != nil || settledTripID != nil { falseWakeCandidate=nil }
         var established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:passive)
         // Live sharing keeps standard updates on. While parked it uses the lower
         // accuracy standby stream; a fresh movement signal upgrades it, so the
         // adaptive policy is never allowed to stop the stream for low-power standby.
-        if liveSharingArmed, active == nil { established = liveSharingStandardMode(now:now) }
+        // The exception is a confirmed rest at the place viewers already see
+        // (SharingRest), where sharing rests with the phone.
+        if liveSharingHoldsLocation, active == nil { established = liveSharingStandardMode(now:now) }
         reconcileAdaptive(now:now,mode:established)
         // The exit region registered by that reconcile can allow passive rest now.
         if !passive, evaluatePassive() {
@@ -471,6 +480,7 @@ extension LocationRecorder {
             homeRest.observe(sample,home:restPlace,now:now)
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
             if noteRestPlaceFix(sample,now:now) {restPlaceNewlyVerified=true}
+            notePlaceObservation(sample,now:now)
             // A published stop keeps only a cheap standby watch. Movement within
             // reach of the stop continues the same activity; anything else ends it
             // and lets the normal departure detection start a new one.
@@ -880,7 +890,7 @@ extension LocationRecorder {
         guard area != dwell else { return }
         let previous = dwell
         dwell = area
-        restPlaceFixAt = nil; restPlaceAccuracy = nil
+        restPlaceFixAt = nil; restPlaceAccuracy = nil; placeInsideAt = nil; placeOutsideAt = nil
         motionProbeGate.reset()
         leftAreaProbed = false
         if area == nil { dwellInference.reset() }
