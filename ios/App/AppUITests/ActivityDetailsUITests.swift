@@ -150,6 +150,7 @@ final class ActivityDetailsUITests: XCTestCase {
         row.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'fastest first'")).firstMatch.waitForExistence(timeout: 5))
         XCTAssertGreaterThanOrEqual(app.buttons.matching(identifier: "segment.pass").count, 1)
+        for name in ["Edit", "Rename", "Delete"] { XCTAssertFalse(app.buttons[name].exists, "\(name) belongs in My Segments") }
         shot("ridden")
     }
     func testOneMinuteSegmentOfATwoHourRideWithLaps() {

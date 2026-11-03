@@ -34,10 +34,11 @@ export function activityMapJourney(trip){
  return points.length>=2?{...trip,route:points.map(p=>[p.latitude,p.longitude]),routeSegments:recordedRouteSegments(points,{automatic:trip.recordingMode==='automatic',fleet:trip.recordingMode==='tesla'})}:trip;
 }
 
-export function activityMap(trip,{selectedPhotoID=null}={}){
+export function activityMap(trip,{selectedPhotoID=null,nearby=null}={}){
  const points=Array.isArray(trip.points)?trip.points:[];
  if(!(Array.isArray(trip.route)?trip.route:[]).length)return {routes:[],pins:[],gaps:[]};
- const layers=canCreateSegments(trip)||trip.details?.namedSegments?.length?segmentLayers(trip):null;
+ const own=canCreateSegments(trip)||trip.details?.namedSegments?.length?segmentLayers(trip):null;
+ const layers=own||nearby?.pins?.length?{styled:[...(own?.styled||[]),...(nearby?.styled||[])],pins:[...(own?.pins||[]),...(nearby?.pins||[])],muted:false}:null;
  const payload=withSegments(mapPayload([activityMapJourney(trip)],null,null,[],[],{selectedPhotoID}),layers);
  const local=deletionIDs(trip).length===1;
  return local&&points.length>=2?withTrimRange(payload,{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??points.length-1,points}):payload;
@@ -111,9 +112,9 @@ function tagSection(trip,grouping,onActivityAvailable){
   })}:null};
 }
 
-function diagnostics(trip){
+function diagnostics(trip,segmentReport=[]){
  const d=tripDiagnostics(trip);
- const report=['Letm3go recording report',`Activity: ${trip.title||trip.activity||'Activity'}`,`Type: ${activityLabel(trip.activity||'Unknown')}`,`Started: ${Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toISOString():'Unknown'}`,`Ended: ${Number.isFinite(trip.endedAt)?new Date(trip.endedAt*1000).toISOString():'Unknown'}`,`Recorded distance (m): ${Number(trip.distanceMeters||0).toFixed(0)}`,`GPS fixes: ${d.points}`,`Median accuracy (m): ${d.medianAccuracy??'Unknown'}`,`First fix lag (s): ${d.lag??'Unknown'}`,`Largest GPS gap (s): ${d.longestGap}`,`End GPS lag (s): ${d.endLag??'Unknown'}`,`Warnings: ${d.warnings.join('; ')||'None'}`,'Recorder events:',...d.events].join('\n');
+ const report=['Letm3go recording report',`Activity: ${trip.title||trip.activity||'Activity'}`,`Type: ${activityLabel(trip.activity||'Unknown')}`,`Started: ${Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toISOString():'Unknown'}`,`Ended: ${Number.isFinite(trip.endedAt)?new Date(trip.endedAt*1000).toISOString():'Unknown'}`,`Recorded distance (m): ${Number(trip.distanceMeters||0).toFixed(0)}`,`GPS fixes: ${d.points}`,`Median accuracy (m): ${d.medianAccuracy??'Unknown'}`,`First fix lag (s): ${d.lag??'Unknown'}`,`Largest GPS gap (s): ${d.longestGap}`,`End GPS lag (s): ${d.endLag??'Unknown'}`,`Warnings: ${d.warnings.join('; ')||'None'}`,'Recorder events:',...d.events,...segmentReport].join('\n');
  return {stats:[{label:'GPS fixes',value:String(d.points)},{label:'Median accuracy',value:d.medianAccuracy==null?'—':`${Math.round(d.medianAccuracy)} m`},{label:'First fix delay',value:diagnosticTime(d.lag)},{label:'Largest GPS gap',value:diagnosticTime(d.longestGap)},{label:'End fix delay',value:diagnosticTime(d.endLag)}],
   warnings:d.warnings,events:d.events.map(item=>typeof item==='string'?item:item.message||JSON.stringify(item)),report};
 }
@@ -123,7 +124,7 @@ function privacySection(trip,places){
  return {title:preview.title,description:preview.description||'',segments:preview.points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean)};
 }
 
-export function activityPresentation(trip,{ownerID,segmentRides=[],places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
+export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport=[],nearbySegments=null,editSegmentID=null,places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
  const points=Array.isArray(trip.points)?trip.points:[];
  const pointCount=points.length;
  const local=deletionIDs(trip).length===1;
@@ -140,10 +141,10 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],places=[],veh
   sources:(trip.sourceRecords||[]).map(s=>({id:String(s.id),label:`View ${s.source==='tesla'?'Tesla':'iPhone'} recording`})),
   photos:{coverID,local,items:photos.map(photo=>({id:String(photo.id),caption:photo.caption||'',locationSource:photo.locationSource||'unlocated',captureTime:photo.captureTime??null,assetID:photo.assetID??null}))},
   heart:heartSection(trip,{unit,maximumHeartRate}),
-  segments:{allowed:segmentsAllowed,ridden:segmentRides,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · Private`}))},
+  segments:{allowed:segmentsAllowed,ridden:segmentRides,editID:editSegmentID,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · Private`}))},
   trail:canLinkTrail(trip)?{linkedID:trip.trail?.id??null,linkedLabel:trip.trail?trailLinkLabel(trip.trail):null}:null,
   trim:!segmentsBlockedTrim(trip,pointCount)?{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??pointCount-1,pointCount}:null,
-  diagnostics:diagnostics(trip),
+  diagnostics:diagnostics(trip,segmentReport),
   tags:tagSection(trip,grouping,canOpenActivities),
   facts:{lines:factLines(trip,local,pointCount),evidence:trip.classification?.evidence||[]},
   stops:(trip.recognisedStops||[]).map(stop=>({id:String(stop.id),name:stop.name,tags:stop.tags||[],detail:`${Math.round(stop.durationSeconds/60)} min${stop.charging==='possible'?' · Possible charging':stop.charging==='confirmed'?' · Charging confirmed by vehicle':''}`,nearby:stop.nearbyName||null,canIgnore:!trip.readOnly})),
@@ -152,6 +153,6 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],places=[],veh
    types:ACTIVITY_TYPES.map(value=>({value,label:activityLabel(value)})),equipment:vehicles.filter(v=>!v.archived).map(v=>({id:String(v.id),title:itemTitle(v)}))},
   equipment:equipmentSection(trip,vehicles),
   privacy:local?privacySection(trip,places):null,
-  map:activityMap(trip,{selectedPhotoID})};
+  map:activityMap(trip,{selectedPhotoID,nearby:nearbySegments})};
 }
 function segmentsBlockedTrim(trip,pointCount){return !(trip.source==='device'&&trip.state==='finished'&&pointCount>=2);}

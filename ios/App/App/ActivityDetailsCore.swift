@@ -126,6 +126,8 @@ struct ActivityPresentation: Decodable, Equatable {
         var allowed: Bool
         var items: [Segment]
         var ridden: [RiddenSegment]?
+        // Asked for from My Segments: open this one's section editor.
+        var editID: String?
         var list: [RiddenSegment] { ridden ?? [] }
     }
     struct Trail: Decodable, Equatable {
@@ -276,7 +278,7 @@ struct ActivityPresentation: Decodable, Equatable {
         sources = lossy([Source].self, .sources) ?? []
         photos = lossy(Photos.self, .photos) ?? Photos(coverID: nil, local: false, items: [])
         heart = lossy(Heart.self, .heart)
-        segments = lossy(Segments.self, .segments) ?? Segments(allowed: false, items: [], ridden: nil)
+        segments = lossy(Segments.self, .segments) ?? Segments(allowed: false, items: [], ridden: nil, editID: nil)
         trail = lossy(Trail.self, .trail)
         trim = lossy(Trim.self, .trim)
         diagnostics = lossy(Diagnostics.self, .diagnostics)
@@ -394,9 +396,10 @@ enum ActivityMapDraft: Equatable {
             options["pins"] = pins.filter { !["start", "finish"].contains($0["kind"] as? String ?? "") } +
                 [["point": first, "title": "Start", "kind": "start"], ["point": last, "title": "Finish", "kind": "finish"]]
         case .picking(let start):
-            // Only the route's ends stay: every other pin would take the tap.
+            // The route's ends, and existing segments so a stretch is not made twice.
+            // Nothing else stays: a pin there would take the tap.
             let chosen = start.flatMap { points.indices.contains($0) ? points[$0] : nil }
-            var kept = pins.filter { (chosen == nil ? ["start", "finish"] : ["finish"]).contains($0["kind"] as? String ?? "") }
+            var kept = pins.filter { (chosen == nil ? ["start", "finish", "segment"] : ["finish", "segment"]).contains($0["kind"] as? String ?? "") }
             if let chosen { kept.append(["point": [chosen.latitude, chosen.longitude], "title": "Segment start", "kind": "start"]) }
             options["pins"] = kept
         case .segment(let start, let end, let editingID):

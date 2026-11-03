@@ -5,7 +5,7 @@ import {activityPresentation} from '../lib/activityPresentation.js';
 import {acceptNativeMutation,activityDetailsRequests} from '../lib/activityDetailsRequests.js';
 import {nativeDetails} from '../lib/nativeActivityDetails.js';
 import {savedMaximum} from '../lib/heartRate.js';
-import {segmentRides} from '../lib/segmentRides.js';
+import {nearbySegmentLayers,segmentMatchReport,segmentRides} from '../lib/segmentRides.js';
 
 // While a screen is replaced by the next activity React unmounts and mounts in the
 // same turn. The native screen, its map and its panel survive that hand-over;
@@ -13,6 +13,7 @@ import {segmentRides} from '../lib/segmentRides.js';
 const session={owner:0,open:false,closing:null,revision:0};
 const LIVE_UPDATE_MS=2000;
 const NONE=[];
+const NO_SEGMENTS={rows:[],nearby:null,report:[]};
 
 // Same props and the same entry points as ActivityDetail: everything that opens an
 // activity keeps working, and this renders nothing of its own while the native
@@ -31,7 +32,7 @@ function useLiveTrip(trip){
 }
 
 export default function NativeActivityDetail(props){
- const {ownerID,trip:latest,activities,journeys,places=NONE,vehicles=NONE,onBack,onDeleted,onUpdated,onSource,run,grouping,journeyGrouping,unit='km',onAddEquipment}=props;
+ const {ownerID,trip:latest,activities,journeys,places=NONE,vehicles=NONE,onBack,onDeleted,onUpdated,onSource,run,grouping,journeyGrouping,unit='km',onAddEquipment,editSegmentID=null}=props;
  const trip=useLiveTrip(latest);
  const auth=useAuth();
  const [failure,setFailure]=useState('');
@@ -43,12 +44,12 @@ export default function NativeActivityDetail(props){
  const metadata=grouping?.metadata,destinations=grouping?.destinations,groupedJourneys=grouping?.journeys;
  // Looked up just after opening, so a long history never delays the screen.
  const library=journeys||activities||NONE;
- const [ridden,setRidden]=useState(NONE);
+ const [ridden,setRidden]=useState(NO_SEGMENTS);
  useEffect(()=>{
-  const timer=setTimeout(()=>setRidden(segmentRides(trip,library)),0);
+  const timer=setTimeout(()=>setRidden({rows:segmentRides(trip,library),nearby:nearbySegmentLayers(trip,library),report:segmentMatchReport(trip,library)}),0);
   return()=>clearTimeout(timer);
  },[trip,library]);
- const presentation=useMemo(()=>activityPresentation(trip,{ownerID,segmentRides:ridden,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,ridden,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
+ const presentation=useMemo(()=>activityPresentation(trip,{ownerID,segmentRides:ridden.rows,segmentReport:ridden.report,nearbySegments:ridden.nearby,editSegmentID,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,ridden,editSegmentID,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
  // Native requests read the current account, activity and callbacks when they run.
  const context=useRef(null);
  const handlers=useRef(null);

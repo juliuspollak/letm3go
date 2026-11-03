@@ -15,13 +15,16 @@ export const SEGMENT_MATCH_SETTINGS = Object.freeze({
   passToleranceMeters: 30,       // a tap admits fixes within this radius as one visit
   enterToleranceMeters: 30,      // a candidate must begin within this of the start (or finish, reverse)
   finishToleranceMeters: 30,     // a candidate must finish within this of the finish
-  matchToleranceMeters: 15,      // base on-route radius for a single fix
+  matchToleranceMeters: 20,      // base on-route radius for a single fix
   accuracyWidenFactor: 1,        // each metre of horizontal accuracy widens the radius by this
   maxWidenMeters: 25,            // accuracy widening is capped at base + this
   progressToleranceMeters: 40,   // along-route progress may not go back or jump ahead more than this
   foldToleranceMeters: 10,       // where two arms overlap, a fix this much worse still counts as going forward
+  fastestMetersPerSecond: 30,    // how far ahead sparse fixes may land, per second between them
+  outlierSeconds: 20,            // GPS may wander off the line this long without ending a pass
   checkpointCount: 20,           // evenly spaced checkpoints sampled for coverage
   checkpointToleranceMeters: 10, // a checkpoint is covered by a fix within this along distance
+  coverageSpanMeters: 150,       // fixes this far apart still show the stretch between them was ridden
   checkpointCoverage: 0.6,       // minimum fraction of checkpoints an effort must cover
   highCoverage: 0.9,             // coverage at/above which confidence may be high
   lowCoverage: 0.7,              // coverage below which confidence is low
@@ -114,16 +117,21 @@ function resamplePolyline(source, spacing) {
 // A durable, reusable definition. The reference is the source fixes resampled
 // at a fixed spacing, carrying only {latitude, longitude, along}; it holds no
 // original-ride indices as its identity and never mutates its input.
-export function segmentDefinition({id, ownerID, name, trip, start, end, createdAt} = {}) {
+export function segmentDefinition({id, ownerID, name, trip, start, end, createdAt, saved = false} = {}) {
  const points = trip && trip.points;
  if (!Array.isArray(points) || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= points.length || start >= end) return null;
- const stats = segmentStats(trip, start, end);
- if (!stats || !stats.valid) return null;
- for (let i = start + 1; i <= end; i++) {
-  const a = points[i - 1], b = points[i];
-  if (!usablePoint(a) || !usablePoint(b) || !connected(a, b)) return null;
+ // A saved segment passed the recorder's checks when it was made. Real recordings can
+ // repeat a timestamp, which must not stop it being found on other rides.
+ if (!saved) {
+  const stats = segmentStats(trip, start, end);
+  if (!stats || !stats.valid) return null;
+  for (let i = start + 1; i <= end; i++) {
+   const a = points[i - 1], b = points[i];
+   if (!usablePoint(a) || !usablePoint(b) || !connected(a, b)) return null;
+  }
  }
- const source = points.slice(start, end + 1);
+ const source = points.slice(start, end + 1).filter(usablePoint);
+ if (source.length < 2) return null;
  const reference = resamplePolyline(source, SEGMENT_MATCH_SETTINGS.referenceSpacingMeters);
  const lengthMeters = reference[reference.length - 1].along;
  const first = points[start], last = points[end];
@@ -173,9 +181,9 @@ function segT(a, b, p) {
 // reference index, so a self-crossing route follows the reference in order
 // instead of snapping to a distant arm. Along is signed at the two ends so
 // start/finish line crossings can be interpolated in time.
-function projectOrdered(reference, refIndex, p, s) {
+function projectOrdered(reference, refIndex, p, s, reach = s.progressToleranceMeters) {
  const back = Math.ceil(s.progressToleranceMeters / s.referenceSpacingMeters);
- const fwd = Math.ceil(s.progressToleranceMeters / s.referenceSpacingMeters) + 1;
+ const fwd = Math.ceil(reach / s.referenceSpacingMeters) + 1;
  const lo = Math.max(0, refIndex - back);
  const hi = Math.min(reference.length - 1, refIndex + fwd);
  let best = null;
@@ -212,16 +220,29 @@ function walk(points, reference, lengthMeters, s, box, entryIndex, entryRefIndex
  let stop = null;
  let minAlong = prevAlong;
  let maxAlong = prevAlong;
+ let lastTime = null;
  while (j < points.length) {
   const p = points[j];
   if (!usablePoint(p)) { stop = 'leave'; break; }
-  if (!inBounds(p, box)) { stop = 'leave'; break; }
-  if (j > entryIndex && !connected(points[j - 1], points[j])) { stop = 'gap'; break; }
-  const projection = projectOrdered(reference, refIndex, p, s);
-  if (projection.offset > perFixTolerance(p, s)) { stop = 'off-route'; break; }
+  // A repeated timestamp is a quirk of the recording, not a gap in it.
+  if (j > entryIndex && points[j].timestamp > points[j - 1].timestamp && !connected(points[j - 1], points[j])) { stop = 'gap'; break; }
+  // Fixes can be many seconds apart, so how far ahead one may land depends on the time
+  // since the last. A wandering fix does not end a pass; staying away does.
+  const since = lastTime == null ? 0 : Math.max(0, p.timestamp - lastTime);
+  if (!inBounds(p, box)) {
+   if (matched.length && since <= s.outlierSeconds) { j++; continue; }
+   stop = 'leave'; break;
+  }
+  const reach = Math.max(s.progressToleranceMeters, since * s.fastestMetersPerSecond);
+  const projection = projectOrdered(reference, refIndex, p, s, reach);
+  if (projection.offset > perFixTolerance(p, s)) {
+   if (matched.length && since <= s.outlierSeconds) { j++; continue; }
+   stop = 'off-route'; break;
+  }
   const along = projection.along;
   if (along < prevAlong - s.progressToleranceMeters) { stop = 'reverse'; break; }
-  if (along > prevAlong + s.progressToleranceMeters) { stop = 'jump'; break; }
+  if (along > prevAlong + reach + s.referenceSpacingMeters) { stop = 'jump'; break; }
+  lastTime = p.timestamp;
   const before = prevAlong;
   refIndex = projection.index;
   prevAlong = along;
@@ -251,13 +272,25 @@ function interpolateAt(seq, targetAlong) {
  return seq.length ? seq[seq.length - 1].timestamp : 0;
 }
 
+// The start can fall between two sparse fixes, far from both.
+function crosses(a, b, spot, tolerance) {
+ if (!usablePoint(a) || !usablePoint(b)) return false;
+ const dx = b.longitude - a.longitude, dy = b.latitude - a.latitude, length = dx * dx + dy * dy;
+ if (!(length > 0)) return false;
+ const t = ((spot.longitude - a.longitude) * dx + (spot.latitude - a.latitude) * dy) / length;
+ if (t < 0 || t > 1) return false;
+ return metres({latitude: a.latitude + dy * t, longitude: a.longitude + dx * t}, spot) <= tolerance;
+}
+
 function checkpointCoverage(segment, lengthMeters, s) {
  if (!segment.length || !(lengthMeters > 0)) return 0;
  const count = s.checkpointCount;
  let covered = 0;
  for (let c = 0; c < count; c++) {
   const target = lengthMeters * c / (count - 1);
-  if (segment.some(m => Math.abs(m.along - target) <= s.checkpointToleranceMeters)) covered += 1;
+  const near = segment.some(m => Math.abs(m.along - target) <= s.checkpointToleranceMeters);
+  const spanned = near || segment.some((m, i) => i > 0 && segment[i - 1].along <= target && target <= m.along && m.along - segment[i - 1].along <= s.coverageSpanMeters);
+  if (spanned) covered += 1;
  }
  return covered / count;
 }
@@ -338,11 +371,16 @@ export function matchEfforts(definition, trip, options = {}) {
   if (used.has(i)) continue;
   const p = points[i];
   if (!usablePoint(p) || !inBounds(p, box)) continue;
-  const nearStart = metres(p, start) <= s.enterToleranceMeters;
-  const nearFinish = metres(p, finish) <= s.enterToleranceMeters;
+  const next = points[i + 1];
+  const onStart = metres(p, start) <= s.enterToleranceMeters;
+  const onFinish = metres(p, finish) <= s.enterToleranceMeters;
+  const passing = !onStart && !onFinish && next && next.timestamp > p.timestamp && crosses(p, next, start, s.enterToleranceMeters);
+  const nearStart = onStart || passing, nearFinish = onFinish;
   if (!nearStart && !nearFinish) continue;
   const entryRefIndex = nearStart ? 0 : reference.length - 1;
-  const result = walk(points, reference, lengthMeters, s, box, i, entryRefIndex);
+  const result = walk(points, reference, lengthMeters, s, box, passing ? i + 1 : i, entryRefIndex);
+  // The fix before the line, so the time at the line can be worked out.
+  if (passing && result.matched.length) result.matched.unshift({index: i, along: -metres(p, start), offset: 0, timestamp: p.timestamp, accuracy: Number.isFinite(p.accuracy) ? p.accuracy : 0});
   for (const m of result.matched) used.add(m.index);
   const outcome = classify(points, result, lengthMeters, s, nearStart, nearFinish);
   if (outcome.effort) efforts.push(outcome.effort);

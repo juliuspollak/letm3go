@@ -53,6 +53,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     var onFocusRange: ((Int, Int) -> Void)?
     private(set) var points: [GPSPoint]
     private var closed = false
+    private var handledEditID: String?
 
     init(presentation: ActivityPresentation, service: ActivityDetailsService) {
         self.presentation = presentation
@@ -79,6 +80,10 @@ final class ActivityDetailsViewModel: ObservableObject {
         points = service.points(activityID: next.activityID)
         // The recording changed under an open editor: its indices no longer name fixes.
         if let current = segmentDraft, current.end >= points.count || current.window.upperBound >= max(1, points.count) { cancelSegment() }
+        if let wanted = next.segments.editID, wanted != handledEditID, let segment = next.segments.items.first(where: { $0.id == wanted }) {
+            handledEditID = wanted
+            editSegment(segment)
+        }
         guard another else { return }
         // Drafts, messages and open forms belonged to the previous activity.
         trimDraft = nil; trimming = false; segmentDraft = nil; pickProblem = ""; message = ""; errorMessage = ""; sheet = nil; photoFocus = nil; deleting = false

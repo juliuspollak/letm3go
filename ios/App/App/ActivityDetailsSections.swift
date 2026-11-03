@@ -98,9 +98,6 @@ struct ActivityNoticesSection: View {
 struct ActivitySegmentsSection: View {
     @ObservedObject var model: ActivityDetailsViewModel
     @State private var open: String?
-    @State private var renaming: ActivityPresentation.Segment?
-    @State private var renameText = ""
-    @State private var confirming: ActivityPresentation.Segment?
     private func counts(_ row: ActivityPresentation.RiddenSegment) -> String {
         "\(row.thisRide)× this ride · \(row.total)× in all · best \(row.best)"
     }
@@ -129,33 +126,8 @@ struct ActivitySegmentsSection: View {
                         Text("\(row.total) time\(row.total == 1 ? "" : "s") on \(row.rideCount) ride\(row.rideCount == 1 ? "" : "s"), fastest first")
                             .font(.footnote).foregroundColor(DetailStyle.muted)
                         ForEach(row.passes) { pass in passRow(pass) }
-                        if row.owned, let segment = s.items.first(where: { $0.id == row.id }) {
-                            HStack {
-                                // Changing one needs an activity that can have segments.
-                                if s.allowed {
-                                    Button("Edit") { model.editSegment(segment) }.buttonStyle(DetailButtonStyle())
-                                    Button("Rename") { renameText = segment.name; renaming = segment }.buttonStyle(DetailButtonStyle())
-                                }
-                                Button("Delete") { confirming = segment }.buttonStyle(DetailButtonStyle(kind: .destructive))
-                            }.disabled(model.busy)
-                        }
                     }
                 }
-            }
-            .sheet(item: $renaming) { segment in
-                TextEntrySheet(title: "Rename segment", label: "New name", text: $renameText, limit: NamedSegments.maximumNameLength, valid: NamedSegments.cleanName(renameText) != nil) {
-                    guard let name = NamedSegments.cleanName(renameText) else { return }
-                    renaming = nil
-                    Task { await model.perform(.saveSegment(id: segment.id, name: name, start: segment.startIndex, end: segment.endIndex)) }
-                }
-            }
-            .confirmationDialog(confirming.map { "Delete “\($0.name)”? The recording is not changed." } ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), titleVisibility: .visible) {
-                Button("Delete segment", role: .destructive) {
-                    guard let segment = confirming else { return }
-                    open = nil
-                    Task { await model.perform(.deleteSegment(id: segment.id)) }
-                }
-                Button("Keep", role: .cancel) {}
             }
         }
     }

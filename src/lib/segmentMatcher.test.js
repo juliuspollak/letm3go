@@ -206,6 +206,36 @@ describe('self-crossing loop and out-and-back', () => {
   expect(matchEfforts(definition, {id: 'wander', points: ride}).efforts).toHaveLength(1);
  });
 
+ it('finds passes recorded with sparse fixes', () => {
+  for (const [step, seconds] of [[40, 5], [60, 6], [100, 10]]) {
+   const ride = [];
+   for (let east = -step * 2, t = 0; east <= 600 + step * 2; east += step, t += seconds) ride.push(trailFix(east + 7, 0, t));
+   const {efforts} = matchEfforts(definition, {id: 'sparse', points: ride});
+   expect(efforts).toHaveLength(1);
+   expect(Math.abs(efforts[0].elapsedSeconds - 600 / step * seconds)).toBeLessThanOrEqual(seconds);
+  }
+ });
+
+ it('rides through a brief GPS wander without losing the pass', () => {
+  const ride = [];
+  for (let t = 0; t <= 120; t++) ride.push(trailFix(5 * t, t >= 50 && t <= 58 ? 60 : 0, t));
+  expect(matchEfforts(definition, {id: 'wander', points: ride}).efforts).toHaveLength(1);
+ });
+
+ it('does not count a ride that leaves the trail for good', () => {
+  const ride = [];
+  for (let t = 0; t <= 120; t++) ride.push(trailFix(5 * t, t >= 40 ? 80 : 0, t));
+  expect(matchEfforts(definition, {id: 'left', points: ride}).efforts).toHaveLength(0);
+ });
+
+ it('builds a saved segment from a recording that repeats a timestamp', () => {
+  const repeated = sourcePoints.map((p, i) => i === 40 ? {...p, timestamp: sourcePoints[39].timestamp} : p);
+  const trip = {id: 'dup', points: repeated};
+  expect(segmentDefinition({id: 'd', trip, start: 0, end: 120})).toBeNull();
+  const saved = segmentDefinition({id: 'd', trip, start: 0, end: 120, saved: true});
+  expect(matchEfforts(saved, trip).efforts).toHaveLength(1);
+ });
+
  it('still rejects a real U-turn on a straight route', () => {
   const ride = [];
   for (let t = 0; t <= 60; t++) ride.push(trailFix(300 * t / 60, 0, t));
