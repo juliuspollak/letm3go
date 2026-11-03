@@ -267,11 +267,15 @@ check(JourneyContinuation.stopSummary(StopContext(family:.driving,placeKind:"wor
 do {
 // Destination stops (StopClassifier). Evidence is motion marks, on-foot displacement,
 // visits and saved places; the verdict is deterministic and explained.
+// Displacement fixes are placed during the first walking mark (or a minute in when
+// there is none), as a walk with the phone would produce them.
 func stopEvidence(_ start: Double = 1000, motion: String = "authorized", marks: [(Double, String, Bool)] = [],
-                  displacement: Double = 0, fixes: Int = 0, visit: Double? = nil, saved: String? = nil, timedOut: Bool? = nil) -> StopEvidenceSummary {
+                  displacement: Double = 0, fixes: Int = 0, visit: Double? = nil, saved: String? = nil, timedOut: Bool? = nil, footAt: Double? = nil) -> StopEvidenceSummary {
     var e = StopEvidenceSummary(stopStart: start, motion: motion, savedPlaceKind: saved)
     e.applyHistory(marks.map { MotionMark(at: $0.0, kind: $0.1, confident: $0.2) }, from: start - 60, to: start + 7200)
     e.historyCoveredUntil = nil
+    let walkStart = footAt ?? (marks.first { $0.1 == "walking" && $0.2 }?.0 ?? start + 50)
+    e.footFixes = (0..<fixes).map { StopEvidenceSummary.FootFix(at: walkStart + 10 + Double($0) * 5, metres: displacement) }
     e.onFootDisplacement = displacement; e.displacementFixes = fixes; e.visitAt = visit; e.historyTimedOut = timedOut
     return e
 }
@@ -321,7 +325,20 @@ var unobserved = StopEvidenceSummary(stopStart: 1000, motion: "authorized")
 _ = unobserved.noteLive(MotionMark(at: 990, kind: "vehicle", confident: true))
 unobserved.visitAt = 1100; unobserved.historyTimedOut = true
 let unobservedVerdict = StopClassifier.classify(unobserved, family: .driving, now: 1900)
-check(unobservedVerdict.verdict != .temporaryPause || unobservedVerdict.confidence != "high", "a stop the phone did not observe is never a confident traffic pause")
+check(unobservedVerdict.verdict == .ambiguous, "a stop the phone did not observe is ambiguous, never a confident traffic pause")
+// On-foot displacement is judged against the motion recorded at each fix.
+check(verdict(stopEvidence(motion: "denied", displacement: 90, fixes: 3, visit: 1200, footAt: 1000 + 15*60 - 100), minutes: 15).verdict == .ambiguous,
+      "without Motion, slow fixes in the last two minutes (a car creeping out) are not on-foot evidence")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1070,"stationary",true)], displacement: 90, fixes: 3, visit: 1200, footAt: 1300), minutes: 15).verdict == .meaningfulDestination,
+      "slow fixes taken while Core Motion recorded stillness do not count, the brief walk and the visit still do")
+check(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1070,"stationary",true)], displacement: 90, fixes: 3, footAt: 1300).footDisplacement(until: 1900).fixes == 0,
+      "fixes during a stationary mark are not on-foot displacement")
+check(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1300,"stationary",true)], displacement: 90, fixes: 3).footDisplacement(until: 1900) == (90, 3),
+      "fixes during a walk recorded later by Core Motion history count, whatever the live callbacks were")
+// A whole-stop run counts only away from its ends, so arrival and departure lag never add up.
+var lagOnly = StopEvidenceSummary(stopStart: 1000, motion: "authorized")
+lagOnly.applyHistory([MotionMark(at: 950, kind: "vehicle", confident: true), MotionMark(at: 1070, kind: "unknown", confident: false), MotionMark(at: 1870, kind: "vehicle", confident: true)], from: 940, to: 1900)
+check(lagOnly.totals(until: 1900).vehicle == 0, "arrival lag and departure lag bridged by unknown motion are not congestion")
 // The car's own arrival and departure are the journey, not motion during the stop.
 let tails = verdict(stopEvidence(marks: [(950,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
 check(tails.verdict == .meaningfulDestination && !tails.reasons.contains { $0.contains("vehicle motion") }, "sitting in the car after parking and driving off before the deciding fix do not veto a destination")
@@ -356,9 +373,9 @@ check(lagging.historyQueriedUntil == 1900, "the range asked for is remembered, s
 let firstMark = live.marks.first
 for i in 0..<400 { _ = live.noteLive(MotionMark(at: 2000 + Double(i), kind: i % 2 == 0 ? "walking" : "stationary", confident: true)) }
 check(live.marks.count <= StopEvidenceSummary.markLimit && live.marks.first == firstMark, "motion evidence is bounded and keeps the state in force at the stop start")
-check(!live.noteFix(distance: 200, accuracy: 80, speed: 1) && !live.noteFix(distance: 200, accuracy: 10, speed: 9) && !live.noteFix(distance: 200, accuracy: 10, speed: -1),
+check(!live.noteFix(distance: 200, accuracy: 80, speed: 1, at: 1260) && !live.noteFix(distance: 200, accuracy: 10, speed: 9, at: 1260) && !live.noteFix(distance: 200, accuracy: 10, speed: -1, at: 1260),
       "coarse, vehicle-speed or unknown-speed fixes are not on-foot displacement")
-check(live.noteFix(distance: 60, accuracy: 10, speed: 1) && live.onFootDisplacement == 50, "displacement is measured beyond the fix uncertainty")
+check(live.noteFix(distance: 60, accuracy: 10, speed: 1, at: 1260) && live.onFootDisplacement == 50, "displacement is measured beyond the fix uncertainty")
 let encodedEvidence = try! JSONEncoder().encode(live)
 check(try! JSONDecoder().decode(StopEvidenceSummary.self, from: encodedEvidence) == live, "open-stop evidence survives a relaunch")
 check(!String(decoding: encodedEvidence, as: UTF8.self).contains("latitude"), "stop evidence stores no coordinates")
@@ -389,25 +406,27 @@ func held(_ t: Double, speed: Double = 1) -> HeldFix {
 }
 var record = HeldStopFixes(owner: "Anna", stopStart: 1000)
 // Stage 1: terminated before anything was held: no record, nothing replayed.
-check(HeldStopFixes.replay(nil, owner: "anna", now: 1960).isEmpty, "with no record nothing is replayed")
+check(HeldStopFixes.replay(nil, owner: "anna", openStopStart: 1000, now: 1960).isEmpty, "with no record nothing is replayed")
 // Stage 2: terminated during the wait: the deciding delivery and later ones replay in order.
 check(record.append(HeldDelivery(receivedAt: 1950, source: "standard", fixes: [held(1945), held(1940), held(1948, speed: -1)])), "the deciding delivery is held")
 check(record.append(HeldDelivery(receivedAt: 1952, source: "lowPower", fixes: [held(1951)])), "a later delivery queues behind it")
 let stored = try! JSONEncoder().encode(record)
-let replayed = HeldStopFixes.replay(stored, owner: "anna", now: 1960)
+let replayed = HeldStopFixes.replay(stored, owner: "anna", openStopStart: 1000, now: 1960)
 check(replayed.map(\.receivedAt) == [1950, 1952] && replayed.map(\.source) == ["standard", "lowPower"], "deliveries replay in arrival order with their receipt time and source")
 check(replayed[0].fixes.map(\.timestamp) == [1940, 1945, 1948], "fixes replay in time order with original timestamps")
 check(replayed[0].fixes.last?.speed == -1, "an unknown speed stays unknown after replay")
 check(replayed.flatMap(\.fixes).count == 4, "no fix is lost or added")
 // Stage 3: terminated after the record was removed for replay: nothing replays twice.
-check(HeldStopFixes.replay(nil, owner: "anna", now: 1960).isEmpty, "a record removed before replay cannot deliver a fix again")
+check(HeldStopFixes.replay(nil, owner: "anna", openStopStart: 1000, now: 1960).isEmpty, "a record removed before replay cannot deliver a fix again")
 // Account scope and bounds.
-check(HeldStopFixes.replay(stored, owner: "kim", now: 1960).isEmpty && HeldStopFixes.replay(stored, owner: nil, now: 1960).isEmpty, "another account never receives held fixes")
-check(HeldStopFixes.replay(Data("null".utf8), owner: "anna", now: 1960).isEmpty && HeldStopFixes.replay(Data("garbage".utf8), owner: "anna", now: 1960).isEmpty, "an unreadable record replays nothing and blocks nothing")
+check(HeldStopFixes.replay(stored, owner: "kim", openStopStart: 1000, now: 1960).isEmpty && HeldStopFixes.replay(stored, owner: nil, openStopStart: 1000, now: 1960).isEmpty, "another account never receives held fixes")
+check(HeldStopFixes.replay(Data("null".utf8), owner: "anna", openStopStart: 1000, now: 1960).isEmpty && HeldStopFixes.replay(Data("garbage".utf8), owner: "anna", openStopStart: 1000, now: 1960).isEmpty, "an unreadable record replays nothing and blocks nothing")
 var full = HeldStopFixes(owner: "anna", stopStart: 1000)
 check(full.append(HeldDelivery(receivedAt: 1, source: "standard", fixes: (0..<HeldStopFixes.fixLimit).map { held(Double($0)) })), "up to the limit is held")
 check(!full.append(HeldDelivery(receivedAt: 2, source: "standard", fixes: [held(9999)])) && full.fixCount == HeldStopFixes.fixLimit, "the held record is bounded")
-check(HeldStopFixes.replay(stored, owner: "anna", now: 1952 + JourneyContinuation.window + 1).isEmpty, "a record older than any continuation window replays nothing")
+check(HeldStopFixes.replay(stored, owner: "anna", openStopStart: 1000, now: 1952 + JourneyContinuation.window + 1).isEmpty, "a record older than any continuation window replays nothing")
+check(HeldStopFixes.replay(stored, owner: "anna", openStopStart: nil, now: 1960).isEmpty && HeldStopFixes.replay(stored, owner: "anna", openStopStart: 4000, now: 1960).isEmpty,
+      "held fixes replay only into the same stop, still open; a closed or different stop receives nothing")
 }
 // One journey is one continuous activity. Walking away from a parked car is its
 // own walking journey, so a confirmed change of type ends the drive instead of
@@ -4876,18 +4895,18 @@ do {
     var holding = HeldStopFixes(owner: "anna", stopStart: parkedAt)
     _ = holding.append(HeldDelivery(receivedAt: returning.timestamp + 1, source: "standard", fixes: [HeldFix(latitude: returning.latitude, longitude: returning.longitude,
         altitude: 0, horizontalAccuracy: returning.accuracy, verticalAccuracy: 5, course: -1, speed: returning.speed, timestamp: returning.timestamp)]))
-    check(HeldStopFixes.replay(try! JSONEncoder().encode(holding), owner: "anna", now: returning.timestamp + 5).first?.fixes.first?.timestamp == returning.timestamp, "combined: the deciding fix is replayed after termination")
+    check(HeldStopFixes.replay(try! JSONEncoder().encode(holding), owner: "anna", openStopStart: parkedAt, now: returning.timestamp + 5).first?.fixes.first?.timestamp == returning.timestamp, "combined: the deciding fix is replayed after termination")
     // 9-12. The first leg ends at the shop; the returning fix starts the second leg.
     outbound.updateDetails { $0.destinationStop = StopInterval(start: parkedAt, end: returning.timestamp, verdict: verdict.verdict.rawValue, confidence: verdict.confidence, reasons: verdict.reasons) }
     outbound.completeProvisional()
     var homeward = RecordedActivity(activity: "Driving", startedAt: returning.timestamp, resumedAt: returning.timestamp, title: "Drive")
     homeward.recordingMode = "automatic"; homeward.details = ActivityDetails()
-    check(homeward.accept(returning, now: returning.timestamp), "combined: the returning fix belongs to the second leg")
+    check(homeward.accept(returning, now: returning.timestamp), "combined (model, not the recorder glue): a second leg built from the returning fix accepts it")
     for i in 1...20 { _ = homeward.accept(drivingFix(returning.latitude - Double(i)*120/111_320, returning.timestamp + Double(i)*10), now: returning.timestamp + Double(i)*10) }
     check(outbound.state == "finished" && outbound.points.last!.timestamp <= parkedAt && outbound.details?.stopEvidence == nil, "combined: the first leg ends at the shop with its geometry and no leftover evidence")
     check(outbound.details?.destinationStop?.end == returning.timestamp && outbound.details?.destinationStop?.verdict == "meaningfulDestination", "combined: the shop stop keeps its timing and reason")
     let outboundTimes = Set(outbound.points.map(\.timestamp)), homewardTimes = Set(homeward.points.map(\.timestamp))
-    check(outboundTimes.isDisjoint(with: homewardTimes) && homeward.points.first?.timestamp == returning.timestamp, "combined: no fix is in both legs")
+    check(outboundTimes.isDisjoint(with: homewardTimes) && homeward.points.first?.timestamp == returning.timestamp, "combined (model): legs cut at the stop share no fix")
     check(outbound.duration(at: returning.timestamp) == parkedAt - 5010, "combined: the shop stop is not moving time")
     // 14. Back home and still again: rest is re-earned, then passive rest is allowed again.
     let backHome = homeRest(returning.timestamp + 200 + 1300, disturbed: returning.timestamp + 200)

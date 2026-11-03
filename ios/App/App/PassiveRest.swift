@@ -54,7 +54,7 @@ extension LocationRecorder {
         sharingRestEnabled = enabled
         // Switching the test off leaves nothing of it behind: no pending false-wake
         // restore; the keep-alive cases end at the reconcile below.
-        if !enabled { falseWakeCandidate = nil }
+        if !enabled { falseWakeCandidate = nil; if passiveSince != nil { passiveEndedAt = Date().timeIntervalSince1970 } }
         UserDefaults.standard.set(enabled, forKey: Self.sharingRestKey(owner))
         recordDiagnostic("preference", enabled ? "Release location while resting with sharing on: device test enabled" : "Release location while resting with sharing on: device test disabled")
         reconcileAutomaticSampling()

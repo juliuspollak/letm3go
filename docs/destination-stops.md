@@ -17,7 +17,7 @@ The evidence is opened when a stop is published (`settleAutomatic`). It is store
   - A parked car (automotive and stationary together) counts as stationary.
   - Limited to 120 marks, always keeping the one in force when the stop began.
   - Live marks are kept in memory and saved with the next fix, visit or history change. They are not saved on every motion flip.
-- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and a known speed < 2.6 m/s, taken while Core Motion reports walking (or cannot answer). Two such fixes are required. Only fixes that do not continue the drive count. Because displacement usually comes from the same walk, it is never the second source a 3–6 minute stop needs.
+- **On-foot displacement:** slow (< 2.6 m/s, known speed), accurate (≤ 30 m) fixes away from the stop are kept as time and distance only (at most 40). At the decision, a fix counts only if Core Motion recorded walking at that moment (live or history) or Motion cannot answer, and never in the last 2 minutes before the deciding fix, when a car creeping out looks the same. Two such fixes are required, beyond 40 m. Only fixes that do not continue the drive are kept. Displacement is never the second source a 3–6 minute stop needs.
 - **iOS visit** arrival or departure within 200 m of the stop. A visit that arrived more than 5 minutes before the stop, or ended before it, is ignored.
 - **Saved-place kind** (never its name), Motion permission, and when history was read or timed out.
 
@@ -73,6 +73,9 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 - The new keys are on the export allowlist. Reasons contain no coordinates or place names.
 
 ## Limitations
+
+- **Standstill in a jam:** Core Motion reports a stopped car as automotive and stationary, which is mapped to stationary. A 15-minute standstill without vehicle motion in the middle is therefore `ambiguous`: the drive stays continuous, but the stop is shown as a Possible destination with its title suffix.
+- **Runtime hand-off untested in the harness:** the native tests cover every decision. They do not cover `processAutomatic`, `finalizeSettledAutomatic`, the detector or the held-fix replay; those are covered by review and the simulator build only. The combined scenario test is a model built from the same decisions.
 
 - **Correction:** an ambiguous stop can be renamed or ignored, but a single native activity cannot be split in the app today. Grouping links and cuts work only between activities. Splitting it is a separate feature.
 - **Backup:** `details.stops`, `stopEvidence` and `destinationStop` are not in the cloud backup projection (`cloudSync.viewMetadata`). A stop's verdict stays on this iPhone. The split itself is backed up, because the two legs are separate activities.

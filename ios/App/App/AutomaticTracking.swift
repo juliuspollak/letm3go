@@ -454,7 +454,13 @@ extension LocationRecorder {
                 pending.deliveries.append((locations, receivedAt ?? Date().timeIntervalSince1970, source))
                 stopHistoryPending = pending
                 persistHeldStopFixes()
-            } else { diagnosticRejections["rejected.heldDeliveryLimit", default: 0] += locations.count }
+            } else {
+                // Past the bound: stop waiting and decide now, so nothing is dropped.
+                pending.deliveries.append((locations, receivedAt ?? Date().timeIntervalSince1970, source))
+                stopHistoryPending = pending
+                recordDiagnostic("decision", "Stop decision made early: too many fixes arrived during the wait")
+                resumeStopDecision(generation: pending.generation, timedOut: true)
+            }
             return
         }
         // A held delivery is judged as of its own receipt, so a suspension during
@@ -1435,8 +1441,7 @@ extension LocationRecorder {
         // A car creeping out of its space is not someone on foot.
         guard !AutomaticDetector.drivingMotion(motion, now: Date().timeIntervalSince1970) else { return }
         guard let id = settledTripID, let last = trips.first(where: { $0.id == id })?.points.last else { return }
-        let onFoot = motionAuthorisation != "authorized" || AutomaticDetector.onFootMotion(motion, now: Date().timeIntervalSince1970)
-        updateSettledEvidence { $0.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: rawSpeed, onFoot: onFoot) }
+        updateSettledEvidence { $0.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: rawSpeed, at: sample.timestamp) }
     }
     // iOS's own view that the person stayed somewhere, near this stop.
     func noteStopVisit(_ visit: CLVisit) {
@@ -1534,7 +1539,14 @@ extension LocationRecorder {
         endStopHistoryTask()
         // A manual or Watch recording that began, or tracking that stopped, during
         // the wait: the fixes stay on disk and are replayed once tracking resumes.
-        if ownerID == pending.owner, reconcileManualExclusion() || !automaticAvailable || active != nil {
+        if ownerID == pending.owner, reconcileManualExclusion() || active != nil {
+            // A manual or Watch recording owns these moments now, as before.
+            clearHeldStopFixes()
+            recordDiagnostic("decision", "Held stop fixes dropped: a manual recording began during the stop decision")
+            return
+        }
+        if ownerID == pending.owner, !automaticAvailable {
+            // Kept for a brief loss of availability; replayed only into this same open stop.
             heldReplayChecked = false
             recordDiagnostic("decision", "Held stop fixes kept until automatic tracking is available")
             return
@@ -1605,7 +1617,8 @@ extension LocationRecorder {
         heldReplayChecked = true
         let url = storage.directory.appendingPathComponent(HeldStopFixes.fileName)
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let deliveries = HeldStopFixes.replay(try? storage.readData(name: HeldStopFixes.fileName), owner: ownerID, now: Date().timeIntervalSince1970)
+        let deliveries = HeldStopFixes.replay(try? storage.readData(name: HeldStopFixes.fileName), owner: ownerID,
+                                              openStopStart: settledEvidence?.stopStart, now: Date().timeIntervalSince1970)
         clearHeldStopFixes()
         recordDiagnostic("recovery", "Stop fixes held when the app last stopped were replayed",
                          details: ["heldFixes": String(deliveries.reduce(0) { $0 + $1.fixes.count })])

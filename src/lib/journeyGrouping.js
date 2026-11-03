@@ -77,7 +77,9 @@ export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
  if(destination&&Number.isFinite(destination.start)&&Math.abs(destination.start-a.endedAt)<=120){
   // The phone split a long drive at a stop: as one native activity it would have
   // been one drive, so it still groups as a road trip, whatever the vehicle.
-  if(longDrive&&stop.durationSeconds<=90*60)return {decision:'auto',reason:'Short stop between long drives'};
+  // Not across a saved Home or Work stop, and not over two titles the person gave.
+  if(longDrive&&stop.durationSeconds<=90*60&&!['home','work'].includes(stop.kind)&&!(metadata.titles[a.id]&&metadata.titles[b.id]&&metadata.titles[a.id]!==metadata.titles[b.id]))
+   return {decision:'auto',reason:'Short stop between long drives'};
   return {decision:'separate',reason:'Destination recognised between these drives'};
  }
  if(a.activity!=='Driving'||b.activity!=='Driving')return {decision:'suggest',reason:'Unclassified journey — confirm both recordings belong to the same drive'};

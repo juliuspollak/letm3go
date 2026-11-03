@@ -1200,8 +1200,14 @@ struct StopEvidenceSummary: Codable, Equatable {
     var historyAttemptedAt: Double?
     var historyTimedOut: Bool?
     var motion: String = "unknown"           // authorized, denied, unavailable, unknown
-    var onFootDisplacement: Double = 0        // metres from the stop, accurate slow fixes only
+    var onFootDisplacement: Double = 0        // largest candidate distance (diagnostic)
     var displacementFixes: Int = 0
+    // Slow, accurate fixes away from the stop: time and distance only. Whether each
+    // was someone on foot is judged at the decision, against the motion marks then
+    // known (history included), never from how fresh a live callback was.
+    var footFixes: [FootFix] = []
+    struct FootFix: Codable, Equatable { var at: Double; var metres: Double }
+    static let footFixLimit = 40
     var visitAt: Double?
     var visitDepartureAt: Double?
     var savedPlaceKind: String?
@@ -1223,6 +1229,7 @@ struct StopEvidenceSummary: Codable, Equatable {
         motion = try c.decodeIfPresent(String.self, forKey: .motion) ?? "unknown"
         onFootDisplacement = try c.decodeIfPresent(Double.self, forKey: .onFootDisplacement) ?? 0
         displacementFixes = try c.decodeIfPresent(Int.self, forKey: .displacementFixes) ?? 0
+        footFixes = try c.decodeIfPresent([FootFix].self, forKey: .footFixes) ?? []
         visitAt = try c.decodeIfPresent(Double.self, forKey: .visitAt)
         visitDepartureAt = try c.decodeIfPresent(Double.self, forKey: .visitDepartureAt)
         savedPlaceKind = try c.decodeIfPresent(String.self, forKey: .savedPlaceKind)
@@ -1269,23 +1276,34 @@ struct StopEvidenceSummary: Codable, Equatable {
         // The mark in force at the stop start is kept, so its run is not undercounted.
         marks = merged.count > Self.markLimit ? [merged[0]] + Array(merged.suffix(Self.markLimit - 1)) : merged
     }
-    // A slow, accurate fix away from the stop: someone on foot with the phone.
-    // Fixes moving at vehicle speed are departure evidence, not a walk.
-    @discardableResult
+    // A slow, accurate fix away from the stop: possibly someone on foot with the
+    // phone. Fixes moving at vehicle speed are departure evidence, not a walk.
     // `speed` is Core Location's raw value: a negative (unknown) speed proves nothing.
-    // `onFoot`: Core Motion reports walking now, or cannot answer. A slow car
-    // creeping out of its space, before Core Motion says so, is not a walk.
-    mutating func noteFix(distance: Double, accuracy: Double, speed: Double, onFoot: Bool = true) -> Bool {
-        guard onFoot, distance.isFinite, accuracy >= 0, accuracy <= 30, speed >= 0, speed < 2.6 else { return false }
+    @discardableResult
+    mutating func noteFix(distance: Double, accuracy: Double, speed: Double, at: Double) -> Bool {
+        guard distance.isFinite, accuracy >= 0, accuracy <= 30, speed >= 0, speed < 2.6 else { return false }
         guard distance - accuracy >= 25 else { return false }
         displacementFixes += 1
         let before = onFootDisplacement
         onFootDisplacement = max(onFootDisplacement, distance - accuracy)
+        footFixes = Array((footFixes + [FootFix(at: at, metres: distance - accuracy)]).suffix(Self.footFixLimit))
         return onFootDisplacement - before >= 10 || displacementFixes == 2
+    }
+    // The confident state in force at `time`, from the marks.
+    func confidentKind(at time: Double) -> String? {
+        marks.filter { $0.at <= time && $0.confident }.max { $0.at < $1.at }?.kind
+    }
+    // On-foot displacement that counts: fixes taken while Core Motion recorded
+    // walking (or cannot answer), and not in the last 2 minutes before the deciding
+    // fix, when a car creeping out of its space looks the same.
+    func footDisplacement(until: Double) -> (metres: Double, fixes: Int) {
+        let motionKnown = motion == "authorized"
+        let counted = footFixes.filter { $0.at <= until - StopEvidenceSummary.vehicleTailSeconds &&
+            (!motionKnown || confidentKind(at: $0.at) == "walking") }
+        return (counted.map(\.metres).max() ?? 0, counted.count)
     }
     struct Totals: Equatable {
         var walking: Double = 0, longestWalk: Double = 0, vehicle: Double = 0, stationary: Double = 0, covered: Double = 0
-        var lastVehicleAt: Double?
     }
     // Confident time in each state between the stop and `until`. A mark lasts until
     // the next one; the state in force at the stop start counts from the start.
@@ -1330,8 +1348,13 @@ struct StopEvidenceSummary: Codable, Equatable {
             }
             let arriving = spans[index].start <= stopStart + Self.vehicleTailSeconds
             let leaving = spans[lastVehicle].end >= until - Self.vehicleTailSeconds
-            if (!arriving && !leaving) || (arriving && leaving && historyCovers(until)) {
-                t.vehicle += seconds; t.lastVehicleAt = max(t.lastVehicleAt ?? 0, spans[lastVehicle].start)
+            if !arriving && !leaving {
+                t.vehicle += seconds
+            } else if arriving && leaving && historyCovers(until) {
+                // A whole-stop run counts only away from both ends, so arrival and
+                // departure lag cannot add up to "congestion".
+                let low = stopStart + Self.vehicleTailSeconds, high = until - Self.vehicleTailSeconds
+                t.vehicle += spans[index...lastVehicle].filter(vehicle).reduce(0) { $0 + max(0, min($1.end, high) - max($1.start, low)) }
             }
             index = next
         }
@@ -1394,8 +1417,9 @@ enum StopClassifier {
         }
         // Displacement is on-foot evidence only where Core Motion saw walking or
         // cannot answer: a car creeping out of a car park is not a walk.
-        if e.onFootDisplacement >= footDisplacementMeters && e.displacementFixes >= 2 && (t.walking > 0 || !motionKnown) {
-            score += 1; sources += 1; displaced = true; reasons.append("on foot \(Int(e.onFootDisplacement)) m from the stop")
+        let foot = e.footDisplacement(until: now)
+        if foot.metres >= footDisplacementMeters && foot.fixes >= 2 {
+            score += 1; sources += 1; displaced = true; reasons.append("on foot \(Int(foot.metres)) m from the stop")
         }
         if e.visitAt != nil { score += 1; sources += 1; reasons.append("iOS reported a visit") }
         if let kind = e.savedPlaceKind { score += 1; sources += 1; reasons.append("at a saved place (\(kind))") }
@@ -1456,13 +1480,15 @@ struct HeldStopFixes: Codable, Equatable {
         deliveries.append(delivery)
         return true
     }
-    // What a launch replays: only this account's own record, deliveries in the
-    // order they arrived and fixes within each in time order. A record older than
-    // any continuation window decides nothing any more and replays nothing.
-    static func replay(_ data: Data?, owner: String?, now: Double, maximumAge: Double = JourneyContinuation.window) -> [HeldDelivery] {
+    // What a launch replays: only this account's own record, and only into the
+    // same stop, still open (`openStopStart`): a closed stop has nothing left to
+    // decide, and stale fixes must not seed a later departure. Deliveries in the
+    // order they arrived, fixes within each in time order, never older than any
+    // continuation window.
+    static func replay(_ data: Data?, owner: String?, openStopStart: Double?, now: Double, maximumAge: Double = JourneyContinuation.window) -> [HeldDelivery] {
         guard let data = data, let owner = owner,
               let held = try? JSONDecoder().decode(HeldStopFixes.self, from: data),
-              held.owner.lowercased() == owner.lowercased(),
+              held.owner.lowercased() == owner.lowercased(), held.stopStart == openStopStart,
               let newest = held.deliveries.map(\.receivedAt).max(), now - newest <= maximumAge else { return [] }
         return held.deliveries.map { delivery in
             var sorted = delivery
