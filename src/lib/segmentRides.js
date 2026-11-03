@@ -67,7 +67,24 @@ function passesOf({segment,owner,definition},trips){
  // A section made across a GPS gap cannot be looked for elsewhere, and a segment always
  // counts on the ride that made it.
  if(!passes.some(pass=>pass.trip.id===owner.id))passes.push({trip:owner,startedAt:segment.startTimestamp,elapsedSeconds:segment.durationSeconds});
- return passes;
+ return onePerLap(passes,trips);
+}
+
+// An automatic recording can run during a recorded ride. A lap it saw belongs to that
+// ride, and one lap seen by both counts once.
+function onePerLap(passes,trips){
+ const recorded=trips.filter(trip=>trip.recordingMode!=='automatic'&&Number.isFinite(trip.endedAt));
+ const placed=passes.map(pass=>{
+  if(pass.trip.recordingMode!=='automatic')return pass;
+  const ride=recorded.find(trip=>trip.startedAt<=pass.startedAt&&pass.startedAt<=trip.endedAt);
+  return ride?{...pass,trip:ride,seenByAutomatic:true}:pass;
+ }).sort((a,b)=>Boolean(a.seenByAutomatic)-Boolean(b.seenByAutomatic)||a.startedAt-b.startedAt);
+ const kept=[];
+ for(const pass of placed){
+  const same=kept.some(other=>other.trip.id===pass.trip.id&&pass.startedAt<other.startedAt+other.elapsedSeconds&&other.startedAt<pass.startedAt+pass.elapsedSeconds);
+  if(!same)kept.push(pass);
+ }
+ return kept;
 }
 
 const MAX_LISTED=200;

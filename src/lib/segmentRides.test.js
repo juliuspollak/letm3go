@@ -63,6 +63,23 @@ describe('rides through a segment',()=>{
    expect(segmentRides(made,[made])[0].thisRide,`every ${step} m`).toBe(3);
   }
  });
+ it('gives a lap seen by an automatic recording to the ride it happened in',()=>{
+  const fullRide=withSegment(ride('watch',1000,[5,5,5]),0,120);
+  const lastLaps=fullRide.points.filter((_,i)=>i>=250);
+  const watch={...fullRide,startedAt:1000,endedAt:fullRide.points.at(-1).timestamp,recordingMode:'watch',points:fullRide.points.slice(0,250).concat(lastLaps.slice(250))};
+  const automatic={id:'auto',title:'Cycling',recordingMode:'automatic',startedAt:lastLaps[0].timestamp,endedAt:lastLaps.at(-1).timestamp,updatedAt:2,points:lastLaps,details:{}};
+  const seen=segmentRides(watch,[watch,automatic])[0];
+  expect(seen.total).toBe(seen.thisRide);
+  expect(seen.passes.every(pass=>pass.current)).toBe(true);
+  const both={...fullRide,startedAt:1000,endedAt:fullRide.points.at(-1).timestamp,recordingMode:'watch'};
+  const all=segmentRides(both,[both,{...automatic,points:fullRide.points}])[0];
+  expect(all).toMatchObject({thisRide:3,total:3,rideCount:1});
+ });
+ it('still counts an automatic activity outside any recorded ride',()=>{
+  const ownRide={...today,startedAt:1000,endedAt:today.points.at(-1).timestamp,recordingMode:'watch'};
+  const auto={...earlier,recordingMode:'automatic',startedAt:500000,endedAt:earlier.points.at(-1).timestamp};
+  expect(segmentRides(ownRide,[ownRide,auto])[0]).toMatchObject({thisRide:3,total:4,rideCount:2});
+ });
  it('shows nearby segments from other rides on the map, and not distant ones',()=>{
   const layers=nearbySegmentLayers(earlier,[today,earlier]);
   expect(layers.pins).toHaveLength(1);
