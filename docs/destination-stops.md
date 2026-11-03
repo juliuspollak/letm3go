@@ -52,7 +52,7 @@ The verdict is evaluated before the returning fix is appended to a drive:
 When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or ≥ 3 m/s) and Core Motion history has not been read, the fix and the rest of its delivery are held:
 
 - Core Motion history is queried for the whole stop. The fixes are then reprocessed in order, on the answer or after 3 s, whichever comes first.
-- Later deliveries queue behind them, up to 500 fixes.
+- Later deliveries queue behind them, up to 500 fixes. Overflow or a failed queue write ends the wait and drains synchronously; the drain cannot start another history wait.
 - A background task asks iOS not to suspend the app during the wait. Each held delivery keeps its own receipt time and is judged as of then, so a suspension cannot age it out.
 - History is queried at most once per range: the range asked for is remembered separately from how far history actually reached, so a parked phone is not re-queried every minute.
 - If nothing can be held (no account), the fixes are processed at once. Sign-out clears the held fixes.
@@ -74,25 +74,25 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 
 ## Limitations
 
-- **Standstill in a jam:** Core Motion reports a stopped car with its engine running as automotive and stationary (`parkedVehicle`).
-  - A stop that is at least 80 % `parkedVehicle`, with no walking and with Core Motion history covering it, is a `temporaryPause` ("a traffic standstill").
+- **Standstill in a jam:** the classifier maps combined automotive and stationary flags to `parkedVehicle`. Those flags do not establish whether the engine is running.
+  - A stop that is at least 80 % `parkedVehicle`, with under 30 seconds of walking and with Core Motion history covering it, is a `temporaryPause` ("a traffic standstill").
   - Without full history it stays `ambiguous`, so it is never overstated.
-  - A phone left in a switched-off car settles to plain stationary and stays `ambiguous`.
+  - Plain stationary evidence alone stays `ambiguous`; actual sensor behaviour still needs device validation.
 - **Runtime coverage:** `npm run test:recorder:sim` (`RecorderHarness.swift`) runs the real recorder orchestration in a simulator. It does not cover iOS scheduling, suspension, background sessions keeping a backgrounded app alive, or real Core Location and Core Motion delivery.
 
 - **Correction:** an ambiguous stop can be renamed or ignored, but a single native activity cannot be split in the app today. Grouping links and cuts work only between activities. Splitting it is a separate feature.
 - **Backup:** a round-trip test (`stopBackup.test.js`) shows what the existing cloud backup restores.
   - Restored: destination legs as separate activities with their exact times and routes, a continued drive's stops as route segment breaks, and moving time without the stops.
-  - Not restored: verdicts, confidence and reasons (`details.stops`, `destinationStop`). They stay on the iPhone that recorded them, because the server's `view_metadata` check accepts only five known keys and changing it would need a migration.
-  - Only the explanation is lost, not route or timing data.
+  - Verdicts, confidence, reasons and intervals (`details.stops`, `destinationStop`) now survive through a bounded versioned `classification.journeyStops` envelope. The existing JSONB/RPC supports it without changing strict `view_metadata` or applying a migration.
+  - Transient motion evidence and provisional/query state remain local. Backups created before this fix cannot recover previously omitted verdicts.
 - **Visits:** iOS often delivers visits late or not at all, so they are only ever supporting evidence.
 - **Process termination during the wait:** the held deliveries are written to the account's encrypted store (`stop-held.data`, `HeldStopFixes`) before anything waits.
-  - The next launch replays them once, in order, with their timestamps, receipt times and sources, as soon as automatic tracking is available.
-  - The record is removed before replay, so nothing is delivered twice.
-  - It is bounded to 500 fixes; a larger backlog is decided at once without history.
+  - The next launch recovers them in order with timestamp deduplication, retaining their timestamps, receipt times and sources, as soon as automatic tracking is available.
+  - The record remains until an automatic route covering the held interval is durably saved. Replay skips already committed automatic observations; unrelated manual/Watch imports do not count as commitment.
+  - It is bounded to 500 fixes; a larger backlog is decided at once without history, after draining the existing journal.
   - It is account-scoped, and removed on sign-out, because the next open's tracking boundary would reject every fix anyway.
-  - It is ignored once older than the 45-minute continuation window.
-  - If a manual or Watch recording, or tracking switched off, interrupts the wait, the record stays until automatic tracking is available.
+  - Recovery decides accepted fixes at their original receipt times before wall-clock continuation expiry, including a relaunch after the deadline.
+  - A manual/Watch ownership takeover drops held automatic fixes with a diagnostic. Temporary tracking unavailability retains the journal for recovery into its original stop.
 
 ## Review
 
@@ -116,7 +116,7 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 Unit tests prove the decisions for given evidence. They do not show what iOS delivers. Record these with the phone locked, then export diagnostics:
 
 1. Home → shop (unsaved), 15 min inside with the phone in a pocket, → Home. Expect two drives, *Stop classified … meaningfulDestination*, and the returning fix as the second drive's start.
-2. The same, with the phone left in the car. Expect one drive with a **Possible destination** stop.
+2. The same, with the phone left in the car. Expect one drive; insufficient evidence stays **Possible destination**, while covered automotive/stationary evidence is a traffic pause. Capture the actual Core Motion flags.
 3. 10–15 min of stop-and-go traffic. Expect one drive, `temporaryPause`.
 4. A 3–4 min pickup. Expect one drive.
 5. A café stop on a bike ride. Expect one ride with a visible stop.

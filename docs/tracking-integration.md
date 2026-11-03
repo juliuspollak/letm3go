@@ -6,12 +6,13 @@ Branch `integration/tracking-improvements`. Not merged into `main`. Nothing depl
 
 | | SHA |
 | --- | --- |
-| Baseline `main` (unchanged during this work) | `6c77050` |
+| Historical integration baseline | `6c77050` |
 | Change A `feature/stationary-sharing` | `0856d88` (`a95e0ea`, `4c22265`, `19756dd`, `0856d88`) |
 | Change B `feature/destination-stops` | `3545909` (`8d21c7b`, `831126a`, `fa88130`, `3545909`) |
 | Merge A | `70fbc45` |
 | Merge B (one conflict: the diagnostics export allowlist, both key sets kept) | `d3153ad` |
-| Integration corrections | `87e5bc1`, `acd842e`, `81a4517`, and the final commit on this branch |
+| Earlier integration corrections | `87e5bc1`, `acd842e`, `81a4517`, `60bfc18`, `67c8b8c`, `dc3a498` |
+| Final hardening corrections | `2f9dcb0` (backup), `71f9182` (durable replay and integration regressions) |
 
 Both features share `RecorderCore.swift`, `AutomaticTracking.swift`, `LocationRecorder.swift`, `AccountSecurity.swift` and the native tests. Apart from the allowlist, those changes merged without conflict.
 
@@ -19,12 +20,12 @@ Both features share `RecorderCore.swift`, `AutomaticTracking.swift`, `LocationRe
 
 - **Durable held fixes (Change B, was critical).**
   - The deciding fix and later deliveries held during the ≤ 3 s Core Motion wait are written to the account's encrypted store (`stop-held.data`, `HeldStopFixes`) before anything waits.
-  - After a termination they are replayed once, in order, with their timestamps, receipt times and sources, into the same stop if it is still open.
-  - The record is removed before replay, so nothing is delivered twice.
-  - Bounded: a backlog over 500 fixes is decided at once, and a delivery past the bound ends the wait early instead of being dropped.
+  - After a termination they are recovered in order with timestamp deduplication, retaining their timestamps, receipt times and sources, into the same stop or its already-finalised first-leg boundary.
+  - The record remains until a saved automatic route covers the accepted fixes. Replay skips committed timestamps only in the original automatic journey or its overlapping successor; unrelated manual/Watch imports cannot suppress it.
+  - Bounded to 500 held fixes: overflow drains the journal first, then processes the incoming delivery synchronously. No second history wait is allowed during a drain. A failed queue write also ends the wait immediately.
   - Account-scoped, and removed on sign-out.
   - Dropped when a manual or Watch recording takes over during the wait.
-  - The continuation window does not expire under a held fix.
+  - Recovery restores the stop using the accepted delivery time before evaluating wall-clock expiry. Accepted observations retain their receipt time and source in the first durable recovery write.
   - A late history answer only changes evidence of the same open stop.
 - **Keep-alive (Change A).** With the device test on, sharing that holds location after a sharing rest released the session is kept resumable, including during a Watch workout. The keep-alive never runs beside the adaptive low-power stream.
 - **Switch off.** Turning the device test off clears a pending false-wake restore and marks the end of a sharing rest, so the pre-rest fix is never re-sent as current.
@@ -36,43 +37,56 @@ Both features share `RecorderCore.swift`, `AutomaticTracking.swift`, `LocationRe
   - A long drive split at a short stop still groups as a road trip without a vehicle, except across a saved Home/Work stop or two titles the person gave.
   - Ambiguous stops show the evidence they lacked.
 
-## Automated results (final commit)
+## Final hardening review (3 November 2026)
 
-| Check | Result |
+The working tree was clean at inspection, at `dc3a498`, with `67c8b8c` and `dc3a498` already following the requested `60bfc18`. Those previously unreviewed corrections were included. Local `origin/main` already pointed at `dc3a498`; no main ref was changed, merge performed, or remote written during this review. Other worktrees were preserved.
+
+The independent reviewer inspected the full integration from `6c77050` and repeated review after corrections. Confirmed correctness findings fixed:
+
+- A failed held-queue write previously left accepted deliveries in memory during the history wait.
+- Removing the journal before replay lost observations if termination occurred between first-leg finalisation and second-leg persistence.
+- Recovery could expire the provisional stop before replaying fixes accepted within its continuation window.
+- An intermediate recovery write flattened receipt times/sources; original delivery metadata now goes into the first write.
+- A draft duplicate check included unrelated Watch/manual activity timestamps; only relevant automatic recordings now prove commitment.
+- Stop verdicts were omitted from backup despite the existing `classification` JSONB/RPC supporting a versioned envelope without migration.
+
+No additional confirmed critical/high or medium correctness findings remained after re-review. This is a code-review conclusion, not proof against every possible defect.
+
+## Automated verification
+
+| Check | Final result |
 | --- | --- |
-| `npm run test:native` (recorder, passive rest, sharing rest, false wake, keep-alive, classifier, held-fix termination stages, combined Home → shop → Home model, test on and off) | 2,010 assertions passed |
-| `npm run test:native:details` | 91 assertions passed |
-| `TZ=UTC npx vitest run` (frontend, grouping, presentation, passive-rest UI, presence text) | 149 files, 1,034 tests passed |
-| `npx eslint src tests --quiet` | clean |
-| `npm run ios:build` (simulator) | BUILD SUCCEEDED |
+| Native recorder/auth decision suite | 2,017 assertions passed |
+| Native Activity Details suite | 91 assertions passed |
+| Web Vitest suite (`TZ=UTC npm test`) | 150 files, 1,037 tests passed |
+| Full repository lint (`npm run lint`) | clean |
+| Orchestrator suite | 52 passed, 11 platform-specific skipped, 0 failed |
+| Production web build | passed; existing bundle-size warning |
+| Real recorder simulator harness (`npm run test:recorder:sim`, includes simulator build) | 66 checks passed, 0 failed, iOS 26.5 |
+| Activity Details simulator UI full run | 18 executed: 15 passed, 3 failed |
+| Targeted retry of all three UI failures, unchanged code | 3 passed, 0 failed |
 
-The native harness compiles the pure decision cores only. `processAutomatic`, `finalizeSettledAutomatic`, the detector, the session and keep-alive glue and held-fix replay are not executed by any test. They are covered by code review and the simulator build. The combined scenario test is a model built from the same decisions.
+The UI failures were `testDiagnosticsAndDeleteConfirmation` (Delete button not found), `testKeyboardExpandsThePanelForSegmentName` (typed "Rock", observed "Ro") and `testOneMinuteSegmentOfATwoHourRideWithLaps` (keyboard focus unavailable). All three passed on an immediate sequential retry on the warmed simulator, without changes. These Activity Details production/test files are unchanged from local `main`; this demonstrates nondeterminism, not an established tracking defect or a clean full-suite result. Merge approval should wait for a clean full UI run or an explicitly accepted resolution of these failures.
 
-## Independent reviews
+Simulator startup initially stalled while checks started concurrently. The interrupted startup attempts ran no complete suite; sequential retries produced the recorder and UI results above. No shared simulator services or existing simulator data were reset. The recorder harness now uses a disposable simulator by default.
 
-- **Two independent reviewers** worked on the full combined diff `6c77050..87e5bc1`, then verified each correction round:
-  - **Reviewer 1:** location ownership, sessions, concurrency, durable buffering.
-  - **Reviewer 2:** classification, boundaries, grouping, compatibility.
-- **Findings per round:**
+The DEBUG harness runs the real `LocationRecorder.processAutomatic`, departure detector, recording, provisional publication, classification/history wait, encrypted persistence, replay, first-leg finalisation, second-leg creation, returning-fix ownership, temporary/ambiguous continuation, manual/Watch exclusion, sharing passive rest, session release and foreground departure recovery. It adds the exact 500-fix boundary, overflow, a failed held write, the actual three-second timeout and late response, a would-be second history wait, interruption between legs, duplicate replay after route save, account isolation and recovery after the continuation deadline.
 
-| Round | Reviewer 1 | Reviewer 2 | Result |
-| --- | --- | --- | --- |
-| `87e5bc1` | 0 critical/high, 2 medium, 8 low | 0 critical/high, 5 medium, 6 low | All fixed or documented in `acd842e` |
-| `acd842e` | 0 critical/high, 3 new low | 0 critical/high, 1 medium (departing car as on-foot evidence), 4 low | Fixed in `81a4517` |
-| `81a4517` | No critical or high; 2 low | No critical or high; 2 low | Low items fixed in the final commit, except one noted below |
+The harness injects GPS observations and Core Motion history. Process interruption is simulated by abandoning the recorder and rebuilding from the encrypted files, including a deterministic interruption after first-leg finalisation. It does **not** send an actual OS kill or prove iOS relaunch/background scheduling. Account recovery fixtures execute the production recovery decisions, but do not exercise Keychain authentication or the complete account-opening UI. Watch ownership runs the real exclusion orchestration with an injected presence; WatchConnectivity transport still needs devices.
 
-Repeated reviews reduce risk. They do not prove the absence of defects.
+## Destination/grouping and backup
 
-### Known remaining limitations (low)
+Dedicated saved Work and conflicting user-title road-trip regressions are present alongside Home and existing road-trip behaviour. A covered 15-minute automotive/stationary standstill is a temporary traffic pause, with medium confidence. Incomplete history alone does not prove congestion or a destination: insufficient evidence stays ambiguous with its reasons. Journey boundaries are unchanged.
 
-- **Above the 500-fix bound:** deliveries re-queued behind a second wait in the same resume are held in memory only.
-- **Grouping tests:** the Work and two-titles cases of the road-trip exception have no test of their own; the Home case does.
-- **Jam standstill:** a 15-minute standstill (Core Motion: automotive and stationary) is shown as a Possible destination; the drive stays continuous.
-- **Splitting:** an ambiguous stop can be renamed or ignored. Splitting one native activity is not supported anywhere in the app today; grouping cuts only work between activities.
-- **Cloud backup:** stop verdicts and evidence are not in the cloud backup projection.
-  - What this loses: only supplementary classification. Destination legs are separate activities, so they are backed up.
-  - What survives: verdicts persist across restart, termination and account reopening, because they are in the encrypted local records. The local account directory is excluded from iOS device backup by design.
-- **Battery:** with the device test on, the sharing keep-alive runs a second `liveUpdates` stream until the app is next opened. Its cost is unmeasured.
+Actual `syncPrivateActivities` → `restoreCloudJournal` round-trip tests cover destination, temporary and ambiguous stops. Routes, segment breaks, moving duration and separate destination legs survive. Verdict, confidence, reasons and intervals now survive through `classification.journeyStops` version 1, lifted back into native details on restore. Strict `view_metadata` remains unchanged; no migration is required or applied. Bounds: latest 1,024 stop annotations, eight reasons of 300 characters each. Transient evidence, provisional state and live history-query state stay local. Legacy/future/malformed envelopes restore safely; old backups cannot recover verdicts omitted before this correction.
+
+## Remaining limitations
+
+- Simulator delivery and session state cannot establish locked-phone scheduling, Core Motion quality, actual background survival, WatchConnectivity delivery, restart after force-quit/reboot, or battery cost.
+- The existing Activity Details accessibility audit reports 10 observations (small hit areas, contrast and Dynamic Type); it logs them without failing. These existing UI accessibility issues are outside the tracking corrections and are not an accessibility sign-off.
+- Sharing passive rest remains an off-by-default device test. Its keep-alive stream's energy cost has not been measured.
+- Persistent storage failure cannot guarantee new observations; the recorder ends the wait synchronously, retains any existing journal, and reports route-save failure rather than waiting indefinitely.
+- An ambiguous stop can be renamed or ignored; splitting one native activity remains unsupported. This is existing behaviour outside this hardening scope.
 
 ## Physical-device acceptance: NOT VERIFIED
 
@@ -103,5 +117,6 @@ No physical-device test was run for this work, and no measurement is claimed. Th
 
 ## Status
 
-- **Code:** ready for merge review. No unresolved critical or high finding from the independent reviews.
+- **Code:** corrections are complete and ready for merge review; independent re-review found no unresolved critical/high or medium correctness defects in the integration diff.
+- **Merge approval:** hold until the full Activity Details UI suite is clean or its observed nondeterminism is explicitly resolved. Passing targeted retries do not erase the failed full run.
 - **Release:** blocked on physical-device evidence. Change A stays behind its off-by-default switch until that evidence exists.
