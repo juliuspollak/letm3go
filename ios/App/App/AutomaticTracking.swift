@@ -303,11 +303,12 @@ extension LocationRecorder {
     func applyLocationConfiguration(_ configuration: LocationConfiguration) {
         let accuracy: CLLocationAccuracy
         switch configuration.accuracy {
+        case .navigation: accuracy = kCLLocationAccuracyBestForNavigation
         case .best: accuracy = kCLLocationAccuracyBest
         case .tenMetres: accuracy = kCLLocationAccuracyNearestTenMeters
         case .hundredMetres: accuracy = kCLLocationAccuracyHundredMeters
         }
-        let type: CLActivityType = configuration.profile == .automotive ? .automotiveNavigation : .other
+        let type: CLActivityType = configuration.profile == .automotive ? .automotiveNavigation : configuration.profile == .fitness ? .fitness : .other
         guard manager.desiredAccuracy != accuracy || manager.distanceFilter != configuration.distanceFilter ||
               manager.activityType != type || manager.pausesLocationUpdatesAutomatically else { return }
         let before="accuracy=\(manager.desiredAccuracy), distanceFilter=\(manager.distanceFilter), profile=\(manager.activityType.rawValue)"

@@ -982,10 +982,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func beginUpdates() {
         // Manual recording owns standard updates; the low-power stream stops first.
         adaptive.stopLowPower(reason: "manual recording")
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 5
-        manager.pausesLocationUpdatesAutomatically = false
-        manager.activityType = active?.activity == "Driving" ? .automotiveNavigation : .fitness
+        applyLocationConfiguration(.manual(activity: active?.activity ?? ""))
         recordDiagnostic("service","Manual precise location configuration applied",details:["configuration":"best accuracy, 5 m distance filter"])
         startContinuousLocation()
         reconcileBackgroundSession("manual recording")

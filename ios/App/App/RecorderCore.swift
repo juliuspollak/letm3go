@@ -1484,13 +1484,22 @@ enum BackgroundSessionPolicy {
 // One configuration owner for the automatic recorder. Values are applied only when
 // they change, and an open journey that is known to be a drive keeps the
 // automotive profile even while Core Motion briefly reports something else.
-enum LocationAccuracyLevel: String { case best, tenMetres, hundredMetres }
-enum LocationProfile: String { case automotive, other }
+enum LocationAccuracyLevel: String { case navigation, best, tenMetres, hundredMetres }
+enum LocationProfile: String { case automotive, fitness, other }
 struct LocationConfiguration: Equatable {
     var accuracy: LocationAccuracyLevel
     var distanceFilter: Double
     var profile: LocationProfile
     var label: String { "\(accuracy.rawValue)/\(Int(distanceFilter))m/\(profile.rawValue)" }
+    // A recording the person started: every fix the chip can give, so tight corners are
+    // not lost between filtered points. It runs only while they are recording. A drive
+    // needs none of that, and keeps road matching.
+    static let everyFix: Double = -1
+    static func manual(activity: String) -> LocationConfiguration {
+        activity == "Driving"
+            ? LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .automotive)
+            : LocationConfiguration(accuracy: .navigation, distanceFilter: everyFix, profile: .fitness)
+    }
     static func automatic(_ mode: AutomaticLocationMode, journeyOpen: Bool, journeyActivity: String?,
                           drivingMotion: Bool, currentProfile: LocationProfile) -> LocationConfiguration? {
         switch mode {

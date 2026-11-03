@@ -171,6 +171,9 @@ do {
     check(wide.ingest(WatchRideFix(latitude: -33, longitude: 151, timestamp: 101, accuracy: 55, altitude: 0, speed: 3), now: 101) == .accepted(newSegment: false), "a weak fix is kept")
     check(wide.ingest(WatchRideFix(latitude: -33, longitude: 151, timestamp: 102, accuracy: 90, altitude: 0, speed: 3), now: 102) == .dropped("accuracy"), "a useless fix is not")
 
+    check(LocationConfiguration.manual(activity: "MTB") == LocationConfiguration(accuracy: .navigation, distanceFilter: -1, profile: .fitness), "a ride records every fix")
+    check(LocationConfiguration.manual(activity: "Driving") == LocationConfiguration(accuracy: .best, distanceFilter: 5, profile: .automotive), "a drive keeps road matching")
+
     // Automatic activities a Watch workout covers.
     func automatic(_ start: Double, _ end: Double, change: ((inout RecordedActivity) -> Void)? = nil) -> RecordedActivity {
         var trip = RecordedActivity(activity: "Driving", startedAt: start, resumedAt: nil, title: "Driving")
