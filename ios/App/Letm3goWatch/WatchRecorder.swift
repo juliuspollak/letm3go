@@ -160,7 +160,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         ]
         let iPhone = RecordingPresence(device: RecordingPresence.iPhone, ownerID: nil, sessionID: "P", activity: "Running", state: "recording", startedAt: now, updatedAt: now)
         if screen == "ready-blocked" { startBlocked = iPhone }
-        guard screen.hasPrefix("recording") || screen == "controls" else { return }
+        guard screen.hasPrefix("recording") || screen == "controls" || screen == "finish" else { return }
         config = WatchStartConfig(activity: "MTB", equipment: levo, indoor: false)
         if screen == "recording-indoor" { config = WatchStartConfig(activity: "Running", indoor: true) }
         draft = WatchRideDraft(activity: config.activity, startedAt: now - 1843, equipment: config.equipment, indoor: config.indoor == true)

@@ -48,6 +48,7 @@ struct Letm3goWatchApp: App {
         case "ready": return [.ready(WatchStartConfig(activity: "MTB", equipment: WatchEquipment(id: "demo-2", name: "Turbo Levo", kind: "ebike")))]
         case "recording", "recording-waiting", "recording-unavailable", "recording-softlock", "recording-conflict", "recording-storage", "recording-indoor": return [.recording]
         case "controls": WatchRecordingView.demoTab = 1; return [.recording]
+        case "finish": WatchRecordingView.demoFinish = true; return [.recording]
         case "ready-blocked": return [.ready(WatchStartConfig(activity: "Running"))]
         case "settings": return [.settings]
         case "history": return [.history]
