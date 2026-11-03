@@ -156,6 +156,21 @@ do {
     let selectedPins = ActivityMapDraft.segment(start: 1, end: 3, editingID: nil).mapOptions(base: base, points: fixes)["pins"] as! [[String: Any]]
     check(selectedPins.contains { $0["kind"] as? String == "finish" }, "both ends are marked")
 
+    // Weak fixes under trees stay on the route and leave the figures alone.
+    func watchPoint(_ east: Double, _ time: Double, accuracy: Double = 5) -> WatchPoint {
+        WatchPoint(latitude: -33, longitude: 151 + east / 93000, timestamp: time, accuracy: accuracy, altitude: 0, speed: 3, segment: 0)
+    }
+    let strong = (0...10).map { watchPoint(Double($0) * 10, Double($0) * 3) }
+    var withWeak = strong
+    withWeak.insert(watchPoint(45, 13, accuracy: 60), at: 5)
+    let strongMetrics = WatchTrackAnalyzer(points: strong, activity: "MTB"), weakMetrics = WatchTrackAnalyzer(points: withWeak, activity: "MTB")
+    check(weakMetrics.points.count == strong.count + 1, "a weak fix stays on the route")
+    check(abs(weakMetrics.metrics.distanceMeters - strongMetrics.metrics.distanceMeters) < 0.01, "a weak fix adds no distance")
+    check(abs(weakMetrics.metrics.movingSeconds - strongMetrics.metrics.movingSeconds) < 0.01, "a weak fix adds no moving time")
+    var wide = WatchRideDraft(activity: "MTB", startedAt: 100, ownerID: nil)
+    check(wide.ingest(WatchRideFix(latitude: -33, longitude: 151, timestamp: 101, accuracy: 55, altitude: 0, speed: 3), now: 101) == .accepted(newSegment: false), "a weak fix is kept")
+    check(wide.ingest(WatchRideFix(latitude: -33, longitude: 151, timestamp: 102, accuracy: 90, altitude: 0, speed: 3), now: 102) == .dropped("accuracy"), "a useless fix is not")
+
     // Automatic activities a Watch workout covers.
     func automatic(_ start: Double, _ end: Double, change: ((inout RecordedActivity) -> Void)? = nil) -> RecordedActivity {
         var trip = RecordedActivity(activity: "Driving", startedAt: start, resumedAt: nil, title: "Driving")

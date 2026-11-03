@@ -265,23 +265,31 @@ struct WatchTrackAnalyzer {
             return nil
         }
         guard point.timestamp > last.timestamp else { return .duplicateTimestamp }
-        let interval = point.timestamp - last.timestamp
-        let step = last.distance(to: point)
-        if point.segment == last.segment {
-            // A displacement faster than plausible movement is corrupt data whether or
-            // not the pair is continuous, so the speed test always applies.
-            if step / interval > maximumSpeed { return .implausibleSpeed }
+        let continuous = point.segment == last.segment
+        // A displacement faster than plausible movement is corrupt data whether or
+        // not the pair is continuous, so the speed test always applies.
+        if continuous, last.distance(to: point) / (point.timestamp - last.timestamp) > maximumSpeed { return .implausibleSpeed }
+        // Figures run from one trusted fix to the next, as if a weak fix were not there,
+        // so keeping it on the route cannot inflate distance, moving time or elevation.
+        if point.accuracy > WatchTransferLimits.trustedAccuracy {
+            points.append(point)
+            return nil
+        }
+        let from = points.last { $0.accuracy <= WatchTransferLimits.trustedAccuracy } ?? last
+        let interval = point.timestamp - from.timestamp
+        let step = from.distance(to: point)
+        if continuous, point.segment == from.segment {
             // Movement is credited only for continuous observation inside one segment.
             // A longer interval inside a single segment cannot come from the recorder
             // (it would have opened a new segment), so it is an unobserved gap in a
             // restored or imported track: it must never add a straight line, moving
             // time or elevation that was not actually ridden.
             if interval <= Self.maximumInterval {
-                let noise = max(2, (last.accuracy + point.accuracy) / 4)
+                let noise = max(2, (from.accuracy + point.accuracy) / 4)
                 if step >= noise { metrics.distanceMeters += step }
                 if step >= Self.movingNoise { metrics.movingSeconds += interval }
-                if point.accuracy <= Self.elevationAccuracy && last.accuracy <= Self.elevationAccuracy {
-                    let delta = point.altitude - last.altitude
+                if point.accuracy <= Self.elevationAccuracy && from.accuracy <= Self.elevationAccuracy {
+                    let delta = point.altitude - from.altitude
                     if abs(delta) >= Self.elevationNoise {
                         if delta > 0 { metrics.elevationGainMeters += delta } else { metrics.elevationLossMeters += -delta }
                     }
@@ -305,7 +313,10 @@ enum WatchTransferLimits {
     static let maximumFixAge = 20.0
     // Two fixes further apart than this are not a continuous ride.
     static let outageGap = 30.0
-    static let maximumAccuracy = 30.0
+    // Under trees a fix can be poor and still be the only sign of where the ride went.
+    // Up to this it stays on the route; beyond `trustedAccuracy` it adds no figures.
+    static let maximumAccuracy = 65.0
+    static let trustedAccuracy = 30.0
     // The rider chose Finish & Save over Discard, so any recording that ran is kept,
     // with or without a route. Only an instant with nothing in it is not an activity.
     static let minimumSecondsWithoutRoute = 1.0

@@ -90,8 +90,9 @@ final class WatchRecorder: NSObject, ObservableObject {
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 3
+        // Every fix the chip can give: tight corners are lost between filtered points.
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.activityType = .fitness
         activity = UserDefaults.standard.string(forKey: Self.activityKey) ?? "MTB"
         if !WatchCatalog.activities.contains(activity) { activity = "MTB" }
