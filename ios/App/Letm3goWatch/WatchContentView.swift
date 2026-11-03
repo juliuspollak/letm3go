@@ -513,8 +513,8 @@ struct WatchRecordingView: View {
     }
 }
 
-// Finishing keeps Save alone at the top. Throwing a ride away is further down the
-// screen and asks again, so it can't be hit by a sweaty finger reaching for Save.
+// Save comes first, with Keep Recording between it and Discard. Throwing a ride away
+// always asks again, so a sweaty finger can't lose one with a single tap.
 struct WatchFinishSheet: View {
     let title: String
     let seconds: Double
@@ -531,8 +531,6 @@ struct WatchFinishSheet: View {
                 Text("\(WatchFormat.clock(seconds)) · \(WatchFormat.distance(meters))").font(.footnote).monospacedDigit().foregroundStyle(WatchStyle.quiet)
                 WatchActionButton(title: "Save", symbol: "checkmark", filled: true, action: save)
                 WatchActionButton(title: "Keep Recording", symbol: "arrow.uturn.backward", action: keepRecording)
-                // A full screen of scrolling between Save and this.
-                Spacer(minLength: 90)
                 Button { confirmingDiscard = true } label: {
                     Text("Discard activity").font(.footnote.weight(.semibold)).foregroundStyle(WatchStyle.danger)
                         .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
