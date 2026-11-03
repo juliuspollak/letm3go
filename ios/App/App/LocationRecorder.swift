@@ -774,7 +774,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard let fix=lastShareFix, locationMode != .passive else {return}
         // Stopping sends no fix, so the status cannot wait for one. The position is
         // only what it was recently: an old one is not presented as current.
-        if shareActivityChanged,
+        if shareActivityChanged, fix.timestamp.timeIntervalSince1970 >= passiveEndedAt,
            Date().timeIntervalSince1970-fix.timestamp.timeIntervalSince1970<=HouseholdPublisher.confirmationInterval {
             sendHouseholdLocation(fix,confirmation:true);return
         }
