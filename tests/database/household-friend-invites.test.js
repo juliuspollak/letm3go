@@ -72,3 +72,39 @@ it('keeps the invitations private from direct reads and from anonymous callers',
  await expect(as(friend,'select * from public.household_friend_invites')).rejects.toThrow();
  await expect(as('','select public.my_household_requests()','anon')).rejects.toThrow();
 });
+const members2=async()=>members();
+const friends=async user=>(await as(user,'select user_id from public.my_friends()')).rows.map(row=>row.user_id);
+it('an invitation from Friends only makes a friend',async()=>{
+ const code=(await as(owner,'select public.create_friend_invite() as code')).rows[0].code;
+ expect((await as(friend,`select * from public.friend_invite_preview('${code}')`)).rows[0]).toMatchObject({invited_by_name:'Julius',household_name:null});
+ await as(friend,`select public.accept_friend_invite('${code}')`);
+ expect(await friends(owner)).toEqual([friend]);
+ expect(await members2()).toEqual([owner]);
+});
+it('an invitation from a household makes a friend and a member, and says so first',async()=>{
+ const code=(await as(owner,'select public.create_household_friend_invite() as code')).rows[0].code;
+ expect((await as(friend,`select * from public.friend_invite_preview('${code}')`)).rows[0]).toMatchObject({invited_by_name:'Julius',household_name:'Pollak',can_join:true});
+ expect(await members2()).toEqual([owner]);
+ await as(friend,`select public.accept_friend_invite('${code}')`);
+ expect(await friends(owner)).toEqual([friend]);
+ expect(await members2()).toEqual([owner,friend]);
+});
+it('only the organiser can send a household invitation',async()=>{
+ await expect(as(friend,'select public.create_household_friend_invite()')).rejects.toThrow('Household owner required');
+});
+it('someone already in a household becomes a friend and stays where they are',async()=>{
+ await as(stranger,"select * from public.create_household('Other')");
+ const code=(await as(owner,'select public.create_household_friend_invite() as code')).rows[0].code;
+ expect((await as(stranger,`select * from public.friend_invite_preview('${code}')`)).rows[0].can_join).toBe(false);
+ await as(stranger,`select public.accept_friend_invite('${code}')`);
+ expect(await friends(owner)).toEqual([stranger]);
+ await db.exec('reset role;');
+ const row=(await db.query(`select h.name from public.household_memberships m join public.households h on h.id=m.household_id where m.user_id='${stranger}'`)).rows[0];
+ expect(row.name).toBe('Other');
+});
+it('a used invitation shows nothing and cannot be reused',async()=>{
+ const code=(await as(owner,'select public.create_household_friend_invite() as code')).rows[0].code;
+ await as(friend,`select public.accept_friend_invite('${code}')`);
+ expect((await as(stranger,`select * from public.friend_invite_preview('${code}')`)).rows).toEqual([]);
+ await expect(as(stranger,`select public.accept_friend_invite('${code}')`)).rejects.toThrow('Invalid invitation');
+});

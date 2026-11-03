@@ -1,10 +1,10 @@
-import {invitationLink} from '../lib/invitationLink.js';
 import {App as NativeApp} from '@capacitor/app';
 import {recorderAvailable} from '../lib/recorder.js';
 import DismissibleSheet from './DismissibleSheet.jsx';
 import LocationSharingRow from './LocationSharingRow.jsx';
 import PeopleGrid from './PeopleGrid.jsx';
 import {invitableFriends} from '../lib/people.js';
+import InviteComposer from './InviteComposer.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
 import {personStatus,selfStatus} from '../lib/personStatus.js';
@@ -23,9 +23,9 @@ import {newUUID} from '../lib/uuid.js';
 export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,memberLocations={},selfLocation=null,onShowMember=null,onSetHome=null,hasHome=false}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[loadError,setLoadError]=useState(''),[reload,setReload]=useState(0);
  const [membersLoading,setMembersLoading]=useState(false);
- const [sheet,setSheet]=useState(null),[showTransport,setShowTransport]=useState(false),[copied,setCopied]=useState(false);
+ const [sheet,setSheet]=useState(null),[showTransport,setShowTransport]=useState(false);
  const [garage,setGarage]=useState([]),[garageMessage,setGarageMessage]=useState('');
- const [household,setHousehold]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[invite,setInvite]=useState(''),[members,setMembers]=useState([]),[loading,setLoading]=useState(Boolean(supabase)),[leaving,setLeaving]=useState(false);
+ const [household,setHousehold]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[members,setMembers]=useState([]),[loading,setLoading]=useState(Boolean(supabase)),[leaving,setLeaving]=useState(false);
  useEffect(()=>{
   if(!supabase)return;
   let active=true,listener;
@@ -54,8 +54,6 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
   return {id:m.user_id,userId:m.user_id,name:m.display_name||'Member',role:m.role==='owner'?'Organiser':null,status:personStatus(location),
    onSelect:location.position&&onShowMember?()=>onShowMember(location.position,m.user_id):null};
  });
- const inviteMessage=invite&&household?`Join my household on Letm3go: ${invitationLink('household',invite)}\n\nIf the link does not open, enter this code under Social → Household: ${invite}. Expires in 48 hours.`:'';
- async function createInvite(){const data=await request('invite_to_household');if(data){setInvite(data);setCopied(false);setSheet('invite');}}
  // A household is built from friends, and each one chooses to join.
  const [friends,setFriends]=useState([]),[invited,setInvited]=useState([]);
  async function openFriends(){
@@ -86,20 +84,12 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
     household.role==='owner'&&{id:'invite',label:'Add friend',icon:UserPlus,onClick:openFriends,disabled:busy||loading},
     {id:'settings',label:'Settings',icon:Settings,onClick:()=>setSheet('settings'),expanded:sheet==='settings'}
    ]}/>
-   {sheet==='friends'&&<div className="modal-backdrop" onClick={closeSheet}><DismissibleSheet label={`Add to ${household.name}`} onClose={closeSheet}>
-    <div className="social-sheet-head"><h2>Add to {household.name}</h2><button type="button" className="icon-button" aria-label="Close" onClick={closeSheet}><X size={20}/></button></div>
-    <p className="social-hint">They get an invitation and choose whether to join. Someone new? Add them as a friend first.</p>
+   {sheet==='friends'&&<div className="modal-backdrop" onClick={closeSheet}><DismissibleSheet label={`Add friend to ${household.name}`} onClose={closeSheet}>
+    <div className="social-sheet-head"><h2>Add friend</h2><button type="button" className="icon-button" aria-label="Close" onClick={closeSheet}><X size={20}/></button></div>
+    <p className="social-hint">Someone new becomes your friend and joins {household.name} when they accept.</p>
+    <InviteComposer busy={busy} household={household.name} create={()=>request('create_household_friend_invite')}/>
+    {invitableFriends({friends,members,invited}).length>0&&<h3 className="social-sheet-label">Your friends</h3>}
     {invitableFriends({friends,members,invited}).map(friend=><div className="grouped-row" key={friend.user_id}><span className="social-manage-person">{friend.display_name}</span><button type="button" className="secondary" disabled={busy||friend.invited} onClick={()=>inviteFriend(friend)}>{friend.invited?'Invited':'Invite'}</button></div>)}
-    {!invitableFriends({friends,members,invited}).length&&<p className="social-empty">No friends to add yet.</p>}
-    <button type="button" className="text-button" disabled={busy} onClick={createInvite}>Share an invitation link instead</button>
-    {error&&<p role="alert" className="error">{error}</p>}
-   </DismissibleSheet></div>}
-   {sheet==='invite'&&invite&&<div className="modal-backdrop" onClick={closeSheet}><DismissibleSheet label={`Invite to ${household.name}`} onClose={closeSheet}>
-    <div className="social-sheet-head"><h2>Invite to {household.name}</h2><button type="button" className="icon-button" aria-label="Close" onClick={closeSheet}><X size={20}/></button></div>
-    <p className="social-hint">Share privately. Valid for 48 hours and one use.</p>
-    <button type="button" className="primary full" onClick={async()=>{try{if(navigator.share)await navigator.share({title:'Letm3go household invitation',text:inviteMessage});else{await navigator.clipboard.writeText(inviteMessage);setCopied(true);}}catch(error){if(error?.name!=='AbortError')setError('Unable to share. Copy the code below instead.');}}}><Share2 size={17}/> Share invitation</button>
-    <button className="secondary full" type="button" onClick={async()=>{try{await navigator.clipboard.writeText(invite);setCopied(true);}catch{setCopied(false);}}}><Copy size={16}/> {copied?'Copied':'Copy code'}</button>
-    <details><summary>Invitation code</summary><code>{invite}</code></details>
     {error&&<p role="alert" className="error">{error}</p>}
    </DismissibleSheet></div>}
    {sheet==='settings'&&<div className="modal-backdrop" onClick={closeSheet}><DismissibleSheet label="Household settings" onClose={closeSheet}>
@@ -119,7 +109,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
     <p className="social-hint"><ShieldCheck size={14} aria-hidden="true"/> Membership never shares your location or past activities. If the organiser leaves, another member becomes organiser.</p>
     <div className="grouped-list grouped-danger">
      {!leaving?<button type="button" className="grouped-row danger-row" disabled={busy||loading} onClick={()=>setLeaving(true)}><span className="grouped-row-label"><LogOut size={18} aria-hidden="true"/>Leave household</span></button>
-     :<div className="grouped-panel" role="group" aria-label="Confirm leaving"><p>Leave {household.name}? Your private activities stay yours. If you are the organiser, another member becomes organiser; an empty household is removed.</p><div className="social-inline-actions"><button type="button" className="secondary" onClick={()=>setLeaving(false)}>Stay</button><button type="button" className="primary danger" disabled={busy||loading} onClick={async()=>{if(await request('leave_household')){setHousehold(null);setMembers([]);setInvite('');closeSheet();}}}>Confirm leave</button></div></div>}
+     :<div className="grouped-panel" role="group" aria-label="Confirm leaving"><p>Leave {household.name}? Your private activities stay yours. If you are the organiser, another member becomes organiser; an empty household is removed.</p><div className="social-inline-actions"><button type="button" className="secondary" onClick={()=>setLeaving(false)}>Stay</button><button type="button" className="primary danger" disabled={busy||loading} onClick={async()=>{if(await request('leave_household')){setHousehold(null);setMembers([]);closeSheet();}}}>Confirm leave</button></div></div>}
     </div>
     {error&&<p role="alert" className="error">{error}</p>}
    </DismissibleSheet></div>}

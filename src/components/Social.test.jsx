@@ -7,7 +7,7 @@ import Household from './Household.jsx';
 import LocationSharingRow from './LocationSharingRow.jsx';
 import {personStatus,selfStatus} from '../lib/personStatus.js';
 
-const household=(role='owner')=>async name=>({data:name==='my_household'?[{id:'family',name:'WarillaFamily',role}]:name==='household_members'?[{user_id:'me',display_name:'Julius',role}]:name==='invite_to_household'?'HOUSE-CODE':name==='my_household_vehicles'?[{id:'car',display_name:'Family car',local_vehicle_id:null}]:name==='create_friend_invite'?'FRIEND-CODE':name==='my_friends'?[]:null,error:null});
+const household=(role='owner')=>async name=>({data:name==='my_household'?[{id:'family',name:'WarillaFamily',role}]:name==='household_members'?[{user_id:'me',display_name:'Julius',role}]:name==='create_household_friend_invite'?'HOUSE-CODE':name==='my_household_vehicles'?[{id:'car',display_name:'Family car',local_vehicle_id:null}]:name==='create_friend_invite'?'FRIEND-CODE':name==='my_friends'?[]:null,error:null});
 beforeEach(()=>{mock.rpc.mockImplementation(household());});
 afterEach(cleanup);
 
@@ -127,9 +127,10 @@ describe('Household',()=>{
  it('invites a member only for the organiser, in a sheet',async()=>{
   render(<Household selfId="me"/>);
   fireEvent.click(await screen.findByRole('button',{name:'Add friend'}));
-  fireEvent.click(await screen.findByRole('button',{name:'Share an invitation link instead'}));
-  await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('invite_to_household',undefined));
-  const sheet=await screen.findByRole('dialog',{name:'Invite to WarillaFamily'});
+  const sheet=await screen.findByRole('dialog',{name:'Add friend to WarillaFamily'});
+  // The same invitation screen as Friends, sent from the household.
+  fireEvent.click(within(sheet).getByRole('button',{name:'Create invitation'}));
+  await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('create_household_friend_invite',undefined));
   expect(within(sheet).getByRole('button',{name:/Share invitation/})).toBeInTheDocument();
   expect(within(sheet).getByText('HOUSE-CODE')).toBeInTheDocument();
   cleanup();
@@ -159,6 +160,28 @@ describe('one list of people',()=>{
   expect(within(list).getByText('At home')).toBeInTheDocument();
   expect(within(list).queryByText('Julius')).toBeNull();
   expect(within(list).queryByText('You')).toBeNull();
+ });
+});
+
+describe('a household invitation',()=>{
+ it('says what accepting does, and only then joins',async()=>{
+  const joined=vi.fn();
+  mock.rpc.mockImplementation(async name=>({data:name==='friend_invite_preview'?[{invited_by_name:'Julius',household_name:'Pollak',can_join:true}]:name==='my_friends'?[]:null,error:null}));
+  render(<Friends selfId="me" invitationCode="CODE" onHouseholdJoined={joined}/>);
+  const buttons=await screen.findAllByRole('button',{name:'Add friend'});
+  fireEvent.click(buttons.at(-1));
+  expect(await screen.findByText('Julius invited you to Pollak')).toBeInTheDocument();
+  expect(mock.rpc).not.toHaveBeenCalledWith('accept_friend_invite',expect.anything());
+  fireEvent.click(screen.getByRole('button',{name:'Join'}));
+  await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('accept_friend_invite',{p_token:'CODE'}));
+  await waitFor(()=>expect(joined).toHaveBeenCalled());
+ });
+ it('adds a plain friend with no extra step',async()=>{
+  mock.rpc.mockImplementation(async name=>({data:name==='friend_invite_preview'?[{invited_by_name:'Julius',household_name:null,can_join:true}]:name==='my_friends'?[]:null,error:null}));
+  render(<Friends selfId="me" invitationCode="CODE"/>);
+  const buttons=await screen.findAllByRole('button',{name:'Add friend'});
+  fireEvent.click(buttons.at(-1));
+  await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('accept_friend_invite',{p_token:'CODE'}));
  });
 });
 
