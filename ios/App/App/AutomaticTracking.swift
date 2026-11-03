@@ -438,7 +438,7 @@ extension LocationRecorder {
         // behind the deciding one, in order, and none is dropped.
         if var pending = stopHistoryPending {
             if pending.deliveries.reduce(0, { $0 + $1.fixes.count }) + locations.count <= 500 {
-                pending.deliveries.append((locations, Date().timeIntervalSince1970))
+                pending.deliveries.append((locations, Date().timeIntervalSince1970, source))
             } else { diagnosticRejections["rejected.heldDeliveryLimit", default: 0] += locations.count }
             stopHistoryPending = pending
             return
@@ -1416,6 +1416,8 @@ extension LocationRecorder {
         updateSettledEvidence(save: false) { $0.noteLive(mark) }
     }
     func noteStopFix(_ sample: GPSPoint, rawSpeed: Double) {
+        // A car creeping out of its space is not someone on foot.
+        guard !AutomaticDetector.drivingMotion(motion, now: Date().timeIntervalSince1970) else { return }
         guard let id = settledTripID, let last = trips.first(where: { $0.id == id })?.points.last else { return }
         updateSettledEvidence { $0.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: rawSpeed) }
     }
@@ -1457,7 +1459,7 @@ extension LocationRecorder {
         guard let owner = ownerID, let evidence = settledEvidence else { return false }
         stopHistoryGeneration += 1
         let generation = stopHistoryGeneration, stopStart = evidence.stopStart
-        stopHistoryPending = (owner, [(fixes, now)], source, generation)
+        stopHistoryPending = (owner, [(fixes, now, source)], generation)
         // The wait is short; ask iOS not to suspend the app in the middle of it.
         if stopHistoryTask == .invalid {
             stopHistoryTask = UIApplication.shared.beginBackgroundTask(withName: "stop decision") { [weak self] in self?.endStopHistoryTask() }
@@ -1514,7 +1516,7 @@ extension LocationRecorder {
         for delivery in pending.deliveries {
             // A delivery that begins another wait queues the rest behind it.
             if var next = stopHistoryPending { next.deliveries.append(delivery); stopHistoryPending = next; continue }
-            processAutomatic(delivery.fixes, source: pending.source, receivedAt: delivery.receivedAt)
+            processAutomatic(delivery.fixes, source: delivery.source, receivedAt: delivery.receivedAt)
         }
     }
     func noteStopClassified(_ c: StopClassification) {
