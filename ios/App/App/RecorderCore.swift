@@ -1459,8 +1459,8 @@ enum StopClassifier {
 // the deciding fix and later deliveries wait. They are written to the account's
 // encrypted store first, so a process that iOS terminates during the wait loses
 // nothing: the next launch of the same account replays them, in order, with their
-// original timestamps and receipt times. The record is removed before replay, so a
-// replay can never deliver a fix twice. Bounded to `fixLimit` fixes.
+// original timestamps and receipt times. Retained until the route is saved;
+// replay skips timestamps already committed. Bounded to `fixLimit` fixes.
 struct HeldFix: Codable, Equatable {
     var latitude: Double
     var longitude: Double
@@ -1479,6 +1479,8 @@ struct HeldDelivery: Codable, Equatable {
 struct HeldStopFixes: Codable, Equatable {
     var owner: String
     var stopStart: Double
+    var tripID: String?
+    var replaying: Bool?
     var deliveries: [HeldDelivery] = []
     static let fileName = "stop-held.data"
     static let fixLimit = 500
@@ -1499,6 +1501,7 @@ struct HeldStopFixes: Codable, Equatable {
         guard let data = data, let owner = owner,
               let held = try? JSONDecoder().decode(HeldStopFixes.self, from: data),
               held.owner.lowercased() == owner.lowercased(), held.stopStart == openStopStart,
+              held.fixCount <= Self.fixLimit,
               let newest = held.deliveries.map(\.receivedAt).max(), now - newest <= maximumAge else { return [] }
         return held.deliveries.map { delivery in
             var sorted = delivery

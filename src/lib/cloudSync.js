@@ -2,9 +2,9 @@ import {backupClassification} from './stopBackup.js';
 import {resolvePhoto} from './privateMedia.js';
 // Explicit foreground backup. Native records remain authoritative and durable.
 // This is not a download/reconciliation service or a background sync scheduler.
-// Only the presentation fields a user actually changed are uploaded: the trimmed
-// route window, the recognised start/end places and the chosen cover photo. A
-// restored journey therefore looks exactly like the one that was recorded.
+// Presentation metadata includes the trimmed route window, recognised places and
+// chosen cover photo. Stop annotations travel in the existing classification
+// JSONB field; transient motion evidence and provisional state remain local.
 // Named segments are backed up with their activity once the database accepts
 // them (migration 20261107000000_activity_named_segments.sql). Until that
 // migration is applied, sending them would make every backup of a segmented

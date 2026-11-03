@@ -45,6 +45,12 @@ enum RecorderHarness {
             } else {
                 await destinationSplit()
                 await terminationDuringWait()
+                await interruptionDuringDrain()
+                await replayPastDeadline()
+                await secondWaitBound()
+                await failedHeldWrite()
+                await historyTimeout()
+                await watchDuringWait()
                 await temporaryPause()
                 await ambiguousStop()
                 await manualDuringWait()
@@ -74,7 +80,15 @@ enum RecorderHarness {
         r.arrivalTimer?.invalidate(); r.arrivalTimer = nil
         r.storage = try RecordingStorage(directory: directory, encryptionKey: key)
         r.ownerID = owner; r.storeOpened = true; r.automaticEnabled = true; r.trackingBoundary = 0; r.accountSuspended = false
-        r.trips = try r.storage!.load().filter { $0.state == "finished" || $0.isProvisional }
+        let records = try r.storage!.load()
+        r.trips = records.filter { $0.state == "finished" || $0.isProvisional }
+        if let id = AutomaticRecovery.plan(records, now: Date().timeIntervalSince1970).tripID,
+           var draft = records.first(where: { $0.id == id }) {
+            draft.recoverAfterInterruption()
+            r.automaticTrip = draft
+            r.detector.phase = "recording"; r.detector.lastMovementAt = draft.points.last?.timestamp
+            r.detector.lastValidFixAt = draft.points.last?.timestamp; r.detector.anchor = draft.points.last
+        }
         r.motionHistory = motion
         r.places = [SavedPlace(id: "home", name: "Home", kind: "home", latitude: home.latitude, longitude: home.longitude, radius: 100)]
         r.refreshAutomaticMonitoring()
@@ -138,7 +152,7 @@ enum RecorderHarness {
         deliver(r, returning)
         check(r.stopHistoryPending != nil && heldFileExists(r), "destination: the returning fix waits for Core Motion history and is saved first")
         await pause(0.5)
-        check(r.stopHistoryPending == nil && !heldFileExists(r), "destination: the wait ended on the history answer and the record was removed")
+        check(r.stopHistoryPending == nil && heldFileExists(r), "destination: the wait ended; the journal still protects the unconfirmed second leg")
         let leg1 = r.trips.first { $0.id == first.id }
         check(leg1?.state == "finished" && leg1?.details?.destinationStop?.verdict == "meaningfulDestination", "destination: the first leg is finalised at a recognised destination")
         check((leg1?.points.last?.timestamp ?? .infinity) <= stopStart && leg1?.details?.stopEvidence == nil, "destination: the first leg ends at the shop with no leftover evidence")
@@ -171,7 +185,7 @@ enum RecorderHarness {
         b.heldReplayChecked = false
         b.replayHeldStopFixes()
         await pause(0.5)
-        check(b.stopHistoryPending == nil && !heldFileExists(b), "termination: held fixes were replayed and the record removed")
+        check(b.stopHistoryPending == nil, "termination: held fixes were replayed without another wait")
         let leg1 = b.trips.first { $0.id == first.id }
         check(leg1?.details?.destinationStop?.verdict == "meaningfulDestination", "termination: the replayed returning fix decided the destination")
         driveOn(b, from: shop, at: returnAt + 5, fixes: 10)
@@ -182,6 +196,133 @@ enum RecorderHarness {
         let before = b.automaticTrip?.points.count
         b.replayHeldStopFixes()
         check(b.automaticTrip?.points.count == before, "termination: a second replay delivers nothing")
+    }
+
+    // Stop between finalising the first leg and creating the second one. Reopen
+    // from disk without the old detector, then repeat once more after a route save.
+    static func interruptionDuringDrain() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard var a: LocationRecorder? = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "drain: opened") }
+        let returnAt = Date().timeIntervalSince1970 - 90
+        guard let (first, shop) = toPublishedStop(a!, name: "drain", returnAt: returnAt, stopSeconds: 900) else { return }
+        motion.answers = false; motion.marks = shopping(first.endedAt ?? 0)
+        deliver(a!, location(shop.0 - 10 / 111_320, shop.1, returnAt, speed: 12))
+        deliver(a!, location(shop.0 - 70 / 111_320, shop.1, returnAt + 5, speed: 12))
+        a!.heldDrainInterrupted = { true }
+        motion.releaseHeld()
+        check(a!.trips.first { $0.id == first.id }?.details?.destinationStop != nil && heldFileExists(a!), "drain: interruption after finalisation retains the complete journal")
+        a!.stopHistoryGeneration += 1; a = nil
+        guard let b = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else { return check(false, "drain: reopened") }
+        // A newer unrelated Watch import is not proof these automatic fixes were saved.
+        var imported = first
+        imported.id = UUID().uuidString; imported.recordingMode = "watch"; imported.source = "watch"
+        imported.points = [GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: returnAt + 60, accuracy: 5, altitude: 0, speed: 1)]
+        b.trips.append(imported)
+        b.heldReplayChecked = false; b.replayHeldStopFixes()
+        driveOn(b, from: shop, at: returnAt + 5, fixes: 10)
+        check(b.automaticTrip?.startedAt == returnAt, "drain: recovery after finalisation keeps the first returning fix despite a newer Watch import")
+        let times = b.automaticTrip?.points.map(\.timestamp) ?? []
+        check(times == times.sorted() && times.count == Set(times).count, "drain: recovery is ordered and duplicate free")
+        check(!heldFileExists(b), "drain: the journal is removed only after the second leg is saved")
+        // Put back the same journal to model termination immediately before cleanup.
+        var held = HeldStopFixes(owner: owner, stopStart: first.endedAt ?? 0)
+        held.tripID = first.id; held.replaying = true
+        _ = held.append(HeldDelivery(receivedAt: returnAt + 1, source: "standard", fixes: [LocationRecorder.heldFix(location(shop.0 - 10 / 111_320, shop.1, returnAt, speed: 12))]))
+        try? b.storage?.writeData(JSONEncoder().encode(held), name: HeldStopFixes.fileName)
+        guard let c = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else { return check(false, "drain: reopened saved route") }
+        let before = c.automaticTrip?.points.count
+        c.heldReplayChecked = false; c.replayHeldStopFixes()
+        check(c.automaticTrip?.points.count == before && !heldFileExists(c), "drain: termination after route save replays no duplicate")
+    }
+
+    static func replayPastDeadline() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let a = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "deadline: opened") }
+        let returnAt = Date().timeIntervalSince1970 - 90
+        guard let (first, shop) = toPublishedStop(a, name: "deadline", returnAt: returnAt, stopSeconds: 900) else { return }
+        motion.answers = false
+        deliver(a, location(shop.0 - 10 / 111_320, shop.1, returnAt, speed: 12))
+        // Expired on the launch clock, but the accepted fix preceded the deadline.
+        if let i = a.trips.firstIndex(where: { $0.id == first.id }) {
+            a.trips[i].updateDetails { $0.continuationEndsAt = returnAt + 30 }
+            try? a.storage?.save(a.trips[i])
+        }
+        a.stopHistoryGeneration += 1; a.stopHistoryPending = nil
+        let motionB = HarnessMotion(); motionB.marks = shopping(first.endedAt ?? 0)
+        guard let b = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motionB) else { return check(false, "deadline: reopened") }
+        b.heldReplayChecked = false; b.restoreSettledAutomaticJourney()
+        check(b.settledTripID == first.id, "deadline: an accepted pre-deadline fix restores its stop before expiry")
+        b.replayHeldStopFixes(); await pause(0.2)
+        driveOn(b, from: shop, at: returnAt, fixes: 10)
+        check(b.automaticTrip?.startedAt == returnAt, "deadline: relaunch after expiry preserves returning fix ownership")
+    }
+
+    static func secondWaitBound() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "second wait: opened") }
+        let returnAt = Date().timeIntervalSince1970 - 700
+        guard let (_, shop) = toPublishedStop(r, name: "second wait", returnAt: returnAt, stopSeconds: 900) else { return }
+        motion.answers = false
+        // Too little displacement to continue yet; the next delivery is beyond
+        // history's retry interval and would previously create a second wait.
+        deliver(r, location(shop.0, shop.1, returnAt, speed: 3))
+        let fixes = (1...499).map { location(shop.0 - Double($0) * 12 / 111_320, shop.1, returnAt + 61 + Double($0), speed: 12) }
+        r.processAutomatic(fixes, receivedAt: returnAt + 561)
+        check(r.stopHistoryPending?.deliveries.reduce(0) { $0 + $1.fixes.count } == 500, "second wait: exactly 500 accepted fixes fit the durable bound")
+        motion.releaseHeld()
+        check(motion.queries == 1 && r.stopHistoryPending == nil, "second wait: draining never creates a second asynchronous history wait")
+        check(!heldFileExists(r) && (r.automaticTrip?.points.count ?? 0) >= 499, "second wait: the bounded backlog is saved before journal cleanup")
+    }
+
+    static func historyTimeout() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "timeout: opened") }
+        let returnAt = Date().timeIntervalSince1970 - 90
+        guard let (first, shop) = toPublishedStop(r, name: "timeout", returnAt: returnAt, stopSeconds: 900) else { return }
+        motion.answers = false; motion.marks = shopping(first.endedAt ?? 0)
+        deliver(r, location(shop.0 - 10 / 111_320, shop.1, returnAt, speed: 12))
+        await pause(LocationRecorder.stopHistoryTimeout + 0.2)
+        check(r.stopHistoryPending == nil && r.automaticTrip?.id == first.id, "timeout: the real deadline drains the wait and keeps an uncertain stop continuous")
+        check(r.automaticTrip?.details?.stops?.last?.verdict == "ambiguous", "timeout: absent history does not become confident congestion or a destination")
+        let before = r.automaticTrip?.points.count
+        motion.releaseHeld()
+        check(r.automaticTrip?.points.count == before && r.trips.first { $0.id == first.id } == nil, "timeout: a late history answer cannot replay or split the completed decision")
+    }
+
+    static func failedHeldWrite() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "write failure: opened") }
+        let returnAt = Date().timeIntervalSince1970 - 90
+        guard let (_, shop) = toPublishedStop(r, name: "write failure", returnAt: returnAt, stopSeconds: 900) else { return }
+        motion.answers = false
+        deliver(r, location(shop.0 - 10 / 111_320, shop.1, returnAt, speed: 12))
+        r.harnessHeldWriteFails = true
+        let fixes = (1...10).map { location(shop.0 - (10 + Double($0) * 60) / 111_320, shop.1, returnAt + Double($0) * 5, speed: 12) }
+        r.processAutomatic(fixes, receivedAt: returnAt + 51)
+        check(r.stopHistoryPending == nil && (r.automaticTrip?.points.count ?? 0) >= 10, "write failure: a failed queue write ends the wait and processes every delivery synchronously")
+        let disk = try? r.storage?.load().first { $0.id == r.automaticTrip?.id }
+        check(disk?.points.last?.timestamp == fixes.last?.timestamp.timeIntervalSince1970, "write failure: the route is saved through the incoming fix")
+        motion.releaseHeld()
+        check(r.stopHistoryPending == nil, "write failure: a late history answer cannot replay the drain")
+    }
+
+    static func watchDuringWait() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "watch: opened") }
+        let returnAt = Date().timeIntervalSince1970 - 90
+        guard let (_, shop) = toPublishedStop(r, name: "watch", returnAt: returnAt, stopSeconds: 900) else { return }
+        motion.answers = false
+        deliver(r, location(shop.0 - 10 / 111_320, shop.1, returnAt, speed: 12))
+        let now = Date().timeIntervalSince1970
+        r.harnessWatchRecording = RecordingPresence(device: "watch", ownerID: owner, sessionID: UUID().uuidString, activity: "Walking", state: "recording", startedAt: returnAt + 2, updatedAt: now)
+        motion.releaseHeld()
+        check(r.manualExclusion.current?.device == "watch" && r.stopHistoryPending == nil && !heldFileExists(r), "watch: real exclusion orchestration closes the wait and transfers ownership")
+        let count = r.automaticTrip?.points.count
+        deliver(r, location(shop.0 - 100 / 111_320, shop.1, now - 1, speed: 12))
+        check(r.automaticTrip?.points.count == count && (r.diagnosticRejections["rejected.manualOwnership"] ?? 0) > 0, "watch: automatic fixes are excluded during the workout")
+        r.harnessWatchRecording = .idle(device: "watch", ownerID: owner, now: now)
+        r.refreshAutomaticMonitoring()
+        check(r.manualExclusion.current == nil, "watch: explicit workout finish releases automatic ownership")
     }
 
     static func temporaryPause() async {

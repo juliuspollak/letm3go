@@ -425,14 +425,19 @@ check(replayed.map(\.receivedAt) == [1950, 1952] && replayed.map(\.source) == ["
 check(replayed[0].fixes.map(\.timestamp) == [1940, 1945, 1948], "fixes replay in time order with original timestamps")
 check(replayed[0].fixes.last?.speed == -1, "an unknown speed stays unknown after replay")
 check(replayed.flatMap(\.fixes).count == 4, "no fix is lost or added")
-// Stage 3: terminated after the record was removed for replay: nothing replays twice.
-check(HeldStopFixes.replay(nil, owner: "anna", openStopStart: 1000, now: 1960).isEmpty, "a record removed before replay cannot deliver a fix again")
+// Stage 3: terminated after the record was removed following commit: nothing replays twice.
+check(HeldStopFixes.replay(nil, owner: "anna", openStopStart: 1000, now: 1960).isEmpty, "a record removed after commit cannot deliver a fix again")
 // Account scope and bounds.
 check(HeldStopFixes.replay(stored, owner: "kim", openStopStart: 1000, now: 1960).isEmpty && HeldStopFixes.replay(stored, owner: nil, openStopStart: 1000, now: 1960).isEmpty, "another account never receives held fixes")
 check(HeldStopFixes.replay(Data("null".utf8), owner: "anna", openStopStart: 1000, now: 1960).isEmpty && HeldStopFixes.replay(Data("garbage".utf8), owner: "anna", openStopStart: 1000, now: 1960).isEmpty, "an unreadable record replays nothing and blocks nothing")
 var full = HeldStopFixes(owner: "anna", stopStart: 1000)
 check(full.append(HeldDelivery(receivedAt: 1, source: "standard", fixes: (0..<HeldStopFixes.fixLimit).map { held(Double($0)) })), "up to the limit is held")
 check(!full.append(HeldDelivery(receivedAt: 2, source: "standard", fixes: [held(9999)])) && full.fixCount == HeldStopFixes.fixLimit, "the held record is bounded")
+var oversized = full
+oversized.deliveries.append(HeldDelivery(receivedAt: 2, source: "standard", fixes: [held(9999)]))
+check(HeldStopFixes.replay(try! JSONEncoder().encode(oversized), owner: "anna", openStopStart: 1000, now: 3).isEmpty, "an oversized decoded journal is never replayed")
+check(HeldStopFixes.replay(stored, owner: "anna", openStopStart: 1000, now: 1952 + JourneyContinuation.window + 1, maximumAge: .greatestFiniteMagnitude).count == 2, "durable accepted fixes can replay past wall-clock expiry using their original receipt time")
+
 check(HeldStopFixes.replay(stored, owner: "anna", openStopStart: 1000, now: 1952 + JourneyContinuation.window + 1).isEmpty, "a record older than any continuation window replays nothing")
 check(HeldStopFixes.replay(stored, owner: "anna", openStopStart: nil, now: 1960).isEmpty && HeldStopFixes.replay(stored, owner: "anna", openStopStart: 4000, now: 1960).isEmpty,
       "held fixes replay only into the same stop, still open; a closed or different stop receives nothing")

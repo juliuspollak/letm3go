@@ -30,6 +30,20 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var stopHistoryTask: UIBackgroundTaskIdentifier = .invalid
     var motionHistory: MotionHistorySource = CoreMotionHistory()
     // False until this account's held stop fixes (HeldStopFixes) have been replayed.
+    #if DEBUG
+    var heldDrainInterrupted: (() -> Bool)?
+    var harnessHeldWriteFails = false
+    var harnessWatchRecording: RecordingPresence?
+    #endif
+    var currentWatchRecording: RecordingPresence? {
+        #if DEBUG
+        if let presence = harnessWatchRecording { return presence }
+        #endif
+        return WatchSessionManager.shared.watchRecording
+    }
+    var drainingHeldStopFixes = false
+    var heldJournalNeedsCommit = false
+    var heldDrainFirstFixAt: Double?
     var heldReplayChecked = true
     var stopHistoryGeneration = 0
     var motion = MotionEvidence()
