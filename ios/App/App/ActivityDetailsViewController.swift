@@ -65,10 +65,11 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         parent.view.addSubview(view)
         didMove(toParent: parent)
-        // Hidden from VoiceOver only. Hiding the view itself would throttle JavaScript,
-        // which still answers this screen's requests.
+        // Capacitor's root view can be the WKWebView itself. Hide only its web
+        // content: hiding the whole web view also hides this native child screen.
+        // Keep JavaScript running to answer the screen's requests.
         hostedWebView = webView
-        webView?.accessibilityElementsHidden = true
+        webView?.scrollView.accessibilityElementsHidden = true
         view.accessibilityViewIsModal = true
         guard !UIAccessibility.isReduceMotionEnabled else { return }
         view.transform = CGAffineTransform(translationX: parent.view.bounds.width, y: 0)
@@ -76,7 +77,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     }
     func uninstall() {
         model.close()
-        hostedWebView?.accessibilityElementsHidden = false
+        hostedWebView?.scrollView.accessibilityElementsHidden = false
         UIAccessibility.post(notification: .screenChanged, argument: nil)
         let finish = { [weak self] in
             guard let self else { return }

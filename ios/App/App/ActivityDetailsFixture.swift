@@ -1,6 +1,7 @@
 #if DEBUG
 import PhotosUI
 import UIKit
+import WebKit
 
 // Debug only: the real screen on sample data, with no account. Launching with
 // `-ActivityDetailsFixture <path to tests/fixtures/activity-presentation.json>` shows
@@ -53,14 +54,16 @@ enum ActivityDetailsFixture {
     private static var path: String? { UserDefaults.standard.string(forKey: "ActivityDetailsFixture") }
     static var enabled: Bool { path != nil }
     private static var retained: ActivityDetailsViewController?
-    static func present(over parent: UIViewController) {
+    static func present(over parent: UIViewController, webView: WKWebView?) {
         guard retained == nil, let path, let data = FileManager.default.contents(atPath: path), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let presentation = try? ActivityPresentation.decode(object) else { return }
         let service = ActivityDetailsFixtureService(map: object["map"] as? [String: Any] ?? [:])
         let screen = ActivityDetailsViewController(presentation: presentation, map: object["map"] as? [String: Any] ?? [:], service: service)
         screen.onClose = {}
         retained = screen
-        screen.install(in: parent, webView: nil)
+        // Match production: the web app keeps running, but must not compete
+        // with the native screen in the accessibility/automation hierarchy.
+        screen.install(in: parent, webView: webView)
     }
 }
 #endif

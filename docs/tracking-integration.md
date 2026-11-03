@@ -63,10 +63,22 @@ No additional confirmed critical/high or medium correctness findings remained af
 | Orchestrator suite | 52 passed, 11 platform-specific skipped, 0 failed |
 | Production web build | passed; existing bundle-size warning |
 | Real recorder simulator harness (`npm run test:recorder:sim`, includes simulator build) | 66 checks passed, 0 failed, iOS 26.5 |
-| Activity Details simulator UI full run | 18 executed: 15 passed, 3 failed |
+| Original Activity Details simulator UI full run | 18 executed: 15 passed, 3 failed |
 | Targeted retry of all three UI failures, unchanged code | 3 passed, 0 failed |
+| UI follow-up, before correcting the grab target | 17 passed, 1 panel-position test failed |
+| Final UI follow-up, actual grab handle and readiness checks | 18 passed, 0 failed; no automatic test retries |
 
-The UI failures were `testDiagnosticsAndDeleteConfirmation` (Delete button not found), `testKeyboardExpandsThePanelForSegmentName` (typed "Rock", observed "Ro") and `testOneMinuteSegmentOfATwoHourRideWithLaps` (keyboard focus unavailable). All three passed on an immediate sequential retry on the warmed simulator, without changes. These Activity Details production/test files are unchanged from local `main`; this demonstrates nondeterminism, not an established tracking defect or a clean full-suite result. Merge approval should wait for a clean full UI run or an explicitly accepted resolution of these failures.
+The UI failures were `testDiagnosticsAndDeleteConfirmation` (Delete button not found), `testKeyboardExpandsThePanelForSegmentName` (typed "Rock", observed "Ro") and `testOneMinuteSegmentOfATwoHourRideWithLaps` (keyboard focus unavailable). All three passed on an immediate sequential retry on the warmed simulator, without changes. At the time of that run, those Activity Details production/test files were unchanged from local `main`. The follow-up below investigates and corrects the fixture and synchronization problems instead of treating passing retries as resolution.
+
+### Activity Details UI follow-up
+
+Failure attachments showed the native overlay still present alongside the web sign-in accessibility tree; the page had not navigated away. The failed Delete search stopped after its fixed swipe budget with the scroll view at 38%. Keyboard failures either read only "Ro" immediately after typing "Rock", or attempted typing without keyboard focus; the tests did not await keyboard/panel readiness.
+
+The fixture passed no web view to `install`, unlike production. Making it match production exposed a separate, confirmed accessibility defect: Capacitor sets its root `view` to its `WKWebView`, and Activity Details is installed as a child. Hiding that entire web view from accessibility hides the native overlay too. A diagnostic run reproduced the missing-title setup failure when the fixture used the production path.
+
+The fix hides only `webView.scrollView` web contents, restores the same property on close, and passes the real web view through the DEBUG fixture. Every UI setup now asserts the native title exists and the underlying sign-in button is absent. Scrolling remains bounded but checks target hittability; keyboard tests wait for the expanded panel and field position above the keyboard before typing, and still require the complete exact name. Panel-position tests use the identified grab handle rather than an estimated title-padding coordinate; the separate body-scroll test still covers page/panel handoff. No automatic test retries or retyping were added. Independent review found no confirmed defect or weakened assertion in this correction.
+
+Native Activity Details: 91 assertions passed. Focused corrected keyboard test: 1 passed. The intermediate full UI suite passed the three original failures but exposed an estimated grab-target failure: a drag starting at titleY−10 left the panel at medium height. The test now uses the actual grabber. Final corrected full UI suite: 18 passed, 0 failed (537.747 s of tests), with automatic test retries disabled. The simulator build also passed.
 
 Simulator startup initially stalled while checks started concurrently. The interrupted startup attempts ran no complete suite; sequential retries produced the recorder and UI results above. No shared simulator services or existing simulator data were reset. The recorder harness now uses a disposable simulator by default.
 
@@ -83,7 +95,7 @@ Actual `syncPrivateActivities` → `restoreCloudJournal` round-trip tests cover 
 ## Remaining limitations
 
 - Simulator delivery and session state cannot establish locked-phone scheduling, Core Motion quality, actual background survival, WatchConnectivity delivery, restart after force-quit/reboot, or battery cost.
-- The existing Activity Details accessibility audit reports 10 observations (small hit areas, contrast and Dynamic Type); it logs them without failing. These existing UI accessibility issues are outside the tracking corrections and are not an accessibility sign-off.
+- The latest Activity Details accessibility audit reports 11 observations (earlier runs reported 10 and 25) (small hit areas, contrast and Dynamic Type); it logs them without failing. These existing UI accessibility issues are outside the tracking corrections and are not an accessibility sign-off.
 - Sharing passive rest remains an off-by-default device test. Its keep-alive stream's energy cost has not been measured.
 - Persistent storage failure cannot guarantee new observations; the recorder ends the wait synchronously, retains any existing journal, and reports route-save failure rather than waiting indefinitely.
 - An ambiguous stop can be renamed or ignored; splitting one native activity remains unsupported. This is existing behaviour outside this hardening scope.
@@ -118,5 +130,5 @@ No physical-device test was run for this work, and no measurement is claimed. Th
 ## Status
 
 - **Code:** corrections are complete and ready for merge review; independent re-review found no unresolved critical/high or medium correctness defects in the integration diff.
-- **Merge approval:** hold until the full Activity Details UI suite is clean or its observed nondeterminism is explicitly resolved. Passing targeted retries do not erase the failed full run.
+- **Merge review:** the previously red UI gate is now green on a complete 18-test run after the fixture, accessibility and readiness corrections. Earlier failed runs and diagnostic audit observations remain documented; a green UI run is not physical-device acceptance.
 - **Release:** blocked on physical-device evidence. Change A stays behind its off-by-default switch until that evidence exists.

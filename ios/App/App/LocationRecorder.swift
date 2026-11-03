@@ -1631,7 +1631,7 @@ class JourneyViewController: CAPBridgeViewController {
     #if DEBUG
     override func viewDidAppear(_ animated:Bool) {
         super.viewDidAppear(animated)
-        if ActivityDetailsFixture.enabled {ActivityDetailsFixture.present(over:self)}
+        if ActivityDetailsFixture.enabled {ActivityDetailsFixture.present(over:self, webView:webView)}
         if RecorderHarness.enabled {RecorderHarness.run()}
     }
     #endif

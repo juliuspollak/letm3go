@@ -11,6 +11,9 @@ final class ActivityDetailsUITests: XCTestCase {
         app.launchArguments = ["-ActivityDetailsFixture", fixturePath]
         app.launch()
         XCTAssertTrue(title.waitForExistence(timeout: 30))
+        // A standalone native fixture must isolate the web sign-in screen just
+        // as the production Activity Details host does.
+        XCTAssertFalse(app.buttons["Sign in with Apple"].exists)
         Thread.sleep(forTimeInterval: 1)
     }
     private var title: XCUIElement { app.staticTexts["Morning ride"] }
@@ -23,15 +26,24 @@ final class ActivityDetailsUITests: XCTestCase {
         point(200, y1).press(forDuration: 0.05, thenDragTo: point(200, y2), withVelocity: speed, thenHoldForDuration: 0.1)
         Thread.sleep(forTimeInterval: 0.9)
     }
+    private func dragPanel(to y: CGFloat, speed: XCUIGestureVelocity = .default) {
+        let handle = app.otherElements["activity.grabber"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        // Title padding can belong to the page's scroll recognizer. Use the
+        // panel's actual handle when testing panel snaps rather than body scroll.
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: point(handle.frame.midX, y), withVelocity: speed, thenHoldForDuration: 0.1)
+        Thread.sleep(forTimeInterval: 0.9)
+    }
     private func settledY() -> CGFloat { titleY }
 
     func testPanelHasThreeStablePositions() {
         let medium = settledY()
         XCTAssertEqual(medium, height * 0.48, accuracy: 60, "opens at medium")
-        drag(from: medium - 10, to: height - 40)
+        dragPanel(to: height - 40)
         let collapsed = settledY()
         XCTAssertGreaterThan(collapsed, height - 170, "collapses to a heading")
-        drag(from: collapsed - 10, to: 120, speed: .fast)
+        dragPanel(to: 120, speed: .fast)
         let up = settledY()
         XCTAssertLessThan(up, medium, "drags back up")
         XCTAssertTrue(app.buttons["activity.back"].exists)
@@ -50,7 +62,7 @@ final class ActivityDetailsUITests: XCTestCase {
     }
     func testMapTakesTouchesAboveThePanelWithoutMovingIt() {
         // Collapsed, so a pinch at the window's centre lands on the map, not the panel.
-        drag(from: settledY() - 10, to: height - 40)
+        dragPanel(to: height - 40)
         let before = settledY()
         point(200, 300).press(forDuration: 0.05, thenDragTo: point(80, 200))
         app.windows.firstMatch.pinch(withScale: 1.5, velocity: 2)
@@ -83,10 +95,10 @@ final class ActivityDetailsUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1)
         XCTAssertTrue(field.isHittable, "the editor is reachable with the map still in view")
         XCTAssertGreaterThan(field.frame.minY, height * 0.45, "the map stays above the editor")
-        field.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        Thread.sleep(forTimeInterval: 1)
+        focusForTyping(field)
         field.typeText("Rock")
+        let complete = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Rock"), object: field)
+        XCTAssertEqual(XCTWaiter.wait(for: [complete], timeout: 5), .completed, "every typed character reaches the name")
         XCTAssertEqual(field.value as? String, "Rock")
         XCTAssertLessThan(field.frame.maxY, app.keyboards.firstMatch.frame.minY + 1, "the field stays above the keyboard")
     }
@@ -116,7 +128,22 @@ final class ActivityDetailsUITests: XCTestCase {
     private func shot(_ name: String) { try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: NSTemporaryDirectory() + "\(name).png")) }
     private func reach(_ element: XCUIElement) {
         drag(from: height * 0.8, to: height * 0.2, speed: .slow)
-        for _ in 0..<10 where !element.isHittable { drag(from: height * 0.8, to: height * 0.3, speed: .slow) }
+        // Lazy sections and panel/scroll handoff make distance per swipe vary.
+        // Bound the search, but require the actual target rather than ten swipes.
+        for _ in 0..<20 where !element.isHittable { drag(from: height * 0.8, to: height * 0.3, speed: .slow) }
+        XCTAssertTrue(element.isHittable, "target is reachable after bounded scrolling")
+    }
+    private func focusForTyping(_ field: XCUIElement) {
+        field.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        // Keyboard appearance moves the FloatingPanel asynchronously. Visibility
+        // alone does not mean the field has reached its final typing position.
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            field.isHittable && self.app.otherElements["activity.panel"].frame.minY < self.height * 0.2 &&
+                field.frame.maxY <= keyboard.frame.minY + 1
+        }, object: field)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
     }
     // The foot of a pin is the point on the route.
     private func tapOnRoute(_ name: String) {
@@ -138,7 +165,7 @@ final class ActivityDetailsUITests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5), "the editor follows straight on")
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'You rode this'")).firstMatch.exists, "no lap is asked for")
         app.buttons["Move finish earlier"].tap()
-        field.tap(); field.typeText("Rock")
+        focusForTyping(field); field.typeText("Rock")
         Thread.sleep(forTimeInterval: 1)
         app.buttons["Save Segment"].firstMatch.tap()
         XCTAssertTrue(title.waitForExistence(timeout: 8), "saving returns to the page")
@@ -173,7 +200,7 @@ final class ActivityDetailsUITests: XCTestCase {
         spot(0.525).tap(); Thread.sleep(forTimeInterval: 1.5)
         app.buttons["Move finish later"].tap()
         let field = app.textFields["segment.name"]
-        field.tap(); field.typeText("Short climb")
+        focusForTyping(field); field.typeText("Short climb")
         Thread.sleep(forTimeInterval: 1)
         app.buttons["Save Segment"].firstMatch.tap()
         XCTAssertTrue(title.waitForExistence(timeout: 8), "a one-minute segment saves")
@@ -248,8 +275,8 @@ final class ActivityDetailsUITests: XCTestCase {
     }
     func testRepeatedPanelMovesKeepTheScreenResponsive() {
         for _ in 0..<5 {
-            drag(from: settledY() - 10, to: height - 40, speed: .fast)
-            drag(from: settledY() - 10, to: height * 0.4, speed: .fast)
+            dragPanel(to: height - 40, speed: .fast)
+            dragPanel(to: height * 0.4, speed: .fast)
         }
         XCTAssertTrue(app.buttons["activity.back"].isHittable)
     }
