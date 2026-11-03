@@ -95,6 +95,26 @@ export function internalStops(t,context){
  }
  return result;
 }
+// Stops the native recorder kept inside one activity (it paused, then continued).
+// No route points exist during such a stop, so internalStops cannot see it. A stop
+// the recorder could not classify as a destination is shown as a possible one, so
+// a round trip never hides where it stopped. Edits use the same stopEdits keys.
+export const NATIVE_STOP_SECONDS=180;
+const STOP_VERDICT_TAGS={ambiguous:'Possible destination',meaningfulDestination:'Destination'};
+export function nativeStops(t,context){
+ const points=t.points||[];
+ return (t.details?.stops||[]).filter(s=>Number.isFinite(s?.start)&&Number.isFinite(s?.end)&&s.end-s.start>=NATIVE_STOP_SECONDS).flatMap(s=>{
+  const at=points.filter(p=>point(p)&&p.timestamp<=s.start).at(-1);
+  if(!at)return [];
+  const id=`native:${t.id}:${s.start}`,manual=context.metadata.stopEdits[id]||{},location=geo(at,context.places,context.metadata);
+  const tag=STOP_VERDICT_TAGS[s.verdict];
+  const stop={id,segmentID:t.id,pointIndex:points.indexOf(at),startedAt:s.start,endedAt:s.end,durationSeconds:s.end-s.start,...location,
+   name:manual.name||location.locality||location.name,verdict:s.verdict||null,reasons:Array.isArray(s.reasons)?s.reasons.slice(0,8):[],meaningful:true};
+  stop.charging='none';
+  stop.tags=manual.replaceTags?[...new Set(manual.tags||[])]:[...new Set([...location.tags,...(manual.tags||[]),...(tag?[tag]:[])])];
+  return manual.ignored?[]:[stop];
+ });
+}
 export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),places=[],vehicles=[],telemetry=[],projectionCache=null}={}){
  // All callers must supply the authenticated owner and an account-scoped input set.
  if(!owner)return {journeys:[],suggestions:[]};
@@ -141,13 +161,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    const recordKey=JSON.stringify(keys.map(key=>metadata.places[key]));
    const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],metadata.stopEdits]);
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
-   const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=internalStops(s,context);
+   const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
    const generatedTitle=destinationTitle(s.activity,recognition.primary)||((from.nearbyName||to.nearbyName)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<100):null);
    const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
    projectionCache?.set(cacheID,{source:s,keys,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
-  const stops=segments.flatMap(t=>internalStops(t,context));
+  const stops=segments.flatMap(t=>[...internalStops(t,context),...nativeStops(t,context)]);
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
   stops.sort((a,b)=>a.startedAt-b.startedAt);
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);

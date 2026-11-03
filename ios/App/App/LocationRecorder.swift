@@ -24,6 +24,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var lastFixAt: Double?
     var recoveryMessage = ""
     var motionManager: CMMotionActivityManager?
+    // Fixes held while Core Motion history for an open stop is read (bounded wait).
+    var stopHistoryPending: (owner: String, fixes: [CLLocation], source: ObservationSource, generation: Int)?
+    var stopHistoryGeneration = 0
     var motion = MotionEvidence()
     var detector = AutomaticDetector()
     var automaticTrip: RecordedActivity?
