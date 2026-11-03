@@ -983,7 +983,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // Manual recording owns standard updates; the low-power stream stops first.
         adaptive.stopLowPower(reason: "manual recording")
         applyLocationConfiguration(.manual(activity: active?.activity ?? ""))
-        recordDiagnostic("service","Manual precise location configuration applied",details:["configuration":"best accuracy, 5 m distance filter"])
+        recordDiagnostic("service","Manual precise location configuration applied",details:["configuration":LocationConfiguration.manual(activity: active?.activity ?? "").label])
         startContinuousLocation()
         reconcileBackgroundSession("manual recording")
     }
