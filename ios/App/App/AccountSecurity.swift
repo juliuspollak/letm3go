@@ -203,6 +203,7 @@ extension LocationRecorder {
         // Sign-out and account changes end background capability and the account's
         // ownership boundary; the next account starts its own.
         endBackgroundSession("the recorder was locked or signed out")
+        cancelStopHistoryWait()
         disableHouseholdLiveSharing(forget: true)
         if let id = ownerID { UserDefaults.standard.removeObject(forKey: Self.boundSinceKey(id)) }
         // Skipped-photo marks carry local Photos asset identifiers. They belong to

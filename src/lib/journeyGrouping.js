@@ -83,6 +83,9 @@ export function continuation(a,b,stop,{vehicles=[],places=[],metadata,owner}){
  if(stop.charging==='confirmed'&&stop.durationSeconds<=2*3600)return {decision:'auto',reason:'Confirmed charging between drives'};
  const longDrive=(a.distanceMeters>=30000&&b.distanceMeters>=30000)||a.distanceMeters>=80000||b.distanceMeters>=80000;
  if(longDrive&&stop.durationSeconds<=90*60)return {decision:'auto',reason:stop.charging==='possible'?'Road-trip continuation near charging infrastructure':'Short stop between long drives'};
+ // The iPhone recognised this stop as a destination and split the drive there.
+ const destination=a.details?.destinationStop;
+ if(destination&&Number.isFinite(destination.start)&&Math.abs(destination.start-a.endedAt)<=120)return {decision:'separate',reason:'Destination recognised between these drives'};
  if(stop.durationSeconds<180&&!fromHome)return {decision:'auto',reason:'Brief interruption in the same drive'};
  return {decision:'suggest',reason:'Nearby drives — confirm continuation'};
 }
@@ -96,21 +99,26 @@ export function internalStops(t,context){
  return result;
 }
 // Stops the native recorder kept inside one activity (it paused, then continued).
-// No route points exist during such a stop, so internalStops cannot see it. A stop
-// the recorder could not classify as a destination is shown as a possible one, so
-// a round trip never hides where it stopped. Edits use the same stopEdits keys.
+// No route points exist during such a stop, so internalStops cannot see it. Only a
+// stop it could not rule out as a destination is shown, as a possible one, so a
+// round trip never hides where it stopped while traffic pauses and stops from
+// earlier builds (no verdict) leave existing history unchanged. Edits use the
+// same stopEdits keys.
 export const NATIVE_STOP_SECONDS=180;
-const STOP_VERDICT_TAGS={ambiguous:'Possible destination',meaningfulDestination:'Destination'};
+const STOP_VERDICT_TAGS={ambiguous:'Possible destination'};
 export function nativeStops(t,context){
  const points=t.points||[];
- return (t.details?.stops||[]).filter(s=>Number.isFinite(s?.start)&&Number.isFinite(s?.end)&&s.end-s.start>=NATIVE_STOP_SECONDS).flatMap(s=>{
+ const first=points[t.visibleRouteStart??0],last=points[t.visibleRouteEnd??points.length-1];
+ return (t.details?.stops||[]).filter(s=>STOP_VERDICT_TAGS[s?.verdict]&&Number.isFinite(s.start)&&Number.isFinite(s.end)&&s.end-s.start>=NATIVE_STOP_SECONDS).flatMap(s=>{
+  // A stop in a trimmed-away part of the route is not shown.
+  if(first&&s.end<=first.timestamp||last&&s.start>=last.timestamp)return [];
   const at=points.filter(p=>point(p)&&p.timestamp<=s.start).at(-1);
   if(!at)return [];
   const id=`native:${t.id}:${s.start}`,manual=context.metadata.stopEdits[id]||{},location=geo(at,context.places,context.metadata);
   const tag=STOP_VERDICT_TAGS[s.verdict];
   const stop={id,segmentID:t.id,pointIndex:points.indexOf(at),startedAt:s.start,endedAt:s.end,durationSeconds:s.end-s.start,...location,
    name:manual.name||location.locality||location.name,verdict:s.verdict||null,reasons:Array.isArray(s.reasons)?s.reasons.slice(0,8):[],meaningful:true};
-  stop.charging='none';
+  stop.charging=charging(stop,context.telemetry||[],context.owner,vehicle(t,context.vehicles||[]));
   stop.tags=manual.replaceTags?[...new Set(manual.tags||[])]:[...new Set([...location.tags,...(manual.tags||[]),...(tag?[tag]:[])])];
   return manual.ignored?[]:[stop];
  });

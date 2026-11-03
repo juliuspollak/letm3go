@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import CoreMotion
+import UIKit
 
 extension LocationRecorder {
     func startMotionUpdates() {
@@ -423,7 +424,9 @@ extension LocationRecorder {
         automaticProbeTimer?.invalidate(); automaticProbeTimer = nil
         cleanupContinuationRegion()
     }
-    func processAutomatic(_ locations: [CLLocation], source: ObservationSource = .standard) {
+    // `receivedAt`: when held fixes were first delivered (a stop decision waited for
+    // Core Motion history), so a suspension during the wait does not age them out.
+    func processAutomatic(_ locations: [CLLocation], source: ObservationSource = .standard, receivedAt: Double? = nil) {
         // Significant-change wake-ups land here: the delivery rechecks ownership and
         // is dropped, so a suspended engine learns nothing from it but the time.
         if reconcileManualExclusion() {
@@ -438,7 +441,11 @@ extension LocationRecorder {
             stopHistoryPending = pending
             return
         }
-        let now = Date().timeIntervalSince1970
+        // Held fixes are judged as of their delivery: fixes queued behind the deciding
+        // one may be newer, so never earlier than the newest of them.
+        let clock = Date().timeIntervalSince1970
+        let newest = locations.map { $0.timestamp.timeIntervalSince1970 }.max() ?? clock
+        let now = receivedAt.map { min(clock, max($0, newest)) } ?? clock
         let remoteRecording = WatchSessionManager.shared.watchRecording
         // iOS does not wake a suspended app to expire a continuation window, so
         // every wake reconciles the wall clock before processing new fixes.
@@ -489,11 +496,12 @@ extension LocationRecorder {
                 // Before a fix can continue the drive, read what Core Motion saw
                 // during the stop. This fix and the rest of the delivery wait, then
                 // are processed again in order.
-                if settledStopDecisionDue(sample,now:now), stopHistoryNeeded(now:now) {
-                    deferForStopHistory(Array(ordered[index...]),source:source,now:now)
+                let decisionDue = settledStopDecisionDue(sample,now:now)
+                if decisionDue, stopHistoryNeeded(now:now), deferForStopHistory(Array(ordered[index...]),source:source,now:now) {
                     break deliveries
                 }
-                noteStopFix(sample)
+                // The fix under decision may be the car leaving: never on-foot evidence.
+                if !decisionDue { noteStopFix(sample,rawSpeed:location.speed) }
                 guard departureEvidence.observe(sample,now:now,minimumDistance:40) else {
                     diagnosticReject("settledAwaitingContinuation");continue
                 }
@@ -1399,11 +1407,14 @@ extension LocationRecorder {
     }
     func noteStopMotion(_ mark: MotionMark) {
         guard settledTripID != nil else { return }
-        updateSettledEvidence { $0.noteLive(mark) }
+        // Kept in memory: motion flips often while parked, and re-encrypting the
+        // journey on each would cost the main thread. Saved with the next fix,
+        // visit or history change; history recovers it after a relaunch.
+        updateSettledEvidence(save: false) { $0.noteLive(mark) }
     }
-    func noteStopFix(_ sample: GPSPoint) {
+    func noteStopFix(_ sample: GPSPoint, rawSpeed: Double) {
         guard let id = settledTripID, let last = trips.first(where: { $0.id == id })?.points.last else { return }
-        updateSettledEvidence { $0.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: sample.speed) }
+        updateSettledEvidence { $0.noteFix(distance: last.distance(to: sample), accuracy: sample.accuracy, speed: rawSpeed) }
     }
     // iOS's own view that the person stayed somewhere, near this stop.
     func noteStopVisit(_ visit: CLVisit) {
@@ -1415,6 +1426,9 @@ extension LocationRecorder {
         let arrival = visit.arrivalDate == .distantPast ? nil : visit.arrivalDate.timeIntervalSince1970
         let departure = visit.departureDate == .distantFuture ? nil : visit.departureDate.timeIntervalSince1970
         updateSettledEvidence { evidence in
+            // A late-delivered visit from before this stop is about another time.
+            if let arrival = arrival, arrival < evidence.stopStart - 300 { return false }
+            if let departure = departure, departure < evidence.stopStart { return false }
             guard evidence.visitAt == nil || (departure != nil && evidence.visitDepartureAt == nil) else { return false }
             evidence.visitAt = evidence.visitAt ?? arrival ?? Date().timeIntervalSince1970
             if let departure = departure { evidence.visitDepartureAt = departure }
@@ -1435,11 +1449,16 @@ extension LocationRecorder {
         return (evidence.historyCoveredUntil ?? 0) < now - 60
     }
     static let stopHistoryTimeout: Double = 3
-    func deferForStopHistory(_ fixes: [CLLocation], source: ObservationSource, now: Double) {
-        guard let owner = ownerID, let evidence = settledEvidence else { return }
+    // Returns false when nothing was held; the caller then processes the fixes now.
+    func deferForStopHistory(_ fixes: [CLLocation], source: ObservationSource, now: Double) -> Bool {
+        guard let owner = ownerID, let evidence = settledEvidence else { return false }
         stopHistoryGeneration += 1
         let generation = stopHistoryGeneration, stopStart = evidence.stopStart
-        stopHistoryPending = (owner, fixes, source, generation)
+        stopHistoryPending = (owner, fixes, source, generation, now)
+        // The wait is short; ask iOS not to suspend the app in the middle of it.
+        if stopHistoryTask == .invalid {
+            stopHistoryTask = UIApplication.shared.beginBackgroundTask(withName: "stop decision") { [weak self] in self?.endStopHistoryTask() }
+        }
         updateSettledEvidence(save: false) { $0.historyAttemptedAt = now; $0.historyTimedOut = nil; return true }
         recordDiagnostic("decision", "Stop decision waits for Core Motion history", details: ["stoppedSeconds": String(Int(max(0, now - stopStart))), "heldFixes": String(fixes.count)])
         if motionManager == nil { motionManager = CMMotionActivityManager() }
@@ -1461,12 +1480,25 @@ extension LocationRecorder {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.stopHistoryTimeout) { [weak self] in
             self?.resumeStopDecision(generation: generation, timedOut: true)
         }
+        return true
+    }
+    func endStopHistoryTask() {
+        guard stopHistoryTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(stopHistoryTask)
+        stopHistoryTask = .invalid
+    }
+    // Sign-out or an account change: held fixes belong to the previous account.
+    func cancelStopHistoryWait() {
+        if stopHistoryPending != nil { recordDiagnostic("decision", "Held stop fixes dropped: the account changed") }
+        stopHistoryPending = nil; stopHistoryGeneration += 1
+        endStopHistoryTask()
     }
     // Exactly once per wait: by the history answer or by the timeout, whichever is
     // first. The held fixes are processed again; another account never receives them.
     func resumeStopDecision(generation: Int, timedOut: Bool) {
         guard let pending = stopHistoryPending, pending.generation == generation else { return }
         stopHistoryPending = nil
+        defer { endStopHistoryTask() }
         guard ownerID == pending.owner else {
             recordDiagnostic("decision", "Held stop fixes dropped: the account changed")
             return
@@ -1475,7 +1507,7 @@ extension LocationRecorder {
             updateSettledEvidence { $0.historyTimedOut = true; return true }
             recordDiagnostic("decision", "Core Motion history did not arrive in time; deciding with live motion only")
         }
-        processAutomatic(pending.fixes, source: pending.source)
+        processAutomatic(pending.fixes, source: pending.source, receivedAt: pending.receivedAt)
     }
     func noteStopClassified(_ c: StopClassification) {
         guard c.stoppedSeconds >= StopClassifier.pauseSeconds else { return }

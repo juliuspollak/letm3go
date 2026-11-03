@@ -12,9 +12,13 @@ An unsaved driving stop stays open for continuation for 20 minutes (`JourneyCont
 
 The evidence is opened when a stop is published (`settleAutomatic`). It is stored on the provisional journey (`details.stopEvidence`), so it survives a relaunch and stays in the account's encrypted records. It holds:
 
-- **Motion marks** (time, kind, confident): from live Core Motion callbacks and Core Motion history. History replaces every mark in the range it covers, and a live mark inside a covered range is ignored, so the same walk is never counted twice. Limited to 120 marks.
-- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and speed < 2.6 m/s. Two such fixes are required.
-- **iOS visit** arrival or departure within 200 m of the stop.
+- **Motion marks** (time, kind, confident): from live Core Motion callbacks and Core Motion history.
+  - History is authoritative up to the last activity it returned, because it lags real time. It replaces the marks in that range, and a live mark inside it is ignored, so the same walk is never counted twice.
+  - A parked car (automotive and stationary together) counts as stationary.
+  - Limited to 120 marks, always keeping the one in force when the stop began.
+  - Live marks are kept in memory and saved with the next fix, visit or history change. They are not saved on every motion flip.
+- **On-foot displacement:** the largest distance from the stop, beyond the fix uncertainty, using only fixes with accuracy ≤ 30 m and a known speed < 2.6 m/s. Two such fixes are required. The fix under decision never counts. Displacement counts as evidence only when Core Motion saw some walking or cannot answer.
+- **iOS visit** arrival or departure within 200 m of the stop. A visit that arrived more than 5 minutes before the stop, or ended before it, is ignored.
 - **Saved-place kind** (never its name), Motion permission, and when history was read or timed out.
 
 No coordinates are kept. The evidence is cleared when the stop is continued (`continueAfterStop`) or the journey completes (`completeProvisional`, which every finalise path uses).
@@ -24,7 +28,7 @@ No coordinates are kept. The evidence is cleared when the stop is continued (`co
 | Stop | Result |
 | --- | --- |
 | Under 3 min | `temporaryPause` |
-| ≥ 60 s of confident vehicle motion and < 30 s walking | `temporaryPause` (congestion, creeping traffic) |
+| ≥ 60 s of confident vehicle motion and < 30 s walking | `temporaryPause` (congestion, creeping traffic). The drive still in force at the stop start and the drive away up to the deciding fix are not counted |
 | 3–6 min | destination only with strong walking (one confident run ≥ 60 s, or ≥ 120 s total) plus one independent source |
 | 6–12 min | destination with score ≥ 2 from at least 2 independent sources |
 | ≥ 12 min | destination with score ≥ 2 (sustained walking alone qualifies; a visit alone does not) |
@@ -49,16 +53,18 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 
 - Core Motion history is queried for the whole stop. The fixes are then reprocessed in order, on the answer or after 3 s, whichever comes first.
 - Later deliveries queue behind them, up to 500 fixes.
+- A background task asks iOS not to suspend the app during the wait. Held fixes are judged as of their delivery time, so a suspension cannot age them out.
+- If nothing can be held (no account), the fixes are processed at once. Sign-out clears the held fixes.
 - A timeout falls back to live evidence and says so in the reasons.
 - History is queried at most once a minute, so this cannot loop.
 - Fixes are dropped, with a diagnostic, if the account changed while they were held.
 
 ### Presentation
 
-- `journeyGrouping.nativeStops` shows native stops of 3 minutes or more as stops of the activity. An ambiguous stop is tagged **Possible destination**, with its reasons.
+- `journeyGrouping.nativeStops` shows ambiguous native stops of 3 minutes or more as stops of the activity, tagged **Possible destination**, with their reasons. Traffic pauses, stops recorded by earlier builds and stops in a trimmed-away part of the route are not shown, so existing history is unchanged.
 - Stops can be renamed or ignored through the existing `stopEdits`.
 - A native Home → Home title with an ambiguous stop reads `Home → Home · stopped 15 min`.
-- The two legs of a destination are separate activities. Grouping already keeps them apart (*Local return home*). Long road trips still group as before.
+- The two legs of a destination are separate activities. Grouping returns `separate` for them (*Destination recognised between these drives*) instead of suggesting a re-join. Long road trips still group as before.
 
 ### Diagnostics
 
@@ -70,7 +76,19 @@ When the deciding fix arrives (≥ 3 min into a drive's stop, ≥ 35 m away or �
 - **Correction:** an ambiguous stop can be renamed or ignored, but a single native activity cannot be split in the app today. Grouping links and cuts work only between activities. Splitting it is a separate feature.
 - **Backup:** `details.stops`, `stopEvidence` and `destinationStop` are not in the cloud backup projection (`cloudSync.viewMetadata`). A stop's verdict stays on this iPhone. The split itself is backed up, because the two legs are separate activities.
 - **Visits:** iOS often delivers visits late or not at all, so they are only ever supporting evidence.
-- **History timeout:** if iOS suspends the app inside the 3-second wait, the held fixes are processed when it next runs. The decision is then made later, but with the same fixes and timestamps.
+- **Process termination during the wait:** if iOS kills the app inside the 3-second wait, the held fixes are lost. Before this change they would have been processed immediately. The background task makes this unlikely, but it is not impossible.
+
+## Review
+
+- An adversarial review of `8d21c7b` found one high, five medium and seven low issues. All are fixed in the follow-up commit, with tests:
+  - the car's arrival and departure motion vetoed destinations;
+  - a departing car counted as on-foot displacement;
+  - lagging history erased fresh live walking;
+  - grouping suggested re-joining every split;
+  - every motion flip was saved;
+  - held fixes were not robust to suspension or sign-out;
+  - plus the low items.
+- The tests use realistic arrival and departure tails.
 
 ## Release gate: physical device
 

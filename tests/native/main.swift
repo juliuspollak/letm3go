@@ -305,7 +305,13 @@ check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true
 check(verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1150,"stationary",true)], saved: "work"), minutes: 8).reasons.contains("at a saved place (work)"),
       "a saved Work stop names its place kind, not its name")
 // Conflicting and missing evidence.
-check(verdict(stopEvidence(marks: [(1000,"vehicle",true),(1100,"walking",false),(1200,"vehicle",true)]), minutes: 12).verdict == .temporaryPause, "low-confidence walking between vehicle motion is creeping traffic")
+check(verdict(stopEvidence(marks: [(1000,"vehicle",true),(1100,"walking",false),(1200,"vehicle",true),(1500,"stationary",true)]), minutes: 12).verdict == .temporaryPause, "low-confidence walking between vehicle motion is creeping traffic")
+// The car's own arrival and departure are the journey, not motion during the stop.
+let tails = verdict(stopEvidence(marks: [(900,"vehicle",true),(1040,"stationary",true),(1060,"walking",true),(1300,"stationary",true),(1820,"walking",true),(1870,"vehicle",true)]), minutes: 15)
+check(tails.verdict == .meaningfulDestination && !tails.reasons.contains { $0.contains("vehicle motion") }, "sitting in the car after parking and driving off before the deciding fix do not veto a destination")
+check(verdict(stopEvidence(marks: [(900,"vehicle",true),(1100,"stationary",true),(1820,"vehicle",true)]), minutes: 15).verdict == .ambiguous, "arrival and departure tails alone are neither congestion nor a destination")
+check(StopEvidenceSummary.kind(walking: false, running: false, automotive: true, cycling: false, stationary: true) == "stationary", "a parked car (automotive and stationary) is not vehicle motion")
+check(verdict(stopEvidence(marks: [(1000,"stationary",true)], displacement: 80, fixes: 3, visit: 1100), minutes: 8).verdict == .ambiguous, "displacement without any walking (a car creeping out) is not on-foot evidence")
 let mixed = verdict(stopEvidence(marks: [(1000,"stationary",true),(1030,"walking",true),(1100,"vehicle",true),(1200,"stationary",true)], displacement: 50, fixes: 2), minutes: 10)
 check(mixed.reasons.contains { $0.contains("conflicts with a destination") }, "vehicle motion during a stop is named as conflicting evidence")
 let denied = verdict(stopEvidence(motion: "denied", displacement: 90, fixes: 3, visit: 1200), minutes: 15)
@@ -322,12 +328,18 @@ check(live.noteLive(MotionMark(at: 1010, kind: "walking", confident: true)), "a 
 check(!live.noteLive(MotionMark(at: 1020, kind: "walking", confident: true)), "a repeated state is not a second mark")
 live.applyHistory([MotionMark(at: 1005, kind: "walking", confident: true), MotionMark(at: 1100, kind: "stationary", confident: true)], from: 940, to: 1200)
 check(live.marks.count == 2 && live.marks.first?.at == 1005, "history replaces the live marks it covers, so a walk is counted once")
-check(!live.noteLive(MotionMark(at: 1150, kind: "walking", confident: true)), "a delayed live callback inside the history range is ignored")
+check(!live.noteLive(MotionMark(at: 1090, kind: "walking", confident: true)), "a delayed live callback inside the history range is ignored")
 check(live.noteLive(MotionMark(at: 1250, kind: "walking", confident: true)), "live marks after the history range are kept")
 check(live.totals(until: 1300).walking == 95 + 50, "walking time is the sum of confident walking spans")
+var lagging = StopEvidenceSummary(stopStart: 1000)
+_ = lagging.noteLive(MotionMark(at: 1850, kind: "walking", confident: true))
+lagging.applyHistory([MotionMark(at: 1000, kind: "stationary", confident: true), MotionMark(at: 1800, kind: "stationary", confident: true)], from: 940, to: 1900)
+check(lagging.marks.last == MotionMark(at: 1850, kind: "walking", confident: true) && lagging.historyCoveredUntil == 1800, "history that lags real time keeps the newer live walk")
+let firstMark = live.marks.first
 for i in 0..<400 { _ = live.noteLive(MotionMark(at: 2000 + Double(i), kind: i % 2 == 0 ? "walking" : "stationary", confident: true)) }
-check(live.marks.count <= StopEvidenceSummary.markLimit, "motion evidence is bounded")
-check(!live.noteFix(distance: 200, accuracy: 80, speed: 1) && !live.noteFix(distance: 200, accuracy: 10, speed: 9), "coarse or vehicle-speed fixes are not on-foot displacement")
+check(live.marks.count <= StopEvidenceSummary.markLimit && live.marks.first == firstMark, "motion evidence is bounded and keeps the state in force at the stop start")
+check(!live.noteFix(distance: 200, accuracy: 80, speed: 1) && !live.noteFix(distance: 200, accuracy: 10, speed: 9) && !live.noteFix(distance: 200, accuracy: 10, speed: -1),
+      "coarse, vehicle-speed or unknown-speed fixes are not on-foot displacement")
 check(live.noteFix(distance: 60, accuracy: 10, speed: 1) && live.onFootDisplacement == 50, "displacement is measured beyond the fix uncertainty")
 let encodedEvidence = try! JSONEncoder().encode(live)
 check(try! JSONDecoder().decode(StopEvidenceSummary.self, from: encodedEvidence) == live, "open-stop evidence survives a relaunch")
@@ -335,6 +347,8 @@ check(!String(decoding: encodedEvidence, as: UTF8.self).contains("latitude"), "s
 // Storage compatibility and lifecycle.
 let oldStop = try! JSONDecoder().decode(StopInterval.self, from: Data(#"{"start":1,"end":2}"#.utf8))
 check(oldStop.verdict == nil && oldStop.reasons == nil, "stops written by earlier builds still decode")
+let sparse = try! JSONDecoder().decode(StopEvidenceSummary.self, from: Data(#"{"stopStart":5}"#.utf8))
+check(sparse.marks.isEmpty && sparse.motion == "unknown", "stop evidence missing newer keys still decodes")
 var shopping = RecordedActivity(activity: "Driving", startedAt: 0, resumedAt: 0, title: "Drive")
 shopping.recordingMode = "automatic"; shopping.details = ActivityDetails()
 for i in 0...12 { _ = shopping.accept(drivingFix(-33 + Double(i)*60/111_320, Double(i)*5), now: Double(i)*5) }
@@ -344,6 +358,7 @@ let ambiguousStop = verdict(shopping.details!.stopEvidence!, minutes: 15)
 check(shopping.continueAfterStop(at: 960, classification: ambiguousStop), "an ambiguous stop keeps the drive continuous")
 check(shopping.details?.stops?.last?.verdict == "ambiguous" && shopping.details?.stops?.last?.reasons?.isEmpty == false, "the ambiguous stop stays visible with its reasons")
 check(shopping.details?.stopEvidence == nil, "transient evidence is cleared once the stop is decided")
+check(shopping.details?.destinationStop == nil, "a continued drive carries no destination")
 check(shopping.duration(at: 960) == 60, "the stop is not moving time")
 var closing = shopping
 closing.publishStop(at: 1000, continuationEndsAt: 2200)
