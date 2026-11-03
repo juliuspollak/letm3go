@@ -22,7 +22,7 @@ One predicate decides whether sharing still holds location: `LocationRecorder.li
 | Every armed audience's last accepted position (household: last accepted send; friends: last successful send) is inside the resting place, accurate to 100 m, and taken no earlier than 2 min before the phone settled there | Viewers already hold the position being rested on |
 | No movement status is shown or waiting to be sent ("stationary" does not count) | A "Driving" status must be cleared by a real send first |
 
-While passive, `confirmHouseholdLocation` sends nothing. When the stream restarts, a fix from before it stopped is never confirmed (`HouseholdPublisher.canConfirm` now requires the fix to be newer than `continuousStartedAt`). Viewers keep the last position with its real capture time. Nothing re-stamps it as a new observation. A departure takes the existing path: wake-up, bounded precise probe, `liveSharingHoldsLocation` becomes true again because the rest is disturbed, and fresh fixes are published as before.
+While passive, `confirmHouseholdLocation` sends nothing. After passive rest ends, a fix from before it is never confirmed or kept as the shared position (`HouseholdPublisher.canConfirm` and `keepsPrevious` compare against `passiveEndedAt`). Other stream restarts behave as before, so behaviour with the switch off is unchanged. Viewers keep the last position with its real capture time. Nothing re-stamps it as a new observation. A departure takes the existing path: wake-up, bounded precise probe, `liveSharingHoldsLocation` becomes true again because the rest is disturbed, and fresh fixes are published as before.
 
 ### False wake-ups
 
@@ -51,7 +51,7 @@ A stale household position inside Home reads **Last verified at home · 25 min a
 
 ## Review
 
-An adversarial review of `a95e0ea` found five medium and five low issues, all fixed in the follow-up commit: re-stamping an old fix after the stream restarted, "stationary" blocking rest, false-wake restore from just outside the place, switch-off behaviour changes, friends' unsent position, missing export keys, a preference left after account deletion, a stale false-wake candidate, and repeated log entries. There were no critical or high findings. One remaining risk is listed under the release gate.
+An adversarial review of `a95e0ea` found five medium and five low issues, all fixed in the follow-up commit: re-stamping an old fix after the stream restarted, "stationary" blocking rest, false-wake restore from just outside the place, switch-off behaviour changes, friends' unsent position, missing export keys, a preference left after account deletion, a stale false-wake candidate, and repeated log entries. There were no critical or high findings. A re-review confirmed the fixes, and found that the first M1 fix also changed switch-off behaviour after a manual recording; the third commit limits it to passive rest. One remaining risk is listed under the release gate.
 
 ## Release gate: physical device
 

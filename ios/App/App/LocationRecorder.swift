@@ -121,6 +121,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var placeInsideAt: Double?
     var placeOutsideAt: Double?
     var sharingRestLoggedAt: Double = 0
+    // When passive rest last ended: no fix from before it is confirmed or kept as
+    // the shared position. Zero when passive rest has not run, as before.
+    var passiveEndedAt: Double = 0
     static func adaptiveKey(_ owner: String) -> String { "letm3go-adaptive-location-\(owner)" }
     var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
     // Place awareness (see DwellArea). Kept in this account's encrypted storage.
@@ -744,7 +747,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         guard location.horizontalAccuracy >= 0,location.horizontalAccuracy <= 100,
               age <= HouseholdPublisher.maximumFixAge, age >= -5 else {return}
         liveGps.observe(sharePoint(location), now: Date().timeIntervalSince1970)
-        if HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
+        // A fix from before passive rest is no longer worth keeping over a new one.
+        if (lastShareFix?.timestamp.timeIntervalSince1970 ?? 0) >= passiveEndedAt,
+           HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
         lastShareFix=location
         sendHouseholdLocation(location,confirmation:false)
     }
@@ -775,7 +780,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         let continuous=HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
               resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince,
-              continuousSince:continuousStartedAt ?? .greatestFiniteMagnitude)
+              continuousSince:passiveEndedAt)
         let stationary=adaptive.lowPowerRunning && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
         guard continuous || stationary else {return}
         sendHouseholdLocation(fix,confirmation:true)

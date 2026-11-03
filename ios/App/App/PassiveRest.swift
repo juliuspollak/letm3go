@@ -230,6 +230,7 @@ extension LocationRecorder {
             reconcileBackgroundSession("passive rest")
         } else if let since = passiveSince {
             passiveSince = nil
+            passiveEndedAt = now
             persistPassiveSince(nil)
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": locationMode.rawValue])
             // In the foreground this starts the session again; in the background
@@ -248,6 +249,7 @@ extension LocationRecorder {
         let now = Date().timeIntervalSince1970
         if let since = passiveSince {
             passiveSince = nil
+            passiveEndedAt = now
             recordDiagnostic("rest", "Passive rest ended", details: ["passiveSeconds": String(Int(max(0, now - since))), "modeAfter": "off"])
         }
         restDecision = .unconfirmed; passiveRetainReason = "automatic tracking unavailable"; restDisturbedAt = nil
@@ -269,7 +271,7 @@ extension LocationRecorder {
         departurePlace = nil; departureMotionOnsetAt = nil; lastPreciseReason = "none yet"; keepAliveUpdates = 0
         modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
         passiveRestEnabled = true
-        sharingRestEnabled = false; falseWakeRestores = []
+        sharingRestEnabled = false; falseWakeRestores = []; placeInsideAt = nil; placeOutsideAt = nil; passiveEndedAt = 0
     }
 
     // MARK: Recording health
