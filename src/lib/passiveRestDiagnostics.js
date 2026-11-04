@@ -40,7 +40,7 @@ export const RECOVERY_ISSUES={
  serviceSessionInsufficient:'iOS reports the app is not sufficiently in use to resume it',
  keepAliveNotRunning:'the keep-alive that lets iOS resume the app is not running'
 };
-const WAKE_OUTCOMES={preciseFix:'a precise fix followed the last wake-up',noPreciseFix:'the last wake-up check ended without a precise fix'};
+const WAKE_OUTCOMES={preciseFix:'a precise fix followed the last wake-up',noPreciseFix:'the last wake-up check ended without a precise fix',interrupted:'the last wake-up check was interrupted before a precise fix',unknown:'the last wake-up outcome is unknown; the check ended while the app was not running'};
 const time=value=>Number.isFinite(value)&&value>0?new Date(value*1000).toLocaleTimeString():'Never';
 
 export function passiveRows(state){

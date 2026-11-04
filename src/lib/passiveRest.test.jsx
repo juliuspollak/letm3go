@@ -72,6 +72,11 @@ describe('passive rest rows',()=>{
    .toBe('Not needed · the background location session is held · a precise fix followed the last wake-up');
   expect(row(passiveRows({passiveRest:passive()}),'Background recovery')).toBe('Not reported');
  });
+ it('shows interrupted and unknown wake-up outcomes',()=>{
+  for(const [outcome,label] of [['interrupted','the last wake-up check was interrupted before a precise fix'],['unknown','the last wake-up outcome is unknown; the check ended while the app was not running']]){
+   expect(row(passiveRows({passiveRest:passive({backgroundRecovery:{status:'armed',issues:[],lastWakeOutcome:outcome}})}),'Background recovery')).toContain(label);
+  }
+ });
  it('treat unavailable Wi-Fi as unavailable, not as disconnected',()=>{
   expect(row(passiveRows({passiveRest:passive({wifi:{configured:true,match:'unavailable'}})}),'Home Wi-Fi')).toBe('Wi-Fi unavailable');
  });
