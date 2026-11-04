@@ -422,6 +422,17 @@ enum RouteTrimming {
 // No segment is bridged or interpolated, so no distance is invented or counted
 // twice, and a journey that no longer has enough real movement is not published.
 enum JourneySplit {
+    // The confirmation may arrive after walking fixes were already appended to the
+    // drive. Cut at the first observed non-vehicle movement, not the time the
+    // detector finally decided. Both distance and end time use retained real fixes.
+    static func drivingEnd(_ trip: RecordedActivity, atOrBefore timestamp: Double) -> RecordedActivity? {
+        var kept = trip
+        kept.points = trip.points.filter { $0.timestamp <= timestamp }
+        kept.distanceMeters = kept.measuredDistance
+        guard kept.points.count >= 2, kept.distanceMeters >= 25, let last = kept.points.last else { return nil }
+        kept.finish(at: max(kept.startedAt,last.timestamp))
+        return kept
+    }
     static func kept(_ trip: RecordedActivity, before timestamp: Double) -> RecordedActivity? {
         var kept = trip
         kept.points = trip.points.filter { $0.timestamp < timestamp }
@@ -2015,7 +2026,7 @@ struct AutomaticDetector {
     func walkingArrivalConfirmed(now: Double) -> Bool {
         guard let began = walkingArrivalSince, let end = walkingArrivalEndAt,
               now >= began, now - began >= Self.walkingArrivalDwell,
-              now - began <= 180, end <= now else { return false }
+              end <= now else { return false }
         return true
     }
     // An absence of GPS fixes is not evidence of arrival. Only conclude arrival
