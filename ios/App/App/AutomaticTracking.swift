@@ -38,6 +38,8 @@ extension LocationRecorder {
             if self.liveSharingArmed, self.active?.state != "recording" {
                 self.confirmHouseholdLocation()
                 if previousMotion.types != types || previousMotion.confidence != confidence {
+                    // The status shown to the household may now be due to change.
+                    self.sharingRestInputChanged("motion changed")
                     self.reconcileLiveSharingLocation()
                 }
             }
@@ -46,6 +48,7 @@ extension LocationRecorder {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
                     self.detector.reset()
                     // A check stopped by stillness also ended without a journey.
+                    self.noteWakeCheckEnded(now:now)
                     self.returnFromFalseWake(now:now)
                     self.reconcileAutomaticSampling()
                 } else if AutomaticDetector.credibleMovement(self.motion,now:now) {
@@ -151,7 +154,7 @@ extension LocationRecorder {
             liveSharing:liveSharingArmed,automaticPermitted:automaticPermitted)
         adaptive.shutdown(reason:"a manual recording owns the iPhone")
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil
-        automaticSampling=AutomaticSampling();departureEvidence.reset();movementTransition.reset();homeRest.reset();endPassiveRest()
+        automaticSampling=AutomaticSampling();departureEvidence.reset();movementTransition.reset();homeRest.reset();endPassiveRest(reason:"a manual recording owns the iPhone")
         // iOS keeps visit monitoring through a relaunch, but the flag does not survive.
         manager.stopMonitoringVisits(); visitMonitoringRequested = false
         for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
@@ -184,6 +187,7 @@ extension LocationRecorder {
         // The app slept through the end of the last check, so nothing it gathered is
         // connected to this wake-up. An open or stopped journey keeps its detector.
         if (automaticSampling.probeUntil ?? .greatestFiniteMagnitude)<=now,automaticTrip == nil,settledTripID == nil {
+            noteWakeCheckEnded(now:now,outcome:.unknown)
             detector.reset();departureLatency.reset()
         }
         // Any departure evidence ends a confirmed rest; it must be re-earned, unless
@@ -206,7 +210,7 @@ extension LocationRecorder {
                 // Departure latency is measured from here, for either engine.
                 if wasIdle, automaticTrip == nil {
                     // A departure that never confirmed must not be measured against this one.
-                    if departureLatency.isStale(now:now) { departureLatency.reset() }
+                    if departureLatency.isStale(now:now) { noteWakeCheckEnded(now:now,outcome:.unknown); departureLatency.reset() }
                     noteDepartureEvidence(cause, now:now)
                 }
             }
@@ -240,6 +244,7 @@ extension LocationRecorder {
                 detector.reset()
                 automaticSampling.endEpisode(now:now)
                 noteJourneyPossiblyMissed()
+                noteWakeCheckEnded(now:now)
                 departureLatency.reset()
                 returnFromFalseWake(now:now)
                 trackingEvent(observing ? "Departure check budget spent; returning to location standby until the next movement" : "Departure check expired; returning to location standby")
@@ -292,11 +297,11 @@ extension LocationRecorder {
             automaticPreciseSince=mode == .precise ? Date().timeIntervalSince1970 : nil
             let passiveNote:String="rest confirmed ("+restDecision.reason+"); location updates and background session released, wake-ups armed"
             recordDiagnostic("service","Location sampling mode changed",details:["modeBefore":previous.rawValue,"modeAfter":mode.rawValue,
-                "reason":mode == .precise ? "an open journey or bounded departure check needs precise fixes" : mode == .resting ? "settled place confirmed; reduce accuracy without releasing background departures" : mode == .passive ? passiveNote : mode == .stationary ? "adaptive stationary standby; precise updates intentionally disabled" : "automatic sampling reconciled"])
-            if mode == .resting { trackingEvent("Resting at settled place: reduced-accuracy location until movement") }
+                "reason":mode == .precise ? "an open journey or bounded departure check needs precise fixes" : mode == .resting ? "reduced-accuracy rest (HomeRest: 10 min at the current place); background session kept. Not the confirmed rest that passive rest needs" : mode == .passive ? passiveNote : mode == .stationary ? "adaptive stationary standby; precise updates intentionally disabled" : "automatic sampling reconciled"])
+            if mode == .resting { trackingEvent("Reduced-accuracy rest at the current place: 100 m location until movement") }
             else if mode == .stationary { trackingEvent("Settled: low-power standby, continuous location stopped") }
             else if previous == .resting || previous == .stationary || previous == .passive {
-                let left:String = previous == .stationary ? "low-power standby" : previous == .passive ? "passive rest" : "Home rest"
+                let left:String = previous == .stationary ? "low-power standby" : previous == .passive ? "passive rest" : "reduced-accuracy rest"
                 trackingEvent("Left " + left + ": " + mode.rawValue + " location")
             }
             if mode == .precise { lastPreciseReason = automaticTrip != nil ? "an open journey" : "departure check: " + lastProbeCause }

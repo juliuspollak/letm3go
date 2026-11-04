@@ -2647,14 +2647,19 @@ do {
     check(passive(confirmed, manual: true) != nil, "manual recording keeps the session")
     check(passive(confirmed, sharing: true) == "location sharing is on", "live sharing blocks passive rest and its session release")
 
-    // Sharing while resting (device test): only at the place viewers already see.
-    func sharingRest(enabled: Bool = true, sharing: Bool = true, automatic: Bool = true, otherwise: Bool = true,
+    // Sharing while resting (device test): only at the place the household already sees.
+    func sharingRestInputs(enabled: Bool = true, sharing: Bool = true, friends: Bool = false, automatic: Bool = true, otherwise: Bool = true,
+                           fixAt: Double? = 1000, accuracy: Double? = 20, inside: Bool = true, since: Double? = 900,
+                           activity: Bool = false, pending: Bool = false, household: Bool = true) -> SharingRestInputs {
+        SharingRestInputs(enabled: enabled, liveSharing: sharing, friendSharing: friends, automaticAvailable: automatic, passiveOtherwiseAllowed: otherwise,
+            shared: household ? [fixAt.map { SharedPosition(at: $0, accuracy: accuracy ?? -1, insidePlace: inside) }] : [],
+            placeSince: since, activityShared: activity, statusChangePending: pending)
+    }
+    func sharingRest(enabled: Bool = true, sharing: Bool = true, friends: Bool = false, automatic: Bool = true, otherwise: Bool = true,
                      fixAt: Double? = 1000, accuracy: Double? = 20, inside: Bool = true, since: Double? = 900,
-                     activity: Bool = false, pending: Bool = false, friend: SharedPosition?? = .none) -> (allowed: Bool, reason: String) {
-        var shared: [SharedPosition?] = [fixAt.map { SharedPosition(at: $0, accuracy: accuracy ?? -1, insidePlace: inside) }]
-        if case .some(let friendPosition) = friend { shared.append(friendPosition) }
-        return SharingRest.decide(SharingRestInputs(enabled: enabled, liveSharing: sharing, automaticAvailable: automatic, passiveOtherwiseAllowed: otherwise,
-            shared: shared, placeSince: since, activityShared: activity, statusChangePending: pending))
+                     activity: Bool = false, pending: Bool = false, household: Bool = true) -> (allowed: Bool, reason: String) {
+        SharingRest.decide(sharingRestInputs(enabled: enabled, sharing: sharing, friends: friends, automatic: automatic, otherwise: otherwise, fixAt: fixAt,
+            accuracy: accuracy, inside: inside, since: since, activity: activity, pending: pending, household: household))
     }
     check(sharingRest().allowed, "sharing may rest once the shared position is the verified resting place")
     check(!sharingRest(enabled: false).allowed, "stationary sharing keeps continuous location unless the device test is on")
@@ -2666,11 +2671,66 @@ do {
     check(!sharingRest(accuracy: 150).allowed && !sharingRest(fixAt: nil).allowed, "a coarse or missing shared position is not rested on")
     check(!sharingRest(activity: true).allowed && !sharingRest(pending: true).allowed, "a movement status still shown or unsent keeps the stream until it clears")
     check(!sharingRest(sharing: false).allowed, "without sharing there is nothing to rest")
-    check(sharingRest(friend: .some(SharedPosition(at: 1000, accuracy: 15, insidePlace: true))).allowed, "household and friends both holding the resting place may rest")
-    check(!sharingRest(friend: .some(SharedPosition(at: 1000, accuracy: 15, insidePlace: false))).allowed, "friends still holding a street position keep the stream (they never received the place)")
-    check(!sharingRest(friend: .some(nil)).allowed, "an audience that has received nothing keeps the stream")
-    check(!SharingRest.decide(SharingRestInputs(enabled: true, liveSharing: true, automaticAvailable: true, passiveOtherwiseAllowed: true, shared: [],
-        placeSince: 900, activityShared: false, statusChangePending: false)).allowed, "with no audience position known nothing is rested on")
+    check(!sharingRest(fixAt: nil).allowed, "a household that has received nothing keeps the stream")
+    check(!sharingRest(household: false).allowed, "with no household position known nothing is rested on")
+
+    // Stage A: friend sharing never rests under the current friend server, which
+    // stamps a position on arrival and hides it 30 minutes later.
+    check(!sharingRest(friends: true).allowed && sharingRest(friends: true).reason.contains("friend sharing is on"),
+          "household and friends both armed: friends keep continuous location even when the household holds the resting place")
+    check(!sharingRest(friends: true, household: false).allowed, "friends only: sharing keeps continuous location")
+    check(!sharingRest(enabled: false, friends: true).reason.contains("friend"), "with the device test off the reason stays the switch, not friends")
+    check(sharingRest(friends: false).allowed, "household only, at the resting place: sharing may rest")
+
+    // Stage A: a decision to rest holds only for the inputs it was made from.
+    let decidedFrom = sharingRestInputs()
+    check(SharingRest.stillAllowed(decidedFrom, allowed: true, current: decidedFrom), "an unchanged decision to rest still holds")
+    check(SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(otherwise: false)),
+          "whether passive is otherwise allowed is decided with the rest, so it is carried over, not compared")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: false, current: decidedFrom) && !SharingRest.stillAllowed(nil, allowed: true, current: decidedFrom),
+          "a decision not to rest, or none at all, never lets sharing rest")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(friends: true)),
+          "multiple audiences: friend sharing armed after the decision makes it stale")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(fixAt: 1100, inside: false)),
+          "stale position: a newly accepted household position outside the place makes it stale")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(fixAt: 1100)),
+          "any newly accepted household position makes it stale until decided again")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(pending: true)),
+          "pending movement status: a status change waiting to be sent makes it stale")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(activity: true)),
+          "a movement status accepted by the server makes it stale")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(since: 2000)),
+          "another resting place makes it stale")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(enabled: false)),
+          "switching the device test off while passive makes it stale at once")
+    check(!SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(sharing: false)) &&
+          !SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(household: false)),
+          "a household credential that ended makes it stale")
+
+    // Stage A review: a stale decision found while passive goes to the central
+    // reconciler first; sharing never starts location under a passive mode.
+    check(SharingRest.centralReconcileFirst(passive: true, allowed: true, current: false), "a stale decision while passive is handed to the central reconciler")
+    check(!SharingRest.centralReconcileFirst(passive: true, allowed: true, current: true), "a current decision while passive changes nothing")
+    check(!SharingRest.centralReconcileFirst(passive: false, allowed: true, current: false) && !SharingRest.centralReconcileFirst(passive: true, allowed: false, current: false),
+          "outside passive rest, or with no decision to rest, sharing reconciles as before")
+
+    // Stage A review: one outcome per wake-up from passive rest, only from evidence.
+    check(WakeCheck.needsOutcome(engine: "passive", evidenceAt: 100, firstFixSeen: false, lastOutcomeAt: nil), "an open passive check without a fix needs an outcome")
+    check(!WakeCheck.needsOutcome(engine: "passive", evidenceAt: 100, firstFixSeen: true, lastOutcomeAt: nil), "a precise fix already answered the wake-up")
+    check(!WakeCheck.needsOutcome(engine: "passive", evidenceAt: 100, firstFixSeen: false, lastOutcomeAt: 150), "a wake-up is reported once, whichever path ends it")
+    check(WakeCheck.needsOutcome(engine: "passive", evidenceAt: 200, firstFixSeen: false, lastOutcomeAt: 150), "a later wake-up is reported again")
+    check(!WakeCheck.needsOutcome(engine: "established", evidenceAt: 100, firstFixSeen: false, lastOutcomeAt: nil) &&
+          !WakeCheck.needsOutcome(engine: "passive", evidenceAt: nil, firstFixSeen: false, lastOutcomeAt: nil), "only checks that began in passive rest are reported")
+
+    // Stage A: a burst of changes costs one reconcile, and a reconcile that runs
+    // anyway answers them.
+    var coalesced = CoalescedRequest()
+    check(coalesced.request("household position accepted"), "the first change schedules a reconcile")
+    check(!coalesced.request("motion changed") && !coalesced.request("friend credential changed") && coalesced.coalesced == 2, "later changes join the pending reconcile")
+    check(coalesced.take() == "household position accepted" && coalesced.take() == nil, "the scheduled run reports its first cause and runs once")
+    check(coalesced.request("motion changed"), "a change after the run schedules a new one")
+    coalesced.satisfied()
+    check(coalesced.take() == nil, "a reconcile that ran for another reason satisfies the pending request")
     func passiveSharing(_ mayRest: Bool) -> String? {
         PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: confirmed, alwaysAuthorized: true, preciseAuthorized: true,
             serviceSessionHeld: true, serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: false,
@@ -2718,6 +2778,52 @@ do {
     check(!KeepAlivePolicy.wanted(automaticAvailable: false, manualRecording: true, precise: false, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, sharingWithoutSession: true),
           "an iPhone manual recording holds its own session, so no keep-alive")
     check(KeepAlivePolicy.reason(precise: false, stopOpen: false).contains("live sharing"), "the keep-alive says which case it covers")
+
+    // Stage A: false wake-ups with sharing resting. The wake ends the rest, so
+    // sharing holds location for the check; a restored rest may rest again only on
+    // a position the household holds inside the place.
+    let restingDecision = sharingRestInputs()
+    check(SharingRest.decide(restingDecision).allowed, "false wake: sharing rests before the wake-up")
+    let waking = sharingRestInputs(otherwise: false)
+    check(!SharingRest.decide(waking).allowed && SharingRest.decide(waking).reason == "passive rest is not allowed yet", "false wake: the wake-up makes sharing hold location for the check")
+    check(falseWake(), "false wake: the check finds the phone still inside and restores the rest")
+    check(SharingRest.decide(sharingRestInputs(fixAt: 5100)).allowed, "false wake: a fix published inside the place during the check is rested on again")
+    check(!SharingRest.decide(sharingRestInputs(fixAt: 5150, inside: false)).allowed &&
+          !FalseWake.restores(wake, placeSince: 900, placeFixAt: 5100, leftPlaceAt: 5150, motionMoving: false, journeyOpen: false, recentRestores: [], now: 5200),
+          "false wake: a position published just outside neither restores the rest nor lets sharing rest")
+    check(!SharingRest.decide(sharingRestInputs(friends: true, fixAt: 5100)).allowed, "false wake: with friends armed, sharing still never rests after the restore")
+
+    // Stage A: switching the device test off while passive. The decision is stale
+    // at once, the next decision keeps location, and the Home fix from before the
+    // rest is never re-sent as current.
+    let switchedOff = sharingRestInputs(enabled: false)
+    check(!SharingRest.stillAllowed(restingDecision, allowed: true, current: switchedOff) && !SharingRest.decide(switchedOff).allowed,
+          "switch off while passive: sharing holds location again")
+    check(!HouseholdPublisher.canConfirm(continuousRunning: true, resuming: false, fixAt: 1000, executingSince: 0, continuousSince: 6000),
+          "switch off while passive: the fix from before the rest is not confirmed as current")
+
+    // Stage A: background recovery says what is armed, never that it worked.
+    func recovery(automatic: Bool = true, session: Bool = false, always: Bool = true, region: Bool = true, significant: Bool = true, visits: Bool = true,
+                  failed: Bool = false, service: Bool = true, inUse: Bool = true, keepAliveWanted: Bool = false, keepAlive: Bool = false) -> (status: BackgroundRecoveryStatus, issues: [String]) {
+        BackgroundRecovery.evaluate(BackgroundRecoveryInputs(automaticAvailable: automatic, activitySessionHeld: session, alwaysAuthorized: always, exitRegion: region,
+            significantChanges: significant, visits: visits, monitoringFailed: failed, serviceSessionHeld: service, serviceSessionInUse: inUse,
+            keepAliveWanted: keepAliveWanted, keepAliveRunning: keepAlive))
+    }
+    check(recovery(session: true).status == .notNeeded && recovery(automatic: false).status == .notNeeded, "recovery: a held session, or no automatic tracking, needs no wake-up")
+    check(recovery() == (.armed, []), "recovery: every wake-up and the service session armed")
+    check(recovery(always: false).status == .unavailable && recovery(always: false).issues.first == "alwaysAccessMissing", "recovery: without Always access nothing can wake the app")
+    check(recovery(region: false, significant: false, visits: false) == (.unavailable, ["noWakeUps"]), "recovery: no wake-up armed at all is unavailable")
+    check(recovery(region: false) == (.limited, ["exitRegionMissing"]), "recovery: a missing exit region is reported, the others still wake")
+    check(recovery(failed: true).issues == ["regionMonitoringFailed"], "recovery: a region monitoring failure is reported")
+    check(recovery(service: false) == (.limited, ["serviceSessionMissing"]) && recovery(inUse: false).issues == ["serviceSessionInsufficient"],
+          "recovery: without an in-use service session a wake-up cannot keep precise GPS running")
+    check(recovery(keepAliveWanted: true) == (.limited, ["keepAliveNotRunning"]) && recovery(keepAliveWanted: true, keepAlive: true).status == .armed,
+          "recovery: a wanted keep-alive that is not running is a failure state")
+    check(RestStage.describe(reducedAccuracy: true, confirmed: false, passive: false) == "reducedAccuracy" &&
+          RestStage.describe(reducedAccuracy: true, confirmed: true, passive: false) == "confirmed" &&
+          RestStage.describe(reducedAccuracy: false, confirmed: true, passive: true) == "passive" &&
+          RestStage.describe(reducedAccuracy: false, confirmed: false, passive: false) == "none",
+          "diagnostics name reduced-accuracy rest (HomeRest) apart from the confirmed rest passive rest needs")
 
     // Modes, configuration, session and indicator.
     var sampling = AutomaticSampling()
@@ -4912,7 +5018,7 @@ do {
     func sharing(_ rest: RestDecision, testOn: Bool, sharedAt: Double = 600) -> Bool {
         let otherwise = PassiveRestPolicy.retainReason(PassiveRestInputs(enabled: true, rest: rest, alwaysAuthorized: true, preciseAuthorized: true, serviceSessionHeld: true,
             serviceSessionInUse: true, significantChanges: true, exitRegion: true, manualRecording: false)) == nil
-        return SharingRest.decide(SharingRestInputs(enabled: testOn, liveSharing: true, automaticAvailable: true, passiveOtherwiseAllowed: otherwise,
+        return SharingRest.decide(SharingRestInputs(enabled: testOn, liveSharing: true, friendSharing: false, automaticAvailable: true, passiveOtherwiseAllowed: otherwise,
             shared: [SharedPosition(at: sharedAt, accuracy: 10, insidePlace: true)], placeSince: 0, activityShared: false, statusChangePending: false)).allowed
     }
     // 1-3. Still at Home for 25 min: with the test on, sharing rests and passive rest may begin.

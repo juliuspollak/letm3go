@@ -182,14 +182,21 @@ enum PassiveRestPolicy {
 //
 // Whether live sharing may release continuous location with the rest of the
 // recorder. Only when everything else already allows passive rest, and the last
-// position the household or friends received was taken inside this resting place
-// after the phone settled there. Viewers then keep that position with its real
-// timestamp, which ages honestly; nothing is re-sent as a new observation while
-// passive. A departure wakes the recorder through the same exit region,
+// position the household received was taken inside this resting place after the
+// phone settled there. The household server keeps that position with its real
+// capture time, which ages honestly; nothing is re-sent as a new observation
+// while passive. A departure wakes the recorder through the same exit region,
 // significant change or visit, and the fresh fixes are published as before.
 // Sharing with Automatic Tracking off has no place verification or departure
 // wake-ups, so it keeps the established continuous stream.
-// The position one audience (household or friends) last accepted.
+//
+// Friend sharing never rests. Its current server function (set_friend_location)
+// stamps a position with the time it arrives, not when it was taken, and
+// my_friend_locations hides it 30 minutes later. A resting phone sends nothing,
+// so friends would lose the position within half an hour. Resting with friends
+// waits for a server that keeps the capture time and a reviewed visibility
+// window.
+// The position the household last accepted.
 struct SharedPosition: Equatable {
     var at: Double
     var accuracy: Double
@@ -199,9 +206,11 @@ struct SharedPosition: Equatable {
 struct SharingRestInputs: Equatable {
     var enabled: Bool               // the device-test preference
     var liveSharing: Bool
+    var friendSharing: Bool         // friend sharing is armed
     var automaticAvailable: Bool
     var passiveOtherwiseAllowed: Bool // PassiveRestPolicy with sharing left out
-    // One entry per armed audience; nil where that audience has received nothing.
+    // One entry per armed audience that may rest (the household); nil where it
+    // has received nothing.
     var shared: [SharedPosition?]
     var placeSince: Double?
     var activityShared: Bool        // a movement status is still shown to viewers
@@ -212,6 +221,7 @@ enum SharingRest {
     static func decide(_ i: SharingRestInputs) -> (allowed: Bool, reason: String) {
         guard i.liveSharing else { return (false, "sharing is off") }
         guard i.enabled else { return (false, "keeps continuous location: releasing it while sharing is a device test that is off") }
+        guard !i.friendSharing else { return (false, "keeps continuous location: friend sharing is on, and friends stop seeing a position 30 minutes after it reaches the server") }
         guard i.automaticAvailable else { return (false, "keeps continuous location: Automatic Tracking is off, so no departure wake-up would follow") }
         guard i.passiveOtherwiseAllowed else { return (false, "passive rest is not allowed yet") }
         guard !i.shared.isEmpty else { return (false, "no shared position accurate enough to rest on") }
@@ -226,6 +236,44 @@ enum SharingRest {
         guard !i.activityShared, !i.statusChangePending else { return (false, "a movement status is still being shared") }
         return (true, "the shared position is the verified resting place")
     }
+    // A decision to rest holds only for what it was decided from. A new audience,
+    // a newly accepted position, a movement status or another place makes it
+    // stale; until the recorder decides again, sharing keeps location. Whether
+    // passive rest is otherwise allowed is only ever decided with it, so it is
+    // carried over rather than compared.
+    static func stillAllowed(_ decided: SharingRestInputs?, allowed: Bool, current: SharingRestInputs) -> Bool {
+        guard allowed, let decided = decided else { return false }
+        var now = current
+        now.passiveOtherwiseAllowed = decided.passiveOtherwiseAllowed
+        return now == decided
+    }
+    // A stale decision to rest found while passive rest is still applied. Leaving
+    // passive rest belongs to the central reconciler (reconcileAutomaticSampling),
+    // which changes the mode, ends the rest, restores the session and keep-alive
+    // together; sharing must not start standard location under a passive mode.
+    static func centralReconcileFirst(passive: Bool, allowed: Bool, current: Bool) -> Bool {
+        passive && allowed && !current
+    }
+}
+
+// Requests made before the pending one runs share it, and a reconcile that runs
+// for any other reason satisfies them, so a burst of changes costs one reconcile.
+struct CoalescedRequest: Equatable {
+    private(set) var pending = false
+    private(set) var cause: String?
+    private(set) var coalesced = 0
+    // True when the caller must schedule the run.
+    mutating func request(_ reason: String) -> Bool {
+        guard !pending else { coalesced += 1; return false }
+        pending = true; cause = reason
+        return true
+    }
+    // The scheduled run: whether it still has work, and why it was asked for.
+    mutating func take() -> String? {
+        defer { pending = false; cause = nil }
+        return pending ? cause ?? "unknown" : nil
+    }
+    mutating func satisfied() { pending = false; cause = nil }
 }
 
 // MARK: Returning to passive rest after a false wake-up
@@ -280,6 +328,93 @@ enum KeepAlivePolicy {
         precise ? "precise GPS without a background activity session"
             : stopOpen ? "a published stop is waiting for a continuation without a background activity session"
             : "live sharing without a background activity session"
+    }
+}
+
+// MARK: Background recovery
+//
+// What can bring location back while no background activity session is held: in
+// passive rest, and after it while iOS refuses to start a session until the app
+// is opened. It says what is armed and what is missing, never that a recovery
+// worked. Only a fix after a wake-up shows that, and it is logged on its own
+// ("First precise fix after wake-up", or "Wake-up check ended without a precise
+// fix"). Armed is a request iOS accepted, not a promise of delivery.
+enum BackgroundRecoveryStatus: String { case notNeeded, armed, limited, unavailable }
+
+struct BackgroundRecoveryInputs: Equatable {
+    var automaticAvailable: Bool
+    var activitySessionHeld: Bool
+    var alwaysAuthorized: Bool
+    var exitRegion: Bool          // the current place's exit region is monitored
+    var significantChanges: Bool
+    var visits: Bool
+    var monitoringFailed: Bool
+    var serviceSessionHeld: Bool
+    var serviceSessionInUse: Bool
+    var keepAliveWanted: Bool
+    var keepAliveRunning: Bool
+}
+
+enum BackgroundRecovery {
+    // Issues most serious first, as stable codes for the log and the app.
+    static func evaluate(_ i: BackgroundRecoveryInputs) -> (status: BackgroundRecoveryStatus, issues: [String]) {
+        // A held session keeps the app running; nothing has to wake it.
+        guard i.automaticAvailable, !i.activitySessionHeld else { return (.notNeeded, []) }
+        var blocking: [String] = [], limiting: [String] = []
+        if !i.alwaysAuthorized { blocking.append("alwaysAccessMissing") }
+        if !i.exitRegion && !i.significantChanges && !i.visits { blocking.append("noWakeUps") }
+        if i.monitoringFailed { limiting.append("regionMonitoringFailed") }
+        if !blocking.contains("noWakeUps") {
+            if !i.exitRegion { limiting.append("exitRegionMissing") }
+            if !i.significantChanges { limiting.append("significantChangesOff") }
+            if !i.visits { limiting.append("visitsOff") }
+        }
+        // A wake-up still runs the app briefly, but without the service session
+        // the precise check it starts cannot keep the app resumed.
+        if !i.serviceSessionHeld { limiting.append("serviceSessionMissing") }
+        else if !i.serviceSessionInUse { limiting.append("serviceSessionInsufficient") }
+        if i.keepAliveWanted && !i.keepAliveRunning { limiting.append("keepAliveNotRunning") }
+        let status: BackgroundRecoveryStatus = !blocking.isEmpty ? .unavailable : !limiting.isEmpty ? .limited : .armed
+        return (status, blocking + limiting)
+    }
+}
+
+// MARK: Wake-up check outcome
+//
+// What a departure check that began in passive rest showed, at most once per
+// wake-up, and only from what the recorder observed:
+// - preciseFix: a precise fix arrived after the wake-up (or a journey confirmed).
+// - noPreciseFix: the check ended while the app ran, without a precise fix.
+// - interrupted: an observed transition ended the check first: automatic
+//   tracking became unavailable (setting or permission), a manual recording took
+//   the iPhone, or the account was locked, signed out or deleted.
+// - unknown: the check's end was never observed because the app was not running;
+//   it is found at the next wake-up.
+// A process that iOS terminates during the check records nothing more. Its
+// journal then shows "Departure wake-up" with no outcome before the next launch;
+// that gap is the only evidence, and it is not filled in afterwards.
+enum WakeCheckOutcome: String { case preciseFix, noPreciseFix, interrupted, unknown }
+
+enum WakeCheck {
+    static func needsOutcome(engine: String, evidenceAt: Double?, firstFixSeen: Bool, lastOutcomeAt: Double?) -> Bool {
+        guard engine == "passive", let evidence = evidenceAt, !firstFixSeen else { return false }
+        return lastOutcomeAt.map { $0 < evidence } ?? true
+    }
+}
+
+// MARK: Two kinds of rest
+//
+// HomeRest (RecorderCore) and RestConfirmation (above) are separate, and the
+// diagnostics name them separately:
+// - reduced-accuracy rest (HomeRest): 10 minutes inside the current place, or the
+//   saved Home when no place is known. Standby location keeps running at 100 m
+//   and the background session stays held. Location mode `resting`.
+// - confirmed rest (RestConfirmation): 15 to 20 still minutes at a verified
+//   place, with Core Motion and optional Home Wi-Fi. It is what PassiveRestPolicy
+//   needs to release location (`passive`). It does not change the mode by itself.
+enum RestStage {
+    static func describe(reducedAccuracy: Bool, confirmed: Bool, passive: Bool) -> String {
+        passive ? "passive" : confirmed ? "confirmed" : reducedAccuracy ? "reducedAccuracy" : "none"
     }
 }
 

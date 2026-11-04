@@ -19,10 +19,11 @@ One predicate decides whether sharing still holds location: `LocationRecorder.li
 | The device-test switch is on (default off) | The reliability gate below has not been met |
 | Automatic Tracking is available | Without it there is no verified place and no departure wake-up |
 | Passive rest is otherwise allowed | Same Always, Precise, iOS 18 service session, significant-change and exit-region requirements as today |
-| Every armed audience's last accepted position (household: last accepted send; friends: last successful send) is inside the resting place, accurate to 100 m, and taken no earlier than 2 min before the phone settled there | Viewers already hold the position being rested on |
+| Friend sharing is not armed (Stage A) | The friend server stamps a position on arrival and hides it after 30 minutes, so friends would lose a resting position |
+| The household's last accepted send is inside the resting place, accurate to 100 m, and taken no earlier than 2 min before the phone settled there | Viewers already hold the position being rested on |
 | No movement status is shown or waiting to be sent ("stationary" does not count) | A "Driving" status must be cleared by a real send first |
 
-While passive, `confirmHouseholdLocation` sends nothing. After passive rest ends, a fix from before it is never confirmed or kept as the shared position (`HouseholdPublisher.canConfirm` and `keepsPrevious` compare against `passiveEndedAt`). Other stream restarts behave as before, so behaviour with the switch off is unchanged. Viewers keep the last position with its real capture time. Nothing re-stamps it as a new observation. A departure takes the existing path: wake-up, bounded precise probe, `liveSharingHoldsLocation` becomes true again because the rest is disturbed, and fresh fixes are published as before.
+While passive, `confirmHouseholdLocation` sends nothing. After passive rest ends, a fix from before it is never confirmed or kept as the shared position (`HouseholdPublisher.canConfirm` and `keepsPrevious` compare against `passiveEndedAt`). Other stream restarts behave as before, so behaviour with the switch off is unchanged. The household keeps the last position with its real capture time. Nothing re-stamps it as a new observation. A departure takes the existing path: wake-up, bounded precise probe, `liveSharingHoldsLocation` becomes true again because the rest is disturbed, and fresh fixes are published as before.
 
 ### False wake-ups
 

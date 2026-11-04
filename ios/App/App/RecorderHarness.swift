@@ -58,6 +58,10 @@ enum RecorderHarness {
                 await otherAccountReplay()
                 await sharingPassiveRest()
                 await pausedManualAutomatic()
+                await sharingRestStageA()
+                await passiveSharingChangeCentral(motionChange: false)
+                await passiveSharingChangeCentral(motionChange: true)
+                await wakeCheckOutcomes()
             }
             print("RECORDER HARNESS: \(passed) passed, \(failed) failed")
             print("RECORDER HARNESS DONE")
@@ -492,6 +496,154 @@ enum RecorderHarness {
         r.reconcileAutomaticSampling()
         check(r.keepAliveTask != nil || r.locationMode == .precise, "sharing: switching the test off leaves the established precise departure check running")
         r.disableHouseholdLiveSharing(forget: false)
+    }
+
+    // Stage A: friends block sharing rest; a change to what the decision read makes
+    // it stale at once and is answered by one coalesced reconcile; switching the
+    // test off while passive restores location.
+    static func sharingRestStageA() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "stage A: recorder opened") }
+        let now = Date().timeIntervalSince1970
+        r.liveShareToken = "harness"; r.liveShareEndpoint = URL(string: "https://harness.invalid/rpc"); r.liveShareApiKey = "harness"
+        r.liveShareTokenExpiresAt = now + 3600; r.liveShareMode = "device"
+        r.passiveRestEnabled = true; r.sharingRestEnabled = true
+        r.reconcileServiceSession("harness")
+        for i in 0..<26 { deliver(r, location(home.latitude, home.longitude, now - 1500 + Double(i) * 60, speed: 0)) }
+        let atHome = GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: now - 60, accuracy: 5, altitude: 20, speed: 0)
+        r.liveShareSentPoint = atHome
+        // Friends armed as well: sharing keeps location although the household holds Home.
+        r.friendShareToken = "harness-friend"; r.friendShareEndpoint = URL(string: "https://harness.invalid/rpc/set_friend_location")
+        r.friendShareApiKey = "harness"; r.friendShareTokenExpiresAt = now + 3600
+        r.reconcileAutomaticSampling()
+        check(r.locationMode != .passive && r.liveSharingHoldsLocation && r.sharingRestReason.contains("friend sharing is on"),
+              "stage A: household and friends armed, sharing keeps continuous location (mode \(r.locationMode.rawValue); \(r.sharingRestReason))")
+        r.disableFriendLiveSharing()
+        r.reconcileAutomaticSampling()
+        guard r.locationMode == .passive else {
+            return check(false, "stage A: household only rests — blocked: \(r.passiveRetainReason); sharing: \(r.sharingRestReason)")
+        }
+        check(!r.liveSharingHoldsLocation && r.sharingRestCurrent, "stage A: household only, sharing rests on a current decision")
+        // Switching the test off while passive restores location at once.
+        try? r.setSharingRest(false)
+        check(r.locationMode != .passive && r.liveSharingHoldsLocation && r.passiveEndedAt > 0,
+              "stage A: switching the test off while passive restores location (mode \(r.locationMode.rawValue))")
+        try? r.setSharingRest(true)
+        guard r.locationMode == .passive else {
+            return check(false, "stage A: passive again after switching back on — blocked: \(r.passiveRetainReason); sharing: \(r.sharingRestReason)")
+        }
+        // A burst of changes while passive: stale at once, one reconcile on the next
+        // turn. The pause comes last: the simulator may deliver its own location then.
+        let coalescedBefore = r.sharingRestReconcile.coalesced
+        r.liveShareSentPoint = GPSPoint(latitude: home.latitude + 900 / 111_320, longitude: home.longitude, timestamp: now - 5, accuracy: 5, altitude: 20, speed: 0)
+        r.liveShareSentActivity = "driving"
+        r.friendShareToken = "harness-friend-2"; r.friendShareTokenExpiresAt = now + 3600
+        check(r.liveSharingHoldsLocation && !r.sharingRestCurrent, "stage A: a stale decision to rest keeps location before the reconcile runs")
+        check(r.sharingRestReconcile.pending && r.sharingRestReconcile.coalesced == coalescedBefore + 2, "stage A: three changes wait for one reconcile")
+        await pause(0.05)
+        check(!r.sharingRestReconcile.pending && !r.sharingRestAllowed && r.locationMode != .passive,
+              "stage A: the coalesced reconcile decides again and leaves passive rest (mode \(r.locationMode.rawValue); \(r.sharingRestReason))")
+        r.disableFriendLiveSharing()
+        let recovery = BackgroundRecovery.evaluate(r.backgroundRecoveryInputs)
+        check(recovery.status == .notNeeded || r.backgroundActivitySession == nil, "stage A: recovery reports notNeeded only while the session is held (\(recovery.status.rawValue))")
+        r.disableHouseholdLiveSharing(forget: false)
+    }
+
+    // Household-only sharing resting at Home, passive.
+    static func passiveSharingRecorder(_ label: String) -> LocationRecorder? {
+        let (directory, key, owner) = freshStore()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else { check(false, "\(label): recorder opened"); return nil }
+        let now = Date().timeIntervalSince1970
+        r.liveShareToken = "harness"; r.liveShareEndpoint = URL(string: "https://harness.invalid/rpc"); r.liveShareApiKey = "harness"
+        r.liveShareTokenExpiresAt = now + 3600; r.liveShareMode = "device"
+        r.passiveRestEnabled = true; r.sharingRestEnabled = true
+        r.reconcileServiceSession("harness")
+        for i in 0..<26 { deliver(r, location(home.latitude, home.longitude, now - 1500 + Double(i) * 60, speed: 0)) }
+        r.liveShareSentPoint = GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: now - 60, accuracy: 5, altitude: 20, speed: 0)
+        r.reconcileAutomaticSampling()
+        guard r.locationMode == .passive else { check(false, "\(label): passive with sharing — blocked: \(r.passiveRetainReason); sharing: \(r.sharingRestReason)"); return nil }
+        return r
+    }
+    // Review finding 1: a sharing or motion change while passive. The callbacks run
+    // reconcileLiveSharingLocation at once; the central reconciler must make the
+    // transition, so the recorded mode always matches the services that run.
+    static func passiveSharingChangeCentral(motionChange: Bool) async {
+        let label = motionChange ? "central (motion)" : "central (status)"
+        guard let r = passiveSharingRecorder(label) else { return }
+        func consistent() -> Bool {
+            (r.locationMode == .passive) == !r.continuousLocationRequested && (r.locationMode == .passive) == (r.passiveSince != nil)
+        }
+        check(consistent() && r.backgroundActivitySession == nil, "\(label): before — passive, no standard location, session released")
+        if motionChange {
+            r.motion = MotionEvidence(types: ["Driving"], confidence: "high", timestamp: Date().timeIntervalSince1970, continuous: true)
+            r.sharingRestInputChanged("motion changed")
+        } else {
+            r.liveShareSentActivity = "driving"
+        }
+        check(r.locationMode == .passive && !r.continuousLocationRequested, "\(label): the change alone starts no location service")
+        let stale = !r.sharingRestCurrent
+        // What the motion and location callbacks run straight after the change.
+        r.reconcileLiveSharingLocation()
+        check(consistent(), "\(label): after the callback, mode \(r.locationMode.rawValue) matches the services (standard \(r.continuousLocationRequested), passiveSince \(r.passiveSince != nil))")
+        if stale {
+            check(r.locationMode != .passive && r.passiveSince == nil && r.passiveEndedAt > 0 && r.continuousLocationRequested,
+                  "\(label): the central reconciler left passive rest before standard location ran (mode \(r.locationMode.rawValue))")
+            check(r.backgroundActivitySession != nil || r.keepAliveTask != nil, "\(label): the session or keep-alive was reconciled with the transition")
+            let decision = r.diagnosticJournal.events.last { $0.message == "Live sharing keeps continuous location" }
+            check(decision?.context["cause"] != nil, "\(label): the decision records what changed (\(decision?.context["cause"] ?? "none"))")
+            check(!r.sharingRestReconcile.pending, "\(label): the queued request was taken by the central reconcile")
+        } else {
+            check(r.locationMode == .passive, "\(label): a change that leaves the decision current keeps passive rest")
+        }
+        // The simulator may deliver its own location during the pause, which moves
+        // the engine on; what must hold is that the mode still matches the services.
+        await pause(0.05)
+        check(!r.sharingRestReconcile.pending && consistent(), "\(label): after the queued turn the mode still matches the services (mode \(r.locationMode.rawValue))")
+        r.disableHouseholdLiveSharing(forget: false)
+    }
+
+    // Review finding 2: every observed way a passive wake-up check ends records one
+    // outcome, from evidence only.
+    static func wakeCheckOutcomes() async {
+        let (directory, key, owner) = freshStore()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else { return check(false, "wake: recorder opened") }
+        r.passiveRestEnabled = true
+        r.refreshAutomaticMonitoring()
+        var step = 0.0
+        func openCheck() {
+            step += 10
+            r.departureLatency = DepartureLatency()
+            r.departureLatency.noteEvidence("harness wake", engine: "passive", now: Date().timeIntervalSince1970 + step)
+            r.departureFirstFixLogged = false
+        }
+        func last() -> String { r.diagnosticJournal.events.last { $0.kind == "recovery" && $0.message.hasPrefix("Wake-up check") }?.message ?? "none" }
+        openCheck()
+        r.automaticSampling.probeUntil = Date().timeIntervalSince1970 - 1
+        r.reconcileAutomaticSampling()
+        check(r.wakeOutcome == "noPreciseFix" && last() == "Wake-up check ended without a precise fix", "wake: a check that expires while the app runs reports no precise fix (\(r.wakeOutcome))")
+        openCheck()
+        r.noteFirstPreciseFix(GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: Date().timeIntervalSince1970 + step, accuracy: 5, altitude: 20, speed: 0),
+                              now: Date().timeIntervalSince1970)
+        r.noteWakeCheckEnded(now: Date().timeIntervalSince1970)
+        check(r.wakeOutcome == "preciseFix", "wake: a precise fix answers the wake-up, and its later end adds no failure (\(r.wakeOutcome))")
+        openCheck()
+        r.automaticSampling.probeUntil = Date().timeIntervalSince1970 - 1
+        r.beginAutomaticProbe(cause: "harness next wake", locationWake: true)
+        check(r.wakeOutcome == "unknown" && last().hasPrefix("Wake-up check outcome unknown"), "wake: a check that ended while the app was not running is unknown, not a failure (\(r.wakeOutcome))")
+        openCheck()
+        r.suspendAutomaticEngine()
+        check(r.wakeOutcome == "interrupted" && r.diagnosticJournal.events.last { $0.message.hasPrefix("Wake-up check interrupted") }?.context["reason"] == "a manual recording owns the iPhone",
+              "wake: a manual recording taking the iPhone interrupts the check (\(r.wakeOutcome))")
+        openCheck()
+        r.endPassiveRest(reason: "automatic tracking became unavailable")
+        check(r.wakeOutcome == "interrupted", "wake: automatic tracking becoming unavailable (setting or permission) interrupts the check")
+        openCheck()
+        r.resetPassiveRest(reason: "the local account was deleted")
+        check(r.diagnosticJournal.events.last { $0.message.hasPrefix("Wake-up check interrupted") }?.context["reason"] == "the local account was deleted",
+              "wake: an account change interrupts the check, with its reason")
+        let outcomes = r.diagnosticJournal.events.filter { $0.message.hasPrefix("Wake-up check") }.count
+        r.noteWakeCheckEnded(now: Date().timeIntervalSince1970)
+        check(r.diagnosticJournal.events.filter { $0.message.hasPrefix("Wake-up check") }.count == outcomes, "wake: an answered wake-up is never reported twice")
     }
 }
 #endif

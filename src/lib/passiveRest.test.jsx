@@ -40,7 +40,7 @@ describe('passive rest rows',()=>{
   const rows=passiveRows({passiveRest:passive({active:true,since:1000,restConfirmed:true,restReason:'at Home, still for 16 min, Home Wi-Fi connected',retainReason:null,
    sessionReleases:1,sessionReleasedAt:1000,modeSeconds:{passive:3600,precise:300},wifi:{configured:true,match:'matched',observedAt:1000,source:'background wake-up'}}),
    adaptive:{lastDepartureLatency:{engine:'passive',cause:'place region exit',evidenceToFirstFixSeconds:'9',motionOnsetToEvidenceSeconds:'140',startGapMeters:'180'}}});
-  expect(row(rows,'Rest')).toBe('Confirmed · at Home, still for 16 min, Home Wi-Fi connected');
+  expect(row(rows,'Confirmed rest (needed for passive rest)')).toBe('Confirmed · at Home, still for 16 min, Home Wi-Fi connected');
   expect(row(rows,'Passive rest')).toMatch(/^Active since .* no location updates, no background session$/);
   expect(row(rows,'Home Wi-Fi')).toBe('Home Wi-Fi detected');
   expect(row(rows,'Time per location mode (since app start)')).toBe('precise 5 min · passive 1 h');
@@ -52,6 +52,30 @@ describe('passive rest rows',()=>{
   expect(row(rows,'False wake-ups restored this hour')).toBe('2');
   expect(row(passiveRows({passiveRest:passive({sharingRest:{enabled:true,allowed:true,reason:'the shared position is the verified resting place',sharingHoldsLocation:false}})}),'Sharing while resting'))
    .toBe('Device test on · sharing does not hold location · the shared position is the verified resting place');
+ });
+ it('name reduced-accuracy rest apart from the confirmed rest passive rest needs',()=>{
+  const rows=passiveRows({passiveRest:passive({restStage:'reducedAccuracy',reducedAccuracyRest:{active:true,insideSince:1000,place:'currentPlace',requiredSeconds:600}})});
+  expect(row(rows,'Reduced-accuracy rest')).toBe('Active at the current place · 100 m location, background session kept');
+  expect(row(rows,'Confirmed rest (needed for passive rest)')).toBe('settling: still for 4 of 20 min');
+  expect(row(passiveRows({passiveRest:passive()}),'Reduced-accuracy rest')).toBe('Not reported');
+ });
+ it('say when a decision to rest with sharing is waiting to be decided again',()=>{
+  const rows=passiveRows({passiveRest:passive({sharingRest:{enabled:true,allowed:true,reason:'the shared position is the verified resting place',sharingHoldsLocation:true,decisionCurrent:false}})});
+  expect(row(rows,'Sharing while resting')).toBe('Device test on · sharing keeps continuous location · the shared position is the verified resting place · sharing changed since; deciding again');
+ });
+ it('report background recovery as armed or failing, never as working',()=>{
+  expect(row(passiveRows({passiveRest:passive({backgroundRecovery:{status:'armed',issues:[],lastWakeOutcome:'none yet'}})}),'Background recovery'))
+   .toBe('Wake-ups armed · not proof that a departure will be caught');
+  expect(row(passiveRows({passiveRest:passive({backgroundRecovery:{status:'limited',issues:['serviceSessionMissing','keepAliveNotRunning'],lastWakeOutcome:'noPreciseFix'}})}),'Background recovery'))
+   .toBe('Limited · no Always service session, so precise GPS after a wake-up cannot keep the app running · the keep-alive that lets iOS resume the app is not running · the last wake-up check ended without a precise fix');
+  expect(row(passiveRows({passiveRest:passive({backgroundRecovery:{status:'notNeeded',issues:[],lastWakeOutcome:'preciseFix'}})}),'Background recovery'))
+   .toBe('Not needed · the background location session is held · a precise fix followed the last wake-up');
+  expect(row(passiveRows({passiveRest:passive()}),'Background recovery')).toBe('Not reported');
+ });
+ it('shows interrupted and unknown wake-up outcomes',()=>{
+  for(const [outcome,label] of [['interrupted','the last wake-up check was interrupted before a precise fix'],['unknown','the last wake-up outcome is unknown; the check ended while the app was not running']]){
+   expect(row(passiveRows({passiveRest:passive({backgroundRecovery:{status:'armed',issues:[],lastWakeOutcome:outcome}})}),'Background recovery')).toContain(label);
+  }
  });
  it('treat unavailable Wi-Fi as unavailable, not as disconnected',()=>{
   expect(row(passiveRows({passiveRest:passive({wifi:{configured:true,match:'unavailable'}})}),'Home Wi-Fi')).toBe('Wi-Fi unavailable');
