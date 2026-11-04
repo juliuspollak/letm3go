@@ -754,7 +754,13 @@ extension LocationRecorder {
         guard previous != .other, previous != family, family != .other else { return }
         // A journey too short to publish is dropped instead of being split into an
         // empty record; its fixes belong to the new journey.
-        guard var ended = JourneySplit.kept(current, before: first.timestamp) else {
+        // A motion-confirmed walk may precede the first GPS transition candidate.
+        // Remove those earlier walking fixes as well, not just the candidate fixes.
+        let walkingCutoff = previous == .driving && family == .onFoot
+            ? detector.walkingArrivalEndAt : nil
+        let transitionCutoff = walkingCutoff.map { min($0, first.timestamp - 0.000001) }
+        guard var ended = transitionCutoff.flatMap({ JourneySplit.drivingEnd(current, atOrBefore: $0) })
+            ?? (walkingCutoff == nil ? JourneySplit.kept(current, before: first.timestamp) : nil) else {
             try? storage.delete(current.id)
             automaticTrip = nil
             settleStateReset()
@@ -784,6 +790,7 @@ extension LocationRecorder {
         // journey stays Unknown even though its speed profile proved the change.
         let previousName = activityName(JourneyFamily.of(ended.activity), preserving: ended.activity)
         ended.activity = previousName
+        if let last = ended.points.last { ended.finish(at:last.timestamp) }
         ended.completeProvisional()
         ended.updateDetails { metadata in
             metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [
@@ -897,9 +904,21 @@ extension LocationRecorder {
         let walkingArrival = JourneyFamily.detected(trip) == .driving && detector.walkingArrivalConfirmed(now:now)
         let lastMovement = (walkingArrival ? detector.walkingArrivalEndAt : nil) ?? detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
         let end = max(trip.startedAt, min(now, lastMovement))
-        trip.points = trip.points.filter { $0.timestamp <= end }
-        // The same distance rule as recording: drift while stopped is not movement.
-        trip.distanceMeters = trip.measuredDistance
+        // Trim recorded walking fixes after the last observed vehicle fix. A normal
+        // GPS arrival must also respect confirmed walking evidence, even if a timer
+        // made the final decision much later.
+        let preTrimFixes = trip.points.count
+        if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:end) {
+            trip = trimmed
+        } else {
+            trip.points = trip.points.filter { $0.timestamp <= end }
+            trip.distanceMeters = trip.measuredDistance
+        }
+        if walkingArrival {
+            recordDiagnostic("arrival","Walking fixes excluded from driving journey",
+                details:["removedFixes":String(preTrimFixes - trip.points.count),
+                         "drivingEndAt":String(end)])
+        }
         // A walk still being checked has stopped: decide now whether it was a
         // journey. Local movement is never published, so it never appears in
         // History and is not silently removed from it later.
@@ -1350,7 +1369,13 @@ extension LocationRecorder {
         }
         // Include a genuine accurate final approach fix near the last movement.
         // Do not extend the journey across the arrival dwell or a GPS outage.
-        let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
+        let walkingArrival = JourneyFamily.detected(trip) == .driving &&
+            detector.walkingArrivalConfirmed(now:Date().timeIntervalSince1970)
+        let lastMovement = (walkingArrival ? detector.walkingArrivalEndAt : nil) ??
+            detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
+        if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:lastMovement) {
+            trip = trimmed
+        }
         let approach = force ? nil : trip.points.last(where: { point in
             point.timestamp >= lastMovement && point.timestamp <= lastMovement + 40 &&
             point.accuracy <= 25 &&
