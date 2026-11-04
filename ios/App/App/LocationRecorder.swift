@@ -443,7 +443,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         state["wifiOnPath"]=wifiOnPath.map{String($0)} ?? "unknown"
         state["wifiPresence"]=homeWiFi == nil ? "Home Wi-Fi not configured" : "supporting evidence at the saved Home only; never proof of rest or departure"
         state["restConfirmed"]=String(restDecision.confirmed)
-        state["restStage"]=RestStage.describe(reducedAccuracy:active == nil && locationMode == .resting,confirmed:restDecision.confirmed,passive:locationMode == .passive)
+        state["restStage"]=RestStage.describe(reducedAccuracy:!manualRecordingLive && locationMode == .resting,confirmed:restDecision.confirmed,passive:locationMode == .passive)
         let recovery=BackgroundRecovery.evaluate(backgroundRecoveryInputs)
         state["backgroundRecovery"]=recovery.status.rawValue
         state["backgroundRecoveryIssues"]=recovery.issues.joined(separator:",")
