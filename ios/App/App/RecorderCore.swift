@@ -1996,6 +1996,28 @@ struct AutomaticDetector {
         abs(point.latitude)<=90 && abs(point.longitude)<=180
     }
     var stationarySince:Double?
+    // A walking transition can be confirmed without requiring more GPS displacement.
+    // Preserve the last vehicle fix so movement inside a shop never extends the drive.
+    var walkingArrivalSince: Double?
+    var walkingArrivalEndAt: Double?
+    static let walkingArrivalDwell: Double = 25
+    mutating func noteDrivingArrivalMotion(_ motion: MotionEvidence, now: Double, lastVehicleFixAt: Double?) {
+        guard phase == "recording" else { return }
+        if Self.drivingMotion(motion,now:now) || Self.cyclingMotion(motion,now:now) {
+            walkingArrivalSince = nil; walkingArrivalEndAt = nil
+        } else if Self.onFootMotion(motion,now:now), walkingArrivalSince == nil,
+                  motion.startedAt > 0, now >= motion.startedAt, now - motion.startedAt <= 120 {
+            walkingArrivalSince = motion.startedAt
+            walkingArrivalEndAt = lastVehicleFixAt ?? lastMovementAt
+        }
+        // Stationary after walking does not erase the arrival evidence.
+    }
+    func walkingArrivalConfirmed(now: Double) -> Bool {
+        guard let began = walkingArrivalSince, let end = walkingArrivalEndAt,
+              now >= began, now - began >= Self.walkingArrivalDwell,
+              now - began <= 180, end <= now else { return false }
+        return true
+    }
     // An absence of GPS fixes is not evidence of arrival. Only conclude arrival
     // while the recorder is receiving fresh, valid location observations.
     var lastValidFixAt:Double?
@@ -2082,7 +2104,10 @@ struct AutomaticDetector {
             }
             return nil
         }
-        if point.speed>=3,point.accuracy<=25,let old=anchor,old.distance(to:point)>max(30,point.accuracy*2) {stationarySince=nil}
+        if point.speed>=3,point.accuracy<=25,let old=anchor,old.distance(to:point)>max(30,point.accuracy*2) {
+            stationarySince=nil
+            if point.speed >= 5 { walkingArrivalSince=nil; walkingArrivalEndAt=nil }
+        }
         if let old = anchor, old.distance(to: point) >= max(20, point.accuracy) {
             lastMovementAt = point.timestamp; anchor = point
         }
@@ -2095,6 +2120,7 @@ struct AutomaticDetector {
         // Confirmed stillness stops sooner than GPS-only stillness. Both are far
         // shorter than a visit, because the recorder keeps the journey open and
         // continues it when movement resumes near the stop location.
+        if walkingArrivalConfirmed(now:now) { return true }
         if let still = stationarySince, now - still >= Self.motionStopDwell { return true }
         return now - (lastMovementAt ?? now) >= Self.stopDwell
     }
