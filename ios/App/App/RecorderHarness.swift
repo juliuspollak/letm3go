@@ -97,6 +97,29 @@ enum RecorderHarness {
             timestamp:now,continuous:true,startedAt:now - 30),now:now,lastVehicleFixAt:now - 32)
         detector.lastValidFixAt = now - 90
         check(!detector.shouldArrive(now:now,activity:"Driving"), "motion alone cannot close a drive across a GPS outage")
+        // Reproduce driving followed by a few metres of walking. Even if those
+        // walking fixes were saved before Core Motion confirmed arrival, they
+        // must not contribute to the drive's distance or endpoint.
+        let base = now - 90
+        var drive = RecordedActivity(activity:"Driving",startedAt:base,resumedAt:base,title:"Driving")
+        drive.recordingMode = "automatic"
+        let vehicle = [
+            GPSPoint(latitude:home.latitude,longitude:home.longitude,timestamp:base,accuracy:3,altitude:0,speed:8),
+            GPSPoint(latitude:home.latitude + 0.001,longitude:home.longitude,timestamp:base + 20,accuracy:3,altitude:0,speed:5),
+            GPSPoint(latitude:home.latitude + 0.002,longitude:home.longitude,timestamp:base + 40,accuracy:3,altitude:0,speed:0)
+        ]
+        for fix in vehicle { _ = drive.accept(fix,now:fix.timestamp) }
+        let vehicleDistance = drive.measuredDistance
+        let walkingFix = GPSPoint(latitude:home.latitude + 0.00212,longitude:home.longitude,
+            timestamp:base + 60,accuracy:3,altitude:0,speed:1)
+        _ = drive.accept(walkingFix,now:walkingFix.timestamp)
+        if let trimmed = JourneySplit.drivingEnd(drive,atOrBefore:base + 40) {
+            check(trimmed.points.count == 3, "arrival trims post-parking walking GPS points")
+            check(abs(trimmed.distanceMeters - vehicleDistance) < 0.01, "walking distance excluded from driving")
+            check(trimmed.points.last?.timestamp == base + 40, "driving route ends at last vehicle fix")
+        } else {
+            check(false, "driving route survives removing walking fixes")
+        }
     }
 
     // MARK: Fixtures
