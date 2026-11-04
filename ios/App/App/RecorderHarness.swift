@@ -39,6 +39,7 @@ enum RecorderHarness {
         started = true
         Task { @MainActor in
             print("HARNESS START")
+            walkingArrivalDetectorChecks()
             let status = CLLocationManager().authorizationStatus
             if status != .authorizedAlways {
                 check(false, "the simulator app has Always location access (status \(status.rawValue)); grant it with simctl privacy")
@@ -68,6 +69,34 @@ enum RecorderHarness {
             fflush(stdout)
             exit(failed == 0 ? 0 : 1)
         }
+    }
+
+    // A short shopping walk must close a drive without requiring 30-80m of
+    // GPS displacement. Ordinary stationary traffic and resumed driving must not.
+    static func walkingArrivalDetectorChecks() {
+        let now = Date().timeIntervalSince1970
+        var detector = AutomaticDetector()
+        detector.phase = "recording"
+        detector.lastMovementAt = now - 32
+        detector.lastValidFixAt = now
+        detector.noteDrivingArrivalMotion(MotionEvidence(types:["Walking"],confidence:"high",
+            timestamp:now,continuous:true,startedAt:now - 30),now:now,lastVehicleFixAt:now - 32)
+        check(detector.shouldArrive(now:now,activity:"Driving"), "walking after parking confirms driving arrival")
+        check(detector.walkingArrivalEndAt == now - 32, "walk does not extend the vehicle end timestamp")
+        detector.noteDrivingArrivalMotion(MotionEvidence(types:["Driving"],confidence:"high",
+            timestamp:now,continuous:true,startedAt:now),now:now,lastVehicleFixAt:nil)
+        check(!detector.walkingArrivalConfirmed(now:now), "resuming driving cancels walking arrival")
+        var traffic = AutomaticDetector()
+        traffic.phase = "recording"
+        traffic.lastMovementAt = now - 30
+        traffic.lastValidFixAt = now
+        traffic.noteDrivingArrivalMotion(MotionEvidence(types:["Stationary"],confidence:"high",
+            timestamp:now,continuous:true,startedAt:now - 30),now:now,lastVehicleFixAt:now - 30)
+        check(!traffic.shouldArrive(now:now,activity:"Driving"), "a red light does not confirm arrival")
+        detector.noteDrivingArrivalMotion(MotionEvidence(types:["Walking"],confidence:"high",
+            timestamp:now,continuous:true,startedAt:now - 30),now:now,lastVehicleFixAt:now - 32)
+        detector.lastValidFixAt = now - 90
+        check(!detector.shouldArrive(now:now,activity:"Driving"), "motion alone cannot close a drive across a GPS outage")
     }
 
     // MARK: Fixtures
