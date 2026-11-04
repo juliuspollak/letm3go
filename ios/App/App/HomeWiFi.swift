@@ -94,7 +94,7 @@ extension LocationRecorder {
         // Leaving Home Wi-Fi during passive rest asks iOS for one location; the
         // fix, not the Wi-Fi change, decides whether a departure check starts.
         if HomeWiFi.leftHome(previous: previous, current: wifiMatchState), locationMode == .passive,
-           automaticAvailable, active == nil, !continuousLocationRequested, now - wifiCheckRequestedAt >= 600 {
+           automaticAvailable, !manualRecordingLive, !continuousLocationRequested, now - wifiCheckRequestedAt >= 600 {
             wifiCheckRequestedAt = now
             recordDiagnostic("wifi", "Home Wi-Fi no longer connected: one location check requested (not a departure)")
             requestPassiveLocationCheck(cause: "Wi-Fi change", now: now)

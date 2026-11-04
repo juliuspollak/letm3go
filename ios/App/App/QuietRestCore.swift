@@ -321,6 +321,24 @@ struct RecordingHealthInputs: Equatable {
     var settling: Bool = false    // just started: services may not be requested yet
 }
 
+// Whether automatic recording runs right now, apart from whether settings allow it.
+// A manual recording suppresses it only while it records (on the iPhone) or owns
+// the iPhone from the Watch; a paused iPhone recording never does. Available means
+// the engine may detect journeys, not that one is being recorded.
+enum AutomaticRecordingState: String { case available, suppressed, off, unavailable }
+
+enum RecordingCoordination {
+    static func state(enabled: Bool, permitted: Bool, owner: String?) -> AutomaticRecordingState {
+        guard enabled else { return .off }
+        guard permitted else { return .unavailable }
+        return owner == nil ? .available : .suppressed
+    }
+    // Who holds the recording resources now.
+    static func owner(manualRecording: Bool, watchOwns: Bool, automaticRecording: Bool) -> String {
+        manualRecording ? "manualIPhone" : watchOwns ? "manualWatch" : automaticRecording ? "automatic" : "none"
+    }
+}
+
 struct RecordingHealthReport: Equatable {
     var status: RecordingHealthStatus
     var permissions: RecordingHealthStatus

@@ -346,8 +346,12 @@ enum CrossDeviceRecording {
     }
     // The one answer to "does a manual recording own this iPhone?". A local recording
     // needs no lease: it ends only through this app, and it survives a relaunch.
+    // An iPhone recording owns the iPhone only while it records. A paused one stays
+    // saved and resumable on the iPhone but holds nothing, so automatic detection runs
+    // meanwhile; resuming takes ownership again. A Watch session keeps its rule:
+    // owned while paused, bounded by the ownership lease.
     static func exclusion(local: RecordingPresence?, remote: RecordingPresence?, ownerID: String?, now: Double) -> ManualRecordingExclusion? {
-        if let local, local.device == RecordingPresence.iPhone, local.isActive {
+        if let local, local.device == RecordingPresence.iPhone, local.state == "recording" {
             return ManualRecordingExclusion(device: local.device, sessionID: local.sessionID, activity: local.activity, state: local.state,
                                             startedAt: local.startedAt, heardRecently: true, leaseEndsAt: nil)
         }
@@ -443,6 +447,7 @@ struct ManualRecordingExclusion: Equatable {
 enum ManualExclusionRelease: String, Equatable {
     case finished = "Apple Watch reported the recording finished"
     case finishedOnIPhone = "the iPhone recording finished"
+    case pausedOnIPhone = "the iPhone recording was paused; it stays saved and resumable"
     case leaseExpired = "nothing was heard from Apple Watch for the whole ownership lease"
     case ownerChanged = "the recording does not belong to this account"
 
@@ -452,6 +457,7 @@ enum ManualExclusionRelease: String, Equatable {
         switch self {
         case .finished: return "Automatic recording released after Watch ownership ended"
         case .finishedOnIPhone: return "Automatic recording released after iPhone recording ended"
+        case .pausedOnIPhone: return "Automatic recording released while the iPhone recording is paused"
         case .leaseExpired: return "Watch ownership lease expired; automatic recording recovered"
         case .ownerChanged: return "Automatic recording released: Watch recording belongs to no open account"
         }
@@ -486,7 +492,7 @@ struct ManualExclusionGate: Equatable {
         case (nil, nil): return .none
         case (nil, let next?): return .acquired(next)
         case (let previous?, nil):
-            guard previous.device == RecordingPresence.watch else { return .released(.finishedOnIPhone) }
+            guard previous.device == RecordingPresence.watch else { return .released(local?.state == "paused" ? .pausedOnIPhone : .finishedOnIPhone) }
             return .released(Self.reason(remote, ownerID: ownerID))
         case (let previous?, let next?):
             if !previous.sameSession(as: next) { return .transferred(next) }
