@@ -429,8 +429,7 @@ enum JourneySplit {
         var kept = trip
         kept.points = trip.points.filter { $0.timestamp <= timestamp }
         kept.distanceMeters = kept.measuredDistance
-        guard kept.points.count >= 2, kept.distanceMeters >= 25, let last = kept.points.last else { return nil }
-        kept.finish(at: max(kept.startedAt,last.timestamp))
+        guard kept.points.count >= 2, kept.distanceMeters >= 25 else { return nil }
         return kept
     }
     static func kept(_ trip: RecordedActivity, before timestamp: Double) -> RecordedActivity? {
