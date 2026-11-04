@@ -28,7 +28,21 @@ extension LocationRecorder {
                 self.diagnosticLastMotionAt=now
                 self.recordDiagnostic("motion","Motion classification delivered",details:["motionStartedAt":String(activity.startDate.timeIntervalSince1970)])
             }
-            if self.automaticAvailable { self.detector.noteMotion(self.motion,now:Date().timeIntervalSince1970) }
+            if self.automaticAvailable {
+                self.detector.noteMotion(self.motion,now:now)
+                if let trip = self.automaticTrip, JourneyFamily.detected(trip) == .driving,
+                   !self.manualRecordingLive {
+                    let lastVehicleFix = trip.points.last(where: { $0.timestamp <= activity.startDate.timeIntervalSince1970 })?.timestamp
+                    self.detector.noteDrivingArrivalMotion(self.motion,now:now,lastVehicleFixAt:lastVehicleFix)
+                    if self.detector.walkingArrivalConfirmed(now:now),
+                       self.detector.shouldArrive(now:now,activity:trip.activity) {
+                        self.recordDiagnostic("arrival","Walking arrival confirmed by Core Motion",
+                            details:["walkingSince":String(self.detector.walkingArrivalSince ?? 0),
+                                     "vehicleEndAt":String(self.detector.walkingArrivalEndAt ?? 0)])
+                        self.settleAutomatic(trigger:"motion",event:"sustained walking after driving")
+                    }
+                }
+            }
             self.noteStopMotion(MotionMark(at:activity.startDate.timeIntervalSince1970,
                 kind:StopEvidenceSummary.kind(walking:activity.walking,running:activity.running,automotive:activity.automotive,cycling:activity.cycling,stationary:activity.stationary),
                 confident:activity.confidence != .low))
@@ -880,7 +894,8 @@ extension LocationRecorder {
     func settleAutomatic(trigger: String = "settleAutomatic", event: String = "the journey stopped moving") {
         guard var trip = automaticTrip, let storage = storage else { detector.reset(); return }
         let now = Date().timeIntervalSince1970
-        let lastMovement = detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
+        let walkingArrival = JourneyFamily.detected(trip) == .driving && detector.walkingArrivalConfirmed(now:now)
+        let lastMovement = (walkingArrival ? detector.walkingArrivalEndAt : nil) ?? detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
         let end = max(trip.startedAt, min(now, lastMovement))
         trip.points = trip.points.filter { $0.timestamp <= end }
         // The same distance rule as recording: drift while stopped is not movement.
@@ -919,7 +934,7 @@ extension LocationRecorder {
         trip.updateDetails { $0.routeQuality = settleQuality }
         trip.updateDetails { metadata in
             metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [
-                "Journey stopped after \(Int(max(0,now-lastMovement)))s without movement",
+                walkingArrival ? "Driving ended after Core Motion confirmed walking away from the vehicle" : "Journey stopped after \(Int(max(0,now-lastMovement)))s without movement",
                 "Stop confirmed by \(trigger) (\(event))",
                 JourneyContinuation.stopSummary(stop),
                 "Published to history immediately; GPS is now in low-power standby"
