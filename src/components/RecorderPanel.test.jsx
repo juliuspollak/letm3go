@@ -114,13 +114,24 @@ it('offers GPS accuracy, defaults mountain biking to high, and leaves it out of 
 });
 it('offers to finish an automatic journey recorded while a manual activity is paused',()=>{
  const run=vi.fn().mockResolvedValue(null);
- render(<RecorderPanel state={{active:{activity:'Walking',source:'device',state:'paused',startedAt:1000,points:[],durationSeconds:20,distanceMeters:0},
-  automaticTrip:{activity:'Driving',distanceMeters:4200,durationSeconds:600},permission:'always'}} run={run} vehicles={[]}/>);
+ const {rerender}=render(<RecorderPanel state={{active:{activity:'Walking',source:'device',state:'paused',startedAt:1000,points:[],durationSeconds:20,distanceMeters:0},
+  automaticTrip:{state:'recording',activity:'Driving',distanceMeters:4200,durationSeconds:600},permission:'always'}} run={run} vehicles={[]}/>);
  expect(screen.getByText('Paused and kept. Automatic recording continues while this activity is paused.')).toBeInTheDocument();
  expect(screen.getByText(/Driving · detected automatically/)).toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:/Finish automatic journey/}));
  fireEvent.click(screen.getByRole('button',{name:'Save journey'}));
  expect(run).toHaveBeenCalledWith('transition','finishAutomatic');
+ expect(screen.getByRole('button',{name:/Resume/})).toBeDisabled();
+ expect(screen.getByText('Finish the automatic journey before resuming this activity.')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:/Resume/}));
+ expect(run).not.toHaveBeenCalledWith('transition','resume');
+ rerender(<RecorderPanel state={{active:{activity:'Walking',source:'device',state:'paused',startedAt:1000,points:[],durationSeconds:20,distanceMeters:0},permission:'always'}} run={run} vehicles={[]}/>);
+ expect(screen.getByRole('button',{name:/Resume/})).toBeEnabled();
  fireEvent.click(screen.getByRole('button',{name:/Resume/}));
  expect(run).toHaveBeenCalledWith('transition','resume');
+});
+
+it('allows resume while an automatic walk is still unconfirmed',()=>{
+ render(<RecorderPanel state={{active:{activity:'Walking',state:'paused',points:[],durationSeconds:20,distanceMeters:0},automaticTrip:{activity:'Walking',state:'recording',details:{localWalkOrigin:'candidate'},points:[]}}} run={vi.fn()} vehicles={[]}/>);
+ expect(screen.getByRole('button',{name:/Resume/})).toBeEnabled();
 });

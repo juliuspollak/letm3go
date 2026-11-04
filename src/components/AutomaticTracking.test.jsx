@@ -12,3 +12,12 @@ it('requires explicit enablement and does not equate missing permissions with ac
  fireEvent.click(screen.getByRole('button',{name:'Allow Always location access'}));
  expect(run).toHaveBeenCalledWith('requestPermission',true);
 });
+
+it('shows ownership suppression without claiming permission is missing, and permits a paused manual activity',()=>{
+ const run=vi.fn();
+ const {rerender}=render(<AutomaticTracking state={{automaticEnabled:true,automaticAvailable:false,automaticSampling:'manual',permission:'always',storageReady:true}} run={run}/>);
+ expect(screen.getByText('Paused for another recording')).toBeInTheDocument();
+ expect(screen.queryByText('Needs permission')).not.toBeInTheDocument();
+ rerender(<AutomaticTracking state={{automaticEnabled:true,automaticAvailable:true,automaticSampling:'locationStandby',active:{state:'paused'},permission:'always',storageReady:true}} run={run}/>);
+ expect(screen.getByText('Detection: Departure standby')).toBeInTheDocument();
+});

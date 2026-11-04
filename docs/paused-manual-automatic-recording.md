@@ -115,7 +115,15 @@ Requested tests 1 to 12 are covered by these, except where noted below.
 
 ## Not verified, and remaining risks
 
-- **No physical-device testing.** On an iPhone, pause a manual activity and lock the phone for at least a day. Then drive, walk and cycle away, and check that each is recorded and the paused activity is unchanged. Resume during an automatic drive and check the refusal. Relaunch, force-quit and reopen with a paused activity. Repeat in Low Power Mode, which the simulator cannot toggle.
+- **No physical-device testing.** On an iPhone, pause a manual activity and lock the phone for at least a day. Then drive, walk and cycle away, and check that each is recorded and the paused activity is unchanged. While an automatic drive records, check that Resume is disabled with an explanation; finish the automatic journey and check that Resume becomes available. Relaunch, force-quit and reopen with a paused activity. Repeat in Low Power Mode, which the simulator cannot toggle.
 - **Changed recovery behaviour:** a manual recording running when the process ends is restored paused (as before), so automatic recording now runs until it is resumed. If the person is still riding, the rest of the ride may be recorded automatically as its own journey rather than missed. That is preferable to losing it, but the two then need joining by hand.
 - A resume is refused while an automatic journey records, even if the person sees it as the same trip. They have to finish it first. There is no merge.
 - Watch sessions are unchanged: paused Watch sessions still own the iPhone under the 12-hour lease.
+
+## Review follow-up: exported availability and Resume
+
+The snapshot's `automaticAvailable` now reports the same ownership-aware value as the recorder: false during iPhone manual recording or Watch exclusion, true again after release when automatic tracking is permitted. The real-recorder harness checks the exported snapshot at those transitions. Automatic History uses the native `automaticSampling == "manual"` state for its suppression message, so a paused manual activity does not imply suppression or missing permission.
+
+Resume is disabled while a confirmed automatic journey is recording, with an explanation to finish that journey first. An unconfirmed walk candidate or published stop still allows Resume, matching the native transition guard. The native guard remains necessary when ownership changes between a UI update and a tap.
+
+Physical-device acceptance remains pending: keep the manual journey paused across several locked-phone journeys, check both saved automatic routes and the untouched manual journey, then repeat after relaunch and with Low Power Mode enabled. Simulator results do not establish locked-phone reliability or power consumption.

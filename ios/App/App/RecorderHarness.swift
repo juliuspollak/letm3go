@@ -314,6 +314,7 @@ enum RecorderHarness {
     static func watchDuringWait() async {
         let (directory, key, owner) = freshStore(), motion = HarnessMotion()
         guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "watch: opened") }
+        r.uiUnlocked = true // Exercise the signed-in UI snapshot, not its locked payload.
         let returnAt = Date().timeIntervalSince1970 - 90
         guard let (_, shop) = toPublishedStop(r, name: "watch", returnAt: returnAt, stopSeconds: 900) else { return }
         motion.answers = false
@@ -322,12 +323,14 @@ enum RecorderHarness {
         r.harnessWatchRecording = RecordingPresence(device: "watch", ownerID: owner, sessionID: UUID().uuidString, activity: "Walking", state: "recording", startedAt: returnAt + 2, updatedAt: now)
         motion.releaseHeld()
         check(r.manualExclusion.current?.device == "watch" && r.stopHistoryPending == nil && !heldFileExists(r), "watch: real exclusion orchestration closes the wait and transfers ownership")
+        check(r.snapshot()["automaticAvailable"] as? Bool == false, "snapshot: watch: real exclusion orchestration closes the wait and transfers ownership")
         let count = r.automaticTrip?.points.count
         deliver(r, location(shop.0 - 100 / 111_320, shop.1, now - 1, speed: 12))
         check(r.automaticTrip?.points.count == count && (r.diagnosticRejections["rejected.manualOwnership"] ?? 0) > 0, "watch: automatic fixes are excluded during the workout")
         r.harnessWatchRecording = .idle(device: "watch", ownerID: owner, now: now)
         r.refreshAutomaticMonitoring()
         check(r.manualExclusion.current == nil, "watch: explicit workout finish releases automatic ownership")
+        check(r.snapshot()["automaticAvailable"] as? Bool == true, "snapshot: watch: explicit workout finish releases automatic ownership")
     }
 
     static func temporaryPause() async {
@@ -416,11 +419,14 @@ enum RecorderHarness {
     static func pausedManualAutomatic() async {
         let (directory, key, owner) = freshStore(), motion = HarnessMotion()
         guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "paused: recorder opened") }
+        r.uiUnlocked = true // Exercise the signed-in UI snapshot, not its locked payload.
         r.refreshAutomaticMonitoring()
         check(r.automaticAvailable && r.automaticRecordingState == .available, "paused: no manual journey, automatic recording available")
+        check(r.snapshot()["automaticAvailable"] as? Bool == true, "snapshot: paused: no manual journey, automatic recording available")
         do { try r.start(activity: "Walking", vehicle: nil) } catch { return check(false, "paused: manual start — \(error.localizedDescription)") }
         check(!r.automaticAvailable && r.automaticRecordingState == .suppressed && r.recordingCoordination["recordingOwner"] == "manualIPhone",
               "paused: a recording manual journey suppresses automatic recording")
+        check(r.snapshot()["automaticAvailable"] as? Bool == false, "snapshot: paused: a recording manual journey suppresses automatic recording")
         check((r.recordingHealthSnapshot["automaticRecording"] as? String) == "suppressed", "paused: the health report says automatic recording is suppressed, not just Ready")
         do { try r.transition("pause") } catch { return check(false, "paused: pause — \(error.localizedDescription)") }
         // Paused for three days.
@@ -430,6 +436,7 @@ enum RecorderHarness {
         r.refreshAutomaticMonitoring()
         check(r.automaticAvailable && r.manualExclusion.current == nil && r.automaticRecordingState == .available && r.recordingCoordination["manualPausedPreserved"] == "true",
               "paused: a paused manual journey leaves automatic recording available")
+        check(r.snapshot()["automaticAvailable"] as? Bool == true, "snapshot: paused: a paused manual journey leaves automatic recording available")
         check(r.diagnosticJournal.events.contains { $0.message == "Automatic recording released while the iPhone recording is paused" }, "paused: the release is logged as a pause")
         check(!r.continuousLocationRequested || r.locationMode != .precise, "paused: pausing starts no precise GPS by itself (mode \(r.locationMode.rawValue))")
         // An automatic drive while the manual journey stays paused.

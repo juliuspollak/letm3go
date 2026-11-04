@@ -1242,7 +1242,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let pendingWalk = automaticTrip?.details?.localWalkOrigin != nil
         if let trip = automaticTrip { automaticStateName = pendingWalk ? "checkingWalk" : trip.state == "recording" ? "recording" : "interrupted" }
         else { automaticStateName = settledTripID != nil ? "settled" : detector.phase }
-        return ["sharedActivity":sharedActivity as Any? ?? NSNull(), "ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticPermitted,
+        return ["sharedActivity":sharedActivity as Any? ?? NSNull(), "ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticAvailable,
                 "manualExclusion": manualExclusion.current.map { ["device":$0.device,"state":$0.state,"heardRecently":$0.heardRecently] as [String:Any] } as Any? ?? NSNull(),
                 "automaticVerified": automaticAvailable && !manualRecordingLive && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
