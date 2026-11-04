@@ -3,6 +3,13 @@
 // diagnostic log can never disagree. Nothing here reads or remembers a permission.
 const settings={label:'Open Settings',run:['openSettings']};
 export const HEALTH_LABELS={checking:'Checking',ready:'Ready',limited:'Limited',unavailable:'Unavailable'};
+// Settings can be ready while a recording that owns the iPhone suppresses automatic
+// recording. That is normal and temporary, so it is named, never warned about. A
+// paused manual recording never suppresses it.
+const SUPPRESSED_BY={iphone:'a manual recording',watch:'an Apple Watch recording'};
+export const automaticSuppressed=health=>health?.automaticRecording==='suppressed';
+export const healthLabel=health=>health?.status==='ready'&&automaticSuppressed(health)?`Paused for ${SUPPRESSED_BY[health.suppressedBy]||'a manual recording'}`:HEALTH_LABELS[health?.status];
+const AUTOMATIC={available:'Available',suppressed:'Paused while a recording owns this iPhone',off:'Off',unavailable:'Unavailable'};
 export const RECORDING_ISSUES={
  accountNotReady:{title:'Automatic Recording Is Unavailable',message:'Private activity storage is not open on this iPhone yet. Automatic recording starts once it is.'},
  locationServicesOff:{title:'Automatic Recording Is Unavailable',message:'Location Services are turned off on this iPhone, so Letm3go cannot record journeys automatically. Turn them on in iOS Settings under Privacy & Security.',action:settings},
@@ -26,6 +33,7 @@ const REFRESH={available:'On',denied:'Off',restricted:'Restricted'};
 const SERVICES={registered:'Requested · iOS holds a place wake-up',requested:'Requested from iOS',notRequested:'Not requested',failed:'iOS reported a problem',unsupported:'Not supported',manualRecording:'Paused for a manual recording'};
 export const healthRows=health=>[
  ['Automatic Tracking',health.automaticEnabled?'On':'Off'],
+ ...(health.automaticRecording?[['Automatic recording now',(automaticSuppressed(health)?`Paused while ${SUPPRESSED_BY[health.suppressedBy]||'a manual recording'} is recording`:AUTOMATIC[health.automaticRecording]||health.automaticRecording)+(health.pausedManual?' · your paused activity is kept and does not pause automatic recording':'')]]:[]),
  ['Location Services',health.locationServices?'On':'Off'],
  ['Location access',LOCATION[health.location]||health.location||'Not reported'],
  ['Precise Location',health.precise?'On':'Off'],

@@ -41,7 +41,7 @@ extension LocationRecorder {
                     self.reconcileLiveSharingLocation()
                 }
             }
-            if self.automaticAvailable,self.active == nil {
+            if self.automaticAvailable,!self.manualRecordingLive {
                 if AutomaticDetector.freshStationary(self.motion,now:now),self.automaticTrip == nil,!self.departureEvidence.recentMovement(now:now),!self.automaticSampling.locationWake {
                     self.automaticSampling.stop(now:Date().timeIntervalSince1970)
                     self.detector.reset()
@@ -113,7 +113,7 @@ extension LocationRecorder {
             startSignificantMonitoring()
             startVisitMonitoring()
             configurePlaceRegions()
-            if active == nil {
+            if !manualRecordingLive {
                 reconcileAutomaticSampling()
                 startMotionUpdates()
             }
@@ -121,7 +121,7 @@ extension LocationRecorder {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
             automaticSampling=AutomaticSampling();departureEvidence.reset();homeRest.reset();locationMode = .off;endPassiveRest()
             adaptive.shutdown(reason:"automatic tracking unavailable")
-            if !automaticEnabled, active == nil, !liveSharingArmed { stopMotionUpdates(); motion = MotionEvidence() }
+            if !automaticEnabled, !manualRecordingLive, !liveSharingArmed { stopMotionUpdates(); motion = MotionEvidence() }
             stopSignificantMonitoring()
             stopVisitMonitoring()
             for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
@@ -176,8 +176,8 @@ extension LocationRecorder {
     }
     func beginAutomaticProbe(movementBegan:Bool = false, cause:String = "movement", locationWake:Bool = false) {
         guard !reconcileManualExclusion() else { return }
-        guard automaticAvailable,active == nil else {
-            recordDiagnostic("decision","Departure wake-up ignored",details:["wakeSource":cause,"blockedBy":active != nil ? "a manual recording is running" : "automatic tracking unavailable"])
+        guard automaticAvailable,!manualRecordingLive else {
+            recordDiagnostic("decision","Departure wake-up ignored",details:["wakeSource":cause,"blockedBy":manualRecordingLive ? "a manual recording is running" : "automatic tracking unavailable"])
             return
         }
         let now=Date().timeIntervalSince1970
@@ -258,22 +258,22 @@ extension LocationRecorder {
         var passive=passiveRestAllowed
         // A journey that began is no false wake-up.
         if automaticTrip != nil || settledTripID != nil { falseWakeCandidate=nil }
-        var established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:passive)
+        var established=automaticSampling.locationMode(available:automaticAvailable,manualActive:manualRecordingLive,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:passive)
         // Live sharing keeps standard updates on. While parked it uses the lower
         // accuracy standby stream; a fresh movement signal upgrades it, so the
         // adaptive policy is never allowed to stop the stream for low-power standby.
         // The exception is a confirmed rest at the place viewers already see
         // (SharingRest), where sharing rests with the phone.
-        if liveSharingHoldsLocation, active == nil { established = liveSharingStandardMode(now:now) }
+        if liveSharingHoldsLocation, !manualRecordingLive { established = liveSharingStandardMode(now:now) }
         reconcileAdaptive(now:now,mode:established)
         // The exit region registered by that reconcile can allow passive rest now.
         if !passive, evaluatePassive() {
             passive=true
-            established=automaticSampling.locationMode(available:automaticAvailable,manualActive:active != nil,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:true)
+            established=automaticSampling.locationMode(available:automaticAvailable,manualActive:manualRecordingLive,automaticRecording:automaticActivelyRecording,now:now,resting:restingNow,passive:true)
             reconcileAdaptive(now:now,mode:established)
         }
         // A paused manual activity continues to take precedence over automation.
-        if active != nil {locationMode = .off}
+        if manualRecordingLive {locationMode = .off}
         reconcilePassiveSessions(now:now)
         checkAdaptiveInvariants()
     }
@@ -379,9 +379,12 @@ extension LocationRecorder {
         if change.changesServices, !refreshing { refreshAutomaticMonitoring() }
         return manualExclusion.current != nil || !closed
     }
+    // Used only for the exclusion. Its start is where the current recording segment
+    // began: automatic journeys made while the recording was paused are real and are
+    // never closed at the original start.
     func manualPresence(_ trip: RecordedActivity) -> RecordingPresence {
         RecordingPresence(device: RecordingPresence.iPhone, ownerID: ownerID, sessionID: trip.id, activity: trip.activity,
-                          state: trip.state == "recording" ? "recording" : "paused", startedAt: trip.startedAt, updatedAt: Date().timeIntervalSince1970)
+                          state: trip.state == "recording" ? "recording" : "paused", startedAt: trip.resumedAt ?? trip.startedAt, updatedAt: Date().timeIntervalSince1970)
     }
     func noteManualExclusion(_ change: ManualExclusionChange) {
         switch change {
@@ -445,7 +448,7 @@ extension LocationRecorder {
             diagnosticRejections["rejected.manualOwnership", default: 0] += locations.count
             return
         }
-        guard automaticAvailable, active == nil, let storage = storage else {diagnosticRejections["rejected.automaticUnavailable",default:0]+=locations.count;return}
+        guard automaticAvailable, !manualRecordingLive, let storage = storage else {diagnosticRejections["rejected.automaticUnavailable",default:0]+=locations.count;return}
         // Fixes held when the process last ended are older than this delivery.
         replayHeldStopFixes()
         // A stop decision is waiting for Core Motion history: later fixes queue
@@ -1278,7 +1281,7 @@ extension LocationRecorder {
         }
         let plan = ProvisionalRecovery.plan(trips,now:now)
         for id in plan.closed { finalizeProvisional(id,note:"Journey completed while the app was closed",trigger:"restoreSettledAutomaticJourney",event:"the continuation window ended while the app was closed") }
-        guard let id = plan.resumed, automaticTrip == nil, active == nil,
+        guard let id = plan.resumed, automaticTrip == nil, !manualRecordingLive,
               let trip = trips.first(where: { $0.id == id }) else { return }
         settledTripID = trip.id
         settledAt = trip.endedAt
@@ -1383,7 +1386,7 @@ extension LocationRecorder {
         recordDiagnostic("region","Region exit delivered",details:["reason":regionKind(region)])
         guard !reconcileManualExclusion() else { return }
         if region.identifier.hasPrefix("letm3go-place-") { homeRest.leave() }
-        guard automaticAvailable, active == nil, region.identifier.hasPrefix("letm3go-place-") else { return }
+        guard automaticAvailable, !manualRecordingLive, region.identifier.hasPrefix("letm3go-place-") else { return }
         // An open journey already has precise GPS; a place exit is not a departure.
         guard automaticTrip == nil || settledAt != nil else { recordDiagnostic("region","Place exit during an open journey");return }
         // Leaving a monitored stop or a saved place is real movement evidence.
@@ -1397,7 +1400,7 @@ extension LocationRecorder {
         noteExecution("regionEnter")
         recordDiagnostic("region","Region entry delivered",details:["reason":regionKind(region)])
         guard !reconcileManualExclusion() else { return }
-        guard automaticAvailable, active == nil else { return }
+        guard automaticAvailable, !manualRecordingLive else { return }
         finishExpiredContinuation(now:Date().timeIntervalSince1970)
         // A one-shot request on the manager that is already running continuous
         // updates adds nothing and its effect on that session is not guaranteed.
@@ -1424,7 +1427,7 @@ extension LocationRecorder {
             if automaticTrip != nil, detector.shouldArrive(now:now,activity:automaticTrip?.activity ?? "Driving") { settleAutomatic(trigger:"didVisit",event:"a visit began at the current location") }
             return
         }
-        guard automaticAvailable, active == nil else { return }
+        guard automaticAvailable, !manualRecordingLive else { return }
         finishExpiredContinuation(now:now)
         trackingEvent("Visit departure triggered departure check")
         beginAutomaticProbe(movementBegan:true,cause:"visit departure",locationWake:true)
@@ -1558,7 +1561,7 @@ extension LocationRecorder {
         endStopHistoryTask()
         // A manual or Watch recording that began, or tracking that stopped, during
         // the wait: the fixes stay on disk and are replayed once tracking resumes.
-        if ownerID == pending.owner, reconcileManualExclusion() || active != nil {
+        if ownerID == pending.owner, reconcileManualExclusion() || manualRecordingLive {
             // A manual or Watch recording owns these moments now, as before.
             clearHeldStopFixes()
             recordDiagnostic("decision", "Held stop fixes dropped: a manual recording began during the stop decision")
@@ -1661,7 +1664,7 @@ extension LocationRecorder {
     // Once per account open. The journal survives the entire drain, including
     // finalising the first leg before the second leg has been saved.
     func replayHeldStopFixes() {
-        guard !heldReplayChecked, stopHistoryPending == nil, automaticAvailable, active == nil, let storage = storage,
+        guard !heldReplayChecked, stopHistoryPending == nil, automaticAvailable, !manualRecordingLive, let storage = storage,
               !reconcileManualExclusion() else { return }
         heldReplayChecked = true
         guard let data = try? storage.readData(name: HeldStopFixes.fileName),

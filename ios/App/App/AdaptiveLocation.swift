@@ -46,7 +46,7 @@ extension LocationRecorder: AdaptiveHost {
 
     @discardableResult
     func reconcileAdaptive(now: Double, mode established: AutomaticLocationMode) -> AdaptiveServices {
-        let services = adaptive.reconcile(adaptiveInputs(now: now), established: established, standardOwned: active == nil, dwell: dwell,
+        let services = adaptive.reconcile(adaptiveInputs(now: now), established: established, standardOwned: !manualRecordingLive, dwell: dwell,
             regions: RegionCapability(available: CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self), maximumRadius: manager.maximumRegionMonitoringDistance))
         if adaptive.state == .recovery, let owner = ownerID, let until = adaptive.policy.recoveryUntil {
             UserDefaults.standard.set(until, forKey: Self.adaptiveRecoveryKey(owner))

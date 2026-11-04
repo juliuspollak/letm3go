@@ -112,3 +112,15 @@ it('offers GPS accuracy, defaults mountain biking to high, and leaves it out of 
  fireEvent.click(screen.getByRole('button',{name:/Driving/}));
  expect(screen.queryByText('GPS accuracy')).not.toBeInTheDocument();
 });
+it('offers to finish an automatic journey recorded while a manual activity is paused',()=>{
+ const run=vi.fn().mockResolvedValue(null);
+ render(<RecorderPanel state={{active:{activity:'Walking',source:'device',state:'paused',startedAt:1000,points:[],durationSeconds:20,distanceMeters:0},
+  automaticTrip:{activity:'Driving',distanceMeters:4200,durationSeconds:600},permission:'always'}} run={run} vehicles={[]}/>);
+ expect(screen.getByText('Paused and kept. Automatic recording continues while this activity is paused.')).toBeInTheDocument();
+ expect(screen.getByText(/Driving · detected automatically/)).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:/Finish automatic journey/}));
+ fireEvent.click(screen.getByRole('button',{name:'Save journey'}));
+ expect(run).toHaveBeenCalledWith('transition','finishAutomatic');
+ fireEvent.click(screen.getByRole('button',{name:/Resume/}));
+ expect(run).toHaveBeenCalledWith('transition','resume');
+});

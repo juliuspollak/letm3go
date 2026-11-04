@@ -253,6 +253,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Whether the automatic engine may run. Every automatic path checks this, so
     // a manual recording suspends them all without a check of its own.
     var automaticAvailable: Bool { automaticPermitted && manualExclusion.current == nil }
+    // A manual recording owns this iPhone's location only while it records. Paused, it
+    // stays saved and resumable and holds nothing, so automatic detection runs.
+    var manualRecordingLive: Bool { active?.state == "recording" }
+    var automaticRecordingState: AutomaticRecordingState {
+        RecordingCoordination.state(enabled: automaticEnabled, permitted: automaticPermitted, owner: manualExclusion.current?.device)
+    }
+    var recordingCoordination: [String: String] {
+        ["automaticRecordingState": automaticRecordingState.rawValue,
+         "automaticSuppressedBy": manualExclusion.current.map { $0.device == RecordingPresence.watch ? "Apple Watch recording" : "iPhone manual recording" } ?? "none",
+         "recordingOwner": RecordingCoordination.owner(manualRecording: manualRecordingLive, watchOwns: manualExclusion.current?.device == RecordingPresence.watch,
+                                                       automaticRecording: automaticActivelyRecording),
+         "manualPausedPreserved": String(active?.state == "paused")]
+    }
     func refreshLocationServicesAvailable() {
         guard locationServicesCheck.request() else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -362,6 +375,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             "adaptiveEnabled":String(adaptiveEnabled),"adaptiveState":adaptiveState.rawValue,"lowPowerStandby":String(adaptive.lowPowerRunning),"locationMode":active?.state == "recording" ? "manualPrecise" : locationMode.rawValue,"automaticLocationMode":locationMode.rawValue]
         context.merge(locationDiagnosticState()){_,new in new}
         context.merge(passiveDiagnosticState(now:now)){_,new in new}
+        context.merge(recordingCoordination){_,new in new}
         return context
     }
     func locationDiagnosticState()->[String:String]{
@@ -371,7 +385,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let confirmedHome=homeRest.insideSince != nil && homePlace.map{homeRest.homeKey?.hasPrefix($0.id+"|")==true} == true
         return ["timezone":TimeZone.current.identifier,"utcOffsetSeconds":String(TimeZone.current.secondsFromGMT()),
             "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
-            "homeRestSince":String(homeRest.insideSince ?? 0),"homeRestConfirmed":String(active == nil && locationMode == .resting),
+            "homeRestSince":String(homeRest.insideSince ?? 0),"homeRestConfirmed":String(!manualRecordingLive && locationMode == .resting),
             "stationarySeconds":stationarySince.map{String(Int(max(0,now-$0)))} ?? "unknown",
             "placeType":dwell?.placeKind ?? dwell?.source.rawValue ?? (confirmedHome ? "home" : "none"),"placeSource":dwell?.source.rawValue ?? (confirmedHome ? "savedHomeConfirmation" : "none"),"placeSettled":String(dwellSettled),
             "significantChangesRequested":String(significantLocationRequested),"visitsRequested":String(visitMonitoringRequested),
@@ -435,7 +449,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","passiveRest","wifiMatch","reason","commit","build","adaptiveState",
         "liveSharingArmed","liveSharingHoldsLocation","liveSharingTracking","liveSharingPublisher","liveSharingSendActivity","householdLastSuccessAgeSeconds",
         // Read back from the journal when it is reopened.
-        "householdLastSuccessAt","friendLastSuccessAt"]
+        "householdLastSuccessAt","friendLastSuccessAt","automaticRecordingState","automaticSuppressedBy","recordingOwner","manualPausedPreserved"]
     func recordDiagnostic(_ kind:String,_ message:String,details:[String:String]=[:]){
         guard ownerID != nil,let storage=storage else {return}
         if let last=diagnosticJournal.events.last,last.kind==kind,last.message==message,
@@ -918,7 +932,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func recoverStalledAutomaticGPS(){
         let now=Date().timeIntervalSince1970
-        guard automaticAvailable,active == nil,continuousLocationRequested,
+        guard automaticAvailable,!manualRecordingLive,continuousLocationRequested,
               !accountSuspended,let started=continuousStartedAt else {return}
         let precise=automaticSampling.needsGPS(automaticAvailable:true,manualRecording:false,automaticRecording:automaticActivelyRecording,now:now)
         guard precise||locationUpdatesPaused else {return}
@@ -1035,6 +1049,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         reconcileBackgroundSession("manual recording")
     }
     func transition(_ action: String) throws {
+        // An automatic journey can be finished while a manual one is paused.
+        if action == "finishAutomatic" {
+            guard automaticTrip != nil || settledTripID != nil else { throw failure("There is no automatic journey to finish.") }
+            try finishAutomatic(force: true,reason:"Journey finished by user",trigger:"transition",event:"the user tapped finish in the app")
+            return
+        }
         if active == nil {
             // Automatic journeys live outside `active`, so the recorder UI must be
             // able to end one that is still recording or waiting for movement.
@@ -1049,6 +1069,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         case "resume":
             guard trip.points.count < 50_000 else { throw failure("This activity reached the point limit. Finish it and start a new activity.") }
             guard authorized, CLLocationManager.locationServicesEnabled() else { throw failure("Location permission is unavailable.") }
+            // Two recordings never run at once. A journey being recorded is the
+            // person's to end; anything else open (a published stop waiting for a
+            // continuation, a walk still being checked) ends here, as it does when
+            // a manual activity starts, with every fix before now kept.
+            if let open = automaticTrip, open.state == "recording", open.details?.localWalkOrigin == nil {
+                recordDiagnostic("decision","Manual resume refused: an automatic journey is recording",details:["activity":open.activity])
+                throw failure("An automatic journey is being recorded. Finish it first, then resume this activity.")
+            }
+            try closeAutomatic(before:now,reason:"Recording stopped: a manual activity was resumed",trigger:"resume",event:"a manual activity was resumed")
+            detector.reset()
             trip.resume(at: now)
         case "finish": trip.finish(at: now)
         default: throw failure("Unknown recording action.")
@@ -1056,6 +1086,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         try storage.save(trip)
         if action == "finish" { trips.insert(trip, at: 0); active = nil }
         else { active = trip }
+        // Resuming takes ownership at once, suspending the automatic engine before
+        // manual GPS starts. Pausing and finishing release it through the refresh below.
+        if action == "resume" { reconcileManualExclusion() }
         currentSpeed = 0
         confirmHouseholdLocation()
         recordDiagnostic("journey","Manual journey \(action == "finish" ? "finished" : action == "pause" ? "paused" : "resumed")",details:["stopKind":action == "pause" || action == "finish" ? "intentional journey stop; not a GPS gap" : "explicit continuation"])
@@ -1085,7 +1118,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // the stream (never into a manual or open journey).
     func handleObservations(_ locations: [CLLocation], source: ObservationSource) {
         if source == .lowPower {
-            guard adaptive.lowPowerRunning, active == nil, !automaticActivelyRecording else { diagnosticReject("lowPowerOutsideStandby"); return }
+            guard adaptive.lowPowerRunning, !manualRecordingLive, !automaticActivelyRecording else { diagnosticReject("lowPowerOutsideStandby"); return }
             noteExecution("liveUpdate")
             lastLowPowerFixAt = locations.last?.timestamp.timeIntervalSince1970
         } else {
@@ -1115,7 +1148,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // Apply the precision change on the fix that proves movement, not only on
         // the next 30-second reconcile.
         if liveSharingArmed, active?.state != "recording" { reconcileLiveSharingLocation() }
-        if active == nil { processAutomatic(locations,source:source);diagnosticSummary(); return }
+        if !manualRecordingLive { processAutomatic(locations,source:source);diagnosticSummary(); return }
         guard var trip = active, trip.state == "recording", let storage = storage else { return }
         let now = Date().timeIntervalSince1970
         if CMMotionActivityManager.authorizationStatus() != .authorized { motion = MotionEvidence() }
@@ -1183,7 +1216,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         else { automaticStateName = settledTripID != nil ? "settled" : detector.phase }
         return ["sharedActivity":sharedActivity as Any? ?? NSNull(), "ownerID":ownerID!, "nativeBinding":bindingDiagnostics, "preferences":prefs, "automaticEnabled": automaticEnabled, "automaticAvailable": automaticPermitted,
                 "manualExclusion": manualExclusion.current.map { ["device":$0.device,"state":$0.state,"heardRecently":$0.heardRecently] as [String:Any] } as Any? ?? NSNull(),
-                "automaticVerified": automaticAvailable && active == nil && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
+                "automaticVerified": automaticAvailable && !manualRecordingLive && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
                 "automaticSampling": !automaticPermitted ? "off" : manualExclusion.current != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .passive ? "passiveRest" : locationMode == .resting ? "restingAtHome" : "locationStandby",
                 "adaptive":adaptiveSnapshot,

@@ -1,7 +1,10 @@
 # Manual recording exclusion
 
 One manual recording, on the iPhone or Apple Watch, owns the iPhone from its actual
-start until it is finished or cancelled, including pauses. The automatic engine does
+start until it is finished or cancelled. An iPhone recording owns it only while it is
+recording: a paused one stays saved and resumable but blocks nothing (see
+[paused-manual-automatic-recording.md](paused-manual-automatic-recording.md)). A Watch
+recording keeps ownership while paused, bounded by its lease. The automatic engine does
 not run during that time. Household and friend live sharing continue.
 
 This replaces the Watch-only guards described in
@@ -41,7 +44,8 @@ the persisted Watch presence, so a relaunch suspends again by itself.
 
 | Situation | Result |
 |---|---|
-| iPhone recording or paused | Owns, no lease: it ends only through this app |
+| iPhone recording | Owns, no lease: it ends only through this app |
+| iPhone paused | No claim. Kept and resumable; automatic recording runs. Resuming owns again |
 | Watch recording or paused, heard within 150 s | Owns, confirmed |
 | Watch silent or unreachable | Owns, held under the lease (`Apple Watch went quiet`) |
 | Watch recording with no account attached | Owns, under the lease |

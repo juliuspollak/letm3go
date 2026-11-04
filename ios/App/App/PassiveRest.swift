@@ -83,7 +83,7 @@ extension LocationRecorder {
         let decision = RestConfirmation.decide(RestInputs(
             place: kind, placeSince: dwell?.since, lastDisturbanceAt: restDisturbedAt, placeAccuracy: restPlaceAccuracy,
             placeVerified: restPlaceFixAt.map { fix in dwell.map { fix >= $0.since - 120 } ?? false } ?? false,
-            idle: automaticAvailable && active == nil && automaticIdle, recentMovement: recent, motionMoving: moving || unsettled,
+            idle: automaticAvailable && !manualRecordingLive && automaticIdle, recentMovement: recent, motionMoving: moving || unsettled,
             wifi: kind == .home ? wifiMatchState : .unknown, now: now))
         if decision.code == "settling", restDecision.code != "settling" {
             recordDiagnostic("rest", "Rest confirmation started", details: ["restPlace": kind.rawValue, "restRequiredSeconds": String(Int(decision.requiredSeconds)), "wifiMatch": wifiMatchState.rawValue])
@@ -111,7 +111,7 @@ extension LocationRecorder {
             preciseAuthorized: manager.accuracyAuthorization == .fullAccuracy,
             serviceSessionHeld: serviceSession != nil, serviceSessionInUse: !serviceSessionInsufficient,
             significantChanges: significantLocationRequested, exitRegion: registeredPlaceRegion != nil,
-            manualRecording: active != nil, liveSharing: false)
+            manualRecording: manualRecordingLive, liveSharing: false)
         let otherwiseAllowed = PassiveRestPolicy.retainReason(inputs) == nil
         evaluateSharingRest(passiveOtherwiseAllowed: otherwiseAllowed)
         inputs.liveSharing = liveSharingArmed
@@ -172,7 +172,7 @@ extension LocationRecorder {
     // One location decides, so opening the app never restarts continuous tracking.
     func noteForegroundReturn(now: Double) {
         refreshWiFiIfDue(now: now, foreground: true)
-        guard automaticAvailable, active == nil, locationMode == .passive, !continuousLocationRequested, now - foregroundCheckAt >= 300 else { return }
+        guard automaticAvailable, !manualRecordingLive, locationMode == .passive, !continuousLocationRequested, now - foregroundCheckAt >= 300 else { return }
         foregroundCheckAt = now
         recordDiagnostic("rest", "App opened during passive rest: one location check requested")
         requestPassiveLocationCheck(cause: "foreground return", now: now)
@@ -306,7 +306,10 @@ extension LocationRecorder {
         let inputs = recordingHealthInputs, report = RecordingHealth.evaluate(inputs)
         return ["status": report.status.rawValue, "permissions": report.permissions.rawValue, "issues": report.issues, "services": inputs.services, "automaticEnabled": inputs.automaticEnabled,
                 "locationServices": inputs.locationServices, "location": inputs.location, "precise": inputs.precise,
-                "motion": inputs.motion, "backgroundRefresh": inputs.backgroundRefresh]
+                "motion": inputs.motion, "backgroundRefresh": inputs.backgroundRefresh,
+                "automaticRecording": automaticRecordingState.rawValue,
+                "suppressedBy": manualExclusion.current.map { $0.device } as Any? ?? NSNull(),
+                "pausedManual": active?.state == "paused"]
     }
     // Kept per account across launches, so a setting changed while the app was
     // closed is logged the next time it runs, including a background wake-up.
@@ -417,7 +420,7 @@ extension LocationRecorder {
 
     // MARK: Keep-alive for precise GPS without an activity session
     func reconcileKeepAlive(now: Double) {
-        let wanted = KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: active != nil,
+        let wanted = KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: manualRecordingLive,
             // The open-stop case is part of the device test until it is measured.
             precise: locationMode == .precise, stopOpen: sharingRestEnabled && settledTripID != nil && locationMode != .passive,
             sessionHeld: backgroundActivitySession != nil, serviceSessionHeld: serviceSession != nil,

@@ -162,3 +162,19 @@ it('reports what iOS has shown about wake-ups, never that they are guaranteed',(
  expect(screen.getByText('Recording services').nextSibling).toHaveTextContent('iOS reported a problem');
  expect(screen.getByText(/iOS reported a problem with location monitoring/)).toBeInTheDocument();
 });
+it('names a suppression by a recording instead of an unqualified Ready, without a warning',()=>{
+ render(<Home health={{...base,automaticRecording:'suppressed',suppressedBy:'iphone'}}/>);
+ expect(screen.getByRole('button',{name:/Recording status: Paused for a manual recording/})).toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Not Now'})).toBeNull();
+ cleanup();
+ render(<Home health={{...base,automaticRecording:'suppressed',suppressedBy:'watch'}}/>);
+ expect(screen.getByRole('button',{name:/Paused for an Apple Watch recording/})).toBeInTheDocument();
+});
+it('keeps Ready when only a paused manual activity exists, and says it does not pause automatic recording',()=>{
+ const health={...base,automaticRecording:'available',suppressedBy:null,pausedManual:true};
+ render(<Home health={health}/>);
+ expect(screen.getByRole('button',{name:/Recording status: Ready/})).toBeInTheDocument();
+ cleanup();
+ render(<RecordingHealthDetail health={health} run={vi.fn()}/>);
+ expect(screen.getByText('Available · your paused activity is kept and does not pause automatic recording')).toBeInTheDocument();
+});

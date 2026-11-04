@@ -57,6 +57,7 @@ enum RecorderHarness {
                 await overflowDuringWait()
                 await otherAccountReplay()
                 await sharingPassiveRest()
+                await pausedManualAutomatic()
             }
             print("RECORDER HARNESS: \(passed) passed, \(failed) failed")
             print("RECORDER HARNESS DONE")
@@ -404,6 +405,58 @@ enum RecorderHarness {
         b.heldReplayChecked = false
         b.replayHeldStopFixes()
         check(b.automaticTrip == nil && b.stopHistoryPending == nil, "account: another account never receives held fixes")
+    }
+
+    // Build 86: a manual journey paused for days silently disabled automatic
+    // recording. Paused, it is kept and resumable but owns nothing.
+    static func pausedManualAutomatic() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "paused: recorder opened") }
+        r.refreshAutomaticMonitoring()
+        check(r.automaticAvailable && r.automaticRecordingState == .available, "paused: no manual journey, automatic recording available")
+        do { try r.start(activity: "Walking", vehicle: nil) } catch { return check(false, "paused: manual start — \(error.localizedDescription)") }
+        check(!r.automaticAvailable && r.automaticRecordingState == .suppressed && r.recordingCoordination["recordingOwner"] == "manualIPhone",
+              "paused: a recording manual journey suppresses automatic recording")
+        check((r.recordingHealthSnapshot["automaticRecording"] as? String) == "suppressed", "paused: the health report says automatic recording is suppressed, not just Ready")
+        do { try r.transition("pause") } catch { return check(false, "paused: pause — \(error.localizedDescription)") }
+        // Paused for three days.
+        guard var paused = r.active else { return check(false, "paused: the manual journey is kept") }
+        paused.startedAt -= 3 * 86_400; try? r.storage?.save(paused); r.active = paused
+        let manualID = paused.id, manualPoints = paused.points.count
+        r.refreshAutomaticMonitoring()
+        check(r.automaticAvailable && r.manualExclusion.current == nil && r.automaticRecordingState == .available && r.recordingCoordination["manualPausedPreserved"] == "true",
+              "paused: a paused manual journey leaves automatic recording available")
+        check(r.diagnosticJournal.events.contains { $0.message == "Automatic recording released while the iPhone recording is paused" }, "paused: the release is logged as a pause")
+        check(!r.continuousLocationRequested || r.locationMode != .precise, "paused: pausing starts no precise GPS by itself (mode \(r.locationMode.rawValue))")
+        // An automatic drive while the manual journey stays paused.
+        let start = Date().timeIntervalSince1970 - 260
+        for i in 0..<5 { deliver(r, location(home.latitude, home.longitude, start - 50 + Double(i) * 10, speed: 0)) }
+        for i in 0...40 { deliver(r, location(home.latitude + Double(i) * 60 / 111_320, home.longitude, start + Double(i) * 5, speed: 12, accuracy: 8)) }
+        guard let drive = r.automaticTrip, drive.state == "recording" else {
+            return check(false, "paused: the drive is recorded automatically (phase \(r.detector.phase), available \(r.automaticAvailable), rejections \(r.diagnosticRejections))")
+        }
+        check(r.active?.id == manualID && r.active?.state == "paused" && r.active?.points.count == manualPoints, "paused: the manual journey stays paused with its points intact")
+        check(r.recordingCoordination["recordingOwner"] == "automatic", "paused: the automatic journey owns the recording resources")
+        // Scenario B: resuming while the drive records is refused, nothing discarded.
+        do { try r.transition("resume"); check(false, "paused: resume during an automatic recording is refused") }
+        catch { check(error.localizedDescription.contains("Finish it first"), "paused: resume during an automatic recording is refused with a reason (\(error.localizedDescription))") }
+        check(r.automaticTrip?.id == drive.id && r.active?.state == "paused", "paused: the refused resume changed neither journey")
+        do { try r.transition("finishAutomatic") } catch { return check(false, "paused: finish automatic — \(error.localizedDescription)") }
+        let saved = r.trips.first { $0.id == drive.id }
+        check(saved != nil && r.automaticTrip == nil && r.active?.state == "paused", "paused: the automatic journey can be finished while the manual one stays paused")
+        do { try r.transition("resume") } catch { return check(false, "paused: resume — \(error.localizedDescription)") }
+        check(r.active?.state == "recording" && !r.automaticAvailable && r.trips.first { $0.id == drive.id }?.points.count == saved?.points.count,
+              "paused: resuming takes ownership again and keeps the automatic journey whole")
+        do { try r.transition("finish") } catch { return check(false, "paused: finish — \(error.localizedDescription)") }
+        check(r.active == nil && r.automaticAvailable && r.automaticRecordingState == .available, "paused: finishing restores automatic recording")
+        // Relaunch with a paused manual journey: restored without taking ownership.
+        var restored = RecordedActivity(activity: "Walking", startedAt: start - 86_400, resumedAt: start - 86_400, title: "Walk")
+        restored.recordingMode = "manual"; restored.pause(at: start - 80_000)
+        let relaunched = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion())
+        relaunched?.active = restored
+        relaunched?.refreshAutomaticMonitoring()
+        check(relaunched?.automaticAvailable == true && relaunched?.manualExclusion.current == nil, "paused: after a relaunch a paused manual journey does not block automatic recording")
+        r.stopContinuousLocation()
     }
 
     static func sharingPassiveRest() async {

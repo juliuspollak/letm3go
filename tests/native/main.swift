@@ -4165,18 +4165,43 @@ do {
     check(noStart.excluded && noStart.history.allSatisfy { $0.endedAt! < start + 150 } && noStart.draft == nil, "a packet without a start closes at the earliest moment it proves")
     check(CrossDeviceRecording.manualStart(watchPresence(owner, started: .nan, at: start)) == start, "a malformed start falls back to the packet time")
 
-    // iPhone manual recording: same gate, no lease.
+    // iPhone manual recording: same gate, no lease, held only while it records. A
+    // paused one stays saved and resumable and blocks nothing (build 86: a journey
+    // paused for days silently disabled automatic recording).
     let phone = ManualOwnershipPhone(owner: owner)
     phone.local = RecordingPresence(device: "iphone", ownerID: owner, sessionID: "phone", activity: "Walking", state: "recording", startedAt: start, updatedAt: start)
     phone.reconcile(start)
     check(phone.excluded && phone.gate.current?.leaseEndsAt == nil, "an iPhone manual recording takes the same gate")
     phone.local?.state = "paused"
-    phone.reconcile(start + 2 * lease)
-    check(phone.excluded, "a paused iPhone recording owns the session for as long as it stays open")
-    phone.hear(watchPresence(owner, started: start + 2 * lease, at: start + 2 * lease), at: start + 2 * lease)
+    phone.reconcile(start + 60)
+    check(!phone.excluded && phone.engineRunning && phone.releases == [.pausedOnIPhone], "pausing on the iPhone releases automatic recording, reported as a pause, not a finish")
+    phone.relaunch(at: start + 120)
+    check(!phone.excluded, "a paused iPhone recording restored after a relaunch does not take ownership again")
+    // Paused for three days: an automatic drive is detected and recorded on its own.
+    let later = start + 3 * 86_400
+    phone.drive(from: later, seconds: 240)
+    check(phone.draft != nil && phone.rejectedFixes == 0, "a drive days later is recorded automatically while the manual recording stays paused")
+    check(phone.local?.state == "paused" && phone.local?.sessionID == "phone" && phone.local?.startedAt == start, "the paused manual recording is untouched")
+    // The drive stops and is published; resuming the manual recording afterwards
+    // closes nothing that came before the resume (its boundary is the resume time).
+    var drove = phone.draft!; drove.finish(at: drove.points.last!.timestamp); phone.draft = nil; phone.settled = drove
+    let resumeAt = (drove.endedAt ?? later) + 300
+    phone.local = RecordingPresence(device: "iphone", ownerID: owner, sessionID: "phone", activity: "Walking", state: "recording", startedAt: resumeAt, updatedAt: resumeAt)
+    phone.reconcile(resumeAt)
+    check(phone.excluded && phone.settled == nil && phone.history.last?.points.count == drove.points.count,
+          "resuming takes ownership again and keeps every fix of the automatic journey made while paused")
+    // Repeated pause and resume leave no stale ownership.
+    for i in 1...6 {
+        phone.local?.state = i % 2 == 1 ? "paused" : "recording"
+        phone.reconcile(resumeAt + Double(i) * 30)
+        check(phone.excluded == (phone.local?.state == "recording"), "pause/resume \(i): ownership follows the recording state")
+    }
+    phone.local?.state = "paused"; phone.reconcile(resumeAt + 400)
+    phone.hear(watchPresence(owner, started: resumeAt + 400, at: resumeAt + 400), at: resumeAt + 400)
+    let releasesBefore = phone.releases.count
     phone.local = nil
-    phone.reconcile(start + 2 * lease + 1)
-    check(phone.excluded && phone.releases.isEmpty && phone.gate.current?.device == "watch", "finishing on the iPhone hands over to a Watch recording still running")
+    phone.reconcile(resumeAt + 401)
+    check(phone.excluded && phone.releases.count == releasesBefore && phone.gate.current?.device == "watch", "finishing on the iPhone hands over to a Watch recording still running")
 
     // Exactly what runs while suspended.
     let watchOnly = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: false, automaticPermitted: true)
@@ -4381,7 +4406,22 @@ do {
     // Diagnostics tell recovery from a finish.
     check(ManualExclusionRelease.finished.explicitFinish && ManualExclusionRelease.finishedOnIPhone.explicitFinish, "a finish is explicit")
     check(!ManualExclusionRelease.leaseExpired.explicitFinish && !ManualExclusionRelease.ownerChanged.explicitFinish, "a lease expiry is not reported as a finish")
-    check(Set([ManualExclusionRelease.finished, .finishedOnIPhone, .leaseExpired, .ownerChanged].map(\.diagnostic)).count == 4, "every release has its own diagnostic line")
+    check(!ManualExclusionRelease.pausedOnIPhone.explicitFinish, "a pause is not reported as a finish")
+    check(Set([ManualExclusionRelease.finished, .finishedOnIPhone, .pausedOnIPhone, .leaseExpired, .ownerChanged].map(\.diagnostic)).count == 5, "every release has its own diagnostic line")
+    // What the app shows apart from permissions: suppressed only by a recording that owns the iPhone.
+    check(RecordingCoordination.state(enabled: true, permitted: true, owner: nil) == .available, "no owner: automatic recording available")
+    check(RecordingCoordination.state(enabled: true, permitted: true, owner: "iphone") == .suppressed && RecordingCoordination.state(enabled: true, permitted: true, owner: "watch") == .suppressed,
+          "a recording iPhone or Watch session suppresses automatic recording")
+    check(RecordingCoordination.state(enabled: false, permitted: true, owner: nil) == .off && RecordingCoordination.state(enabled: true, permitted: false, owner: nil) == .unavailable,
+          "off and unavailable are told apart from a suppression")
+    check(RecordingCoordination.owner(manualRecording: true, watchOwns: false, automaticRecording: false) == "manualIPhone" &&
+          RecordingCoordination.owner(manualRecording: false, watchOwns: true, automaticRecording: false) == "manualWatch" &&
+          RecordingCoordination.owner(manualRecording: false, watchOwns: false, automaticRecording: true) == "automatic" &&
+          RecordingCoordination.owner(manualRecording: false, watchOwns: false, automaticRecording: false) == "none", "the owner of recording resources is named")
+    let pausedPhone = ManualOwnershipPhone(owner: owner)
+    pausedPhone.local = RecordingPresence(device: "iphone", ownerID: owner, sessionID: "p", activity: "Walking", state: "paused", startedAt: start, updatedAt: start)
+    pausedPhone.reconcile(start)
+    check(!pausedPhone.excluded && pausedPhone.changes.isEmpty, "a paused recording found at launch never acquires ownership")
     let ownPhone = ManualOwnershipPhone(owner: owner)
     ownPhone.local = RecordingPresence(device: "iphone", ownerID: owner, sessionID: "phone", activity: "Walking", state: "recording", startedAt: start, updatedAt: start)
     ownPhone.reconcile(start); ownPhone.local = nil; ownPhone.reconcile(start + 60)
