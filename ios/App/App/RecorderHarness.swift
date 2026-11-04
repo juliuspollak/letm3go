@@ -58,6 +58,7 @@ enum RecorderHarness {
                 await otherAccountReplay()
                 await sharingPassiveRest()
                 await pausedManualAutomatic()
+                await sharingRestStageA()
             }
             print("RECORDER HARNESS: \(passed) passed, \(failed) failed")
             print("RECORDER HARNESS DONE")
@@ -491,6 +492,57 @@ enum RecorderHarness {
         r.sharingRestEnabled = false
         r.reconcileAutomaticSampling()
         check(r.keepAliveTask != nil || r.locationMode == .precise, "sharing: switching the test off leaves the established precise departure check running")
+        r.disableHouseholdLiveSharing(forget: false)
+    }
+
+    // Stage A: friends block sharing rest; a change to what the decision read makes
+    // it stale at once and is answered by one coalesced reconcile; switching the
+    // test off while passive restores location.
+    static func sharingRestStageA() async {
+        let (directory, key, owner) = freshStore(), motion = HarnessMotion()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "stage A: recorder opened") }
+        let now = Date().timeIntervalSince1970
+        r.liveShareToken = "harness"; r.liveShareEndpoint = URL(string: "https://harness.invalid/rpc"); r.liveShareApiKey = "harness"
+        r.liveShareTokenExpiresAt = now + 3600; r.liveShareMode = "device"
+        r.passiveRestEnabled = true; r.sharingRestEnabled = true
+        r.reconcileServiceSession("harness")
+        for i in 0..<26 { deliver(r, location(home.latitude, home.longitude, now - 1500 + Double(i) * 60, speed: 0)) }
+        let atHome = GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: now - 60, accuracy: 5, altitude: 20, speed: 0)
+        r.liveShareSentPoint = atHome
+        // Friends armed as well: sharing keeps location although the household holds Home.
+        r.friendShareToken = "harness-friend"; r.friendShareEndpoint = URL(string: "https://harness.invalid/rpc/set_friend_location")
+        r.friendShareApiKey = "harness"; r.friendShareTokenExpiresAt = now + 3600
+        r.reconcileAutomaticSampling()
+        check(r.locationMode != .passive && r.liveSharingHoldsLocation && r.sharingRestReason.contains("friend sharing is on"),
+              "stage A: household and friends armed, sharing keeps continuous location (mode \(r.locationMode.rawValue); \(r.sharingRestReason))")
+        r.disableFriendLiveSharing()
+        r.reconcileAutomaticSampling()
+        guard r.locationMode == .passive else {
+            return check(false, "stage A: household only rests — blocked: \(r.passiveRetainReason); sharing: \(r.sharingRestReason)")
+        }
+        check(!r.liveSharingHoldsLocation && r.sharingRestCurrent, "stage A: household only, sharing rests on a current decision")
+        // Switching the test off while passive restores location at once.
+        try? r.setSharingRest(false)
+        check(r.locationMode != .passive && r.liveSharingHoldsLocation && r.passiveEndedAt > 0,
+              "stage A: switching the test off while passive restores location (mode \(r.locationMode.rawValue))")
+        try? r.setSharingRest(true)
+        guard r.locationMode == .passive else {
+            return check(false, "stage A: passive again after switching back on — blocked: \(r.passiveRetainReason); sharing: \(r.sharingRestReason)")
+        }
+        // A burst of changes while passive: stale at once, one reconcile on the next
+        // turn. The pause comes last: the simulator may deliver its own location then.
+        let coalescedBefore = r.sharingRestReconcile.coalesced
+        r.liveShareSentPoint = GPSPoint(latitude: home.latitude + 900 / 111_320, longitude: home.longitude, timestamp: now - 5, accuracy: 5, altitude: 20, speed: 0)
+        r.liveShareSentActivity = "Driving"
+        r.friendShareToken = "harness-friend-2"; r.friendShareTokenExpiresAt = now + 3600
+        check(r.liveSharingHoldsLocation && !r.sharingRestCurrent, "stage A: a stale decision to rest keeps location before the reconcile runs")
+        check(r.sharingRestReconcile.pending && r.sharingRestReconcile.coalesced == coalescedBefore + 2, "stage A: three changes wait for one reconcile")
+        await pause(0.05)
+        check(!r.sharingRestReconcile.pending && !r.sharingRestAllowed && r.locationMode != .passive,
+              "stage A: the coalesced reconcile decides again and leaves passive rest (mode \(r.locationMode.rawValue); \(r.sharingRestReason))")
+        r.disableFriendLiveSharing()
+        let recovery = BackgroundRecovery.evaluate(r.backgroundRecoveryInputs)
+        check(recovery.status == .notNeeded || r.backgroundActivitySession == nil, "stage A: recovery reports notNeeded only while the session is held (\(recovery.status.rawValue))")
         r.disableHouseholdLiveSharing(forget: false)
     }
 }

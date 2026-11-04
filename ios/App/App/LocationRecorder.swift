@@ -135,10 +135,21 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var sharingRestEnabled = false
     var sharingRestAllowed = false
     var sharingRestReason = "not evaluated"
+    // What the decision was made from; it holds only while that is unchanged.
+    var sharingRestDecidedFrom: SharingRestInputs?
+    // A change to what SharingRest reads asks for one reconcile on the next turn.
+    var sharingRestReconcile = CoalescedRequest()
+    var sharingRestReconcileCause: String?
     var falseWakeCandidate: FalseWakeCandidate?
     var falseWakeRestores: [Double] = []
-    // The position friends last accepted (SharingRest checks every audience).
-    var friendShareSentPoint: GPSPoint?
+    // The position friends last accepted. Diagnostics only: friend sharing never
+    // rests while its server stamps positions on arrival (SharingRest).
+    var friendShareSentPoint: GPSPoint? { didSet { if friendShareSentPoint != oldValue { sharingRestInputChanged("friend position accepted") } } }
+    // Background recovery, logged when it changes; the last wake-up outcome is
+    // what a fix showed, never assumed.
+    var backgroundRecoveryLogged = ""
+    var wakeOutcome = "none yet"
+    var wakeOutcomeAt: Double?
     // Last accurate fix inside and outside the current place (FalseWake).
     var placeInsideAt: Double?
     var placeOutsideAt: Double?
@@ -170,13 +181,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticEnabled = false
     // Native background sharing. Friends use the short-lived session token (off
     // after restart); household sharing keeps a device credential in the Keychain.
-    var liveShareToken: String?
+    var liveShareToken: String? { didSet { if liveShareToken != oldValue { sharingRestInputChanged("household credential changed") } } }
     var liveShareEndpoint: URL?
     var liveShareApiKey: String?
     var liveShareTokenExpiresAt: Double = 0
     var liveShareLastSentAt: Double = 0
     var liveShareSendsActivity = true
-    var liveShareSentActivity: String?
+    var liveShareSentActivity: String? { didSet { if liveShareSentActivity != oldValue { sharingRestInputChanged("household status accepted") } } }
     // A migration-related 404 must not disable activity forever. Probe again later;
     // the first successful publish with the field re-enables it.
     var liveShareSendsActivityRetryAt: Double = 0
@@ -212,7 +223,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     var liveShareInFlight = false
     var liveShareRetryAt: Double = 0
-    var liveShareSentPoint: GPSPoint?
+    var liveShareSentPoint: GPSPoint? { didSet { if liveShareSentPoint != oldValue { sharingRestInputChanged("household position accepted") } } }
     static let shareTimeFormat = ISO8601DateFormatter()
     // Off once a server without the 20261108 migration refuses the extra argument.
     var liveShareSendsCaptureTime = true
@@ -222,7 +233,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var lastShareFix: CLLocation?
     var liveShareLastOkAt: Double = 0
     var liveShareStatus = ""
-    var friendShareToken: String?
+    var friendShareToken: String? { didSet { if friendShareToken != oldValue { sharingRestInputChanged("friend credential changed") } } }
     var friendShareEndpoint: URL?
     var friendShareApiKey: String?
     var friendShareTokenExpiresAt: Double = 0
@@ -385,7 +396,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let confirmedHome=homeRest.insideSince != nil && homePlace.map{homeRest.homeKey?.hasPrefix($0.id+"|")==true} == true
         return ["timezone":TimeZone.current.identifier,"utcOffsetSeconds":String(TimeZone.current.secondsFromGMT()),
             "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
+            // HomeRest is the reduced-accuracy rest at the current place (or the saved
+            // Home), not the confirmed rest that allows passive rest (restConfirmed).
+            // The homeRest* keys keep their names so older reports compare.
             "homeRestSince":String(homeRest.insideSince ?? 0),"homeRestConfirmed":String(!manualRecordingLive && locationMode == .resting),
+            "reducedAccuracyRest":String(!manualRecordingLive && locationMode == .resting),
             "stationarySeconds":stationarySince.map{String(Int(max(0,now-$0)))} ?? "unknown",
             "placeType":dwell?.placeKind ?? dwell?.source.rawValue ?? (confirmedHome ? "home" : "none"),"placeSource":dwell?.source.rawValue ?? (confirmedHome ? "savedHomeConfirmation" : "none"),"placeSettled":String(dwellSettled),
             "significantChangesRequested":String(significantLocationRequested),"visitsRequested":String(visitMonitoringRequested),
@@ -427,6 +442,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         state["wifiOnPath"]=wifiOnPath.map{String($0)} ?? "unknown"
         state["wifiPresence"]=homeWiFi == nil ? "Home Wi-Fi not configured" : "supporting evidence at the saved Home only; never proof of rest or departure"
         state["restConfirmed"]=String(restDecision.confirmed)
+        state["restStage"]=RestStage.describe(reducedAccuracy:active == nil && locationMode == .resting,confirmed:restDecision.confirmed,passive:locationMode == .passive)
+        let recovery=BackgroundRecovery.evaluate(backgroundRecoveryInputs)
+        state["backgroundRecovery"]=recovery.status.rawValue
+        state["backgroundRecoveryIssues"]=recovery.issues.joined(separator:",")
         state["restReason"]=restDecision.reason
         state["restPlace"]=restPlaceKind.rawValue
         state["restStillSeconds"]=String(Int(restDecision.stillSeconds))
@@ -446,7 +465,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     static let fullContextKinds:Set<String>=["lifecycle","session","rest","journey","preference","error","invariant","recovery","account","detection"]
     static let compactContextKeys:Set<String>=["process","component","appState","locationMode","automaticLocationMode","backgroundSession","continuousLocationRequested",
-        "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","passiveRest","wifiMatch","reason","commit","build","adaptiveState",
+        "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","restStage","passiveRest","backgroundRecovery","wifiMatch","reason","commit","build","adaptiveState",
         "liveSharingArmed","liveSharingHoldsLocation","liveSharingTracking","liveSharingPublisher","liveSharingSendActivity","householdLastSuccessAgeSeconds",
         // Read back from the journal when it is reopened.
         "householdLastSuccessAt","friendLastSuccessAt","automaticRecordingState","automaticSuppressedBy","recordingOwner","manualPausedPreserved"]
@@ -699,8 +718,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let age=now-location.timestamp.timeIntervalSince1970
         // Friend sharing uses the same native location callback as household
         // sharing, but a separate consent/table and an older RPC that has no
-        // captured-at or activity fields. Keep the reason explicit instead of
-        // quietly giving the two audiences different tracking lifecycles.
+        // captured-at or activity fields: the server stamps the row on arrival and
+        // friends stop seeing it 30 minutes later. That is why friend sharing never
+        // rests with the phone (SharingRest), while household sharing may.
         guard !accountSuspended,!accountDeleting,
               let token=friendShareToken,let endpoint=friendShareEndpoint,let apiKey=friendShareApiKey,
               now<friendShareTokenExpiresAt-60,!friendShareInFlight,
