@@ -154,7 +154,7 @@ extension LocationRecorder {
             liveSharing:liveSharingArmed,automaticPermitted:automaticPermitted)
         adaptive.shutdown(reason:"a manual recording owns the iPhone")
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil
-        automaticSampling=AutomaticSampling();departureEvidence.reset();movementTransition.reset();homeRest.reset();endPassiveRest()
+        automaticSampling=AutomaticSampling();departureEvidence.reset();movementTransition.reset();homeRest.reset();endPassiveRest(reason:"a manual recording owns the iPhone")
         // iOS keeps visit monitoring through a relaunch, but the flag does not survive.
         manager.stopMonitoringVisits(); visitMonitoringRequested = false
         for region in manager.monitoredRegions where region.identifier.hasPrefix("letm3go-place-") { stopRegionMonitoring(region) }
@@ -187,6 +187,7 @@ extension LocationRecorder {
         // The app slept through the end of the last check, so nothing it gathered is
         // connected to this wake-up. An open or stopped journey keeps its detector.
         if (automaticSampling.probeUntil ?? .greatestFiniteMagnitude)<=now,automaticTrip == nil,settledTripID == nil {
+            noteWakeCheckEnded(now:now,outcome:.unknown)
             detector.reset();departureLatency.reset()
         }
         // Any departure evidence ends a confirmed rest; it must be re-earned, unless
@@ -209,7 +210,7 @@ extension LocationRecorder {
                 // Departure latency is measured from here, for either engine.
                 if wasIdle, automaticTrip == nil {
                     // A departure that never confirmed must not be measured against this one.
-                    if departureLatency.isStale(now:now) { departureLatency.reset() }
+                    if departureLatency.isStale(now:now) { noteWakeCheckEnded(now:now,outcome:.unknown); departureLatency.reset() }
                     noteDepartureEvidence(cause, now:now)
                 }
             }

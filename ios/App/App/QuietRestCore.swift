@@ -247,6 +247,13 @@ enum SharingRest {
         now.passiveOtherwiseAllowed = decided.passiveOtherwiseAllowed
         return now == decided
     }
+    // A stale decision to rest found while passive rest is still applied. Leaving
+    // passive rest belongs to the central reconciler (reconcileAutomaticSampling),
+    // which changes the mode, ends the rest, restores the session and keep-alive
+    // together; sharing must not start standard location under a passive mode.
+    static func centralReconcileFirst(passive: Bool, allowed: Bool, current: Bool) -> Bool {
+        passive && allowed && !current
+    }
 }
 
 // Requests made before the pending one runs share it, and a reconcile that runs
@@ -369,6 +376,29 @@ enum BackgroundRecovery {
         if i.keepAliveWanted && !i.keepAliveRunning { limiting.append("keepAliveNotRunning") }
         let status: BackgroundRecoveryStatus = !blocking.isEmpty ? .unavailable : !limiting.isEmpty ? .limited : .armed
         return (status, blocking + limiting)
+    }
+}
+
+// MARK: Wake-up check outcome
+//
+// What a departure check that began in passive rest showed, at most once per
+// wake-up, and only from what the recorder observed:
+// - preciseFix: a precise fix arrived after the wake-up (or a journey confirmed).
+// - noPreciseFix: the check ended while the app ran, without a precise fix.
+// - interrupted: an observed transition ended the check first: automatic
+//   tracking became unavailable (setting or permission), a manual recording took
+//   the iPhone, or the account was locked, signed out or deleted.
+// - unknown: the check's end was never observed because the app was not running;
+//   it is found at the next wake-up.
+// A process that iOS terminates during the check records nothing more. Its
+// journal then shows "Departure wake-up" with no outcome before the next launch;
+// that gap is the only evidence, and it is not filled in afterwards.
+enum WakeCheckOutcome: String { case preciseFix, noPreciseFix, interrupted, unknown }
+
+enum WakeCheck {
+    static func needsOutcome(engine: String, evidenceAt: Double?, firstFixSeen: Bool, lastOutcomeAt: Double?) -> Bool {
+        guard engine == "passive", let evidence = evidenceAt, !firstFixSeen else { return false }
+        return lastOutcomeAt.map { $0 < evidence } ?? true
     }
 }
 

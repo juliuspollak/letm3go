@@ -78,10 +78,16 @@ extension LocationRecorder {
               sharingRestReconcile.request(cause) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let cause = self.sharingRestReconcile.take() else { return }
-            self.sharingRestReconcileCause = cause
-            self.reconcileAutomaticSampling()
-            self.sharingRestReconcileCause = nil
+            self.reconcileSharingRest(cause: cause)
         }
+    }
+    // Runs the central reconciler for a sharing change: queued, or at once when
+    // sharing would otherwise start location while passive rest is still applied.
+    func reconcileSharingRest(cause: String) {
+        guard !sharingRestReconciling else { return }
+        sharingRestReconciling = true; sharingRestReconcileCause = cause
+        defer { sharingRestReconciling = false; sharingRestReconcileCause = nil }
+        reconcileAutomaticSampling()
     }
 
     var restPlaceKind: RestPlaceKind {
@@ -207,7 +213,7 @@ extension LocationRecorder {
     func noteFirstPreciseFix(_ sample: GPSPoint, now: Double) {
         guard let evidence = departureLatency.evidenceAt, !departureFirstFixLogged, sample.timestamp >= evidence - 5 else { return }
         departureFirstFixLogged = true
-        if departureLatency.engine == "passive" { wakeOutcome = "preciseFix"; wakeOutcomeAt = now }
+        if departureLatency.engine == "passive" { wakeOutcome = WakeCheckOutcome.preciseFix.rawValue; wakeOutcomeAt = now }
         recordDiagnostic("detection", "First precise fix after wake-up", details: ["wakeSource": departureLatency.cause, "firstFixAt": String(sample.timestamp),
             "wakeToFirstFixSeconds": String(Int(max(0, sample.timestamp - evidence))), "firstFixAccuracyMeters": String(Int(sample.accuracy))])
     }
@@ -277,8 +283,10 @@ extension LocationRecorder {
     }
 
     // Automatic tracking became unavailable: nothing of the rest carries over.
-    func endPassiveRest() {
+    func endPassiveRest(reason: String = "automatic tracking became unavailable") {
         let now = Date().timeIntervalSince1970
+        // Every caller ends the automatic engine: a check still open is interrupted.
+        noteWakeCheckEnded(now: now, outcome: .interrupted, reason: reason)
         if let since = passiveSince {
             passiveSince = nil
             // Only the device test can rest with sharing, so only it needs the marker.
@@ -296,7 +304,7 @@ extension LocationRecorder {
     // Sign-out or account change: no rest, Wi-Fi or session state carries over.
     func resetPassiveRest(reason: String) {
         persistPassiveSince(nil)
-        endPassiveRest()
+        endPassiveRest(reason: reason)
         endServiceSession(reason)
         resetHomeWiFi()
         monitoringFailures = MonitoringFailures()
@@ -305,6 +313,8 @@ extension LocationRecorder {
         modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
         passiveRestEnabled = true
         sharingRestEnabled = false; falseWakeRestores = []; placeInsideAt = nil; placeOutsideAt = nil; passiveEndedAt = 0
+        // The measurement belongs to the account that is ending; its outcome was reported above.
+        departureLatency.reset(); departureFirstFixLogged = false
         sharingRestReconcile = CoalescedRequest(); backgroundRecoveryLogged = ""; wakeOutcome = "none yet"; wakeOutcomeAt = nil
     }
 
@@ -508,14 +518,22 @@ extension LocationRecorder {
         recordDiagnostic("recovery", "Background recovery availability changed", details: [
             "backgroundRecovery": report.status.rawValue, "backgroundRecoveryIssues": report.issues.joined(separator: ",")])
     }
-    // A departure check from passive rest ended. Only a precise fix shows that
-    // the wake-up brought tracking back; without one it is reported as a failure.
-    func noteWakeCheckEnded(now: Double) {
-        guard departureLatency.engine == "passive", let evidence = departureLatency.evidenceAt, !departureFirstFixLogged,
-              wakeOutcomeAt.map({ $0 < evidence }) ?? true else { return }
-        wakeOutcome = "noPreciseFix"; wakeOutcomeAt = now
-        recordDiagnostic("recovery", "Wake-up check ended without a precise fix", details: [
-            "wakeSource": departureLatency.cause, "wakeCheckSeconds": String(Int(max(0, now - evidence)))])
+    // A departure check from passive rest ended without a precise fix (WakeCheck).
+    // Only a fix shows that the wake-up brought tracking back.
+    func noteWakeCheckEnded(now: Double, outcome: WakeCheckOutcome = .noPreciseFix, reason: String? = nil) {
+        guard WakeCheck.needsOutcome(engine: departureLatency.engine, evidenceAt: departureLatency.evidenceAt,
+                                     firstFixSeen: departureFirstFixLogged, lastOutcomeAt: wakeOutcomeAt),
+              let evidence = departureLatency.evidenceAt else { return }
+        wakeOutcome = outcome.rawValue; wakeOutcomeAt = now
+        let message: String
+        switch outcome {
+        case .noPreciseFix, .preciseFix: message = "Wake-up check ended without a precise fix"
+        case .interrupted: message = "Wake-up check interrupted before a precise fix"
+        case .unknown: message = "Wake-up check outcome unknown: it ended while the app was not running"
+        }
+        var details = ["wakeSource": departureLatency.cause, "wakeCheckSeconds": String(Int(max(0, now - evidence)))]
+        if let reason = reason { details["reason"] = reason }
+        recordDiagnostic("recovery", message, details: details)
     }
 
     // MARK: Departure onset after passive rest

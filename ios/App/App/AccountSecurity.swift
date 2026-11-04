@@ -214,6 +214,7 @@ extension LocationRecorder {
         // the account that made them and must not survive into the next session.
         PhotoSuggestionSkips.clearAll()
         disableLiveSharing()
+        noteWakeCheckEnded(now:Date().timeIntervalSince1970,outcome:.interrupted,reason:"the recorder was locked or signed out")
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil;automaticSampling=AutomaticSampling();homeRest.reset();dwell=nil;dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
         adaptive.reset(now:Date().timeIntervalSince1970,reason:"the recorder was locked or signed out");adaptiveEnabled=false;lastLowPowerFixAt=nil;adaptiveViolationsLogged=[];departureLatency.reset();lastDepartureLatency=[:]
         resetPassiveRest(reason:"the recorder was locked or signed out")

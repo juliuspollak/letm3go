@@ -140,6 +140,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // A change to what SharingRest reads asks for one reconcile on the next turn.
     var sharingRestReconcile = CoalescedRequest()
     var sharingRestReconcileCause: String?
+    var sharingRestReconciling = false
     var falseWakeCandidate: FalseWakeCandidate?
     var falseWakeRestores: [Double] = []
     // The position friends last accepted. Diagnostics only: friend sharing never
@@ -780,6 +781,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // valid sharing credential is held and the phone is not manually recording
     // (a manual recording already owns precise GPS).
     func reconcileLiveSharingLocation() {
+        // A decision to rest that went stale while passive: the central reconciler
+        // leaves passive rest first, so the mode never says passive while standard
+        // location runs. It takes over the queued request.
+        if SharingRest.centralReconcileFirst(passive: locationMode == .passive, allowed: sharingRestAllowed, current: sharingRestCurrent), !sharingRestReconciling {
+            reconcileSharingRest(cause: sharingRestReconcile.take() ?? "stale decision while passive")
+            return
+        }
         // Sharing that rests with the phone leaves location to the automatic
         // engine, which ends passive rest on any departure evidence.
         guard liveSharingHoldsLocation, active?.state != "recording" else { return }

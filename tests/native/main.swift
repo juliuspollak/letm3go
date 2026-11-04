@@ -2707,6 +2707,21 @@ do {
           !SharingRest.stillAllowed(decidedFrom, allowed: true, current: sharingRestInputs(household: false)),
           "a household credential that ended makes it stale")
 
+    // Stage A review: a stale decision found while passive goes to the central
+    // reconciler first; sharing never starts location under a passive mode.
+    check(SharingRest.centralReconcileFirst(passive: true, allowed: true, current: false), "a stale decision while passive is handed to the central reconciler")
+    check(!SharingRest.centralReconcileFirst(passive: true, allowed: true, current: true), "a current decision while passive changes nothing")
+    check(!SharingRest.centralReconcileFirst(passive: false, allowed: true, current: false) && !SharingRest.centralReconcileFirst(passive: true, allowed: false, current: false),
+          "outside passive rest, or with no decision to rest, sharing reconciles as before")
+
+    // Stage A review: one outcome per wake-up from passive rest, only from evidence.
+    check(WakeCheck.needsOutcome(engine: "passive", evidenceAt: 100, firstFixSeen: false, lastOutcomeAt: nil), "an open passive check without a fix needs an outcome")
+    check(!WakeCheck.needsOutcome(engine: "passive", evidenceAt: 100, firstFixSeen: true, lastOutcomeAt: nil), "a precise fix already answered the wake-up")
+    check(!WakeCheck.needsOutcome(engine: "passive", evidenceAt: 100, firstFixSeen: false, lastOutcomeAt: 150), "a wake-up is reported once, whichever path ends it")
+    check(WakeCheck.needsOutcome(engine: "passive", evidenceAt: 200, firstFixSeen: false, lastOutcomeAt: 150), "a later wake-up is reported again")
+    check(!WakeCheck.needsOutcome(engine: "established", evidenceAt: 100, firstFixSeen: false, lastOutcomeAt: nil) &&
+          !WakeCheck.needsOutcome(engine: "passive", evidenceAt: nil, firstFixSeen: false, lastOutcomeAt: nil), "only checks that began in passive rest are reported")
+
     // Stage A: a burst of changes costs one reconcile, and a reconcile that runs
     // anyway answers them.
     var coalesced = CoalescedRequest()

@@ -158,6 +158,10 @@ extension LocationRecorder: AdaptiveHost {
             lastDepartureLatency["startGapMeters"] = String(Int((max(0, place.centre.distance(to: first) - place.radius) / 10).rounded()) * 10)
         }
         recordDiagnostic("detection", "Departure latency", details: lastDepartureLatency)
+        // A confirmed journey is evidence the wake-up brought tracking back.
+        if WakeCheck.needsOutcome(engine: departureLatency.engine, evidenceAt: departureLatency.evidenceAt, firstFixSeen: departureFirstFixLogged, lastOutcomeAt: wakeOutcomeAt) {
+            wakeOutcome = WakeCheckOutcome.preciseFix.rawValue; wakeOutcomeAt = now
+        }
         departureLatency.reset()
         departurePlace = nil; departureMotionOnsetAt = nil
     }
