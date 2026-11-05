@@ -1,5 +1,5 @@
 // Permanent regression coverage for the real-clock baseline failure at midnight.
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from '../App.jsx';
 import { emptyRecorder } from '../lib/recorder.js';
@@ -25,6 +25,8 @@ it.each([
  const trip={id:'clock-boundary',title:'Drive home',source:'device',activity:'Driving',state:'paused',recordingMode:'automatic',startedAt,endedAt:startedAt+180,durationSeconds:180,distanceMeters:5900,ownerID:'owner',points:[{latitude:-33,longitude:151,timestamp:startedAt,segment:0},{latitude:-32.9,longitude:151,timestamp:startedAt+180,segment:0}],details:{provisional:true}};
  recorder.mockReturnValue({state:{...emptyRecorder,ownerID:'owner',trips:[trip],automaticEnabled:true},run:vi.fn(),busy:false,error:''});
  render(<App/>);
- expect(screen.getByRole('button',{name:new RegExp(`Today's distance: ${expectedDistance.replace('.','\\.')} km`)})).toBeInTheDocument();
- expect(screen.getByRole('button',{name:new RegExp(`Activities today: ${expectedCount}`)})).toBeInTheDocument();
+ const summary=screen.getByRole('region',{name:'Daily activity summary'});
+ expect(screen.getByRole('button',{name:'View activities for Today'})).toBeInTheDocument();
+ expect(within(summary).getByText(expectedDistance)).toBeInTheDocument();
+ expect(within(summary).getByText(String(expectedCount))).toBeInTheDocument();
 });
