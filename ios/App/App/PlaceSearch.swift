@@ -30,6 +30,12 @@ enum PlaceSearch {
                     let candidates = items.compactMap { pair -> [String: Any]? in
                         let (item, fromCentreQuery) = pair
                         guard let name = item.name, !name.isEmpty, let point = item.placemark.location else { return nil }
+                        // A natural-language shopping search can also return tenants.
+                        // Promote only names recognisable as a centre/mall, rather than
+                        // calling every shop returned by that query a shopping centre.
+                        if fromCentreQuery && name.range(
+                            of: #"(?i)\b(shopping\s*(centre|center|village)|mall|plaza|marketplace|galleria|arcade|westfield|grove)\b"#,
+                            options: .regularExpression) == nil { return nil }
                         let distance = point.distance(from: location)
                         guard distance <= (fromCentreQuery ? 350 : 2500) else { return nil }
                         var identifier: String?
