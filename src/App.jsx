@@ -56,6 +56,7 @@ import ActivityDetailScreen from './components/ActivityDetailScreen.jsx';
 import HouseholdRequests from './components/HouseholdRequests.jsx';
 import PeopleGrid from './components/PeopleGrid.jsx';
 import HomeDailySummary from './components/HomeDailySummary.jsx';
+import {homeJourneysForDay} from './lib/homeDailyStats.js';
 import {homePeople} from './lib/homePeople.js';
 import SegmentLibrary from './components/SegmentLibrary.jsx';
 import ActivityEditor from './components/ActivityEditor.jsx';
@@ -370,7 +371,8 @@ function PrivateApp(){
   if(success){setMergeSource(null);setMergeTarget(null);}
  };
  // Use the same visible, non-household activities as the Activities list.
- const homeJourneys=useMemo(()=>visibleJourneys.filter(t=>!t.readOnly&&matchesDate(t,homeDay,today)),[visibleJourneys,homeDay,today]);
+ // Match the default Activities list: archived and household journeys are excluded.
+ const homeJourneys=useMemo(()=>homeJourneysForDay(visibleJourneys,archivedTrips,homeDay,today),[visibleJourneys,archivedTrips,homeDay,today]);
  const openHomeDay=day=>{
   setQuery('');setFilter('All activities');setDateChosen(true);setDayFilter(day);
   setMetricView(null);setFavouritesOnly(false);setEquipmentFilter('');setShowArchived(false);

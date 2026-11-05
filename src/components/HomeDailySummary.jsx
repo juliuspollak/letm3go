@@ -2,14 +2,16 @@ import {useRef} from 'react';
 import {ChevronRight, Clock3, ListChecks, Route} from 'lucide-react';
 import {canShiftForward,dateLabel,shiftDate} from '../lib/activityFilters.js';
 import {distanceValue,distanceUnitLabel} from '../lib/distanceUnits.js';
+import {dailyJourneyTotals} from '../lib/homeDailyStats.js';
 
 // A single entry into Activities. Gestures only change the displayed day;
 // tapping the summary opens the same day in the existing Activities date filter.
 export default function HomeDailySummary({date,today,journeys,unit,onDateChange,onOpen}){
  const touchStart=useRef(null);
  const ignoreClickUntil=useRef(0);
- const distance=journeys.reduce((sum,journey)=>sum+(journey.distanceMeters||0),0)/1000;
- const minutes=Math.floor(journeys.reduce((sum,journey)=>sum+(journey.durationSeconds||0),0)/60);
+ const totals=dailyJourneyTotals(journeys,date,today);
+ const distance=totals.distanceMeters/1000;
+ const minutes=Math.floor(totals.durationSeconds/60);
  const forward=canShiftForward(date,today);
  const changeDay=step=>onDateChange(shiftDate(date,step,today));
  const onTouchStart=event=>{
@@ -43,7 +45,7 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
   <button type="button" className="home-daily-open" aria-label={`View activities for ${dateLabel(date,today)}`} onClick={open} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchCancel={()=>{touchStart.current=null;}}>
    <span className="home-daily-stats">
     <span className="home-daily-stat"><Route size={18}/><strong>{distanceValue(distance,unit)} <small>{distanceUnitLabel(unit)}</small></strong><span>Distance</span></span>
-    <span className="home-daily-stat"><ListChecks size={18}/><strong>{journeys.length}</strong><span>Activities</span></span>
+    <span className="home-daily-stat"><ListChecks size={18}/><strong>{totals.count}</strong><span>Activities</span></span>
     <span className="home-daily-stat"><Clock3 size={18}/><strong>{minutes} <small>min</small></strong><span>Recorded</span></span>
    </span>
    <span className="home-daily-link">View activities <ChevronRight size={15}/></span>
