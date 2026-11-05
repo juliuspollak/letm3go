@@ -27,7 +27,8 @@ enum PlaceSearch {
                     let items: [(MKMapItem, Bool)] = centres.map { ($0, true) }
                         + (nearby?.mapItems ?? []).map { ($0, false) }
                         + (natural?.mapItems ?? []).map { ($0, false) }
-                    let candidates = items.compactMap { item, fromCentreQuery -> [String: Any]? in
+                    let candidates = items.compactMap { pair -> [String: Any]? in
+                        let (item, fromCentreQuery) = pair
                         guard let name = item.name, !name.isEmpty, let point = item.placemark.location else { return nil }
                         let distance = point.distance(from: location)
                         guard distance <= (fromCentreQuery ? 350 : 2500) else { return nil }
