@@ -25,6 +25,9 @@ it.each([
  const trip={id:'clock-boundary',title:'Drive home',source:'device',activity:'Driving',state:'paused',recordingMode:'automatic',startedAt,endedAt:startedAt+180,durationSeconds:180,distanceMeters:5900,ownerID:'owner',points:[{latitude:-33,longitude:151,timestamp:startedAt,segment:0},{latitude:-32.9,longitude:151,timestamp:startedAt+180,segment:0}],details:{provisional:true}};
  recorder.mockReturnValue({state:{...emptyRecorder,ownerID:'owner',trips:[trip],automaticEnabled:true},run:vi.fn(),busy:false,error:''});
  render(<App/>);
- expect(screen.getByRole('button',{name:new RegExp(`Today's distance: ${expectedDistance.replace('.','\\.')} km`)})).toBeInTheDocument();
- expect(screen.getByRole('button',{name:new RegExp(`Activities today: ${expectedCount}`)})).toBeInTheDocument();
+ const summary=screen.getByRole('button',{name:'View activities for Today'});
+ expect(summary).toBeInTheDocument();
+ expect(summary).toHaveTextContent(expectedDistance);
+ expect(summary).toHaveTextContent('km');
+ expect(summary.querySelector('.home-daily-stat:nth-child(2) strong')).toHaveTextContent(String(expectedCount));
 });
