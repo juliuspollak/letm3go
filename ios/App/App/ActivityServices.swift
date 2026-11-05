@@ -488,7 +488,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
             guard error==nil,let place=results?.first else {call.reject("Place recognition is unavailable offline. It will retry later.");return}
             let locality=place.locality ?? place.subLocality ?? place.administrativeArea ?? ""
-            PlaceSearch.search(at: location.coordinate) { candidates, partial, lookupErrors in
+            PlaceSearch.search(at: location.coordinate, explore: call.getBool("explore") == true) { candidates, partial, lookupErrors in
                 guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
                 call.resolve(["locality":locality,"region":place.administrativeArea ?? "",
                     "nearbyName":"","categories":[],"possibleCharging":false,
