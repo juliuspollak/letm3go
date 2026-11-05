@@ -4,6 +4,7 @@ import {assessRoutePlaces,destinationTitle,destinationVisits} from './journeyRec
 import {activityCode} from './activityNames.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
+import {recognisedStopVenue} from './stopVenueRecognition.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
 export const GROUPING_VERSION=1;
@@ -33,8 +34,12 @@ function routeTags(activity,metadata){
 }
 function activityPlaceTags(activity,from,to,stops=[]){
  const candidates=[];
- if(from.nearbyName)candidates.push({name:from.nearbyName,kind:from.kind?'saved':'start'});
- if(to.nearbyName)candidates.push({name:to.nearbyName,kind:to.kind?'saved':'destination'});
+ // On a Home round trip, a named intermediate visit is the destination.
+ // Don't let the duplicate endpoint Home tag outrank that visit.
+ const namedStop=stops.some(s=>s.meaningful&&s.nearbyName&&s.name!=='Home');
+ const homeRoundTrip=from.kind==='home'&&to.kind==='home'&&namedStop;
+ if(!homeRoundTrip&&from.nearbyName)candidates.push({name:from.nearbyName,kind:from.kind?'saved':'start'});
+ if(!homeRoundTrip&&to.nearbyName)candidates.push({name:to.nearbyName,kind:to.kind?'saved':'destination'});
  for(const stop of stops.filter(s=>s.meaningful)){
   if(stop.nearbyName)candidates.push({name:stop.nearbyName,kind:stop.kind?'saved':'stop'});
   else if(stop.locality||stop.name)candidates.push({name:stop.locality||stop.name,kind:'stop'});
@@ -58,7 +63,7 @@ function makeStop(a,b,{places,metadata,telemetry,owner,vehicles}){
  const id=edge(a.id,b.id),location=geo(p,places,metadata),manual=metadata.stopEdits[id]||{};
  const stop={id,afterSegmentID:a.id,beforeSegmentID:b.id,startedAt:start,endedAt:end,durationSeconds:end-start,...location};
  stop.charging=charging(stop,telemetry,owner,vehicle(a,vehicles));
- stop.name=manual.name||location.locality||location.name;
+ stop.name=manual.name||location.nearbyName||location.locality||location.name;
  stop.tags=[...new Set([...location.tags,...(manual.tags||[]),...(stop.charging==='confirmed'?['Charging']:stop.charging==='possible'?['Possible charging']:[])])];
  if(manual.replaceTags)stop.tags=[...new Set(manual.tags||[])];
  stop.meaningful=!manual.ignored&&(stop.durationSeconds>=300||(stop.durationSeconds>=180&&(stop.charging!=='none'||!!location.nearbyName)));
@@ -103,7 +108,7 @@ export function internalStops(t,context){
  const result=[],points=t.points||[];let start=0;
  while(start<points.length){const first=points[start];if(!point(first)||first.accuracy>35){start++;continue;}let end=start+1;
   while(end<points.length&&points[end].segment===first.segment&&points[end].accuracy<=35&&points[end].timestamp-points[end-1].timestamp<=120&&metres(first,points[end])<=50)end++;
-  const last=points[end-1];if(last.timestamp-first.timestamp>=300){const location=geo(first,context.places,context.metadata);const id=`dwell:${t.id}:${first.timestamp}`,manual=context.metadata.stopEdits[id]||{};const stop={id,segmentID:t.id,pointIndex:start,startedAt:first.timestamp,endedAt:last.timestamp,durationSeconds:last.timestamp-first.timestamp,...location,name:manual.name||location.locality||location.name,meaningful:true};stop.charging=charging(stop,context.telemetry,context.owner,vehicle(t,context.vehicles));stop.tags=manual.replaceTags?[...new Set(manual.tags||[])]:[...new Set([...location.tags,...(manual.tags||[]),...(stop.charging==='possible'?['Possible charging']:stop.charging==='confirmed'?['Charging']:[])])];if(!manual.ignored)result.push(stop);}start=Math.max(start+1,end);
+  const last=points[end-1];if(last.timestamp-first.timestamp>=300){const location=geo(first,context.places,context.metadata);const id=`dwell:${t.id}:${first.timestamp}`,manual=context.metadata.stopEdits[id]||{};const stop={id,segmentID:t.id,pointIndex:start,startedAt:first.timestamp,endedAt:last.timestamp,durationSeconds:last.timestamp-first.timestamp,...location,name:manual.name||location.nearbyName||location.locality||location.name,meaningful:true};stop.charging=charging(stop,context.telemetry,context.owner,vehicle(t,context.vehicles));stop.tags=manual.replaceTags?[...new Set(manual.tags||[])]:[...new Set([...location.tags,...(manual.tags||[]),...(stop.charging==='possible'?['Possible charging']:stop.charging==='confirmed'?['Charging']:[])])];if(!manual.ignored)result.push(stop);}start=Math.max(start+1,end);
  }
  return result;
 }
@@ -124,9 +129,12 @@ export function nativeStops(t,context){
   const at=points.filter(p=>point(p)&&p.timestamp<=s.start).at(-1);
   if(!at)return [];
   const id=`native:${t.id}:${s.start}`,manual=context.metadata.stopEdits[id]||{},location=geo(at,context.places,context.metadata);
+  const venue=!location.kind?recognisedStopVenue(context.metadata.places[placeKey(at)],at,s.end-s.start):null;
+  // A verified saved place takes precedence. Nearby unrelated shops remain suggestions.
+  if(venue){location.name=venue.name;location.nearbyName=venue.name;location.stopVenue=venue;}
   const tag=STOP_VERDICT_TAGS[s.verdict];
   const stop={id,segmentID:t.id,pointIndex:points.indexOf(at),startedAt:s.start,endedAt:s.end,durationSeconds:s.end-s.start,...location,
-   name:manual.name||location.locality||location.name,verdict:s.verdict||null,reasons:Array.isArray(s.reasons)?s.reasons.slice(0,8):[],meaningful:true};
+   name:manual.name||location.nearbyName||location.locality||location.name,verdict:s.verdict||null,reasons:Array.isArray(s.reasons)?s.reasons.slice(0,8):[],meaningful:true};
   stop.charging=charging(stop,context.telemetry||[],context.owner,vehicle(t,context.vehicles||[]));
   stop.tags=manual.replaceTags?[...new Set(manual.tags||[])]:[...new Set([...location.tags,...(manual.tags||[]),...(tag?[tag]:[])])];
   return manual.ignored?[]:[stop];
@@ -180,8 +188,14 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
    const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
-   const generatedTitle=destinationTitle(s.activity,recognition.primary)||((from.nearbyName||to.nearbyName)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<100):null);
-   const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
+   const destinationStop=stops.find(stop=>stop.id.startsWith('native:')&&stop.stopVenue&&!metadata.stopEdits[stop.id]?.name);
+   const homeLoop=from.kind==='home'&&to.kind==='home'&&destinationStop;
+   const stopTitle=homeLoop?`Home → ${destinationStop.name} → Home`:null;
+   const generatedTitle=stopTitle||destinationTitle(s.activity,recognition.primary)||((from.nearbyName||to.nearbyName)?contextualJourneyTitle(s.activity,from,to,metres(endpoint(s,false),endpoint(s,true))<100):null);
+   // Native automatic round-trip titles are generated by the recorder, not user
+   // edits. Only replace that pattern when the main stop has a verified venue.
+   const generatedNativeStopTitle=!!stopTitle&&s.recordingMode==='automatic'&&!s.details?.titleEdited&&!s.details?.userCorrected&&/^Home → Home · stopped \d+ min$/.test(s.title||'');
+   const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
    projectionCache?.set(cacheID,{source:s,keys,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>[...internalStops(t,context),...nativeStops(t,context)]);
