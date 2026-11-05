@@ -32,7 +32,7 @@ import NavButton from './components/NavButton.jsx';
 import {NAV_ITEMS} from './lib/navigation.js';
 import {recordControlState} from './lib/recordingState.js';
 import AutoCloudSync from './components/AutoCloudSync.jsx';
-import {distanceText,distanceValue,distanceUnitLabel} from './lib/distanceUnits.js';
+import {distanceText} from './lib/distanceUnits.js';
 import { setNativeAppearance } from './lib/appleMaps.js';
 import TrackingPermissions from './components/TrackingPermissions.jsx';
 import {RecordingHealthChip,RecordingHealthDetail,RecordingWarning} from './components/RecordingHealth.jsx';
