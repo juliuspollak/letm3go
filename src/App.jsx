@@ -370,7 +370,8 @@ function PrivateApp(){
   if(success){setMergeSource(null);setMergeTarget(null);}
  };
  // Use the same visible, non-household activities as the Activities list.
- const homeJourneys=useMemo(()=>visibleJourneys.filter(t=>!t.readOnly&&matchesDate(t,homeDay,today)),[visibleJourneys,homeDay,today]);
+ // Match the default Activities list: archived and household journeys are excluded.
+ const homeJourneys=useMemo(()=>visibleJourneys.filter(t=>!t.readOnly&&!archivedTrips.includes(t.id)&&matchesDate(t,homeDay,today)),[visibleJourneys,archivedTrips,homeDay,today]);
  const openHomeDay=day=>{
   setQuery('');setFilter('All activities');setDateChosen(true);setDayFilter(day);
   setMetricView(null);setFavouritesOnly(false);setEquipmentFilter('');setShowArchived(false);
