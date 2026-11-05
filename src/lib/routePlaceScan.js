@@ -36,6 +36,7 @@ export async function scanRoutePlaces(trip,{hidden=[],places={},onProgress,signa
    try{
     // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
     place=await recorder.recogniseTripPlace(null,0,point,true);
+    if(stop)place={...place,stopLookup:true};
    }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
   }
   if(stop){
