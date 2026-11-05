@@ -44,7 +44,7 @@ import EquipmentSheet from './components/EquipmentSheet.jsx';
 import {EquipmentChip} from './components/EquipmentChip.jsx';
 import {equipmentTripCount,equipmentUsage,itemTitle,tripEquipmentLabel,tripUsesEquipment} from './lib/collection.js';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Flag, ListChecks, Clock3, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Home, MapPin, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Route, Lock, GitMerge, EyeOff, Eye, LifeBuoy } from 'lucide-react';
+import { Flag, CircleDot, Users, Gauge, Car as CarIcon, ArrowUpRight, ArrowLeft, ArrowRight, Star, ChevronRight, Home, MapPin, Plus, Search, ShieldCheck, SlidersHorizontal, Sun, Moon, User, X, Route, Lock, GitMerge, EyeOff, Eye, LifeBuoy } from 'lucide-react';
 import JourneyMap from './components/JourneyMap.jsx';
 import MtbMap from './components/MtbMap.jsx';
 import RecorderPanel from './components/RecorderPanel.jsx';
