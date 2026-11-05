@@ -1,5 +1,11 @@
-import {chosenDay} from './activityFilters.js';
+import {chosenDay,matchesDate} from './activityFilters.js';
 import {shiftMapDay} from './mapLayers.js';
+
+// Keep the Home summary in sync with the default Activities listing.
+export function homeJourneysForDay(journeys,archivedIDs,selection,today){
+ const archived=new Set(archivedIDs);
+ return journeys.filter(journey=>!journey.readOnly&&!archived.has(journey.id)&&matchesDate(journey,selection,today));
+}
 
 // Allocate only the recorded portion falling inside the selected local calendar
 // day. A grouped journey is made of distinct recordings, not one continuous
