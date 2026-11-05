@@ -7,7 +7,7 @@ import {distanceValue,distanceUnitLabel} from '../lib/distanceUnits.js';
 // tapping the summary opens the same day in the existing Activities date filter.
 export default function HomeDailySummary({date,today,journeys,unit,onDateChange,onOpen}){
  const touchStart=useRef(null);
- const ignoreClick=useRef(false);
+ const ignoreClickUntil=useRef(0);
  const distance=journeys.reduce((sum,journey)=>sum+(journey.distanceMeters||0),0)/1000;
  const minutes=Math.floor(journeys.reduce((sum,journey)=>sum+(journey.durationSeconds||0),0)/60);
  const forward=canShiftForward(date,today);
@@ -25,12 +25,12 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
   if(Math.abs(dx)<45||Math.abs(dx)<Math.abs(dy)*1.25)return;
   // Swiping left browses older days, swiping right returns towards Today.
   if(dx<0||forward){
-   ignoreClick.current=true;
+   ignoreClickUntil.current=Date.now()+650;
    changeDay(dx<0?-1:1);
   }
  };
  const open=()=>{
-  if(ignoreClick.current){ignoreClick.current=false;return;}
+  if(Date.now()<ignoreClickUntil.current)return;
   onOpen(date);
  };
  return <section className="home-daily-summary" aria-label="Daily activity summary">
