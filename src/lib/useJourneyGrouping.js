@@ -1,7 +1,7 @@
 import {recognitionSampleIndexes,lookupDue,cachedLookup} from './journeyRecognition.js';
 import {reconcileSources} from './fleetJourneys.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops} from './journeyGrouping.js';
+import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops,nativeStops} from './journeyGrouping.js';
 import {recorder,recorderAvailable} from './recorder.js';
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
@@ -23,14 +23,20 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
    const context={owner,metadata:current.current,places,vehicles,telemetry:[]};
    const candidates=activities.flatMap(t=>{
     const points=t.points||[];if(!points.length||t.endedAt==null||t.state==='recording'||(t.ownerID||t.owner_id)&& (t.ownerID||t.owner_id)!==owner)return [];
-    const indexes=recognitionSampleIndexes(t,internalStops(t,context));
-    return indexes.map(index=>({id:t.id,index,point:points[index],cloud:t.source!=='device'&&t.source!=='simulator'}));
+    const recordedStops=nativeStops(t,context);
+    const stopIndexes=new Set(recordedStops.map(stop=>stop.pointIndex));
+    const indexes=recognitionSampleIndexes(t,[...internalStops(t,context),...recordedStops]);
+    return indexes.map(index=>({id:t.id,index,point:points[index],stop:stopIndexes.has(index),
+      cloud:t.source!=='device'&&t.source!=='simulator'}));
    });
+   // Prioritise actual recorded stops ahead of generic route samples, including
+   // when the same coordinate appears in both lists.
+   candidates.sort((a,b)=>Number(b.stop)-Number(a.stop));
    const seen=new Set();
    for(const c of candidates){
     if(!alive)return;const key=placeKey(c.point);if(!key||seen.has(key))continue;seen.add(key);
-    const cached=current.current.places[key];if(!lookupDue(cached))continue;
-    try{const place=await recorder.recogniseTripPlace(c.id,c.index,c.cloud?c.point:null);if(!alive)return;await persist(meta=>({...meta,places:{...meta.places,[key]:cachedLookup(place)}}));}
+    const cached=current.current.places[key];if(!lookupDue(cached)&&!(c.stop&&cached?.source!=='saved-place'&&!cached?.stopLookup))continue;
+    try{const place=await recorder.recogniseTripPlace(c.id,c.index,c.cloud?c.point:null,c.stop);if(!alive)return;await persist(meta=>({...meta,places:{...meta.places,[key]:cachedLookup({...place,...(c.stop?{stopLookup:true}:{})})}}));}
     catch{if(alive)await persist(meta=>({...meta,places:{...meta.places,[key]:{...cached,retryAfter:Date.now()+5*60000}}})).catch(()=>{});}
     await new Promise(resolve=>setTimeout(resolve,1200));
    }
