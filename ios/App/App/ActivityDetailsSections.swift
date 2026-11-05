@@ -10,10 +10,27 @@ struct ActivityHeaderSection: View {
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
                 if h.local {
-                    Button { model.sheet = .editor } label: { Image(systemName: "pencil") }
-                        .accessibilityLabel("Edit activity").disabled(model.busy).frame(minWidth: 44, minHeight: 44)
-                    Button { model.sheet = .privacy } label: { Image(systemName: "lock.shield") }
-                        .accessibilityLabel("Activity privacy").frame(minWidth: 44, minHeight: 44)
+                    Button { model.sheet = .editor } label: {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Edit activity")
+                    .accessibilityIdentifier("activity.header.edit")
+                    .disabled(model.busy)
+                    Button { model.sheet = .privacy } label: {
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Activity privacy")
+                    .accessibilityIdentifier("activity.header.privacy")
                 }
             }
             Text(h.subtitle).font(.subheadline).foregroundColor(DetailStyle.muted)
