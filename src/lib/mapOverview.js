@@ -23,7 +23,8 @@ export function overviewPhotos(journeys,unit='km'){
   for(const photo of journey.photos||[]){
    if(photos.length>=OVERVIEW_PHOTO_LIMIT)return photos;
    if(!valid(photo?.point)||photo.id==null)continue;
-   const km=Number(journey.distance)||(Number(journey.distanceMeters)||0)/1000;
+   // Metres first, rounded like every other distance (tripDistanceText).
+   const km=Number.isFinite(journey.distanceMeters)?journey.distanceMeters/1000:Number(journey.distance)||0;
    photos.push({
     id:`photo:${photo.id}`,kind:'photo',point:photo.point,photoID:String(photo.id),journeyID:String(journey.id),
     title:photo.caption||'Journey photo',

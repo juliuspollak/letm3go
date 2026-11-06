@@ -280,4 +280,25 @@ final class ActivityDetailsUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["activity.back"].isHittable)
     }
+    // Expanded, scroll well down and back up past the top: once the finger lifts,
+    // the panel and its content must come to rest instead of moving up and down.
+    func testScrollingBackToTheTopSettles() {
+        let panel = app.otherElements["activity.panel"]
+        drag(from: height * 0.8, to: height * 0.2, speed: .slow)
+        let expanded = panel.frame.minY
+        for _ in 0..<3 { drag(from: height * 0.8, to: height * 0.25) }
+        for _ in 0..<6 { drag(from: height * 0.3, to: height * 0.85) }
+        // Pull down past the top and keep holding, as a person reading back up does.
+        point(200, height * 0.3).press(forDuration: 0.05, thenDragTo: point(200, height * 0.7), withVelocity: .slow, thenHoldForDuration: 2)
+        Thread.sleep(forTimeInterval: 0.9)
+        for _ in 0..<2 { drag(from: height * 0.3, to: height * 0.85) }
+        var panels: [CGFloat] = [], titles: [CGFloat] = []
+        for _ in 0..<12 {
+            panels.append(panel.frame.minY); titles.append(title.exists ? titleY : -1)
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        print("SETTLE expanded=\(expanded) panel=\(panels) title=\(titles)")
+        XCTAssertLessThan((panels.max() ?? 0) - (panels.min() ?? 0), 2, "the panel stays still")
+        XCTAssertLessThan((titles.max() ?? 0) - (titles.min() ?? 0), 2, "the content stays still")
+    }
 }
