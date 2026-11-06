@@ -1,8 +1,15 @@
-import {cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import TripsList from './TripsList.jsx';
-import {TRIP_PAGE_SIZE} from '../lib/tripsList.js';
+import {TRIP_PAGE_SIZE,TRIP_PREFETCH_BATCH_SIZE} from '../lib/tripsList.js';
 afterEach(cleanup);
+// jsdom does not implement PointerEvent; preserve pointer identity and coordinates.
+function pointer(row,type,x=0,y=0){
+ const event=new MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y});
+ Object.defineProperties(event,{pointerType:{value:'touch'},isPrimary:{value:true},pointerId:{value:1}});
+ fireEvent(row,event);
+ return event;
+}
 
 // Rows are delegated from the list container, so every test renders the real
 // component with the smallest set of props App passes.
@@ -76,8 +83,8 @@ it('keeps the same row elements when a recorder poll republishes the list',()=>{
 it('reveals Delete as well as Archive without deleting on the swipe itself',()=>{
  const ride=trip('watch',{source:'watch'});const {container,props}=renderList({journeys:[ride]});
  const row=container.querySelector('[data-trip-id]');
- fireEvent.touchStart(row,{touches:[{clientX:250,clientY:100}]});
- fireEvent.touchMove(row,{touches:[{clientX:150,clientY:100}]});fireEvent.touchEnd(row);
+ pointer(row,'pointerdown',250,100);
+ pointer(row,'pointermove',150,100);pointer(row,'pointerup');
  expect(container.querySelector('.trip-swipe-surface').style.transform).toBe('translateX(-198px)');
  expect(props.onDelete).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole('button',{name:'Delete: Ride watch'}));
@@ -88,8 +95,8 @@ it('a held touch followed by vertical scrolling never starts merge or blocks scr
  try{
   const {container,props}=renderList({journeys:[trip('drive',{activity:'Driving'})]});
   const row=container.querySelector('[data-trip-id]');
-  fireEvent.touchStart(row,{touches:[{clientX:180,clientY:100}]});vi.advanceTimersByTime(500);
-  const move=new Event('touchmove',{bubbles:true,cancelable:true});Object.defineProperty(move,'touches',{value:[{clientX:180,clientY:250}]});fireEvent(row,move);
+  pointer(row,'pointerdown',180,100);vi.advanceTimersByTime(500);
+  const move=pointer(row,'pointermove',180,250);
   expect(move.defaultPrevented).toBe(false);expect(props.onMergeSelect).not.toHaveBeenCalled();expect(container.querySelector('.merge-floating-card')).toBeNull();
   expect(row).toHaveAttribute('draggable','false');
  }finally{vi.useRealTimers();}
@@ -100,7 +107,7 @@ it('does not offer deletion of shared, remote or active records',()=>{
 });
 it('restores an archived activity on a full swipe instead of archiving it again',()=>{
  const {container,props}=renderList({journeys:[trip('a')],showArchived:true});const row=container.querySelector('[data-trip-id]');
- fireEvent.touchStart(row,{touches:[{clientX:350,clientY:100}]});fireEvent.touchMove(row,{touches:[{clientX:10,clientY:100}]});fireEvent.touchEnd(row);
+ pointer(row,'pointerdown',350,100);pointer(row,'pointermove',10,100);pointer(row,'pointerup');
  expect(props.onRestore).toHaveBeenCalledWith('a');expect(props.onArchive).not.toHaveBeenCalled();
 });
 
@@ -114,4 +121,31 @@ it('marks a distance that includes estimated GPS gaps with ~, in both sort layou
  unmount();
  const sorted=renderList({journeys,sort:'duration'}).container;
  expect([...sorted.querySelectorAll('.trip-time-distance')].map(n=>n.textContent)).toEqual(['~59 km','4.2 km']);
+});
+
+it('cancels a horizontal preview when the browser takes over a gesture',()=>{
+ const {container,props}=renderList({journeys:[trip('a')]});
+ const row=container.querySelector('[data-trip-id]');
+ pointer(row,'pointerdown',250,100);pointer(row,'pointermove',150,100);
+ expect(row).toHaveClass('trip-swiping');
+ pointer(row,'pointercancel');
+ expect(row).not.toHaveClass('trip-swiping');
+ expect(row.querySelector('.trip-swipe-surface').style.transform).toBe('');
+ expect(props.onArchive).not.toHaveBeenCalled();
+});
+
+it('reobserves the sentinel after each page so continuous scrolling loads beyond page two',()=>{
+ const observers=[];
+ vi.stubGlobal('IntersectionObserver',class{
+  constructor(callback){this.callback=callback;this.observe=vi.fn();this.disconnect=vi.fn();observers.push(this);}
+ });
+ try{
+  const {container}=renderList({journeys:Array.from({length:TRIP_PAGE_SIZE*3+1},(_,i)=>trip(`t${i}`))});
+  for(let page=1;page<=9;page++){
+   const observer=observers.at(-1);
+   act(()=>observer.callback([{isIntersecting:true}]));
+   expect(observer.disconnect).toHaveBeenCalled();
+   expect(container.querySelectorAll('.trip-list-row')).toHaveLength(Math.min(TRIP_PAGE_SIZE+page*TRIP_PREFETCH_BATCH_SIZE,TRIP_PAGE_SIZE*3+1));
+  }
+ }finally{vi.unstubAllGlobals();}
 });

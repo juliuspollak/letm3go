@@ -16,7 +16,16 @@ function tripKey(t){
  // in case a future trim path forgets to advance `updatedAt`.
  return [t.id,t.source,t.recordingMode,t.title,t.updatedAt,t.startedAt,t.points?.length,t.endedAt,t.state,t.durationSeconds,t.distanceMeters,t.activity,t.details?.provisional,t.details?.continuationEndsAt,t.details?.userCorrected,t.details?.visibility,t.details?.coverPhotoID,t.details?.visibleRouteStart,t.details?.visibleRouteEnd,(t.details?.photos||[]).length,t.details?.heartRate?.samples?.length,t.details?.unverifiedHeartRate?.samples?.length,t.details?.titleEdited,JSON.stringify(t.details?.energy),JSON.stringify(t.details?.unverifiedEnergy),JSON.stringify(t.details?.wholeWorkoutEnergy),JSON.stringify(t.details?.unverifiedWholeWorkoutEnergy),JSON.stringify(t.details?.energyBinding)].join(':');
 }
-export function snapshotKey(data){
+// The hook supplies a cache only for reconciled, immutable history arrays. Live
+// records are fingerprinted separately every time; edits replace the history array.
+function historyKey(trips,cache){
+ if(!trips)return '';
+ if(cache?.has(trips))return cache.get(trips);
+ const key=trips.map(tripKey).join('|');
+ cache?.set(trips,key);
+ return key;
+}
+export function snapshotKey(data,historyCache){
  if(!data)return '';
  const svc=data.trackingServices||{};
  return [
@@ -32,7 +41,7 @@ export function snapshotKey(data){
   data.recordingElsewhere?.sessionID,data.recordingElsewhere?.state,data.recordingElsewhere?.activity,
   data.error,data.recovery,data.accuracy,data.lastFixAt,data.currentSpeed,
   tripKey(data.active),tripKey(data.automaticTrip),
-  (data.trips||[]).map(tripKey).join('|'),
+  historyKey(data.trips,historyCache),
   (data.places||[]).map(p=>[p.id,p.name,p.kind,p.latitude,p.longitude,p.radius].join(':')).join('|'),
   (data.deletedIDs||[]).join(','),
   svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,svc.automaticPauseEnabled,svc.lastExecutionGapSeconds,
@@ -55,12 +64,15 @@ export function reconcileRecorderSnapshot(previous,data){
   data={...data,trips:previous.trips,historyUnchanged:false};
  }
  if(!sameOwner)return data;
- const old=new Map((previous.trips||[]).map(t=>[t.id,t]));
- const trips=(data.trips||[]).map(t=>{const prior=old.get(t.id);return prior&&tripKey(prior)===tripKey(t)?prior:t;});
- const stable=trips.length===previous.trips?.length&&trips.every((t,i)=>t===previous.trips[i]);
+ let trips=previous.trips||[];
+ if(data.trips!==previous.trips){
+  const old=new Map((previous.trips||[]).map(t=>[t.id,t]));
+  trips=(data.trips||[]).map(t=>{const prior=old.get(t.id);return prior&&tripKey(prior)===tripKey(t)?prior:t;});
+  if(trips.length===previous.trips?.length&&trips.every((t,i)=>t===previous.trips[i]))trips=previous.trips;
+ }
  const places=JSON.stringify(data.places||[])===JSON.stringify(previous.places||[])?previous.places:data.places;
  const deletedIDs=(data.deletedIDs||[]).join('|')===(previous.deletedIDs||[]).join('|')?previous.deletedIDs:data.deletedIDs;
- return {...data,trips:stable?previous.trips:trips,places,deletedIDs};
+ return {...data,trips,places,deletedIDs};
 }
 function lockedSnapshot(data){
  return {...emptyRecorder,version:data?.version||emptyRecorder.version,build:data?.build||emptyRecorder.build,permission:data?.permission||'locked',storageReady:false,nativeBinding:data?.nativeBinding||null,error:data?.error||''};
@@ -68,6 +80,7 @@ function lockedSnapshot(data){
 
 export function useRecorder(ownerID,onBindingRequired){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const historyFingerprints=useRef(new WeakMap());
  const lastKey=useRef(''),accepted=useRef(emptyRecorder),generation=useRef(0),readRequest=useRef(0),actionSequence=useRef(0);
  // Why the last action failed has to be readable in the same tick the awaited
  // `run(...)` resolves, before React re-renders, so it lives in a ref behind a
@@ -104,7 +117,7 @@ export function useRecorder(ownerID,onBindingRequired){
     setError('');
     // Skip an identical poll: keeps the state reference stable so memoised
     // journey lists and maps do not recompute while nothing actually changed.
-    const next=reconcileRecorderSnapshot(accepted.current,data),key=snapshotKey(next);
+    const next=reconcileRecorderSnapshot(accepted.current,data),key=snapshotKey(next,historyFingerprints.current);
     if(key===lastKey.current)return;
     lastKey.current=key;accepted.current=next;
     setState(next);
@@ -130,7 +143,7 @@ export function useRecorder(ownerID,onBindingRequired){
     if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
      accepted.current=emptyRecorder;lastKey.current='';setState(lockedSnapshot(result));requestRebind(result.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');
     }
-    const next=reconcileRecorderSnapshot(accepted.current,result);accepted.current=next;lastKey.current=snapshotKey(next);setState(next);
+    const next=reconcileRecorderSnapshot(accepted.current,result);accepted.current=next;lastKey.current=snapshotKey(next,historyFingerprints.current);setState(next);
    }
    generation.current+=1; // also reject polls started while the mutation ran
    return result||true;
@@ -150,7 +163,7 @@ export function useRecorder(ownerID,onBindingRequired){
    rebindAttempt.current=null;
    setError('');
    const next=reconcileRecorderSnapshot(accepted.current,data);accepted.current=next;
-   lastKey.current=snapshotKey(next);
+   lastKey.current=snapshotKey(next,historyFingerprints.current);
    setState(next);
   }catch(err){if(epoch===generation.current&&request===readRequest.current)setError(err.message||'Unable to read native recorder.');}
  },[ownerID,requestRebind]);

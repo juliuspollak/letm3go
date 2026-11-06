@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {localRecorderJourneys} from '../src/lib/recorder.js';
-import {reconcileRecorderSnapshot} from '../src/lib/useRecorder.js';
+import {reconcileRecorderSnapshot,snapshotKey} from '../src/lib/useRecorder.js';
 
 // Synthetic only. Measures the history portion of a poll; live data/preferences
 // and native runtime frame timing are outside this benchmark.
@@ -10,10 +10,12 @@ const trips=Array.from({length:100},(_,i)=>({id:`synthetic-${i}`,source:i%2?'dev
 const full={ownerID:'synthetic-owner',historyToken:'synthetic-history',trips,places:[]};
 const delta={ownerID:full.ownerID,historyToken:full.historyToken,historyUnchanged:true,trips:[]};
 const cache=new WeakMap(),first=localRecorderJourneys(full,full.ownerID,cache);
+const historyFingerprints=new WeakMap();snapshotKey(full,historyFingerprints);
 const started=performance.now();let state=full;
 for(let n=0;n<100;n++){
  state=reconcileRecorderSnapshot(state,{...delta,currentSpeed:n});
  assert.equal(state.trips,full.trips);
+ snapshotKey(state,historyFingerprints);
  const next=localRecorderJourneys(state,full.ownerID,cache);
  assert.ok(next.every((trip,i)=>trip===first[i]));
 }

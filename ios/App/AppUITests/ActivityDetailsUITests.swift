@@ -302,3 +302,90 @@ final class ActivityDetailsUITests: XCTestCase {
         XCTAssertLessThan((titles.max() ?? 0) - (titles.min() ?? 0), 2, "the content stays still")
     }
 }
+
+// Built by scripts/test-activity-scroll-simulator.mjs with the real TripsList
+// component/styles in a standalone synthetic bundle inside the app's WKWebView.
+final class ActivityScrollUITests: XCTestCase {
+    private var app: XCUIApplication!
+    override func setUp() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Activity scroll fixture"].waitForExistence(timeout: 30))
+    }
+    private func point(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+    }
+    private func scroll(up: Bool, hold: TimeInterval = 0.05) {
+        point(0.45, up ? 0.78 : 0.28).press(forDuration: hold,
+            thenDragTo: point(0.45, up ? 0.25 : 0.80),
+            withVelocity: .fast, thenHoldForDuration: 0)
+    }
+    private var diagnostic: XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Scroll diagnostics '")).firstMatch
+    }
+    private func evidence(_ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        print("SCROLL_DIAGNOSTICS \(name): \(diagnostic.label)")
+    }
+    func testContinuousScrollingWithoutTaps() {
+        for _ in 0..<55 { scroll(up: true) }
+        evidence("continuous-bottom")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Open Simulator activity 199'")).firstMatch.isHittable,
+                      "all five pages load through actual scrolling")
+        for _ in 0..<55 { scroll(up: false) }
+        XCTAssertTrue(app.staticTexts["Activity scroll fixture"].isHittable)
+        evidence("continuous-return-top")
+        XCTAssertTrue(diagnostic.label.contains("opens=0"), "scrolls never activate a row")
+        XCTAssertTrue(diagnostic.label.contains("merge=none"), "scrolls never start merging")
+    }
+    func testTapThenScrollAndHeldTouches() {
+        var taps = 0
+        for iteration in 0..<12 {
+            let rows = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Open Simulator activity '"))
+            let visible = rows.allElementsBoundByIndex.first { $0.isHittable && $0.frame.midY > 160 && $0.frame.midY < 600 }
+            XCTAssertNotNil(visible)
+            visible?.tap(); taps += 1
+            scroll(up: true, hold: iteration % 2 == 0 ? 0.5 : 0.05)
+        }
+        evidence("tap-scroll-held-touch")
+        XCTAssertTrue(diagnostic.label.contains("opens=\(taps)"), "each deliberate tap opens exactly once")
+        XCTAssertTrue(diagnostic.label.contains("merge=none"))
+        for _ in 0..<16 { scroll(up: false) }
+        XCTAssertTrue(app.staticTexts["Activity scroll fixture"].isHittable)
+    }
+    func testCoordinateTapsThenScrollWithoutRowQueries() {
+        // Avoid walking the entire accessibility tree between gestures. That
+        // instrumentation can itself stall WebKit while offscreen rows resolve.
+        for iteration in 0..<12 {
+            point(0.4, 0.5).tap()
+            scroll(up: true, hold: iteration % 2 == 0 ? 0.5 : 0.05)
+        }
+        evidence("coordinate-tap-scroll")
+        let label = diagnostic.label
+        func count(_ key: String) -> Int {
+            Int(label.components(separatedBy: "\(key)=").last?.components(separatedBy: " ").first ?? "") ?? -1
+        }
+        XCTAssertGreaterThanOrEqual(count("clicks"), 10, "the coordinates actually exercised row buttons")
+        XCTAssertEqual(count("opens"), count("clicks"), "every click reaching a row button dispatches exactly once")
+        XCTAssertTrue(diagnostic.label.contains("merge=none"))
+        for _ in 0..<16 { scroll(up: false) }
+        XCTAssertTrue(app.staticTexts["Activity scroll fixture"].isHittable)
+    }
+
+    func testScrollPerformanceSample() {
+        for _ in 0..<12 { scroll(up: true) }
+        evidence("performance-down")
+        XCTAssertTrue(diagnostic.label.contains("opens=0"))
+        for _ in 0..<16 { scroll(up: true) }
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Open Simulator activity 199'")).firstMatch.isHittable)
+        evidence("performance-all-pages")
+        for _ in 0..<28 { scroll(up: false) }
+        XCTAssertTrue(app.staticTexts["Activity scroll fixture"].isHittable)
+        evidence("performance-return")
+        XCTAssertTrue(diagnostic.label.contains("opens=0"))
+        XCTAssertTrue(diagnostic.label.contains("merge=none"))
+    }
+
+}

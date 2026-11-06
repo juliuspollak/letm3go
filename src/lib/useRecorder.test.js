@@ -52,3 +52,20 @@ it('refreshes an energy-only revision/consent change even when energy values are
  const revised={...trip,details:{...trip.details,energyBinding:{revision:2,consent:'owner'}}};
  expect(reconcileRecorderSnapshot({ownerID:'me',trips:[trip]},{ownerID:'me',trips:[revised]}).trips[0]).toBe(revised);
 });
+
+it('does not rescan immutable history on unchanged native polls, but fingerprints edits',()=>{
+ let reads=0;
+ const record={id:'watch',source:'watch',updatedAt:1,get details(){reads++;return {energy:{active:10}};}};
+ const previous={ownerID:'me',historyToken:'token',trips:[record],places:[]};
+ const cache=new WeakMap(),initial=snapshotKey(previous,cache),initialReads=reads;
+ let accepted=previous;
+ for(let i=0;i<100;i++){
+  accepted=reconcileRecorderSnapshot(accepted,{ownerID:'me',historyToken:'token',historyUnchanged:true,places:[]});
+  expect(snapshotKey(accepted,cache)).toBe(initial);
+ }
+ expect(reads).toBe(initialReads);
+ const revised={...record,updatedAt:2,details:{energy:{active:20}}};
+ const changed=reconcileRecorderSnapshot(accepted,{ownerID:'me',historyToken:'new-token',trips:[revised],places:[]});
+ expect(changed.trips[0]).toBe(revised);
+ expect(snapshotKey(changed,cache)).not.toBe(initial);
+});

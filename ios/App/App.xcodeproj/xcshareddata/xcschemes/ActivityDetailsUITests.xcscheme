@@ -5,6 +5,9 @@
       <Testables>
          <TestableReference skipped="NO">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="AD4000000000000000000005" BuildableName="AppUITests.xctest" BlueprintName="AppUITests" ReferencedContainer="container:App.xcodeproj"/>
+            <SelectedTests>
+               <Test Identifier="ActivityDetailsUITests"/>
+            </SelectedTests>
          </TestableReference>
       </Testables>
    </TestAction>

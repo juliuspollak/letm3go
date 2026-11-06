@@ -1108,3 +1108,13 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .home-daily-stat>span{font-size:11px}
 .home-daily-link{display:flex;justify-content:center;align-items:center;gap:3px;color:var(--accent);font-size:11px;font-weight:700;margin-top:13px}
 @media(max-width:760px){.home-daily-summary{padding:12px;margin-bottom:20px}.home-daily-stat strong{font-size:19px}}
+
+/* Let WebKit scroll vertically without waiting for JavaScript gesture arbitration. */
+.trips-activity-list,.trips-activity-list .trip-list-row{touch-action:pan-y pinch-zoom}
+.trips-activity-list .trip-swiping .trip-swipe-surface{transition:none}
+/* Keep variable-height rows and browser find/accessibility, but skip offscreen layout/paint. */
+.trips-activity-list .trip-list-row{content-visibility:auto;contain-intrinsic-size:auto 100px}
+
+/* Activity history can move for minutes beneath the fixed bar. An opaque surface
+   avoids a backdrop-filter pass on every scroll frame while retaining its shape. */
+.mobile-nav.mobile-nav--activity{background:var(--surface);backdrop-filter:none;-webkit-backdrop-filter:none}

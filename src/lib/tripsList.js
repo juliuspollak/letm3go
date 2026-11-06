@@ -3,6 +3,9 @@ import {tripEquipmentLabel} from './collection.js';
 // iOS cannot afford to build hundreds of rows while a finger is on the screen, so
 // the Trips list grows in pages instead of rendering the whole archive up front.
 export const TRIP_PAGE_SIZE=40;
+// Automatic prefetch is committed in small batches so adding history does not
+// block input with 40 rows' worth of new buttons and SVGs in a single frame.
+export const TRIP_PREFETCH_BATCH_SIZE=10;
 
 // Only a finished, own-device activity can be merged by dragging one row onto another.
 export function canMergeTrip(trip){

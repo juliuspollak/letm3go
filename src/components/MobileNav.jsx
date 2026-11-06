@@ -8,7 +8,7 @@ import RecordControl from './RecordControl.jsx';
 // label-free on the compact iPhone tab bar; every control carries an `aria-label`.
 export default function MobileNav({tab,onSelect,recordState='idle'}){
  const status=recordState==='recording'?'Recording in progress':recordState==='paused'?'Recording paused':recordState==='auto'?'Automatic journey in progress':'';
- return <nav className="mobile-nav" aria-label="Sections">
+ return <nav className={`mobile-nav${tab==='Trips'?' mobile-nav--activity':''}`} aria-label="Sections">
   {status&&<span className="sr-only" role="status">{status}</span>}
   {NAV_ITEMS.map(({name})=>name==='Record'
    ?<div className={`mobile-nav-record${tab===name?' is-current':''}`} key={name}>
