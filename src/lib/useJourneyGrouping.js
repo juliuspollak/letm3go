@@ -4,7 +4,7 @@ import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops,nativeStops} from './journeyGrouping.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
-import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,ROAD_CACHE_BYTES} from './gapReconstruction.js';
+import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,estimatedDistance,distanceSnapshot,ROAD_CACHE_BYTES} from './gapReconstruction.js';
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>readGrouping(serialized,owner),[serialized,owner]);
@@ -37,18 +37,18 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
   if(!Number.isFinite(current.current.enrichFrom)){void persist(meta=>Number.isFinite(meta.enrichFrom)?meta:{...meta,enrichFrom:Date.now()}).catch(()=>{});return;}
   // Results are saved in batches, not once per lookup: each save re-renders the
   // app and rebuilds every journey. A save from a changed account is refused.
-  const pending={places:{},roads:{},enriched:{}};let held=0,since=0,marked=false;
+  const pending={places:{},roads:{},enriched:{},distanceSummaries:{}};let held=0,since=0,marked=false;
   // Retain successful provider answers until preference storage confirms the save.
   const flush=async()=>{
    if(!held&&!marked)return true;
-   const batch={places:{...pending.places},roads:{...pending.roads},enriched:{...pending.enriched}};
+   const batch={places:{...pending.places},roads:{...pending.roads},enriched:{...pending.enriched},distanceSummaries:{...pending.distanceSummaries}};
    try{
-    await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched}}));
-    for(const kind of ['places','roads','enriched'])for(const [key,value] of Object.entries(batch[kind])){
+    await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched},distanceSummaries:{...meta.distanceSummaries,...batch.distanceSummaries}}));
+    for(const kind of ['places','roads','enriched','distanceSummaries'])for(const [key,value] of Object.entries(batch[kind])){
      if(pending[kind][key]===value)delete pending[kind][key];
     }
     held=Object.keys(pending.places).length+Object.keys(pending.roads).length;
-    marked=Object.keys(pending.enriched).length>0;
+    marked=Object.keys(pending.enriched).length>0||Object.keys(pending.distanceSummaries).length>0;
     return true;
    }catch(error){
     console.warn('Journey enrichment save failed; results retained for retry',error);
@@ -56,7 +56,7 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
    }
   };
   // Only provider answers count toward a batch; a done marker rides along with them.
-  const hold=async(kind,key,value)=>{pending[kind][key]=value;if(kind==='enriched'){marked=true;return;}if(!held++)since=Date.now();if(held>=8||Date.now()-since>=15000)await flush();};
+  const hold=async(kind,key,value)=>{pending[kind][key]=value;if(kind==='enriched'||kind==='distanceSummaries'){marked=true;return;}if(!held++)since=Date.now();if(held>=8||Date.now()-since>=15000)await flush();};
   const place=key=>pending.places[key]??current.current.places[key];
   const road=key=>pending.roads[key]??current.current.roads?.[key];
   // Provider requests are spaced (throttling), but not after the last one.
@@ -111,7 +111,11 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
      await hold('roads',key,result);
      if(result.retryAfter){waiting=true;next=Math.min(next,result.retryAfter);}
     }
-    if(!waiting)await hold('enriched',t.id,Date.now());
+    if(!waiting){
+     const summary=distanceSnapshot(t,estimatedDistance(t,{...current.current.roads,...pending.roads}));
+     if(summary)await hold('distanceSummaries',t.id,summary);
+     await hold('enriched',t.id,Date.now());
+    }
    }
    if(alive&&!await flush())next=Math.min(next,Date.now()+60000);
    // Retry only unfinished save-time work, never arbitrary historical journeys.
