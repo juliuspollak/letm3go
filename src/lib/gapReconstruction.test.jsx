@@ -222,3 +222,10 @@ describe('the recording report explains each gap',()=>{
   expect(activityPresentation(history,{ownerID:OWNER,places:[],grouping:null}).diagnostics.report).toContain('Road estimate lookup: not run: saved before road estimates');
  });
 });
+it('the recording report shows the lookup as done once it is, without a stale cached journey',()=>{
+ const trip=recordedJourney(lowPowerDrive()),cache=new Map();
+ const meta={...emptyGrouping(OWNER),enrichFrom:0,roads:roadsFor(lowPowerDrive())};
+ expect(buildJourneys([trip],{owner:OWNER,metadata:meta,projectionCache:cache}).journeys[0].distanceEstimate.lookup).toBe('pending');
+ const done={...meta,enriched:{[trip.id]:1}};
+ expect(buildJourneys([trip],{owner:OWNER,metadata:done,projectionCache:cache}).journeys[0].distanceEstimate.lookup).toBe('done');
+});

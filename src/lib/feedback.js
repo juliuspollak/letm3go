@@ -191,14 +191,14 @@ export function storageUpload({ url, apiKey, token, path, blob, onProgress, sign
     if (request.upload) request.upload.onprogress = event => {
       if (event.lengthComputable && event.total) onProgress?.(Math.round(event.loaded / event.total * 100));
     };
-    request.onerror = () => reject(transient('The photo could not be uploaded. Check your connection and retry.'));
-    request.ontimeout = () => reject(transient('The photo took too long to upload. Check your connection and retry.'));
+    request.onerror = () => reject(transient('The upload failed. Check your connection and retry.'));
+    request.ontimeout = () => reject(transient('The upload took too long. Check your connection and retry.'));
     request.onabort = () => reject(new FeedbackCancelled());
     request.onload = () => {
       if (request.status >= 200 && request.status < 300) { onProgress?.(100); resolve(); return; }
       let message = '';
       try { message = JSON.parse(request.responseText)?.message || ''; } catch { /* Non-JSON storage error. */ }
-      const text = message || 'The photo could not be uploaded. Please retry.';
+      const text = message || 'The upload failed. Please retry.';
       reject(request.status >= 500 || request.status === 429 || request.status === 408 ? transient(text) : new Error(text));
     };
     request.send(blob);

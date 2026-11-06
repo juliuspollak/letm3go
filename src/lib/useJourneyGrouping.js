@@ -8,6 +8,7 @@ import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,ROAD_CACHE_BYTES}
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>readGrouping(serialized,owner),[serialized,owner]);
+ const readable=useMemo(()=>!serialized||(()=>{try{const saved=JSON.parse(serialized);return saved?.owner===owner&&saved?.version===1;}catch{return false;}})(),[serialized,owner]);
  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
  const current=useRef(emptyGrouping(owner)),queue=useRef(Promise.resolve());
  useEffect(()=>{current.current=metadata;},[metadata]);
@@ -26,9 +27,12 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
  const enrichFrom=metadata.enrichFrom;
  const settled=t=>Number.isFinite(enrichFrom)&&t.endedAt!=null&&t.endedAt*1000>=enrichFrom&&t.state!=='recording'&&t.details?.provisional!==true&&(!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner);
  // Not keyed on the done markers: saving them must not restart a run part-way.
- const fingerprint=JSON.stringify([enrichFrom,activities.filter(settled).map(t=>[t.id,t.updatedAt,t.points?.length])]);
+ const fingerprint=JSON.stringify([readable,enrichFrom,activities.filter(settled).map(t=>[t.id,t.updatedAt,t.points?.length])]);
  useEffect(()=>{
   if(!recorderAvailable()||!owner)return;let alive=true,timer;
+  // Saved metadata that exists but could not be read as this account's is never
+  // written over (it would be replaced by an empty grouping), and nothing runs.
+  if(!readable)return;
   // First run of this build: everything already recorded is history.
   if(!Number.isFinite(current.current.enrichFrom)){void persist(meta=>Number.isFinite(meta.enrichFrom)?meta:{...meta,enrichFrom:Date.now()}).catch(()=>{});return;}
   // Results are saved in batches, not once per lookup: each save re-renders the

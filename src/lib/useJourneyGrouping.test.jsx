@@ -105,3 +105,9 @@ it('an activity that finished before the cutoff is history: never looked up',asy
  await new Promise(resolve=>setTimeout(resolve,300));
  expect(mock.lookup).not.toHaveBeenCalled();expect(p.savePreferences).not.toHaveBeenCalled();
 });
+it('never writes over saved metadata it cannot read as this account\'s',async()=>{
+ const p=props();p.serialized=JSON.stringify({...emptyGrouping('someone-else'),titles:{a:'Mine'}});
+ renderHook(()=>useJourneyGrouping(p));
+ await new Promise(resolve=>setTimeout(resolve,300));
+ expect(p.savePreferences).not.toHaveBeenCalled();expect(mock.lookup).not.toHaveBeenCalled();
+});
