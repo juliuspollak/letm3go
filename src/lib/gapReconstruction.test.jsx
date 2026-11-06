@@ -246,3 +246,15 @@ it('uses a durable distance snapshot without scanning saved GPS points again',()
  expect(estimate.roadGaps).toBe(9);
  expect(JSON.stringify(summary)).not.toContain('lines');
 });
+
+it('persists a no-gap result and does not rescan clean GPS recordings',()=>{
+ const trip=lowPowerDrive();
+ trip.points=trip.points.map(p=>({...p,segment:0}));
+ const snapshot=distanceSnapshot(trip,null);
+ const meta={...emptyGrouping(OWNER),distanceSummaries:{[trip.id]:snapshot}};
+ const guarded={...trip,points:new Proxy(trip.points,{get(target,key){
+  if(key===Symbol.iterator||key==='map')throw new Error('rescan');
+  return Reflect.get(target,key);
+ }})};
+ expect(savedDistance(guarded,meta)).toBeNull();
+});
