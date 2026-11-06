@@ -113,7 +113,7 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
     }
     if(!waiting){
      const summary=distanceSnapshot(t,estimatedDistance(t,{...current.current.roads,...pending.roads}));
-     if(summary)await hold('distanceSummaries',t.id,summary);
+     await hold('distanceSummaries',t.id,summary);
      await hold('enriched',t.id,Date.now());
     }
    }
