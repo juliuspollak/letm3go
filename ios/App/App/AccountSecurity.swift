@@ -61,6 +61,9 @@ struct SyncReceipt: Codable {
     // SHA-256 of the uploaded JPEG, so an unchanged Collection photo is not
     // uploaded again after the first successful transfer.
     var sha256: String?
+    // The activity's updatedAt when it was backed up: an unchanged activity is not
+    // serialised and hashed again on the next backup.
+    var updatedAt: Double?
 }
 struct LocalVehicle: Codable {
     var source: String?
@@ -392,7 +395,11 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     } }
     @objc func savePreferences(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID, let object = call.getObject("preferences") else { call.reject("Missing settings."); return }
-        do { let data = try JSONSerialization.data(withJSONObject:object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+        do { let data = try JSONSerialization.data(withJSONObject:object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences)
+            // Only the saved preferences: the caller reads nothing else. A full snapshot
+            // here re-encoded every recorded GPS fix on the main thread (~1.3 s and 32 MB
+            // for a month of history) on each save, and enrichment saves every few seconds.
+            call.resolve(["ownerID":LocationRecorder.shared.ownerID ?? "","preferences":(try? JSONSerialization.jsonObject(with:JSONEncoder().encode(LocationRecorder.shared.preferences))) ?? [:]]) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func prepareDeletion(_ call: CAPPluginCall) { DispatchQueue.main.async {
         let r = LocationRecorder.shared

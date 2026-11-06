@@ -22,7 +22,7 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
   // interrupted stretch. Large gaps are left unjoined so a direct-looking line is
   // never drawn where the route is genuinely unknown.
   // A road estimate for a GPS gap (gapReconstruction.js) replaces that gap's
-  // straight connector. It is drawn orange and dashed, never as recorded GPS,
+  // straight connector. It is drawn in orange, never in the recorded route's colour,
   // and it starts and ends exactly at the fixes either side of the gap.
   const roads=(j.distanceEstimate?.lines||[]).map(line=>line.filter(valid)).filter(line=>line.length>1);
   estimated.push(...roads);

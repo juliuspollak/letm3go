@@ -11,15 +11,27 @@ export function recognitionSampleIndexes(trip,stops=[]){
  const count=Math.min(outdoor.has(activityCode(trip.activity))?10:3,points.length);
  return [...new Set([0,points.length-1,...stops.map(s=>s.pointIndex),...Array.from({length:count},(_,i)=>Math.round(i*(points.length-1)/Math.max(1,count-1)))])].filter(i=>points[i]);
 }
+// An activity is enriched once, when it is saved; its answers are final. "Nothing
+// found" is an answer too. Nothing expires or is refreshed later. Only a failed or
+// incomplete provider answer is retried, with backoff, a bounded number of times.
+export const LOOKUP_ATTEMPTS=5;
+const backoff=attempts=>5*60000*2**(attempts-1);
 export function lookupDue(cached,now=Date.now()){
  if(!cached)return true;
- if(cached.retryAfter)return cached.retryAfter<=now;
- if(cached.source==='saved-place')return false;
- return cached.lookupVersion!==LOOKUP_VERSION||!cached.expiresAt||cached.expiresAt<=now;
+ return Number.isFinite(cached.retryAfter)&&cached.retryAfter<=now;
 }
-export function cachedLookup(place,now=Date.now()){
- return {...place,lookupVersion:LOOKUP_VERSION,lookedUpAt:now,expiresAt:now+(place.candidates?.length?30:1)*86400000,
-  ...(place.partial?{retryAfter:now+5*60000}:{})};
+export function cachedLookup(place,now=Date.now(),previous=null){
+ const attempts=(previous?.attempts||0)+1;
+ const {retryAfter:_drop,...answer}=place;void _drop;
+ return {...answer,lookupVersion:LOOKUP_VERSION,lookedUpAt:now,attempts,
+  ...(place.partial&&attempts<LOOKUP_ATTEMPTS?{retryAfter:now+backoff(attempts)}:{})};
+}
+// A lookup that failed outright keeps any earlier answer. After the last attempt
+// the place is settled with what there is (possibly nothing).
+export function failedLookup(previous,now=Date.now()){
+ const attempts=(previous?.attempts||0)+1;
+ const {retryAfter:_drop,...kept}=previous||{};void _drop;
+ return attempts<LOOKUP_ATTEMPTS?{...kept,attempts,retryAfter:now+backoff(attempts)}:{candidates:[],...kept,attempts,lookedUpAt:now,unavailable:true};
 }
 // A nearby pin is never containment. Promotion requires category plus substantial
 // route evidence or measured dwell; POI search regions are never area boundaries.

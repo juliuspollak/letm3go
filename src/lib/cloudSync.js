@@ -48,6 +48,8 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  const acknowledge=async()=>checkpoint({...updated});
  for(const id of state.deletedIDs||[]){
   const receipt=updated[id];if(receipt&&receipt.owner!==owner)throw new Error('Backup receipts belong to another account.');
+  // A deletion the cloud already confirmed is not sent again on every backup.
+  if(receipt?.deleted)continue;
   const {error}=await client.from('activities').delete().eq('id',id).eq('owner_id',owner);if(error)throw new Error('Cloud deletion could not be confirmed. Retry backup when connected.');
   updated[id]={...receipt,owner,deleted:true};deleted++;await acknowledge();
  }
@@ -69,12 +71,16 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  for(const trip of state.trips){
   if(!finished(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
+  // Unchanged since its last backup: not serialised or hashed again.
+  if(previous&&!previous.deleted&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
   const details=trip.details||{};
   const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification(details,trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
-  const fingerprint=await hash(row);if(previous?.fingerprint===fingerprint&&!previous.deleted)continue;
+  const fingerprint=await hash(row);
+  // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
+  if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,updatedAt:trip.updatedAt};}continue;}
   const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
-  updated[trip.id]={owner,fingerprint,revision};uploaded++;await acknowledge();
+  updated[trip.id]={owner,fingerprint,revision,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
  }
  let photosUploaded=0;
  for(const trip of state.trips||[]){

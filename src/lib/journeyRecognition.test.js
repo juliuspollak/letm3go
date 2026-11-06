@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {assessRoutePlaces,recognitionSampleIndexes,cachedLookup,lookupDue,destinationVisits} from './journeyRecognition.js';
+import {assessRoutePlaces,recognitionSampleIndexes,cachedLookup,lookupDue,failedLookup,LOOKUP_ATTEMPTS,destinationVisits} from './journeyRecognition.js';
 import {compareRoutes} from './journeyGeometry.js';
 import {buildJourneys,emptyGrouping,placeKey} from './journeyGrouping.js';
 import {automaticTitle} from './activityTitle.js';
@@ -31,12 +31,20 @@ it('new sampling includes endpoints and stops and deduplicates indexes',()=>{
  expect(indexes).toContain(0);expect(indexes).toContain(60);expect(indexes).toContain(15);
  expect(new Set(indexes).size).toBe(indexes.length);
 });
-it('expires old empty caches and partial lookups without discarding candidates',()=>{
- expect(lookupDue({nearbyName:''},1000)).toBe(true);
- const cache=cachedLookup({candidates:[reserve],partial:true},1000);
- expect(lookupDue(cache,1001)).toBe(false);expect(lookupDue(cache,1000+5*60000)).toBe(true);
- expect(cache.candidates).toEqual([reserve]);
- expect(lookupDue(cachedLookup({candidates:[]},1000),1000+86400000)).toBe(true);
+it('treats an answer as final, including "nothing found", and retries only incomplete or failed lookups, a bounded number of times',()=>{
+ const year=365*86400000;
+ expect(lookupDue(undefined,1000)).toBe(true);
+ expect(lookupDue(cachedLookup({candidates:[]},1000),1000+year)).toBe(false);
+ expect(lookupDue(cachedLookup({candidates:[reserve]},1000),1000+year)).toBe(false);
+ expect(lookupDue({candidates:[],lookupVersion:1,expiresAt:5},1000+year)).toBe(false); // older caches are final too
+ let partial=cachedLookup({candidates:[reserve],partial:true},1000);
+ expect(lookupDue(partial,1001)).toBe(false);expect(lookupDue(partial,1000+5*60000)).toBe(true);expect(partial.candidates).toEqual([reserve]);
+ for(let i=1;i<LOOKUP_ATTEMPTS;i++)partial=cachedLookup({candidates:[reserve],partial:true},1000,partial);
+ expect(partial).not.toHaveProperty('retryAfter');expect(lookupDue(partial,1000+year)).toBe(false);
+ let failed=failedLookup({candidates:[reserve],lookedUpAt:1},1000);
+ expect(failed).toMatchObject({candidates:[reserve],attempts:1});expect(lookupDue(failed,1000+5*60000)).toBe(true);
+ for(let i=1;i<LOOKUP_ATTEMPTS;i++)failed=failedLookup(failed,1000);
+ expect(failed).toMatchObject({candidates:[reserve],unavailable:true});expect(lookupDue(failed,1000+year)).toBe(false);
 });
 it('uses contextual manual timestamp suggestions without rewriting the original or edited titles',()=>{
  const meta=emptyGrouping('owner');for(const p of route)meta.places[placeKey(p)]={candidates:[reserve]};

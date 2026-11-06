@@ -46,7 +46,7 @@ describe('the reported drive',()=>{
   const view=activityPresentation(journey,{ownerID:OWNER,places:[],grouping:null});
   const notice=view.notices.find(n=>n.id==='estimated-distance');
   expect(notice.text).toMatch(/^~59 km estimated distance: 3\.2 km recorded by GPS \+ 56 km estimated along roads for 9 GPS gaps/);
-  expect(notice.text).toContain('orange dashed is an estimated road route, not a recording');
+  expect(notice.text).toContain('solid orange is an estimated road route, not a recording');
   // Map: nine orange road lines, each joined exactly to the recorded fixes.
   expect(view.map.estimated).toHaveLength(9);
   routeGaps(trip).forEach((g,i)=>{const line=view.map.estimated[i];expect(line[0][0]).toBeCloseTo(g.from.latitude,4);expect(line[0][1]).toBeCloseTo(g.from.longitude,4);expect(line.at(-1)[0]).toBeCloseTo(g.to.latitude,4);expect(line.at(-1)[1]).toBeCloseTo(g.to.longitude,4);});
@@ -127,31 +127,34 @@ describe('road route plausibility',()=>{
   expect(line[0]).toEqual([-34.4,150.88]);expect(line.at(-1)).toEqual([-34.47,150.85]);
   expect(decodeLine(encodeLine([[-34.123456,150.987654],[0,0],[51.5,-0.12]]))).toEqual([[-34.12346,150.98765],[0,0],[51.5,-0.12]]);
  });
- it('refreshes only when due: success is kept, failures retry, "no road" is rechecked later',()=>{
-  const now=Date.now(),ok=roadRecord([route(10500,290)],gap,now);
-  expect(roadLookupDue(ok,now+86400000)).toBe(false);
-  expect(roadLookupDue({...ok,version:ROAD_VERSION+1},now)).toBe(true);
-  const failed=failedRecord(ok,now);
-  expect(failed).toMatchObject({status:'route',line:ok.line});expect(roadLookupDue(failed,now+60000)).toBe(false);expect(roadLookupDue(failed,now+11*60000)).toBe(true);
-  expect(roadLookupDue(roadRecord([],gap,now),now+15*86400000)).toBe(true);
+ it('an answer is final ("no road" too); only failures retry, with backoff, until they settle',()=>{
+  const now=Date.now(),year=365*86400000,ok=roadRecord([route(10500,290)],gap,now);
+  expect(ok).not.toHaveProperty('expiresAt');
+  expect(roadLookupDue(ok,now+year)).toBe(false);
+  expect(roadLookupDue({...ok,version:ROAD_VERSION+1},now+year)).toBe(false);
+  expect(roadLookupDue(roadRecord([],gap,now),now+year)).toBe(false);
+  expect(roadLookupDue(roadRecord([route(30000,280)],gap,now),now+year)).toBe(false);
+  const failed=failedRecord(undefined,now);
+  expect(roadLookupDue(failed,now+60000)).toBe(false);expect(roadLookupDue(failed,now+11*60000)).toBe(true);
+  expect(failedRecord(failed,now).retryAfter-now).toBe(20*60000);
   let unroutable;for(let i=0;i<6;i++)unroutable=failedRecord(unroutable,now);
-  expect(unroutable).toMatchObject({status:'none',failures:6});expect(roadLookupDue(unroutable,now+86400000)).toBe(false);
-  let repeated=ok;for(let i=0;i<12;i++)repeated=failedRecord(repeated,now);
-  expect(repeated.retryAfter-now).toBe(86400000);expect(failedRecord(failedRecord(undefined,now),now).retryAfter-now).toBe(20*60000);
+  expect(unroutable).toMatchObject({status:'none',failures:6});expect(unroutable).not.toHaveProperty('retryAfter');expect(roadLookupDue(unroutable,now+year)).toBe(false);
  });
 });
 
-describe('automatic and historical reconstruction',()=>{
+describe('road estimates when an activity is saved',()=>{
  // Places are cached so only road lookups run; a short trip keeps the test quick.
  function threeGapDrive(id='three',startedAt){const t=lowPowerDrive({id,...(startedAt?{startedAt}:{})});const keep=t.points.filter(p=>p.segment<=3);return {...t,points:keep,endedAt:keep.at(-1).timestamp};}
- function cachedPlaces(trips){const m=emptyGrouping(OWNER),now=Date.now();for(const t of trips)for(const p of t.points)m.places[placeKey(p)]={source:'apple-geocoder-mapkit',candidates:[{name:'x'}],lookupVersion:2,expiresAt:now+86400000};return m;}
+ function cachedPlaces(trips){const m={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();for(const t of trips)for(const p of t.points)m.places[placeKey(p)]={source:'apple-geocoder-mapkit',candidates:[{name:'x'}],lookupVersion:2,expiresAt:now+86400000};return m;}
  function run(trips,meta){const savePreferences=vi.fn().mockResolvedValue();renderHook(()=>useJourneyGrouping({owner:OWNER,activities:trips.map(recordedJourney),places:[],vehicles:[],serialized:JSON.stringify(meta),savePreferences}));return savePreferences;}
  const last=save=>JSON.parse(save.mock.calls.at(-1)[0].journeyGrouping);
- it('reconstructs each gap of new and old recordings once, newest first, and does not ask again',async()=>{
+ it('estimates each gap of newly saved recordings once, newest first, and never asks again',async()=>{
   const recent=threeGapDrive(),old=threeGapDrive('old',1700000000);
   mock.road.mockImplementation(async from=>{const g=[...routeGaps(recent),...routeGaps(old)].find(x=>x.from===from||x.from.timestamp===from.timestamp);return {routes:[roadFor(g)]};});
   const save=run([old,recent],cachedPlaces([old,recent]));
-  await waitFor(()=>expect(save).toHaveBeenCalledTimes(6),{timeout:15000});
+  // Six road lookups, one batched save.
+  await waitFor(()=>expect(save).toHaveBeenCalledTimes(1),{timeout:15000});
+  expect(mock.road).toHaveBeenCalledTimes(6);
   expect(mock.road.mock.calls[0][0].timestamp).toBe(routeGaps(recent)[0].from.timestamp);
   const meta=last(save);
   expect(Object.values(meta.roads).every(r=>r.status==='route')).toBe(true);
@@ -164,7 +167,7 @@ describe('automatic and historical reconstruction',()=>{
  it('offline: keeps what it had, schedules a retry and shows the straight-line estimate meanwhile',async()=>{
   const trip=threeGapDrive();mock.road.mockRejectedValue(new Error('Road routes are unavailable: NSURLErrorDomain:-1009'));
   const save=run([trip],cachedPlaces([trip]));
-  await waitFor(()=>expect(save).toHaveBeenCalledTimes(3),{timeout:15000});
+  await waitFor(()=>expect(save).toHaveBeenCalledTimes(1),{timeout:15000});
   const meta=last(save);
   expect(Object.values(meta.roads).every(r=>r.retryAfter>Date.now()&&r.failures===1&&!r.status)).toBe(true);
   expect(project([trip],meta.roads)[0].distanceEstimate.confidence).toBe('straight');
@@ -172,7 +175,7 @@ describe('automatic and historical reconstruction',()=>{
  it('no road found: falls back to the straight line without retrying every cycle',async()=>{
   const trip=threeGapDrive();mock.road.mockResolvedValue({routes:[]});
   const save=run([trip],cachedPlaces([trip]));
-  await waitFor(()=>expect(save).toHaveBeenCalledTimes(3),{timeout:15000});
+  await waitFor(()=>expect(save).toHaveBeenCalledTimes(1),{timeout:15000});
   const meta=last(save);
   expect(Object.values(meta.roads).every(r=>r.status==='none'&&!roadLookupDue(r))).toBe(true);
  },20000);
@@ -181,7 +184,7 @@ describe('automatic and historical reconstruction',()=>{
   const savePreferences=vi.fn().mockResolvedValue();
   const {rerender}=renderHook(p=>useJourneyGrouping(p),{initialProps:{owner:OWNER,activities:[recordedJourney(trip)],places:[],vehicles:[],serialized:JSON.stringify(cachedPlaces([trip])),savePreferences}});
   await waitFor(()=>expect(mock.road).toHaveBeenCalledTimes(1),{timeout:5000});
-  rerender({owner:'other',activities:[],places:[],vehicles:[],serialized:JSON.stringify(emptyGrouping('other')),savePreferences});
+  rerender({owner:'other',activities:[],places:[],vehicles:[],serialized:JSON.stringify({...emptyGrouping('other'),enrichFrom:0}),savePreferences});
   finish({routes:[roadFor(routeGaps(trip)[0])]});await new Promise(r=>setTimeout(r,200));
   expect(savePreferences).not.toHaveBeenCalled();
  },10000);
@@ -198,5 +201,24 @@ describe('the Map overview',()=>{
   const photo=overview.photos.find(p=>p.photoID==='p1');
   expect(photo.journeyDistance).toBe('~59 km');
   expect(JSON.stringify(overview)).not.toContain('"estimated"');
+ });
+});
+
+describe('the recording report explains each gap',()=>{
+ it('says which gaps have a road line and why the others do not',()=>{
+  const trip=lowPowerDrive(),gaps=routeGaps(trip),roads=roadsFor(trip);
+  roads[gapKey(trip.id,gaps[1])]=roadRecord([],gaps[1]);
+  roads[gapKey(trip.id,gaps[2])]=failedRecord(undefined);
+  delete roads[gapKey(trip.id,gaps[3])];
+  const m={...emptyGrouping(OWNER),enrichFrom:0,roads};
+  const [journey]=buildJourneys([recordedJourney(trip)],{owner:OWNER,metadata:m}).journeys;
+  const text=activityPresentation(journey,{ownerID:OWNER,places:[],grouping:null}).diagnostics.report;
+  expect(text).toContain('Road estimate lookup: pending (not finished yet)');
+  expect(text).toMatch(/Gap 1: 260s, 7112m straight-line -> road \d+m/);
+  expect(text).toContain('Gap 2: 288s, 8731m straight-line -> Apple Maps found no driving route; straight line used, no road drawn');
+  expect(text).toContain('Gap 3: 285s, 6460m straight-line -> lookup failed, retry pending (1 failures); straight line used, no road drawn');
+  expect(text).toContain('Gap 4: 290s, 5297m straight-line -> not looked up; straight line used, no road drawn');
+  const history=buildJourneys([recordedJourney(trip)],{owner:OWNER,metadata:{...m,enrichFrom:Date.now()}}).journeys[0];
+  expect(activityPresentation(history,{ownerID:OWNER,places:[],grouping:null}).diagnostics.report).toContain('Road estimate lookup: not run: saved before road estimates');
  });
 });
