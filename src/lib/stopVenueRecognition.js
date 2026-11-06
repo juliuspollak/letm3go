@@ -36,3 +36,19 @@ export function recognisedStopVenue(record, point, durationSeconds) {
    source:record.source || 'Apple Maps', distanceMeters:Math.round(centres[0].distance),
    category:'shoppingCentre'};
 }
+
+
+ // A possible centre is useful as a manual suggestion even if the evidence
+ // isn't strong enough for an automatic tag. These are NOT confirmed visits.
+export function suggestedStopVenues(record, point, durationSeconds) {
+ if (!record || !Number.isFinite(durationSeconds) || durationSeconds < 180 ||
+     !Number.isFinite(point?.latitude) || !Number.isFinite(point?.longitude)) return [];
+ const seen=new Set();
+ return (record.candidates || []).filter(candidate => {
+  if(candidate?.category!=='shoppingCentre'||typeof candidate.name!=='string'||!candidate.name.trim()||
+     !Number.isFinite(candidate.latitude)||!Number.isFinite(candidate.longitude))return false;
+  const name=candidate.name.trim().toLocaleLowerCase();
+  if(seen.has(name)||metres(point,candidate)>250)return false;
+  seen.add(name);return true;
+ }).map(candidate=>({name:candidate.name.trim(),source:record.source||'Apple Maps',kind:'stop'}));
+}
