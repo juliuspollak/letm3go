@@ -5,7 +5,7 @@ import {activityCode} from './activityNames.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 import {recognisedStopVenue} from './stopVenueRecognition.js';
-import {routeGaps,gapKey,savedDistance,combineEstimates} from './gapReconstruction.js';
+import {routeGaps,gapKey,snapshotCurrent,savedDistance,combineEstimates} from './gapReconstruction.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
 export const GROUPING_VERSION=1;
@@ -201,8 +201,9 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  const journeys=groups.map(segments=>{
   if(segments.length===1){const s=segments[0],cacheID=`${owner}:${s.id}`,previous=projectionCache?.get(cacheID);
    const keys=previous?.source===s?previous.keys:[...new Set((s.points||[]).map(placeKey))];
-   const gaps=previous?.source===s?previous.gaps:routeGaps(s);
-   const recordKey=JSON.stringify([keys.map(key=>metadata.places[key]),gaps.map(g=>metadata.roads?.[gapKey(s.id,g)]),metadata.distanceSummaries?.[s.id]]);
+   const saved=metadata.distanceSummaries?.[s.id];
+   const gaps=previous?.source===s?previous.gaps:snapshotCurrent(s,saved)?(saved.summary?.gaps||[]):routeGaps(s);
+   const recordKey=JSON.stringify([keys.map(key=>metadata.places[key]),gaps.map(g=>metadata.roads?.[g.key||gapKey(s.id,g)]),saved]);
    const ownStopEdits=Object.entries(metadata.stopEdits||{}).filter(([key])=>key.startsWith(`native:${s.id}:`)||key.startsWith(`dwell:${s.id}:`));
    const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],ownStopEdits,metadata.enriched?.[s.id]??null,metadata.enrichFrom??null]);
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
