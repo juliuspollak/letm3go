@@ -186,3 +186,17 @@ describe('automatic and historical reconstruction',()=>{
   expect(savePreferences).not.toHaveBeenCalled();
  },10000);
 });
+
+describe('the Map overview',()=>{
+ it('photo cards show ~ through the worker transfer, and estimated roads stay off the overview',async()=>{
+  const {packJourneys,unpackJourneys}=await import('./overviewTransfer.js');
+  const {mapOverview}=await import('./mapOverview.js');
+  const trip=lowPowerDrive();
+  const [journey]=project([trip],roadsFor(trip));
+  const withPhoto={...journey,photos:[{id:'p1',point:[trip.points[0].latitude,trip.points[0].longitude],caption:'Stop'}]};
+  const overview=mapOverview(unpackJourneys(JSON.parse(JSON.stringify(packJourneys([withPhoto])))));
+  const photo=overview.photos.find(p=>p.photoID==='p1');
+  expect(photo.journeyDistance).toBe('~59 km');
+  expect(JSON.stringify(overview)).not.toContain('"estimated"');
+ });
+});

@@ -22,6 +22,8 @@ export function packJourneys(journeys){
    coordinates[offset++]=NaN;coordinates[offset++]=NaN;
   }
   meta.push({id:journey.id,startedAt:journey.startedAt,date:journey.date,title:journey.title,activity:journey.activity,distance:journey.distance,distanceMeters:journey.distanceMeters,
+   // Only that the distance is an estimate (shown with ~); its road lines stay off the overview.
+   ...(journey.distanceEstimate?{distanceEstimate:{estimatedMeters:journey.distanceEstimate.estimatedMeters,recordedMeters:journey.distanceEstimate.recordedMeters}}:{}),
    signature:routeSignature(journey),start,end:offset,photos:(journey.photos||[]).map(p=>({id:p.id,point:p.point,caption:p.caption}))});
  });
  return {meta,coordinates};
