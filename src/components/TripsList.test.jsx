@@ -1,4 +1,4 @@
-import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import TripsList from './TripsList.jsx';
 import {TRIP_PAGE_SIZE,TRIP_PREFETCH_BATCH_SIZE} from '../lib/tripsList.js';
@@ -24,11 +24,17 @@ it('renders one page of activities and appends the next page on demand',()=>{
  const {container}=renderList({journeys});
  const rows=()=>container.querySelectorAll('.trip-list-row');
  expect(rows()).toHaveLength(TRIP_PAGE_SIZE);
- expect(screen.queryByRole('button',{name:'Open Ride t44'})).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'Show more activities'}));
+ // Check the row boundary directly; global role queries repeatedly resolve the
+ // accessible names/styles of every swipe action and can exhaust CI's timeout.
+ expect(container.querySelector('[data-trip-id="t44"]')).toBeNull();
+ const more=screen.getByText('Show more activities',{selector:'button'});
+ expect(more).toHaveAccessibleName('Show more activities');
+ fireEvent.click(more);
  expect(rows()).toHaveLength(TRIP_PAGE_SIZE+5);
- expect(screen.getByRole('button',{name:'Open Ride t44'})).toBeInTheDocument();
- expect(screen.queryByRole('button',{name:'Show more activities'})).not.toBeInTheDocument();
+ const last=container.querySelector('[data-trip-id="t44"]');
+ expect(last).toBeInTheDocument();
+ expect(within(last).getByRole('button',{name:'Open Ride t44'})).toBeInTheDocument();
+ expect(screen.queryByText('Show more activities',{selector:'button'})).not.toBeInTheDocument();
 });
 
 it('opens a row, saves a favourite and archives it from the revealed actions',()=>{
