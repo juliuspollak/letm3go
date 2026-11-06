@@ -1,19 +1,24 @@
 import {recognitionSampleIndexes,lookupDue,cachedLookup,failedLookup} from './journeyRecognition.js';
 import {reconcileSources} from './fleetJourneys.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops,nativeStops} from './journeyGrouping.js';
+import {buildJourneys,changeGrouping,emptyGrouping,placeKey,parseGrouping,internalStops,nativeStops} from './journeyGrouping.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
 import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,ROAD_CACHE_BYTES} from './gapReconstruction.js';
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
- const metadata=useMemo(()=>readGrouping(serialized,owner),[serialized,owner]);
- const readable=useMemo(()=>!serialized||(()=>{try{const saved=JSON.parse(serialized);return saved?.owner===owner&&saved?.version===1;}catch{return false;}})(),[serialized,owner]);
+ const parsed=useMemo(()=>parseGrouping(serialized,owner),[serialized,owner]);
+ const metadata=useMemo(()=>parsed??emptyGrouping(owner),[parsed,owner]);
+ const readable=parsed!==null;
+ // Retain unsaved provider answers across effect restarts, but never accounts.
+ const pending=useMemo(()=>({owner,places:{},roads:{},enriched:{}}),[owner]);
+ const [enrichmentError,setEnrichmentError]=useState('');
  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const currentReadable=useRef(readable);
  const current=useRef(emptyGrouping(owner)),queue=useRef(Promise.resolve());
- useEffect(()=>{current.current=metadata;},[metadata]);
+ useEffect(()=>{current.current=metadata;currentReadable.current=readable;},[metadata,readable]);
  const persist=useCallback(updater=>{
-  const operation=async()=>{const next=updater(current.current);if(next.owner!==owner)throw new Error('Account changed.');const value=JSON.stringify(next);if(value.length>900000)throw new Error('Journey metadata is full.');await savePreferences({journeyGrouping:value});current.current=next;return next;};
+  const operation=async()=>{if(!currentReadable.current)throw new Error('Saved journey metadata could not be read. Nothing was changed.');const next=updater(current.current);if(next.owner!==owner)throw new Error('Account changed.');const value=JSON.stringify(next);if(value.length>900000)throw new Error('Journey metadata is full.');await savePreferences({journeyGrouping:value});current.current=next;return next;};
   const result=queue.current.then(operation,operation);queue.current=result.catch(()=>{});return result;
  },[owner,savePreferences]);
  const reconciled=useMemo(()=>reconcileSources(activities,{owner,vehicles,links:metadata.sourceLinks||[]}),[activities,owner,vehicles,metadata.sourceLinks]);
@@ -33,20 +38,41 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
   // Saved metadata that exists but could not be read as this account's is never
   // written over (it would be replaced by an empty grouping), and nothing runs.
   if(!readable)return;
-  // First run of this build: everything already recorded is history.
-  if(!Number.isFinite(current.current.enrichFrom)){void persist(meta=>Number.isFinite(meta.enrichFrom)?meta:{...meta,enrichFrom:Date.now()}).catch(()=>{});return;}
+  // Retrying initialization must not move the cutoff past recordings saved
+  // while the first write was failing.
+  const initialCutoff=Date.now();
   // Results are saved in batches, not once per lookup: each save re-renders the
   // app and rebuilds every journey. A save from a changed account is refused.
-  const pending={places:{},roads:{},enriched:{}};let held=0,since=0,marked=false;
-  const flush=async()=>{if(!held&&!marked)return;const batch={...pending};pending.places={};pending.roads={};pending.enriched={};held=0;marked=false;
-   await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched}})).catch(()=>{});};
-  // Only provider answers count toward a batch; a done marker rides along with them.
-  const hold=async(kind,key,value)=>{pending[kind][key]=value;if(kind==='enriched'){marked=true;return;}if(!held++)since=Date.now();if(held>=8||Date.now()-since>=15000)await flush();};
+  let since=Date.now();
+  const count=()=>Object.keys(pending.places).length+Object.keys(pending.roads).length;
+  const flush=async()=>{
+   if(!count()&&!Object.keys(pending.enriched).length)return;
+   const batch={places:{...pending.places},roads:{...pending.roads},enriched:{...pending.enriched}};
+   await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched}}));
+   // A newer run may have added answers while this save was queued. Only clear
+   // entries confirmed by this write, and keep the entire batch on rejection.
+   for(const kind of ['places','roads','enriched'])for(const [key,value] of Object.entries(batch[kind])){
+    if(pending[kind][key]===value)delete pending[kind][key];
+   }
+   since=Date.now();
+  };
+  const hold=async(kind,key,value)=>{
+   if(!count())since=Date.now();
+   pending[kind][key]=value;
+   if(kind!=='enriched'&&(count()>=8||Date.now()-since>=15000))await flush();
+  };
   const place=key=>pending.places[key]??current.current.places[key];
   const road=key=>pending.roads[key]??current.current.roads?.[key];
   // Provider requests are spaced (throttling), but not after the last one.
   let requested=false;const space=async ms=>{if(requested)await new Promise(resolve=>setTimeout(resolve,ms));requested=true;};
   async function enrich(){
+   if(!Number.isFinite(current.current.enrichFrom)){
+    await persist(meta=>Number.isFinite(meta.enrichFrom)?meta:{...meta,enrichFrom:initialCutoff});
+    if(alive)setEnrichmentError('');
+    return;
+   }
+   // Retry retained writes before doing any more provider work or done markers.
+   await flush();if(!alive)return;
    requested=false;
    const todo=activities.filter(t=>settled(t)&&!current.current.enriched?.[t.id]&&!pending.enriched[t.id]).sort((a,b)=>b.startedAt-a.startedAt);
    let roadLookups=0,next=Infinity;
@@ -94,15 +120,20 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
     }
     if(!waiting)await hold('enriched',t.id,Date.now());
    }
-   if(alive)await flush();
+   if(alive){await flush();if(alive)setEnrichmentError('');}
    // Nothing runs again unless something is still waiting for a retry.
-   if(alive&&Number.isFinite(next))timer=setTimeout(()=>void enrich(),Math.max(60000,next-Date.now()));
+   if(alive&&Number.isFinite(next))timer=setTimeout(run,Math.max(60000,next-Date.now()));
   }
   // A restart for changed recordings keeps what this run already found.
-  void enrich();return()=>{alive=false;clearTimeout(timer);void flush();};
+  const run=()=>enrich().catch(()=>{
+   if(!alive)return;
+   setEnrichmentError('Activity details could not be saved. Retrying when storage is available.');
+   timer=setTimeout(run,60000);
+  });
+  void run();return()=>{alive=false;clearTimeout(timer);void flush().catch(()=>{});};
  // Re-run when an unfinished activity appears or changes, not on every poll.
  // eslint-disable-next-line react-hooks/exhaustive-deps
  },[owner,fingerprint]);
  async function act(action){setBusy(true);setError('');try{await persist(meta=>changeGrouping(meta,action,{activities,owner,vehicles,places}));return true;}catch(e){setError(e.message||'Journey change could not be saved.');return false;}finally{setBusy(false);}}
- return {...model,records:reconciled.activities,sourceSuggestions:reconciled.suggestions,metadata,act,busy,error};
+ return {...model,records:reconciled.activities,sourceSuggestions:reconciled.suggestions,metadata,act,busy,error:error||(!readable?'Saved journey metadata could not be read. It has been left unchanged.':enrichmentError)};
 }

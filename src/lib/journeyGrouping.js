@@ -18,7 +18,22 @@ export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixe
 // not grouped, shared or backed up until the recorder finalises it.
 export const isProvisional=t=>t?.details?.provisional===true;
 export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{},roads:{},enriched:{}};}
-export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads&&typeof m.roads==='object'?m.roads:{},enriched:m.enriched&&typeof m.enriched==='object'?m.enriched:{}};}catch{return emptyGrouping(owner);}}
+// Parsing and write authorization share one validator. A fallback may be shown,
+// but must never replace an existing record that failed validation.
+export function parseGrouping(serialized,owner){
+ if(!serialized)return emptyGrouping(owner);
+ const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+ try{
+  const m=JSON.parse(serialized);
+  if(!record(m)||m.version!==GROUPING_VERSION||m.owner!==owner||
+   !['links','cuts','history'].every(key=>Array.isArray(m[key]))||
+   !['titles','places','stopEdits'].every(key=>record(m[key]))||
+   !['types','manualTags','hiddenTags','roads','enriched'].every(key=>m[key]==null||record(m[key]))||
+   (m.sourceLinks!=null&&!Array.isArray(m.sourceLinks)))return null;
+  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{}};
+ }catch{return null;}
+}
+export function readGrouping(serialized,owner){return parseGrouping(serialized,owner)??emptyGrouping(owner);}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function visibleTags(tags,segments,metadata){const ids=segments.map(s=>s.id);const hidden=new Set(ids.flatMap(id=>metadata.hiddenTags?.[id]||[]).map(x=>x.toLowerCase()));return [...new Set(tags.filter(t=>typeof t==='string'&&t.trim()&&!hidden.has(t.toLowerCase())))];}
 function routeTags(activity,metadata){

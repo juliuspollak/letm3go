@@ -6,7 +6,7 @@ import {useJourneyGrouping} from './useJourneyGrouping.js';
 import {emptyGrouping,placeKey} from './journeyGrouping.js';
 const trip={id:'a',ownerID:'owner',activity:'Walking',state:'finished',source:'device',endedAt:200,startedAt:100,points:[{latitude:1,longitude:2,timestamp:100,accuracy:5}],tags:[]};
 const props=()=>({owner:'owner',activities:[trip],places:[],vehicles:[],serialized:JSON.stringify({...emptyGrouping('owner'),enrichFrom:0}),savePreferences:vi.fn().mockResolvedValue()});
-beforeEach(()=>{mock.lookup.mockReset();});afterEach(()=>{cleanup();});
+beforeEach(()=>{mock.lookup.mockReset();});afterEach(()=>{cleanup();vi.useRealTimers();});
 it('enriches only completed recordings belonging to this account',async()=>{
  mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
  const p=props();p.activities=[trip,{...trip,id:'foreign',ownerID:'other'},{...trip,id:'active',state:'recording',endedAt:null}];
@@ -110,4 +110,84 @@ it('never writes over saved metadata it cannot read as this account\'s',async()=
  renderHook(()=>useJourneyGrouping(p));
  await new Promise(resolve=>setTimeout(resolve,300));
  expect(p.savePreferences).not.toHaveBeenCalled();expect(mock.lookup).not.toHaveBeenCalled();
+});
+
+it('does not overwrite same-owner metadata rejected by the reader, including manual actions',async()=>{
+ const p=props();p.serialized=JSON.stringify({version:1,owner:'owner',titles:{a:'Keep this'},places:{saved:{name:'Keep place'}}});
+ const {result}=renderHook(()=>useJourneyGrouping(p));
+ await act(async()=>{});
+ expect(p.savePreferences).not.toHaveBeenCalled();expect(mock.lookup).not.toHaveBeenCalled();
+ expect(result.current.error).toMatch(/left unchanged/);
+ let saved;await act(async()=>{saved=await result.current.act({type:'rename',id:'a',title:'New'});});
+ expect(saved).toBe(false);expect(p.savePreferences).not.toHaveBeenCalled();
+});
+
+const batchActivities=()=>Array.from({length:8},(_,i)=>({...trip,id:`batch-${i}`,points:[{latitude:1+i*.01,longitude:2,timestamp:100,accuracy:5}]}));
+it('retains a failed boundary batch, retries storage without provider repeats, and only then finishes activities',async()=>{
+ vi.useFakeTimers();mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ const p=props();p.activities=batchActivities();p.savePreferences.mockRejectedValueOnce(new Error('disk unavailable'));
+ const {result}=renderHook(()=>useJourneyGrouping(p));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10000);});
+ expect(p.savePreferences).toHaveBeenCalledTimes(1);
+ expect(result.current.error).toMatch(/could not be saved/);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(60000);});
+ const saved=JSON.parse(p.savePreferences.mock.lastCall[0].journeyGrouping);
+ for(const activity of p.activities){
+  expect(saved.places[placeKey(activity.points[0])]).toMatchObject({source:'apple-geocoder-mapkit'});
+  expect(saved.enriched[activity.id]).toEqual(expect.any(Number));
+ }
+ expect(result.current.error).toBe('');expect(mock.lookup).toHaveBeenCalledTimes(8);
+ const writes=p.savePreferences.mock.calls.length;
+ await act(async()=>{await vi.advanceTimersByTimeAsync(24*3600000);});
+ expect(p.savePreferences).toHaveBeenCalledTimes(writes);expect(mock.lookup).toHaveBeenCalledTimes(8);
+});
+it('keeps unsaved answers when changing activities restarts enrichment',async()=>{
+ vi.useFakeTimers();mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ const p=props();p.activities=batchActivities();p.savePreferences.mockRejectedValueOnce(new Error('disk unavailable'));
+ const view=renderHook(props=>useJourneyGrouping(props),{initialProps:p});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10000);});
+ const next={...trip,id:'new',points:[{latitude:8,longitude:8,timestamp:100,accuracy:5}]};
+ view.rerender({...p,activities:[...p.activities,next]});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10000);});
+ const saved=JSON.parse(p.savePreferences.mock.lastCall[0].journeyGrouping);
+ for(const activity of [...p.activities,next]){
+  expect(saved.places[placeKey(activity.points[0])]).toBeDefined();
+  expect(saved.enriched[activity.id]).toEqual(expect.any(Number));
+ }
+ expect(mock.lookup).toHaveBeenCalledTimes(9);
+});
+it('does not flush retained answers into a different account',async()=>{
+ vi.useFakeTimers();mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ const p=props();p.activities=batchActivities();p.savePreferences.mockRejectedValueOnce(new Error('disk unavailable'));
+ const view=renderHook(props=>useJourneyGrouping(props),{initialProps:p});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10000);});
+ view.rerender({...p,owner:'other',activities:[],serialized:JSON.stringify({...emptyGrouping('other'),enrichFrom:0})});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});
+ expect(p.savePreferences).toHaveBeenCalledTimes(1);
+});
+it('retries the initial cutoff write without moving the first-run boundary',async()=>{
+ vi.useFakeTimers();const now=Date.now(),p=props();p.serialized=JSON.stringify(emptyGrouping('owner'));
+ p.savePreferences.mockRejectedValueOnce(new Error('disk unavailable'));
+ const {result}=renderHook(()=>useJourneyGrouping(p));
+ await act(async()=>{});
+ expect(result.current.error).toMatch(/could not be saved/);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(60000);});
+ expect(p.savePreferences).toHaveBeenCalledTimes(2);
+ expect(JSON.parse(p.savePreferences.mock.lastCall[0].journeyGrouping).enrichFrom).toBe(now);
+ expect(result.current.error).toBe('');expect(mock.lookup).not.toHaveBeenCalled();
+});
+
+it('also retries failed persistence when a provider retry timer initiated the run',async()=>{
+ vi.useFakeTimers();mock.lookup.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ const p=props();p.savePreferences.mockResolvedValueOnce().mockRejectedValueOnce(new Error('disk unavailable'));
+ const {result}=renderHook(()=>useJourneyGrouping(p));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
+ expect(p.savePreferences).toHaveBeenCalledTimes(1);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(300000);});
+ expect(result.current.error).toMatch(/could not be saved/);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(60000);});
+ const saved=JSON.parse(p.savePreferences.mock.lastCall[0].journeyGrouping);
+ expect(saved.enriched.a).toEqual(expect.any(Number));
+ expect(saved.places[placeKey(trip.points[0])]).toMatchObject({source:'apple-geocoder-mapkit'});
+ expect(mock.lookup).toHaveBeenCalledTimes(2);expect(result.current.error).toBe('');
 });

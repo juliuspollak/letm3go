@@ -87,4 +87,15 @@ Storage API.
 ## Repeating older migrations by hand
 
 `20261110000000` and `20261111000000` restore a photo-only upload check. If either is
-ever run again by hand, run `20261116000000` after them.
+ever run again by hand, run `20261116000000` and then `20261117000000` after them.
+
+
+## Closing while an upload is registering
+
+`20261117000000_feedback_close_registration.sql` adds an open-ticket guard to
+both photo and report rows, including retried upserts. Registration takes a shared
+row lock on the owning ticket. Closing updates that same row before deleting
+attachments, so registration either commits first and is included in cleanup, or
+waits for closure and is rejected. Photo insert/update policies also require a
+non-closed ticket. The definer checks the caller's ownership before taking a lock.
+No existing feedback text, files or tickets are deleted by this migration.

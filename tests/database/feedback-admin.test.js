@@ -126,3 +126,42 @@ it('the migration can be applied again without error', async () => {
   await db.exec(await readFile('supabase/migrations/20261116000000_feedback_admin_and_reports.sql', 'utf8'));
   expect((await as(admin, 'select public.is_app_admin() as yes')).rows[0].yes).toBe(true);
 });
+
+it('rejects late photo and report registration after a ticket is closed',async()=>{
+ const ticket=await submit(user,'Closing during upload');
+ const photoID='dddddddd-dddd-4ddd-8ddd-000000000099';
+ const photoKey=`${user}/${ticket.id}/${photoID}.jpg`;
+ const reportID='eeeeeeee-eeee-4eee-8eee-000000000099';
+ await put(user,photoKey);await put(user,`${user}/${ticket.id}/${reportID}.txt`);
+ // The objects arrived before close; their registration responses are delayed.
+ await as(admin,`select public.admin_set_feedback_status('${ticket.id}','closed')`);
+ await expect(as(user,`insert into public.feedback_attachments(id,feedback_id,object_key,byte_size,width,height) values('${photoID}','${ticket.id}','${photoKey}',10,10,10)`)).rejects.toThrow(/open feedback ticket/);
+ await expect(addReport(user,ticket,reportID)).rejects.toThrow(/open feedback ticket/);
+ expect((await as(admin,`select * from public.feedback_attachments where feedback_id='${ticket.id}'`)).rows).toHaveLength(0);
+ // The rejected registration leaves the object unreferenced and removable.
+ expect((await as(admin,`delete from storage.objects where name='${photoKey}' returning name`)).rows).toHaveLength(1);
+});
+it('keeps existing closed-ticket attachments from being updated or upserted',async()=>{
+ const ticket=await submit(user,'Retry during closure');
+ const id='dddddddd-dddd-4ddd-8ddd-000000000098',key=`${user}/${ticket.id}/${id}.jpg`;
+ await put(user,key);
+ await as(user,`insert into public.feedback_attachments(id,feedback_id,object_key,byte_size,width,height) values('${id}','${ticket.id}','${key}',10,10,10)`);
+ // A legacy closed row can exist from a previous build. The guard must also
+ // protect UPDATE, even for SQL/service roles that bypass RLS.
+ await db.exec(`update public.feedback set status='closed' where id='${ticket.id}'`);
+ await expect(db.exec(`update public.feedback_attachments set width=20 where id='${id}'`)).rejects.toThrow(/open feedback ticket/);
+ await expect(as(user,`insert into public.feedback_attachments(id,feedback_id,object_key,byte_size,width,height) values('${id}','${ticket.id}','${key}',10,10,10) on conflict(id) do update set width=20`)).rejects.toThrow(/open feedback ticket/);
+});
+it('installs the locking guard for both attachment tables and can be reapplied',async()=>{
+ await db.exec(await readFile('supabase/migrations/20261117000000_feedback_close_registration.sql','utf8'));
+ const triggers=(await db.query(`select c.relname from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_proc p on p.oid=t.tgfoid where p.proname='require_open_feedback_ticket' and not t.tgisinternal order by c.relname`)).rows;
+ expect(triggers.map(r=>r.relname)).toEqual(['feedback_attachments','feedback_reports']);
+ const source=(await db.query(`select prosrc from pg_proc where proname='require_open_feedback_ticket'`)).rows[0].prosrc;
+ expect(source).toMatch(/for share/i);
+});
+
+it('rejects forged ownership before the definer can lock another account ticket',async()=>{
+ const ticket=await submit(other,'Do not lock another owner ticket');
+ const id='eeeeeeee-eeee-4eee-8eee-000000000097';
+ await expect(as(user,`insert into public.feedback_reports(id,feedback_id,owner_id,kind,object_key,mime_type,byte_size) values('${id}','${ticket.id}','${other}','recording','${other}/${ticket.id}/${id}.txt','text/plain',10)`)).rejects.toThrow(/Only the ticket owner/);
+});
