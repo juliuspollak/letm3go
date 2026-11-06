@@ -4,6 +4,7 @@ import {publicationPreview,sourceLabel} from './activityPrivacy.js';
 import {mapPayload} from './appleMaps.js';
 import {withSegments,withTrimRange} from './mapContent.js';
 import {distanceText} from './distanceUnits.js';
+import {estimateExplanation} from './gapReconstruction.js';
 import {heartRateOf,heartRateRuns,routeAt,timeInZones} from './heartRate.js';
 import {compareRoutes} from './journeyGeometry.js';
 import {canLinkTrail,trailLinkLabel} from './mtbLink.js';
@@ -53,6 +54,8 @@ function notices(trip){
   list.push({id:'provisional',tone:'info',text:`Stopped and saved to History${left?`; ${left} minute${left===1?'':'s'} remain for the same activity near here`:''}. A different activity (walking after parking, or driving after a walk) is saved as its own journey.`});
  }
  if(trip.details?.indoor)list.push({id:'indoor',tone:'info',text:'Indoor activity · no route was recorded.'});
+ // Also the map legend: estimated road routes are never presented as recorded GPS.
+ if(trip.distanceEstimate)list.push({id:'estimated-distance',tone:'info',text:estimateExplanation(trip.distanceEstimate)});
  return list;
 }
 
@@ -114,7 +117,7 @@ function tagSection(trip,grouping,onActivityAvailable){
 
 function diagnostics(trip,segmentReport=[]){
  const d=tripDiagnostics(trip);
- const report=['Letm3go recording report',`Activity: ${trip.title||trip.activity||'Activity'}`,`Type: ${activityLabel(trip.activity||'Unknown')}`,`Started: ${Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toISOString():'Unknown'}`,`Ended: ${Number.isFinite(trip.endedAt)?new Date(trip.endedAt*1000).toISOString():'Unknown'}`,`Recorded distance (m): ${Number(trip.distanceMeters||0).toFixed(0)}`,`GPS fixes: ${d.points}`,`Median accuracy (m): ${d.medianAccuracy??'Unknown'}`,`First fix lag (s): ${d.lag??'Unknown'}`,`Largest GPS gap (s): ${d.longestGap}`,`End GPS lag (s): ${d.endLag??'Unknown'}`,`Warnings: ${d.warnings.join('; ')||'None'}`,'Recorder events:',...d.events,...segmentReport].join('\n');
+ const report=['Letm3go recording report',`Activity: ${trip.title||trip.activity||'Activity'}`,`Type: ${activityLabel(trip.activity||'Unknown')}`,`Started: ${Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toISOString():'Unknown'}`,`Ended: ${Number.isFinite(trip.endedAt)?new Date(trip.endedAt*1000).toISOString():'Unknown'}`,`Recorded distance (m): ${Number(trip.recordedDistanceMeters??trip.distanceMeters??0).toFixed(0)}`,...(trip.distanceEstimate?[`Estimated distance (m): ${trip.distanceEstimate.estimatedMeters} (${trip.distanceEstimate.roadGaps} of ${trip.distanceEstimate.gapCount} GPS gaps along roads, the rest straight-line)`]:[]),`GPS fixes: ${d.points}`,`Median accuracy (m): ${d.medianAccuracy??'Unknown'}`,`First fix lag (s): ${d.lag??'Unknown'}`,`Largest GPS gap (s): ${d.longestGap}`,`End GPS lag (s): ${d.endLag??'Unknown'}`,`Warnings: ${d.warnings.join('; ')||'None'}`,'Recorder events:',...d.events,...segmentReport].join('\n');
  return {stats:[{label:'GPS fixes',value:String(d.points)},{label:'Median accuracy',value:d.medianAccuracy==null?'—':`${Math.round(d.medianAccuracy)} m`},{label:'First fix delay',value:diagnosticTime(d.lag)},{label:'Largest GPS gap',value:diagnosticTime(d.longestGap)},{label:'End fix delay',value:diagnosticTime(d.endLag)}],
   warnings:d.warnings,events:d.events.map(item=>typeof item==='string'?item:item.message||JSON.stringify(item)),report};
 }
@@ -135,7 +138,7 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
   header:{title:trip.title,recordedTitle:trip.recordedTitle??trip.title,activity:activityCode(trip.activity),activityLabel:activityLabel(trip.activity),
    subtitle:`${activityLabel(trip.activity)}${trip.source==='watch'?' · Apple Watch':''} · ${trip.date}`,location:trip.location||'',state:trip.state||'finished',source:trip.source||null,local,readOnly:trip.readOnly===true,startedAt:trip.startedAt??null,timeZone:trip.timezone||trip.timeZone||null,noRouteDetail:trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'},
   summary:activitySummary(trip,{unit}).map(({id,label,value,detail})=>({id,label,value,detail:detail||null})),
-  metrics:[{label:'Estimated distance',value:distanceText(trip.distance,unit)},{label:'Active duration',value:trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`},{label:'Average speed',value:trip.source?speedLabel(trip.distanceMeters,trip.durationSeconds):'—'}],
+  metrics:[{label:'Estimated distance',value:`${trip.distanceEstimate?'~':''}${distanceText(trip.distance,unit)}`},{label:'Active duration',value:trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`},{label:'Average speed',value:trip.source?`${trip.distanceEstimate?'~':''}${speedLabel(trip.distanceMeters,trip.durationSeconds)}`:'—'}],
   notices:notices(trip),
   consent:{energy:Boolean(heldEnergy(trip)),heartRate:Boolean(trip.details?.unverifiedHeartRate)},
   sources:(trip.sourceRecords||[]).map(s=>({id:String(s.id),label:`View ${s.source==='tesla'?'Tesla':'iPhone'} recording`})),

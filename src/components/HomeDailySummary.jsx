@@ -44,7 +44,7 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
   </div>
   <button type="button" className="home-daily-open" aria-label={`View activities for ${dateLabel(date,today)}`} onClick={open} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchCancel={()=>{touchStart.current=null;}}>
    <span className="home-daily-stats">
-    <span className="home-daily-stat"><Route size={18}/><strong>{distanceValue(distance,unit)} <small>{distanceUnitLabel(unit)}</small></strong><span>Distance</span></span>
+    <span className="home-daily-stat"><Route size={18}/><strong>{totals.estimated?'~':''}{distanceValue(distance,unit)} <small>{distanceUnitLabel(unit)}</small></strong><span>{totals.estimated?'Distance (includes estimated GPS gaps)':'Distance'}</span></span>
     <span className="home-daily-stat"><ListChecks size={18}/><strong>{totals.count}</strong><span>Activities</span></span>
     <span className="home-daily-stat"><Clock3 size={18}/><strong>{minutes} <small>min</small></strong><span>Recorded</span></span>
    </span>

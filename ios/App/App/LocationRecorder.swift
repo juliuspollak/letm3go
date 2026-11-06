@@ -643,6 +643,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         diagnosticObservers.append(NotificationCenter.default.addObserver(forName:UIApplication.didEnterBackgroundNotification,object:nil,queue:.main){[weak self] _ in self?.recordingHealthAway=true})
         diagnosticObservers.append(NotificationCenter.default.addObserver(forName:UIApplication.backgroundRefreshStatusDidChangeNotification,object:nil,queue:.main){[weak self] _ in self?.noteRecordingHealth()})
+        // Low Power Mode changes are journalled with what keeps a drive recording,
+        // and the keep-alive is re-checked at once rather than at the next reconcile.
+        diagnosticObservers.append(NotificationCenter.default.addObserver(forName:.NSProcessInfoPowerStateDidChange,object:nil,queue:.main){[weak self] _ in
+            guard let self else {return}
+            let on=ProcessInfo.processInfo.isLowPowerModeEnabled
+            self.recordDiagnostic("power",on ? "Low Power Mode turned on" : "Low Power Mode turned off",details:["lowPowerMode":String(on),
+                "journeyOpen":String(self.automaticTrip != nil),"backgroundSession":self.backgroundSessionState,"serviceSession":self.serviceSessionState,
+                "keepAliveRunning":String(self.keepAliveTask != nil),"continuousGPS":String(self.continuousLocationRequested)])
+            if self.automaticTrip != nil {self.reconcileKeepAlive(now:Date().timeIntervalSince1970)}
+        })
         arrivalTimer = Timer.scheduledTimer(withTimeInterval:30, repeats:true) { [weak self] _ in
             guard let self = self else { return }
             self.noteExecution("timer")
@@ -1320,6 +1330,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "currentPosition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "searchAddress", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "recogniseTripPlace", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "roadRoute", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "editActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "assignEquipment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "assignTrail", returnType: CAPPluginReturnPromise),

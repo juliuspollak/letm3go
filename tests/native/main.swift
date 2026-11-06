@@ -5105,4 +5105,13 @@ rememberCamera("people:owner",0.02)
 rememberCamera("people:owner",0.03)
 check(resumeCamera("people:owner")==0.03, "camera memory replaces the same intent's camera")
 check(resumeCamera("missing")==nil, "no camera is restored for an intent that was never remembered")
+// GPS gap causes (the reported 45 min Low Power Mode drive: ~290 s gaps).
+let suspendedGap = GapCause.note(seconds: 290, meters: 5297, suspendedSeconds: GapCause.suspendedSeconds(gapStart: 1000, executingSince: 1285, lastExecutionGap: 280),
+                                 lowPower: true, activitySession: false, keepAlive: false)
+check(suspendedGap.hasPrefix("GPS resumed after 290s without saved route samples; 5297m straight-line gap excluded from distance"), "a gap note keeps its established opening")
+check(suspendedGap.contains("iOS suspended the app for 280s") && suspendedGap.contains("Low Power Mode on") && suspendedGap.contains("no background session or keep-alive"), "a gap says iOS suspended the app, in Low Power Mode, with nothing keeping it running")
+check(GapCause.suspendedSeconds(gapStart: 1000, executingSince: 900, lastExecutionGap: 500) == 0, "a process that kept running through the gap did not sleep through it")
+let runningGap = GapCause.note(seconds: 120, meters: 900, suspendedSeconds: 0, lowPower: false, activitySession: true, keepAlive: false)
+check(runningGap.contains("the app was running but no GPS fix arrived") && runningGap.contains("background session held") && !runningGap.contains("Low Power"), "a gap with the app running is reported as missing fixes, not suspension")
+check(GapCause.note(seconds: 60, meters: 400, suspendedSeconds: 900, lowPower: false, activitySession: false, keepAlive: true).contains("suspended the app for 60s"), "suspension is never reported as longer than the gap")
 print("\(assertions) native recorder/auth assertions passed")

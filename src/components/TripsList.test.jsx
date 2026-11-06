@@ -103,3 +103,15 @@ it('restores an archived activity on a full swipe instead of archiving it again'
  fireEvent.touchStart(row,{touches:[{clientX:350,clientY:100}]});fireEvent.touchMove(row,{touches:[{clientX:10,clientY:100}]});fireEvent.touchEnd(row);
  expect(props.onRestore).toHaveBeenCalledWith('a');expect(props.onArchive).not.toHaveBeenCalled();
 });
+
+it('marks a distance that includes estimated GPS gaps with ~, in both sort layouts',()=>{
+ const estimate={estimatedMeters:59462,recordedMeters:3188,gapCount:9,roadGaps:9};
+ const journeys=[trip('gap',{activity:'Driving',distanceMeters:59462,distance:59.5,distanceEstimate:estimate}),trip('ok',{distanceMeters:4200,distance:4.2})];
+ const {container,unmount}=renderList({journeys});
+ const text=[...container.querySelectorAll('.recent-activity-distance')].map(n=>n.textContent);
+ expect(text).toEqual(['~59 km','4.2 km']);
+ expect(container.querySelector('[title="Estimated: includes GPS gaps"]')).toBeInTheDocument();
+ unmount();
+ const sorted=renderList({journeys,sort:'duration'}).container;
+ expect([...sorted.querySelectorAll('.trip-time-distance')].map(n=>n.textContent)).toEqual(['~59 km','4.2 km']);
+});

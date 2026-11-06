@@ -5,6 +5,7 @@ import {activityCode} from './activityNames.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 import {recognisedStopVenue} from './stopVenueRecognition.js';
+import {routeGaps,gapKey,estimatedDistance,combineEstimates} from './gapReconstruction.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
 export const GROUPING_VERSION=1;
@@ -16,8 +17,8 @@ export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixe
 // A stopped journey that may still be continued is a provisional record. It is
 // not grouped, shared or backed up until the recorder finalises it.
 export const isProvisional=t=>t?.details?.provisional===true;
-export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{}};}
-export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{}};}catch{return emptyGrouping(owner);}}
+export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{},roads:{}};}
+export function readGrouping(serialized,owner){try{const m=JSON.parse(serialized);if(m.version!==1||m.owner!==owner||!Array.isArray(m.links)||!Array.isArray(m.cuts)||!m.titles||!m.places||!m.stopEdits||!Array.isArray(m.history))return emptyGrouping(owner);return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads&&typeof m.roads==='object'?m.roads:{}};}catch{return emptyGrouping(owner);}}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function visibleTags(tags,segments,metadata){const ids=segments.map(s=>s.id);const hidden=new Set(ids.flatMap(id=>metadata.hiddenTags?.[id]||[]).map(x=>x.toLowerCase()));return [...new Set(tags.filter(t=>typeof t==='string'&&t.trim()&&!hidden.has(t.toLowerCase())))];}
 function routeTags(activity,metadata){
@@ -148,6 +149,13 @@ export function nativeStops(t,context){
   return manual.ignored?[]:[stop];
  });
 }
+// The estimate replaces the displayed distance only; the recorded distance is
+// kept beside it and the activity itself is unchanged.
+function withEstimate(journey,estimate){
+ if(!estimate)return journey;
+ journey.recordedDistanceMeters=journey.distanceMeters;journey.distanceMeters=estimate.estimatedMeters;
+ journey.distance=Math.round(estimate.estimatedMeters/100)/10;journey.distanceEstimate=estimate;return journey;
+}
 export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),places=[],vehicles=[],telemetry=[],projectionCache=null}={}){
  // All callers must supply the authenticated owner and an account-scoped input set.
  if(!owner)return {journeys:[],suggestions:[]};
@@ -191,7 +199,8 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  const journeys=groups.map(segments=>{
   if(segments.length===1){const s=segments[0],cacheID=`${owner}:${s.id}`,previous=projectionCache?.get(cacheID);
    const keys=previous?.source===s?previous.keys:[...new Set((s.points||[]).map(placeKey))];
-   const recordKey=JSON.stringify(keys.map(key=>metadata.places[key]));
+   const gaps=previous?.source===s?previous.gaps:routeGaps(s);
+   const recordKey=JSON.stringify([keys.map(key=>metadata.places[key]),gaps.map(g=>metadata.roads?.[gapKey(s.id,g)])]);
    const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],metadata.stopEdits]);
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
    const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
@@ -211,15 +220,17 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    // manual titles remain authoritative.
    const generatedNativeStopTitle=!!stopTitle&&nativeStopTitle;
    const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
-   projectionCache?.set(cacheID,{source:s,keys,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
+   withEstimate(journey,estimatedDistance(s,metadata.roads));
+   projectionCache?.set(cacheID,{source:s,keys,gaps,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>[...internalStops(t,context),...nativeStops(t,context)]);
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
   stops.sort((a,b)=>a.startedAt-b.startedAt);
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
   const tags=visibleTags([...segments.flatMap(s=>s.tags||[]),...segments.flatMap(s=>metadata.manualTags?.[s.id]||[]),...activityPlaceTags(first,start,end,stops),...segments.flatMap(s=>routeTags(s,metadata))],segments,metadata);
-  const distanceMeters=segments.reduce((n,s)=>n+(s.distanceMeters||0),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
-  return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments,stops,title:manualTitle||contextualJourneyTitle(metadata.types[first.id]||first.activity,start,end,metres(endpoint(first,false),endpoint(last,true))<700),titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null};
+  const estimates=segments.map(s=>estimatedDistance(s,metadata.roads)),estimate=combineEstimates(segments,estimates);
+  const distanceMeters=segments.reduce((n,s,i)=>n+(estimates[i]?.estimatedMeters??(s.distanceMeters||0)),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
+  return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments:segments.map((s,i)=>estimates[i]?withEstimate({...s},estimates[i]):s),stops,title:manualTitle||contextualJourneyTitle(metadata.types[first.id]||first.activity,start,end,metres(endpoint(first,false),endpoint(last,true))<700),titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null,...(estimate?{recordedDistanceMeters:estimate.recordedMeters,distanceEstimate:estimate}:{})};
  });
  // Place/stop text is indexed for singles as well as grouped journeys.
  for(const j of journeys){const stops=j.stops||j.recognisedStops||[];j.searchIndex=[j.title,j.location,j.collection,j.notes,...(j.tags||[]),...stops.flatMap(s=>[s.name,...s.tags])].filter(Boolean).join(' ').toLowerCase();}

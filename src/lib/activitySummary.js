@@ -120,7 +120,9 @@ export function heartRateSummary(trip){
 export function activitySummary(trip,{unit='km'}={}){
  const entries=[];
  const distanceKm=finite(trip?.distanceMeters)?trip.distanceMeters/1000:finite(trip?.distance)?trip.distance:null;
- if(distanceKm!=null)entries.push({id:'distance',label:'Distance',value:distanceText(distanceKm,unit)});
+ // Includes estimates for GPS gaps: read as approximate, with the recorded part beside it.
+ if(distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
+  ...(trip?.distanceEstimate?{detail:`${distanceText(trip.distanceEstimate.recordedMeters/1000,unit)} recorded`}:{})});
  const movingSeconds=[trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds].find(value=>finite(value)&&value>0);
  const elapsedSeconds=finite(trip?.durationSeconds)?trip.durationSeconds:Number.isFinite(trip?.minutes)?trip.minutes*60:null;
  if(movingSeconds!=null)entries.push({id:'moving',label:'Moving time',value:durationText(movingSeconds)});

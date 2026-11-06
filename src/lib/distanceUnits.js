@@ -11,3 +11,9 @@ export function distanceValue(km,unit='km'){
 }
 export const distanceUnitLabel=unit=>unit==='mi'?'mi':unit==='ft'?'ft':'km';
 export const distanceText=(km,unit='km')=>`${distanceValue(km,unit)} ${distanceUnitLabel(unit)}`;
+// A journey whose distance includes estimates for GPS gaps reads "~12.3 km".
+export const estimatePrefix=trip=>trip?.distanceEstimate?'~':'';
+// Metres when known, so every surface rounds the same value the same way.
+const tripKm=trip=>Number.isFinite(trip?.distanceMeters)?trip.distanceMeters/1000:trip?.distance;
+export const tripDistanceText=(trip,unit='km')=>`${estimatePrefix(trip)}${distanceText(tripKm(trip),unit)}`;
+export const tripDistanceValue=(trip,unit='km')=>`${estimatePrefix(trip)}${distanceValue(tripKm(trip),unit)}`;

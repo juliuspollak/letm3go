@@ -12,11 +12,13 @@ export function homeJourneysForDay(journeys,archivedIDs,selection,today){
 // recording: gaps between its segments must never receive distance or time.
 export function dailyJourneyTotals(journeys,selection,today){
  const day=chosenDay(selection,today);
- if(!day)return {count:0,distanceMeters:0,durationSeconds:0};
+ if(!day)return {count:0,distanceMeters:0,durationSeconds:0,estimated:false};
  const start=new Date(day+'T00:00:00').getTime()/1000;
  const end=new Date(shiftMapDay(day,1)+'T00:00:00').getTime()/1000;
  let distanceMeters=0;
  let durationSeconds=0;
+ // True when any distance counted is an estimate for GPS gaps (shown with ~).
+ let estimated=false;
  for(const journey of journeys){
   const parts=journey.segments?.length?journey.segments:[journey];
   for(const part of parts){
@@ -29,14 +31,16 @@ export function dailyJourneyTotals(journeys,selection,today){
     // only the actual recorded duration, not the entire clock-time interval.
     const share=overlap/(to-from);
     distanceMeters+=distance*share;
+    if(share>0&&part.distanceEstimate)estimated=true;
     durationSeconds+=duration*share;
    }else if(part.date===day){
     // Legacy or in-progress records without complete timestamps are assigned
     // to their known day, rather than duplicated across several days.
     distanceMeters+=distance;
     durationSeconds+=duration;
+    if(part.distanceEstimate)estimated=true;
    }
   }
  }
- return {count:journeys.length,distanceMeters,durationSeconds};
+ return {count:journeys.length,distanceMeters,durationSeconds,estimated};
 }

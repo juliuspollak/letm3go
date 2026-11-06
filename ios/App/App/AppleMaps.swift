@@ -17,6 +17,15 @@ private let gapColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UI
 // It is never rendered like an observed route, so a solid line never implies GPS
 // was recorded where it was not.
 private final class GapPolyline: MKPolyline {}
+// A road route estimated for a GPS gap (never recorded): orange and dashed, so it
+// cannot be mistaken for the solid recorded route or for a straight gap marker.
+private let estimatedColor = UIColor.systemOrange
+private final class EstimatedPolyline: MKPolyline {}
+private func estimatedRenderer(_ line: EstimatedPolyline) -> MKPolylineRenderer {
+    let renderer = MKPolylineRenderer(polyline: line)
+    renderer.strokeColor = estimatedColor; renderer.lineWidth = 4; renderer.lineCap = .round; renderer.lineJoin = .round; renderer.lineDashPattern = [8, 7]
+    return renderer
+}
 // A route drawn in its own colour: named segments, the section being chosen in
 // the segment editor, and the recording behind them when it is muted.
 private final class StyledLine: MKPolyline {
@@ -677,6 +686,7 @@ private struct CameraIntent {
 private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let gaps: [[CLLocationCoordinate2D]]
+    let estimated: [[CLLocationCoordinate2D]]
     let pins: [[String:Any]]
     let styled: [StyledRoute]
     let muted: Bool
@@ -696,6 +706,7 @@ private struct MapContent {
         focus=coordinate(options["focus"])
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
+        estimated=(options["estimated"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
         styled=(options["styled"] as? [[String:Any]] ?? []).prefix(60).compactMap { item -> StyledRoute? in
             let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
@@ -711,7 +722,7 @@ private struct MapContent {
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
-    var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+styled.flatMap{$0.coordinates}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? []) }
+    var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+estimated.flatMap{$0}+styled.flatMap{$0.coordinates}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? []) }
     var peoplePins:[[String:Any]] { pins.filter { ($0["kind"] as? String)=="people" } }
     // Everyone on the map, marked with whether the camera should keep them in view
     // (the web layer leaves out a stale position far from everyone else).
@@ -851,6 +862,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         for route in next.routes {hasher.combine(route.count);for c in route {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         hasher.combine(-1)
         for gap in next.gaps {for c in gap {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
+        hasher.combine(-2)
+        for line in next.estimated {hasher.combine(line.count);for c in line {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         hasher.combine(next.muted)
         for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.description);for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         let key=hasher.finalize()
@@ -858,6 +871,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             overlayRebuilds+=1
             map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine)})
             for gap in next.gaps {map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))}
+            for line in next.estimated {map.addOverlay(EstimatedPolyline(coordinates:line,count:line.count))}
             for line in routeOverlays(next) {map.addOverlay(line)}
             routeKey=key
         }
@@ -1648,6 +1662,11 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         UIColor.white.setStroke();path.lineWidth=7;path.lineCapStyle = .round;path.stroke()
                         ctx.saveGState();ctx.setLineDash(phase:0,lengths:[7,7]);gapColor.setStroke();path.lineWidth=3.5;path.stroke();ctx.restoreGState()
                     }
+                    for line in content.estimated {
+                        let path=UIBezierPath();path.move(to:snapshot.point(for:line[0]));for c in line.dropFirst(){path.addLine(to:snapshot.point(for:c))}
+                        UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
+                        ctx.saveGState();ctx.setLineDash(phase:0,lengths:[8,7]);estimatedColor.setStroke();path.lineWidth=3.5;path.stroke();ctx.restoreGState()
+                    }
                     // The place radius is rendered on previews as well as the fullscreen picker.
                     for pin in content.pins {
                         guard let center=coordinate(pin["point"]),let radius=pin["radius"] as? Double,radius.isFinite,radius>0 else {continue}
@@ -2008,6 +2027,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         for gap in content.gaps {
             map.addOverlay(GapPolyline(coordinates:gap,count:gap.count),level:.aboveLabels)
         }
+        for line in content.estimated {map.addOverlay(EstimatedPolyline(coordinates:line,count:line.count),level:.aboveLabels)}
         // Use the same complete coordinate sequence as the preview; draw above labels
         // to prevent Apple Maps road styling from obscuring portions of sparse routes.
         for line in routeOverlays(content) {map.addOverlay(line,level:.aboveLabels)}
@@ -2046,6 +2066,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
         if let lines=overlay as? DensityLines {return densityRenderer(lines,dimmed:coordinator?.densityDimmed ?? false)}
         if let line=overlay as? HighlightLine {return highlightRenderer(line)}
+        if let line=overlay as? EstimatedPolyline {return estimatedRenderer(line)}
         if let gap=overlay as? GapPolyline {let renderer=MKPolylineRenderer(polyline:gap);renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6];return renderer}
         if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=5;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
@@ -2197,6 +2218,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
     public func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
         if let lines=overlay as? DensityLines {return densityRenderer(lines,dimmed:coordinator(for:mapView)?.densityDimmed ?? false)}
         if let line=overlay as? HighlightLine {return highlightRenderer(line)}
+        if let line=overlay as? EstimatedPolyline {return estimatedRenderer(line)}
         if let gap=overlay as? GapPolyline {
             let renderer=MKPolylineRenderer(polyline:gap)
             renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]
@@ -2294,6 +2316,7 @@ final class ActivityMapEngine:NSObject,MKMapViewDelegate {
         return marker
     }
     func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
+        if let line=overlay as? EstimatedPolyline {return estimatedRenderer(line)}
         if let gap=overlay as? GapPolyline {
             let renderer=MKPolylineRenderer(polyline:gap)
             renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]

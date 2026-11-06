@@ -1944,6 +1944,26 @@ struct ExecutionHeartbeat {
 // queued during the suspension are delivered first; stopping the service at the
 // moment of resume could discard them. A foreground start also restores the
 // documented allowsBackgroundLocationUpdates keep-alive on iOS 15 and 16.
+// Why a drive's GPS gap happened, in its saved note and diagnostics, so a short
+// recording report explains the gap without the full journal: whether iOS had
+// suspended the app (only then can no fix arrive while precise GPS runs), whether
+// Low Power Mode was on, and what was meant to keep the app running.
+enum GapCause {
+    static func note(seconds: Double, meters: Double, suspendedSeconds: Double, lowPower: Bool,
+                     activitySession: Bool, keepAlive: Bool) -> String {
+        var parts = ["GPS resumed after \(Int(seconds))s without saved route samples; \(Int(meters))m straight-line gap excluded from distance"]
+        parts.append(suspendedSeconds >= 1 ? "iOS suspended the app for \(Int(min(seconds, suspendedSeconds)))s of it" : "the app was running but no GPS fix arrived")
+        if lowPower { parts.append("Low Power Mode on") }
+        parts.append(activitySession ? "background session held" : keepAlive ? "no background session; keep-alive running" : "no background session or keep-alive")
+        return parts.joined(separator: " · ")
+    }
+    // The part of the gap the process slept through: it last resumed after the fix
+    // before the gap, having been away for `lastExecutionGap` seconds.
+    static func suspendedSeconds(gapStart: Double, executingSince: Double, lastExecutionGap: Double) -> Double {
+        executingSince > gapStart ? max(0, lastExecutionGap) : 0
+    }
+}
+
 enum StallPolicy {
     enum Decision: Equatable { case none, sleptThrough, restart }
     static let silence: Double = 60
