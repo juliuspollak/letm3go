@@ -135,7 +135,7 @@ export function nativeStops(t,context){
   const venue=!renamed&&!location.kind?recognisedStopVenue(context.metadata.places[placeKey(at)],at,s.end-s.start):null;
   if(renamed){
    location.name=manual.name.trim();location.nearbyName=manual.name.trim();
-   location.tags=location.tags.filter(name=>name!==location.locality);
+   location.tags=[manual.name.trim()];
   } else if(venue){
    location.name=venue.name;location.nearbyName=venue.name;location.stopVenue=venue;
    location.tags=[...new Set([...location.tags,venue.name])];
