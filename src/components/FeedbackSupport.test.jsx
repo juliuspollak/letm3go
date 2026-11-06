@@ -7,6 +7,8 @@ const m = vi.hoisted(() => ({
   submit: vi.fn(),
   load: vi.fn(),
   seen: vi.fn(),
+  isAdmin: vi.fn(),
+  setStatus: vi.fn(),
 }));
 
 vi.mock('../lib/AuthContext.jsx', () => ({ useAuth: () => m.auth }));
@@ -16,6 +18,8 @@ vi.mock('../lib/feedback.js', async importOriginal => ({
   submitFeedbackTicket: m.submit,
   loadFeedbackHistory: m.load,
   markFeedbackSeen: m.seen,
+  feedbackIsAdmin: (...args) => m.isAdmin(...args),
+  adminSetFeedbackStatus: (...args) => m.setStatus(...args),
 }));
 
 import FeedbackSupport from './FeedbackSupport.jsx';
@@ -39,6 +43,8 @@ beforeEach(() => {
   m.load.mockReset();
   m.seen.mockReset();
   m.supabase.rpc.mockReset();
+  m.isAdmin.mockReset().mockResolvedValue(false);
+  m.setStatus.mockReset();
 });
 
 afterEach(cleanup);
@@ -192,4 +198,31 @@ it('abandons a send when the sheet closes, and creates one token per draft', asy
   expect(signal.aborted).toBe(false);
   unmount();
   expect(signal.aborted).toBe(true);
+});
+
+it('shows admins everyone\'s feedback with the sender and reports, and asks before closing deletes files', async () => {
+  m.isAdmin.mockResolvedValue(true);
+  const juliaTicket = { ...ticket, id: 'julia-ticket', number: 42, owner_id: 'julia', author: 'Julia', status: 'open', messages: [], attachments: [],
+    reports: [{ id: 'r1', kind: 'diagnosticLog', byte_size: 204800, url: 'https://signed/log' }] };
+  m.load.mockResolvedValue([juliaTicket]);
+  m.setStatus.mockResolvedValue({ removed: 1, filesLeft: 0 });
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<FeedbackSupport />);
+  fireEvent.click(await screen.findByRole('button', { name: 'All feedback' }));
+  await waitFor(() => expect(m.load).toHaveBeenCalledWith(m.supabase, expect.objectContaining({ admin: true })));
+  expect(await screen.findByText(/#42 · Julia · /)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /Map freezes on open/ }));
+  expect(screen.getByText('Diagnostic log')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('href', 'https://signed/log');
+  fireEvent.click(screen.getByRole('button', { name: /Close \(deletes photos and reports\)/ }));
+  expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Close #42\? Its 1 photos and reports will be deleted/));
+  await waitFor(() => expect(m.setStatus).toHaveBeenCalledWith(m.supabase, 'julia-ticket', 'closed'));
+  expect(await screen.findByText(/1 files deleted/)).toBeInTheDocument();
+  confirm.mockRestore();
+});
+it('never shows the admin tab to someone who is not an admin', async () => {
+  m.isAdmin.mockResolvedValue(false);
+  render(<FeedbackSupport />);
+  await waitFor(() => expect(m.isAdmin).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'All feedback' })).not.toBeInTheDocument();
 });

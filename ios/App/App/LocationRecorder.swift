@@ -1348,7 +1348,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "restoreActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "restorePhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trackingReport", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "shareDiagnosticLog", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "diagnosticLogArchive", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "exportJourneyDiagnostics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
@@ -1507,12 +1507,13 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "limitations":"A log gap means no diagnostic events were persisted. It cannot prove force-quit, suspension, crash, or the actual time movement began. No coordinates, routes, names, account identifiers, or credentials are included."])
         }catch{call.reject("The tracking report could not be prepared.")}
     }}
-    // The only way the location log leaves the device. Only the snapshot below
-    // touches the main thread; building, compressing and verifying the file run
-    // elsewhere, and no location service, journey or session state is changed.
-    @objc func shareDiagnosticLog(_ call:CAPPluginCall){DispatchQueue.main.async {
+    // The only way the location log leaves the device: returned to the app, which
+    // sends it with a feedback ticket (owner and admins only). Only the snapshot
+    // below touches the main thread; building, compressing and verifying the file
+    // run elsewhere, and no location service, journey or session state is changed.
+    @objc func diagnosticLogArchive(_ call:CAPPluginCall){DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
-        guard !self.diagnosticShareOpen else {call.reject("The diagnostic log is already being shared.");return}
+        guard !self.diagnosticShareOpen else {call.reject("The diagnostic log is already being prepared.");return}
         self.diagnosticShareOpen=true
         let r=LocationRecorder.shared,now=Date().timeIntervalSince1970,owner=r.ownerID
         r.diagnosticSummary(force:true)
@@ -1521,40 +1522,17 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         var journeys=r.trips
         if let active=r.active {journeys.append(active)}
         if let active=r.automaticTrip,!journeys.contains(where:{$0.id==active.id}) {journeys.append(active)}
-        let directory=FileManager.default.temporaryDirectory.appendingPathComponent("diagnostic-export",isDirectory:true)
         DispatchQueue.global(qos:.userInitiated).async {
-            do {
-                let archive=try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal:journal,current:current,journeys:journeys,now:now,timezone:timezone,storageError:storageError))
-                try? FileManager.default.removeItem(at:directory)
-                try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
-                let file=directory.appendingPathComponent(archive.fileName)
-                try archive.data.write(to:file,options:[.atomic,.completeFileProtection])
-                DispatchQueue.main.async {self.presentDiagnosticLog(call,file:file,archive:archive,owner:owner,directory:directory)}
-            } catch {
-                try? FileManager.default.removeItem(at:directory)
-                DispatchQueue.main.async {self.diagnosticShareOpen=false;call.reject("The diagnostic log could not be created. Nothing was exported.")}
+            let result=Result { try LocationDiagnosticExport.archive(LocationDiagnosticExport.report(journal:journal,current:current,journeys:journeys,now:now,timezone:timezone,storageError:storageError)) }
+            let encoded=(try? result.get())?.data.base64EncodedString()
+            DispatchQueue.main.async {
+                self.diagnosticShareOpen=false
+                guard owner==LocationRecorder.shared.ownerID,LocationRecorder.shared.uiUnlocked else {call.reject("Account changed. Nothing was exported.");return}
+                guard let archive=try? result.get(),let encoded else {call.reject("The diagnostic log could not be created. Nothing was exported.");return}
+                call.resolve(["fileName":archive.fileName,"base64":encoded,"events":archive.eventCount,"compressedBytes":archive.data.count,"uncompressedBytes":archive.uncompressedBytes])
             }
         }
     }}
-    func presentDiagnosticLog(_ call:CAPPluginCall,file:URL,archive:LocationDiagnosticExport.Archive,owner:String?,directory:URL){
-        func finish(_ result:()->Void){try? FileManager.default.removeItem(at:directory);diagnosticShareOpen=false;result()}
-        guard owner==LocationRecorder.shared.ownerID,LocationRecorder.shared.uiUnlocked else {finish{call.reject("Account changed. Nothing was exported.")};return}
-        guard let host=bridge?.viewController,host.presentedViewController==nil else {finish{call.reject("The iOS share sheet could not be opened.")};return}
-        let sheet=UIActivityViewController(activityItems:[file],applicationActivities:nil)
-        sheet.popoverPresentationController?.sourceView=host.view
-        sheet.popoverPresentationController?.sourceRect=CGRect(x:host.view.bounds.midX,y:host.view.bounds.midY,width:0,height:0)
-        sheet.completionWithItemsHandler={[weak self,weak sheet] activity,completed,_,error in
-            // Backing out of one destination leaves the sheet open for another,
-            // so the file must survive until the sheet itself is gone.
-            guard let self=self,self.diagnosticShareOpen else {return}
-            if error==nil,!completed,activity != nil,sheet?.presentingViewController != nil {return}
-            finish {
-                if error != nil {call.reject("The diagnostic log could not be shared. Nothing else was exported.")}
-                else {call.resolve(["shared":completed,"fileName":archive.fileName,"events":archive.eventCount,"compressedBytes":archive.data.count,"uncompressedBytes":archive.uncompressedBytes])}
-            }
-        }
-        host.present(sheet,animated:true)
-    }
     @objc func exportJourneyDiagnostics(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         let r = LocationRecorder.shared

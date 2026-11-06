@@ -2,6 +2,7 @@
 // and the idempotent submission pipeline used by both the app and its tests.
 import { config } from './config.js';
 import { newUUID } from './uuid.js';
+import { REPORT_KINDS } from './reportKinds.js';
 
 export const MAX_ATTACHMENTS = 5;
 // The same figure as the bucket's file_size_limit and the attachment row's check.
@@ -105,7 +106,9 @@ export function feedbackDiagnostics({ state = {}, preferences = {}, session, nat
   };
 }
 
+// The number a person quotes ("feedback #42"); older rows fall back to the ID.
 export function feedbackReference(ticket) {
+  if (Number.isFinite(Number(ticket?.number)) && ticket?.number != null) return `#${ticket.number}`;
   return ticket?.id ? `FB-${String(ticket.id).slice(0, 8).toUpperCase()}` : 'FB-PENDING';
 }
 
@@ -277,19 +280,26 @@ export async function submitFeedbackTicket(client, {
   return { ticket, photoError, cancelled };
 }
 
-export async function loadFeedbackHistory(client, { limit = 50 } = {}) {
+// For an admin the database returns every account's tickets; `admin` also loads
+// who sent each one.
+export async function loadFeedbackHistory(client, { limit = 50, admin = false } = {}) {
   const { data, error } = await client.from('feedback').select('*').order('created_at', { ascending: false }).limit(limit);
   if (error) throw new Error('Your feedback could not be loaded. Please retry.');
   const tickets = data || [];
   if (!tickets.length) return [];
   const ids = tickets.map(ticket => ticket.id);
-  const [messages, attachments] = await Promise.all([
+  const [messages, attachments, reports, authors] = await Promise.all([
     client.from('feedback_messages').select('*').in('feedback_id', ids).order('created_at', { ascending: true }),
     client.from('feedback_attachments').select('*').in('feedback_id', ids).order('created_at', { ascending: true }),
+    client.from('feedback_reports').select('*').in('feedback_id', ids).order('created_at', { ascending: true }),
+    admin ? client.rpc('admin_feedback_authors', { p_ids: [...new Set(tickets.map(ticket => ticket.owner_id))] }) : Promise.resolve({ data: [] }),
   ]);
   if (messages.error || attachments.error) throw new Error('Your feedback could not be loaded. Please retry.');
+  const names = Object.fromEntries((authors.data || []).map(item => [item.id, item.display_name]));
   let urls = {};
-  const paths = (attachments.data || []).map(item => item.object_key);
+  // Reports are optional here: an older database has no reports table yet.
+  const reportRows = reports.error ? [] : reports.data || [];
+  const paths = [...(attachments.data || []), ...reportRows].map(item => item.object_key);
   if (paths.length) {
     try {
       const { data: signed } = await client.storage.from(FEEDBACK_BUCKET).createSignedUrls(paths, 3600);
@@ -301,6 +311,8 @@ export async function loadFeedbackHistory(client, { limit = 50 } = {}) {
     messages: (messages.data || []).filter(message => message.feedback_id === ticket.id),
     attachments: (attachments.data || []).filter(item => item.feedback_id === ticket.id)
       .map(item => ({ ...item, url: urls[item.object_key] || '' })),
+    reports: reportRows.filter(item => item.feedback_id === ticket.id).map(item => ({ ...item, url: urls[item.object_key] || '' })),
+    author: names[ticket.owner_id] || '',
   }));
 }
 
@@ -316,3 +328,87 @@ export async function markFeedbackSeen(client) {
   return false;
 }
 
+// Reports sent with feedback instead of copied: recording, journey and tracking
+// reports as text, and the compressed diagnostic log. They are stored with the
+// ticket in the same private folder as photos (owner and admins only) and are
+// removed when the ticket is closed.
+export { REPORT_KINDS };
+export const MAX_REPORT_BYTES = 10 * 1024 * 1024;
+const reportExtension = blob => (blob.type === 'application/gzip' ? 'json.gz' : 'txt');
+
+async function reportRegistered(client, id) {
+  try {
+    const { data, error } = await bounded(client.from('feedback_reports').select('id').eq('id', id).maybeSingle());
+    return !error && Boolean(data);
+  } catch {
+    return false;
+  }
+}
+
+// Uploads one report into a ticket and registers it. Retrying reuses the same key.
+export async function attachFeedbackReport(client, { ticket, report, upload = storageUpload, signal }) {
+  const { id, kind, title = '', blob } = report;
+  if (!REPORT_KINDS[kind]) throw new Error('Unknown report type.');
+  if (!blob?.size || blob.size > MAX_REPORT_BYTES) throw new Error('The report is empty or larger than 10 MB.');
+  const objectKey = `${ticket.owner_id}/${ticket.id}/${id}.${reportExtension(blob)}`;
+  try {
+    await uploadFeedbackPhoto({ client, blob, objectKey, upload, signal });
+    const { error } = await bounded(client.from('feedback_reports').upsert({
+      id, feedback_id: ticket.id, owner_id: ticket.owner_id, kind, title: title.slice(0, 120), object_key: objectKey,
+      mime_type: blob.type === 'application/gzip' ? 'application/gzip' : 'text/plain', byte_size: blob.size,
+    }, { onConflict: 'id' }));
+    if (error && !await reportRegistered(client, id)) throw new Error(feedbackErrorMessage(error, 'The report could not be attached. Please retry.'));
+    return objectKey;
+  } catch (caught) {
+    if (!await reportRegistered(client, id)) {
+      try { await bounded(client.storage?.from?.(FEEDBACK_BUCKET)?.remove?.([objectKey])); } catch { /* Retry reuses the key. */ }
+    }
+    throw caught;
+  }
+}
+
+// One step for a report screen: a bug ticket with the report attached. The
+// returned ticket carries the number to quote. `token` and `reportID` make a
+// retry return the same ticket and overwrite the same file.
+export async function sendReportAsFeedback(client, { token, reportID, kind, title, note = '', text, blob, state = {}, native = false, upload, signal }) {
+  const file = blob || new Blob([String(text || '')], { type: 'text/plain' });
+  const draft = { ...emptyFeedbackDraft(), category: 'bug', title: (title || REPORT_KINDS[kind] || 'Report').slice(0, 120),
+    description: trimmed(note) || `${REPORT_KINDS[kind] || 'Report'} attached.` };
+  const { ticket } = await submitFeedbackTicket(client, { token, draft, diagnostics: null, state, native, signal });
+  await attachFeedbackReport(client, { ticket, report: { id: reportID, kind, title: draft.title, blob: file }, upload, signal });
+  return ticket;
+}
+
+// Admins: who they are, and what they can do. All of it is enforced by the database.
+export async function feedbackIsAdmin(client) {
+  try {
+    const { data, error } = await client.rpc('is_app_admin');
+    return !error && data === true;
+  } catch {
+    return false;
+  }
+}
+export async function adminReplyFeedback(client, id, body) {
+  const { error } = await client.rpc('admin_reply_feedback', { p_feedback_id: id, p_body: body });
+  if (error) throw new Error(feedbackErrorMessage(error, 'The reply could not be sent. Please retry.'));
+}
+export async function adminSetFeedbackHidden(client, id, hidden) {
+  const { error } = await client.rpc('admin_set_feedback_deleted', { p_feedback_id: id, p_deleted: hidden });
+  if (error) throw new Error(feedbackErrorMessage(error, 'The feedback could not be updated. Please retry.'));
+}
+// Closing returns the keys of the photos and reports it removed; their files are
+// deleted here (Storage objects cannot be deleted with SQL). `filesLeft` counts any
+// that stayed, which the orphan query in docs/feedback-admin.md finds later.
+export async function adminSetFeedbackStatus(client, id, status) {
+  const { data, error } = await client.rpc('admin_set_feedback_status', { p_feedback_id: id, p_status: status });
+  if (error) throw new Error(feedbackErrorMessage(error, 'The status could not be changed. Please retry.'));
+  const keys = Array.isArray(data) ? data : [];
+  if (!keys.length) return { removed: 0, filesLeft: 0 };
+  try {
+    const { data: removed, error: removeError } = await client.storage.from(FEEDBACK_BUCKET).remove(keys);
+    if (removeError) return { removed: 0, filesLeft: keys.length };
+    return { removed: removed?.length ?? keys.length, filesLeft: Math.max(0, keys.length - (removed?.length ?? keys.length)) };
+  } catch {
+    return { removed: 0, filesLeft: keys.length };
+  }
+}

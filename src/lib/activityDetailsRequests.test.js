@@ -29,3 +29,21 @@ describe('native requests',()=>{
   expect(onDeleted).toHaveBeenCalledTimes(1);
  });
 });
+
+it('sends the activity recording report as feedback and returns the number to quote', async () => {
+  const { activityDetailsRequests: requests } = await import('./activityDetailsRequests.js');
+  const upsert = vi.fn().mockResolvedValue({ error: null });
+  const client = {
+    rpc: vi.fn().mockResolvedValue({ data: { id: 't1', owner_id: 'o1', number: 5 }, error: null }),
+    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'x' } }, error: null }) },
+    from: vi.fn(() => ({ upsert, select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { id: 'r1' }, error: null }) }) }) })),
+    storage: { from: vi.fn(() => ({ remove: vi.fn() })) },
+  };
+  const original = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = class { open() {} setRequestHeader() {} send() { this.status = 200; this.onload(); this.onloadend?.(); } };
+  let result;
+  try { result = await requests.sendRecordingReport({ client, trip: { id: 'a', title: 'Driving', startedAt: 1793896237 } }, { note: 'Too short', report: 'Letm3go recording report', token: 'tok', reportID: 'r1' }); } finally { globalThis.XMLHttpRequest = original; }
+  expect(result).toEqual({ reference: '#5' });
+  expect(client.rpc).toHaveBeenCalledWith('submit_feedback', expect.objectContaining({ p_description: 'Too short', p_title: expect.stringMatching(/^Recording report · Driving · /) }));
+  expect(upsert.mock.calls[0][0]).toMatchObject({ id: 'r1', kind: 'recording', object_key: 'o1/t1/r1.txt' });
+});

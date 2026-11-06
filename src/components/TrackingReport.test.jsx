@@ -1,5 +1,9 @@
 import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+const sent=vi.hoisted(()=>({send:vi.fn()}));
+vi.mock('../lib/supabase.js',()=>({supabase:{}}));
+vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>({status:'authenticated'})}));
+vi.mock('../lib/feedback.js',async original=>({...(await original()),sendReportAsFeedback:sent.send}));
 import TrackingReport from './TrackingReport.jsx';
 const run=vi.fn();
 const report={start:100,end:200,oldestAvailableAt:90,events:[{at:90,kind:'lifecycle',message:'Started',context:{}},{at:130,kind:'observations',message:'Summary',context:{gpsDelivered:'3','rejected.accuracy':'2'}}]};
@@ -11,15 +15,18 @@ it('creates an incident report even when there is no recorded activity',async()=
  fireEvent.change(screen.getByLabelText('Expected activity'),{target:{value:'Walking'}});
  fireEvent.click(screen.getByRole('button',{name:'Prepare missed activity report'}));
  await waitFor(()=>expect(run).toHaveBeenCalledWith('trackingReport',expect.objectContaining({expectedActivity:'Walking',markMissing:true,start:expect.any(Number),end:expect.any(Number)})));
- expect((await screen.findByLabelText('Tracking report text')).value).toContain('rejected.accuracy');
- expect(screen.getByText('2 GPS fixes were rejected outside route accuracy limits.')).toBeInTheDocument();
+ expect(await screen.findByText('2 GPS fixes were rejected outside route accuracy limits.')).toBeInTheDocument();
+ sent.send.mockResolvedValue({id:'t',number:9});
+ fireEvent.click(screen.getByRole('button',{name:/as feedback/}));
+ expect(await screen.findByText(/Sent as feedback/)).toHaveTextContent('#9');
+ expect(sent.send.mock.calls[0][1]).toMatchObject({kind:'tracking',text:expect.stringContaining('rejected.accuracy')});
 });
-it('keeps a selectable report when clipboard access is unavailable',async()=>{
+it('offers no copy: the report goes only to feedback',async()=>{
  render(<TrackingReport recording={recording()}/>);
  fireEvent.click(screen.getByRole('button',{name:'Prepare missed activity report'}));
- fireEvent.click(await screen.findByRole('button',{name:'Copy tracking report'}));
- expect(await screen.findByRole('status')).toHaveTextContent('Select and copy');
- expect(screen.getByLabelText('Tracking report text')).toHaveAttribute('readonly');
+ expect(await screen.findByRole('button',{name:/as feedback/})).toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:/Copy/})).not.toBeInTheDocument();
+ expect(screen.queryByLabelText('Tracking report text')).not.toBeInTheDocument();
 });
 it('rejects inverted incident times without calling the native recorder',async()=>{
  render(<TrackingReport recording={recording()}/>);

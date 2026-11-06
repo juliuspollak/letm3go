@@ -1,20 +1,14 @@
-import { useState } from 'react';
-import {copyText} from '../lib/clipboard.js';
-import { Check, Copy } from 'lucide-react';
+import SendReportFeedback from './SendReportFeedback.jsx';
 import { formatJourneyReport, journeyEvents, journeyFindings, journeySummary } from '../lib/journeyReport.js';
 
 export default function JourneyReport({report,onClose}){
- const [status,setStatus]=useState('');
  if(report.error)return <section className="journey-report"><p role="alert" className="error">{report.error}</p></section>;
  const text=formatJourneyReport(report);
  const events=journeyEvents(report);
  const notes=report.trackingNotes||[];
- async function copy(){setStatus(await copyText(text)?'copied':'failed');}
  return <section className="journey-report" aria-label="Journey diagnostic report">
   <div className="journey-report-head"><h3>Journey diagnostic report</h3>{onClose&&<button type="button" className="text-button" onClick={onClose}>Close</button>}</div>
-  <button type="button" className="primary full" onClick={copy}>{status==='copied'?<><Check size={16}/> Copied to clipboard</>:<><Copy size={16}/> Copy report</>}</button>
-  {status==='failed'&&<p role="alert" className="error">Copy is unavailable. Open “Full report text” below and copy it manually.</p>}
-  {status==='copied'&&<p role="status" className="muted small-copy">Paste it into your bug report. It contains no coordinates, routes, names or credentials.</p>}
+  <SendReportFeedback kind="journey" title={`Journey diagnostics · ${report.activity||'activity'} · ${report.startedAt?new Date(report.startedAt*1000).toLocaleDateString('en-AU'):''}`} getReport={async()=>({text})}/>
   <dl className="diagnostics journey-report-summary">{journeySummary(report).map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
   <h4>What happened</h4>
   <ul className="journey-report-findings">{journeyFindings(report).map(finding=><li key={finding}>{finding}</li>)}</ul>
@@ -23,6 +17,5 @@ export default function JourneyReport({report,onClose}){
    {event.newProcess&&<span className="journey-report-restart">App restarted</span>}
    <time>{event.time}</time> <span>{event.message}</span>{event.details&&<small>{event.details}</small>}
   </li>)}</ol></details>
-  <details><summary>Full report text</summary><textarea aria-label="Journey diagnostic report text" readOnly rows={14} value={text}/></details>
  </section>;
 }

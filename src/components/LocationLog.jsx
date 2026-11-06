@@ -1,23 +1,18 @@
-import {useState} from 'react';
 import {recorder,recorderAvailable} from '../lib/recorder.js';
+import SendReportFeedback from './SendReportFeedback.jsx';
 
-// The one location export: native code builds a single .json.gz and opens the iOS
-// share sheet. A failure is reported with Retry and never falls back to another
-// format, so there is no clipboard, plain-text or multi-part path here.
+// The one location export: native code builds a single .json.gz, which is sent as
+// feedback (stored with the ticket, for you and the letm3go admins only). There is
+// no clipboard, share sheet, plain-text or multi-part path here.
+async function diagnosticLog(){
+ const result=await recorder.diagnosticLogArchive();
+ const bytes=Uint8Array.from(atob(result?.base64||''),character=>character.charCodeAt(0));
+ if(!bytes.length)throw new Error('The diagnostic log could not be created. Nothing was sent.');
+ return {blob:new Blob([bytes],{type:'application/gzip'})};
+}
 export default function LocationLog(){
- const [status,setStatus]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
- async function share(){
-  setBusy(true);setStatus('');setError('');
-  try{
-   const result=await recorder.shareDiagnosticLog();
-   if(result?.shared)setStatus(`Diagnostic log shared with ${result.events} events.`);
-  }catch(err){setError(err?.message||'The diagnostic log could not be created or shared.');}
-  finally{setBusy(false);}
- }
  return <section className="location-log" aria-label="Location diagnostics">
-  {!error&&<button type="button" className="primary full" disabled={busy||!recorderAvailable()} onClick={share}>{busy?'Preparing diagnostic log…':'Share Diagnostic Log'}</button>}
-  <p className="muted small-copy">One compressed file with current state and all retained location history, even with no journeys. No coordinates, names or credentials. Nothing is uploaded unless you share it.</p>
-  {status&&<p role="status">{status}</p>}
-  {error&&<><p role="alert" className="error">{error}</p><button type="button" className="primary full" disabled={busy} onClick={share}>{busy?'Preparing diagnostic log…':'Retry'}</button></>}
+  <SendReportFeedback kind="diagnosticLog" title={`Diagnostic log · ${new Date().toLocaleString('en-AU')}`} getReport={diagnosticLog} disabled={!recorderAvailable()} label="Send diagnostic log as feedback"/>
+  <p className="muted small-copy">One compressed file with current state and all retained location history, even with no journeys. No coordinates, names or credentials.</p>
  </section>;
 }

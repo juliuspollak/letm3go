@@ -252,3 +252,62 @@ describe('read state', () => {
     expect(feedbackMarkedSeen([quiet])[0]).toBe(quiet);
   });
 });
+
+describe('reports sent as feedback, ticket numbers and admin actions', () => {
+  const numbered = { ...ticket, number: 42 };
+  const client = (overrides = {}) => {
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    return {
+      upsert,
+      rpc: vi.fn().mockResolvedValue({ data: numbered, error: null }),
+      auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'token' } }, error: null }) },
+      from: vi.fn(() => ({ upsert, select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }) })),
+      storage: { from: vi.fn(() => ({ remove: vi.fn().mockResolvedValue({ data: [], error: null }) })) },
+      ...overrides,
+    };
+  };
+  it('quotes a ticket by its number, and older tickets by their ID', async () => {
+    const { feedbackReference: reference } = await import('./feedback.js');
+    expect(reference(numbered)).toBe('#42');
+    expect(reference(ticket)).toBe('FB-12345678');
+  });
+  it('creates a bug ticket, then uploads and registers the report with it', async () => {
+    const { sendReportAsFeedback } = await import('./feedback.js');
+    const c = client(), upload = vi.fn().mockResolvedValue();
+    const sent = await sendReportAsFeedback(c, { token: 'tok', reportID: 'rep-1', kind: 'recording', title: 'Recording report · Drive', note: '', text: 'Letm3go recording report', upload });
+    expect(sent.number).toBe(42);
+    expect(c.rpc).toHaveBeenCalledWith('submit_feedback', expect.objectContaining({ p_category: 'bug', p_title: 'Recording report · Drive', p_description: 'Recording report attached.' }));
+    expect(upload.mock.calls[0][0]).toMatchObject({ path: `${ticket.owner_id}/${ticket.id}/rep-1.txt` });
+    expect(c.upsert.mock.calls[0][0]).toMatchObject({ id: 'rep-1', kind: 'recording', mime_type: 'text/plain', object_key: `${ticket.owner_id}/${ticket.id}/rep-1.txt` });
+  });
+  it('a diagnostic log is stored as .json.gz', async () => {
+    const { attachFeedbackReport } = await import('./feedback.js');
+    const c = client(), upload = vi.fn().mockResolvedValue();
+    await attachFeedbackReport(c, { ticket, report: { id: 'log-1', kind: 'diagnosticLog', blob: new Blob([new Uint8Array([31, 139])], { type: 'application/gzip' }) }, upload });
+    expect(c.upsert.mock.calls[0][0]).toMatchObject({ mime_type: 'application/gzip', object_key: `${ticket.owner_id}/${ticket.id}/log-1.json.gz` });
+  });
+  it('removes an unregistered report file when the upload fails', async () => {
+    const { attachFeedbackReport } = await import('./feedback.js');
+    const remove = vi.fn().mockResolvedValue({ error: null });
+    const c = client({ storage: { from: vi.fn(() => ({ remove })) } });
+    await expect(attachFeedbackReport(c, { ticket, report: { id: 'rep-2', kind: 'journey', blob: new Blob(['x'], { type: 'text/plain' }) }, upload: vi.fn().mockRejectedValue(new Error('denied')) })).rejects.toThrow('denied');
+    expect(remove).toHaveBeenCalledWith([`${ticket.owner_id}/${ticket.id}/rep-2.txt`]);
+  });
+  it('closing deletes the files the database released, and reports any left behind', async () => {
+    const { adminSetFeedbackStatus } = await import('./feedback.js');
+    const keys = ['o/t/a.jpg', 'o/t/b.txt'];
+    const remove = vi.fn().mockResolvedValue({ data: [{ name: 'o/t/a.jpg' }], error: null });
+    const c = client({ rpc: vi.fn().mockResolvedValue({ data: keys, error: null }), storage: { from: vi.fn(() => ({ remove })) } });
+    expect(await adminSetFeedbackStatus(c, 't', 'closed')).toEqual({ removed: 1, filesLeft: 1 });
+    expect(c.rpc).toHaveBeenCalledWith('admin_set_feedback_status', { p_feedback_id: 't', p_status: 'closed' });
+    expect(remove).toHaveBeenCalledWith(keys);
+    const plain = client({ rpc: vi.fn().mockResolvedValue({ data: [], error: null }) });
+    expect(await adminSetFeedbackStatus(plain, 't', 'resolved')).toEqual({ removed: 0, filesLeft: 0 });
+  });
+  it('only a true answer from the database makes someone an admin', async () => {
+    const { feedbackIsAdmin } = await import('./feedback.js');
+    expect(await feedbackIsAdmin({ rpc: vi.fn().mockResolvedValue({ data: true, error: null }) })).toBe(true);
+    expect(await feedbackIsAdmin({ rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'missing' } }) })).toBe(false);
+    expect(await feedbackIsAdmin({ rpc: vi.fn().mockRejectedValue(new Error('offline')) })).toBe(false);
+  });
+});
