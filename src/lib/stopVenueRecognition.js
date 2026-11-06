@@ -1,21 +1,59 @@
 import {metres} from './journeyGeometry.js';
 
-// POI points are not venue boundaries. Only an explicit shopping-centre search
-// result near a recorded, sufficiently long native stop can name its destination.
-// Do not treat arbitrary nearby businesses or the whole inactive interval as GPS dwell.
-export function recognisedStopVenue(record,point,durationSeconds){
- if(!record?.stopLookup||!Number.isFinite(durationSeconds)||durationSeconds<300||
-    !Number.isFinite(point?.latitude)||!Number.isFinite(point?.longitude))return null;
- const centres=(record.candidates||[]).filter(c=>
-  c?.category==='shoppingCentre'&&typeof c.name==='string'&&c.name.trim()&&
-  Number.isFinite(c.latitude)&&Number.isFinite(c.longitude))
-  .map(c=>({...c,distance:metres(point,c)}))
-  .filter(c=>c.distance<=250)
-  .sort((a,b)=>a.distance-b.distance);
- if(!centres.length)return null;
- // Nearby competing shopping centres make the location uncertain. Don't assert
- // either as a visited destination merely because its map pin is closest.
- if(centres.length>1&&centres[1].distance-centres[0].distance<100)return null;
- return {name:centres[0].name.trim(),source:record.source||'Apple Maps',
-  distanceMeters:Math.round(centres[0].distance),category:'shoppingCentre'};
+// MapKit provides centre POI points, NOT verified property boundaries. Be
+// conservative: a long recorded stop very close to a unique centre is required
+// to promote a name automatically. More distant or competing centres remain
+// suggestions in the explicit route-place search.
+export const STOP_VENUE_MIN_SECONDS = 8 * 60;
+export const STOP_VENUE_MAX_METRES = 90;
+export const STOP_VENUE_COMPETING_METRES = 150;
+
+export function recognisedStopVenue(record, point, durationSeconds) {
+ if (!record?.stopLookup || record.partial || !Number.isFinite(durationSeconds) ||
+     durationSeconds < STOP_VENUE_MIN_SECONDS ||
+     !Number.isFinite(point?.latitude) || !Number.isFinite(point?.longitude)) return null;
+
+ // Apple Maps can return the same shopping centre more than once under slightly
+ // different POI identifiers. Collapse identical names before looking for a
+ // competing venue, so duplicate records don't block a good match.
+ const unique = new Map();
+ for (const candidate of record.candidates || []) {
+  if (candidate?.category !== 'shoppingCentre' ||
+      typeof candidate.name !== 'string' || !candidate.name.trim() ||
+      !Number.isFinite(candidate.latitude) || !Number.isFinite(candidate.longitude)) continue;
+  const distance = metres(point, candidate);
+  if (!Number.isFinite(distance) || distance > STOP_VENUE_COMPETING_METRES) continue;
+  const key = candidate.name.trim().toLocaleLowerCase();
+  if (!unique.has(key) || unique.get(key).distance > distance)
+   unique.set(key, {name:candidate.name.trim(), distance, placeID:candidate.placeID});
+ }
+ const centres = [...unique.values()].sort((a,b) => a.distance-b.distance);
+ if (!centres.length || centres[0].distance > STOP_VENUE_MAX_METRES) return null;
+ // Two different centres in the same vicinity are ambiguous even if the nearer
+ // one is substantially closer. A POI coordinate alone cannot prove containment.
+ if (centres.length > 1) return null;
+ return {name:centres[0].name, placeID:centres[0].placeID,
+   source:record.source || 'Apple Maps', distanceMeters:Math.round(centres[0].distance),
+   category:'shoppingCentre'};
+}
+
+
+// A possible centre is useful as a manual suggestion even if the evidence
+ // isn't strong enough for an automatic tag. These are NOT confirmed visits.
+export function suggestedStopVenues(record, point, durationSeconds) {
+ if (!record || !Number.isFinite(durationSeconds) || durationSeconds < 180 ||
+     !Number.isFinite(point?.latitude) || !Number.isFinite(point?.longitude)) return [];
+ const seen=new Set();
+ return (record.candidates || []).filter(candidate=>
+  candidate?.category==='shoppingCentre'&&typeof candidate.name==='string'&&candidate.name.trim()&&
+  Number.isFinite(candidate.latitude)&&Number.isFinite(candidate.longitude))
+  .map(candidate=>({...candidate,distance:metres(point,candidate)}))
+  .filter(candidate=>Number.isFinite(candidate.distance)&&candidate.distance<=250)
+  .sort((a,b)=>a.distance-b.distance)
+  .filter(candidate=>{
+   const name=candidate.name.trim().toLocaleLowerCase();
+   if(seen.has(name))return false;
+   seen.add(name);return true;
+  })
+  .map(candidate=>({name:candidate.name.trim(),source:record.source||'Apple Maps',kind:'stop'}));
 }

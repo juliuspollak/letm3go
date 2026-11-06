@@ -2,7 +2,7 @@ import {recognitionSampleIndexes,assessRoutePlaces} from './journeyRecognition.j
 import {rankPlaceCandidates} from './placeTagPolicy.js';
 import {recorder} from './recorder.js';
 import {placeKey} from './journeyGrouping.js';
-import {recognisedStopVenue} from './stopVenueRecognition.js';
+import {suggestedStopVenues} from './stopVenueRecognition.js';
 
 // Looks up named places along a route for the person to review. Shared by the
 // React tags section and the native Activity Details screen. `signal` stops a
@@ -32,7 +32,11 @@ export async function scanRoutePlaces(trip,{hidden=[],places={},onProgress,signa
   onProgress?.({notice:`Checking place ${n+1} of ${samples.length}…`});
   const {point,stop}=samples[n],key=placeKey(point);
   let place=places?.[key];
-  if(!place?.nearbyName&&!place?.categories?.length){
+  // A previous route sample lookup may have cached ordinary POIs but not a
+  // shopping-centre search. Refresh exactly those stop coordinates; reuse a
+  // completed stop lookup rather than repeating provider requests on every scan.
+  const needsStopLookup=!!stop&&place?.source!=='saved-place'&&!place?.stopLookup;
+  if(!place||needsStopLookup||(!place.nearbyName&&!place.categories?.length&&!place.candidates?.length&&place.source!=='saved-place')){
    try{
     // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
     place=await recorder.recogniseTripPlace(null,0,point,true);
@@ -40,9 +44,11 @@ export async function scanRoutePlaces(trip,{hidden=[],places={},onProgress,signa
    }catch(error){errors.push(error?.message||'Place lookup unavailable');continue;}
   }
   if(stop){
-   const venue=recognisedStopVenue(place,point,stop.durationSeconds);
-   if(venue&&!result.some(x=>x.name.toLowerCase()===venue.name.toLowerCase()))
-    result.push({name:venue.name,tag:venue.name,kind:'stop',source:venue.source});
+   // Uncertain centre POIs are possible places for user review, not recorded
+   // visits; a driving route-wide search would otherwise filter them out.
+   for(const venue of suggestedStopVenues(place,point,stop.durationSeconds))
+    if(!result.some(x=>x.name.toLowerCase()===venue.name.toLowerCase()))
+     result.push({name:venue.name,tag:venue.name,kind:'stop',source:venue.source});
   }
   const assessed=assessRoutePlaces(trip,[place],{hidden});
   for(const candidate of assessed.candidates){if(!result.some(x=>x.name.toLowerCase()===candidate.name.toLowerCase()))result.push({...candidate,tag:candidate.name,kind:'route',source:place?.source||'Apple Maps'});}

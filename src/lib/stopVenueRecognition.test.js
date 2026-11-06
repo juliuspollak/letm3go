@@ -76,3 +76,61 @@ it('does not reinterpret a traffic pause or a trip with no native stop evidence'
  expect(journey.tags).not.toContain('Warilla Grove');
  expect(journey.title).toBe(trip.title);
 });
+
+
+it('renaming a native stop replaces inferred venue tags and the generated journey name',()=>{
+ const meta=emptyGrouping(owner);
+ meta.places[placeKey(shops)]={stopLookup:true,source:'apple-geocoder-mapkit',locality:'Warilla',candidates:[mall]};
+ const nativeID=`native:warilla-trip:${stop.start}`;
+ meta.stopEdits[nativeID]={name:'My chemist',tags:[]};
+ const journey=buildJourneys([example()],{owner,metadata:meta,places:[homePlace]}).journeys[0];
+ expect(journey.title).toBe('Home → My chemist → Home');
+ expect(journey.tags).toContain('My chemist');
+ expect(journey.tags).not.toContain('Warilla Grove');
+ expect(journey.recognisedStops[0].name).toBe('My chemist');
+ expect(journey.recognisedStops[0].stopVenue).toBeUndefined();
+ expect(journey.recognisedStops[0].tags).not.toContain('Warilla Grove');
+});
+
+it('a hidden auto-tag removes the inferred name from the generated title, without rewriting data',()=>{
+ const meta=emptyGrouping(owner);
+ meta.places[placeKey(shops)]={stopLookup:true,source:'apple-geocoder-mapkit',candidates:[mall]};
+ meta.hiddenTags['warilla-trip']=['Warilla Grove'];
+ const trip=example(),before=JSON.stringify(trip);
+ const journey=buildJourneys([trip],{owner,metadata:meta,places:[homePlace]}).journeys[0];
+ expect(journey.tags).not.toContain('Warilla Grove');
+ expect(journey.title).toBe('Home → Home · stopped 11 min');
+ expect(JSON.stringify(trip)).toBe(before);
+});
+
+it('a strong manually chosen title stays unchanged regardless of stop or hidden tags',()=>{
+ const meta=emptyGrouping(owner);
+ meta.places[placeKey(shops)]={stopLookup:true,candidates:[mall]};
+ meta.titles['warilla-trip']='Family errands';
+ meta.hiddenTags['warilla-trip']=['Warilla Grove'];
+ meta.stopEdits[`native:warilla-trip:${stop.start}`]={name:'Chemist',tags:[]};
+ expect(buildJourneys([example()],{owner,metadata:meta,places:[homePlace]}).journeys[0].title).toBe('Family errands');
+});
+
+it('avoids asserting a venue with a competing centre, marginal distance or partial provider response',()=>{
+ const candidate={...mall,latitude:shops.latitude+.00055};
+ const rival={...mall,name:'Another Shopping Centre',latitude:shops.latitude+.0008};
+ const record={stopLookup:true,source:'apple-geocoder-mapkit',candidates:[candidate,rival]};
+ expect(recognisedStopVenue(record,shops,691)).toBeNull();
+ expect(recognisedStopVenue({stopLookup:true,candidates:[{...mall,latitude:shops.latitude+.0016}]},shops,691)).toBeNull();
+ expect(recognisedStopVenue({stopLookup:true,partial:true,candidates:[mall]},shops,691)).toBeNull();
+ expect(recognisedStopVenue({stopLookup:true,candidates:[mall]},shops,400)).toBeNull();
+ expect(recognisedStopVenue({stopLookup:true,candidates:[mall,{...mall,latitude:shops.latitude+.0001}]},shops,691)?.name).toBe('Warilla Grove');
+});
+
+it('does not promote shopping near a genuine but too-short stop, or a saved-place stop',()=>{
+ const meta=emptyGrouping(owner);
+ meta.places[placeKey(shops)]={stopLookup:true,candidates:[mall]};
+ const brief=example();
+ brief.details.stops=[{...stop,end:stop.start+240}];
+ expect(buildJourneys([brief],{owner,metadata:meta,places:[homePlace]}).journeys[0].title).toBe(brief.title);
+ const savedShop={id:'savedShop',name:'My destination',kind:'favourite',latitude:shops.latitude,longitude:shops.longitude,radius:100};
+ const saved=buildJourneys([example()],{owner,metadata:meta,places:[homePlace,savedShop]}).journeys[0];
+ expect(saved.recognisedStops[0].stopVenue).toBeUndefined();
+ expect(saved.recognisedStops[0].name).toBe('My destination');
+});
