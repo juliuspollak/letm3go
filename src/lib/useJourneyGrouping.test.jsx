@@ -1,12 +1,12 @@
 import {renderHook,waitFor,cleanup,act} from '@testing-library/react';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mock=vi.hoisted(()=>({lookup:vi.fn()}));
-vi.mock('./recorder.js',()=>({recorderAvailable:()=>true,recorder:{recogniseTripPlace:mock.lookup}}));
+const mock=vi.hoisted(()=>({lookup:vi.fn(),road:vi.fn()}));
+vi.mock('./recorder.js',()=>({recorderAvailable:()=>true,recorder:{recogniseTripPlace:mock.lookup,roadRoute:mock.road}}));
 import {useJourneyGrouping} from './useJourneyGrouping.js';
 import {emptyGrouping,placeKey} from './journeyGrouping.js';
 const trip={id:'a',ownerID:'owner',activity:'Walking',state:'finished',source:'device',endedAt:200,startedAt:100,points:[{latitude:1,longitude:2,timestamp:100,accuracy:5}],tags:[]};
 const props=()=>({owner:'owner',activities:[trip],places:[],vehicles:[],serialized:JSON.stringify({...emptyGrouping('owner'),enrichFrom:0}),savePreferences:vi.fn().mockResolvedValue()});
-beforeEach(()=>{mock.lookup.mockReset();});afterEach(()=>{cleanup();});
+beforeEach(()=>{mock.lookup.mockReset();mock.road.mockReset();});afterEach(()=>{cleanup();});
 it('enriches only completed recordings belonging to this account',async()=>{
  mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
  const p=props();p.activities=[trip,{...trip,id:'foreign',ownerID:'other'},{...trip,id:'active',state:'recording',endedAt:null}];
@@ -111,3 +111,38 @@ it('never writes over saved metadata it cannot read as this account\'s',async()=
  await new Promise(resolve=>setTimeout(resolve,300));
  expect(p.savePreferences).not.toHaveBeenCalled();expect(mock.lookup).not.toHaveBeenCalled();
 });
+
+it('retains successful lookups across a failed metadata write and retries the save',async()=>{
+ vi.useFakeTimers();
+ try{
+  const p=props();
+  mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+  p.savePreferences=vi.fn().mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValue();
+  renderHook(()=>useJourneyGrouping(p));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
+  expect(p.savePreferences).toHaveBeenCalledTimes(1);
+  expect(mock.lookup).toHaveBeenCalledTimes(1);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60100);});
+  expect(p.savePreferences).toHaveBeenCalledTimes(2);
+  expect(mock.lookup).toHaveBeenCalledTimes(1);
+  const saved=JSON.parse(p.savePreferences.mock.calls[1][0].journeyGrouping);
+  expect(saved.enriched.a).toEqual(expect.any(Number));
+  expect(saved.places[placeKey(trip.points[0])]).toBeDefined();
+ }finally{cleanup();vi.useRealTimers();}
+});
+
+it('records a capacity fallback instead of silently dropping a GPS gap',async()=>{
+ const p=props(),meta={...emptyGrouping('owner'),enrichFrom:0};
+ meta.roads={existing:{status:'route',line:'x'.repeat(300001)}};
+ p.serialized=JSON.stringify(meta);
+ p.activities=[{...trip,activity:'Driving',recordingMode:'automatic',distanceMeters:500,
+  points:[{latitude:-34.5,longitude:150.8,timestamp:100,accuracy:4,segment:0},
+          {latitude:-34.55,longitude:150.85,timestamp:190,accuracy:4,segment:1}]}];
+ mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ renderHook(()=>useJourneyGrouping(p));
+ await waitFor(()=>expect(p.savePreferences).toHaveBeenCalled(),{timeout:10000});
+ const saved=JSON.parse(p.savePreferences.mock.calls.at(-1)[0].journeyGrouping);
+ expect(Object.values(saved.roads)).toContainEqual(expect.objectContaining({status:'capacityExceeded'}));
+ expect(mock.road).not.toHaveBeenCalled();
+ expect(saved.enriched.a).toEqual(expect.any(Number));
+},15000);
