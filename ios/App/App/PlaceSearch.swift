@@ -34,7 +34,7 @@ enum PlaceSearch {
                         // Promote only names recognisable as a centre/mall, rather than
                         // calling every shop returned by that query a shopping centre.
                         if fromCentreQuery && name.range(
-                            of: #"(?i)\b(shopping\s*(centre|center|village)|mall|plaza|marketplace|galleria|arcade|westfield|grove)\b"#,
+                            of: #"(?i)\b(shopping\s*(centre|center|village)|mall|plaza|marketplace|galleria|arcade|westfield)\b|\bgrove$"#,
                             options: .regularExpression) == nil { return nil }
                         let distance = point.distance(from: location)
                         guard distance <= (fromCentreQuery ? 350 : 2500) else { return nil }
