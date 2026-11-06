@@ -32,7 +32,11 @@ export async function scanRoutePlaces(trip,{hidden=[],places={},onProgress,signa
   onProgress?.({notice:`Checking place ${n+1} of ${samples.length}…`});
   const {point,stop}=samples[n],key=placeKey(point);
   let place=places?.[key];
-  if(!place?.nearbyName&&!place?.categories?.length){
+  // A previous route sample lookup may have cached ordinary POIs but not a
+  // shopping-centre search. Refresh exactly those stop coordinates; reuse a
+  // completed stop lookup rather than repeating provider requests on every scan.
+  const needsStopLookup=!!stop&&place?.source!=='saved-place'&&!place?.stopLookup;
+  if(!place||needsStopLookup||(!place.nearbyName&&!place.categories?.length&&!place.candidates?.length&&place.source!=='saved-place')){
    try{
     // Pass the actual sampled coordinate. Displayed/trimmed indices are not native indices.
     place=await recorder.recogniseTripPlace(null,0,point,true);
