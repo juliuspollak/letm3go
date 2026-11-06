@@ -203,7 +203,8 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    const keys=previous?.source===s?previous.keys:[...new Set((s.points||[]).map(placeKey))];
    const gaps=previous?.source===s?previous.gaps:routeGaps(s);
    const recordKey=JSON.stringify([keys.map(key=>metadata.places[key]),gaps.map(g=>metadata.roads?.[gapKey(s.id,g)])]);
-   const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],metadata.stopEdits,metadata.enriched?.[s.id]??null,metadata.enrichFrom??null]);
+   const ownStopEdits=Object.entries(metadata.stopEdits||{}).filter(([key])=>key.startsWith(`native:${s.id}:`)||key.startsWith(`dwell:${s.id}:`));
+   const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],ownStopEdits,metadata.enriched?.[s.id]??null,metadata.enrichFrom??null]);
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
    const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
