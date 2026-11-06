@@ -125,13 +125,16 @@ export function distanceSnapshot(trip, estimate) {
   distanceMeters:trip.distanceMeters??0, visibleRouteStart:trip.visibleRouteStart??null,
   visibleRouteEnd:trip.visibleRouteEnd??null, summary:estimate?summary:null};
 }
-export function savedDistance(trip, metadata) {
- const saved=metadata.distanceSummaries?.[trip.id];
- if(saved && saved.updatedAt===(trip.updatedAt??null) &&
+export function snapshotCurrent(trip, saved) {
+ return !!saved && saved.updatedAt===(trip.updatedAt??null) &&
    saved.pointCount===(trip.points?.length??0) &&
    saved.distanceMeters===(trip.distanceMeters??0) &&
    saved.visibleRouteStart===(trip.visibleRouteStart??null) &&
-   saved.visibleRouteEnd===(trip.visibleRouteEnd??null)) {
+   saved.visibleRouteEnd===(trip.visibleRouteEnd??null);
+}
+export function savedDistance(trip, metadata) {
+ const saved=metadata.distanceSummaries?.[trip.id];
+ if(snapshotCurrent(trip,saved)) {
   if(!saved.summary)return null; // A complete recording with no GPS gaps.
   // Only decode display geometry, never rescan fixes or query the road provider.
   const lines=saved.summary.gaps.filter(g=>g.source==='road').flatMap(g=>{
