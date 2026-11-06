@@ -60,18 +60,24 @@ enum PlaceSearch {
                         if let identifier { result["placeID"] = "apple:\(identifier)" }
                         return result
                     }.sorted { ($0["distanceMeters"] as? Double ?? .infinity) < ($1["distanceMeters"] as? Double ?? .infinity) }
+                    let shoppingCentres = candidates.filter { ($0["category"] as? String) == "shoppingCentre" }
                     let significant = candidates.filter {
-                        ["park", "nationalPark", "parking", "shoppingCentre"].contains($0["category"] as? String ?? "")
+                        ["park", "nationalPark", "parking"].contains($0["category"] as? String ?? "")
                     }
                     let other = candidates.filter {
                         !["park", "nationalPark", "parking", "shoppingCentre"].contains($0["category"] as? String ?? "")
                     }
+                    // Keep up to four explicit centre candidates even where
+                    // closer car parks or parks would otherwise fill the first
+                    // eight POI slots. Unrelated shops retain their four slots.
+                    let chosenCentres = Array(shoppingCentres.prefix(4))
+                    let chosenSignificant = Array(significant.prefix(8 - chosenCentres.count))
                     let errors = [nearError, parkError, centreError].compactMap { error -> String? in
                         guard let error = error as NSError? else { return nil }
                         let domain = [MKErrorDomain, NSURLErrorDomain, kCLErrorDomain].contains(error.domain) ? error.domain : "other"
                         return "\(domain):\(error.code)"
                     }
-                    completion(Array((significant.prefix(8) + other.prefix(4)).prefix(12)), !errors.isEmpty, errors)
+                    completion(chosenCentres + chosenSignificant + Array(other.prefix(4)), !errors.isEmpty, errors)
                 }
                 guard explore else { finish([], nil); return }
                 let centreRequest = MKLocalSearch.Request()
