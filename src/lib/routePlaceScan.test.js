@@ -34,3 +34,13 @@ it('honours a hidden venue in manual stop suggestions',async()=>{
  const result=await scanRoutePlaces(trip,{places,hidden:['Warilla Grove']});
  expect(result.suggestions.map(s=>s.name)).not.toContain('Warilla Grove');
 });
+
+
+it('offers competing shopping centres for confirmation without asserting either automatically',async()=>{
+ const rival={...mall,name:'Another Shopping Centre',latitude:shop.latitude+.0005};
+ const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:true,candidates:[mall,rival]},
+  [placeKey(home)]:{source:'saved-place',locality:'Home'}};
+ const result=await scanRoutePlaces(trip,{places});
+ expect(result.suggestions.map(s=>s.name)).toEqual(expect.arrayContaining(['Warilla Grove','Another Shopping Centre']));
+ expect(mock.lookup).not.toHaveBeenCalled();
+});
