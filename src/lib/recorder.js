@@ -69,6 +69,7 @@ export const recorder = {
  setHomeWiFi:action=>native.setHomeWiFi({action}),
  searchAddress:query=>native.searchAddress({query}),
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
+ roadRoute:(from,to)=>native.roadRoute({fromLatitude:from.latitude,fromLongitude:from.longitude,toLatitude:to.latitude,toLongitude:to.longitude}),
  editActivity:trip=>native.editActivity({...trip,activity:activityCode(trip.activity)}),
  assignEquipment:params=>native.assignEquipment(params),
  // A trail link is stored on the local activity, so it works offline and never

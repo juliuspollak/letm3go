@@ -23,7 +23,7 @@ function runs(segments){
 
 // Douglas–Peucker keeps original vertices, including the largest turns. Unlike
 // every-Nth-point sampling it cannot systematically miss a corner between ticks.
-function simplify(points,budget){
+export function simplify(points,budget){
  if(points.length<=budget)return points;
  // Bound worst-case RDP work on densely zigzagging tracks. The block boundary
  // remains an original vertex; no chord skips the observation between blocks.

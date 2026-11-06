@@ -30,7 +30,7 @@ export function overviewPhotos(journeys,unit='km'){
     // Only what is known; the card leaves out anything empty.
     journeyTitle:journey.title||activityLabel(journey.activity)||'',
     journeyDate:journeyDateText(journey),
-    ...(km>0?{journeyDistance:distanceText(km,unit)}:{})
+    ...(km>0?{journeyDistance:`${journey.distanceEstimate?'~':''}${distanceText(km,unit)}`}:{})
    });
   }
  }

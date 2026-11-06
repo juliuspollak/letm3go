@@ -4,6 +4,7 @@ import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops,nativeStops} from './journeyGrouping.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
+import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,ROAD_CACHE_BYTES} from './gapReconstruction.js';
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>readGrouping(serialized,owner),[serialized,owner]);
@@ -40,6 +41,24 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
     try{const place=await recorder.recogniseTripPlace(c.id,c.index,c.cloud?c.point:null,c.stop);if(!alive)return;await persist(meta=>({...meta,places:{...meta.places,[key]:cachedLookup({...place,...(c.stop?{stopLookup:STOP_LOOKUP_VERSION}:{})})}}));}
     catch{if(alive)await persist(meta=>({...meta,places:{...meta.places,[key]:{...cached,retryAfter:Date.now()+5*60000}}})).catch(()=>{});}
     await new Promise(resolve=>setTimeout(resolve,1200));
+   }
+   // Road estimates for GPS gaps in drives (gapReconstruction.js), newest first,
+   // a bounded number per cycle and within the cache budget, so neither Apple's
+   // directions throttle nor the account metadata limit is reached.
+   const live=new Set(activities.map(t=>t.id)),week=Date.now()-7*86400000;
+   const orphans=Object.entries(current.current.roads||{}).filter(([key,r])=>!live.has(key.slice(0,key.lastIndexOf(':',key.lastIndexOf(':')-1)))&&(r.lookedUpAt||0)<week).map(([key])=>key);
+   // Never while the list is still loading: an empty list is not "all deleted".
+   if(alive&&activities.length&&orphans.length)await persist(meta=>{const roads={...meta.roads};for(const key of orphans)delete roads[key];return {...meta,roads};}).catch(()=>{});
+   const drives=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>b.startedAt-a.startedAt);
+   let lookups=0;
+   roads: for(const t of drives)for(const gap of routeGaps(t)){
+    if(!alive)return;if(lookups>=20)break roads;
+    const key=gapKey(t.id,gap),record=current.current.roads?.[key];
+    if(!roadLookupDue(record)||(!record&&JSON.stringify(current.current.roads||{}).length>ROAD_CACHE_BYTES))continue;
+    lookups++;
+    try{const result=await recorder.roadRoute(gap.from,gap.to);if(!alive)return;await persist(meta=>({...meta,roads:{...meta.roads,[key]:roadRecord(result?.routes||[],gap)}}));}
+    catch{if(alive)await persist(meta=>({...meta,roads:{...meta.roads,[key]:failedRecord(meta.roads?.[key])}})).catch(()=>{});}
+    await new Promise(resolve=>setTimeout(resolve,1500));
    }
    if(alive)timer=setTimeout(()=>void enrich(),60000);
   }

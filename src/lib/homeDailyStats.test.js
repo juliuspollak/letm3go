@@ -15,7 +15,7 @@ describe('Home day selection',()=>{
   const household={...trip('shared',today,'14:00','15:00'),readOnly:true};
   const selected=homeJourneysForDay([local,archived,household],['hidden'],'today',today);
   expect(selected).toEqual([local]);
-  expect(dailyJourneyTotals(selected,'today',today)).toEqual({count:1,distanceMeters:1000,durationSeconds:3600});
+  expect(dailyJourneyTotals(selected,'today',today)).toEqual({count:1,distanceMeters:1000,durationSeconds:3600,estimated:false});
  });
  it('keeps a grouped journey on the days with recorded segments but not during a gap',()=>{
   const grouped={id:'group',segments:[
@@ -23,8 +23,8 @@ describe('Home day selection',()=>{
    trip('second','2026-11-04','10:00','11:00',3000)
   ]};
   expect(homeJourneysForDay([grouped],[],'2026-11-03',today)).toEqual([]);
-  expect(dailyJourneyTotals(homeJourneysForDay([grouped],[],'2026-11-02',today),'2026-11-02',today)).toEqual({count:1,distanceMeters:2000,durationSeconds:3600});
-  expect(dailyJourneyTotals(homeJourneysForDay([grouped],[],'2026-11-04',today),'2026-11-04',today)).toEqual({count:1,distanceMeters:3000,durationSeconds:3600});
+  expect(dailyJourneyTotals(homeJourneysForDay([grouped],[],'2026-11-02',today),'2026-11-02',today)).toEqual({count:1,distanceMeters:2000,durationSeconds:3600,estimated:false});
+  expect(dailyJourneyTotals(homeJourneysForDay([grouped],[],'2026-11-04',today),'2026-11-04',today)).toEqual({count:1,distanceMeters:3000,durationSeconds:3600,estimated:false});
  });
 });
 
@@ -35,26 +35,26 @@ describe('Daily recorded totals',()=>{
   const journey={id:'overnight',date:'2026-11-03',startedAt:start,endedAt:end,distanceMeters:1000,durationSeconds:3600};
   const first=dailyJourneyTotals([journey],'2026-11-03',today);
   const second=dailyJourneyTotals([journey],'2026-11-04',today);
-  expect(first).toEqual({count:1,distanceMeters:500,durationSeconds:1800});
-  expect(second).toEqual({count:1,distanceMeters:500,durationSeconds:1800});
+  expect(first).toEqual({count:1,distanceMeters:500,durationSeconds:1800,estimated:false});
+  expect(second).toEqual({count:1,distanceMeters:500,durationSeconds:1800,estimated:false});
   expect(first.distanceMeters+second.distanceMeters).toBe(1000);
   expect(first.durationSeconds+second.durationSeconds).toBe(3600);
  });
  it('scales recorded duration rather than elapsed clock time when there are pauses',()=>{
   const journey={id:'paused',date:'2026-11-03',startedAt:at('2026-11-03','23:30'),endedAt:at('2026-11-04','00:30'),distanceMeters:4000,durationSeconds:1200};
-  expect(dailyJourneyTotals([journey],'2026-11-03',today)).toEqual({count:1,distanceMeters:2000,durationSeconds:600});
+  expect(dailyJourneyTotals([journey],'2026-11-03',today)).toEqual({count:1,distanceMeters:2000,durationSeconds:600,estimated:false});
  });
  it('uses segments instead of elapsed time across a merged journey with a long gap',()=>{
   const journey={id:'merged',date:'2026-11-03',startedAt:at('2026-11-03','12:00'),endedAt:at('2026-11-05','12:00'),distanceMeters:9000,durationSeconds:7200,segments:[
    {...trip('a','2026-11-03','12:00','13:00',4000)},
    {...trip('b','2026-11-05','11:00','12:00',5000)}
   ]};
-  expect(dailyJourneyTotals([journey],'2026-11-04',today)).toEqual({count:1,distanceMeters:0,durationSeconds:0});
-  expect(dailyJourneyTotals([journey],'2026-11-05',today)).toEqual({count:1,distanceMeters:5000,durationSeconds:3600});
+  expect(dailyJourneyTotals([journey],'2026-11-04',today)).toEqual({count:1,distanceMeters:0,durationSeconds:0,estimated:false});
+  expect(dailyJourneyTotals([journey],'2026-11-05',today)).toEqual({count:1,distanceMeters:5000,durationSeconds:3600,estimated:false});
  });
  it('assigns legacy data with missing end time only to its known day',()=>{
   const journey={id:'legacy',date:'2026-11-03',startedAt:at('2026-11-03','23:45'),distanceMeters:700,durationSeconds:900};
-  expect(dailyJourneyTotals([journey],'2026-11-03',today)).toEqual({count:1,distanceMeters:700,durationSeconds:900});
-  expect(dailyJourneyTotals([journey],'2026-11-04',today)).toEqual({count:1,distanceMeters:0,durationSeconds:0});
+  expect(dailyJourneyTotals([journey],'2026-11-03',today)).toEqual({count:1,distanceMeters:700,durationSeconds:900,estimated:false});
+  expect(dailyJourneyTotals([journey],'2026-11-04',today)).toEqual({count:1,distanceMeters:0,durationSeconds:0,estimated:false});
  });
 });

@@ -499,6 +499,44 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             }
         }
     }}
+    // Driving routes Apple Maps suggests between the two fixes either side of a GPS
+    // gap. A public directions request with no account data; it never starts GPS.
+    // No route is a complete answer (resolved empty); anything else rejects, so the
+    // caller retries later instead of caching a failure as "no road".
+    @objc func roadRoute(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let owner = LocationRecorder.shared.ownerID
+        func coordinate(_ prefix: String) -> CLLocationCoordinate2D? {
+            guard let lat = call.getDouble(prefix + "Latitude"), let lon = call.getDouble(prefix + "Longitude"),
+                  lat.isFinite, lon.isFinite, abs(lat) <= 90, abs(lon) <= 180 else { return nil }
+            return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        }
+        guard let from = coordinate("from"), let to = coordinate("to") else { call.reject("Choose two route points."); return }
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
+        request.transportType = .automobile
+        request.requestsAlternateRoutes = true
+        let directions = MKDirections(request: request)
+        directions.calculate { response, error in
+            _ = directions
+            guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { call.reject("Account changed."); return }
+            if let error = error as NSError? {
+                if error.domain == MKErrorDomain && error.code == Int(MKError.Code.directionsNotFound.rawValue) { call.resolve(["routes": []]); return }
+                call.reject("Road routes are unavailable: \(error.domain):\(error.code)"); return
+            }
+            let routes = (response?.routes ?? []).prefix(4).map { route -> [String: Any] in
+                let count = route.polyline.pointCount
+                var points = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid, count: count)
+                route.polyline.getCoordinates(&points, range: NSRange(location: 0, length: count))
+                let step = max(1, count / 1500)
+                let kept = stride(from: 0, to: count, by: step).map { points[$0] } + (count > 1 && (count - 1) % step != 0 ? [points[count - 1]] : [])
+                return ["distanceMeters": route.distance, "expectedSeconds": route.expectedTravelTime,
+                        "points": kept.map { [$0.latitude, $0.longitude] }]
+            }
+            call.resolve(["routes": Array(routes)])
+        }
+    } }
     @objc func editActivity(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle"),vehicleID:call.getString("vehicleID")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }

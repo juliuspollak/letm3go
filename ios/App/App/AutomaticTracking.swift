@@ -696,9 +696,15 @@ extension LocationRecorder {
                         // Note only a real segment break, so the notes, route quality
                         // and the dashed map connector describe the same gaps.
                         if let last=previousFix,let added=trip.points.last,added.segment != last.segment {
-                            let note="GPS resumed after \(Int(added.timestamp-last.timestamp))s without saved route samples; \(Int(last.distance(to:added)))m straight-line gap excluded from distance"
+                            let seconds=added.timestamp-last.timestamp,lowPower=ProcessInfo.processInfo.isLowPowerModeEnabled
+                            let suspended=GapCause.suspendedSeconds(gapStart:last.timestamp,executingSince:executingSince,lastExecutionGap:lastExecutionGapSeconds)
+                            let note=GapCause.note(seconds:seconds,meters:last.distance(to:added),suspendedSeconds:suspended,lowPower:lowPower,
+                                activitySession:backgroundActivitySession != nil,keepAlive:keepAliveTask != nil)
                             trip.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
-                            recordDiagnostic("gap","Automatic route segment break",details:["gapSeconds":String(Int(added.timestamp-last.timestamp)),"gapMeters":String(Int(last.distance(to:added)))])
+                            recordDiagnostic("gap","Automatic route segment break",details:["gapSeconds":String(Int(seconds)),"gapMeters":String(Int(last.distance(to:added))),
+                                "suspendedSeconds":String(Int(suspended)),"lowPowerMode":String(lowPower),"backgroundSession":backgroundSessionState,
+                                "serviceSession":serviceSessionState,"keepAliveRunning":String(keepAliveTask != nil),
+                                "appState":UIApplication.shared.applicationState == .active ? "foreground" : "background"])
                         }
                         // An on-foot journey may refine its own subtype, but only the
                         // sustained movement transition may relabel it as a vehicle.
