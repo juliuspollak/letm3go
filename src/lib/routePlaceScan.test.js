@@ -22,14 +22,14 @@ it('refreshes a cached route-only search for a native stop',async()=>{
  expect(result.suggestions.map(s=>s.name)).not.toContain('Petbarn');
 });
 it('reuses a completed stop search without unnecessarily calling the provider',async()=>{
- const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:true,candidates:[mall]},
+ const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:2,candidates:[mall]},
   [placeKey(home)]:{source:'saved-place',locality:'Home'}};
  const result=await scanRoutePlaces(trip,{places});
  expect(mock.lookup).not.toHaveBeenCalled();
  expect(result.suggestions.map(s=>s.name)).toContain('Warilla Grove');
 });
 it('honours a hidden venue in manual stop suggestions',async()=>{
- const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:true,candidates:[mall]},
+ const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:2,candidates:[mall]},
   [placeKey(home)]:{source:'saved-place',locality:'Home'}};
  const result=await scanRoutePlaces(trip,{places,hidden:['Warilla Grove']});
  expect(result.suggestions.map(s=>s.name)).not.toContain('Warilla Grove');
@@ -38,7 +38,7 @@ it('honours a hidden venue in manual stop suggestions',async()=>{
 
 it('offers competing shopping centres for confirmation without asserting either automatically',async()=>{
  const rival={...mall,name:'Another Shopping Centre',latitude:shop.latitude+.0005};
- const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:true,candidates:[mall,rival]},
+ const places={[placeKey(shop)]:{source:'apple-geocoder-mapkit',stopLookup:2,candidates:[mall,rival]},
   [placeKey(home)]:{source:'saved-place',locality:'Home'}};
  const result=await scanRoutePlaces(trip,{places});
  expect(result.suggestions.map(s=>s.name)).toEqual(expect.arrayContaining(['Warilla Grove','Another Shopping Centre']));

@@ -53,6 +53,6 @@ it('enriches the native stop before generic route samples and upgrades a route-o
  expect(mock.lookup.mock.calls[0]).toEqual(['shopping',1,null,true]);
  await waitFor(()=>expect(p.savePreferences).toHaveBeenCalled());
  const cached=JSON.parse(p.savePreferences.mock.calls[0][0].journeyGrouping).places[key];
- expect(cached.stopLookup).toBe(true);
+ expect(cached.stopLookup).toBe(2);
  expect(cached.candidates[0].name).toBe('Warilla Grove');
 });

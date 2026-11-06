@@ -1,0 +1,379 @@
+{
+ "_note": "LIVE Apple MapKit responses captured 2026-11-06 on macOS 26.6.1 via a diagnostic that mirrors ActivityServices.recogniseTripPlace (CLGeocoder reverse geocode, then PlaceSearch.search). 'merged' = PlaceSearch.swift at 4149310d; 'patched' = this branch. Coordinates are public POIs and the synthetic fixture points, not a home. Replayed in tests; this file is not a live provider check.",
+ "routeMerged": {
+  "candidates": [
+   {
+    "category": "parking",
+    "distanceMeters": 97.44924179474738,
+    "latitude": -34.548313,
+    "longitude": 150.86118,
+    "name": "Shellharbour Road",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "parking",
+    "distanceMeters": 127.50995913617437,
+    "latitude": -34.546381,
+    "longitude": 150.861917,
+    "name": "Warilla Grove Shops",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryFoodMarket",
+    "distanceMeters": 21.03450953626108,
+    "latitude": -34.5476436,
+    "longitude": 150.8615187,
+    "name": "Super Cellars",
+    "placeID": "apple:IA52CD70763C04EC9",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "unknown",
+    "distanceMeters": 26.486883837662923,
+    "latitude": -34.5474152,
+    "longitude": 150.8617312,
+    "name": "Whisk Design",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "unknown",
+    "distanceMeters": 28.795450708367085,
+    "latitude": -34.5473221,
+    "longitude": 150.8617119,
+    "name": "Dr Paul Halley Dental Surgery",
+    "placeID": "apple:IB6A5D81268457BC4",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryNightlife",
+    "distanceMeters": 33.62228937653054,
+    "latitude": -34.5475173,
+    "longitude": 150.8618089,
+    "name": "Warilla Hotel",
+    "placeID": "apple:IB771FDB603DA89A6",
+    "source": "apple-geocoder-mapkit"
+   }
+  ],
+  "categories": [],
+  "locality": "Warilla",
+  "lookupErrors": [],
+  "lookupVersion": 2,
+  "nearbyName": "",
+  "partial": false,
+  "possibleCharging": false,
+  "region": "NSW",
+  "source": "apple-geocoder-mapkit"
+ },
+ "routePatched": {
+  "areasOfInterest": [],
+  "candidates": [
+   {
+    "category": "parking",
+    "distanceMeters": 97.44924179474738,
+    "latitude": -34.548313,
+    "longitude": 150.86118,
+    "name": "Shellharbour Road",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "parking",
+    "distanceMeters": 127.50995913617437,
+    "latitude": -34.546381,
+    "longitude": 150.861917,
+    "name": "Warilla Grove Shops",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 320.63872854806567,
+    "latitude": -34.5492625,
+    "longitude": 150.8641823,
+    "name": "Elloura Park",
+    "placeID": "apple:IEA00042088312539",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 329.9888259770676,
+    "latitude": -34.5488178,
+    "longitude": 150.8646492,
+    "name": "Klein Park",
+    "placeID": "apple:I13D536E982D7CB5",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 337.57263797407717,
+    "latitude": -34.5466282,
+    "longitude": 150.8649851,
+    "name": "Keith Fletcher Park",
+    "placeID": "apple:I17793ED1D1D06FD1",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 415.6000928709649,
+    "latitude": -34.550249,
+    "longitude": 150.858421,
+    "name": "Warilla Fenced Dog Park",
+    "placeID": "apple:I39FEEE9A19127CDE",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 491.0111877590989,
+    "latitude": -34.5510302,
+    "longitude": 150.8582811,
+    "name": "Shellharbour Municipality War Memorial Park",
+    "placeID": "apple:I367B9F9948A88051",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 602.0103233273747,
+    "latitude": -34.5521302,
+    "longitude": 150.8647954,
+    "name": "King Mickey Park",
+    "placeID": "apple:I645D6D058BBC4C38",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryFoodMarket",
+    "distanceMeters": 21.03450953626108,
+    "latitude": -34.5476436,
+    "longitude": 150.8615187,
+    "name": "Super Cellars",
+    "placeID": "apple:IA52CD70763C04EC9",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "unknown",
+    "distanceMeters": 26.486883837662923,
+    "latitude": -34.5474152,
+    "longitude": 150.8617312,
+    "name": "Whisk Design",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "unknown",
+    "distanceMeters": 28.795450708367085,
+    "latitude": -34.5473221,
+    "longitude": 150.8617119,
+    "name": "Dr Paul Halley Dental Surgery",
+    "placeID": "apple:IB6A5D81268457BC4",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryNightlife",
+    "distanceMeters": 33.62228937653054,
+    "latitude": -34.5475173,
+    "longitude": 150.8618089,
+    "name": "Warilla Hotel",
+    "placeID": "apple:IB771FDB603DA89A6",
+    "source": "apple-geocoder-mapkit"
+   }
+  ],
+  "categories": [],
+  "locality": "Warilla",
+  "lookupErrors": [],
+  "lookupVersion": 3,
+  "nearbyName": "",
+  "partial": false,
+  "possibleCharging": false,
+  "region": "NSW",
+  "source": "apple-geocoder-mapkit"
+ },
+ "routeSample": {
+  "explore": false,
+  "latitude": -34.5474631,
+  "longitude": 150.8614485
+ },
+ "stop": {
+  "explore": true,
+  "latitude": -34.545954,
+  "longitude": 150.86274
+ },
+ "stopMerged": {
+  "candidates": [
+   {
+    "category": "parking",
+    "distanceMeters": 0,
+    "latitude": -34.545954,
+    "longitude": 150.86274,
+    "name": "Parking",
+    "placeID": "apple:I777CE3693887E450",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryAnimalService",
+    "distanceMeters": 22.83662913477762,
+    "latitude": -34.5457645,
+    "longitude": 150.8626428,
+    "name": "Dr Tom Currie",
+    "placeID": "apple:IF7EE31B0DFBB13AD",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryRestaurant",
+    "distanceMeters": 27.617097093010017,
+    "latitude": -34.5457052,
+    "longitude": 150.8627294,
+    "name": "Go Gallo Chickens",
+    "placeID": "apple:I8E19CBB842425D58",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryATM",
+    "distanceMeters": 27.635433586739993,
+    "latitude": -34.54617,
+    "longitude": 150.86289,
+    "name": "Westfield Liverpool",
+    "placeID": "apple:ID78F10ACAFD1D673",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryAnimalService",
+    "distanceMeters": 30.561578476809938,
+    "latitude": -34.5456827,
+    "longitude": 150.8626821,
+    "name": "Greencross Vets",
+    "placeID": "apple:IC13615CCB19CEB65",
+    "source": "apple-geocoder-mapkit"
+   }
+  ],
+  "categories": [],
+  "locality": "Warilla",
+  "lookupErrors": [],
+  "lookupVersion": 2,
+  "nearbyName": "",
+  "partial": false,
+  "possibleCharging": false,
+  "region": "NSW",
+  "source": "apple-geocoder-mapkit"
+ },
+ "stopPatched": {
+  "areasOfInterest": [
+   "Warilla Grove"
+  ],
+  "candidates": [
+   {
+    "category": "shoppingCentre",
+    "distanceMeters": 100.07068014726539,
+    "latitude": -34.5468329,
+    "longitude": 150.8629856,
+    "name": "HomeCo. Warilla Grove",
+    "placeID": "apple:IB39CB4ED1B55341E",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "areaOfInterest": true,
+    "category": "shoppingCentre",
+    "distanceMeters": 108.50356504330803,
+    "latitude": -34.5468923,
+    "longitude": 150.8630738,
+    "name": "Warilla Grove",
+    "placeID": "apple:I9E547877098A843",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "parking",
+    "distanceMeters": 0,
+    "latitude": -34.545954,
+    "longitude": 150.86274,
+    "name": "Parking",
+    "placeID": "apple:I777CE3693887E450",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 219.22797440713302,
+    "latitude": -34.5466282,
+    "longitude": 150.8649851,
+    "name": "Keith Fletcher Park",
+    "placeID": "apple:I17793ED1D1D06FD1",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 362.8101934988123,
+    "latitude": -34.5488178,
+    "longitude": 150.8646492,
+    "name": "Klein Park",
+    "placeID": "apple:I13D536E982D7CB5",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 390.1630463151698,
+    "latitude": -34.5492625,
+    "longitude": 150.8641823,
+    "name": "Elloura Park",
+    "placeID": "apple:IEA00042088312539",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 619.8014122069918,
+    "latitude": -34.550249,
+    "longitude": 150.858421,
+    "name": "Warilla Fenced Dog Park",
+    "placeID": "apple:I39FEEE9A19127CDE",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "park",
+    "distanceMeters": 692.312116385112,
+    "latitude": -34.5410318,
+    "longitude": 150.8673767,
+    "name": "Reddall Reserve",
+    "placeID": "apple:IDE0FA76A0E498173",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryAnimalService",
+    "distanceMeters": 22.836611063948205,
+    "latitude": -34.5457645,
+    "longitude": 150.8626428,
+    "name": "Dr Tom Currie",
+    "placeID": "apple:IF7EE31B0DFBB13AD",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryRestaurant",
+    "distanceMeters": 27.617099023824128,
+    "latitude": -34.5457052,
+    "longitude": 150.8627294,
+    "name": "Go Gallo Chickens",
+    "placeID": "apple:I8E19CBB842425D58",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryATM",
+    "distanceMeters": 27.63539669198018,
+    "latitude": -34.54617,
+    "longitude": 150.86289,
+    "name": "Westfield Liverpool",
+    "placeID": "apple:ID78F10ACAFD1D673",
+    "source": "apple-geocoder-mapkit"
+   },
+   {
+    "category": "MKPOICategoryAnimalService",
+    "distanceMeters": 30.561575571832158,
+    "latitude": -34.5456827,
+    "longitude": 150.8626821,
+    "name": "Greencross Vets",
+    "placeID": "apple:IC13615CCB19CEB65",
+    "source": "apple-geocoder-mapkit"
+   }
+  ],
+  "categories": [],
+  "locality": "Warilla",
+  "lookupErrors": [],
+  "lookupVersion": 3,
+  "nearbyName": "",
+  "partial": false,
+  "possibleCharging": false,
+  "region": "NSW",
+  "source": "apple-geocoder-mapkit"
+ }
+}
