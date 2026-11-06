@@ -3,6 +3,7 @@ import {reconcileSources} from './fleetJourneys.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops,nativeStops} from './journeyGrouping.js';
 import {recorder,recorderAvailable} from './recorder.js';
+import {STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>readGrouping(serialized,owner),[serialized,owner]);
@@ -35,8 +36,8 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
    const seen=new Set();
    for(const c of candidates){
     if(!alive)return;const key=placeKey(c.point);if(!key||seen.has(key))continue;seen.add(key);
-    const cached=current.current.places[key];if(!lookupDue(cached)&&!(c.stop&&cached?.source!=='saved-place'&&!cached?.stopLookup))continue;
-    try{const place=await recorder.recogniseTripPlace(c.id,c.index,c.cloud?c.point:null,c.stop);if(!alive)return;await persist(meta=>({...meta,places:{...meta.places,[key]:cachedLookup({...place,...(c.stop?{stopLookup:true}:{})})}}));}
+    const cached=current.current.places[key];if(!lookupDue(cached)&&!(c.stop&&cached?.source!=='saved-place'&&cached?.stopLookup!==STOP_LOOKUP_VERSION&&!(cached?.retryAfter>Date.now())))continue;
+    try{const place=await recorder.recogniseTripPlace(c.id,c.index,c.cloud?c.point:null,c.stop);if(!alive)return;await persist(meta=>({...meta,places:{...meta.places,[key]:cachedLookup({...place,...(c.stop?{stopLookup:STOP_LOOKUP_VERSION}:{})})}}));}
     catch{if(alive)await persist(meta=>({...meta,places:{...meta.places,[key]:{...cached,retryAfter:Date.now()+5*60000}}})).catch(()=>{});}
     await new Promise(resolve=>setTimeout(resolve,1200));
    }

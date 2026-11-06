@@ -197,7 +197,8 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
    const hiddenNames=new Set((metadata.hiddenTags?.[s.id]||[]).map(name=>String(name).trim().toLocaleLowerCase()));
-   const destinationStop=stops.filter(stop=>stop.id.startsWith('native:')&&(stop.stopVenue||metadata.stopEdits[stop.id]?.name)&&
+   // A saved place (other than Home) at the stop names it as firmly as a rename.
+   const destinationStop=stops.filter(stop=>stop.id.startsWith('native:')&&(stop.stopVenue||metadata.stopEdits[stop.id]?.name||(stop.kind&&stop.kind!=='home'))&&
      !hiddenNames.has(stop.name.toLocaleLowerCase())).sort((a,b)=>b.durationSeconds-a.durationSeconds)[0];
    const homeLoop=from.kind==='home'&&to.kind==='home'&&destinationStop;
    const stopTitle=homeLoop?`Home → ${destinationStop.name} → Home`:null;

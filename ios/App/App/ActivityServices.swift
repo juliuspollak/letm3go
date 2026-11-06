@@ -488,10 +488,12 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
             guard error==nil,let place=results?.first else {call.reject("Place recognition is unavailable offline. It will retry later.");return}
             let locality=place.locality ?? place.subLocality ?? place.administrativeArea ?? ""
-            PlaceSearch.search(at: location.coordinate, explore: call.getBool("explore") == true) { candidates, partial, lookupErrors in
+            // Areas the stop lies within, from this same reverse geocode (no extra request).
+            let areas=(place.areasOfInterest ?? []).prefix(5).map { String($0.prefix(100)) }
+            PlaceSearch.search(at: location.coordinate, explore: call.getBool("explore") == true, areasOfInterest: areas) { candidates, partial, lookupErrors in
                 guard owner==r.ownerID,r.uiUnlocked else {call.reject("Account changed.");return}
                 call.resolve(["locality":locality,"region":place.administrativeArea ?? "",
-                    "nearbyName":"","categories":[],"possibleCharging":false,
+                    "nearbyName":"","categories":[],"possibleCharging":false,"areasOfInterest":areas,
                     "candidates":candidates,"lookupVersion":PlaceSearch.version,"partial":partial,"lookupErrors":lookupErrors,
                     "source":"apple-geocoder-mapkit"])
             }
