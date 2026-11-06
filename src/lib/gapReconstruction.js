@@ -119,12 +119,11 @@ export function estimatedDistance(trip, roads = {}) {
 // Store the completed numerical result once at save time. Road geometry stays
 // in the existing compact route cache rather than being duplicated in metadata.
 export function distanceSnapshot(trip, estimate) {
- if (!estimate) return null;
- const {lines: _lines, ...summary} = estimate;
+ const {lines: _lines, ...summary} = estimate || {};
  void _lines;
  return {updatedAt:trip.updatedAt??null, pointCount:trip.points?.length??0,
   distanceMeters:trip.distanceMeters??0, visibleRouteStart:trip.visibleRouteStart??null,
-  visibleRouteEnd:trip.visibleRouteEnd??null, summary};
+  visibleRouteEnd:trip.visibleRouteEnd??null, summary:estimate?summary:null};
 }
 export function savedDistance(trip, metadata) {
  const saved=metadata.distanceSummaries?.[trip.id];
@@ -132,7 +131,8 @@ export function savedDistance(trip, metadata) {
    saved.pointCount===(trip.points?.length??0) &&
    saved.distanceMeters===(trip.distanceMeters??0) &&
    saved.visibleRouteStart===(trip.visibleRouteStart??null) &&
-   saved.visibleRouteEnd===(trip.visibleRouteEnd??null) && saved.summary?.gapCount>0) {
+   saved.visibleRouteEnd===(trip.visibleRouteEnd??null)) {
+  if(!saved.summary)return null; // A complete recording with no GPS gaps.
   // Only decode display geometry, never rescan fixes or query the road provider.
   const lines=saved.summary.gaps.filter(g=>g.source==='road').flatMap(g=>{
    const record=metadata.roads?.[g.key];
