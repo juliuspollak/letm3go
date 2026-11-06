@@ -116,6 +116,35 @@ export function estimatedDistance(trip, roads = {}) {
   confidence: roadGaps === gaps.length ? 'road' : roadGaps ? 'mixed' : 'straight', gaps: parts, lines};
 }
 
+// Store the completed numerical result once at save time. Road geometry stays
+// in the existing compact route cache rather than being duplicated in metadata.
+export function distanceSnapshot(trip, estimate) {
+ if (!estimate) return null;
+ const {lines: _lines, ...summary} = estimate;
+ void _lines;
+ return {updatedAt:trip.updatedAt??null, pointCount:trip.points?.length??0,
+  distanceMeters:trip.distanceMeters??0, visibleRouteStart:trip.visibleRouteStart??null,
+  visibleRouteEnd:trip.visibleRouteEnd??null, summary};
+}
+export function savedDistance(trip, metadata) {
+ const saved=metadata.distanceSummaries?.[trip.id];
+ if(saved && saved.updatedAt===(trip.updatedAt??null) &&
+   saved.pointCount===(trip.points?.length??0) &&
+   saved.distanceMeters===(trip.distanceMeters??0) &&
+   saved.visibleRouteStart===(trip.visibleRouteStart??null) &&
+   saved.visibleRouteEnd===(trip.visibleRouteEnd??null) && saved.summary?.gapCount>0) {
+  // Only decode display geometry, never rescan fixes or query the road provider.
+  const lines=saved.summary.gaps.filter(g=>g.source==='road').flatMap(g=>{
+   const record=metadata.roads?.[g.key];
+   return record?.version===ROAD_VERSION&&typeof record.line==='string'?[decodeLine(record.line)]:[];
+  });
+  return {...saved.summary,lines};
+ }
+ // Legacy activities, and an edited track awaiting its next save-time snapshot,
+ // retain the existing local-only fallback. No Apple Maps request is made here.
+ return estimatedDistance(trip,metadata.roads);
+}
+
 // One estimate for a journey grouped from several recordings, or null if none of
 // them has a gap. Recordings without gaps add their recorded distance.
 export function combineEstimates(segments, estimates) {
