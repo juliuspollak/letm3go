@@ -40,3 +40,25 @@ it('never uploads heart rate or overlap notes in a private backup',async()=>{
  expect(sent.length).toBeGreaterThan(0);
  expect(JSON.stringify(sent)).not.toMatch(/heartRate|bpm|overlaps|energy|calorie/i);
 });
+it('does not resend a deletion the cloud already confirmed',async()=>{
+ const api=client();
+ await run(api,{...state,trips:[],deletedIDs:['gone']},{gone:{owner:'owner',deleted:true}});
+ expect(api.chain.delete).not.toHaveBeenCalled();
+});
+it('does not serialise or hash an activity unchanged since its last backup',async()=>{
+ const api=client(),edited={...trip,updatedAt:300};
+ const first=await run(api,{...state,trips:[edited]});
+ expect(api.rpc).toHaveBeenCalledTimes(1);expect(first.receipts.trip).toMatchObject({updatedAt:300});
+ const digest=vi.fn((...args)=>webcrypto.subtle.digest(...args));
+ await run(api,{...state,trips:[edited]},first.receipts,{cryptoImpl:{subtle:{digest}}});
+ expect(digest).not.toHaveBeenCalled();expect(api.rpc).toHaveBeenCalledTimes(1);
+ await run(api,{...state,trips:[{...edited,updatedAt:400,title:'Renamed'}]},first.receipts);
+ expect(api.rpc).toHaveBeenCalledTimes(2);
+});
+it('a receipt from an earlier build learns updatedAt once, without uploading',async()=>{
+ const api=client(),edited={...trip,updatedAt:300};
+ const legacy=await run(api,{...state,trips:[edited]});
+ const {updatedAt:_u,...old}=legacy.receipts.trip;void _u;
+ const again=await run(api,{...state,trips:[edited]},{trip:old});
+ expect(api.rpc).toHaveBeenCalledTimes(1);expect(again.receipts.trip).toMatchObject({...old,updatedAt:300});
+});

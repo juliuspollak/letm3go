@@ -1,4 +1,4 @@
-import {recognitionSampleIndexes,lookupDue,cachedLookup} from './journeyRecognition.js';
+import {recognitionSampleIndexes,lookupDue,cachedLookup,failedLookup} from './journeyRecognition.js';
 import {reconcileSources} from './fleetJourneys.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {buildJourneys,changeGrouping,emptyGrouping,placeKey,readGrouping,internalStops,nativeStops} from './journeyGrouping.js';
@@ -8,6 +8,7 @@ import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,ROAD_CACHE_BYTES}
 export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>readGrouping(serialized,owner),[serialized,owner]);
+ const readable=useMemo(()=>!serialized||(()=>{try{const saved=JSON.parse(serialized);return saved?.owner===owner&&saved?.version===1;}catch{return false;}})(),[serialized,owner]);
  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
  const current=useRef(emptyGrouping(owner)),queue=useRef(Promise.resolve());
  useEffect(()=>{current.current=metadata;},[metadata]);
@@ -17,53 +18,89 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
  },[owner,savePreferences]);
  const reconciled=useMemo(()=>reconcileSources(activities,{owner,vehicles,links:metadata.sourceLinks||[]}),[activities,owner,vehicles,metadata.sourceLinks]);
  const model=useMemo(()=>{const own=buildJourneys(reconciled.activities,{owner,metadata,places,vehicles,telemetry,projectionCache:projectionCache.values});const shared=reconciled.activities.filter(t=>t.ownerID&&t.ownerID!==owner&&t.sharedToHousehold);const publicPlaces=Object.fromEntries(Object.entries(metadata.places).filter(([,p])=>p.source==='apple-geocoder-mapkit'));const sharedJourneys=[...new Set(shared.map(t=>t.ownerID))].flatMap(sharedOwner=>buildJourneys(shared.filter(t=>t.ownerID===sharedOwner),{owner:sharedOwner,metadata:{...emptyGrouping(sharedOwner),places:publicPlaces},places:[],vehicles:[],telemetry}).journeys.map(j=>({...j,readOnly:true})));return {...own,journeys:[...own.journeys,...sharedJourneys]};},[reconciled.activities,owner,metadata,places,vehicles,telemetry,projectionCache]);
- const fingerprint=JSON.stringify(activities.map(t=>[t.id,t.updatedAt,t.points?.length,t.endedAt]));
+ // Enrichment runs once, for an activity as it is saved: its places and road
+ // estimates are retrieved, kept, and the activity is marked done
+ // (metadata.enriched); it is never looked up or refreshed again. History is never
+ // processed: only activities that finished after this account's cutoff
+ // (metadata.enrichFrom, set the first time this build runs) qualify. Recordings
+ // in progress and provisional stops are still changing and wait until finalised.
+ const enrichFrom=metadata.enrichFrom;
+ const settled=t=>Number.isFinite(enrichFrom)&&t.endedAt!=null&&t.endedAt*1000>=enrichFrom&&t.state!=='recording'&&t.details?.provisional!==true&&(!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner);
+ // Not keyed on the done markers: saving them must not restart a run part-way.
+ const fingerprint=JSON.stringify([readable,enrichFrom,activities.filter(settled).map(t=>[t.id,t.updatedAt,t.points?.length])]);
  useEffect(()=>{
   if(!recorderAvailable()||!owner)return;let alive=true,timer;
+  // Saved metadata that exists but could not be read as this account's is never
+  // written over (it would be replaced by an empty grouping), and nothing runs.
+  if(!readable)return;
+  // First run of this build: everything already recorded is history.
+  if(!Number.isFinite(current.current.enrichFrom)){void persist(meta=>Number.isFinite(meta.enrichFrom)?meta:{...meta,enrichFrom:Date.now()}).catch(()=>{});return;}
+  // Results are saved in batches, not once per lookup: each save re-renders the
+  // app and rebuilds every journey. A save from a changed account is refused.
+  const pending={places:{},roads:{},enriched:{}};let held=0,since=0,marked=false;
+  const flush=async()=>{if(!held&&!marked)return;const batch={...pending};pending.places={};pending.roads={};pending.enriched={};held=0;marked=false;
+   await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched}})).catch(()=>{});};
+  // Only provider answers count toward a batch; a done marker rides along with them.
+  const hold=async(kind,key,value)=>{pending[kind][key]=value;if(kind==='enriched'){marked=true;return;}if(!held++)since=Date.now();if(held>=8||Date.now()-since>=15000)await flush();};
+  const place=key=>pending.places[key]??current.current.places[key];
+  const road=key=>pending.roads[key]??current.current.roads?.[key];
+  // Provider requests are spaced (throttling), but not after the last one.
+  let requested=false;const space=async ms=>{if(requested)await new Promise(resolve=>setTimeout(resolve,ms));requested=true;};
   async function enrich(){
-   // Sequential lookups avoid geocoder throttling; results are cached per account.
-   const context={owner,metadata:current.current,places,vehicles,telemetry:[]};
-   const candidates=activities.flatMap(t=>{
-    const points=t.points||[];if(!points.length||t.endedAt==null||t.state==='recording'||(t.ownerID||t.owner_id)&& (t.ownerID||t.owner_id)!==owner)return [];
-    const recordedStops=nativeStops(t,context);
-    const stopIndexes=new Set(recordedStops.map(stop=>stop.pointIndex));
-    const indexes=recognitionSampleIndexes(t,[...internalStops(t,context),...recordedStops]);
-    return indexes.map(index=>({id:t.id,index,point:points[index],stop:stopIndexes.has(index),
-      cloud:t.source!=='device'&&t.source!=='simulator'}));
-   });
-   // Prioritise actual recorded stops ahead of generic route samples, including
-   // when the same coordinate appears in both lists.
-   candidates.sort((a,b)=>Number(b.stop)-Number(a.stop));
-   const seen=new Set();
-   for(const c of candidates){
-    if(!alive)return;const key=placeKey(c.point);if(!key||seen.has(key))continue;seen.add(key);
-    const cached=current.current.places[key];if(!lookupDue(cached)&&!(c.stop&&cached?.source!=='saved-place'&&cached?.stopLookup!==STOP_LOOKUP_VERSION&&!(cached?.retryAfter>Date.now())))continue;
-    try{const place=await recorder.recogniseTripPlace(c.id,c.index,c.cloud?c.point:null,c.stop);if(!alive)return;await persist(meta=>({...meta,places:{...meta.places,[key]:cachedLookup({...place,...(c.stop?{stopLookup:STOP_LOOKUP_VERSION}:{})})}}));}
-    catch{if(alive)await persist(meta=>({...meta,places:{...meta.places,[key]:{...cached,retryAfter:Date.now()+5*60000}}})).catch(()=>{});}
-    await new Promise(resolve=>setTimeout(resolve,1200));
+   requested=false;
+   const todo=activities.filter(t=>settled(t)&&!current.current.enriched?.[t.id]&&!pending.enriched[t.id]).sort((a,b)=>b.startedAt-a.startedAt);
+   let roadLookups=0,next=Infinity;
+   for(const t of todo){
+    if(!alive)return;
+    let waiting=false;
+    const points=t.points||[];
+    if(points.length){
+     const context={owner,metadata:current.current,places,vehicles,telemetry:[]};
+     const stops=nativeStops(t,context),stopIndexes=new Set(stops.map(stop=>stop.pointIndex));
+     // Recorded stops first, so a stop gets its shopping-centre search even
+     // where the same coordinate is also a route sample.
+     const samples=recognitionSampleIndexes(t,[...internalStops(t,context),...stops]).map(index=>({index,stop:stopIndexes.has(index)})).sort((a,b)=>Number(b.stop)-Number(a.stop));
+     const seen=new Set();
+     for(const {index,stop} of samples){
+      const key=placeKey(points[index]);if(!key||seen.has(key))continue;seen.add(key);
+      const cached=place(key);
+      // An answer is final; a recorded stop also needs its stop search once.
+      const needed=!cached||lookupDue(cached)||(stop&&cached.source!=='saved-place'&&!cached.stopLookup&&!cached.retryAfter);
+      if(!needed){if(cached.retryAfter){waiting=true;next=Math.min(next,cached.retryAfter);}continue;}
+      await space(1200);if(!alive)return;
+      let result;
+      try{const found=await recorder.recogniseTripPlace(t.id,index,t.source!=='device'&&t.source!=='simulator'?points[index]:null,stop);if(!alive)return;result=cachedLookup({...found,...(stop?{stopLookup:STOP_LOOKUP_VERSION}:{})},Date.now(),cached);}
+      catch{if(!alive)return;result=failedLookup(cached);}
+      await hold('places',key,result);
+      if(result.retryAfter){waiting=true;next=Math.min(next,result.retryAfter);}
+     }
+    }
+    // Road estimates for this activity's GPS gaps (gapReconstruction.js), within
+    // the cache budget; past it the straight line stands, clearly marked.
+    for(const gap of routeGaps(t)){
+     if(!alive)return;
+     const key=gapKey(t.id,gap),record=road(key);
+     if(record&&!roadLookupDue(record)){if(record.retryAfter){waiting=true;next=Math.min(next,record.retryAfter);}continue;}
+     if(!record&&JSON.stringify(current.current.roads||{}).length>ROAD_CACHE_BYTES)continue;
+     // At most 20 directions requests a minute; the rest wait for the next run.
+     if(roadLookups>=20){waiting=true;next=Math.min(next,Date.now()+60000);continue;}
+     roadLookups++;
+     await space(1500);if(!alive)return;
+     let result;
+     try{const found=await recorder.roadRoute(gap.from,gap.to);if(!alive)return;result=roadRecord(found?.routes||[],gap);}
+     catch{if(!alive)return;result=failedRecord(record);}
+     await hold('roads',key,result);
+     if(result.retryAfter){waiting=true;next=Math.min(next,result.retryAfter);}
+    }
+    if(!waiting)await hold('enriched',t.id,Date.now());
    }
-   // Road estimates for GPS gaps in drives (gapReconstruction.js), newest first,
-   // a bounded number per cycle and within the cache budget, so neither Apple's
-   // directions throttle nor the account metadata limit is reached.
-   const live=new Set(activities.map(t=>t.id)),week=Date.now()-7*86400000;
-   const orphans=Object.entries(current.current.roads||{}).filter(([key,r])=>!live.has(key.slice(0,key.lastIndexOf(':',key.lastIndexOf(':')-1)))&&(r.lookedUpAt||0)<week).map(([key])=>key);
-   // Never while the list is still loading: an empty list is not "all deleted".
-   if(alive&&activities.length&&orphans.length)await persist(meta=>{const roads={...meta.roads};for(const key of orphans)delete roads[key];return {...meta,roads};}).catch(()=>{});
-   const drives=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>b.startedAt-a.startedAt);
-   let lookups=0;
-   roads: for(const t of drives)for(const gap of routeGaps(t)){
-    if(!alive)return;if(lookups>=20)break roads;
-    const key=gapKey(t.id,gap),record=current.current.roads?.[key];
-    if(!roadLookupDue(record)||(!record&&JSON.stringify(current.current.roads||{}).length>ROAD_CACHE_BYTES))continue;
-    lookups++;
-    try{const result=await recorder.roadRoute(gap.from,gap.to);if(!alive)return;await persist(meta=>({...meta,roads:{...meta.roads,[key]:roadRecord(result?.routes||[],gap)}}));}
-    catch{if(alive)await persist(meta=>({...meta,roads:{...meta.roads,[key]:failedRecord(meta.roads?.[key])}})).catch(()=>{});}
-    await new Promise(resolve=>setTimeout(resolve,1500));
-   }
-   if(alive)timer=setTimeout(()=>void enrich(),60000);
+   if(alive)await flush();
+   // Nothing runs again unless something is still waiting for a retry.
+   if(alive&&Number.isFinite(next))timer=setTimeout(()=>void enrich(),Math.max(60000,next-Date.now()));
   }
-  void enrich();return()=>{alive=false;clearTimeout(timer);};
- // Re-run when actual recordings change, not on every two-second polling identity.
+  // A restart for changed recordings keeps what this run already found.
+  void enrich();return()=>{alive=false;clearTimeout(timer);void flush();};
+ // Re-run when an unfinished activity appears or changes, not on every poll.
  // eslint-disable-next-line react-hooks/exhaustive-deps
  },[owner,fingerprint]);
  async function act(action){setBusy(true);setError('');try{await persist(meta=>changeGrouping(meta,action,{activities,owner,vehicles,places}));return true;}catch(e){setError(e.message||'Journey change could not be saved.');return false;}finally{setBusy(false);}}

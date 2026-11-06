@@ -7,7 +7,7 @@ import {syncCollections} from '../lib/collectionSync.js';
 import {syncAccountSettings} from '../lib/settingsSync.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0);
+ const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null);
  useEffect(()=>{latest.current={auth,state};},[auth,state]);
  useEffect(()=>{
   if(!config.backupEnabled||!supabase)return;
@@ -16,6 +16,11 @@ export default function AutoCloudSync({state}){
    if(running.current||document.visibilityState!=='visible'||!navigator.onLine||Date.now()-lastAttempt.current<120000)return;
    const {auth:user,state:recordings}=latest.current;
    if(user.status!=='authenticated'||!recordings?.ownerID||recordings.ownerID.toLowerCase()!==user.session.user.id.toLowerCase())return;
+   // Work only after something was saved, edited or deleted: an unchanged history
+   // (the recorder's history token), places and settings need no backup pass.
+   const {syncReceipts:_r,lastBackup:_b,...settings}=user.preferences;void _r;void _b;
+   const signature=JSON.stringify([recordings.ownerID,recordings.historyToken||null,recordings.places||[],recordings.deletedIDs||[],settings]);
+   if(signature===synced.current)return;
    running.current=true;lastAttempt.current=Date.now();
    try{
     // Settings and the Collection are small and independent of the route upload,
@@ -29,6 +34,7 @@ export default function AutoCloudSync({state}){
     receipts=trips.receipts;
     if(alive)await user.savePreferences({syncReceipts:receipts,lastBackup:trips.lastSync});
     if(failure)throw failure;
+    synced.current=signature;
    }catch{
     // The Settings screen is the explicit retry/error surface. Nothing local is deleted.
    }finally{running.current=false;}

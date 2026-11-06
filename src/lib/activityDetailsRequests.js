@@ -5,6 +5,7 @@ import {MTB_ACCESS_LABELS} from './mtb.js';
 import * as mtbApi from './mtbApi.js';
 import {scanRoutePlaces} from './routePlaceScan.js';
 import {saveMaximum} from './heartRate.js';
+import {sendReportAsFeedback,feedbackReference} from './feedback.js';
 import {buildCollectionItem,collectionItemError,categoriesForActivity,COLLECTION_CATEGORIES} from './collection.js';
 
 const trailDistance=m=>Number.isFinite(m)?(m>=1000?`${(m/1000).toFixed(1)} km`:`${Math.round(m)} m`):'Unknown length';
@@ -31,6 +32,13 @@ export const activityDetailsRequests={
   const ok=await grouping.act(action);
   if(!ok)throw new Error(grouping.error||'That change could not be saved.');
   return {};
+ },
+ // The activity's recording report, sent as feedback instead of copied.
+ async sendRecordingReport({client,trip},{note='',report='',token,reportID},{signal}={}){
+  if(!client)throw new Error('Sending needs a connection to your account.');
+  const day=Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toLocaleDateString('en-AU'):'';
+  const ticket=await sendReportAsFeedback(client,{token,reportID,kind:'recording',title:`Recording report · ${trip.title||'Activity'}${day?` · ${day}`:''}`,note,text:report,native:true,signal});
+  return {reference:feedbackReference(ticket)};
  },
  async scanPlaces({trip,grouping},args,{signal,progress}){
   const anchor=trip.segmentIDs?.[0]||trip.id;

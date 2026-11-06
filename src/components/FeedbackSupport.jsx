@@ -9,6 +9,7 @@ import {
   FEEDBACK_CATEGORIES, FeedbackCancelled, emptyFeedbackDraft, feedbackCategory, feedbackDate, feedbackDiagnostics,
   feedbackErrors, feedbackHasUnread, feedbackHeadline, feedbackMarkedSeen, feedbackReference, feedbackStatus,
   loadFeedbackHistory, markFeedbackSeen, newFeedbackToken, submitFeedbackTicket,
+  REPORT_KINDS, feedbackIsAdmin, adminReplyFeedback, adminSetFeedbackStatus, adminSetFeedbackHidden,
 } from '../lib/feedback.js';
 
 const SECTIONS = [
@@ -16,6 +17,15 @@ const SECTIONS = [
   { id: 'mine', label: 'My feedback' },
   { id: 'help', label: 'Help' },
 ];
+// Shown only to admins (public.app_admins); the database enforces the access.
+const ADMIN_SECTION = { id: 'all', label: 'All feedback' };
+const ADMIN_FILTERS = [
+  { id: 'active', label: 'Open', match: ticket => !ticket.deleted_at && ['open', 'in_review'].includes(ticket.status) },
+  { id: 'resolved', label: 'Resolved', match: ticket => !ticket.deleted_at && ticket.status === 'resolved' },
+  { id: 'closed', label: 'Closed', match: ticket => !ticket.deleted_at && ticket.status === 'closed' },
+  { id: 'hidden', label: 'Hidden', match: ticket => Boolean(ticket.deleted_at) },
+];
+const kilobytes = bytes => `${Math.max(1, Math.round((Number(bytes) || 0) / 1024))} KB`;
 
 const HELP_TOPICS = [
   { title: 'Recording stopped or has gaps', body: 'Open Profile → Tracking & Permissions and check that location is set to Always, Precise Location is on, and Low Power Mode is off. Background recording needs the app to stay installed and signed in.' },
@@ -51,6 +61,11 @@ export default function FeedbackSupport({ recording }) {
   const [replyError, setReplyError] = useState('');
   const [viewer, setViewer] = useState(null);
   const [token, setToken] = useState(newFeedbackToken);
+  const [admin, setAdmin] = useState(false);
+  const [adminFilter, setAdminFilter] = useState('active');
+  const [adminBusy, setAdminBusy] = useState('');
+  const [adminNotice, setAdminNotice] = useState('');
+  const me = auth.session?.user?.id;
   const sending = useRef(null);
   const photosRefreshedAt = useRef(0);
   const attachmentsRef = useRef(attachments);
@@ -62,13 +77,20 @@ export default function FeedbackSupport({ recording }) {
     attachmentsRef.current.forEach(photo => URL.revokeObjectURL(photo.previewUrl));
   }, []);
 
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+    void feedbackIsAdmin(supabase).then(value => { if (!cancelled) setAdmin(value); });
+    return () => { cancelled = true; };
+  }, [me]);
+
   // The history loads when its tab opens and again after a successful submission.
   useEffect(() => {
-    if (section !== 'mine' || !supabase) return undefined;
+    if ((section !== 'mine' && section !== 'all') || !supabase) return undefined;
     let cancelled = false;
     (async () => {
       try {
-        const tickets = await loadFeedbackHistory(supabase);
+        const tickets = await loadFeedbackHistory(supabase, { admin, limit: admin ? 200 : 50 });
         if (cancelled) return;
         setHistory({ status: 'ready', tickets, error: '' });
         // A viewer already open keeps its place on the new links.
@@ -76,7 +98,7 @@ export default function FeedbackSupport({ recording }) {
           const ticket = current?.ticketID && tickets.find(item => item.id === current.ticketID);
           return ticket && historyPhotos(ticket).length === current.photos.length ? { ...current, photos: historyPhotos(ticket) } : current;
         });
-        if (!tickets.some(ticket => feedbackHasUnread(ticket))) return;
+        if (!tickets.some(ticket => (!admin || ticket.owner_id === me) && feedbackHasUnread(ticket))) return;
         const saved = await markFeedbackSeen(supabase);
         if (cancelled) return;
         if (saved) setHistory(current => ({ ...current, tickets: feedbackMarkedSeen(current.tickets) }));
@@ -86,7 +108,7 @@ export default function FeedbackSupport({ recording }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [section, refresh]);
+  }, [section, refresh, admin, me]);
 
   const viewerOpen = Boolean(viewer);
 
@@ -108,7 +130,7 @@ export default function FeedbackSupport({ recording }) {
     setSection(id);
     setError('');
     // Status changes belong in the handler; the loader effect only writes after its await.
-    if (id === 'mine' && section !== 'mine') {
+    if ((id === 'mine' || id === 'all') && section !== id) {
       setHistory(current => ({ ...current, status: current.tickets.length ? 'refreshing' : 'loading', error: '' }));
     }
   }
@@ -236,6 +258,44 @@ export default function FeedbackSupport({ recording }) {
   }
 
 
+  async function adminAct(ticket, work, notice) {
+    setAdminBusy(ticket.id);
+    setAdminNotice('');
+    try {
+      const outcome = await work();
+      setAdminNotice(typeof notice === 'function' ? notice(outcome) : notice);
+      if (work.reply) setReply('');
+      reloadHistory();
+    } catch (caught) {
+      setAdminNotice(caught.message || 'That change could not be saved. Please retry.');
+    } finally {
+      setAdminBusy('');
+    }
+  }
+  function adminReply(ticket, event) {
+    event.preventDefault();
+    const body = reply.trim();
+    if (!body) return;
+    const work = () => adminReplyFeedback(supabase, ticket.id, body);
+    work.reply = true;
+    void adminAct(ticket, work, 'Reply sent.');
+  }
+  function adminStatus(ticket, status) {
+    // Closing deletes the ticket's photos and reports; the text and conversation stay.
+    const files = (ticket.attachments || []).length + (ticket.reports || []).length;
+    if (status === 'closed' && files && !window.confirm(`Close ${feedbackReference(ticket)}? Its ${files} photos and reports will be deleted.`)) return;
+    void adminAct(ticket, () => adminSetFeedbackStatus(supabase, ticket.id, status), outcome =>
+      `Status changed to ${feedbackStatus(status).label}.${outcome?.removed ? ` ${outcome.removed} files deleted.` : ''}${outcome?.filesLeft ? ` ${outcome.filesLeft} files could not be deleted yet.` : ''}`);
+  }
+  function adminHide(ticket, hidden) {
+    void adminAct(ticket, () => adminSetFeedbackHidden(supabase, ticket.id, hidden), hidden ? 'Hidden from the sender.' : 'Visible to the sender again.');
+  }
+
+  const sections = admin ? [SECTIONS[0], SECTIONS[1], ADMIN_SECTION, SECTIONS[2]] : SECTIONS;
+  // A non-admin only ever receives their own tickets; an admin receives everyone's.
+  const mineTickets = history.tickets.filter(ticket => (!admin || ticket.owner_id === me) && !ticket.deleted_at);
+  const filter = ADMIN_FILTERS.find(item => item.id === adminFilter) || ADMIN_FILTERS[0];
+  const shownTickets = section === 'all' ? history.tickets.filter(filter.match) : mineTickets;
   const showReceipt = Boolean(result);
   return <>
     <p className="eyebrow">WE&apos;RE LISTENING</p>
@@ -243,7 +303,7 @@ export default function FeedbackSupport({ recording }) {
     <p className="muted feedback-intro">Tell us what broke, what would help, or ask a question. Your message goes to the small letm3go team — never to other members or people you share with.</p>
 
     <div className="feedback-sections" role="group" aria-label="Feedback sections">
-      {SECTIONS.map(item => <button key={item.id} type="button" className={section === item.id ? 'selected' : ''} aria-pressed={section === item.id} onClick={() => showSection(item.id)}>{item.label}{item.id === 'mine' && history.tickets.some(feedbackHasUnread) && <span className="feedback-dot" aria-label="Unread reply" />}</button>)}
+      {sections.map(item => <button key={item.id} type="button" className={section === item.id ? 'selected' : ''} aria-pressed={section === item.id} onClick={() => showSection(item.id)}>{item.label}{item.id === 'mine' && mineTickets.some(feedbackHasUnread) && <span className="feedback-dot" aria-label="Unread reply" />}</button>)}
     </div>
 
     {section === 'send' && (showReceipt ? <div className="feedback-receipt" role="status">
@@ -335,27 +395,34 @@ export default function FeedbackSupport({ recording }) {
     </form>)}
 
 
-    {section === 'mine' && <section className="feedback-history" aria-label="My feedback">
+    {(section === 'mine' || section === 'all') && <section className="feedback-history" aria-label={section === 'all' ? 'All feedback' : 'My feedback'}>
       <div className="feedback-history-head">
-        <div><h3>Your conversations</h3><p className="muted small-copy">Replies from the letm3go team appear here.</p></div>
+        {section === 'all' ? <div><h3>All feedback</h3><p className="muted small-copy">Every account&apos;s feedback. Only admins see this.</p></div>
+          : <div><h3>Your conversations</h3><p className="muted small-copy">Replies from the letm3go team appear here.</p></div>}
         <button type="button" className="text-button" disabled={history.status === 'loading' || history.status === 'refreshing'} onClick={reloadHistory}>Refresh</button>
       </div>
       {!supabase && <p className="notice" role="status">Feedback history needs a connection to your account.</p>}
       {supabase && history.status === 'loading' && <p className="feedback-loading" role="status"><LoaderCircle className="spin" size={17} /> Loading your feedback…</p>}
       {history.status === 'error' && <div className="error" role="alert"><p>{history.error}</p><button type="button" className="secondary" onClick={reloadHistory}>Try again</button></div>}
-      {history.status === 'ready' && history.tickets.length === 0 && <div className="feedback-empty">
+      {section === 'all' && <div className="feedback-sections" role="group" aria-label="Filter feedback">
+        {ADMIN_FILTERS.map(item => <button key={item.id} type="button" className={adminFilter === item.id ? 'selected' : ''} aria-pressed={adminFilter === item.id} onClick={() => setAdminFilter(item.id)}>{item.label} ({history.tickets.filter(item.match).length})</button>)}
+      </div>}
+      {section === 'all' && adminNotice && <p role="status" className="notice">{adminNotice}</p>}
+      {section === 'all' && history.status === 'ready' && shownTickets.length === 0 && <p className="muted">No feedback here.</p>}
+      {section === 'mine' && history.status === 'ready' && shownTickets.length === 0 && <div className="feedback-empty">
         <MessageCircle size={26} aria-hidden="true" />
         <h3>Nothing here yet</h3>
         <p className="muted">When you send feedback, you can follow it here — including any reply from us.</p>
         <button type="button" className="secondary" onClick={() => setSection('send')}>Send feedback</button>
       </div>}
-      {history.tickets.map(ticket => {
+      {shownTickets.map(ticket => {
         const status = feedbackStatus(ticket.status);
+        const adminView = section === 'all';
         const open = openTicket === ticket.id;
         const unread = feedbackHasUnread(ticket) || ticket.freshReply;
         return <article key={ticket.id} className={`feedback-ticket${open ? ' is-open' : ''}`}>
           <button type="button" className="feedback-ticket-head" aria-expanded={open} onClick={() => { setOpenTicket(open ? '' : ticket.id); setReply(''); setReplyError(''); clearFreshReply(ticket.id); }}>
-            <span className="feedback-ticket-title"><strong>{feedbackHeadline(ticket)}</strong><small>{feedbackCategory(ticket.category).label} · {feedbackDate(ticket.created_at)}</small></span>
+            <span className="feedback-ticket-title"><strong>{feedbackHeadline(ticket)}</strong><small>{feedbackReference(ticket)} · {adminView ? `${ticket.author || 'Unknown'} · ` : ''}{feedbackCategory(ticket.category).label} · {feedbackDate(ticket.created_at)}</small></span>
             {unread && <span className="feedback-unread">New reply</span>}
             <span className={`feedback-status ${status.tone}`}>{status.label}</span>
             <ChevronDown size={17} className={open ? 'open' : ''} aria-hidden="true" />
@@ -370,14 +437,30 @@ export default function FeedbackSupport({ recording }) {
             {ticket.attachments.some(photo => photo.url) && <div className="feedback-history-photos">
               {ticket.attachments.filter(photo => photo.url).map((photo, index) => <button key={photo.id} type="button" onClick={() => openHistoryPhoto(ticket, index)} aria-label={`View attachment ${index + 1}`}><img src={photo.url} alt={`Attachment ${index + 1}`} onError={refreshPhotoLinks} /></button>)}
             </div>}
+            {(ticket.reports || []).length > 0 && <ul className="feedback-reports" aria-label="Attached reports">
+              {ticket.reports.map(item => <li key={item.id}><strong>{REPORT_KINDS[item.kind] || 'Report'}</strong> · {kilobytes(item.byte_size)}{item.url && <> · <a href={item.url} target="_blank" rel="noopener noreferrer">Open</a></>}</li>)}
+            </ul>}
+            {ticket.files_removed_at && <p className="muted small-copy">Photos and reports were deleted when this feedback was closed.</p>}
             {ticket.messages.length > 0 && <ul className="feedback-thread" aria-label="Conversation">
               {ticket.messages.map(message => <li key={message.id} className={message.is_staff ? 'staff' : 'owner'}>
-                <small>{message.is_staff ? 'letm3go support' : 'You'} · {feedbackDate(message.created_at, { withTime: true })}</small>
+                <small>{message.is_staff ? 'letm3go support' : adminView ? ticket.author || 'Sender' : 'You'} · {feedbackDate(message.created_at, { withTime: true })}</small>
                 <p>{message.body}</p>
               </li>)}
             </ul>}
-            {ticket.messages.length === 0 && ticket.status !== 'closed' && <p className="muted small-copy">No replies yet. We read every report.</p>}
-            {ticket.status === 'closed' ? <p className="muted small-copy">This conversation is closed. Send new feedback if you need anything else.</p> : <form className="feedback-reply" onSubmit={event => void sendReply(ticket, event)}>
+            {!adminView && ticket.messages.length === 0 && ticket.status !== 'closed' && <p className="muted small-copy">No replies yet. We read every report.</p>}
+            {adminView ? <div className="feedback-admin">
+              <form className="feedback-reply" onSubmit={event => adminReply(ticket, event)}>
+                <label htmlFor={`feedback-admin-reply-${ticket.id}`}>Reply as letm3go support
+                  <textarea id={`feedback-admin-reply-${ticket.id}`} rows={2} maxLength={4000} value={reply} onChange={event => setReply(event.target.value)} disabled={adminBusy === ticket.id} />
+                </label>
+                <button type="submit" className="secondary" disabled={adminBusy === ticket.id || !reply.trim()}>Send reply</button>
+              </form>
+              <div className="feedback-admin-actions" role="group" aria-label="Change status">
+                {['open', 'in_review', 'resolved'].filter(value => value !== ticket.status).map(value => <button key={value} type="button" className="secondary" disabled={adminBusy === ticket.id} onClick={() => adminStatus(ticket, value)}>Mark {feedbackStatus(value).label.toLowerCase()}</button>)}
+                {ticket.status !== 'closed' && <button type="button" className="secondary" disabled={adminBusy === ticket.id} onClick={() => adminStatus(ticket, 'closed')}>Close (deletes photos and reports)</button>}
+                <button type="button" className="text-button" disabled={adminBusy === ticket.id} onClick={() => adminHide(ticket, !ticket.deleted_at)}>{ticket.deleted_at ? 'Unhide' : 'Hide from sender'}</button>
+              </div>
+            </div> : ticket.status === 'closed' ? <p className="muted small-copy">This conversation is closed. Send new feedback if you need anything else.</p> : <form className="feedback-reply" onSubmit={event => void sendReply(ticket, event)}>
               <label htmlFor={`feedback-reply-${ticket.id}`}>Reply <span className="muted">(optional)</span>
                 <textarea id={`feedback-reply-${ticket.id}`} rows={2} maxLength={4000} value={reply} onChange={event => setReply(event.target.value)} disabled={replyBusy === ticket.id} />
               </label>

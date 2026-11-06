@@ -31,7 +31,8 @@ function nativeLookup(trip,{stop,route}){
   return structuredClone(route);
  };
 }
-async function enrich(trip,responses,serialized=JSON.stringify(emptyGrouping(OWNER)),calls=3){
+// One save for the whole cycle: lookups are batched (useJourneyGrouping).
+async function enrich(trip,responses,serialized=JSON.stringify({...emptyGrouping(OWNER),enrichFrom:0}),calls=1){
  mock.lookup.mockImplementation(nativeLookup(trip,responses));
  const savePreferences=vi.fn().mockResolvedValue();
  renderHook(()=>useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],serialized,savePreferences}));
@@ -97,21 +98,19 @@ describe('automatic pipeline',()=>{
   expect(screen.getByRole('button',{name:'Hide tag Warilla Grove'})).toBeTruthy();
  },15000);
 
- it('re-queries a stop cached by the previous search once, then never again',async()=>{
-  const trip=warillaGroveRecording(),old=emptyGrouping(OWNER),now=Date.now();
+ it('an activity looked up by an earlier build is historical: its answers stand and nothing is re-queried',async()=>{
+  const trip=warillaGroveRecording(),old={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();
   for(const [key,record] of [[placeKey(PARKED),{...live.stopMerged,stopLookup:true}],[placeKey(trip.points[0]),savedPlace],[placeKey(trip.points[143]),live.routeMerged]])
-   old.places[key]={...record,lookupVersion:2,lookedUpAt:now,expiresAt:now+86400000};
+   old.places[key]={...record,lookupVersion:2,lookedUpAt:now,expiresAt:now-1};
   const meta=await enrich(trip,{stop:live.stopPatched,route:live.routePatched},JSON.stringify(old),1);
-  expect(mock.lookup.mock.calls).toEqual([[trip.id,STOP_INDEX,null,true]]);
-  expect(project(trip,meta).title).toBe('Home → Warilla Grove → Home');
-  mock.lookup.mockClear();cleanup();
-  renderHook(()=>useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],serialized:JSON.stringify(meta),savePreferences:vi.fn()}));
-  await new Promise(r=>setTimeout(r,300));
   expect(mock.lookup).not.toHaveBeenCalled();
+  expect(meta.enriched).toEqual({[trip.id]:expect.any(Number)});
+  // The earlier answer had no centre; the person can still add one by hand.
+  expect(project(trip,meta).title).toBe('Home → Home · stopped 11 min');
  },15000);
 
  it('does not retry a failed stop upgrade before its retry time',async()=>{
-  const trip=warillaGroveRecording(),old=emptyGrouping(OWNER),now=Date.now();
+  const trip=warillaGroveRecording(),old={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();
   for(const [key,record] of [[placeKey(PARKED),{...live.stopMerged,stopLookup:true,retryAfter:now+300000}],[placeKey(trip.points[0]),savedPlace],[placeKey(trip.points[143]),live.routeMerged]])
    old.places[key]={lookupVersion:2,expiresAt:now+86400000,...record};
   mock.lookup.mockImplementation(nativeLookup(trip,{stop:live.stopPatched,route:live.routePatched}));
@@ -119,16 +118,18 @@ describe('automatic pipeline',()=>{
   await new Promise(r=>setTimeout(r,300));
   expect(mock.lookup).not.toHaveBeenCalled();
  });
- it('keeps existing data and schedules a retry when the provider is offline',async()=>{
-  const trip=warillaGroveRecording(),old=emptyGrouping(OWNER);
-  old.places[placeKey(PARKED)]={...live.stopMerged,stopLookup:true,lookupVersion:2,expiresAt:Date.now()+86400000};
+ it('offline at save time: the stop is retried later and the activity is done only once it is answered',async()=>{
+  const trip=warillaGroveRecording(),old={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();
+  for(const [key,record] of [[placeKey(trip.points[0]),savedPlace],[placeKey(trip.points[143]),live.routeMerged]])old.places[key]={...record,lookupVersion:2,lookedUpAt:now};
   mock.lookup.mockRejectedValue(new Error('Place recognition is unavailable offline. It will retry later.'));
   const savePreferences=vi.fn().mockResolvedValue();
   renderHook(()=>useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],serialized:JSON.stringify(old),savePreferences}));
   await waitFor(()=>expect(savePreferences).toHaveBeenCalled(),{timeout:5000});
-  const saved=JSON.parse(savePreferences.mock.calls[0][0].journeyGrouping).places[placeKey(PARKED)];
-  expect(saved.candidates).toEqual(live.stopMerged.candidates);
-  expect(saved.retryAfter).toBeGreaterThan(Date.now());
+  const saved=JSON.parse(savePreferences.mock.calls[0][0].journeyGrouping);
+  expect(mock.lookup).toHaveBeenCalledTimes(1);
+  expect(saved.places[placeKey(PARKED)]).toMatchObject({attempts:1,retryAfter:expect.any(Number)});
+  expect(saved.places[placeKey(trip.points[143])]).toEqual(old.places[placeKey(trip.points[143])]);
+  expect(saved.enriched).toEqual({});
  },10000);
 });
 

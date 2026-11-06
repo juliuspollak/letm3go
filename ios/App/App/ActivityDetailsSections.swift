@@ -490,7 +490,21 @@ struct ActivityStopsSection: View {
 
 struct ActivityDiagnosticsSection: View {
     @ObservedObject var model: ActivityDetailsViewModel
-    @State private var copied = false
+    // The report is sent as feedback (with the ticket, for the sender and admins
+    // only), never copied. The IDs make a retry return the same ticket and file.
+    @State private var note = ""
+    @State private var sending = false
+    @State private var sent: String?
+    @State private var sendError: String?
+    @State private var ids = (token: UUID().uuidString.lowercased(), report: UUID().uuidString.lowercased())
+    private func send(_ report: String) async {
+        sending = true; sendError = nil
+        do {
+            let result = try await model.request("sendRecordingReport", args: ["note": note, "report": report, "token": ids.token, "reportID": ids.report], timeout: 60)
+            sent = result["reference"] as? String ?? ""
+        } catch { sendError = error.localizedDescription }
+        sending = false
+    }
     var body: some View {
         if let d = model.presentation.diagnostics {
             DisclosureGroup("Recording diagnostics") {
@@ -502,8 +516,14 @@ struct ActivityDiagnosticsSection: View {
                         ForEach(d.warnings, id: \.self) { Text("• \($0)").font(.footnote) }
                     }
                     ForEach(Array(d.events.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundColor(DetailStyle.muted) }
-                    Button("Copy recording report") { UIPasteboard.general.string = d.report; copied = true }.buttonStyle(DetailButtonStyle())
-                    if copied { DetailFootnote(text: "Recording report copied.") }
+                    if let sent {
+                        DetailFootnote(text: "Sent as feedback \(sent). Quote this number when you ask about it; replies appear under Feedback → My feedback.")
+                    } else {
+                        TextField("What went wrong? (optional)", text: $note).font(.footnote).textFieldStyle(.roundedBorder).disabled(sending)
+                        Button(sending ? "Sending…" : "Send recording report as feedback") { Task { await send(d.report) } }
+                            .buttonStyle(DetailButtonStyle()).disabled(sending)
+                        if let sendError { DetailFootnote(text: sendError) }
+                    }
                     DetailFootnote(text: "A trip may be incomplete if iOS wakes the app after departure. No app can recover coordinates that iOS never provided.")
                 }.padding(.top, 6)
             }

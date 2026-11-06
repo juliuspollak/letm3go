@@ -1,3 +1,4 @@
+import SendReportFeedback from './SendReportFeedback.jsx';
 import {useState} from 'react';
 import {formatTrackingReport,trackingFindings} from '../lib/trackingReport.js';
 const localInput=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
@@ -21,6 +22,6 @@ export default function TrackingReport({recording}){
  {state.recorderDiagnostics?.error&&<p role="alert" className="error">{state.recorderDiagnostics.error}</p>}
  <form onSubmit={prepare}><label>Expected activity<select value={activity} onChange={e=>setActivity(e.target.value)}>{['Driving','Walking','Running','Cycling','Unknown'].map(value=><option key={value}>{value}</option>)}</select></label><label>Activity started<input type="datetime-local" required value={start} onChange={e=>setStart(e.target.value)}/></label><label>Activity ended<input type="datetime-local" required value={end} onChange={e=>setEnd(e.target.value)}/></label><p className="muted small-copy">Times use this device’s local time zone.</p><button type="submit" className="secondary full" disabled={!available||busy||pending}>{pending?'Preparing report…':'Prepare missed activity report'}</button></form>
  {message&&<p role="status">{message}</p>}
- {report&&<><h3>Evidence for this time window</h3><ul>{trackingFindings(report).map(finding=><li key={finding}>{finding}</li>)}</ul><p className="muted small-copy">Copy this report into your bug report, along with when you actually started moving. A gap in the log cannot identify its cause by itself.</p><button type="button" className="secondary full" onClick={async()=>{try{await navigator.clipboard.writeText(formatTrackingReport(report));setMessage('Tracking report copied.');}catch{setMessage('Copy is unavailable. Select and copy the report text below.');}}}>Copy tracking report</button><details><summary>Report text and event timeline</summary><textarea aria-label="Tracking report text" readOnly rows={14} value={formatTrackingReport(report)}/></details></>}
+ {report&&<><h3>Evidence for this time window</h3><ul>{trackingFindings(report).map(finding=><li key={finding}>{finding}</li>)}</ul><p className="muted small-copy">Send this report as feedback, and say when you actually started moving. A gap in the log cannot identify its cause by itself.</p><SendReportFeedback kind="tracking" title={`Missed ${activity.toLowerCase()} · ${start}`} getReport={async()=>({text:formatTrackingReport(report)})}/></>}
  </section>;
 }

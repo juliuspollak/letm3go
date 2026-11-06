@@ -72,12 +72,12 @@ export function chooseRoute(routes, gap) {
 // gap to the first fix after it, so it meets the recorded route where it ends.
 export function roadRecord(routes, gap, now = Date.now()) {
  const chosen = chooseRoute(routes, gap);
- if (!chosen) return {version: ROAD_VERSION, status: routes?.length ? 'implausible' : 'none', lookedUpAt: now, expiresAt: now + 14 * DAY};
+ if (!chosen) return {version: ROAD_VERSION, status: routes?.length ? 'implausible' : 'none', lookedUpAt: now};
  const line = [[gap.from.latitude, gap.from.longitude], ...chosen.points, [gap.to.latitude, gap.to.longitude]]
   .filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
  return {version: ROAD_VERSION, status: 'route', distanceMeters: Math.round(chosen.distanceMeters),
   expectedSeconds: Number.isFinite(chosen.expectedSeconds) ? Math.round(chosen.expectedSeconds) : null,
-  line: encodeLine(simplify(line, 60)), lookedUpAt: now, expiresAt: now + 180 * DAY};
+  line: encodeLine(simplify(line, 60)), lookedUpAt: now};
 }
 export function failedRecord(previous, now = Date.now()) {
  // 10 min, doubling, at most daily: a gap Apple Maps keeps failing on is not
@@ -85,13 +85,13 @@ export function failedRecord(previous, now = Date.now()) {
  const failures = (previous?.failures || 0) + 1;
  // Apple Maps answers an unroutable point (sea, private land) with a server
  // error, not "no route": after repeated failures treat it as no road for now.
- if (failures >= 6 && previous?.status !== 'route') return {version: ROAD_VERSION, status: 'none', failures, lookedUpAt: now, expiresAt: now + 14 * DAY};
+ if (failures >= 6) {const {retryAfter: _drop, ...kept} = previous || {}; void _drop; return kept.status === 'route' ? {...kept, failures} : {version: ROAD_VERSION, status: 'none', failures, lookedUpAt: now};}
  return {...(previous || {}), version: previous?.version ?? ROAD_VERSION, retryAfter: now + Math.min(DAY, 10 * 60000 * 2 ** (failures - 1)), failures};
 }
+// Final once answered, like place lookups: only failures are retried.
 export function roadLookupDue(record, now = Date.now()) {
  if (!record) return true;
- if (record.retryAfter) return record.retryAfter <= now;
- return record.version !== ROAD_VERSION || !(record.expiresAt > now);
+ return Number.isFinite(record.retryAfter) && record.retryAfter <= now;
 }
 
 // Recorded distance plus, for each gap, the road estimate or (lower confidence)
@@ -106,7 +106,10 @@ export function estimatedDistance(trip, roads = {}) {
   const road = record?.status === 'route' && record.version === ROAD_VERSION && Number.isFinite(record.distanceMeters) && typeof record.line === 'string';
   if (road) { roadMeters += record.distanceMeters; roadGaps++; lines.push(decodeLine(record.line)); }
   else straightMeters += gap.straightMeters;
-  return {key: gapKey(trip.id, gap), seconds: gap.seconds, straightMeters: Math.round(gap.straightMeters), roadMeters: road ? record.distanceMeters : null, source: road ? 'road' : 'straight'};
+  // Why there is or is not a road line, for the recording report.
+  const status = road ? 'road' : !record ? 'notLookedUp' : record.retryAfter ? 'retrying' : record.status === 'implausible' ? 'implausible' : record.failures ? 'failed' : 'none';
+  return {key: gapKey(trip.id, gap), seconds: gap.seconds, straightMeters: Math.round(gap.straightMeters), roadMeters: road ? record.distanceMeters : null, source: road ? 'road' : 'straight',
+   status, failures: record?.failures || 0};
  });
  return {recordedMeters, estimatedMeters: Math.round(recordedMeters + roadMeters + straightMeters), roadMeters: Math.round(roadMeters), straightMeters: Math.round(straightMeters),
   gapCount: gaps.length, roadGaps, unobservedSeconds: Math.round(gaps.reduce((n, g) => n + g.seconds, 0)),
@@ -131,5 +134,5 @@ export function estimateExplanation(estimate) {
  if (estimate.roadGaps) parts.push(`${km(estimate.roadMeters)} estimated along roads for ${estimate.roadGaps} GPS gap${estimate.roadGaps === 1 ? '' : 's'}`);
  if (straightGaps) parts.push(`${km(estimate.straightMeters)} as a straight line for ${straightGaps} gap${straightGaps === 1 ? '' : 's'} (lower confidence: no road route yet)`);
  return `~${km(estimate.estimatedMeters)} estimated distance: ${parts.join(' + ')}. GPS was missing for ${minutes} min. ` +
-  `On the map, solid blue is recorded GPS${estimate.roadGaps ? ' and orange dashed is an estimated road route, not a recording' : ''}.`;
+  `On the map, solid blue is recorded GPS${estimate.roadGaps ? ' and solid orange is an estimated road route, not a recording' : ''}.`;
 }

@@ -17,13 +17,13 @@ private let gapColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UI
 // It is never rendered like an observed route, so a solid line never implies GPS
 // was recorded where it was not.
 private final class GapPolyline: MKPolyline {}
-// A road route estimated for a GPS gap (never recorded): orange and dashed, so it
-// cannot be mistaken for the solid recorded route or for a straight gap marker.
+// A road route estimated for a GPS gap (never recorded): a solid line drawn on the
+// road in orange, so its colour alone tells it apart from the blue recorded route.
 private let estimatedColor = UIColor.systemOrange
 private final class EstimatedPolyline: MKPolyline {}
 private func estimatedRenderer(_ line: EstimatedPolyline) -> MKPolylineRenderer {
     let renderer = MKPolylineRenderer(polyline: line)
-    renderer.strokeColor = estimatedColor; renderer.lineWidth = 4; renderer.lineCap = .round; renderer.lineJoin = .round; renderer.lineDashPattern = [8, 7]
+    renderer.strokeColor = estimatedColor; renderer.lineWidth = 4; renderer.lineCap = .round; renderer.lineJoin = .round
     return renderer
 }
 // A route drawn in its own colour: named segments, the section being chosen in
@@ -1665,7 +1665,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     for line in content.estimated {
                         let path=UIBezierPath();path.move(to:snapshot.point(for:line[0]));for c in line.dropFirst(){path.addLine(to:snapshot.point(for:c))}
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
-                        ctx.saveGState();ctx.setLineDash(phase:0,lengths:[8,7]);estimatedColor.setStroke();path.lineWidth=3.5;path.stroke();ctx.restoreGState()
+                        estimatedColor.setStroke();path.lineWidth=3.5;path.stroke()
                     }
                     // The place radius is rendered on previews as well as the fullscreen picker.
                     for pin in content.pins {

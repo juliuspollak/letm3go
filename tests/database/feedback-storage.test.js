@@ -70,7 +70,11 @@ it('hides photos from another account and from one pending deletion', async () =
 it('can be applied again', async () => {
   await db.exec(await readFile('supabase/migrations/20261110000000_feedback_storage_hardening.sql', 'utf8'));
   await db.exec(await readFile('supabase/migrations/20261111000000_feedback_upload_limits.sql', 'utf8'));
-  expect((await db.query(`select count(*)::int as n from pg_policies where schemaname='storage' and policyname like 'feedback attachments%'`)).rows[0].n).toBe(4);
+  // Repeating those by hand restores their photo-only upload check, so the later
+  // reports migration is repeated after them, in order.
+  await db.exec(await readFile('supabase/migrations/20261116000000_feedback_admin_and_reports.sql', 'utf8'));
+  // Owner read/insert/update/delete, plus admin read and admin delete.
+  expect((await db.query(`select count(*)::int as n from pg_policies where schemaname='storage' and policyname like 'feedback attachments%'`)).rows[0].n).toBe(6);
 });
 
 it('agrees on one size limit across the database and the bucket', async () => {
