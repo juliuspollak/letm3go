@@ -24,7 +24,7 @@ export function recognisedStopVenue(record, point, durationSeconds) {
   const distance = metres(point, candidate);
   if (!Number.isFinite(distance) || distance > STOP_VENUE_COMPETING_METRES) continue;
   const key = candidate.name.trim().toLocaleLowerCase();
-  if (!unique.has(key) || unique.get(key).distance < distance)
+  if (!unique.has(key) || unique.get(key).distance > distance)
    unique.set(key, {name:candidate.name.trim(), distance, placeID:candidate.placeID});
  }
  const centres = [...unique.values()].sort((a,b) => a.distance-b.distance);
