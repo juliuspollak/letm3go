@@ -38,8 +38,23 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
   // Results are saved in batches, not once per lookup: each save re-renders the
   // app and rebuilds every journey. A save from a changed account is refused.
   const pending={places:{},roads:{},enriched:{}};let held=0,since=0,marked=false;
-  const flush=async()=>{if(!held&&!marked)return;const batch={...pending};pending.places={};pending.roads={};pending.enriched={};held=0;marked=false;
-   await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched}})).catch(()=>{});};
+  // Retain successful provider answers until preference storage confirms the save.
+  const flush=async()=>{
+   if(!held&&!marked)return true;
+   const batch={places:{...pending.places},roads:{...pending.roads},enriched:{...pending.enriched}};
+   try{
+    await persist(meta=>({...meta,places:{...meta.places,...batch.places},roads:{...meta.roads,...batch.roads},enriched:{...meta.enriched,...batch.enriched}}));
+    for(const kind of ['places','roads','enriched'])for(const [key,value] of Object.entries(batch[kind])){
+     if(pending[kind][key]===value)delete pending[kind][key];
+    }
+    held=Object.keys(pending.places).length+Object.keys(pending.roads).length;
+    marked=Object.keys(pending.enriched).length>0;
+    return true;
+   }catch(error){
+    console.warn('Journey enrichment save failed; results retained for retry',error);
+    return false;
+   }
+  };
   // Only provider answers count toward a batch; a done marker rides along with them.
   const hold=async(kind,key,value)=>{pending[kind][key]=value;if(kind==='enriched'){marked=true;return;}if(!held++)since=Date.now();if(held>=8||Date.now()-since>=15000)await flush();};
   const place=key=>pending.places[key]??current.current.places[key];
@@ -81,7 +96,11 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
      if(!alive)return;
      const key=gapKey(t.id,gap),record=road(key);
      if(record&&!roadLookupDue(record)){if(record.retryAfter){waiting=true;next=Math.min(next,record.retryAfter);}continue;}
-     if(!record&&JSON.stringify(current.current.roads||{}).length>ROAD_CACHE_BYTES)continue;
+     if(!record&&JSON.stringify({...current.current.roads,...pending.roads}).length>ROAD_CACHE_BYTES){
+      // Explicit terminal fallback rather than falsely claiming a road lookup.
+      await hold('roads',key,{version:1,status:'capacityExceeded',lookedUpAt:Date.now()});
+      continue;
+     }
      // At most 20 directions requests a minute; the rest wait for the next run.
      if(roadLookups>=20){waiting=true;next=Math.min(next,Date.now()+60000);continue;}
      roadLookups++;
@@ -94,8 +113,8 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
     }
     if(!waiting)await hold('enriched',t.id,Date.now());
    }
-   if(alive)await flush();
-   // Nothing runs again unless something is still waiting for a retry.
+   if(alive&&!await flush())next=Math.min(next,Date.now()+60000);
+   // Retry only unfinished save-time work, never arbitrary historical journeys.
    if(alive&&Number.isFinite(next))timer=setTimeout(()=>void enrich(),Math.max(60000,next-Date.now()));
   }
   // A restart for changed recordings keeps what this run already found.
