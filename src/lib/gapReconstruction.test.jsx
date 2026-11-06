@@ -5,7 +5,7 @@ import {renderHook,waitFor,cleanup,render,screen} from '@testing-library/react';
 import {describe,it,expect,vi,beforeEach,afterEach} from 'vitest';
 const mock=vi.hoisted(()=>({lookup:vi.fn(),road:vi.fn()}));
 vi.mock('./recorder.js',async()=>({...(await vi.importActual('./recorder.js')),recorderAvailable:()=>true,recorder:{recogniseTripPlace:mock.lookup,roadRoute:mock.road}}));
-import {routeGaps,gapKey,plausibleRoute,chooseRoute,roadRecord,failedRecord,roadLookupDue,estimateExplanation,encodeLine,decodeLine,ROAD_VERSION} from './gapReconstruction.js';
+import {routeGaps,gapKey,plausibleRoute,chooseRoute,roadRecord,failedRecord,roadLookupDue,estimateExplanation,estimatedDistance,distanceSnapshot,savedDistance,encodeLine,decodeLine,ROAD_VERSION} from './gapReconstruction.js';
 import {buildJourneys,emptyGrouping,placeKey} from './journeyGrouping.js';
 import {useJourneyGrouping} from './useJourneyGrouping.js';
 import {recordedJourney} from './recorder.js';
@@ -228,4 +228,21 @@ it('the recording report shows the lookup as done once it is, without a stale ca
  expect(buildJourneys([trip],{owner:OWNER,metadata:meta,projectionCache:cache}).journeys[0].distanceEstimate.lookup).toBe('pending');
  const done={...meta,enriched:{[trip.id]:1}};
  expect(buildJourneys([trip],{owner:OWNER,metadata:done,projectionCache:cache}).journeys[0].distanceEstimate.lookup).toBe('done');
+});
+
+it('uses a durable distance snapshot without scanning saved GPS points again',()=>{
+ const trip=lowPowerDrive(),roads=roadsFor(trip);
+ const summary=distanceSnapshot(trip,estimatedDistance(trip,roads));
+ const meta={...emptyGrouping(OWNER),roads,distanceSummaries:{[trip.id]:summary}};
+ // A Proxy proves the projection does not iterate the GPS fixes when the
+ // persisted activity fingerprint matches.
+ const guarded={...trip,points:new Proxy(trip.points,{get(target,key){
+  if(key===Symbol.iterator||key==='map')throw new Error('rescan');
+  return Reflect.get(target,key);
+ }})};
+ const estimate=savedDistance(guarded,meta);
+ expect(estimate.estimatedMeters).toBeGreaterThan(59000);
+ expect(estimate.lines).toHaveLength(9);
+ expect(estimate.roadGaps).toBe(9);
+ expect(JSON.stringify(summary)).not.toContain('lines');
 });
