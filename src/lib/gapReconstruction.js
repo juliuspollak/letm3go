@@ -107,7 +107,7 @@ export function estimatedDistance(trip, roads = {}) {
   if (road) { roadMeters += record.distanceMeters; roadGaps++; lines.push(decodeLine(record.line)); }
   else straightMeters += gap.straightMeters;
   // Why there is or is not a road line, for the recording report.
-  const status = road ? 'road' : !record ? 'notLookedUp' : record.retryAfter ? 'retrying' : record.status === 'implausible' ? 'implausible' : record.failures ? 'failed' : 'none';
+  const status = road ? 'road' : !record ? 'notLookedUp' : record.status === 'capacityExceeded' ? 'capacityExceeded' : record.retryAfter ? 'retrying' : record.status === 'implausible' ? 'implausible' : record.failures ? 'failed' : 'none';
   return {key: gapKey(trip.id, gap), seconds: gap.seconds, straightMeters: Math.round(gap.straightMeters), roadMeters: road ? record.distanceMeters : null, source: road ? 'road' : 'straight',
    status, failures: record?.failures || 0};
  });
