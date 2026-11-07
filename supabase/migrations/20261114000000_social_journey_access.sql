@@ -56,15 +56,6 @@ begin
  return false;
 end $$;
 
-create or replace function public.prepare_social_journey(p_activity uuid)
-returns void language plpgsql security definer set search_path='' as $$
-begin
- if auth.uid() is null or not exists(select 1 from public.shared_journeys j where j.activity_id=p_activity and j.owner_id=auth.uid()) then
-  raise exception 'Only the owner can change journey sharing';
- end if;
- delete from public.social_journey_policies where activity_id=p_activity and owner_id=auth.uid();
-end $$;
-
 create or replace function public.configure_social_journey(
  p_activity uuid, p_mode text, p_recipients uuid[] default '{}'::uuid[])
 returns void
@@ -117,6 +108,28 @@ begin
  end if;
 end $$;
 
+-- One database transaction: a snapshot cannot become readable under stale
+-- recipients. A failed recipient check rolls the snapshot back automatically.
+create or replace function public.publish_social_journey(
+ p_activity uuid,p_revision integer,p_audience text,p_mode text,
+ p_recipients uuid[],p_snapshot jsonb)
+returns uuid
+language plpgsql security definer set search_path=''
+as $
+declare v_token uuid; v_current integer;
+begin
+ if auth.uid() is null then raise exception 'Sign in required'; end if;
+ if p_audience not in ('friends','household') or p_mode is null then raise exception 'Invalid social audience'; end if;
+ select revision into v_current from public.activities
+ where id=p_activity and owner_id=auth.uid() for update;
+ if not found or v_current<>p_revision then raise exception 'Activity revision changed'; end if;
+ -- Revalidation and publication occur under the same row lock.
+ -- Keep previous policy inaccessible until the full transaction commits.
+ select public.commit_shared_journey(p_activity,auth.uid(),p_revision,p_audience,p_snapshot) into v_token;
+ perform public.configure_social_journey(p_activity,p_mode,coalesce(p_recipients,'{}'::uuid[]));
+ return v_token;
+end $;
+
 create or replace function public.read_social_journey(p_activity uuid)
 returns jsonb
 language plpgsql security definer set search_path=''
@@ -158,13 +171,13 @@ as $$
 $$;
 
 revoke all on function public.can_view_social_journey(uuid) from public,anon,authenticated;
-revoke all on function public.prepare_social_journey(uuid) from public,anon,authenticated;
+revoke all on function public.publish_social_journey(uuid,integer,text,text,uuid[],jsonb) from public,anon,authenticated;
 revoke all on function public.configure_social_journey(uuid,text,uuid[]) from public,anon,authenticated;
 revoke all on function public.read_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.my_social_journey_feed() from public,anon,authenticated;
 revoke all on function public.my_social_publications() from public,anon,authenticated;
-grant execute on function public.prepare_social_journey(uuid) to authenticated;
-grant execute on function public.configure_social_journey(uuid,text,uuid[]) to authenticated;
+grant execute on function public.publish_social_journey(uuid,integer,text,text,uuid[],jsonb) to authenticated;
+-- configure_social_journey is callable only from the atomic publishing function.
 grant execute on function public.read_social_journey(uuid) to authenticated;
 grant execute on function public.my_social_journey_feed() to authenticated;
 grant execute on function public.my_social_publications() to authenticated;
