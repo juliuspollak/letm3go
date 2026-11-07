@@ -75,4 +75,5 @@ it('shares full snapshots only with current, selected friends and revokes atomic
  expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
  await as('authenticated',a,`select public.revoke_activity_publication('${id}')`);
  expect((await as('authenticated',a,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
+ expect(Number((await as('service_role','',`select count(*)::integer as total from public.social_journey_policies where activity_id='${id}'`)).rows[0].total)).toBe(0);
 },30000);
