@@ -27,7 +27,9 @@ export function mapPayload(journeys=[],currentPosition=null,homePresence=null,li
   const roads=(j.distanceEstimate?.lines||[]).map(line=>line.filter(valid)).filter(line=>line.length>1);
   estimated.push(...roads);
   const near=(a,b)=>gapMetres(a,b)<=25;
-  for(let i=1;i<segments.length;i++){
+  // Privacy redaction deliberately cuts the route. Never draw even a dashed
+  // straight-line connection across shared snapshot segments.
+  for(let i=1;!j.isShared&&i<segments.length;i++){
    const from=segments[i-1].at(-1),to=segments[i][0];
    if(from&&to&&!roads.some(line=>near(line[0],from)&&near(line.at(-1),to))){const distance=gapMetres(from,to);if(distance>0&&distance<=1000)gaps.push([from,to]);}
   }
