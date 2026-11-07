@@ -18,12 +18,12 @@ The button is a toggle, with `aria-pressed` and an active appearance.
   the place to publish and revoke your own shared activities.
 - This replaces the earlier proposal for All/Mine/Shared segmented controls.
 
-**Remaining shared-detail integration:** The shared row currently opens the
-existing secure published-journey viewer (`PublicJourney`). It does not yet
-render the **same native activity-detail presentation** as an owned recording.
-That requires a safe native shared read-only presentation model with no
-mutation callbacks; do not spoof activity ownership or call owner-only
-recording operations. This remains a merge requirement.
+**Shared-detail integration:** In-app recipients now open the existing native
+`ActivityDetailScreen` using a restricted saved snapshot. The existing Apple
+Maps/SwiftUI detail and photograph viewer render it read-only; the native and
+JavaScript mutation handlers refuse all owner-only writes. Browser public
+links use the existing JourneyMap renderer instead of the removed
+`PublicJourney` component.
 
 This is **not deployed** and is not ready to merge or release without the test
 matrix below. Existing live-location sharing and vehicle summary sharing are
@@ -41,8 +41,8 @@ separate and remain opt-in.
    includes only selected photo IDs; coordinates near the owner's saved
    Home/Work radius plus buffer are omitted from the shared snapshot.
 4. The Edge Function saves a reviewed snapshot, not a link to the owner's raw
-   recording. Private modes require a separate owner-authenticated policy
-   configuration. Readers use JWT-backed `read_social_journey` and never query
+   recording. Private modes commit the snapshot and recipient policy together
+   in one owner-authenticated database transaction. Readers use JWT-backed `read_social_journey` and never query
    `activities` or `media_assets` directly.
 5. Snapshot ACLs are an intersection of (a) the recipient set at publication
    time, and (b) current friendship or household membership. New friends or
@@ -55,7 +55,7 @@ separate and remain opt-in.
 
 ## Files
 
-- `supabase/migrations/20261114000000_social_journey_access.sql`: access
+- `supabase/migrations/20261118000000_social_journey_access.sql`: access
   policies, owner publication list, recipient feed, authenticated snapshot RPC.
 - `supabase/functions/journeys/index.ts`: public-only token reads,
   authenticated private route/photo reads and selected snapshot data.
