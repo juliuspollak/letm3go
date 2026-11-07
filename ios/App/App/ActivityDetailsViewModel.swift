@@ -94,7 +94,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     // The owner of the screen when a write starts; the result only applies to it.
     @discardableResult
     func perform(_ mutation: ActivityMutation, success: String? = nil, loadedUpdatedAt: Double?? = nil) async -> Bool {
-        guard !busy, !closed else { return false }
+        guard !busy, !closed, !presentation.header.readOnly else { return false }
         let id = presentation.activityID
         busy = true; errorMessage = ""
         defer { busy = false }
@@ -109,6 +109,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     }
     // Ask JavaScript. The reply is ignored once the activity has moved on.
     func request(_ op: String, args: [String: Any] = [:], timeout: TimeInterval = 25, progress: ((String) -> Void)? = nil) async throws -> [String: Any] {
+        guard !presentation.header.readOnly else { throw ActivityDetailsError.cancelled }
         let id = presentation.activityID
         let result = try await service.request(op, args: args, timeout: timeout, progress: progress)
         guard !closed, presentation.activityID == id else { throw ActivityDetailsError.cancelled }
@@ -127,13 +128,13 @@ final class ActivityDetailsViewModel: ObservableObject {
         photoFocus = PhotoFocus(id: photoID)
     }
     func addPhotos() {
-        guard !addingPhotos, !busy else { return }
+        guard !addingPhotos, !busy, !presentation.header.readOnly else { return }
         guard photosRemaining > 0 else { errorMessage = "Up to 50 photos per activity are supported."; return }
         addingPhotos = true
         onPickPhotos?()
     }
     func importPicked(_ results: [PHPickerResult]) {
-        guard !results.isEmpty else { addingPhotos = false; return }
+        guard !presentation.header.readOnly, !results.isEmpty else { addingPhotos = false; return }
         let id = presentation.activityID
         Task {
             defer { addingPhotos = false }
