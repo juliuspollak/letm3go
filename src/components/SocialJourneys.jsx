@@ -13,7 +13,7 @@ import PrivateImage from './PrivateImage.jsx';
 const idOf=item=>String(item?.id||'');
 const same=(a,b)=>idOf(a)===idOf(b);
 export default function SocialJourneys({activities=[],ownerID,receipts={},saveReceipts,onSetHome=null}) {
- const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false),[members,setMembers]=useState([]);
+ const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false);
  const [mine,setMine]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
  const [chosen,setChosen]=useState(null);
  const [household,setHousehold]=useState(false),[allFriends,setAllFriends]=useState(false),[selectedFriends,setSelectedFriends]=useState([]);
@@ -25,8 +25,6 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   ]);
   if(f.error||h.error||p.error){setError('Social journey sharing needs the new database migration and a connection.');return;}
   setFriends(f.data||[]);setHouseholdReady(Boolean(h.data?.[0]?.id));
-  if(h.data?.[0]?.id){const roster=await supabase.rpc('household_members');if(!roster.error)setMembers(roster.data||[]);}
-  else setMembers([]);
   setMine(p.data||[]);setError('');
  },[]);
  useEffect(()=>{
