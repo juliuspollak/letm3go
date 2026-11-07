@@ -1,5 +1,45 @@
 # Social journey sharing — draft feature (7 November 2026)
 
+## Product UX decision — Shared activities belong in Activities
+
+**Do not ship the current standalone SocialJourneys feed/PublicJourney detail
+as the final UX.** The canonical browsing surface is **Activities**, not a
+separate social screen. The existing TripsList, date navigation, activity
+filters, sort, map, and native activity-detail presentation should be reused.
+
+- Show personal and permitted shared activities together by default, with a
+  small **Shared** flag and owner name on shared rows.
+- Provide a lightweight segmented scope toggle **All / Mine / Shared**.
+  This scope is independent of the current date, activity type and search
+  filters; switching scopes should be instant, retain the current filters, and
+  not trigger expensive route or photo downloads.
+- Use the same TripsList rows and the existing detail presentation model.
+  A shared detail has the same map, distance/duration, permitted photographs,
+  description and start/end times, but explicitly no owner-only controls
+  (edit, tags, split/merge, archive/delete, equipment, privacy edits, GPS
+  diagnostics, or other mutations). Never implement 'read only' by hiding
+  buttons alone: block all native/JS mutation requests on shared records.
+- Do not reconstruct GPS when Activity is opened. Shared geometry comes
+  from the owner's published, redacted snapshot created at publish time;
+  the viewer must not query the owner's private activity.
+- A recipient may see only fields explicitly included in the published
+  projection. Under no circumstance populate private owner-only details
+  from a local/device record.
+- Cache metadata separately from routes/photos. Load the shared snapshot
+  only on detail open or when explicitly enabling the shared map layer.
+  Revocation or relationship loss must clear any visible cached route.
+- The current native detail plugin binds the presentation's ownerID to the
+  local recorder account. Reuse requires an explicitly vetted *shared*
+  read-only presentation path rather than spoofing the owner's ID or
+  bypassing the owner gate for mutable local records.
+- Keep Social for people, household membership, presence and the explicit
+  sharing action. The primary viewing experience belongs to Activities.
+
+**Current status:** This is a required refactor, not implemented by the
+original PR #22 UI changes. The existing standalone shared viewer is a
+temporary internal implementation only; do not merge it as final UX.
+
+
 This is **not deployed** and is not ready to merge or release without the test
 matrix below. Existing live-location sharing and vehicle summary sharing are
 separate and remain opt-in.
