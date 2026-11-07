@@ -13,7 +13,7 @@ import PublicJourney from './PublicJourney.jsx';
 const idOf=item=>String(item?.id||'');
 const same=(a,b)=>idOf(a)===idOf(b);
 export default function SocialJourneys({activities=[],ownerID,receipts={},saveReceipts}) {
- const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false);
+ const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false),[members,setMembers]=useState([]);
  const [feed,setFeed]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
  const [chosen,setChosen]=useState(null),[openID,setOpenID]=useState(null);
  const [household,setHousehold]=useState(false),[allFriends,setAllFriends]=useState(false),[selectedFriends,setSelectedFriends]=useState([]);
@@ -24,7 +24,10 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
    supabase.rpc('my_friends'),supabase.rpc('my_household'),supabase.rpc('my_social_journey_feed')
   ]);
   if(f.error||h.error||j.error){setError('Social journey sharing needs the new database migration and a connection.');return;}
-  setFriends(f.data||[]);setHouseholdReady(Boolean(h.data?.[0]?.id));setFeed(j.data||[]);setError('');
+  setFriends(f.data||[]);setHouseholdReady(Boolean(h.data?.[0]?.id));
+  if(h.data?.[0]?.id){const roster=await supabase.rpc('household_members');if(!roster.error)setMembers(roster.data||[]);}
+  else setMembers([]);
+  setFeed(j.data||[]);setError('');
  },[]);
  useEffect(()=>{
   const timer=setTimeout(()=>void refresh(),0);
@@ -32,6 +35,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   document.addEventListener('visibilitychange',listener);
   return()=>{clearTimeout(timer);document.removeEventListener('visibilitychange',listener);};
  },[refresh]);
+ const personName=userID=>friends.find(p=>p.user_id===userID)?.display_name||members.find(p=>p.user_id===userID)?.display_name||'Shared by a friend';
  const available=useMemo(()=>activities.filter(t=>t.source==='device'&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
  const rawPhotos=chosen?.details?.photos||[];
  const preview=useMemo(()=>{
@@ -78,7 +82,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   <h2>Shared activities</h2>
   <p className="muted small-copy">Your activities stay private until you choose recipients. Sharing a location never shares your history.</p>
   {feed.length?feed.map(item=><button key={item.activity_id} type="button" className="grouped-row" onClick={()=>setOpenID(item.activity_id)}>
-   <strong>{item.title}</strong><span>{item.activity} · {new Date(item.started_at).toLocaleDateString('en-AU')} · {Number(item.distance_km||0).toFixed(1)} km</span><span>Open shared map and photos</span>
+   <strong>{personName(item.owner_id)} · {item.title}</strong><span>{item.activity} · {new Date(item.started_at).toLocaleDateString('en-AU')} · {Number(item.distance_km||0).toFixed(1)} km</span><span>Open shared map and photos</span>
   </button>):<p className="muted small-copy">No activities have been shared with you yet.</p>}
   {!chosen?<details><summary>Share one of my completed activities</summary>
    {available.map(t=><div className="status-row" key={t.id}><div><strong>{t.title||t.activity}</strong><p>{new Date(t.startedAt*1000).toLocaleDateString('en-AU')}</p></div><button className="secondary" type="button" disabled={loading} onClick={()=>void start(t)}>Review &amp; share</button></div>)}
