@@ -28,7 +28,7 @@ export function sharedSnapshotActivity(snapshot,activityID,ownerName='Friend'){
   activity:snapshot.activity||'Other',description:snapshot.description||'',
   startedAt,endedAt,date:new Date(startedAt*1000).toLocaleDateString('en-CA'),
   durationSeconds,distanceMeters,distance:distanceMeters/1000,minutes:Math.floor(durationSeconds/60),
-  points,route:[],routeSegments,photos,tags:[],notes:'',details:{},recordingMode:'shared',location:'',
+  points,route:routeSegments.flat(),routeSegments,photos,tags:[],notes:'',details:{},recordingMode:'shared',location:'',
   // Only the already-redacted snapshot can be rendered. No private source metadata.
   classification:null,recognisedStops:[],sourceRecords:[]
  };
