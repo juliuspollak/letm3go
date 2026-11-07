@@ -109,7 +109,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     }
     // Ask JavaScript. The reply is ignored once the activity has moved on.
     func request(_ op: String, args: [String: Any] = [:], timeout: TimeInterval = 25, progress: ((String) -> Void)? = nil) async throws -> [String: Any] {
-        guard !presentation.header.readOnly else { throw ActivityDetailsError.cancelled }
+        guard !presentation.header.readOnly || op == "sharedPhoto" else { throw ActivityDetailsError.cancelled }
         let id = presentation.activityID
         let result = try await service.request(op, args: args, timeout: timeout, progress: progress)
         guard !closed, presentation.activityID == id else { throw ActivityDetailsError.cancelled }
@@ -118,6 +118,24 @@ final class ActivityDetailsViewModel: ObservableObject {
     func groupingAct(_ action: [String: Any]) async -> Bool {
         do { _ = try await request("groupingAct", args: ["action": action]); return true }
         catch { if case ActivityDetailsError.cancelled = error { return false }; errorMessage = error.localizedDescription; return false }
+    }
+
+    // Shared media is permitted per photograph by the same JS/Supabase account.
+    // No bearer token is passed into Swift, only a 60-second signed HTTPS URL.
+    func photoImage(_ photoID: String, pixels: CGFloat) async -> UIImage? {
+        guard presentation.header.readOnly else {
+            return await service.fullImage(activityID: presentation.activityID, photoID: photoID, pixels: pixels)
+        }
+        guard presentation.photos.items.contains(where: { $0.id == photoID }) else { return nil }
+        do {
+            let result = try await request("sharedPhoto", args: ["photoID": photoID])
+            guard let text = result["url"] as? String, text.count < 4096,
+                  let url = URL(string: text), url.scheme == "https" else { return nil }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200,
+                  data.count <= 8_000_000 else { return nil }
+            return UIImage(data: data)
+        } catch { return nil }
     }
 
     // MARK: Photos
