@@ -35,6 +35,8 @@ begin
  where j.activity_id=p_activity;
  if not found then return false; end if;
  if auth.uid()=v_owner then return true; end if;
+ -- A recipient must have been included when the owner published this version.
+ if not exists(select 1 from public.social_journey_recipients r where r.activity_id=p_activity and r.user_id=auth.uid()) then return false; end if;
  if v_mode in ('household','mixed','all') and v_audience in ('household','friends') and exists (
    select 1 from public.household_members() as m
    where (to_jsonb(m)->>'user_id')=v_owner::text
@@ -95,6 +97,20 @@ begin
  values(p_activity,auth.uid(),p_mode)
  on conflict(activity_id) do update set owner_id=excluded.owner_id,mode=excluded.mode;
  delete from public.social_journey_recipients where activity_id=p_activity;
+ -- Explicitly snapshot current recipients. Future friends and new household
+ -- members must not inherit the owner's historical shares automatically.
+ if p_mode in ('friends','all') then
+  insert into public.social_journey_recipients(activity_id,user_id)
+   select p_activity,(to_jsonb(f)->>'user_id')::uuid from public.my_friends() as f
+   where (to_jsonb(f)->>'user_id') is not null and (to_jsonb(f)->>'user_id')<>auth.uid()::text
+   on conflict do nothing;
+ end if;
+ if p_mode in ('household','mixed','all') then
+  insert into public.social_journey_recipients(activity_id,user_id)
+   select p_activity,(to_jsonb(m)->>'user_id')::uuid from public.household_members() as m
+   where (to_jsonb(m)->>'user_id') is not null and (to_jsonb(m)->>'user_id')<>auth.uid()::text
+   on conflict do nothing;
+ end if;
  if p_mode in ('selected','mixed') then
   insert into public.social_journey_recipients(activity_id,user_id)
    select p_activity, unnest(p_recipients) on conflict do nothing;
