@@ -14,5 +14,5 @@ export function publicJourneyMap(snapshot) {
  const photos=(snapshot.photos||[]).filter(p=>p?.id && valid(p.latitude,p.longitude)).map(p=>({
   id:String(p.id),caption:p.caption||'',point:[p.latitude,p.longitude]
  }));
- return {id:'published-journey',routeSegments:segments,route:segments.flat(),photos};
+ return {id:'published-journey',isShared:true,readOnly:true,routeSegments:segments,route:segments.flat(),photos};
 }
