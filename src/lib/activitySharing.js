@@ -8,7 +8,7 @@ export async function sharingRequest(client,action,id,params={}){
 }
 export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal,audience='public',mode=null,recipients=[],photoIDs=[]}){
  if(!['public','friends','household'].includes(audience))throw new Error('Choose a supported audience.');
- if(audience!=='public' && !((audience==='friends'&&['friends','selected'].includes(mode))||(audience==='household'&&mode==='household')))throw new Error('The sharing audience needs review.');
+ if(audience!=='public' && !((audience==='friends'&&['friends','selected','mixed','all'].includes(mode))||(audience==='household'&&mode==='household')))throw new Error('The sharing audience needs review.');
  if(!Array.isArray(photoIDs)||photoIDs.length>50||photoIDs.some(p=>typeof p!=='string'))throw new Error('Invalid photo selection.');
  const {data:auth,error}=await client.auth.getUser();const owner=auth?.user?.id;
  if(error||!owner||state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('This activity belongs to a different account.');
@@ -35,7 +35,7 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  const result=await sharingRequest(client,'publish',id,{audience,revision:current.revision,placesConfirmed:true,photoIDs});
  if(!result.token)throw new Error('Publication was not confirmed.');
  if(audience!=='public'){
-  const {error:accessError}=await client.rpc('configure_social_journey',{p_activity:id,p_mode:mode,p_recipients:mode==='selected'?recipients:[]});
+  const {error:accessError}=await client.rpc('configure_social_journey',{p_activity:id,p_mode:mode,p_recipients:['selected','mixed'].includes(mode)?recipients:[]});
   if(accessError){
    // A social publication without a policy cannot be read. Revoke nevertheless,
    // so a later migration cannot accidentally expose the incomplete publication.
