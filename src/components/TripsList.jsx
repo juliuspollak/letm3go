@@ -12,23 +12,23 @@ import {distanceUnitLabel,tripDistanceValue,tripDistanceText} from '../lib/dista
 // all their date formatting and equipment chips — in the middle of a scroll. Rows
 // now only re-render when their own journey object or one of their flags changes.
 const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,swiped,dragging,dropTarget,mergeSelected,mergeCandidate,busy,showArchived,vehicles,onEquipment}){
- const mergeable=canMergeTrip(trip),deletable=deletionIDs(trip).length>0;
+ const shared=trip.isShared===true,mergeable=!shared&&canMergeTrip(trip),deletable=!shared&&deletionIDs(trip).length>0;
  const actionWidth=deletable?198:132;
  const reason=query.trim()?tripMatchReason(trip,query,vehicles):null;
  return <div
   data-merge-id={mergeable?trip.id:undefined}
   data-trip-id={trip.id}
   draggable={false}
-  className={`trip-list-row${dropTarget?' merge-drop-target':''}${dragging?' merge-dragging':''}${swiped?' trip-swiped':''}`}>
-  <div className="trip-swipe-actions">
+  className={`trip-list-row${shared?' trip-shared-row':''}${dropTarget?' merge-drop-target':''}${dragging?' merge-dragging':''}${swiped?' trip-swiped':''}`}>
+  {!shared&&<div className="trip-swipe-actions">
    <button type="button" className="trip-action-pin" data-action="pin" aria-label={`${favourite?'Unpin':'Pin'} ${trip.title}`}><Star size={20} fill={favourite?'currentColor':'none'}/><small>{favourite?'Unpin':'Pin'}</small></button>
    <button type="button" className="trip-action-archive" data-action="archive" aria-label={`${showArchived?'Restore':'Archive'}: ${trip.title}`}><Archive size={20}/><small>{showArchived?'Restore':'Archive'}</small></button>
    {deletable&&<button type="button" className="trip-action-delete" data-action="delete" disabled={busy} aria-label={`Delete: ${trip.title}`}><Trash2 size={20}/><small>Delete</small></button>}
   </div>
-  <div className="trip-swipe-surface" style={{transform:swiped?`translateX(-${actionWidth}px)`:undefined}}>
+  <div className="trip-swipe-surface" style={{transform:!shared&&swiped?`translateX(-${actionWidth}px)`:undefined}}>
    <div className="recent-activity-row">
-    <button type="button" className="trip-open-button" data-action="open" aria-label={`Open ${trip.title}`}><span className="recent-activity-icon"><ActivityIcon activity={activityLabel(trip.activity)} size={19}/></span><span className="recent-activity-info"><strong>{trip.title}</strong><small>{trip.isGroupedJourney?`${trip.segmentIDs.length} activities · ${trip.stops.length} stops`:activityLabel(trip.activity)}{trip.source==='watch'&&!trip.isGroupedJourney?' · Apple Watch':''} · {formatters.date.format(new Date(`${trip.date}T12:00:00`))}</small>{trip.provisional&&<small className="trip-provisional">Stopped · saved, may continue</small>}{reason&&<small className="trip-search-reason"><Search size={12}/>{reason.label}: <strong>{reason.value}</strong></small>}<small>{formatters.time.format(trip.startedAt*1000)} – {trip.endedAt!=null?formatters.time.format(trip.endedAt*1000):'Recording'}</small></span><span className="recent-activity-distance">{sort==='duration'?<>{Math.floor(trip.durationSeconds/60)} <small>min</small><small className="trip-time-distance">{tripDistanceText(trip,unit)}</small></>:<span title={trip.distanceEstimate?'Estimated: includes GPS gaps':undefined}>{tripDistanceValue(trip,unit)} <small>{distanceUnitLabel(unit)}</small></span>}</span></button>
-    <EquipmentChip trip={trip} items={vehicles} onOpen={onEquipment} fallback={<ChevronRight size={16} aria-hidden="true"/>}/>
+    <button type="button" className="trip-open-button" data-action="open" aria-label={`Open ${trip.title}`}><span className="recent-activity-icon"><ActivityIcon activity={activityLabel(trip.activity)} size={19}/></span><span className="recent-activity-info"><strong>{trip.title}</strong>{shared&&<small className="trip-shared-label"><span>Shared</span> · {trip.ownerName||'Friend'}</small>}<small>{trip.isGroupedJourney?`${trip.segmentIDs.length} activities · ${trip.stops.length} stops`:activityLabel(trip.activity)}{trip.source==='watch'&&!trip.isGroupedJourney?' · Apple Watch':''} · {formatters.date.format(new Date(`${trip.date}T12:00:00`))}</small>{trip.provisional&&<small className="trip-provisional">Stopped · saved, may continue</small>}{reason&&<small className="trip-search-reason"><Search size={12}/>{reason.label}: <strong>{reason.value}</strong></small>}<small>{formatters.time.format(trip.startedAt*1000)} – {trip.endedAt!=null?formatters.time.format(trip.endedAt*1000):'Recording'}</small></span><span className="recent-activity-distance">{sort==='duration'?<>{Math.floor(trip.durationSeconds/60)} <small>min</small><small className="trip-time-distance">{tripDistanceText(trip,unit)}</small></>:<span title={trip.distanceEstimate?'Estimated: includes GPS gaps':undefined}>{tripDistanceValue(trip,unit)} <small>{distanceUnitLabel(unit)}</small></span>}</span></button>
+    {shared?<ChevronRight size={16} aria-hidden="true"/>:<EquipmentChip trip={trip} items={vehicles} onOpen={onEquipment} fallback={<ChevronRight size={16} aria-hidden="true"/>}/>}
    </div>
    <button type="button" className="icon-button trip-row-bookmark" data-action="pin" aria-pressed={favourite} title={favourite?'Remove from favourites':'Add to favourites'} aria-label={`${favourite?'Remove from':'Add to'} favourites: ${trip.title}`}><Star size={17} fill={favourite?'currentColor':'none'}/></button>
    {mergeable&&<button type="button" className="text-button trip-merge-button" draggable={mergeable&&!busy} data-action="merge" disabled={busy} aria-label={mergeCandidate?`Merge with ${trip.title}`:`Select ${trip.title} to merge`} title={mergeCandidate?'Merge with this drive':mergeSelected?'Selected for merging':'Merge with another drive'}><GitMerge size={17} aria-hidden="true"/></button>}
@@ -70,7 +70,8 @@ export default function TripsList({journeys,unit,sort,query,favourites,vehicles,
     const trip=id&&find(id);
     if(!trip)return;
     if(action==='open'){if(suppress.current){suppress.current=false;return;}latest.current.onOpen(trip);}
-    else if(action==='pin')latest.current.onBookmark(id);
+    else if(trip.isShared)return;
+     else if(action==='pin')latest.current.onBookmark(id);
     else if(action==='archive'){setSwiped(null);if(latest.current.showArchived)latest.current.onRestore(id);else latest.current.onArchive(trip);}
     else if(action==='delete'&&!latest.current.busy&&deletionIDs(trip).length){setSwiped(null);latest.current.onDelete?.(trip);}
     else if(action==='merge'){
