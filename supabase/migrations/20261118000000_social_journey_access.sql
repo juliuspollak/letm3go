@@ -115,7 +115,7 @@ create or replace function public.publish_social_journey(
  p_recipients uuid[],p_snapshot jsonb)
 returns uuid
 language plpgsql security definer set search_path=''
-as $
+as $$
 declare v_token uuid; v_current integer;
 begin
  if auth.uid() is null then raise exception 'Sign in required'; end if;
@@ -128,7 +128,7 @@ begin
  select public.commit_shared_journey(p_activity,auth.uid(),p_revision,p_audience,p_snapshot) into v_token;
  perform public.configure_social_journey(p_activity,p_mode,coalesce(p_recipients,'{}'::uuid[]));
  return v_token;
-end $;
+end $$;
 
 create or replace function public.read_social_journey(p_activity uuid)
 returns jsonb
