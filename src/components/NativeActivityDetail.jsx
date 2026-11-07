@@ -73,7 +73,14 @@ export default function NativeActivityDetail(props){
    running.set(requestID,controller);
    const operation=activityDetailsRequests[op];
    try{
-    if(context.current?.sharedReadOnly)throw new Error('Shared activities are read-only.');
+    if(context.current?.sharedReadOnly){
+     if(op!=='sharedPhoto'||typeof args?.photoID!=='string'||!context.current.trip.photos?.some(photo=>photo.id===args.photoID))throw new Error('Shared activities are read-only.');
+     const id=context.current.trip.sharedActivityID;
+     const {data,error}=await supabase.functions.invoke('journeys?activity='+encodeURIComponent(id)+'&photo='+encodeURIComponent(args.photoID),{method:'GET'});
+     if(error||!data?.url)throw new Error('This shared photograph is unavailable.');
+     await nativeDetails.respond({requestID,ok:true,result:{url:data.url}});
+     return;
+    }
     if(!operation)throw new Error('This action is not available in this version.');
     const result=await operation(context.current,args||{},{signal:controller.signal,progress:notice=>void nativeDetails.respond({requestID,progress:notice}).catch(()=>{})});
     await nativeDetails.respond({requestID,ok:true,result:result||{}});
