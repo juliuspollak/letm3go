@@ -184,5 +184,8 @@ grant execute on function public.my_social_publications() to authenticated;
 -- Deny direct table reads even if an old RLS policy was permissive. Public
 -- reads happen through the Edge Function with an explicit public audience check.
 revoke select on public.shared_journeys from anon, authenticated;
+-- The initial schema granted column-level SELECT explicitly. A table-level
+-- REVOKE does not remove independent column grants; close those as well.
+revoke select(token,snapshot,created_at) on public.shared_journeys from anon,authenticated;
 -- can_view is invoked inside a SECURITY DEFINER function; callers cannot use it directly.
 commit;
