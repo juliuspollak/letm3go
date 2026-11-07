@@ -18,8 +18,7 @@ Deno.serve(async request=>{
  try{
   const token=new URL(request.url).searchParams.get('token');
   if(request.method==='GET'&&uuid(token)){
-   const publicClient=createClient(url,anon,{auth:{persistSession:false}});
-   const {data,error}=await publicClient.from('shared_journeys').select('token,snapshot,created_at').eq('token',token).eq('audience','public').maybeSingle();
+   const {data,error}=await admin.from('shared_journeys').select('token,snapshot,created_at').eq('token',token).eq('audience','public').maybeSingle();
    if(error||!data)return reply({error:'Journey unavailable'},404);
    const {data:budget}=await admin.rpc('consume_operation',{p_key:`public:${token}`,p_max:300});if(!budget)return reply({error:'Please retry later'},429);
    const photoID=new URL(request.url).searchParams.get('photo');
@@ -30,6 +29,27 @@ Deno.serve(async request=>{
     return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
    }
    return reply(data);
+  }
+  // Private shares are always read using the viewer's JWT and the database's
+  // current friendship/household policy. A token alone is never enough.
+  const privateActivity=new URL(request.url).searchParams.get('activity');
+  if(request.method==='GET'&&uuid(privateActivity)){
+   const bearer=request.headers.get('Authorization')||'';
+   if(!bearer.startsWith('Bearer '))return reply({error:'Sign in required'},401);
+   const viewer=createClient(url,anon,{global:{headers:{Authorization:bearer}},auth:{persistSession:false}});
+   const {data:user,error:authError}=await viewer.auth.getUser();
+   if(authError||!user.user)return reply({error:'Sign in required'},401);
+   const {data:shared,error:accessError}=await viewer.rpc('read_social_journey',{p_activity:privateActivity});
+   if(accessError)return reply({error:'Private sharing is not configured'},503);
+   if(!shared?.snapshot)return reply({error:'Journey unavailable'},404);
+   const photoID=new URL(request.url).searchParams.get('photo');
+   if(photoID){
+    if(!uuid(photoID)||!shared.snapshot.photos?.some((p:{id:string})=>p.id===photoID))return reply({error:'Photo unavailable'},404);
+    const {data:asset}=await admin.from('media_assets').select('object_key').eq('id',photoID).eq('activity_id',privateActivity).maybeSingle();
+    if(!asset)return reply({error:'Photo unavailable'},404);
+    return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
+   }
+   return reply({snapshot:shared.snapshot});
   }
   if(request.method!=='POST')return reply({error:'Unsupported request'},405);
   const userClient=createClient(url,anon,{global:{headers:{Authorization:request.headers.get('Authorization')||''}},auth:{persistSession:false}});
@@ -47,7 +67,7 @@ Deno.serve(async request=>{
   const body=await boundedJSON(request);
   if(body.action==='publicMedia'){
    if(!uuid(body.token)||!uuid(body.mediaID))return reply({error:'Invalid request'},400);
-   const {data:shared}=await userClient.from('shared_journeys').select('snapshot').eq('token',body.token).maybeSingle();
+   const {data:shared}=await admin.from('shared_journeys').select('snapshot').eq('token',body.token).eq('audience','public').maybeSingle();
    if(!shared?.snapshot.photos?.some((p:{id:string})=>p.id===body.mediaID))return reply({error:'Photo unavailable'},404);
    const {data:asset}=await admin.from('media_assets').select('object_key').eq('id',body.mediaID).maybeSingle();
    if(!asset)return reply({error:'Photo unavailable'},404);
