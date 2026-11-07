@@ -33,6 +33,24 @@ it('never looks up an answered place again, however old, and marks the activity 
  const saved=JSON.parse(p.savePreferences.mock.calls[0][0].journeyGrouping);
  expect(saved.places[key]).toEqual(meta.places[key]);expect(saved.enriched).toEqual({a:expect.any(Number)});
 });
+// With the records store attached the edit is queued as record values and the mirror
+// is only what the screen reads, so nothing here writes a whole grouping blob.
+it('queues the change as record values instead of a blob',async()=>{
+ const p=props();mock.lookup.mockResolvedValue({candidates:[{name:'Park',placeID:'apple:park'}],source:'apple-geocoder-mapkit'});
+ const store={metadata:JSON.parse(p.serialized),queue:{},status:{owner:'owner'}};
+ const sync={read:()=>store,write:patch=>Object.assign(store,patch),flush:async()=>store};
+ const {result,rerender}=renderHook(()=>useJourneyGrouping({...p,sync}));
+ await waitFor(()=>expect(store.queue.activities).toBeDefined());
+ expect(p.savePreferences).not.toHaveBeenCalled();
+ expect(store.queue.places).toHaveLength(1);
+ expect(store.metadata.enriched).toEqual({a:expect.any(Number)});
+ // A record another device replaced is reported to the screen, never hidden.
+ expect(result.current.conflicts).toBe(null);
+ store.status={owner:'owner',conflicts:{activities:1,total:1}};
+ rerender();
+ await waitFor(()=>expect(result.current.conflicts).toEqual({activities:1,total:1}));
+});
+
 it('a done activity is not read again: no lookups, no saves',async()=>{
  const p=props(),meta={...emptyGrouping('owner'),enrichFrom:0};meta.enriched={a:1};p.serialized=JSON.stringify(meta);
  renderHook(()=>useJourneyGrouping(p));

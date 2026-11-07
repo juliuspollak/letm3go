@@ -2,10 +2,11 @@ import {recognitionSampleIndexes,lookupDue,cachedLookup,failedLookup} from './jo
 import {reconcileSources} from './fleetJourneys.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {buildJourneys,changeGrouping,emptyGrouping,placeKey,parseGrouping,internalStops,nativeStops} from './journeyGrouping.js';
+import {fitCache,groupingChanges,mergeChanges} from './journeyMetadata.js';
 import {recorder,recorderAvailable} from './recorder.js';
 import {STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
 import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,estimatedDistance,distanceSnapshot,ROAD_CACHE_BYTES,ROAD_VERSION} from './gapReconstruction.js';
-export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[]}){
+export function useJourneyGrouping({owner,activities,places,vehicles,serialized,savePreferences,telemetry=[],sync=null}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const parsed=useMemo(()=>parseGrouping(serialized,owner),[serialized,owner]);
  const metadata=useMemo(()=>parsed??emptyGrouping(owner),[parsed,owner]);
@@ -18,9 +19,20 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
  const current=useRef(emptyGrouping(owner)),queue=useRef(Promise.resolve());
  useEffect(()=>{current.current=metadata;currentReadable.current=readable;},[metadata,readable]);
  const persist=useCallback(updater=>{
-  const operation=async()=>{if(!currentReadable.current)throw new Error('Saved journey metadata could not be read. Nothing was changed.');const next=updater(current.current);if(next.owner!==owner)throw new Error('Account changed.');const value=JSON.stringify(next);if(value.length>900000)throw new Error('Journey metadata is full.');await savePreferences({journeyGrouping:value});current.current=next;return next;};
+  const operation=async()=>{
+   if(!currentReadable.current)throw new Error('Saved journey metadata could not be read. Nothing was changed.');
+   const next=updater(current.current);if(next.owner!==owner)throw new Error('Account changed.');
+   // What was decided is queued as record values. The derived answers are trimmed from
+   // the mirror only when it would outgrow the device budget, never from what is sent,
+   // so a full phone cannot delete the enrichment another device relies on.
+   const changes=groupingChanges(current.current,next),metadata=fitCache(next).metadata,value=JSON.stringify(metadata);
+   if(value.length>900000)throw new Error('Journey metadata is full.');
+   if(sync)sync.write({metadata,queue:mergeChanges(sync.read().queue,changes)});
+   else await savePreferences({journeyGrouping:value});
+   current.current=metadata;return metadata;
+  };
   const result=queue.current.then(operation,operation);queue.current=result.catch(()=>{});return result;
- },[owner,savePreferences]);
+ },[owner,savePreferences,sync]);
  const reconciled=useMemo(()=>reconcileSources(activities,{owner,vehicles,links:metadata.sourceLinks||[]}),[activities,owner,vehicles,metadata.sourceLinks]);
  const model=useMemo(()=>{const own=buildJourneys(reconciled.activities,{owner,metadata,places,vehicles,telemetry,projectionCache:projectionCache.values});const shared=reconciled.activities.filter(t=>t.ownerID&&t.ownerID!==owner&&t.sharedToHousehold);const publicPlaces=Object.fromEntries(Object.entries(metadata.places).filter(([,p])=>p.source==='apple-geocoder-mapkit'));const sharedJourneys=[...new Set(shared.map(t=>t.ownerID))].flatMap(sharedOwner=>buildJourneys(shared.filter(t=>t.ownerID===sharedOwner),{owner:sharedOwner,metadata:{...emptyGrouping(sharedOwner),places:publicPlaces},places:[],vehicles:[],telemetry}).journeys.map(j=>({...j,readOnly:true})));return {...own,journeys:[...own.journeys,...sharedJourneys]};},[reconciled.activities,owner,metadata,places,vehicles,telemetry,projectionCache]);
  // Enrichment runs once, for an activity as it is saved: its places and road
@@ -139,5 +151,9 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
  // eslint-disable-next-line react-hooks/exhaustive-deps
  },[owner,fingerprint]);
  async function act(action){setBusy(true);setError('');try{await persist(meta=>changeGrouping(meta,action,{activities,owner,vehicles,places}));return true;}catch(e){setError(e.message||'Journey change could not be saved.');return false;}finally{setBusy(false);}}
- return {...model,records:reconciled.activities,sourceSuggestions:reconciled.suggestions,metadata,act,busy,error:error||(!readable?'Saved journey metadata could not be read. It has been left unchanged.':enrichmentError)};
+ // What the last sync replaced with another device's answer, if anything. Read from the
+ // record status the adapter keeps, so a person who edited the same journey on two
+ // phones is told instead of quietly seeing one version disappear.
+ const conflicts=sync?.read?.().status?.conflicts||null;
+ return {...model,records:reconciled.activities,sourceSuggestions:reconciled.suggestions,metadata,act,busy,conflicts,error:error||(!readable?'Saved journey metadata could not be read. It has been left unchanged.':enrichmentError)};
 }

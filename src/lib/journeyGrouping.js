@@ -20,19 +20,19 @@ export const isProvisional=t=>t?.details?.provisional===true;
 export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{},roads:{},enriched:{},distanceSummaries:{}};}
 // Parsing and write authorization share one validator. A fallback may be shown,
 // but must never replace an existing record that failed validation.
-export function parseGrouping(serialized,owner){
- if(!serialized)return emptyGrouping(owner);
+export function validateGrouping(m,owner){
  const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
  try{
-  const m=JSON.parse(serialized);
   if(!record(m)||m.version!==GROUPING_VERSION||m.owner!==owner||
    !['links','cuts','history'].every(key=>Array.isArray(m[key]))||
    !['titles','places','stopEdits'].every(key=>record(m[key]))||
    !['types','manualTags','hiddenTags','roads','enriched','distanceSummaries'].every(key=>m[key]==null||record(m[key]))||
    (m.sourceLinks!=null&&!Array.isArray(m.sourceLinks)))return null;
-  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{}};
+  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{},sourceLinks:m.sourceLinks||[]};
  }catch{return null;}
 }
+export function parseGrouping(serialized,owner){return serialized?validateGrouping(safeParse(serialized),owner):emptyGrouping(owner);}
+function safeParse(serialized){try{return JSON.parse(serialized);}catch{return null;}}
 export function readGrouping(serialized,owner){return parseGrouping(serialized,owner)??emptyGrouping(owner);}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function visibleTags(tags,segments,metadata){const ids=segments.map(s=>s.id);const hidden=new Set(ids.flatMap(id=>metadata.hiddenTags?.[id]||[]).map(x=>x.toLowerCase()));return [...new Set(tags.filter(t=>typeof t==='string'&&t.trim()&&!hidden.has(t.toLowerCase())))];}

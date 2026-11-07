@@ -6,9 +6,17 @@ const preferences = () => ({ displayName: 'Jules', avatar: 'data:image/jpeg;base
 
 it('exports only settings, never vehicles or per-device receipts', () => {
   const payload = settingsPayload({ ...preferences(), demoOverrides: 'secret', password: 'nope', notificationsEnabled: false });
-  expect(Object.keys(payload).sort()).toEqual(['archivedTrips', 'avatar', 'bookmarks', 'displayName', 'distanceUnit', 'journeyGrouping', 'notificationsEnabled']);
+  expect(Object.keys(payload).sort()).toEqual(['archivedTrips', 'avatar', 'bookmarks', 'displayName', 'distanceUnit', 'notificationsEnabled']);
   expect(payload.notificationsEnabled).toBe(false);
   expect(settingsPayload({ bookmarks: 'nope', archivedTrips: [1, 'ok'], displayName: '  ' })).toMatchObject({ bookmarks: [], archivedTrips: ['ok'] });
+});
+
+// Journey metadata is a set of owner-scoped records now. The settings backup must not
+// carry the grouping any more: it used to be truncated on the way out, so a restore
+// from it lost titles and merges the records still hold.
+it('leaves journey metadata out of the settings backup and the restore', () => {
+  expect(settingsPayload(preferences())).not.toHaveProperty('journeyGrouping');
+  expect(mergeRestoredSettings({}, { journeyGrouping: '{"version":1}' })).toEqual({});
 });
 
 it('backs up once per fingerprint and surfaces a backend failure', async () => {
@@ -36,6 +44,6 @@ it('merges a restore additively and never blanks a local value', () => {
     { displayName: 'Local', avatar: null, distanceUnit: 'km', notificationsEnabled: false, bookmarks: ['a'], archivedTrips: ['one'], journeyGrouping: '' },
     { displayName: 'Cloud', avatar: 'data:image/jpeg;base64,QQ==', distanceUnit: 'mi', notificationsEnabled: true, bookmarks: ['a', 'b'], archivedTrips: ['one', 'two'], journeyGrouping: '{"version":1}' },
   );
-  expect(patch).toEqual({ avatar: 'data:image/jpeg;base64,QQ==', distanceUnit: 'mi', bookmarks: ['a', 'b'], archivedTrips: ['one', 'two'], journeyGrouping: '{"version":1}' });
+  expect(patch).toEqual({ avatar: 'data:image/jpeg;base64,QQ==', distanceUnit: 'mi', bookmarks: ['a', 'b'], archivedTrips: ['one', 'two'] });
   expect(mergeRestoredSettings({ displayName: 'Local' }, { displayName: 'Cloud', avatar: 'javascript:alert(1)' })).toEqual({});
 });

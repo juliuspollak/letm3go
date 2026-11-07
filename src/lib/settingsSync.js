@@ -1,6 +1,9 @@
 // Account settings that used to exist only in the device-encrypted preferences
 // file. Vehicles and sync receipts are deliberately excluded: the Collection has
-// its own table, and receipts are per-device bookkeeping.
+// its own table, and receipts are per-device bookkeeping. Journey metadata is
+// excluded too: titles, merges, tags and the answers derived for them live in their
+// own owner-scoped records, so the settings backup no longer carries a truncated
+// copy of the grouping blob.
 const DISTANCE_UNITS=['km','mi'];
 const stringList=(value,limit)=>Array.isArray(value)?value.filter(entry=>typeof entry==='string'&&entry.length<=100).slice(0,limit):[];
 
@@ -13,7 +16,6 @@ export function settingsPayload(preferences={}){
  payload.notificationsEnabled=preferences.notificationsEnabled===true;
  payload.bookmarks=stringList(preferences.bookmarks,1000);
  payload.archivedTrips=stringList(preferences.archivedTrips,2000);
- if(typeof preferences.journeyGrouping==='string'&&preferences.journeyGrouping)payload.journeyGrouping=preferences.journeyGrouping.slice(0,300000);
  return payload;
 }
 
@@ -29,7 +31,6 @@ export function mergeRestoredSettings(preferences={},payload={}){
  if(bookmarks.length>(preferences.bookmarks||[]).length)patch.bookmarks=bookmarks.slice(0,1000);
  const archived=[...new Set([...(preferences.archivedTrips||[]),...stringList(payload.archivedTrips,2000)])];
  if(archived.length>(preferences.archivedTrips||[]).length)patch.archivedTrips=archived.slice(0,2000);
- if(!preferences.journeyGrouping&&typeof payload.journeyGrouping==='string'&&payload.journeyGrouping)patch.journeyGrouping=payload.journeyGrouping;
  return patch;
 }
 

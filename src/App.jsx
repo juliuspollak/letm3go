@@ -25,6 +25,7 @@ import {secondsAtPlace} from './lib/peopleMap.js';
 import {useFriendLocations} from './lib/useFriendLocations.js';
 import {useFleetJourneys} from './lib/useFleetJourneys.js';
 import {useJourneyGrouping} from './lib/useJourneyGrouping.js';
+import {createJourneySync} from './lib/journeyMetadataStore.js';
 import JourneyGroupingPanel from './components/JourneyGroupingPanel.jsx';
 import GroupedJourneyDetail from './components/GroupedJourneyDetail.jsx';
 import AnimatedWordmark from './components/AnimatedWordmark.jsx';
@@ -121,7 +122,20 @@ function PrivateApp(){
  const localProjectionCache=useMemo(()=>({owner:session.user.id,timeZone:localTimeZone,values:new WeakMap()}),[session.user.id,localTimeZone]);
  const realJourneys=useMemo(()=>localRecorderJourneys({ownerID:recording.state.ownerID,trips:recording.state.trips},session.user.id,localProjectionCache.values),[recording.state.trips,recording.state.ownerID,session.user.id,localProjectionCache]);
  const groupingActivities=useMemo(()=>realJourneys.filter(t=>!t.provisional).concat(fleet.activities),[realJourneys,fleet.activities]);
- const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,telemetry:fleet.charges,places:recording.state.places||NO_PLACES,vehicles,serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences});
+ // Journey metadata is stored as owner-scoped records in Postgres; the preferences
+ // file keeps the mirror, the queue of values still to send and how far the last sync
+ // got. One adapter per account, built from the preferences restored for that account
+ // and saved through the auth context, which writes from its own refs, so it never
+ // reads render state it does not own: an edit queued here is the edit that is sent.
+ // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilt only when the account changes
+ const journeySync=useMemo(()=>createJourneySync({owner:session.user.id,preferences:auth.preferences,savePreferences:auth.savePreferences}),[session.user.id]);
+ // AuthContext reads this account's file before the app renders, so the adapter starts
+ // from the real mirror, queue and status. A restore that is still finishing, or one
+ // that arrives after a rendered screen, would hand it an empty file instead - and the
+ // first edit from that empty state would replace everything the device knows. This
+ // re-reads the file while nothing has been written yet, and is a no-op afterwards.
+ useEffect(()=>{journeySync.reseed(auth.preferences);},[journeySync,auth.preferences]);
+ const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,telemetry:fleet.charges,places:recording.state.places||NO_PLACES,vehicles,serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences,sync:journeySync});
  // A removed Collection item leaves an explicit tombstone receipt so the cloud
  // copy is deleted on the next sync. Restore therefore cannot resurrect it.
  const setVehicles=async next=>{
@@ -398,7 +412,7 @@ function PrivateApp(){
   setTripSearchOpen(false);setTripFiltersOpen(false);setTripFilterCategory(null);
   setSelected(null);setTab('Trips');
  };
-  return <><AutoCloudSync state={recording.state}/><div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
+  return <><AutoCloudSync state={recording.state} journeySync={journeySync}/><div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
   <main>{error&&<p role="alert" className="error">{error}</p>}{recording.error&&<p role="alert" className="error">{recording.error}</p>}{auth.status==='offline'&&<p className="notice">Offline · Private recordings stay on this device. Cloud actions require reconnection.</p>}<header className="topbar"><span className="mobile-brand"><AnimatedWordmark/></span><div className="breadcrumb">Your world, a little closer.</div><div className="top-actions"><button className="icon-button" aria-label="Toggle dark theme" onClick={()=>setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={20}/>:<Moon size={20}/>}</button><button type="button" className={`icon-button presence-toggle ${presenceHidden?'presence-hidden':'presence-visible'}`} aria-label="Location sharing" title="Location sharing" onClick={()=>{setSelected(null);setSheet(null);setTab('Social');setSocialSection('household');}}><MapPin size={20}/></button><button type="button" className="avatar header-avatar" aria-label="Open profile" onClick={()=>setSheet('profile')}><PersonAvatar name={auth.preferences.displayName||'You'} userId={session.user.id} selfId={session.user.id} selfAvatar={auth.preferences.avatar} photos={peopleAvatars.photos} size="sm"/></button></div></header>
  <RecordingWarning health={recording.state.recordingHealth} run={recording.run} warning={recordingWarning} tab={tab} recording={recording.state.active?.state==='recording'}/>
  {recording.state.active&&<button type="button" className="active-recording-banner" onClick={()=>{setSelected(null);setSheet(null);setTab("Record");}} aria-label="Return to active recording"><span className="live-dot"/><strong>{activityLabel(recording.state.active.activity)} · {recording.state.active.state==="recording"?"Recording": "Paused"}</strong><span>Continue exploring · tap to view recording</span><ArrowRight size={17}/></button>}

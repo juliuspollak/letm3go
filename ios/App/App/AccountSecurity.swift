@@ -49,8 +49,25 @@ struct AccountPreferences: Codable {
     // per-account preferences so they can be backed up.
     var archivedTrips: [String]?
     var journeyGrouping: String?
+    // Journey metadata is stored as owner-scoped records in Postgres. The mirror above
+    // keeps the grouping readable offline; these two keep the values still waiting to
+    // be sent and how far the last pass got, so a save of one cannot drop the other and
+    // an interrupted sync resumes where it stopped.
+    var journeyMetadataQueue: String?
+    var journeyMetadata: JourneyMetadataStatus?
     var syncReceipts: [String: SyncReceipt]?
     var lastBackup: String?
+}
+// Progress of the journey metadata sync. Every field is optional so a preferences file
+// written by an earlier build still decodes without a migration.
+struct JourneyMetadataStatus: Codable {
+    var owner: String
+    var revision: Int?
+    var migratedAt: Double?
+    var state: String?
+    var error: String?
+    var conflicts: [String: Int]?
+    var updatedAt: Double?
 }
 struct SyncReceipt: Codable {
     var owner: String
@@ -248,7 +265,7 @@ extension LocationRecorder {
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
-              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
+              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.journeyMetadataQueue?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
               (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
               updated.vehicles.allSatisfy({ vehicle in
                 let category = vehicle.category ?? "car"
@@ -261,6 +278,13 @@ extension LocationRecorder {
               }) else { throw failure("Account settings are invalid or too large.") }
         if let value=updated.journeyGrouping {
             guard let data=value.data(using:.utf8),let meta=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],(meta["owner"] as? String)?.lowercased()==ownerID,(meta["version"] as? Int)==1 else {throw failure("Journey metadata belongs to another account or is invalid.")}
+        }
+        // The queue is record values, so an empty one is written as an empty string.
+        if let value=updated.journeyMetadataQueue, !value.isEmpty {
+            guard let data=value.data(using:.utf8),let queue=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],(queue["owner"] as? String)?.lowercased()==ownerID,(queue["version"] as? Int)==1,(queue["changes"] as? [String:Any]) != nil else {throw failure("Pending journey changes belong to another account or are invalid.")}
+        }
+        if let status=updated.journeyMetadata {
+            guard status.owner.lowercased()==ownerID, (status.state?.count ?? 0) <= 32, (status.error?.count ?? 0) <= 1_000, (status.conflicts?.count ?? 0) <= 16 else {throw failure("Journey sync status belongs to another account or is invalid.")}
         }
         if let avatar = updated.avatar, !avatar.hasPrefix("data:image/jpeg;base64,") { throw failure("Use a JPEG profile image.") }
         try storage.writeData(JSONEncoder().encode(updated),name:"preferences.data"); preferences = updated
