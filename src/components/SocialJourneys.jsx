@@ -32,9 +32,10 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
  },[]);
  useEffect(()=>{
   const timer=setTimeout(()=>void refresh(),0);
+  const poll=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},30000);
   const listener=()=>{if(document.visibilityState==='visible')void refresh();};
   document.addEventListener('visibilitychange',listener);
-  return()=>{clearTimeout(timer);document.removeEventListener('visibilitychange',listener);};
+  return()=>{clearTimeout(timer);clearInterval(poll);document.removeEventListener('visibilitychange',listener);};
  },[refresh]);
  const personName=userID=>friends.find(p=>p.user_id===userID)?.display_name||members.find(p=>p.user_id===userID)?.display_name||'Shared by a friend';
  const available=useMemo(()=>activities.filter(t=>t.source==='device'&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
