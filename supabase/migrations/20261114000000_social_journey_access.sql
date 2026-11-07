@@ -132,11 +132,11 @@ end $$;
 
 -- Never return the raw owner activities table to a viewer.
 create or replace function public.my_social_journey_feed()
-returns table(activity_id uuid,owner_id uuid,title text,activity text,started_at timestamptz,distance_km numeric)
+returns table(activity_id uuid,owner_id uuid,title text,activity text,started_at timestamptz,distance_km numeric,ended_at timestamptz,duration_seconds numeric)
 language sql security definer set search_path=''
 as $$
  select j.activity_id,j.owner_id,j.snapshot->>'title',j.snapshot->>'activity',
-  a.started_at,(a.distance_meters/1000.0)::numeric
+  a.started_at,(a.distance_meters/1000.0)::numeric,a.ended_at,a.duration_seconds::numeric
  from public.shared_journeys j
  join public.social_journey_policies p on p.activity_id=j.activity_id and p.owner_id=j.owner_id
  join public.activities a on a.id=j.activity_id and a.owner_id=j.owner_id
