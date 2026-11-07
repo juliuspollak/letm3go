@@ -16,7 +16,9 @@ struct PrivateThumbnail: View {
             else { Image(systemName: "photo").foregroundColor(DetailStyle.muted) }
         }
         .task(id: photoID) {
-            let loaded = await (model?.presentation.header.readOnly == true ? model?.photoImage(photoID, pixels: size) : service.thumbnail(photoID: photoID, size: size))
+            let loaded: UIImage?
+            if let model, model.presentation.header.readOnly { loaded = await model.photoImage(photoID, pixels: size) }
+            else { loaded = await service.thumbnail(photoID: photoID, size: size) }
             if !Task.isCancelled { image = loaded }
         }
     }
@@ -103,7 +105,9 @@ private struct FullPhoto: View {
         }
         .task(id: photoID) {
             let pixels = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale * 1.5
-            let loaded = await (model?.presentation.header.readOnly == true ? model?.photoImage(photoID, pixels: pixels) : service.fullImage(activityID: activityID, photoID: photoID, pixels: pixels))
+            let loaded: UIImage?
+            if let model, model.presentation.header.readOnly { loaded = await model.photoImage(photoID, pixels: pixels) }
+            else { loaded = await service.fullImage(activityID: activityID, photoID: photoID, pixels: pixels) }
             if Task.isCancelled { return }
             image = loaded; missing = loaded == nil
         }
