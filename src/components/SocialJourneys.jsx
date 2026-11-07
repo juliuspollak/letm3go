@@ -6,7 +6,6 @@ import {publicationPreview} from '../lib/activityPrivacy.js';
 import {publicJourneyMap} from '../lib/publicJourneyMap.js';
 import {sharingSelection} from '../lib/socialSelection.js';
 import JourneyMap from './JourneyMap.jsx';
-import PublicJourney from './PublicJourney.jsx';
 import PrivateImage from './PrivateImage.jsx';
 
 // An activity is never auto-shared because it belongs to a household or because
@@ -15,20 +14,20 @@ const idOf=item=>String(item?.id||'');
 const same=(a,b)=>idOf(a)===idOf(b);
 export default function SocialJourneys({activities=[],ownerID,receipts={},saveReceipts,onSetHome=null}) {
  const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false),[members,setMembers]=useState([]);
- const [feed,setFeed]=useState([]),[mine,setMine]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
- const [chosen,setChosen]=useState(null),[openID,setOpenID]=useState(null);
+ const [mine,setMine]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
+ const [chosen,setChosen]=useState(null);
  const [household,setHousehold]=useState(false),[allFriends,setAllFriends]=useState(false),[selectedFriends,setSelectedFriends]=useState([]);
  const [link,setLink]=useState(false),[photoIDs,setPhotoIDs]=useState([]),[publishedToken,setPublishedToken]=useState(null);
  const refresh=useCallback(async()=>{
   if(!supabase)return;
-  const [f,h,j,p]=await Promise.all([
-   supabase.rpc('my_friends'),supabase.rpc('my_household'),supabase.rpc('my_social_journey_feed'),supabase.rpc('my_social_publications')
+  const [f,h,p]=await Promise.all([
+   supabase.rpc('my_friends'),supabase.rpc('my_household'),supabase.rpc('my_social_publications')
   ]);
-  if(f.error||h.error||j.error||p.error){setError('Social journey sharing needs the new database migration and a connection.');return;}
+  if(f.error||h.error||p.error){setError('Social journey sharing needs the new database migration and a connection.');return;}
   setFriends(f.data||[]);setHouseholdReady(Boolean(h.data?.[0]?.id));
   if(h.data?.[0]?.id){const roster=await supabase.rpc('household_members');if(!roster.error)setMembers(roster.data||[]);}
   else setMembers([]);
-  setFeed(j.data||[]);setMine(p.data||[]);setError('');
+  setMine(p.data||[]);setError('');
  },[]);
  useEffect(()=>{
   const timer=setTimeout(()=>void refresh(),0);
@@ -37,7 +36,6 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   document.addEventListener('visibilitychange',listener);
   return()=>{clearTimeout(timer);clearInterval(poll);document.removeEventListener('visibilitychange',listener);};
  },[refresh]);
- const personName=userID=>friends.find(p=>p.user_id===userID)?.display_name||members.find(p=>p.user_id===userID)?.display_name||'Shared by a friend';
  const available=useMemo(()=>activities.filter(t=>['device','watch'].includes(t.source)&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
  const rawPhotos=chosen?.details?.photos||[];
  const homeReady=Boolean(chosen?.__savedPlaces?.some(p=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)));
@@ -80,13 +78,9 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   try{await makeActivityPrivate(supabase,trip.id);setChosen(null);setPublishedToken(null);await refresh();}
   catch(e){setError(e.message||'Could not revoke access.');}finally{setLoading(false);}
  };
- if(openID)return <PublicJourney activityID={openID} onBack={()=>setOpenID(null)}/>;
  return <section className="social-panel" aria-label="Shared journeys">
-  <h2>Shared activities</h2>
-  <p className="muted small-copy">Your activities stay private until you choose recipients. Sharing a location never shares your history.</p>
-  {feed.length?feed.map(item=><button key={item.activity_id} type="button" className="grouped-row" onClick={()=>setOpenID(item.activity_id)}>
-   <strong>{personName(item.owner_id)} · {item.title}</strong><span>{item.activity} · {new Date(item.started_at).toLocaleDateString('en-AU')} · {Number(item.distance_km||0).toFixed(1)} km</span><span>Open shared map and photos</span>
-  </button>):<p className="muted small-copy">No activities have been shared with you yet.</p>}
+  <h2>Share an activity</h2>
+  <p className="muted small-copy">Choose which of your completed activities to share. Activities shared with you appear in Activities when you enable its share filter.</p>
   {mine.length>0&&<div className="social-own-publications"><h3>My shared activities</h3>
    {mine.map(item=><div className="status-row" key={item.activity_id}><div><strong>{item.title||'Shared activity'}</strong>
     <p>{item.mode||item.audience} · {item.mode===null&&item.audience!=='public'?'Recipients need confirmation':'Shared'}</p>
