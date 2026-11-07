@@ -55,3 +55,24 @@ it('scopes linked-vehicle trip summaries to current household membership',async(
  await as('authenticated',b,'select public.leave_household()');
  expect((await as('authenticated',b,'select * from public.my_household_vehicle_trip_feed()')).rows).toHaveLength(0);
 },30000);
+
+it('shares full snapshots only with current, selected friends and revokes atomically',async()=>{
+ const id='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+ await as('authenticated',a,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+ values('${id}','Coastal walk','Walking','manual',now(),now(),1800,2500)`);
+ const invite=(await as('authenticated',a,'select public.create_friend_invite() as code')).rows[0].code;
+ await as('authenticated',b,`select public.accept_friend_invite('${invite}')`);
+ await expect(as('authenticated',b,`select * from public.shared_journeys`)).rejects.toThrow();
+ const snapshot='{"title":"Coastal walk","activity":"Walking","points":[],"photos":[]}';
+ await as('authenticated',a,`select public.publish_social_journey('${id}',1,'friends','selected',array['${b}']::uuid[],'${snapshot}'::jsonb)`);
+ expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared.snapshot.title).toBe('Coastal walk');
+ expect((await as('authenticated',c,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
+ await expect(as('anon','',`select public.read_social_journey('${id}')`)).rejects.toThrow();
+ const changed='{"title":"Changed without recipient approval","activity":"Walking","points":[]}';
+ await expect(as('authenticated',a,`select public.publish_social_journey('${id}',1,'friends','selected',array['${c}']::uuid[],'${changed}'::jsonb)`)).rejects.toThrow();
+ expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared.snapshot.title).toBe('Coastal walk');
+ await as('authenticated',a,`select public.remove_friend('${b}')`);
+ expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
+ await as('authenticated',a,`select public.revoke_activity_publication('${id}')`);
+ expect((await as('authenticated',a,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
+},30000);
