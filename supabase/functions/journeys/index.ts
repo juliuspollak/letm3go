@@ -39,6 +39,8 @@ Deno.serve(async request=>{
    const viewer=createClient(url,anon,{global:{headers:{Authorization:bearer}},auth:{persistSession:false}});
    const {data:user,error:authError}=await viewer.auth.getUser();
    if(authError||!user.user)return reply({error:'Sign in required'},401);
+   const {data:budget,error:budgetError}=await admin.rpc('consume_operation',{p_key:`social-read:${user.user.id}`,p_max:300});
+   if(budgetError||!budget)return reply({error:'Please retry later'},429);
    const {data:shared,error:accessError}=await viewer.rpc('read_social_journey',{p_activity:privateActivity});
    if(accessError)return reply({error:'Private sharing is not configured'},503);
    if(!shared?.snapshot)return reply({error:'Journey unavailable'},404);
