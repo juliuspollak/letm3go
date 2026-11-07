@@ -56,6 +56,15 @@ begin
  return false;
 end $$;
 
+create or replace function public.prepare_social_journey(p_activity uuid)
+returns void language plpgsql security definer set search_path='' as $
+begin
+ if auth.uid() is null or not exists(select 1 from public.shared_journeys j where j.activity_id=p_activity and j.owner_id=auth.uid()) then
+  raise exception 'Only the owner can change journey sharing';
+ end if;
+ delete from public.social_journey_policies where activity_id=p_activity and owner_id=auth.uid();
+end $;
+
 create or replace function public.configure_social_journey(
  p_activity uuid, p_mode text, p_recipients uuid[] default '{}'::uuid[])
 returns void
@@ -123,11 +132,16 @@ as $$
 $$;
 
 revoke all on function public.can_view_social_journey(uuid) from public,anon,authenticated;
+revoke all on function public.prepare_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.configure_social_journey(uuid,text,uuid[]) from public,anon,authenticated;
 revoke all on function public.read_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.my_social_journey_feed() from public,anon,authenticated;
+grant execute on function public.prepare_social_journey(uuid) to authenticated;
 grant execute on function public.configure_social_journey(uuid,text,uuid[]) to authenticated;
 grant execute on function public.read_social_journey(uuid) to authenticated;
 grant execute on function public.my_social_journey_feed() to authenticated;
+-- Deny direct table reads even if an old RLS policy was permissive. Public
+-- reads happen through the Edge Function with an explicit public audience check.
+revoke select on public.shared_journeys from anon, authenticated;
 -- can_view is invoked inside a SECURITY DEFINER function; callers cannot use it directly.
 commit;
