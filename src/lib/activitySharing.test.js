@@ -10,22 +10,19 @@ it('backs up only the explicitly selected completed trip then publishes a revisi
 it('rejects account mismatch and changed previews before copying GPS',async()=>{const c=client();await expect(publishActivity({client:c,state:{ownerID:'other',trips:[]},id:'trip'})).rejects.toThrow('different account');await expect(publishActivity({client:c,state:{ownerID:owner,trips:[{id:'trip',source:'device',endedAt:100,activity:'Driving',points:[]}]},id:'trip',reviewedTrip:{activity:'Walking',points:[]}})).rejects.toThrow('Activity changed');expect(syncPrivateActivities).not.toHaveBeenCalled();});
 it('revokes through the owner-checked RPC and never confirms a failed revocation',async()=>{const c=client();expect(await makeActivityPrivate(c,'trip')).toEqual({audience:'private'});expect(c.rpc).toHaveBeenCalledWith('revoke_activity_publication',{p_id:'trip'});c.rpc.mockResolvedValue({error:{}});await expect(makeActivityPrivate(c,'trip')).rejects.toThrow('could not be revoked');});
 
-it('publishes household and selected-friend audiences only after server permission confirmation',async()=>{
+it('publishes household and selected-friend audiences in one backend request',async()=>{
  const c=client(),trip={id:'trip',source:'device',endedAt:100,points:[]};
  syncPrivateActivities.mockResolvedValue({receipts:{}});
- c.functions.invoke.mockImplementation(async(_,{body})=>({data:body.action==='status'?{audience:'private'}:{token:'token'}}));
  await publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[{kind:'home',latitude:-34,longitude:151}]},id:'trip',audience:'friends',mode:'mixed',recipients:['friend1'],photoIDs:['photo1'],receipts:{},checkpoint:vi.fn()});
- expect(c.functions.invoke).toHaveBeenCalledWith('journeys',{body:{action:'publish',id:'trip',audience:'friends',revision:4,placesConfirmed:true,photoIDs:['photo1']},timeout:20000});
- expect(c.rpc).toHaveBeenCalledWith('configure_social_journey',{p_activity:'trip',p_mode:'mixed',p_recipients:['friend1']});
- expect(c.rpc).not.toHaveBeenCalledWith('prepare_social_journey',expect.anything());
+ expect(c.functions.invoke).toHaveBeenCalledWith('journeys',{body:{action:'publish',id:'trip',audience:'friends',revision:4,placesConfirmed:true,photoIDs:['photo1'],mode:'mixed',recipients:['friend1']},timeout:20000});
+ expect(c.rpc).not.toHaveBeenCalled();
 });
-it('revokes an incomplete social publication when recipient authorisation fails',async()=>{
+it('does not claim success when atomic backend publishing fails',async()=>{
  const c=client(),trip={id:'trip',source:'device',endedAt:100,points:[]};
  syncPrivateActivities.mockResolvedValue({receipts:{}});
- c.functions.invoke.mockImplementation(async(_,{body})=>({data:body.action==='status'?{audience:'private'}:{token:'token'}}));
- c.rpc.mockImplementation(async name=>name==='configure_social_journey'?{error:{message:'not authorised'}}:{});
- await expect(publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[{kind:'home',latitude:-34,longitude:151}]},id:'trip',audience:'household',mode:'household',receipts:{},checkpoint:vi.fn()})).rejects.toThrow('recipients');
- expect(c.rpc).toHaveBeenCalledWith('revoke_activity_publication',{p_id:'trip'});
+ c.functions.invoke.mockResolvedValue({error:{message:'recipient rejected'}});
+ await expect(publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[{kind:'home',latitude:-34,longitude:151}]},id:'trip',audience:'household',mode:'household',receipts:{},checkpoint:vi.fn()})).rejects.toThrow('could not be confirmed');
+ expect(c.rpc).not.toHaveBeenCalled();
 });
 it('never publishes an unsupported private audience',async()=>{
  const c=client();
