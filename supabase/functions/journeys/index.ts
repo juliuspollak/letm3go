@@ -109,6 +109,7 @@ Deno.serve(async request=>{
    // Query the at-most-two sensitive places explicitly; favourites must not crowd
    // Home/Work out of PostgREST's default row limit and weaken route masking.
    const {data:places,error:placesError}=await userClient.from('saved_places').select('*').in('kind',['home','work']);if(placesError)throw placesError;
+   if(!(places||[]).some((p:{kind:string;latitude:number;longitude:number})=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)))return reply({error:'Save a Home place before publishing GPS routes'},409);
    // Fail closed: a client must confirm its saved places were synchronised before preview.
    if(body.placesConfirmed!==true)return reply({error:'Sync saved Home/Work places and review masking first'},400);
    const {data:assets,error:mediaError}=await userClient.from('media_assets').select('id,caption,latitude,longitude').eq('activity_id',trip.id);if(mediaError)throw mediaError;
