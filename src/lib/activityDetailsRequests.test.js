@@ -47,3 +47,55 @@ it('sends the activity recording report as feedback and returns the number to qu
   expect(client.rpc).toHaveBeenCalledWith('submit_feedback', expect.objectContaining({ p_description: 'Too short', p_title: expect.stringMatching(/^Recording report · Driving · /) }));
   expect(upsert.mock.calls[0][0]).toMatchObject({ id: 'r1', kind: 'recording', object_key: 'o1/t1/r1.txt' });
 });
+
+describe('the activity Share sheet',()=>{
+ const rpcClient=answers=>({rpc:vi.fn(async name=>answers[name]??{data:null,error:{message:'missing'}})});
+ const friends={data:[{user_id:'f1',display_name:'Ava'},{user_id:'f2',display_name:'Ben'}],error:null};
+ const save=(args)=>requests.privacySave({client:{},trip:{id:'a'},auth:{preferences:{}}},args);
+ beforeEach(()=>{mocks.publish.mockResolvedValue({token:'t'});mocks.status.mockResolvedValue({audience:'private'});mocks.state.mockResolvedValue({});});
+ it('opens a never-shared activity with nothing selected, listing friends and the household',async()=>{
+  const client=rpcClient({my_activity_sharing:{data:{audience:'private',household:false,friends:[]},error:null},my_friends:friends,my_household:{data:[{id:'h',name:'Family'}],error:null}});
+  expect(await requests.privacyStatus({client,trip:{id:'a'}})).toEqual({audience:'private',household:false,friends:[],
+   options:{friends:[{id:'f1',name:'Ava'},{id:'f2',name:'Ben'}],household:'Family'}});
+ });
+ it('opens an already shared activity with its recipients, ignoring people who are no longer friends',async()=>{
+  const client=rpcClient({my_activity_sharing:{data:{audience:'friends',household:true,friends:['f2','gone']},error:null},my_friends:friends,my_household:{data:[],error:null}});
+  expect(await requests.privacyStatus({client,trip:{id:'a'}})).toMatchObject({audience:'friends',household:true,friends:['f2'],options:{household:null}});
+ });
+ it('falls back to public/private on a database without the sharing migration',async()=>{
+  mocks.status.mockResolvedValue({audience:'public'});
+  const client=rpcClient({my_friends:friends,my_household:{data:[],error:null}});
+  expect(await requests.privacyStatus({client,trip:{id:'a'}})).toMatchObject({audience:'public',friends:[],options:{friends:[]}});
+ });
+ it.each([
+  [{household:false,friends:['f1']},{audience:'friends',mode:'selected',recipients:['f1']}],
+  [{household:false,friends:['f1','f2']},{audience:'friends',mode:'selected',recipients:['f1','f2']}],
+  [{household:true,friends:[]},{audience:'household',mode:'household',recipients:[]}],
+  [{household:true,friends:['f2']},{audience:'friends',mode:'mixed',recipients:['f2']}],
+ ])('saves %j as one server publication %j',async(selection,expected)=>{
+  const result=await save({choice:'share',...selection});
+  expect(mocks.publish.mock.calls[0][0]).toMatchObject(expected);
+  expect(result).toMatchObject({audience:expected.audience,household:selection.household,friends:expected.recipients});
+ });
+ it('a public link is its own publication; stopping sharing revokes everything',async()=>{
+  await save({choice:'public'});
+  expect(mocks.publish.mock.calls[0][0]).toMatchObject({audience:'public',mode:null,recipients:[]});
+  const {makeActivityPrivate}=await import('./activitySharing.js');
+  expect(await save({choice:'private'})).toMatchObject({audience:'private',household:false,friends:[]});
+  expect(makeActivityPrivate).toHaveBeenCalledWith({},'a');
+ });
+ it('refuses an empty selection, so the sheet must confirm Stop sharing instead',async()=>{
+  await expect(save({choice:'share',household:false,friends:[]})).rejects.toThrow(/at least one recipient/);
+  expect(mocks.publish).not.toHaveBeenCalled();
+ });
+ it('a failed save reports the error and changes nothing',async()=>{
+  mocks.publish.mockRejectedValue(new Error('Sharing could not be confirmed.'));
+  await expect(save({choice:'share',household:false,friends:['f1']})).rejects.toThrow('Sharing could not be confirmed.');
+ });
+ it('Add friends creates the same invitation as Social → Friends',async()=>{
+  const client=rpcClient({create_friend_invite:{data:'11111111-1111-4111-8111-111111111111',error:null}});
+  const {text}=await requests.createFriendInvite({client});
+  expect(text).toContain('au.jpollak.journey://invite/friend?code=11111111-1111-4111-8111-111111111111');
+  await expect(requests.createFriendInvite({client:rpcClient({})})).rejects.toThrow(/invitation could not be created/);
+ });
+});

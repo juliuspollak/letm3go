@@ -456,3 +456,10 @@ it('confirms the number of originals before deleting a grouped journey',async()=
  fireEvent.click(within(screen.getByRole('dialog',{name:'Delete activity'})).getByRole('button',{name:'Delete activity'}));
  await waitFor(()=>expect(run).toHaveBeenCalledWith('deleteActivities',['a','b']));
 });
+it('Social is for friends, household and live location: activity sharing lives on the activity',()=>{
+ signedIn();render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Social'})[0]);
+ expect(screen.queryByText('Share an activity')).not.toBeInTheDocument();
+ expect(screen.queryByText(/Share one of my completed activities/)).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:/Review & share/})).not.toBeInTheDocument();
+});

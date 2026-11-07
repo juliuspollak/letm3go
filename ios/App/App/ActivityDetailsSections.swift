@@ -22,14 +22,14 @@ struct ActivityHeaderSection: View {
                     .accessibilityIdentifier("activity.header.edit")
                     .disabled(model.busy)
                     Button { model.sheet = .privacy } label: {
-                        Image(systemName: "lock.shield")
+                        Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 19, weight: .semibold))
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.primary)
-                    .accessibilityLabel("Activity privacy")
+                    .accessibilityLabel("Share activity")
                     .accessibilityIdentifier("activity.header.privacy")
                 }
             }

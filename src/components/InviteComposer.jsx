@@ -1,13 +1,12 @@
 import {useState} from 'react';
 import {Copy,MessageCircle,Share2,UserPlus} from 'lucide-react';
-import {invitationLink} from '../lib/invitationLink.js';
+import {invitationMessage} from '../lib/invitationLink.js';
 
 // The one invitation screen. Friends and Household both send a friend invitation;
 // what it does when accepted is decided by which one created it.
 export default function InviteComposer({create,busy=false,household=null}){
  const [invite,setInvite]=useState(''),[feedback,setFeedback]=useState(''),[error,setError]=useState(''),[working,setWorking]=useState(false);
- const intro=household?`Join me on letm3go and our household, ${household}!`:'Join me on letm3go!';
- const text=invite?`Open my Letm3go invitation: ${invitationLink('friend',invite)}\n\n${intro} Open the app, go to Social → Friends, and paste this invitation code to add me:\n\n${invite}\n\nThis private invitation expires in 48 hours.`:'';
+ const text=invite?invitationMessage(invite,household):'';
  async function start(){setWorking(true);setError('');try{setInvite(await create());}catch(e){setError(e.message);}finally{setWorking(false);}}
  async function share(){setError('');setFeedback('');try{if(navigator.share){await navigator.share({title:'Add me on letm3go',text});}else{await navigator.clipboard.writeText(text);setFeedback('Invitation copied. Paste it into a message.');}}catch(e){if(e.name!=='AbortError')setError('Sharing is unavailable. Try Copy invitation instead.');}}
  async function copy(){setError('');try{await navigator.clipboard.writeText(text);setFeedback('Invitation copied. Paste it into a message.');}catch{setError('Could not copy automatically. Select the invitation code below to copy it.');}}

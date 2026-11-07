@@ -10,12 +10,16 @@ The button is a toggle, with `aria-pressed` and an active appearance.
   Activities list, sorted by the same sort and constrained by the existing
   date, activity-type and search settings. The heading count reflects the
   visible results.
-- Each shared row uses the existing TripsList and shows **Shared · owner**.
-  Shared rows have no swipe/bookmark/archive/delete/merge/equipment controls.
+- Each shared row uses the existing TripsList and shows the owner's avatar
+  (`PersonAvatar`). Shared rows have no swipe/bookmark/archive/delete/merge/
+  equipment controls. Your own shared activities show a compact indicator:
+  share icon, household and up to three recipient avatars, or a globe for a
+  public link (`my_social_publications`, loaded when the list shows and after
+  an activity's details close; never polled).
 - Feed loading is metadata-only. GPS and images aren't loaded on the
   Activities list. The published snapshot is fetched only on opening.
-- The separate recipient feed has been removed from Social; Social remains
-  the place to publish and revoke your own shared activities.
+- Social is for friends, household and live location only. Activity sharing
+  is managed from each activity (see below).
 - This replaces the earlier proposal for All/Mine/Shared segmented controls.
 
 **Shared-detail integration:** In-app recipients now open the existing native
@@ -31,11 +35,17 @@ separate and remain opt-in.
 
 ## Intended flow
 
-1. Owner selects a **completed** device-recorded activity on Social and reviews
-   its Home/Work-redacted route. Sharing is never enabled automatically by
-   joining a household or sharing live position.
-2. Owner selects household, all current friends, specific friends, both
-   household and specific friends, or (separately) a public link.
+1. Owner opens a **completed** activity they recorded and taps **Share** in the
+   activity details header. The Share sheet opens with the current selection
+   (`my_activity_sharing`); never-shared activities start with nothing
+   selected. Sharing is never enabled automatically by joining a household or
+   sharing live position.
+2. Owner ticks Household and/or any friends (or, separately, a public link),
+   then Save. The first share shows the Home/Work-redacted preview and asks for
+   consent. Changing recipients replaces the whole selection in one
+   transaction; deselecting everyone (or **Stop sharing**) asks to confirm and
+   makes the activity private. **Add friends** shares the same invitation as
+   Social → Friends.
 3. Owner selects photographs. The existing foreground private-cloud backup
    uploads the selected activity and its private photos. Server publication
    includes only selected photo IDs; coordinates near the owner's saved
@@ -45,8 +55,12 @@ separate and remain opt-in.
    in one owner-authenticated database transaction. Readers use JWT-backed `read_social_journey` and never query
    `activities` or `media_assets` directly.
 5. Snapshot ACLs are an intersection of (a) the recipient set at publication
-   time, and (b) current friendship or household membership. New friends or
-   later household additions do not automatically inherit old activities.
+   time, with the reason each recipient was included (household, chosen
+   friend, or both), and (b) current membership for that reason. Someone
+   shared with through the household loses access on leaving it, even if they
+   are a friend who was not chosen. New friends or later household additions
+   do not automatically inherit old activities. A public link clears private
+   recipients in the same transaction (`20261119000000`).
 6. The Social feed and optional Map layer read only permitted snapshots;
    photos use 60-second signed R2 URLs issued per permitted viewer.
 7. Owner can revoke publication; the viewer cannot continue to obtain
@@ -59,8 +73,13 @@ separate and remain opt-in.
   policies, owner publication list, recipient feed, authenticated snapshot RPC.
 - `supabase/functions/journeys/index.ts`: public-only token reads,
   authenticated private route/photo reads and selected snapshot data.
-- `src/components/SocialJourneys.jsx`: owner publishing, recipient picker,
-  photo picker, feed and revocation.
+- `ios/App/App/ActivityDetailsSheets.swift` (`ActivityPrivacySheet`): the
+  Share sheet, reached from the activity details header.
+- `src/lib/activityDetailsRequests.js`: `privacyStatus`, `privacySave`,
+  `createFriendInvite` for the Share sheet.
+- `supabase/migrations/20261119000000_activity_share_recipients.sql`:
+  recipient reasons, `my_activity_sharing`, recipients in
+  `my_social_publications`.
 - `src/components/SharedActivityDetail.jsx`: loads the authorised saved snapshot
   and opens the existing native `ActivityDetailScreen`; public browser links
   use the existing `JourneyMap`.
