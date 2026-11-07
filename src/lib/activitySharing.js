@@ -20,16 +20,13 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  const {data:again,error:accountError}=await client.auth.getUser();if(accountError||again.user?.id!==owner)throw new Error('Account changed. Publication cancelled.');
  // Last point at which leaving can still stop the activity going public.
  if(signal?.aborted)throw new Error('Publication cancelled.');
- // Closing an earlier social policy before re-publication fails closed: an old
- // recipient must never see a new route while its permissions are being replaced.
+ // Clear any previous recipient policy before replacing a published route.
+ // A first publication has no old recipients and needs no preparation call.
  if(audience!=='public'){
-  const {error:prepareError}=await client.rpc('prepare_social_journey',{p_activity:id});
-  if(prepareError&&!/Only the owner/.test(prepareError.message||'')){
-   // A first-time publication has no row yet, so prepare is not required.
-   const {data:previous}=await client.from('activities').select('id').eq('id',id).eq('owner_id',owner).maybeSingle();
-   if(!previous)throw new Error('The activity must be backed up before sharing.');
-   // No safe way to distinguish a missing migration from an ownership failure.
-   throw new Error('Private sharing is not configured. Nothing was published.');
+  const currentSharing=await sharingRequest(client,'status',id);
+  if(currentSharing.audience!=='private'){
+   const {error:prepareError}=await client.rpc('prepare_social_journey',{p_activity:id});
+   if(prepareError)throw new Error('Could not safely prepare the recipient change. Nothing new was published.');
   }
  }
  const result=await sharingRequest(client,'publish',id,{audience,revision:current.revision,placesConfirmed:true,photoIDs});
