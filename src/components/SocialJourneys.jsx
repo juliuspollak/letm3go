@@ -35,7 +35,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   return()=>{clearTimeout(timer);clearInterval(poll);document.removeEventListener('visibilitychange',listener);};
  },[refresh]);
  const available=useMemo(()=>activities.filter(t=>['device','watch'].includes(t.source)&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
- const rawPhotos=chosen?.details?.photos||[];
+ const rawPhotos=useMemo(()=>chosen?.details?.photos||[],[chosen]);
  const homeReady=Boolean(chosen?.__savedPlaces?.some(p=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)));
  const preview=useMemo(()=>{
   if(!chosen)return null;
