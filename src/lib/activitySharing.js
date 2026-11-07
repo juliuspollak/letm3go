@@ -21,26 +21,11 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  const {data:again,error:accountError}=await client.auth.getUser();if(accountError||again.user?.id!==owner)throw new Error('Account changed. Publication cancelled.');
  // Last point at which leaving can still stop the activity going public.
  if(signal?.aborted)throw new Error('Publication cancelled.');
- // Clear any previous recipient policy before replacing a published route.
- // A first publication has no old recipients and needs no preparation call.
- if(audience!=='public'){
-  const currentSharing=await sharingRequest(client,'status',id);
-  if(currentSharing.audience!=='private'){
-   const {error:prepareError}=await client.rpc('prepare_social_journey',{p_activity:id});
-   if(prepareError)throw new Error('Could not safely prepare the recipient change. Nothing new was published.');
-  }
- }
- const result=await sharingRequest(client,'publish',id,{audience,revision:current.revision,placesConfirmed:true,photoIDs});
+ const result=await sharingRequest(client,'publish',id,{
+  audience,revision:current.revision,placesConfirmed:true,photoIDs,
+  ...(audience==='public'?{}:{mode,recipients:['selected','mixed'].includes(mode)?recipients:[]})
+ });
  if(!result.token)throw new Error('Publication was not confirmed.');
- if(audience!=='public'){
-  const {error:accessError}=await client.rpc('configure_social_journey',{p_activity:id,p_mode:mode,p_recipients:['selected','mixed'].includes(mode)?recipients:[]});
-  if(accessError){
-   // A social publication without a policy cannot be read. Revoke nevertheless,
-   // so a later migration cannot accidentally expose the incomplete publication.
-   await client.rpc('revoke_activity_publication',{p_id:id}).catch(()=>{});
-   throw new Error('Social recipients could not be confirmed. The journey was not shared.');
-  }
- }
  return {...result,receipts:backup.receipts};
 }
 export async function makeActivityPrivate(client,id){
