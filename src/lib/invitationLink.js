@@ -12,3 +12,8 @@ export function parseInvitationLink(input){
   return ['friend','household'].includes(kind)&&uuid.test(code||'')?{kind,code}:null;
  }catch{return null;}
 }
+// The one invitation message, from Friends, Household or an activity's Share sheet.
+export function invitationMessage(code,household=null){
+ const intro=household?`Join me on letm3go and our household, ${household}!`:'Join me on letm3go!';
+ return `Open my Letm3go invitation: ${invitationLink('friend',code)}\n\n${intro} Open the app, go to Social → Friends, and paste this invitation code to add me:\n\n${code}\n\nThis private invitation expires in 48 hours.`;
+}

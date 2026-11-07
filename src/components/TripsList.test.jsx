@@ -155,3 +155,25 @@ it('reobserves the sentinel after each page so continuous scrolling loads beyond
   }
  }finally{vi.unstubAllGlobals();}
 });
+
+it('shows who shared an activity with me as an avatar, and who can see mine',()=>{
+ const friendsRow=trip('theirs',{title:'Beach ride',isShared:true,readOnly:true,sharedOwnerID:'f1',ownerName:'Ava'});
+ const mine=trip('mine',{title:'Morning ride'}),privateOne=trip('private',{title:'Solo ride'});
+ const sharing={mine:{audience:'friends',household:true,friends:[{id:'f2',name:'Ben'},{id:'f3',name:'Cal'},{id:'f4',name:'Dee'},{id:'f5',name:'Eve'}]}};
+ const {container}=renderList({journeys:[friendsRow,mine,privateOne],sharing,photos:{}});
+ const rows=[...container.querySelectorAll('.trip-list-row')];
+ // Shared with me: the owner's avatar, no extra label row; it cannot be swiped or deleted.
+ expect(within(rows[0]).getByRole('img',{name:'Ava avatar'})).toBeInTheDocument();
+ expect(within(rows[0]).getByText(/Shared by Ava/)).toHaveClass('sr-only');
+ expect(rows[0].querySelector('.trip-swipe-actions')).toBeNull();
+ // Mine: a compact indicator with the household and up to three friends.
+ expect(within(rows[1]).getByLabelText('Shared with household and 4 friends')).toBeInTheDocument();
+ expect(within(rows[1]).getAllByRole('img').map(img=>img.getAttribute('aria-label'))).toEqual(['Ben avatar','Cal avatar','Dee avatar']);
+ expect(within(rows[1]).getByText('+1')).toBeInTheDocument();
+ // Not shared: nothing extra.
+ expect(rows[2].querySelector('.trip-sharing')).toBeNull();
+});
+it('marks a public link on my activity',()=>{
+ const {container}=renderList({journeys:[trip('pub')],sharing:{pub:{audience:'public',household:false,friends:[]}}});
+ expect(container.querySelector('[aria-label="Shared by public link"]')).toBeInTheDocument();
+});

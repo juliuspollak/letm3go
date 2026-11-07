@@ -1,5 +1,6 @@
 import MapKit
 import SwiftUI
+import UIKit
 
 // MARK: Heart rate
 
@@ -329,77 +330,166 @@ private struct RoutePreview: UIViewRepresentable {
     }
 }
 
+// The one sharing control for an activity you own: household, friends (any
+// combination) or a public link, opened from the header's Share button. It opens
+// with the confirmed selection from the database and changes nothing until the
+// server confirms a save, so a failure keeps the last confirmed state.
 struct ActivityPrivacySheet: View {
     @ObservedObject var model: ActivityDetailsViewModel
+    private struct Friend: Identifiable, Equatable { let id: String; let name: String }
     @State private var audience: String?
-    @State private var choice = "private"
+    @State private var confirmedHousehold = false
+    @State private var confirmedFriends = Set<String>()
+    @State private var household = false
+    @State private var friends = Set<String>()
+    @State private var publicLink = false
+    @State private var people: [Friend] = []
+    @State private var householdName: String?
     @State private var consent = false
     @State private var loading = true
     @State private var saving = false
+    @State private var inviting = false
     @State private var problem = ""
     @State private var done = ""
+    @State private var confirmStop = false
     @Environment(\.dismiss) private var dismiss
+
+    private var shared: Bool { ["friends", "household", "public"].contains(audience ?? "") }
+    private var nothingSelected: Bool { !household && friends.isEmpty && !publicLink }
+    private var changed: Bool {
+        publicLink ? audience != "public" : (audience == "public" || household != confirmedHousehold || friends != confirmedFriends)
+    }
+    // Sharing uploads the reviewed copy: the first time, or when it becomes public.
+    private var needsConsent: Bool { changed && !nothingSelected && (publicLink ? audience != "public" : !shared || audience == "public") }
     private var statusText: String {
-        loading ? "Checking current setting…" : audience == "private" ? "Only you can see this trip." : audience == "public" ? "A public copy of this trip is shared." : "Current sharing setting could not be verified."
+        if loading { return "Checking current sharing…" }
+        switch audience {
+        case "private": return "Only you can see this activity."
+        case "public": return "Anyone with the link can see a copy of this activity."
+        case "friends", "household":
+            let names = people.filter { confirmedFriends.contains($0.id) }.map(\.name)
+            let parts = (confirmedHousehold ? ["your household"] : []) + (names.isEmpty ? [] : [names.joined(separator: ", ")])
+            return "Shared with \(parts.joined(separator: " and "))."
+        default: return "Current sharing could not be confirmed."
+        }
+    }
+    private func binding(_ id: String) -> Binding<Bool> {
+        Binding(get: { friends.contains(id) }, set: { on in if on { friends.insert(id) } else { friends.remove(id) }; consent = false; done = "" })
     }
     var body: some View {
         NavigationView {
             Form {
-                Section {
-                    Text(statusText).font(.footnote)
-                    Picker("Who can see this trip?", selection: $choice) {
-                        Label("Private · Only you", systemImage: "lock").tag("private")
-                        Label("Public · Anyone with the link", systemImage: "globe").tag("public")
-                    }.pickerStyle(.inline).labelsHidden().disabled(saving || loading)
-                    .onChange(of: choice) { _ in consent = false; done = "" }
+                Section { Text(statusText).font(.footnote) }
+                Section("Share with") {
+                    if let name = householdName {
+                        Toggle(isOn: $household) { Label("Household · \(name)", systemImage: "house") }
+                            .disabled(saving || loading || publicLink)
+                    }
+                    ForEach(people) { friend in
+                        Toggle(isOn: binding(friend.id)) { Label(friend.name, systemImage: "person") }
+                            .disabled(saving || loading || publicLink)
+                    }
+                    if !loading && people.isEmpty && householdName == nil { DetailFootnote(text: "You have no friends or household yet. Invite someone to share with them.") }
+                    Button { createInvite() } label: { Label(inviting ? "Preparing invitation…" : "Add friends", systemImage: "person.badge.plus") }
+                        .disabled(saving || inviting)
                 }
-                if choice == "public", audience != "public", let preview = model.presentation.privacy {
-                    Section("Preview public copy") {
-                        DetailFootnote(text: "Your title, description and route below will be shared. Home and Work areas are hidden, but landmarks may still identify places. Photos and private notes stay private.")
+                Section {
+                    Toggle(isOn: $publicLink) { Label("Anyone with the link", systemImage: "globe") }
+                        .disabled(saving || loading)
+                } header: { Text("Public link") } footer: { Text("A public link replaces household and friend sharing.") }
+                if needsConsent, let preview = model.presentation.privacy {
+                    Section("Preview of the shared copy") {
+                        DetailFootnote(text: "Your title, description and route below will be shared. Home and Work areas are hidden, but landmarks may still identify places. Photos and private notes are not included.")
                         Text(preview.title).font(.headline)
                         if !preview.description.isEmpty { Text(preview.description).font(.subheadline) }
                         if preview.segments.isEmpty { DetailFootnote(text: "No route points remain after privacy masking.") }
                         else { RoutePreview(segments: preview.segments).frame(height: 180).listRowInsets(EdgeInsets()) }
-                        Toggle("I agree to upload this trip and saved Home/Work locations privately, and publish the reviewed copy.", isOn: $consent).font(.footnote).disabled(saving || loading)
+                        Toggle("I agree to upload this activity and my saved Home/Work locations privately, and share the reviewed copy.", isOn: $consent).font(.footnote).disabled(saving || loading)
                     }
                 }
-                if choice == "private", audience == "public" { DetailFootnote(text: "The public link will stop working. Copies already saved by others cannot be recalled.") }
                 if !done.isEmpty { DetailFootnote(text: done) }
                 if !problem.isEmpty { Text(problem).font(.footnote).foregroundColor(.red) }
-                if choice != audience {
-                    Button(saving ? "Saving…" : choice == "private" ? "Make private" : "Share publicly") { save() }
-                        .disabled(saving || loading || (choice == "public" && !consent))
+                if changed && !loading {
+                    Button(saving ? "Saving…" : "Save") { nothingSelected ? (confirmStop = true) : save(publicLink ? "public" : "share") }
+                        .disabled(saving || (needsConsent && !consent) || (nothingSelected && !shared))
+                        .accessibilityIdentifier("activity.share.save")
+                }
+                if shared && !loading {
+                    Button("Stop sharing", role: .destructive) { confirmStop = true }.disabled(saving)
                 }
             }
-            .navigationTitle("Who can see this trip?").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(saving).accessibilityLabel("Close privacy settings") } }
+            .onChange(of: publicLink) { on in if on { household = false; friends = [] }; consent = false; done = "" }
+            .onChange(of: household) { _ in consent = false; done = "" }
+            .navigationTitle("Share activity").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving).accessibilityLabel("Close sharing") } }
             .interactiveDismissDisabled(saving)
+            .alert("Stop sharing?", isPresented: $confirmStop) {
+                Button("Stop sharing", role: .destructive) { save("private") }
+                Button("Keep sharing", role: .cancel) {}
+            } message: { Text("Nobody else will be able to see this activity. Copies others already saved cannot be recalled.") }
             .task(id: model.presentation.updatedAt) { await load() }
         }.navigationViewStyle(.stack)
+    }
+    private func apply(_ result: [String: Any]) {
+        audience = result["audience"] as? String
+        confirmedHousehold = result["household"] as? Bool ?? false
+        confirmedFriends = Set((result["friends"] as? [String]) ?? [])
+        household = confirmedHousehold; friends = confirmedFriends; publicLink = audience == "public"; consent = false
     }
     private func load() async {
         loading = true
         defer { loading = false }
         do {
             let result = try await model.request("privacyStatus")
-            audience = result["audience"] as? String
-            choice = audience == "public" ? "public" : "private"
-        } catch { problem = "Online sharing status is unavailable. You can retry, or explicitly make this activity private." }
+            let options = result["options"] as? [String: Any] ?? [:]
+            people = ((options["friends"] as? [[String: Any]]) ?? []).compactMap { item in
+                guard let id = item["id"] as? String else { return nil }
+                return Friend(id: id, name: item["name"] as? String ?? "Friend")
+            }
+            householdName = options["household"] as? String
+            apply(result)
+        } catch { problem = "Sharing status is unavailable. You can retry, or stop sharing this activity." }
     }
-    private func save() {
+    private func save(_ choice: String) {
         saving = true; problem = ""; done = ""
         Task {
             defer { saving = false }
             do {
-                let result = try await model.request("privacySave", args: ["choice": choice], timeout: 180)
-                audience = result["audience"] as? String
+                let result = try await model.request("privacySave", args: ["choice": choice, "household": household, "friends": Array(friends).sorted()], timeout: 180)
+                apply(result)
                 done = result["message"] as? String ?? ""
             } catch ActivityDetailsError.timedOut {
                 audience = nil
                 problem = "This is taking longer than expected, so the result is not confirmed. Close this and check again before relying on it."
-            } catch { audience = nil; problem = error.localizedDescription }
+            } catch {
+                // The server kept the last confirmed sharing; show that, not the attempted one.
+                household = confirmedHousehold; friends = confirmedFriends; publicLink = audience == "public"
+                problem = error.localizedDescription
+            }
         }
     }
+    private func createInvite() {
+        inviting = true; problem = ""
+        Task {
+            defer { inviting = false }
+            do {
+                let result = try await model.request("createFriendInvite")
+                if let text = result["text"] as? String, !text.isEmpty { presentShare(text) }
+            } catch { problem = error.localizedDescription }
+        }
+    }
+}
+
+// The iOS share sheet for an invitation, over whatever is showing. A SwiftUI
+// sheet nested in this sheet stops every sheet on the screen from presenting.
+@MainActor private func presentShare(_ text: String) {
+    guard let root = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first?.rootViewController else { return }
+    var top = root
+    while let next = top.presentedViewController { top = next }
+    let sheet = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+    sheet.popoverPresentationController?.sourceView = top.view
+    sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+    top.present(sheet, animated: true)
 }
 
 // MARK: Photo suggestions

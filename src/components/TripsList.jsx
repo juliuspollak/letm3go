@@ -1,6 +1,7 @@
 import {activityLabel} from '../lib/activityNames.js';
 import {memo,startTransition,useCallback,useEffect,useMemo,useRef,useState} from 'react';
-import {Archive,ChevronRight,GitMerge,Search,Star,Trash2} from 'lucide-react';
+import {Archive,ChevronRight,GitMerge,Globe,Home,Search,Share2,Star,Trash2} from 'lucide-react';
+import PersonAvatar from './PersonAvatar.jsx';
 import ActivityIcon from './ActivityIcon.jsx';
 import {EquipmentChip} from './EquipmentChip.jsx';
 import {TRIP_PAGE_SIZE,TRIP_PREFETCH_BATCH_SIZE,canMergeTrip,tripMatchReason,deletionIDs} from '../lib/tripsList.js';
@@ -11,7 +12,14 @@ import {distanceUnitLabel,tripDistanceValue,tripDistanceText} from '../lib/dista
 // preferences. Without it each of those commits re-rendered every row — including
 // all their date formatting and equipment chips — in the middle of a scroll. Rows
 // now only re-render when their own journey object or one of their flags changes.
-const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,swiped,dragging,dropTarget,mergeSelected,mergeCandidate,busy,showArchived,vehicles,onEquipment}){
+// My shared activity: who can see it, compactly (household, up to three friends).
+function SharingIndicator({sharing,photos}){
+ const shown=sharing.friends.slice(0,3),more=sharing.friends.length-shown.length;
+ const label=sharing.audience==='public'?'Shared by public link':`Shared with ${[sharing.household?'household':null,sharing.friends.length?`${sharing.friends.length} friend${sharing.friends.length===1?'':'s'}`:null].filter(Boolean).join(' and ')}`;
+ return <small className="trip-sharing" aria-label={label} title={label}><Share2 size={12} aria-hidden="true"/>{sharing.audience==='public'&&<Globe size={12} aria-hidden="true"/>}{sharing.household&&<Home size={12} aria-hidden="true"/>}
+  {shown.map(friend=><PersonAvatar key={friend.id} size="xs" userId={friend.id} name={friend.name} photos={photos}/>)}{more>0&&<span>+{more}</span>}</small>;
+}
+const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,swiped,dragging,dropTarget,mergeSelected,mergeCandidate,busy,showArchived,vehicles,onEquipment,sharing=null,photos=null}){
  const shared=trip.isShared===true,mergeable=!shared&&canMergeTrip(trip),deletable=!shared&&deletionIDs(trip).length>0;
  const actionWidth=deletable?198:132;
  const reason=query.trim()?tripMatchReason(trip,query,vehicles):null;
@@ -27,7 +35,7 @@ const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,s
   </div>}
   <div className="trip-swipe-surface" style={{transform:!shared&&swiped?`translateX(-${actionWidth}px)`:undefined}}>
    <div className="recent-activity-row">
-    <button type="button" className="trip-open-button" data-action="open" aria-label={`Open ${trip.title}`}><span className="recent-activity-icon"><ActivityIcon activity={activityLabel(trip.activity)} size={19}/></span><span className="recent-activity-info"><strong>{trip.title}</strong>{shared&&<small className="trip-shared-label"><span>Shared</span> · {trip.ownerName||'Friend'}</small>}<small>{trip.isGroupedJourney?`${trip.segmentIDs.length} activities · ${trip.stops.length} stops`:activityLabel(trip.activity)}{trip.source==='watch'&&!trip.isGroupedJourney?' · Apple Watch':''} · {formatters.date.format(new Date(`${trip.date}T12:00:00`))}</small>{trip.provisional&&<small className="trip-provisional">Stopped · saved, may continue</small>}{reason&&<small className="trip-search-reason"><Search size={12}/>{reason.label}: <strong>{reason.value}</strong></small>}<small>{formatters.time.format(trip.startedAt*1000)} – {trip.endedAt!=null?formatters.time.format(trip.endedAt*1000):'Recording'}</small></span><span className="recent-activity-distance">{sort==='duration'?<>{Math.floor(trip.durationSeconds/60)} <small>min</small><small className="trip-time-distance">{tripDistanceText(trip,unit)}</small></>:<span title={trip.distanceEstimate?'Estimated: includes GPS gaps':undefined}>{tripDistanceValue(trip,unit)} <small>{distanceUnitLabel(unit)}</small></span>}</span></button>
+    <button type="button" className="trip-open-button" data-action="open" aria-label={`Open ${trip.title}`}><span className="recent-activity-icon"><ActivityIcon activity={activityLabel(trip.activity)} size={19}/></span><span className="recent-activity-info"><strong className="trip-title-line">{shared&&<PersonAvatar size="xs" userId={trip.sharedOwnerID} name={trip.ownerName||'Friend'} photos={photos}/>}{shared&&<span className="sr-only">Shared by {trip.ownerName||'a friend'}: </span>}{trip.title}</strong>{!shared&&sharing&&<SharingIndicator sharing={sharing} photos={photos}/>}<small>{trip.isGroupedJourney?`${trip.segmentIDs.length} activities · ${trip.stops.length} stops`:activityLabel(trip.activity)}{trip.source==='watch'&&!trip.isGroupedJourney?' · Apple Watch':''} · {formatters.date.format(new Date(`${trip.date}T12:00:00`))}</small>{trip.provisional&&<small className="trip-provisional">Stopped · saved, may continue</small>}{reason&&<small className="trip-search-reason"><Search size={12}/>{reason.label}: <strong>{reason.value}</strong></small>}<small>{formatters.time.format(trip.startedAt*1000)} – {trip.endedAt!=null?formatters.time.format(trip.endedAt*1000):'Recording'}</small></span><span className="recent-activity-distance">{sort==='duration'?<>{Math.floor(trip.durationSeconds/60)} <small>min</small><small className="trip-time-distance">{tripDistanceText(trip,unit)}</small></>:<span title={trip.distanceEstimate?'Estimated: includes GPS gaps':undefined}>{tripDistanceValue(trip,unit)} <small>{distanceUnitLabel(unit)}</small></span>}</span></button>
     {shared?<ChevronRight size={16} aria-hidden="true"/>:<EquipmentChip trip={trip} items={vehicles} onOpen={onEquipment} fallback={<ChevronRight size={16} aria-hidden="true"/>}/>}
    </div>
    {!shared&&<button type="button" className="icon-button trip-row-bookmark" data-action="pin" aria-pressed={favourite} title={favourite?'Remove from favourites':'Add to favourites'} aria-label={`${favourite?'Remove from':'Add to'} favourites: ${trip.title}`}><Star size={17} fill={favourite?'currentColor':'none'}/></button>}
@@ -39,7 +47,7 @@ const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,s
 
 // One delegated listener per gesture type instead of five per row keeps memoised
 // rows from ever seeing a new callback identity.
-export default function TripsList({journeys,unit,sort,query,favourites,vehicles,busy,showArchived,mergeSource,mergeTarget,onOpen,onBookmark,onEquipment,onArchive,onDelete,onRestore,onMergeSelect,onMergeTarget}){
+export default function TripsList({journeys,unit,sort,query,favourites,vehicles,busy,showArchived,mergeSource,mergeTarget,sharing=null,photos=null,onOpen,onBookmark,onEquipment,onArchive,onDelete,onRestore,onMergeSelect,onMergeTarget}){
  const timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone;
  const formatters=useMemo(()=>({
   date:new Intl.DateTimeFormat('en-AU',{day:'numeric',month:'short',timeZone}),
@@ -169,8 +177,8 @@ export default function TripsList({journeys,unit,sort,query,favourites,vehicles,
   return()=>observer.disconnect();
  },[more,journeys.length,limit]);
 
- const rows=useMemo(()=>list.map(trip=><TripRow key={trip.id} trip={trip} formatters={formatters} unit={unit} sort={sort} query={query} vehicles={vehicles} showArchived={showArchived} busy={busy} onEquipment={openEquipment} favourite={favouriteIDs.has(trip.id)} swiped={swiped===trip.id} dragging={dragging===trip.id} dropTarget={dropTarget===trip.id} mergeSelected={mergeSource===trip.id} mergeCandidate={Boolean(mergeSource&&mergeSource!==trip.id)}/>),
-  [list,formatters,unit,sort,query,vehicles,showArchived,busy,openEquipment,favouriteIDs,swiped,dragging,dropTarget,mergeSource]);
+ const rows=useMemo(()=>list.map(trip=><TripRow key={trip.id} trip={trip} formatters={formatters} unit={unit} sort={sort} query={query} vehicles={vehicles} showArchived={showArchived} busy={busy} onEquipment={openEquipment} sharing={sharing?.[trip.id]||null} photos={photos} favourite={favouriteIDs.has(trip.id)} swiped={swiped===trip.id} dragging={dragging===trip.id} dropTarget={dropTarget===trip.id} mergeSelected={mergeSource===trip.id} mergeCandidate={Boolean(mergeSource&&mergeSource!==trip.id)}/>),
+  [list,formatters,unit,sort,query,vehicles,showArchived,busy,openEquipment,favouriteIDs,swiped,dragging,dropTarget,mergeSource,sharing,photos]);
 
  return <>
   <div className="recent-activities trips-activity-list" onClick={handlers.click} onPointerDown={handlers.pointerDown} onPointerMove={handlers.pointerMove} onPointerUp={handlers.pointerUp} onPointerCancel={handlers.pointerCancel} onLostPointerCapture={handlers.pointerCancel} onDragStart={handlers.dragStart} onDragOver={handlers.dragOver} onDragLeave={handlers.dragLeave} onDrop={handlers.drop} onDragEnd={handlers.dragEnd}>

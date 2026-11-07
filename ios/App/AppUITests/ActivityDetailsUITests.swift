@@ -79,8 +79,24 @@ final class ActivityDetailsUITests: XCTestCase {
         XCTAssertTrue(title.waitForExistence(timeout: 5))
     }
     func testPrivacySheetLoadsStatus() {
-        app.buttons["Activity privacy"].tap()
-        XCTAssertTrue(app.staticTexts["Only you can see this trip."].waitForExistence(timeout: 5))
+        app.buttons["Share activity"].tap()
+        XCTAssertTrue(app.staticTexts["Only you can see this activity."].waitForExistence(timeout: 5))
+        // Nothing is shared yet, so nothing is selected and Save is not offered.
+        XCTAssertTrue(app.switches["Ava"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.switches["Ava"].value as? String, "0")
+        XCTAssertFalse(app.buttons["activity.share.save"].exists)
+        // The row is a switch; on current iOS the control is a nested switch inside it.
+        let row = app.switches["Ava"], control = row.switches.firstMatch
+        XCTAssertTrue(row.isHittable)
+        (control.exists ? control : row).tap()
+        let on = expectation(for: NSPredicate(format: "value == '1'"), evaluatedWith: row)
+        wait(for: [on], timeout: 5)
+        // A first share adds the route preview and consent above Save: scroll to it.
+        let save = app.buttons["activity.share.save"]
+        for _ in 0..<6 where !save.exists { app.swipeUp() }
+        XCTAssertTrue(save.waitForExistence(timeout: 3))
+        // Save stays disabled until the person agrees to the reviewed copy.
+        XCTAssertFalse(save.isEnabled)
     }
     func testKeyboardExpandsThePanelForSegmentName() {
         drag(from: height * 0.8, to: height * 0.2, speed: .slow)

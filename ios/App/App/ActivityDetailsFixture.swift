@@ -13,7 +13,7 @@ final class ActivityDetailsFixtureService: ActivityDetailsService {
     func perform(_ mutation: ActivityMutation, activityID: String, ownerID: String, loadedUpdatedAt: Double?) async throws { log.append("\(mutation)") }
     func request(_ op: String, args: [String: Any], timeout: TimeInterval, progress: ((String) -> Void)?) async throws -> [String: Any] {
         switch op {
-        case "privacyStatus": return ["audience": "private"]
+        case "privacyStatus": return ["audience": "private", "household": false, "friends": [String](), "options": ["friends": [["id": "f1", "name": "Ava"]], "household": "Family"]]
         case "findTrails": return ["trails": []]
         default: return [:]
         }
