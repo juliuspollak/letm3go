@@ -15,20 +15,20 @@ const idOf=item=>String(item?.id||'');
 const same=(a,b)=>idOf(a)===idOf(b);
 export default function SocialJourneys({activities=[],ownerID,receipts={},saveReceipts}) {
  const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false),[members,setMembers]=useState([]);
- const [feed,setFeed]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
+ const [feed,setFeed]=useState([]),[mine,setMine]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
  const [chosen,setChosen]=useState(null),[openID,setOpenID]=useState(null);
  const [household,setHousehold]=useState(false),[allFriends,setAllFriends]=useState(false),[selectedFriends,setSelectedFriends]=useState([]);
  const [link,setLink]=useState(false),[photoIDs,setPhotoIDs]=useState([]),[publishedToken,setPublishedToken]=useState(null);
  const refresh=useCallback(async()=>{
   if(!supabase)return;
-  const [f,h,j]=await Promise.all([
-   supabase.rpc('my_friends'),supabase.rpc('my_household'),supabase.rpc('my_social_journey_feed')
+  const [f,h,j,p]=await Promise.all([
+   supabase.rpc('my_friends'),supabase.rpc('my_household'),supabase.rpc('my_social_journey_feed'),supabase.rpc('my_social_publications')
   ]);
-  if(f.error||h.error||j.error){setError('Social journey sharing needs the new database migration and a connection.');return;}
+  if(f.error||h.error||j.error||p.error){setError('Social journey sharing needs the new database migration and a connection.');return;}
   setFriends(f.data||[]);setHouseholdReady(Boolean(h.data?.[0]?.id));
   if(h.data?.[0]?.id){const roster=await supabase.rpc('household_members');if(!roster.error)setMembers(roster.data||[]);}
   else setMembers([]);
-  setFeed(j.data||[]);setError('');
+  setFeed(j.data||[]);setMine(p.data||[]);setError('');
  },[]);
  useEffect(()=>{
   const timer=setTimeout(()=>void refresh(),0);
@@ -85,6 +85,12 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   {feed.length?feed.map(item=><button key={item.activity_id} type="button" className="grouped-row" onClick={()=>setOpenID(item.activity_id)}>
    <strong>{personName(item.owner_id)} · {item.title}</strong><span>{item.activity} · {new Date(item.started_at).toLocaleDateString('en-AU')} · {Number(item.distance_km||0).toFixed(1)} km</span><span>Open shared map and photos</span>
   </button>):<p className="muted small-copy">No activities have been shared with you yet.</p>}
+  {mine.length>0&&<div className="social-own-publications"><h3>My shared activities</h3>
+   {mine.map(item=><div className="status-row" key={item.activity_id}><div><strong>{item.title||'Shared activity'}</strong>
+    <p>{item.mode||item.audience} · {item.mode===null&&item.audience!=='public'?'Recipients need confirmation':'Shared'}</p>
+    {item.audience==='public'&&item.token&&<a href={window.location.origin+'/?journey='+encodeURIComponent(item.token)}>Open public link</a>}
+   </div><button type="button" className="secondary" disabled={loading} onClick={()=>void unshare({id:item.activity_id})}>Stop sharing</button></div>)}
+  </div>}
   {!chosen?<details><summary>Share one of my completed activities</summary>
    {available.map(t=><div className="status-row" key={t.id}><div><strong>{t.title||t.activity}</strong><p>{new Date(t.startedAt*1000).toLocaleDateString('en-AU')}</p></div><button className="secondary" type="button" disabled={loading} onClick={()=>void start(t)}>Review &amp; share</button></div>)}
   </details>:<div className="social-share-review">
