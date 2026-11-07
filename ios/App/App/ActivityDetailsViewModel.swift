@@ -109,7 +109,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     }
     // Ask JavaScript. The reply is ignored once the activity has moved on.
     func request(_ op: String, args: [String: Any] = [:], timeout: TimeInterval = 25, progress: ((String) -> Void)? = nil) async throws -> [String: Any] {
-        guard !presentation.header.readOnly || op == "sharedPhoto" else { throw ActivityDetailsError.cancelled }
+        guard !presentation.header.readOnly || (presentation.header.source == "shared" && op == "sharedPhoto") else { throw ActivityDetailsError.cancelled }
         let id = presentation.activityID
         let result = try await service.request(op, args: args, timeout: timeout, progress: progress)
         guard !closed, presentation.activityID == id else { throw ActivityDetailsError.cancelled }
@@ -123,7 +123,7 @@ final class ActivityDetailsViewModel: ObservableObject {
     // Shared media is permitted per photograph by the same JS/Supabase account.
     // No bearer token is passed into Swift, only a 60-second signed HTTPS URL.
     func photoImage(_ photoID: String, pixels: CGFloat) async -> UIImage? {
-        guard presentation.header.readOnly else {
+        guard presentation.header.source == "shared" else {
             return await service.fullImage(activityID: presentation.activityID, photoID: photoID, pixels: pixels)
         }
         guard presentation.photos.items.contains(where: { $0.id == photoID }) else { return nil }
