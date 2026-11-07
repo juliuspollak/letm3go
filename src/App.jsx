@@ -341,7 +341,7 @@ function PrivateApp(){
  const selectedActivity=selected&&!selected.isGroupedJourney?(visibleJourneys.find(j=>j.id===selected.id)||realJourneys.find(j=>j.id===selected.id)||selected):null;
  const today=new Date().toLocaleDateString('en-CA');
  const mapJourneys=useMemo(()=>mapViewJourneys(grouping.journeys,mapView,today,saved,archivedTrips),[grouping.journeys,mapView,today,saved,archivedTrips]);
- const combinedMapJourneys=useMemo(()=>socialMapEnabled?[...mapJourneys,...socialMap.journeys]:mapJourneys,[mapJourneys,socialMapEnabled,socialMap.journeys]);
+ const combinedMapJourneys=useMemo(()=>socialMapEnabled?[...socialMap.journeys.slice(0,15),...mapJourneys.slice(0,35)]:mapJourneys,[mapJourneys,socialMapEnabled,socialMap.journeys]);
  const mapActivities=useMemo(()=>activityChoices(grouping.journeys),[grouping.journeys]);
  // The route overview: a density map of every shown journey (not only the 50
  // most recent) with clustered photos. Rebuilt only when the journeys change.
