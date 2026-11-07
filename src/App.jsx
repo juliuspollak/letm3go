@@ -243,8 +243,8 @@ function PrivateApp(){
  const mapPeople=useMemo(()=>peoplePins({
   self:mapLocation.position?{latitude:mapLocation.position.latitude,longitude:mapLocation.position.longitude,accuracy:mapLocation.position.accuracy,name:auth.preferences.displayName||'You',home:homeFlags.self===true,seconds:selfSeconds,activity:automaticPresenceActivity}:null,
   members:mapView.people?[...householdMembers.map(m=>({...m,home:homeFlags[m.user_id]===true})),...friendMembers]:[],
-  photos:peopleAvatars.photos,selfId:session.user.id,selfAvatar:auth.preferences.avatar,places:savedPlaces||[],activities:sharedActivities
- }),[mapView.people,mapLocation.position,householdMembers,friendMembers,homeFlags,peopleAvatars.photos,session.user.id,auth.preferences.avatar,auth.preferences.displayName,selfSeconds,automaticPresenceActivity,savedPlaces,sharedActivities]);
+  photos:peopleAvatars.photos,selfId:session.user.id,selfAvatar:auth.preferences.avatar,places:savedPlaces||[],activities:sharedActivities,nowMs:motionClock
+ }),[mapView.people,mapLocation.position,householdMembers,friendMembers,homeFlags,peopleAvatars.photos,session.user.id,auth.preferences.avatar,auth.preferences.displayName,selfSeconds,automaticPresenceActivity,savedPlaces,sharedActivities,motionClock]);
  // What the household sees of you: confirmed sends, not just the switch.
  const selfSharedAt=Math.max(presence.lastPublishedAt||0,(recording.state.nativeFamilySharing?.lastUploadOkAt||0)*1000);
  const selfLocationState=!presence.liveEnabled?{state:'off',ageSeconds:null}:

@@ -128,3 +128,38 @@ it('gives a live driver the driving marker, and a stale one nothing',()=>{
  expect(activity('live')).toContain('"activity":"driving"');
  expect(activity('stale')).not.toContain('"activity":"driving"');
 });
+
+// Exercise the native map payload, including grouped people and offline expiry.
+describe('shared speed in people bubbles',()=>{
+ const receivedAtMs=Date.parse(server);
+ const pin=(speed_kmh,age=5,extra={})=>{
+  const row={...anna,speed_kmh,location_at:ago(age),receivedAtMs,...extra};
+  return peoplePins({members:[{...row,...memberLocationState(row)}],activities:{anna:'Driving'},nowMs:receivedAtMs})[0];
+ };
+ it('shows rounded km/h in the bubble, callout and accessible member label',()=>{
+  const bubble=pin(67.8);
+  expect(bubble.label).toBe('Driving · 68 km/h');
+  expect(bubble.subtitle).toContain('68 km/h · speed updated 5 s ago');
+  expect(bubble.members[0].label).toContain('68 km/h');
+  expect(mapPayload([],null,null,[],[bubble]).pins[0].label).toBe(bubble.label);
+  expect(pin(0).label).toBe('Driving · 0 km/h');
+ });
+ it('omits unknown, invalid and old speeds without hiding the person',()=>{
+  for(const speed of [null,undefined,-1,NaN,Infinity,251,'68'])expect(pin(speed).label).toBeUndefined();
+  expect(pin(68,31).label).toBeUndefined();
+  expect(pin(68,3600).label).not.toContain('km/h');
+ });
+ it('expires speed as local time advances even if no new server response arrives',()=>{
+  const row={...anna,speed_kmh:68,location_at:ago(5),receivedAtMs};
+  const members=[{...row,...memberLocationState(row)}];
+  expect(peoplePins({members,nowMs:receivedAtMs+25000})[0].label).toBe('68 km/h');
+  expect(peoplePins({members,nowMs:receivedAtMs+26000})[0].label).toBeUndefined();
+ });
+ it('keeps speeds attached to the right people when their avatars are grouped',()=>{
+  const rows=[{...anna,speed_kmh:68,location_at:ago(5)}, {...anna,user_id:'bob',display_name:'Bob',speed_kmh:42,location_at:ago(5)}];
+  const [bubble]=peoplePins({members:rows.map(row=>({...row,...memberLocationState(row)}))});
+  expect(bubble.label).toBeUndefined();
+  expect(bubble.subtitle).toContain('Anna: Sharing location · updated just now · 68 km/h');
+  expect(bubble.subtitle).toContain('Bob: Sharing location · updated just now · 42 km/h');
+ });
+});

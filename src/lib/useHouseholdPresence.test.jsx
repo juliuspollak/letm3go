@@ -32,15 +32,15 @@ afterEach(cleanup);
 it('loads every household member with their state, not just members seen in the last 90 seconds',async()=>{
  const {result}=renderHook(()=>useHouseholdPresence('julius',true));
  await waitFor(()=>expect(result.current.liveReady).toBe(true));
- expect(result.current.liveMembers).toEqual([anna]);
- expect(result.current.livePeople).toEqual([anna]);
+ expect(result.current.liveMembers).toEqual([expect.objectContaining({...anna,receivedAtMs:expect.any(Number)})]);
+ expect(result.current.livePeople).toEqual([expect.objectContaining({...anna,receivedAtMs:expect.any(Number)})]);
  expect(mock.rpc).toHaveBeenCalledWith('my_household_location_status');
 });
 it('keeps members without a position in the member list but off the map list',async()=>{
  const waiting={...anna,latitude:null,longitude:null,location_at:null};
  respond('my_household_location_status',{data:[waiting]});
  const {result}=renderHook(()=>useHouseholdPresence('julius',true));
- await waitFor(()=>expect(result.current.liveMembers).toEqual([waiting]));
+ await waitFor(()=>expect(result.current.liveMembers).toEqual([expect.objectContaining({...waiting,receivedAtMs:expect.any(Number)})]));
  expect(result.current.livePeople).toEqual([]);
 });
 it('falls back to the earlier RPC until the database migration is applied',async()=>{
@@ -57,7 +57,7 @@ it('survives a temporary network failure without blanking the map, then recovers
  respond('my_household_location_status',new Error('Failed to fetch'));
  await act(async()=>{await result.current.refreshLive();});
  expect(result.current.liveError).not.toBe('');
- expect(result.current.livePeople).toEqual([anna]);
+ expect(result.current.livePeople).toEqual([expect.objectContaining({...anna,receivedAtMs:expect.any(Number)})]);
  // A missed update: the next foreground fetch restores the current state.
  const moved={...anna,latitude:-33.9,location_at:'2026-11-04T08:05:00Z',server_now:'2026-11-04T08:05:10Z'};
  respond('my_household_location_status',{data:[moved]});

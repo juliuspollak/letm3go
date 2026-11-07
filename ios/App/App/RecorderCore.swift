@@ -51,10 +51,19 @@ struct RecordedActivity: Codable {
     var updatedAt: Double?
     mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
+        if recordingMode == "automatic" {
+            guard AutomaticActivityPolicy.allows(classification.predicted) else { return }
+            // Established types change only through the confirmed transition path.
+            if !metadata.userCorrected, AutomaticActivityPolicy.allows(activity), activity != classification.predicted { return }
+        }
         // Unknown or a brief walk after parking must not replace a whole drive.
         guard classification.predicted != "Unknown",distance.isFinite,distance>0 else { return }
         var weights=metadata.classificationDistances ?? [:]
-        if metadata.classificationDistances == nil,metadata.classification.predicted != "Unknown" {
+        if recordingMode == "automatic", !metadata.userCorrected {
+            weights=weights.filter { AutomaticActivityPolicy.allows($0.key) }
+        }
+        if metadata.classificationDistances == nil,metadata.classification.predicted != "Unknown",
+           recordingMode != "automatic" || AutomaticActivityPolicy.allows(metadata.classification.predicted) {
             weights[metadata.classification.predicted]=max(0,distanceMeters-distance)
         }
         weights[classification.predicted,default:0] += distance
@@ -599,7 +608,31 @@ struct MotionEvidence {
     // Core Motion's startDate, for diagnostics only.
     var startedAt: Double = 0
 }
+// Raw sensor classifications and manually chosen activities support many types.
+// Only these two types may be assigned by the automatic recorder.
+enum AutomaticActivityPolicy {
+    static func allows(_ activity: String) -> Bool { activity == "Walking" || activity == "Driving" }
+    static func allows(_ family: JourneyFamily) -> Bool { family == .onFoot || family == .driving }
+    static func continuationMovement(_ motion: MotionEvidence, speed: Double, now: Double, from family: JourneyFamily) -> JourneyFamily? {
+        if unsupportedMotion(motion,now:now) { return family == .driving ? .driving : nil }
+        guard let movement=JourneyContinuation.movement(motion,speed:speed,now:now), allows(movement) else { return nil }
+        return movement
+    }
+    static func unsupportedMotion(_ motion: MotionEvidence, now: Double) -> Bool {
+        guard motion.confidence != "low", now >= motion.timestamp, now-motion.timestamp <= 30 else { return false }
+        // A cycling/running flag must not fall through into GPS-only Walking or
+        // Driving. A simultaneous automotive flag still supports Driving.
+        return !motion.types.contains("Driving") && motion.types.contains(where: { $0 == "Cycling" || $0 == "Running" })
+    }
+}
 struct SmartClassifier {
+    static func classifyAutomatic(motion: MotionEvidence, speed: Double, displacement: Double, seconds: Double, accuracy: Double, now: Double) -> Classification {
+        let result=classify(motion:motion,speed:speed,displacement:displacement,seconds:seconds,accuracy:accuracy,now:now)
+        guard result.predicted == "Unknown" || AutomaticActivityPolicy.allows(result.predicted) else {
+            return Classification(predicted:"Unknown",confidence:"low",evidence:["Automatic recording only assigns Walking or Driving"])
+        }
+        return result
+    }
     static func classify(motion: MotionEvidence, speed: Double, displacement: Double, seconds: Double, accuracy: Double, now: Double) -> Classification {
         let moving = motion.types.filter { ["Walking", "Running", "Cycling", "Driving"].contains($0) }
         guard (motion.continuous || now - motion.timestamp <= 90), motion.confidence != "low", moving.count == 1,
@@ -939,7 +972,7 @@ struct MovementTransition {
     // fast bicycle is never a drive.
     static func candidate(_ point: GPSPoint, motion: MotionEvidence, now: Double) -> JourneyFamily? {
         if AutomaticDetector.drivingMotion(motion,now:now) { return .driving }
-        if AutomaticDetector.cyclingMotion(motion,now:now) { return .cycling }
+        if AutomaticActivityPolicy.unsupportedMotion(motion,now:now) { return nil }
         if AutomaticDetector.onFootMotion(motion,now:now), point.speed >= 0.4,
            point.speed <= maximumSpeed(.onFoot,motion:motion,now:now) { return .onFoot }
         if motionAvailable(motion) {
@@ -2085,6 +2118,7 @@ struct AutomaticDetector {
         credibleMovement(current,now:now) && !credibleMovement(previous,now:now)
     }
     static func shouldProbe(_ point:GPSPoint,motion:MotionEvidence,now:Double)->Bool {
+        if AutomaticActivityPolicy.unsupportedMotion(motion,now:now) { return false }
         if motion.confidence != "low",motion.types == ["Stationary"],now-motion.timestamp<=90,point.speed<3 {return false}
         return point.speed>=0.5 || (motion.confidence != "low" && motion.types.contains(where:{["Walking","Running","Cycling","Driving"].contains($0)}))
     }
@@ -2103,6 +2137,7 @@ struct AutomaticDetector {
     mutating func reset() { self = AutomaticDetector() }
     mutating func observe(_ point: GPSPoint, motion: MotionEvidence, manualActive: Bool, now: Double, activity: String = "Driving") -> String? {
         guard !manualActive else { reset(); return nil }
+        if phase != "recording", AutomaticActivityPolicy.unsupportedMotion(motion,now:now) { reset(); return nil }
         guard point.accuracy >= 0, point.accuracy <= 65, abs(now-point.timestamp) <= 20 else { return nil }
         lastValidFixAt = point.timestamp
         if let previous = candidate.last, point.timestamp <= previous.timestamp { return nil }

@@ -65,7 +65,7 @@ extension LocationRecorder {
                     self.noteWakeCheckEnded(now:now)
                     self.returnFromFalseWake(now:now)
                     self.reconcileAutomaticSampling()
-                } else if AutomaticDetector.credibleMovement(self.motion,now:now) {
+                } else if AutomaticDetector.credibleMovement(self.motion,now:now), !AutomaticActivityPolicy.unsupportedMotion(self.motion,now:now) {
                     self.noteRestDisturbance(now:now)
                     let onFootOnly = !AutomaticDetector.drivingMotion(self.motion,now:now) && !AutomaticDetector.cyclingMotion(self.motion,now:now)
                     let idle = self.automaticTrip == nil && self.settledTripID == nil
@@ -710,7 +710,7 @@ extension LocationRecorder {
                         // sustained movement transition may relabel it as a vehicle.
                         // A late or stale Core Motion classification must not turn a
                         // walk into a drive on a single sample.
-                        let prediction = SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:observedAt)
+                        let prediction = SmartClassifier.classifyAutomatic(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:observedAt)
                         let onFoot = JourneyFamily.of(trip.activity) == .onFoot && trip.details?.userCorrected != true
                         if sample.speed >= 0.3, !(onFoot && JourneyFamily.of(prediction.predicted) != .onFoot) {
                             trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)
@@ -757,7 +757,7 @@ extension LocationRecorder {
               last.timestamp > first.timestamp else { return }
         let confirmed = movementTransition.candidates
         let previous = JourneyFamily.detected(current)
-        guard previous != .other, previous != family, family != .other else { return }
+        guard previous != .other, previous != family, AutomaticActivityPolicy.allows(family) else { return }
         // A journey too short to publish is dropped instead of being split into an
         // empty record; its fixes belong to the new journey.
         // A motion-confirmed walk may precede the first GPS transition candidate.
@@ -837,7 +837,7 @@ extension LocationRecorder {
         beginRecordingAutomaticJourney(trip,at:last)
     }
     func makeAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint]) -> RecordedActivity? {
-        guard let first = points.first, let last = points.last, last.timestamp > first.timestamp else { return nil }
+        guard AutomaticActivityPolicy.allows(family), let first = points.first, let last = points.last, last.timestamp > first.timestamp else { return nil }
         let name = activityName(family, preserving: "")
         var trip = RecordedActivity(activity:name,startedAt:first.timestamp,resumedAt:first.timestamp,title:name)
         trip.recordingMode = "automatic"
@@ -1136,7 +1136,7 @@ extension LocationRecorder {
         let decision = JourneyContinuation.decide(
             stoppedAt: settled, now: now, distance: distance,
             family: family,
-            movement: JourneyContinuation.movement(motion, speed: sample.speed, now: now),
+            movement: AutomaticActivityPolicy.continuationMovement(motion,speed:sample.speed,now:now,from:family),
             change: change,
             window: continuationEndsAt.map { max(0, $0 - settled) } ?? JourneyContinuation.window(for: stopContext(for: trip, family: family))
         )
@@ -1187,7 +1187,7 @@ extension LocationRecorder {
         // recorded as the movement it actually was, not rejected as stale.
         if trip.accept(sample,now:sample.timestamp) {
             if let first = trip.points.first {
-                let prediction = SmartClassifier.classify(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now)
+                let prediction = SmartClassifier.classifyAutomatic(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now)
                 let onFoot = family == .onFoot && trip.details?.userCorrected != true
                 if sample.speed >= 0.3, !(onFoot && JourneyFamily.of(prediction.predicted) != .onFoot) {
                     trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)

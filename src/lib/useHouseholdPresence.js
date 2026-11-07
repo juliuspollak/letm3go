@@ -135,7 +135,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
     liveConsent.current=enabled;
     setLiveEnabled(enabled);setSelfArrival(enabled?arrival:null);setLiveError('');setLiveReady(true);
    }
-   if(request===positionRequest.current){setLiveMembers(members);noteDelivery(members);}
+   if(request===positionRequest.current){setLiveMembers(members.map(row=>({...row,receivedAtMs:Date.now()})));noteDelivery(members);}
   }catch(err){if(settingsToken===settingsRequest.current)setLiveError(err.message||'Location sharing could not be loaded.');}
  },[owner,online,noteDelivery]);
  // A signal only needs the positions: this one read, not the settings and arrival too.
@@ -147,7 +147,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    const members=await loadHouseholdLocations();
    if(request!==positionRequest.current)return;
    refreshTimes.current.push(Date.now()-started);
-   setLiveMembers(members);setLiveError('');
+   setLiveMembers(members.map(row=>({...row,receivedAtMs:Date.now()})));setLiveError('');
    noteDelivery(members);
   }catch{/* The next poll reports it; a missed signal must not raise an error. */}
  },[owner,online,noteDelivery]);

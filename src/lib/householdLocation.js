@@ -122,17 +122,28 @@ export function personName(member){
 // label says where the person is and for how long, only when that is known.
 // `places` are the viewer's own saved places; `activities` the coarse status
 // members already share (user id → label).
-export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvatar=null,places=[],activities={}}){
+export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvatar=null,places=[],activities={},nowMs=Date.now()}){
  const people=[];
  if(self&&validPoint(self.latitude,self.longitude))people.push({...self,id:'self',isSelf:true,state:'live',seconds:self.seconds??null,activity:self.activity??null});
  for(const member of members)if(member.position&&['live','stale'].includes(member.state))
   people.push({id:member.user_id,userId:member.user_id,name:personName(member),named:Boolean(member.display_name?.trim()),latitude:member.position.latitude,longitude:member.position.longitude,
    accuracy:member.position.accuracy,state:member.state,ageSeconds:member.ageSeconds,home:member.home&&member.state==='live',source:member.source||'household',
-   seconds:secondsAtPlace(member),activity:activities[member.user_id]??null});
+   seconds:secondsAtPlace(member),activity:activities[member.user_id]??null,
+   speedKmh:member.speed_kmh,speedAge:member.ageSeconds==null?null:member.ageSeconds+(Number.isFinite(member.receivedAtMs)?Math.max(0,(nowMs-member.receivedAtMs)/1000):0)});
  for(const p of people){
   const place=p.home||p.state!=='live'?null:savedPlaceName(p,places);
   p.label=personLabel({state:p.state,ageSeconds:p.isSelf?null:p.ageSeconds,home:p.home,place,seconds:p.seconds});
   p.movement=personActivity({state:p.state,home:p.home,seconds:p.seconds,shared:p.activity});
+  // Location stays visible longer than speed. Advance the server-measured age
+  // locally so failed refreshes cannot leave an old speed looking current.
+  if(p.state==='live'&&Number.isFinite(p.speedAge)&&p.speedAge>=0&&p.speedAge<=30&&
+    Number.isFinite(p.speedKmh)&&p.speedKmh>=0&&p.speedKmh<=250){
+   const speed=`${Math.round(p.speedKmh)} km/h`;
+   const movement={driving:'Driving',walking:'Walking',running:'Running',cycling:'Cycling'}[p.movement];
+   p.label={...p.label,short:movement?`${movement} · ${speed}`:p.label.short?`${p.label.short} · ${speed}`:speed,
+    text:`${p.label.text} · ${speed} · speed updated ${Math.floor(p.speedAge)} s ago`};
+   p.speedText=`${speed} · speed updated ${Math.floor(p.speedAge)} s ago`;
+  }
  }
  const fit=cameraFit(people);
  return groupPeople(people).map(({anchor,members:group})=>{
@@ -142,8 +153,9 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
   // One person: their own label. Several: "Home" when everyone there is at Home;
   // each person's own time is in the callout.
   const label=group.length===1?group[0].label:everyoneHome?{short:'Home',kind:'home'}:{short:null,kind:'none'};
-  const status=p=>p.isSelf?(p.label.kind==='live'?'your location':p.label.text):
+  const locationStatus=p=>p.isSelf?(p.label.kind==='live'?'your location':p.label.text):
    p.state==='live'&&p.label.kind!=='live'?`${p.label.text} · ${locationStatusText(p).replace('Sharing location · ','')}`:locationStatusText(p);
+  const status=p=>[locationStatus(p),p.label.kind==='live'?p.speedText:null].filter(Boolean).join(' · ');
   return {
    id:'people:'+group.map(p=>p.id).sort().join(','),
    point:self?[self.latitude,self.longitude]:[anchor.latitude,anchor.longitude],

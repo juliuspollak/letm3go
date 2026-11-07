@@ -132,3 +132,20 @@ These need two or three real phones in one household with sharing on. None of th
 | 15 | Airplane mode, then online | The last positions stay with their ages; updates resume |
 | 16 | Route, photo and saved-place maps; Community trails | Unchanged; Community trails opens |
 | 17 | Light, dark and satellite; iPhone SE and Pro Max | Labels legible; nothing under the tab bar or Dynamic Island |
+
+## Speed in people bubbles
+
+Household position updates already include `speed_kmh` from Core Location. A
+single person's map bubble now shows the rounded value, for example
+`Driving · 68 km/h`; the callout includes the age of that speed sample. Grouped
+avatars keep each person's speed in their own callout entry. Friends-only sharing
+does not supply speed, and the viewer's own marker does not infer it from motion.
+
+Speed is displayed only for a live position with a finite value from 0–250 km/h
+and a sample age no greater than 30 seconds. Age starts with the server-measured
+position age and advances using local elapsed time since the response arrived,
+so a failed refresh does not freeze a speed reading indefinitely. The existing
+15-second map clock rechecks expiry. Missing or invalid speed stays absent rather
+than becoming zero. Speed updates change the existing marker without rebuilding
+the map or moving the camera. Automated tests cover payloads, grouping, offline
+expiry and native-map bridge updates; a two-phone driving check remains manual.

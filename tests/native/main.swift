@@ -133,14 +133,14 @@ check(transition.observe(drivingFix(-33,700,speed:5),motion:slowUnconfirmed,now:
 check(transition.observe(drivingFix(-32.9965,715,speed:5),motion:slowUnconfirmed,now:715,from:.onFoot) == nil,"uncorroborated slow movement stays pending")
 check(transition.observe(drivingFix(-32.993,730,speed:5),motion:slowUnconfirmed,now:730,from:.onFoot) == nil,"5 m/s without automotive motion is not a drive")
 check(transition.candidates.isEmpty,"5 m/s without automotive motion is never buffered as driving")
-// A brisk e-bike reaches driving speeds; fresh cycling motion must win, and the
-// ride is its own cycling journey rather than a drive.
+// Cycling is manual-only. Its motion signal must not create an automatic
+// Cycling recording or fall through to Driving at e-bike speeds.
 transition.reset()
 let eBike=MotionEvidence(types:["Cycling"],confidence:"high",timestamp:800)
-check(transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800,from:.onFoot) == nil,"fresh cycling motion starts a cycling candidate")
+check(transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800,from:.onFoot) == nil,"fresh cycling motion is ignored for automatic transitions")
 check(transition.observe(drivingFix(-32.9988,812,speed:8),motion:eBike,now:812,from:.onFoot) == nil,"two e-bike fixes cannot split walking")
-check(transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826,from:.onFoot) == .cycling,"an e-bike at driving speed splits as cycling, never as a drive")
-check(transition.candidates.count == 3,"cycling motion is never buffered as a driving transition")
+check(transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826,from:.onFoot) == nil,"an e-bike cannot create an automatic Cycling or Driving transition")
+check(transition.candidates.isEmpty,"cycling motion is never buffered as an automatic transition")
 check(AutomaticDetector.cyclingMotion(eBike,now:801),"fresh cycling motion is credible")
 var detector = AutomaticDetector()
 check(detector.observe(point(-33,100),motion:motion,manualActive:false,now:100) == nil,"departure candidate")
@@ -504,8 +504,8 @@ check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.onF
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot),"walking away from a parked car is never a continuation")
 check(MovementTransition.candidate(metreFix(100,1200,speed:0.2),motion:footMotion(1200),now:1200) == nil,"standing still proposes no movement type")
 check(MovementTransition.candidate(metreFix(100,1200,speed:12),motion:footMotion(1200),now:1200) == .driving,"vehicle speed overrides a stale on-foot label")
-check(MovementTransition.candidate(metreFix(100,1200,speed:4.2),motion:MotionEvidence(types:["Running"],confidence:"high",timestamp:1200),now:1200) == .onFoot,"a running label allows running speed on foot")
-check(MovementTransition.candidate(metreFix(100,1200,speed:8),motion:MotionEvidence(types:["Cycling"],confidence:"high",timestamp:1200),now:1200) == .cycling,"cycling motion beats vehicle speed")
+check(MovementTransition.candidate(metreFix(100,1200,speed:4.2),motion:MotionEvidence(types:["Running"],confidence:"high",timestamp:1200),now:1200) == nil,"a running label cannot propose an automatic activity")
+check(MovementTransition.candidate(metreFix(100,1200,speed:8),motion:MotionEvidence(types:["Cycling"],confidence:"high",timestamp:1200),now:1200) == nil,"cycling motion cannot propose any automatic type")
 check(MovementTransition.candidate(metreFix(100,1200,speed:4.2),motion:footMotion(1200),now:1200) == nil,"walking speed limits stay in force for a walking label")
 // Core Motion denied: only unambiguous GPS shapes may propose a change, so driving
 // is never guessed against cycling, a scooter or a fast walk.
@@ -5115,3 +5115,71 @@ let runningGap = GapCause.note(seconds: 120, meters: 900, suspendedSeconds: 0, l
 check(runningGap.contains("the app was running but no GPS fix arrived") && runningGap.contains("background session held") && !runningGap.contains("Low Power"), "a gap with the app running is reported as missing fixes, not suspension")
 check(GapCause.note(seconds: 60, meters: 400, suspendedSeconds: 900, lowPower: false, activitySession: false, keepAlive: true).contains("suspended the app for 60s"), "suspension is never reported as longer than the gap")
 print("\(assertions) native recorder/auth assertions passed")
+
+// Automatic-only policy regressions. No private coordinates or personal timeline
+// are embedded: the reported Driving -> Cycling -> Driving sequence is replayed
+// with synthetic geometry. Actual reports recorded a 22-second-old Cycling label
+// and 22 GPS candidate samples at the first erroneous split.
+for unsupported in ["Cycling","MTB","Road cycling","Running","Hiking","Other","Unknown"] {
+    check(!AutomaticActivityPolicy.allows(unsupported),"automatic policy rejects " + unsupported)
+}
+check(AutomaticActivityPolicy.allows("Walking") && AutomaticActivityPolicy.allows("Driving"),"automatic policy allows Walking and Driving")
+check(!AutomaticActivityPolicy.allows(JourneyFamily.cycling),"automatic journey creation rejects cycling family")
+for unsupported in ["Cycling","Running"] {
+    let label=MotionEvidence(types:[unsupported],confidence:"high",timestamp:1000,continuous:true)
+    let guess=SmartClassifier.classifyAutomatic(motion:label,speed:5,displacement:100,seconds:30,accuracy:8,now:1022)
+    check(guess.predicted == "Unknown","automatic classifier rejects " + unsupported)
+    var departure=AutomaticDetector()
+    var departures=0
+    for second in 0...26 {
+        let p=metreFix(Double(second)*5,1000+Double(second),speed:5)
+        if departure.observe(p,motion:label,manualActive:false,now:p.timestamp) == "depart" { departures += 1 }
+    }
+    check(departures == 0 && departure.phase == "idle","unsupported motion cannot auto-start an activity")
+    check(!AutomaticDetector.shouldProbe(metreFix(0,1022,speed:5),motion:label,now:1022),"unsupported motion alone does not request an automatic departure probe")
+    let movement=AutomaticActivityPolicy.continuationMovement(label,speed:14,now:1022,from:.driving)
+    check(JourneyContinuation.decide(stoppedAt:1000,now:1022,distance:50,family:.driving,movement:movement) == .resume,"unsupported motion cannot turn a traffic pause into a different activity")
+}
+let automaticWalk=SmartClassifier.classifyAutomatic(motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),speed:1.5,displacement:80,seconds:30,accuracy:8,now:1022)
+let automaticCar=SmartClassifier.classifyAutomatic(motion:MotionEvidence(types:["Driving"],confidence:"high",timestamp:1000),speed:14,displacement:300,seconds:30,accuracy:8,now:1022)
+check(automaticWalk.predicted == "Walking" && automaticCar.predicted == "Driving","supported automatic classifications remain available")
+for correctedByUser in [false,true] {
+    var ride=RecordedActivity(activity:"MTB",startedAt:1000,title:"Explicit manual ride")
+    ride.recordingMode=correctedByUser ? "automatic" : "manual"
+    ride.details=ActivityDetails();ride.details?.userCorrected=correctedByUser
+    ride.applyPrediction(Classification(predicted:"Cycling",confidence:"high",evidence:[]),distance:1000)
+    check(ride.activity == "MTB","manual and explicitly corrected cycling remain available")
+}
+var contaminated=RecordedActivity(activity:"Driving",startedAt:1000,title:"Legacy automatic weights")
+contaminated.recordingMode="automatic";contaminated.details=ActivityDetails()
+contaminated.details?.classificationDistances=["Cycling":100000,"Driving":100]
+contaminated.applyPrediction(Classification(predicted:"Driving",confidence:"high",evidence:[]),distance:10)
+check(contaminated.activity == "Driving" && contaminated.details?.classificationDistances?["Cycling"] == nil,"legacy unsupported prediction weights cannot win")
+
+for refreshEveryFix in [false,true] {
+    var trace=RecordedActivity(activity:"Driving",startedAt:1000,resumedAt:1000,title:"Synthetic continuous drive")
+    trace.recordingMode="automatic";trace.details=ActivityDetails()
+    var changes=MovementTransition(),splits=0,accepted=0
+    for second in 0...500 {
+        let time=1000+Double(second)
+        let cycling=second >= 319 && second < 424
+        let labelAt=cycling && !refreshEveryFix ? 1319 : time
+        let evidence=MotionEvidence(types:[cycling ? "Cycling" : "Driving"],confidence:"high",timestamp:labelAt,continuous:true)
+        let p=metreFix(Double(second)*14,time,speed:14,accuracy:8)
+        if changes.observe(p,motion:evidence,now:time,from:.driving) != nil { splits += 1 }
+        let previousDistance=trace.distanceMeters
+        if trace.accept(p,now:time) { accepted += 1 }
+        let prediction=SmartClassifier.classifyAutomatic(motion:evidence,speed:14,displacement:Double(second)*14,seconds:Double(second),accuracy:8,now:time)
+        trace.applyPrediction(prediction,distance:trace.distanceMeters-previousDistance)
+        // Also exercise the record boundary independently of the filtered caller.
+        if cycling { trace.applyPrediction(Classification(predicted:"Cycling",confidence:"high",evidence:[]),distance:100000) }
+    }
+    check(splits == 0,"reported Driving-Cycling-Driving label sequence creates no automatic splits")
+    check(trace.activity == "Driving" && accepted == 501 && trace.points.count == 501,"scenario replay keeps one Driving activity and every valid fix")
+    check(trace.details?.classificationDistances?["Cycling"] == nil,"scenario replay never stores automatic Cycling prediction weights")
+}
+print("\(assertions) native assertions including automatic policy and scenario replay passed (synthetic GPS, not the original route).")
+
+let unsupportedSpeed=SmartClassifier.classifyAutomatic(motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),speed:20,displacement:100,seconds:30,accuracy:8,now:1022)
+check(unsupportedSpeed.predicted == "Unknown" && unsupportedSpeed.evidence.contains("Motion and GPS speed disagree"),"automatic filtering preserves the actual reason for uncertain sensor evidence")
+print("Final native assertion count: \(assertions)")

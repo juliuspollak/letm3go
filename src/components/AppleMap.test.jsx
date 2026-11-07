@@ -292,3 +292,17 @@ it('opens fullscreen without destroying the embedded map camera',async()=>{
  await waitFor(()=>expect(mocks.open).toHaveBeenCalled());
  expect(mocks.unembed).not.toHaveBeenCalled();
 });
+
+it('updates and expires a speed bubble in place without rebuilding the map',async()=>{
+ const people=label=>({routes:[],pins:[{id:'people:anna',kind:'people',point:[-33.87,151.21],title:'Anna',...(label?{label}:{}),members:[{id:'anna',name:'Anna',state:'live'}]}]});
+ const {rerender}=render(<AppleMap payload={people('Driving · 68 km/h')}/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ mocks.embed.mockClear();mocks.update.mockClear();mocks.snapshot.mockClear();
+ rerender(<AppleMap payload={people('Driving · 72 km/h')}/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[expect.objectContaining({label:'Driving · 72 km/h'})]})));
+ mocks.update.mockClear();
+ rerender(<AppleMap payload={people(null)}/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[expect.not.objectContaining({label:expect.anything()})]})));
+ expect(mocks.embed).not.toHaveBeenCalled();
+ expect(mocks.snapshot).not.toHaveBeenCalled();
+});
