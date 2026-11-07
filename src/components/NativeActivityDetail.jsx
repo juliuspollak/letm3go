@@ -47,7 +47,7 @@ export default function NativeActivityDetail(props){
  const library=journeys||activities||NONE;
  const [ridden,setRidden]=useState(NO_SEGMENTS);
  useEffect(()=>{
-  if(sharedReadOnly){setRidden(NO_SEGMENTS);return;}
+  if(sharedReadOnly){queueMicrotask(()=>setRidden(NO_SEGMENTS));return;}
   const timer=setTimeout(()=>setRidden({rows:segmentRides(trip,library),nearby:nearbySegmentLayers(trip,library),report:segmentMatchReport(trip,library)}),0);
   return()=>clearTimeout(timer);
  },[trip,library,sharedReadOnly]);
