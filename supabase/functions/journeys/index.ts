@@ -19,7 +19,7 @@ Deno.serve(async request=>{
   const token=new URL(request.url).searchParams.get('token');
   if(request.method==='GET'&&uuid(token)){
    const publicClient=createClient(url,anon,{auth:{persistSession:false}});
-   const {data,error}=await publicClient.from('shared_journeys').select('token,snapshot,created_at').eq('token',token).maybeSingle();
+   const {data,error}=await publicClient.from('shared_journeys').select('token,snapshot,created_at').eq('token',token).eq('audience','public').maybeSingle();
    if(error||!data)return reply({error:'Journey unavailable'},404);
    const {data:budget}=await admin.rpc('consume_operation',{p_key:`public:${token}`,p_max:300});if(!budget)return reply({error:'Please retry later'},429);
    const photoID=new URL(request.url).searchParams.get('photo');
@@ -91,7 +91,7 @@ Deno.serve(async request=>{
    if(body.placesConfirmed!==true)return reply({error:'Sync saved Home/Work places and review masking first'},400);
    const {data:assets,error:mediaError}=await userClient.from('media_assets').select('id,caption,latitude,longitude').eq('activity_id',trip.id);if(mediaError)throw mediaError;
    const selected=Array.isArray(body.photoIDs)?body.photoIDs.slice(0,50):[];
-   const safePhotos=(assets||[]).filter(p=>selected.includes(p.id)&&!places?.some(place=>['home','work'].includes(place.kind)&&p.latitude!=null&&p.longitude!=null&&metersBetween(p,place)<=place.radius+300)).map(p=>({id:p.id,caption:p.caption}));
+   const safePhotos=(assets||[]).filter(p=>selected.includes(p.id)&&!places?.some(place=>['home','work'].includes(place.kind)&&p.latitude!=null&&p.longitude!=null&&metersBetween(p,place)<=place.radius+300)).map(p=>({id:p.id,caption:p.caption,latitude:p.latitude,longitude:p.longitude}));
    const snapshot={title:trip.title,activity:trip.activity,description:trip.description,points:redactRoute(trip.route_points,places||[]),photos:safePhotos};
    const {data:result,error:commitError}=await admin.rpc('commit_shared_journey',{p_id:trip.id,p_owner:owner,p_revision:trip.revision,p_audience:body.audience,p_snapshot:snapshot});if(commitError)throw commitError;
    return reply({token:result,snapshot});
