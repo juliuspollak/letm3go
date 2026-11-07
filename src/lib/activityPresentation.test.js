@@ -94,3 +94,12 @@ describe('a long recording on the map',()=>{
   expect(map.routes.at(-1).at(-1)).toEqual([long.at(-1).latitude,long.at(-1).longitude]);
  });
 });
+
+it('renders a shared activity through the same detail schema without private controls',()=>{
+ const trip={id:'shared:one',isShared:true,readOnly:true,source:'shared',state:'finished',ownerName:'Julia',title:'Walk',activity:'Walking',date:'2026-11-07',startedAt:1794010000,endedAt:1794011800,distanceMeters:2500,distance:2.5,durationSeconds:1800,points:[],route:[[ -34,151 ],[-34.01,151.01]],routeSegments:[[[ -34,151 ],[-34.01,151.01]]],photos:[],description:'Coast'};
+ const p=activityPresentation(trip,{ownerID:'viewer'});
+ expect(p.header).toMatchObject({readOnly:true,local:false});
+ expect(p.editor).toBeNull();expect(p.privacy).toBeNull();expect(p.trim).toBeNull();expect(p.tags).toBeNull();expect(p.diagnostics).toBeNull();
+ expect(p.map.routes).toHaveLength(1);
+ expect(p.story.description).toBe('Coast');
+});

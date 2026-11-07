@@ -31,6 +31,7 @@ const diagnosticTime=n=>n==null?'Not recorded':n>=60?`${Math.round(n/60)} min`:`
 const minutes=seconds=>seconds<60?`${Math.round(seconds)} s`:`${Math.round(seconds/60)} min`;
 
 export function activityMapJourney(trip){
+ if(trip.isShared&&trip.readOnly===true)return trip;
  const points=Array.isArray(trip.points)?trip.points:[];
  return points.length>=2?{...trip,route:points.map(p=>[p.latitude,p.longitude]),routeSegments:recordedRouteSegments(points,{automatic:trip.recordingMode==='automatic',fleet:trip.recordingMode==='tesla'})}:trip;
 }
@@ -134,6 +135,28 @@ function privacySection(trip,places){
 }
 
 export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport=[],nearbySegments=null,editSegmentID=null,places=[],vehicles=[],grouping=null,unit='km',maximumHeartRate=null,selectedPhotoID=null,canOpenActivities=true}={}){
+ // The same native detail schema and Apple Maps, restricted to published fields.
+ // No diagnostics, editor, grouping, tag, equipment or photo-import controls
+ // are ever sent for another person's shared recording.
+ if(trip.isShared===true&&trip.readOnly===true){
+  const photos=Array.isArray(trip.photos)?trip.photos:[];
+  return {schema:PRESENTATION_SCHEMA,ownerID:String(ownerID||''),activityID:String(trip.id),updatedAt:null,unit,
+   header:{title:trip.title,recordedTitle:trip.title,activity:activityCode(trip.activity),activityLabel:activityLabel(trip.activity),
+    subtitle:`${activityLabel(trip.activity)} · Shared by ${trip.ownerName||'a friend'}`,location:'',state:'finished',source:'shared',
+    local:false,readOnly:true,startedAt:trip.startedAt??null,timeZone:null,noRouteDetail:'No route was included in this shared activity.'},
+   summary:[{id:'distance',label:'Distance',value:distanceText(trip.distance,unit)},
+    {id:'duration',label:'Duration',value:clockDuration(trip.durationSeconds)},
+    {id:'date',label:'Date',value:trip.date||'—'}],
+   metrics:[{label:'Distance',value:distanceText(trip.distance,unit)},{label:'Duration',value:clockDuration(trip.durationSeconds)}],
+   notices:[{id:'shared',tone:'info',text:`Shared by ${trip.ownerName||'a friend'} · Read-only activity`}],
+   consent:{energy:false,heartRate:false},sources:[],
+   photos:{coverID:null,local:false,items:photos.map(photo=>({id:String(photo.id),caption:photo.caption||'',locationSource:photo.locationSource||'unlocated',captureTime:null,assetID:null}))},
+   heart:{held:false,noneNote:null},segments:{allowed:false,ridden:[],editID:null,items:[]},trail:null,trim:null,diagnostics:null,tags:null,
+   facts:{lines:[],evidence:[]},stops:[],
+   story:{description:trip.description||'',notes:'',tags:[]},editor:null,equipment:null,privacy:null,
+   map:activityMap(trip,{selectedPhotoID})};
+ }
+
  const points=Array.isArray(trip.points)?trip.points:[];
  const pointCount=points.length;
  const local=deletionIDs(trip).length===1;

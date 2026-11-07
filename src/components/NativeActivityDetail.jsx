@@ -34,6 +34,7 @@ function useLiveTrip(trip){
 export default function NativeActivityDetail(props){
  const {ownerID,trip:latest,activities,journeys,places=NONE,vehicles=NONE,onBack,onDeleted,onUpdated,onSource,run,grouping,journeyGrouping,unit='km',onAddEquipment,editSegmentID=null}=props;
  const trip=useLiveTrip(latest);
+ const sharedReadOnly=trip?.isShared===true&&trip?.readOnly===true;
  const auth=useAuth();
  const [failure,setFailure]=useState('');
  const [selectedPhotoID,setSelectedPhotoID]=useState(null);
@@ -46,15 +47,16 @@ export default function NativeActivityDetail(props){
  const library=journeys||activities||NONE;
  const [ridden,setRidden]=useState(NO_SEGMENTS);
  useEffect(()=>{
+  if(sharedReadOnly){queueMicrotask(()=>setRidden(NO_SEGMENTS));return;}
   const timer=setTimeout(()=>setRidden({rows:segmentRides(trip,library),nearby:nearbySegmentLayers(trip,library),report:segmentMatchReport(trip,library)}),0);
   return()=>clearTimeout(timer);
- },[trip,library]);
+ },[trip,library,sharedReadOnly]);
  const presentation=useMemo(()=>activityPresentation(trip,{ownerID,segmentRides:ridden.rows,segmentReport:ridden.report,nearbySegments:ridden.nearby,editSegmentID,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,ridden,editSegmentID,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
  // Native requests read the current account, activity and callbacks when they run.
  const context=useRef(null);
  const handlers=useRef(null);
  useEffect(()=>{
-  context.current={client:supabase,trip,ownerID,activities:journeys||activities||[],grouping:grouping||journeyGrouping,run,auth,onSource,addEquipmentItem:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
+  context.current={client:supabase,trip,ownerID,sharedReadOnly,activities:sharedReadOnly?[]:journeys||activities||[],grouping:sharedReadOnly?null:grouping||journeyGrouping,run:sharedReadOnly?null:run,auth,onSource:sharedReadOnly?null:onSource,addEquipmentItem:sharedReadOnly?null:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
   handlers.current={onBack,onDeleted,onUpdated,run};
  });
 
@@ -71,6 +73,14 @@ export default function NativeActivityDetail(props){
    running.set(requestID,controller);
    const operation=activityDetailsRequests[op];
    try{
+    if(context.current?.sharedReadOnly){
+     if(op!=='sharedPhoto'||typeof args?.photoID!=='string'||!context.current.trip.photos?.some(photo=>photo.id===args.photoID))throw new Error('Shared activities are read-only.');
+     const id=context.current.trip.sharedActivityID;
+     const {data,error}=await supabase.functions.invoke('journeys?activity='+encodeURIComponent(id)+'&photo='+encodeURIComponent(args.photoID),{method:'GET'});
+     if(error||!data?.url)throw new Error('This shared photograph is unavailable.');
+     await nativeDetails.respond({requestID,ok:true,result:{url:data.url}});
+     return;
+    }
     if(!operation)throw new Error('This action is not available in this version.');
     const result=await operation(context.current,args||{},{signal:controller.signal,progress:notice=>void nativeDetails.respond({requestID,progress:notice}).catch(()=>{})});
     await nativeDetails.respond({requestID,ok:true,result:result||{}});
@@ -80,7 +90,7 @@ export default function NativeActivityDetail(props){
   });
   add('cancelRequest',({requestID})=>running.get(requestID)?.abort());
   add('mutation',({activityID,kind})=>{
-   if(activityID!==context.current.trip.id)return;
+   if(context.current?.sharedReadOnly||activityID!==context.current.trip.id)return;
    void acceptNativeMutation({run:handlers.current.run,onUpdated:handlers.current.onUpdated,onDeleted:handlers.current.onDeleted,activityID,kind});
   });
   add('photoSelected',({photoID})=>setSelectedPhotoID(photoID));

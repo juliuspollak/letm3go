@@ -41,3 +41,9 @@ it('does not label native-size chunks of a detailed continuous route as GPS gaps
 
 // swiftc does not run on every machine that changes this code, and the design rests
 // on these lines: real touches reach MapKit, and a button dies with its map.
+
+it('does not reconnect privacy-redacted shared route segments with dashed gaps',()=>{
+ const p=mapPayload([{id:'shared:one',isShared:true,routeSegments:[[[-34,151],[-34.001,151]],[[-34.002,151],[-34.003,151]]]}]);
+ expect(p.routes).toHaveLength(2);
+ expect(p.gaps).toEqual([]);
+});

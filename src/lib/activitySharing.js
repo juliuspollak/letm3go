@@ -6,18 +6,25 @@ export async function sharingRequest(client,action,id,params={}){
  if(error||data?.error||!data)throw new Error('Sharing could not be confirmed. The journeys backend may need deployment. Your last confirmed permission has not been changed in this screen.');
  return data;
 }
-export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal}){
+export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal,audience='public',mode=null,recipients=[],photoIDs=[]}){
+ if(!['public','friends','household'].includes(audience))throw new Error('Choose a supported audience.');
+ if(audience!=='public' && !((audience==='friends'&&['friends','selected','mixed','all'].includes(mode))||(audience==='household'&&mode==='household')))throw new Error('The sharing audience needs review.');
+ if(!Array.isArray(photoIDs)||photoIDs.length>50||photoIDs.some(p=>typeof p!=='string'))throw new Error('Invalid photo selection.');
  const {data:auth,error}=await client.auth.getUser();const owner=auth?.user?.id;
  if(error||!owner||state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('This activity belongs to a different account.');
- const trip=state.trips.find(t=>t.id===id);if(!trip||trip.source!=='device'||!trip.endedAt)throw new Error('Only completed iPhone activities can be shared.');
+ const trip=state.trips.find(t=>t.id===id);if(!trip||!['device','watch'].includes(trip.source)||!trip.endedAt)throw new Error('Only completed recordings from this account can be shared.');
  if(reviewedTrip&&(JSON.stringify(trip.points)!==JSON.stringify(reviewedTrip.points)||trip.activity!==reviewedTrip.activity||(trip.details?.description||'')!==(reviewedTrip.description||'')))throw new Error('Activity changed. Close privacy controls and review the latest activity before publishing.');
+ if(!state.places?.some(p=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)))throw new Error('Set your Home place before sharing a GPS activity so the private route can be masked.');
  const backup=await syncPrivateActivities(client,{...state,trips:[trip],deletedIDs:[]},receipts,{checkpoint});
  const {data:current,error:readError}=await client.from('activities').select('revision').eq('id',id).eq('owner_id',owner).single();
  if(readError||!Number.isInteger(current?.revision))throw new Error('The current activity could not be verified.');
  const {data:again,error:accountError}=await client.auth.getUser();if(accountError||again.user?.id!==owner)throw new Error('Account changed. Publication cancelled.');
  // Last point at which leaving can still stop the activity going public.
  if(signal?.aborted)throw new Error('Publication cancelled.');
- const result=await sharingRequest(client,'publish',id,{audience:'public',revision:current.revision,placesConfirmed:true,photoIDs:[]});
+ const result=await sharingRequest(client,'publish',id,{
+  audience,revision:current.revision,placesConfirmed:true,photoIDs,
+  ...(audience==='public'?{}:{mode,recipients:['selected','mixed'].includes(mode)?recipients:[]})
+ });
  if(!result.token)throw new Error('Publication was not confirmed.');
  return {...result,receipts:backup.receipts};
 }

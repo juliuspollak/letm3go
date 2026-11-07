@@ -18,8 +18,7 @@ Deno.serve(async request=>{
  try{
   const token=new URL(request.url).searchParams.get('token');
   if(request.method==='GET'&&uuid(token)){
-   const publicClient=createClient(url,anon,{auth:{persistSession:false}});
-   const {data,error}=await publicClient.from('shared_journeys').select('token,snapshot,created_at').eq('token',token).maybeSingle();
+   const {data,error}=await admin.from('shared_journeys').select('token,snapshot,created_at').eq('token',token).eq('audience','public').maybeSingle();
    if(error||!data)return reply({error:'Journey unavailable'},404);
    const {data:budget}=await admin.rpc('consume_operation',{p_key:`public:${token}`,p_max:300});if(!budget)return reply({error:'Please retry later'},429);
    const photoID=new URL(request.url).searchParams.get('photo');
@@ -30,6 +29,29 @@ Deno.serve(async request=>{
     return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
    }
    return reply(data);
+  }
+  // Private shares are always read using the viewer's JWT and the database's
+  // current friendship/household policy. A token alone is never enough.
+  const privateActivity=new URL(request.url).searchParams.get('activity');
+  if(request.method==='GET'&&uuid(privateActivity)){
+   const bearer=request.headers.get('Authorization')||'';
+   if(!bearer.startsWith('Bearer '))return reply({error:'Sign in required'},401);
+   const viewer=createClient(url,anon,{global:{headers:{Authorization:bearer}},auth:{persistSession:false}});
+   const {data:user,error:authError}=await viewer.auth.getUser();
+   if(authError||!user.user)return reply({error:'Sign in required'},401);
+   const {data:budget,error:budgetError}=await admin.rpc('consume_operation',{p_key:`social-read:${user.user.id}`,p_max:300});
+   if(budgetError||!budget)return reply({error:'Please retry later'},429);
+   const {data:shared,error:accessError}=await viewer.rpc('read_social_journey',{p_activity:privateActivity});
+   if(accessError)return reply({error:'Private sharing is not configured'},503);
+   if(!shared?.snapshot)return reply({error:'Journey unavailable'},404);
+   const photoID=new URL(request.url).searchParams.get('photo');
+   if(photoID){
+    if(!uuid(photoID)||!shared.snapshot.photos?.some((p:{id:string})=>p.id===photoID))return reply({error:'Photo unavailable'},404);
+    const {data:asset}=await admin.from('media_assets').select('object_key').eq('id',photoID).eq('activity_id',privateActivity).maybeSingle();
+    if(!asset)return reply({error:'Photo unavailable'},404);
+    return reply({url:await getSignedUrl(r2(),new GetObjectCommand({Bucket:bucket,Key:asset.object_key}),{expiresIn:60})});
+   }
+   return reply({snapshot:shared.snapshot});
   }
   if(request.method!=='POST')return reply({error:'Unsupported request'},405);
   const userClient=createClient(url,anon,{global:{headers:{Authorization:request.headers.get('Authorization')||''}},auth:{persistSession:false}});
@@ -47,7 +69,7 @@ Deno.serve(async request=>{
   const body=await boundedJSON(request);
   if(body.action==='publicMedia'){
    if(!uuid(body.token)||!uuid(body.mediaID))return reply({error:'Invalid request'},400);
-   const {data:shared}=await userClient.from('shared_journeys').select('snapshot').eq('token',body.token).maybeSingle();
+   const {data:shared}=await admin.from('shared_journeys').select('snapshot').eq('token',body.token).eq('audience','public').maybeSingle();
    if(!shared?.snapshot.photos?.some((p:{id:string})=>p.id===body.mediaID))return reply({error:'Photo unavailable'},404);
    const {data:asset}=await admin.from('media_assets').select('object_key').eq('id',body.mediaID).maybeSingle();
    if(!asset)return reply({error:'Photo unavailable'},404);
@@ -87,13 +109,20 @@ Deno.serve(async request=>{
    // Query the at-most-two sensitive places explicitly; favourites must not crowd
    // Home/Work out of PostgREST's default row limit and weaken route masking.
    const {data:places,error:placesError}=await userClient.from('saved_places').select('*').in('kind',['home','work']);if(placesError)throw placesError;
+   if(!(places||[]).some((p:{kind:string;latitude:number;longitude:number})=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)))return reply({error:'Save a Home place before publishing GPS routes'},409);
    // Fail closed: a client must confirm its saved places were synchronised before preview.
    if(body.placesConfirmed!==true)return reply({error:'Sync saved Home/Work places and review masking first'},400);
    const {data:assets,error:mediaError}=await userClient.from('media_assets').select('id,caption,latitude,longitude').eq('activity_id',trip.id);if(mediaError)throw mediaError;
    const selected=Array.isArray(body.photoIDs)?body.photoIDs.slice(0,50):[];
-   const safePhotos=(assets||[]).filter(p=>selected.includes(p.id)&&!places?.some(place=>['home','work'].includes(place.kind)&&p.latitude!=null&&p.longitude!=null&&metersBetween(p,place)<=place.radius+300)).map(p=>({id:p.id,caption:p.caption}));
-   const snapshot={title:trip.title,activity:trip.activity,description:trip.description,points:redactRoute(trip.route_points,places||[]),photos:safePhotos};
-   const {data:result,error:commitError}=await admin.rpc('commit_shared_journey',{p_id:trip.id,p_owner:owner,p_revision:trip.revision,p_audience:body.audience,p_snapshot:snapshot});if(commitError)throw commitError;
+   const safePhotos=(assets||[]).filter(p=>selected.includes(p.id)&&!places?.some(place=>['home','work'].includes(place.kind)&&p.latitude!=null&&p.longitude!=null&&metersBetween(p,place)<=place.radius+300)).map(p=>({id:p.id,caption:p.caption,latitude:p.latitude,longitude:p.longitude}));
+   const snapshot={title:trip.title,activity:trip.activity,description:trip.description,startedAt:trip.started_at,endedAt:trip.ended_at,distanceMeters:trip.distance_meters,durationSeconds:trip.duration_seconds,points:redactRoute(trip.route_points,places||[]),photos:safePhotos};
+   const privateAudience=body.audience==='friends'||body.audience==='household';
+   if(privateAudience&&(!['friends','household','selected','mixed','all'].includes(body.mode)||!Array.isArray(body.recipients)||body.recipients.length>100))return reply({error:'Select valid social recipients'},400);
+   const publication=privateAudience
+    ?await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot})
+    :await admin.rpc('commit_shared_journey',{p_id:trip.id,p_owner:owner,p_revision:trip.revision,p_audience:body.audience,p_snapshot:snapshot});
+   const {data:result,error:commitError}=publication;
+   if(commitError)throw commitError;
    return reply({token:result,snapshot});
   }
   if(body.action==='revoke'){const {error}=await userClient.rpc('revoke_activity_publication',{p_id:trip.id});if(error)throw error;return reply({revoked:true});}

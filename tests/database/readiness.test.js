@@ -96,7 +96,8 @@ it('freezes direct client and service writes during deletion then cascades witho
   await as('authenticated', a, "select * from public.create_household('Family')");
   const invite = (await as('authenticated', a, 'select public.invite_to_household() as token')).rows[0].token;
   await as('service_role', '', `insert into public.account_deletion_requests(owner_id) values('${a}')`);
-  expect((await as('anon', '', 'select snapshot from public.shared_journeys')).rows).toHaveLength(0);
+  // Snapshots are never readable directly, by anyone: public links go through the Edge Function.
+  await expect(as('anon', '', 'select snapshot from public.shared_journeys')).rejects.toThrow(/permission denied/);
   expect((await as('authenticated', a, 'select * from public.activities')).rows).toHaveLength(0);
   expect((await as('authenticated', a, 'select * from public.my_household()')).rows).toHaveLength(0);
   await expect(as('authenticated', a, "select * from public.create_household('Another')")).rejects.toThrow('Account unavailable');
