@@ -107,13 +107,45 @@ export function estimatedDistance(trip, roads = {}) {
   if (road) { roadMeters += record.distanceMeters; roadGaps++; lines.push(decodeLine(record.line)); }
   else straightMeters += gap.straightMeters;
   // Why there is or is not a road line, for the recording report.
-  const status = road ? 'road' : !record ? 'notLookedUp' : record.retryAfter ? 'retrying' : record.status === 'implausible' ? 'implausible' : record.failures ? 'failed' : 'none';
+  const status = road ? 'road' : !record ? 'notLookedUp' : record.status === 'capacityExceeded' ? 'capacityExceeded' : record.retryAfter ? 'retrying' : record.status === 'implausible' ? 'implausible' : record.failures ? 'failed' : 'none';
   return {key: gapKey(trip.id, gap), seconds: gap.seconds, straightMeters: Math.round(gap.straightMeters), roadMeters: road ? record.distanceMeters : null, source: road ? 'road' : 'straight',
    status, failures: record?.failures || 0};
  });
  return {recordedMeters, estimatedMeters: Math.round(recordedMeters + roadMeters + straightMeters), roadMeters: Math.round(roadMeters), straightMeters: Math.round(straightMeters),
   gapCount: gaps.length, roadGaps, unobservedSeconds: Math.round(gaps.reduce((n, g) => n + g.seconds, 0)),
   confidence: roadGaps === gaps.length ? 'road' : roadGaps ? 'mixed' : 'straight', gaps: parts, lines};
+}
+
+// Store the completed numerical result once at save time. Road geometry stays
+// in the existing compact route cache rather than being duplicated in metadata.
+export function distanceSnapshot(trip, estimate) {
+ const {lines: _lines, ...summary} = estimate || {};
+ void _lines;
+ return {updatedAt:trip.updatedAt??null, pointCount:trip.points?.length??0,
+  distanceMeters:trip.distanceMeters??0, visibleRouteStart:trip.visibleRouteStart??null,
+  visibleRouteEnd:trip.visibleRouteEnd??null, summary:estimate?summary:null};
+}
+export function snapshotCurrent(trip, saved) {
+ return !!saved && saved.updatedAt===(trip.updatedAt??null) &&
+   saved.pointCount===(trip.points?.length??0) &&
+   saved.distanceMeters===(trip.distanceMeters??0) &&
+   saved.visibleRouteStart===(trip.visibleRouteStart??null) &&
+   saved.visibleRouteEnd===(trip.visibleRouteEnd??null);
+}
+export function savedDistance(trip, metadata) {
+ const saved=metadata.distanceSummaries?.[trip.id];
+ if(snapshotCurrent(trip,saved)) {
+  if(!saved.summary)return null; // A complete recording with no GPS gaps.
+  // Only decode display geometry, never rescan fixes or query the road provider.
+  const lines=saved.summary.gaps.filter(g=>g.source==='road').flatMap(g=>{
+   const record=metadata.roads?.[g.key];
+   return record?.version===ROAD_VERSION&&typeof record.line==='string'?[decodeLine(record.line)]:[];
+  });
+  return {...saved.summary,lines};
+ }
+ // Legacy activities, and an edited track awaiting its next save-time snapshot,
+ // retain the existing local-only fallback. No Apple Maps request is made here.
+ return estimatedDistance(trip,metadata.roads);
 }
 
 // One estimate for a journey grouped from several recordings, or null if none of

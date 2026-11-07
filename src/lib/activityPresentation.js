@@ -118,7 +118,7 @@ function tagSection(trip,grouping,onActivityAvailable){
 
 // One line per GPS gap: whether it has a road line, and if not, why.
 const ROAD_LOOKUP={done:'done when the activity was saved',pending:'pending (not finished yet)',history:'not run: saved before road estimates (history is never looked up)'};
-const GAP_OUTCOME={notLookedUp:'not looked up',retrying:'lookup failed, retry pending',failed:'lookup failed every attempt',implausible:'Apple Maps routes did not fit the time and distance',none:'Apple Maps found no driving route'};
+const GAP_OUTCOME={capacityExceeded:'road estimate store was full',notLookedUp:'not looked up',retrying:'lookup failed, retry pending',failed:'lookup failed every attempt',implausible:'Apple Maps routes did not fit the time and distance',none:'Apple Maps found no driving route'};
 function roadReport(estimate){
  return [`Road estimate lookup: ${ROAD_LOOKUP[estimate.lookup]||'unknown'}`,...(estimate.gaps||[]).map((g,i)=>`Gap ${i+1}: ${Math.round(g.seconds)}s, ${g.straightMeters}m straight-line -> ${g.source==='road'?`road ${g.roadMeters}m`:`${GAP_OUTCOME[g.status]||g.status}${g.failures?` (${g.failures} failures)`:''}; straight line used, no road drawn`}`)];
 }

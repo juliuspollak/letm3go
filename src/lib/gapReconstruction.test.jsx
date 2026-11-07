@@ -5,7 +5,7 @@ import {renderHook,waitFor,cleanup,render,screen} from '@testing-library/react';
 import {describe,it,expect,vi,beforeEach,afterEach} from 'vitest';
 const mock=vi.hoisted(()=>({lookup:vi.fn(),road:vi.fn()}));
 vi.mock('./recorder.js',async()=>({...(await vi.importActual('./recorder.js')),recorderAvailable:()=>true,recorder:{recogniseTripPlace:mock.lookup,roadRoute:mock.road}}));
-import {routeGaps,gapKey,plausibleRoute,chooseRoute,roadRecord,failedRecord,roadLookupDue,estimateExplanation,encodeLine,decodeLine,ROAD_VERSION} from './gapReconstruction.js';
+import {routeGaps,gapKey,plausibleRoute,chooseRoute,roadRecord,failedRecord,roadLookupDue,estimateExplanation,estimatedDistance,distanceSnapshot,savedDistance,encodeLine,decodeLine,ROAD_VERSION} from './gapReconstruction.js';
 import {buildJourneys,emptyGrouping,placeKey} from './journeyGrouping.js';
 import {useJourneyGrouping} from './useJourneyGrouping.js';
 import {recordedJourney} from './recorder.js';
@@ -158,6 +158,9 @@ describe('road estimates when an activity is saved',()=>{
   expect(mock.road.mock.calls[0][0].timestamp).toBe(routeGaps(recent)[0].from.timestamp);
   const meta=last(save);
   expect(Object.values(meta.roads).every(r=>r.status==='route')).toBe(true);
+  // Each drive's distance summary is saved once it is done, so the list never rescans it.
+  expect(Object.keys(meta.distanceSummaries).sort()).toEqual([old.id,recent.id].sort());
+  expect(meta.distanceSummaries[recent.id].summary).toMatchObject({gapCount:3,roadGaps:3});
   expect(Object.keys(meta.roads)).toHaveLength(6);
   cleanup();mock.road.mockClear();
   run([old,recent],meta);await new Promise(r=>setTimeout(r,400));
@@ -228,4 +231,46 @@ it('the recording report shows the lookup as done once it is, without a stale ca
  expect(buildJourneys([trip],{owner:OWNER,metadata:meta,projectionCache:cache}).journeys[0].distanceEstimate.lookup).toBe('pending');
  const done={...meta,enriched:{[trip.id]:1}};
  expect(buildJourneys([trip],{owner:OWNER,metadata:done,projectionCache:cache}).journeys[0].distanceEstimate.lookup).toBe('done');
+});
+
+it('uses a durable distance snapshot without scanning saved GPS points again',()=>{
+ const trip=lowPowerDrive(),roads=roadsFor(trip);
+ const summary=distanceSnapshot(trip,estimatedDistance(trip,roads));
+ const meta={...emptyGrouping(OWNER),roads,distanceSummaries:{[trip.id]:summary}};
+ // A Proxy proves the projection does not iterate the GPS fixes when the
+ // persisted activity fingerprint matches.
+ const guarded={...trip,points:new Proxy(trip.points,{get(target,key){
+  if(key===Symbol.iterator||key==='map')throw new Error('rescan');
+  return Reflect.get(target,key);
+ }})};
+ const estimate=savedDistance(guarded,meta);
+ expect(estimate.estimatedMeters).toBeGreaterThan(59000);
+ expect(estimate.lines).toHaveLength(9);
+ expect(estimate.roadGaps).toBe(9);
+ expect(JSON.stringify(summary)).not.toContain('lines');
+});
+
+it('persists a no-gap result and does not rescan clean GPS recordings',()=>{
+ const trip=lowPowerDrive();
+ trip.points=trip.points.map(p=>({...p,segment:0}));
+ const snapshot=distanceSnapshot(trip,null);
+ const meta={...emptyGrouping(OWNER),distanceSummaries:{[trip.id]:snapshot}};
+ const guarded={...trip,points:new Proxy(trip.points,{get(target,key){
+  if(key===Symbol.iterator||key==='map')throw new Error('rescan');
+  return Reflect.get(target,key);
+ }})};
+ expect(savedDistance(guarded,meta)).toBeNull();
+});
+it('saves no distance summary for an activity without GPS gaps, keeping account metadata small',async()=>{
+ const {useJourneyGrouping:hook}=await import('./useJourneyGrouping.js');
+ const clean=lowPowerDrive();clean.points=clean.points.map(p=>({...p,segment:0}));
+ const meta={...emptyGrouping(OWNER),enrichFrom:0};
+ const now=Date.now();for(const p of clean.points)meta.places[placeKey(p)]={source:'apple-geocoder-mapkit',candidates:[{name:'x'}],lookupVersion:2,lookedUpAt:now};
+ const savePreferences=vi.fn().mockResolvedValue();
+ renderHook(()=>hook({owner:OWNER,activities:[recordedJourney(clean)],places:[],vehicles:[],serialized:JSON.stringify(meta),savePreferences}));
+ await waitFor(()=>expect(savePreferences).toHaveBeenCalled(),{timeout:5000});
+ const saved=JSON.parse(savePreferences.mock.lastCall[0].journeyGrouping);
+ expect(saved.enriched[clean.id]).toEqual(expect.any(Number));
+ expect(saved.distanceSummaries||{}).toEqual({});
+ expect(mock.road).not.toHaveBeenCalled();
 });
