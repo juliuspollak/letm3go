@@ -4,7 +4,7 @@
 begin;
 
 create table if not exists public.social_journey_policies (
- activity_id uuid primary key,
+ activity_id uuid primary key references public.activities(id) on delete cascade,
  owner_id uuid not null references auth.users(id) on delete cascade,
  mode text not null check(mode in ('friends','household','selected','mixed','all')),
  created_at timestamptz not null default now()
@@ -145,11 +145,11 @@ end $$;
 
 -- Never return the raw owner activities table to a viewer.
 create or replace function public.my_social_journey_feed()
-returns table(activity_id uuid,owner_id uuid,title text,activity text,started_at timestamptz,distance_km numeric,ended_at timestamptz,duration_seconds numeric)
+returns table(activity_id uuid,owner_id uuid,title text,activity text,started_at timestamptz,distance_km numeric,ended_at timestamptz,duration_seconds numeric,owner_name text)
 language sql security definer set search_path=''
 as $$
  select j.activity_id,j.owner_id,j.snapshot->>'title',j.snapshot->>'activity',
-  a.started_at,(a.distance_meters/1000.0)::numeric,a.ended_at,a.duration_seconds::numeric
+  a.started_at,(a.distance_meters/1000.0)::numeric,a.ended_at,a.duration_seconds::numeric,public.person_display_name(j.owner_id)
  from public.shared_journeys j
  join public.social_journey_policies p on p.activity_id=j.activity_id and p.owner_id=j.owner_id
  join public.activities a on a.id=j.activity_id and a.owner_id=j.owner_id
