@@ -13,7 +13,9 @@ export function useSharedActivityFeed(enabled,ownerID){
    const {data,error}=await supabase.rpc('my_social_journey_feed');
    if(!active)return;
    if(error){setState({items:EMPTY,error:'Shared activities are unavailable. Please try again.',loading:false});return;}
-   setState({items:data||EMPTY,error:'',loading:false});
+   // Only a real change re-renders the Activities list; an unchanged poll is free.
+   const items=data||EMPTY;
+   setState(previous=>!previous.error&&!previous.loading&&JSON.stringify(previous.items)===JSON.stringify(items)?previous:{items,error:'',loading:false});
   };
   queueMicrotask(()=>{if(active)setState({items:EMPTY,error:'',loading:true});});
   void refresh();

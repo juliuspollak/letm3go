@@ -17,11 +17,11 @@ create table if not exists public.social_journey_recipients (
 -- Revocation and owner edits delete the publication. Clear all recipient
 -- grants in that same transaction, including after a previously public share.
 create or replace function public.clear_social_journey_policy()
-returns trigger language plpgsql security definer set search_path='' as $
+returns trigger language plpgsql security definer set search_path='' as $$
 begin
  delete from public.social_journey_policies where activity_id=old.activity_id;
  return old;
-end $;
+end $$;
 drop trigger if exists clear_social_journey_policy on public.shared_journeys;
 create trigger clear_social_journey_policy after delete on public.shared_journeys
 for each row execute function public.clear_social_journey_policy();
@@ -122,15 +122,21 @@ end $$;
 
 -- One database transaction: a snapshot cannot become readable under stale
 -- recipients. A failed recipient check rolls the snapshot back automatically.
+-- Only the journeys Edge Function (service role) calls this, with the owner it
+-- verified from the JWT and the snapshot it built and masked. A client calling it
+-- directly could otherwise publish an unmasked route. The friend and household
+-- checks run as that owner for this transaction only.
 create or replace function public.publish_social_journey(
- p_activity uuid,p_revision integer,p_audience text,p_mode text,
+ p_owner uuid,p_activity uuid,p_revision integer,p_audience text,p_mode text,
  p_recipients uuid[],p_snapshot jsonb)
 returns uuid
 language plpgsql security definer set search_path=''
 as $$
 declare v_token uuid; v_current integer;
 begin
- if auth.uid() is null then raise exception 'Sign in required'; end if;
+ if p_owner is null then raise exception 'Sign in required'; end if;
+ perform set_config('request.jwt.claim.sub',p_owner::text,true);
+ if auth.uid() is distinct from p_owner then raise exception 'Sign in required'; end if;
  if p_audience not in ('friends','household') or p_mode is null then raise exception 'Invalid social audience'; end if;
  select revision into v_current from public.activities
  where id=p_activity and owner_id=auth.uid() for update;
@@ -183,12 +189,13 @@ as $$
 $$;
 
 revoke all on function public.can_view_social_journey(uuid) from public,anon,authenticated;
-revoke all on function public.publish_social_journey(uuid,integer,text,text,uuid[],jsonb) from public,anon,authenticated;
+drop function if exists public.publish_social_journey(uuid,integer,text,text,uuid[],jsonb);
+revoke all on function public.publish_social_journey(uuid,uuid,integer,text,text,uuid[],jsonb) from public,anon,authenticated;
 revoke all on function public.configure_social_journey(uuid,text,uuid[]) from public,anon,authenticated;
 revoke all on function public.read_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.my_social_journey_feed() from public,anon,authenticated;
 revoke all on function public.my_social_publications() from public,anon,authenticated;
-grant execute on function public.publish_social_journey(uuid,integer,text,text,uuid[],jsonb) to authenticated;
+grant execute on function public.publish_social_journey(uuid,uuid,integer,text,text,uuid[],jsonb) to service_role;
 -- configure_social_journey is callable only from the atomic publishing function.
 grant execute on function public.read_social_journey(uuid) to authenticated;
 grant execute on function public.my_social_journey_feed() to authenticated;

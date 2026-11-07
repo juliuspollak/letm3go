@@ -119,7 +119,7 @@ Deno.serve(async request=>{
    const privateAudience=body.audience==='friends'||body.audience==='household';
    if(privateAudience&&(!['friends','household','selected','mixed','all'].includes(body.mode)||!Array.isArray(body.recipients)||body.recipients.length>100))return reply({error:'Select valid social recipients'},400);
    const publication=privateAudience
-    ?await userClient.rpc('publish_social_journey',{p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot})
+    ?await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot})
     :await admin.rpc('commit_shared_journey',{p_id:trip.id,p_owner:owner,p_revision:trip.revision,p_audience:body.audience,p_snapshot:snapshot});
    const {data:result,error:commitError}=publication;
    if(commitError)throw commitError;

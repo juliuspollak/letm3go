@@ -64,12 +64,14 @@ it('shares full snapshots only with current, selected friends and revokes atomic
  await as('authenticated',b,`select public.accept_friend_invite('${invite}')`);
  await expect(as('authenticated',b,`select * from public.shared_journeys`)).rejects.toThrow();
  const snapshot='{"title":"Coastal walk","activity":"Walking","points":[],"photos":[]}';
- await as('authenticated',a,`select public.publish_social_journey('${id}',1,'friends','selected',array['${b}']::uuid[],'${snapshot}'::jsonb)`);
+ // A client cannot publish its own snapshot: only the Edge Function (service role) may.
+ await expect(as('authenticated',a,`select public.publish_social_journey('${a}','${id}',1,'friends','selected',array['${b}']::uuid[],'${snapshot}'::jsonb)`)).rejects.toThrow();
+ await as('service_role','',`select public.publish_social_journey('${a}','${id}',1,'friends','selected',array['${b}']::uuid[],'${snapshot}'::jsonb)`);
  expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared.snapshot.title).toBe('Coastal walk');
  expect((await as('authenticated',c,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
  await expect(as('anon','',`select public.read_social_journey('${id}')`)).rejects.toThrow();
  const changed='{"title":"Changed without recipient approval","activity":"Walking","points":[]}';
- await expect(as('authenticated',a,`select public.publish_social_journey('${id}',1,'friends','selected',array['${c}']::uuid[],'${changed}'::jsonb)`)).rejects.toThrow();
+ await expect(as('service_role','',`select public.publish_social_journey('${a}','${id}',1,'friends','selected',array['${c}']::uuid[],'${changed}'::jsonb)`)).rejects.toThrow();
  expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared.snapshot.title).toBe('Coastal walk');
  await as('authenticated',a,`select public.remove_friend('${b}')`);
  expect((await as('authenticated',b,`select public.read_social_journey('${id}') as shared`)).rows[0].shared).toBeNull();
