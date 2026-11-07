@@ -1,4 +1,6 @@
 import {useEffect,useRef} from 'react';
+import {App as NativeApp} from '@capacitor/app';
+import {Capacitor} from '@capacitor/core';
 import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
 import {config} from '../lib/config.js';
@@ -8,15 +10,18 @@ import {syncAccountSettings} from '../lib/settingsSync.js';
 import {runJourneySync} from '../lib/journeyMetadataStore.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),syncedJourneys=useRef(null);
+ const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null);
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
   if(!config.backupEnabled||!supabase)return;
-  let alive=true;
-  async function sync(){
-   if(running.current||document.visibilityState!=='visible'||!navigator.onLine||Date.now()-lastAttempt.current<120000)return;
+  let alive=true,listener;
+  async function sync(foreground=false){
+   if(running.current||document.visibilityState!=='visible'||!navigator.onLine||(!foreground&&Date.now()-lastAttempt.current<120000))return;
    const {auth:user,state:recordings,journeySync:journeys}=latest.current;
-   if(user.status!=='authenticated'||!recordings?.ownerID||recordings.ownerID.toLowerCase()!==user.session.user.id.toLowerCase())return;
+   if(user.status!=='authenticated')return;
+   const owner=user.session.user.id;
+   const ownsRecordings=recordings?.ownerID?.toLowerCase()===owner.toLowerCase();
+   if(!ownsRecordings&&!journeys)return;
    // Work only after something was saved, edited or deleted: an unchanged history
    // (the recorder's history token), places and settings need no backup pass.
    // Journey metadata is left out of this signature on purpose. It has its own queue
@@ -25,10 +30,9 @@ export default function AutoCloudSync({state,journeySync=null}){
    // change on every two-minute check.
    const {syncReceipts:_r,lastBackup:_b,journeyGrouping:_g,journeyMetadataQueue:_q,journeyMetadata:_m,...settings}=user.preferences;
    void _r;void _b;void _g;void _q;void _m;
-   const signature=JSON.stringify([recordings.ownerID,recordings.historyToken||null,recordings.places||[],recordings.deletedIDs||[],settings]);
-   const journeyState=()=>{const read=journeys?.read?.();return read?JSON.stringify([read.status?.revision??null,read.status?.state??'',read.queue??null,read.dropped??null]):null;};
-   const journeysOnly=signature===synced.current&&journeyState()!==syncedJourneys.current;
-   if(signature===synced.current&&!journeysOnly)return;
+   const signature=JSON.stringify([owner,recordings?.historyToken||null,recordings?.places||[],recordings?.deletedIDs||[],settings]);
+   const journeysOnly=!ownsRecordings||signature===synced.current;
+   if(journeysOnly&&!journeys)return;
    running.current=true;lastAttempt.current=Date.now();
    try{
     // Settings and the Collection are small and independent of the route upload,
@@ -45,7 +49,7 @@ export default function AutoCloudSync({state,journeySync=null}){
     // Anything short of active stays queued and makes the pass count as unfinished, so
     // the next tick tries again instead of recording this state as already synced.
     if(journeys)await attempt(async next=>{
-     const journey=await runJourneySync({client:supabase,owner:recordings.ownerID,...journeys});
+     const journey=await runJourneySync({client:supabase,owner,...journeys});
      await journeys.flush();
      if(journey.state!=='active'&&journey.state!=='idle')throw new Error(journey.error||'Journey metadata could not be stored in the cloud.');
      return {receipts:next};
@@ -56,16 +60,16 @@ export default function AutoCloudSync({state,journeySync=null}){
      if(alive)await user.savePreferences({syncReceipts:receipts,lastBackup:trips.lastSync});
     }
     if(failure)throw failure;
-    synced.current=signature;syncedJourneys.current=journeyState();
+    synced.current=signature;
    }catch{
     // The Settings screen is the explicit retry/error surface. Nothing local is deleted.
    }finally{running.current=false;}
   }
-  const starter=setTimeout(()=>void sync(),5000),periodic=setInterval(()=>void sync(),120000);
-  const resume=()=>void sync();
+  const starter=setTimeout(()=>void sync(),5000),periodic=setInterval(()=>void sync(true),120000);
+  const resume=()=>void sync(true);
   window.addEventListener('online',resume);document.addEventListener('visibilitychange',resume);
-  return()=>{alive=false;clearTimeout(starter);clearInterval(periodic);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);};
+  if(Capacitor.isNativePlatform())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)resume();}).then(handle=>{if(alive)listener=handle;else void handle.remove();}).catch(()=>{});
+  return()=>{alive=false;clearTimeout(starter);clearInterval(periodic);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
  },[]);
  return null;
 }
-

@@ -1,374 +1,213 @@
-# Build 47 — Journey metadata as records, not one blob
+# PR #28: journey metadata records — review and validation
 
-Every decision the app keeps about a journey — the title, the classification, the
-tags, a merge, a split, a corrected stop — plus the answers derived for it
-(recognised places, rebuilt road gaps, distance summaries) used to live in **one
-JSON string** in the encrypted preferences file:
+This branch is intentionally **unmerged**. The migration has **not been applied to
+production** by this review. Automated database tests run against disposable
+PGlite PostgreSQL instances, not the linked hosted Supabase project. A passing
+`npm run test:database` is not a hosted deployment check.
 
-```
-AccountPreferences.journeyGrouping          (≤900 kB, device)
-account_settings.payload.journeyGrouping    (truncated at 300 kB, cloud backup)
-```
+## Changes made after the independent review
 
-A single blob has three problems that cannot be fixed inside the blob:
+- `AutoCloudSync` checks the journey revision on foreground/online events and at
+  the existing two-minute interval while visible and online, independently of local
+  signatures. A steady-state idle pass downloads no snapshot unless the revision
+  changes. Activity, photo, collection and settings uploads still use their own
+  unchanged signatures and receipts.
+- Preferences are now **legacy import only** for journey data. Native iOS uses an
+  account-local SQLite database with per-record AES-GCM encrypted values and
+  `synchronous=FULL`; web uses account-keyed IndexedDB records and strict write
+  transactions. Mirror entries, pending values and sync progress commit together.
+  There is no 400/800 kB eviction and no giant queue/preferences blob. Route answers
+  and pending user decisions remain until confirmed in the cloud.
+- User actions await the transaction. A rejected write leaves the previous state
+  intact and reports an error. Enrichment persists each provider answer before
+  continuing, and persists completion only after its answers are durable. A restart
+  reads those answers and markers instead of reconstructing history again.
+- Pending activity and stop edits retain their changed fields and original field
+  values. After a remote revision change, a three-way field merge combines
+  independent edits; the account revision is still checked atomically by SQL.
+  Competing values of the same field, including contradictory merge/split choices,
+  block the push and keep both copies: the
+  pending local value on disk and the unchanged cloud value. The error names the
+  recording/field. A global last-writer-wins retry is no longer used for these
+  edits. Legacy queued records without field ancestry are treated conservatively.
+- Link/cut values remain **JSON-encoded pair strings**. Pairs are canonically
+  ordered by ID on both sides, irrespective of recording time. Existing pair stop
+  keys are normalized too. Deleting a link cannot erase a cut or source relation.
+  Database tests exercise real application merge/split reducers, source links,
+  stop edits, reloads and IDs whose time order differs from alphabetical order.
+- Legacy preferences are cleared only after durable import. Unreadable values and
+  unsupported fields stop destructive migration. The previous settings blob stays
+  readable in the cloud; a settings-only backup no longer erases that recovery
+  source during rollout. Legacy hidden-tag capacity (60) is preserved.
+- Large reconstructed roads can occupy up to 4 MB per cloud record; RPC bodies are
+  bounded at 6 MB. Normal pushes remain chunked at 200 records / approximately
+  120 kB, with a single large record sent alone. These are upload/schema limits,
+  **not local eviction limits**. An oversized or refused record remains pending and
+  the failure is visible.
 
-1. **Two devices overwrite each other.** The blob is replaced as a whole, so the
-   last writer wins even when the two devices edited different journeys.
-2. **It cannot be sent partially.** A rename is a 900 kB write, so a flaky
-   connection either sends everything or nothing, and a retry can re-send a
-   change that was already applied.
-3. **The backup truncates it.** The settings backup stopped at 300 kB, so titles
-   and merges past that point were simply missing after a restore.
+## Storage and recovery semantics
 
-This build moves that data into owner-scoped Postgres records, keeps the
-preferences file as an offline **mirror** plus a **queue** of record values, and
-leaves every screen reading the same grouped object it always read.
+The owner-scoped local transaction contains separate mirror and pending records,
+plus control values (revision, cutoff, status). Account preferences carry neither
+large routes nor the backlog after import, so queue growth cannot make an ordinary
+settings save exceed a journey preference cap. Real physical disk exhaustion can
+still prevent any application write; that must remain an error, not a successful
+save. Native encryption keys remain in the existing per-account Keychain flow.
+Native files stay in the existing account directory and are removed with that
+account. Web account deletion removes only that owner's IndexedDB records.
 
-## 1. Data model
+Durability covers force-quit, process termination, normal restart and app updates
+that preserve the account container. It does **not** promise that iOS uninstall,
+web-site-data deletion, device loss or storage eviction retains unsynced records.
+This app excludes its account directory from device backup. A replacement install
+can recover cloud-confirmed records after sign-in; unsent local-only decisions
+cannot be recovered after the local container is removed. Keychain retention alone
+cannot recreate a deleted database. Do not describe unsynced reinstall recovery as
+supported.
 
-Migration `supabase/migrations/20261120000000_journey_metadata_records.sql`.
+If an earlier preview actually evicted a value from both its queue and mirror,
+this change cannot recreate that value. Import keeps remaining legacy data and
+refuses lossy projection; recover any missing older values from another device or
+an existing backup. No production occurrence of such preview eviction is assumed.
 
-| Table | One row per | Key |
-| --- | --- | --- |
-| `journey_metadata_state` | account | `owner_id` (also holds `enrich_from`, `revision`, `updated_at`) |
-| `journey_activity_metadata` | recording | `(owner_id, ref)` — title, type, manual tags, hidden tags, `enriched_at` |
-| `journey_pair_metadata` | relation between two recordings | `(owner_id, relation, left_id, right_id)`, `relation in ('link','cut','source')`, `left_id < right_id` |
-| `journey_stop_metadata` | corrected stop | `(owner_id, ref)` — name, tags, `replace_tags`, `ignored` |
-| `journey_place_metadata` | recognised place | `(owner_id, ref)` — lookup JSON ≤20 kB |
-| `journey_road_metadata` | rebuilt GPS gap | `(owner_id, ref)` — record JSON ≤40 kB |
-| `journey_distance_summary` | recording's travelled distance | `(owner_id, ref)` — snapshot JSON ≤20 kB |
+## Automated verification
 
-Design rules behind the shape:
-
-* **Owner first.** Every primary key starts with `owner_id`, so an account's
-  metadata is one countable, deletable unit and no row can be addressed by a
-  recording reference alone. All seven tables cascade on `auth.users` deletion.
-* **A cleared value is a value.** An empty title is stored as `null`, not as a
-  missing row, so the last write wins without needing to know what it replaced.
-  Stop edits are the exception: an edit with nothing left in it is a deletion
-  (enforced by a table check), because "no correction" and "an empty correction"
-  mean the same thing.
-* **References keep the shape the screen already uses.** `dwell:<recording>:<time>`,
-  `native:<recording>:<time>` and the JSON pair of two ids. The ids they encode are
-  derived (`edgePair`, `stopRefs`, `gapRefs` in `src/lib/journeyMetadata.js`), never
-  stored a second time.
-* **Derived data is separated from decisions.** The three enrichment tables are the
-  only ones the device mirror may drop when it runs out of budget; a title, merge,
-  tag or stop correction is never dropped.
-
-Access: all seven tables have RLS enabled, `anon`/`authenticated` are revoked, and
-each table gets an owner policy (`owner_id = auth.uid()`) plus the existing
-restrictive `account_is_active()` policy, so an account awaiting deletion cannot
-read or write journey metadata.
-
-
-## 2. The only way in and out
-
-Three `security invoker` functions, so RLS and the account guard apply to every
-read and write they make:
-
-| Function | Purpose |
-| --- | --- |
-| `journey_metadata_snapshot(p_owner)` | the whole account as one grouped object plus `revision` and `updatedAt` |
-| `journey_metadata_revision(p_owner)` | just the revision: the cheap half of a pull |
-| `journey_apply_changes(p_owner, p_changes, p_expected_revision)` | applies a set of record values and returns the new revision |
-
-`journey_apply_changes`:
-
-* rejects a payload over 240 kB, an unknown domain, or a domain that is not a list;
-* takes `for update` on the state row, so two devices cannot both "win";
-* moves the revision **once**, so re-sending a queued value after a dropped
-  connection cannot create a second revision for the same edit;
-* turns a stale `p_expected_revision` into a visible conflict
-  (`… reload before saving again (conflict)`) instead of a silent overwrite;
-* applies exactly the same reducer as `applyChanges()` in `src/lib/journeyMetadata.js`,
-  so a replayed, duplicated or reordered write converges, and a record never
-  replaces a value the cloud already has with something older.
-
-## 3. The device half
-
-Three preference keys, written **together** so a crash cannot leave a queued value
-without the edit that produced it:
-
-| Key | What it is |
-| --- | --- |
-| `journeyGrouping` | the mirror: the grouped object the screens already read (unchanged format) |
-| `journeyMetadataQueue` | record values still to send, `{version, owner, changes, dropped?}` |
-| `journeyMetadata` | sync status: `owner, revision, migratedAt, state, error, conflicts, updatedAt` |
-
-`src/lib/journeyMetadataStore.js` is the engine:
-
-* `readJourneyState` / `journeyStatePatch` read and write those keys, and the patch
-  contains only the keys that changed, so an unrelated setting saved at the same
-  moment cannot be undone by a sync pass.
-* `createJourneySync({owner, preferences, savePreferences})` is the adapter the app
-  uses: one per account, seeded from that account's restored preferences. Writes are
-  **single-flight** — an edit and the status it produced become one preferences save —
-  and a key leaves the dirty set only once the device has accepted the write, so a
-  locked or full device cannot lose an edit made while the write was failing. A
-  refused save is reported through `status.state='offline'` rather than thrown at the
-  action that already happened.
-* `runJourneySync` decides between the first-run migration (`migratedAt` empty) and
-  the steady state, and never throws: an unreachable cloud becomes
-  `{state:'offline', error}` and the values stay queued.
-* `flushJourneyMetadata` compares revisions, pulls when another device moved first,
-  pushes the queue in chunks (200 records / 120 kB per request), and on a conflict
-  re-reads once and re-sends, because a record is a value, not a delta.
-* `clearPushed` removes only what was actually sent, so an edit made during the
-  request survives it.
-
-`fitCache` (in `src/lib/journeyMetadata.js`) keeps the mirror inside the native
-preference budget (`JOURNEY_CACHE_BYTES = 900000`) by evicting the oldest **derived**
-answers. A full phone loses a recomputable place lookup, never a decision.
-`fitQueue` does the same for the queue (`JOURNEY_QUEUE_BYTES = 400000`), applied in
-the adapter's single `write`, and counts what it gave up in
-`journeyMetadataQueue.dropped`; see risk 2 in §9 for why that bound exists.
-
-### Who calls it
-
-* `useJourneyGrouping.js` still owns the screen's object. Its `persist` now emits
-  `groupingChanges(before, after)` — record values — into the queue and trims only the
-  mirror; with a `sync` adapter it writes through it, and without one it falls back to
-  the old single save (the path the existing hook tests use).
-* `App.jsx` creates one adapter per account (memoised on `session.user.id`) and passes
-  it both to the hook and to `<AutoCloudSync journeySync>`.
-* `AutoCloudSync` runs the journey pass after settings and the Collection, then
-  `await journeys.flush()`. Anything short of `active`/`idle` is re-thrown, so the pass
-  counts as unfinished and the next tick tries again instead of recording the state as
-  already synced.
-
-## 4. Upgrading a device that already has journeys
-
-`runJourneySync` reads `status.migratedAt`. Empty means this account has never been
-migrated, and `migrateJourneyMetadata` then runs **once**:
-
-1. Read the local mirror. If it cannot be read, fall back to the account's own
-   `account_settings.payload.journeyGrouping` (the last backup) — the only other copy
-   that can exist.
-2. If there is neither, stop with `state='recoveryRequired'` and a message. Nothing is
-   replaced: an unreadable mirror may be the only copy of what the device knows.
-3. Read the cloud snapshot, compute `migrationChanges(local, cloud)` — only what the
-   cloud does not have, or has differently — and push it.
-4. Read the snapshot **back** and verify with `missingRecords` that every record
-   arrived. If any did not, stop with `state='incomplete'` and keep the mirror.
-5. Only then replace the mirror with the cloud copy (with the queue applied), clear the
-   queue, and stamp `migratedAt`.
-
-So a first upgrade on a new device seeds the records from the backup instead of asking
-the person to start over, and a device whose mirror cannot be read is reported rather
-than silently emptied.
-
-## 5. What failed writes and conflicts look like
-
-| Situation | Result |
-| --- | --- |
-| No network | `status.state='offline'`, queue untouched, retried on the next pass and after a relaunch |
-| Another device wrote first | revision mismatch → pull, then the queued values are sent on top once |
-| Device refuses the preferences write | keys stay dirty and queued, retried |
-| Cloud refuses a record | message surfaced in the status, local mirror unchanged |
-| Mirror unreadable, no copy anywhere | `state='recoveryRequired'`, nothing replaced |
-
-An unreadable or foreign-owner mirror is reported as `metadata: null`. The store then
-skips writing that key entirely rather than putting an empty grouping over it, and the
-hook refuses to edit until it is readable.
-
-## 6. Settings backup no longer carries journey metadata
-
-`settingsPayload` and `mergeRestoredSettings` in `src/lib/settingsSync.js` no longer
-include `journeyGrouping`: it was the 300 kB-truncated copy that lost titles and merges
-on restore. The records are the backup now. The preferences file still holds the mirror
-so the app opens offline, but it is a cache, not a backup.
-
-`AccountPreferences` (native) gained `journeyMetadataQueue` and `journeyMetadata`, both
-optional so a file written by an earlier build still decodes; each string is capped at
-1 MB and validated as JSON belonging to the signed-in account (the queue additionally
-needs `version: 1` and a `changes` object). `JourneyMetadataStatus` declares every
-field optional for the same forward-compatibility reason.
-
-## 7. What did not change
-
-Recording, GPS, distance, tracking segments, archive/pin, photo handling and the
-household/social sharing model are untouched. The grouped object every screen reads
-(`links`, `cuts`, `titles`, `manualTags`, `hiddenTags`, `stopEdits`, `places`, `roads`,
-`distanceSummaries`, `enriched`, `enrichFrom`, `history`) has the same shape and the
-same reducer as before; only where it is stored, and how it reaches another device,
-changed.
-
-## 8. Tests
-
-| Suite | Covers |
-| --- | --- |
-| `src/lib/journeyMetadata.test.js` (21) | the record description: refs, change sets, merge, apply, `clearPushed`, migration diff, mirror trimming, queue trimming and its bounded overflow |
-| `src/lib/journeyMetadataStore.test.js` (26) | queue round trip and owner scoping, first-run migration, verify-then-replace, one-time backup recovery, `recoveryRequired` and its recovery, queued values sent before the mirror is replaced, offline replay, conflict retry, same-record conflict reporting, an idle pass costing one call, the cloud copy disappearing, late hydration |
-| `tests/database/journey-metadata.test.js` (10, PGlite) | the migration applied to a real Postgres: RLS, owner isolation, snapshot/apply semantics, revision conflicts, records it replaced, cascade on account deletion |
-| `src/lib/useJourneyGrouping.test.jsx` (19) | the hook still enriches once, never overwrites an unreadable mirror, queues record values instead of a blob when a sync adapter is present, and reports a conflict |
-| `src/components/AutoCloudSync.test.jsx` (5) | the journey pass runs, flushes, retries when it is not `active`, and a journey edit alone does not re-upload routes and photos |
-| `src/lib/settingsSync.test.js` (5) | journey metadata is not in the settings payload and is not restored from it |
-
-## 9. Review before merge: eight risks
-
-**1. Initialisation and hydration.** `AuthGate` renders a loading screen while
-`auth.status` is `restoring`/`deleting`, and `PrivateApp` is keyed by
-`session.user.id`, so the adapter is only ever built from an account file that has
-already been read, and never survives an account switch. Two things were still
-wrong:
-
-* A delayed restore (or any future screen that renders earlier) would have created
-  the adapter from an empty file, and the first edit would then have written an
-  almost-empty mirror and queue over the real one. `createJourneySync` now exposes
-  `reseed(preferences)` and `App.jsx` calls it from an effect while nothing has been
-  written yet — no dirty key, no save in flight, no queued value, no completed
-  migration. It is a no-op for a fresh account and a recovery for a late hydration,
-  and it can never undo an edit this device already made.
-* `readJourneyState` treats another account's mirror as unreadable rather than
-  empty, and `readStatus`/`readQueue` ignore records whose `owner` is not this
-  account, so a restored account cannot inherit another's queue or migration state.
-
-**2. Offline queue capacity.** The queue is one preference value with a 1 MB native
-limit, and exceeding it makes **every** preference save fail — settings, vehicles,
-avatar — because the whole file is written at once. The queue had no bound at all:
-a week offline with road reconstruction (40 kB per rebuilt gap) and place lookups
-could reach that limit and wedge the device, with the queued values still in memory
-only. `fitQueue` (`journeyMetadata.js`) now bounds it to 400 kB and is applied in
-one place, `createJourneySync.write`, so every edit and every sync pass goes through
-it:
-
-* recomputable answers are given up first and oldest first (`roads`, then `places`,
-  then `summaries`) because they can be asked for again;
-* decisions — titles, merges, splits, tags, stop corrections, the enrichment cutoff
-  — are kept whole up to the 800 kB the device can still store, and only past that
-  (tens of thousands of decisions) are the oldest of them lost;
-* what was given up is counted in `journeyMetadataQueue.dropped` next to the queue,
-  accumulates while the queue is unsent, and disappears with it, so nothing is
-  discarded silently.
-
-The regression test builds a 300-road, 60-place backlog (≈600 kB), shows the queue
-fits, and asserts every decision survived. A large payload store separate from the
-preferences file does not exist on the device yet; if bounded eviction ever proves
-insufficient, that is the next step, not a bigger blob.
-
-**3. Migration safety.** `migratedAt` is stamped only after the cloud copy has been
-read back and `missingRecords` (now including the enrichment cutoff) matches what
-was sent. Anything else leaves `migratedAt` unset, which is what makes the run
-resumable: the mirror is untouched, and the next pass re-diffs against the current
-snapshot and skips what already arrived (tested with a store that silently drops a
-batch). Two real gaps were closed:
-
-* queued values were not part of the migration source, so an edit made between the
-  upgrade and the first sync could be cleared from the queue without ever being
-  sent; the source is now the mirror *plus* the queue, and the queue is pushed on
-  top of the diff;
-* a device whose own file could not be read stopped at `recoveryRequired` for ever,
-  even after another device uploaded the records. It now keeps trying, adopts the
-  cloud copy when it exists, and keeps refusing to replace an unreadable file when
-  nothing readable exists anywhere.
-
-**4. Legacy compatibility.** `readLegacyBlob` and the migration path stay. The review
-found the path was too narrow: it was only consulted when the local mirror was
-*unreadable*, so a **first upgrade on a replacement device** — empty mirror, no
-records yet, journeys only in `account_settings.payload.journeyGrouping` — restored
-nothing at all. The backup is now read when the account has no records anywhere, at
-most once, and never again once records exist (both cases are tested). Removing it
-stays a separate, later decision (see §10).
-
-Each risk below was reviewed against the code as written, not against the design.
-
-**5. Synchronisation conflicts.** Records are values, so different journeys edited on
-different devices merge and cannot collide (tested). Same-record edits used to be
-last-writer-wins with no trace at all. `journey_apply_changes` now compares each
-record with what is stored and returns `{revision, overwritten: [{domain, ref}]}`;
-the store records the count in `status.conflicts`, the hook exposes it as
-`grouping.conflicts`, and the grouping panel says that some details were also
-changed on another device. A stale revision still produces a visible conflict error
-that is retried once after a pull. The overwrite itself is still last-writer-wins —
-that is the semantics of a value — but it is no longer silent on either side.
-
-**6. Enrichment persistence.** Unchanged and re-verified: a recording marked done
-(`enriched[ref]`) is never looked up again, a place answer is final, road estimates
-are stored per gap with a lookup version, and the distance summary is computed once
-per recording. Reopening a historical activity, or adopting a snapshot that already
-carries the markers, does no provider work (hook tests "a done activity is not read
-again" and "history is never looked up").
-
-**7. Database security.** Seven tables, all `(owner_id, …)` keyed with
-`on delete cascade` to `auth.users`; RLS enabled with an owner policy *and* a
-restrictive `account_is_active` policy; `revoke all` from `anon`/`authenticated`
-followed by explicit table grants, and `guard_owner_write` triggers; three
-`security invoker` functions that re-check `p_owner = auth.uid()` and the active
-account, with `execute` revoked from `public`/`anon`. Policies are now dropped
-before creation so an interrupted migration can be re-applied. Deletion cascades
-(tested). Household and friend sharing are untouched: they read the *other*
-account's recordings, and journey metadata stays owner-only — a shared journey is
-still rendered read-only from the viewer's own metadata plus public place names.
-
-**8. Performance.** One cheap `journey_metadata_revision` call per pass, and the
-snapshot is downloaded only when that number moved; pushes are chunked at 200
-records / 120 kB and the migration reads the snapshot twice, once per account. Two
-problems were found and fixed:
-
-* the `AutoCloudSync` signature included the whole mirror and queue, so renaming a
-  journey looked like a settings change and triggered a full route and photo backup
-  pass, and serialised ~1 MB of mirror every two minutes. Journey state now has its
-  own signature, and a journey-only change runs only the journey pass (tested).
-* an unbounded queue also meant an unbounded `JSON.stringify` on every pass; the
-  queue is bounded now (risk 2).
-
-## 10. Deployment and follow-up
-
-The migration has not been applied to any project yet, and this branch is not
-production-ready until the checks below have passed, in this order.
+Run these from the branch root:
 
 ```bash
-# 1. Apply the migration to the test project with the repository wrapper (never a
-#    bare npx supabase, which bypasses the token guards). This project's remote
-#    migration ledger is not reconciled, so the file is applied directly and then
-#    recorded - see docs/cloud-sync-deployment.md and docs/supabase-connection.md.
-npm run supabase -- migration list --linked        # 20261120000000 must be the only pending entry
-npm run supabase -- db query --linked --file supabase/migrations/20261120000000_journey_metadata_records.sql
-npm run supabase -- migration repair 20261120000000 --status applied --linked
-npm run supabase -- migration list --linked        # confirm it is recorded as applied
-
-# 2. Re-run the whole database suite against the local Postgres build of every
-#    migration, then the app suite.
-npm run test:database
 npm run check
+npm run test:database
+npm run test:native
+npm run test:native:details
+npm run ios:build
 ```
 
-```bash
-# 3. Confirm the functions, policies and grants on the test project (read-only).
-npm run supabase -- db query --linked "select proname, prosecdef from pg_proc
- where proname in ('journey_metadata_snapshot','journey_metadata_revision','journey_apply_changes');"
-npm run supabase -- db query --linked "select tablename, policyname, permissive, cmd from pg_policies
- where tablename like 'journey_%' order by tablename, policyname;"
-npm run supabase -- db query --linked "select count(*) as rls_tables from pg_tables
- where schemaname='public' and tablename like 'journey_%' and rowsecurity;"
-```
+Local results from the final review run:
 
-Then, on real devices:
+- `npm run check`: 1,269 tests across 166 files; lint and production build passed.
+  The orchestrator suite separately passed 52 tests with 11 existing skips.
+- `npm run test:database`: 167 tests across 22 disposable database test files passed.
+- Native recorder/storage suite: 2,115 assertions passed; details: 91 passed.
+- Generic iOS simulator build: passed. This is a build check, not a real-phone test.
+- The final store identity-comparison optimization also passed all 28 store tests.
+- GitHub reported no automated checks for this PR branch at review time; the above
+  results are local. Hosted and physical-device requirements remain unverified.
 
-1. **Two-device sync.** Sign in on A and B. Rename a journey on A → B shows the new
-   title after its next pass (≤2 min, or on foreground). Rename a *different*
-   journey on each device while both are in airplane mode → reconnect both → both
-   renames are present on both devices. Rename the *same* journey on both while
-   offline → reconnect → the later write wins on both, and the grouping panel on the
-   loser says the details were also changed on another device. Delete the journey on
-   A → B follows; check `activities`/`account_settings` for account A are untouched
-   apart from the journey records.
-2. **Upgrade.** Install this build over the previous one on a device with existing
-   journeys and merges. Confirm every title, merge, tag and corrected stop is still
-   there, `journeyMetadata.migratedAt` is set exactly once, `journeyMetadataQueue`
-   is empty afterwards, and no journey appears twice on the second device.
-3. **New device.** Sign in on a phone that never had the data: it should adopt the
-   records; if the account has no records yet, it seeds them from the old settings
-   backup once.
-4. **iOS preference keys.** In a real build, edit a journey, force-quit, reopen: the
-   edit survives, and `AccountPreferences` accepts the three keys (mirror ≤1 MB,
-   queue ≤1 MB, status). "Account settings are invalid or too large" here would mean
-   a cap was exceeded — the queue bound makes that impossible for derived data.
+Coverage includes idle A→B updates, foreground revision checks, no redundant
+snapshots/uploads, independent offline records, independent fields of one activity
+and stop, competing titles, actual stale-revision rejection, multi-megabyte route
+backlogs, restart/recovery, atomic failed transactions, IndexedDB quota errors,
+native SQLite page-capacity exhaustion and recovery, encryption/wrong-key refusal,
+legacy migration, malformed legacy preservation, settings recovery-source
+retention, pair representation, owner isolation, RLS and account deletion.
 
-Only after all of the above should the legacy pieces go: the backup copy in
-`account_settings.payload.journeyGrouping` and the `readLegacyBlob` fallback. People
-upgrade from older builds long after a rollout, so that removal is a separate change
-with its own telemetry, not part of this one.
+The SQLite capacity test uses the actual native database implementation with a
+small test page limit. IndexedDB quota failure is injected; it does not establish
+how every Safari/iOS release behaves under physical disk pressure.
 
-Each risk below was reviewed against the code as written, not against the design.
+## Second review findings and remaining limitations
+
+The second pass checked durable acknowledgement, mutation during a pending save,
+field ancestry while coalescing offline edits, CAS retry, canonical pair identity,
+legacy settings retention, tag limits, account switching/deletion and single-pass
+enrichment. Fixes for those findings are included in this branch.
+
+Same-field conflicts are preserved and surfaced, not automatically chosen. There
+is currently no dedicated per-field resolution screen: a conflicted queue remains
+blocked until its competing values are deliberately reconciled. Legacy records
+that disagree with existing cloud records also remain intact and report an
+incomplete migration rather than arbitrarily choosing a winner. Treat these as
+explicit product/rollout limitations, not successful synchronization. Do not clear
+queues or reset migrated flags to suppress the warnings.
+
+Hosted PostgREST serialization, hosted auth/RLS/session guards, network request
+limits and real iOS lifecycle behavior still require the checks below. Local SQL
+and a simulator build do not establish those results.
+
+## Exact hosted Supabase validation requirements — staging only
+
+Use a **separate disposable hosted test project**, with production-equivalent
+prerequisite migrations and two ordinary test users. Do not use this checkout's
+current `--linked` target without independently confirming that it is the test
+project. This review does not authorize production migration or a production
+ledger repair. Never print connection strings or tokens.
+
+1. Work in a disposable checkout at the reviewed PR head. Use the repository
+   `scripts/supabase.mjs` wrapper and a protected test-project token. Explicitly
+   link **that checkout** to the test project and verify its project ref and
+   migration ledger. The production ref is `subobfmlkfqcsaekygat` and must not be
+   the validation target. Do not run `db push` against an unreconciled ledger.
+2. After confirming the target, apply **only**
+   `supabase/migrations/20261120000000_journey_metadata_records.sql` on staging,
+   then record that version in the staging ledger. For this repository's direct
+   apply/record workflow, the commands in the staging checkout are:
+
+   ```bash
+   npm run supabase -- link --project-ref "$STAGING_PROJECT_REF"
+   npm run supabase -- migration list --linked
+   npm run supabase -- db query --linked --file supabase/migrations/20261120000000_journey_metadata_records.sql
+   npm run supabase -- migration repair 20261120000000 --status applied --linked
+   npm run supabase -- migration list --linked
+   ```
+
+   If any prerequisite migration is absent, reconcile the **staging** environment
+   first. Do not use migration repair to claim an unapplied schema exists.
+3. Verify all seven journey tables have RLS, an owner policy, the restrictive
+   active-account policy, expected grants and the owner-write guard. Verify the
+   three `journey_*` RPCs are security invoker with an empty search path and are
+   unavailable to `anon`. Verify the account-settings preservation trigger still
+   increments revision and enforces owner immutability. Reapply the migration on
+   staging and confirm no records disappear and the 60-tag/4 MB constraints match.
+4. Use **ordinary authenticated clients**, not a service role: test own reads and
+   writes, cross-owner reads/writes, anonymous requests, account awaiting deletion,
+   and stale revisions. A rejected mixed batch must write no rows or revision.
+   Confirm first-write concurrency retries safely and cannot erase either edit.
+5. Through the real PostgREST RPC endpoint, send JSON pair strings via application
+   changes; read back merges, cuts, source arrays and stop edits. Exercise a
+   Unicode title and a single 0.5–4 MB route, followed by a multi-chunk offline
+   backlog. Verify gateway limits, JSON byte sizes and complete readback. Refused
+   payloads must remain locally pending and display the error.
+6. Test an existing `account_settings.payload.journeyGrouping` user with no new
+   records. Perform a settings-only backup first, then a first-device and a
+   replacement-device import. Verify the recovery blob remains, all metadata
+   records arrive, cutoff is unchanged, and migration is stamped only after
+   readback verification. Conflicting legacy copies must remain available.
+
+Record staging project ref, PR commit, client build, exact results and any failed
+RPCs (without credentials) before asking to proceed toward a production rollout.
+
+## Exact iOS validation requirements
+
+Build this branch against **staging**, including both the updated native plugin
+and web bundle. Two real iPhones with the same test account are required.
+
+1. Upgrade an installation with real legacy titles, merges, splits, 60 hidden tags,
+   stop edits and enrichment. Verify all values before/after local import, restart
+   and cloud verification; no duplicates and no provider lookups for done history.
+2. Keep B idle on the map/activity screen. Rename on A: B receives it within the
+   two-minute visible interval. Background B, rename on A, foreground B: it checks
+   immediately. Check logs/network that only the revision is read when unchanged
+   and that metadata-only work does not back up routes/photos/settings again.
+3. Put both devices offline. Edit different activities, then different fields of
+   the same activity and stop. Reconnect in both orders; both devices must converge
+   with all independent edits. Repeat with the same title field: the cloud winner
+   remains, the other pending value survives restart and a named-field warning
+   appears. Do not count the blocked conflict as a successful merge.
+4. Accumulate a backlog above the former 400/800 kB thresholds, including large
+   reconstructed roads. Force-quit, reboot, relaunch and reconnect. Compare record
+   counts and values; check that results remain complete without provider rework.
+   Save unrelated settings while the queue is large: they must still succeed.
+5. Exercise locked/protected storage and low disk space on a spare test device.
+   An unsuccessful edit must show an error, retain prior state and never display
+   success. Free space, retry and confirm durable save/restart/recovery.
+6. Switch accounts while storage and sync requests are in flight. No record,
+   pending value or cloud response may appear under the other owner. Delete a test
+   account and verify its local database/key and cloud rows are removed without
+   affecting another account.
+7. On a disposable test installation, uninstall/reinstall **after cloud sync** and
+   confirm cloud restoration. Separately document that unsynced container data is
+   removed on uninstall; this is not a supported recovery path. Test app upgrade
+   and force-quit recovery separately from uninstall.
+
+Keep PR #28 unmerged and production unchanged until the hosted/iOS evidence is
+reviewed. Do not remove the legacy import/recovery path as part of this PR.

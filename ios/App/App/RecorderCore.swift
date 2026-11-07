@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import SQLite3
 
 struct GPSPoint: Codable, Equatable {
     var latitude: Double
@@ -2916,5 +2917,69 @@ extension ActivityPhoto {
     static func thumbnailDataURL(_ jpeg: Data?) -> String? {
         guard let jpeg, !jpeg.isEmpty else { return nil }
         return "data:image/jpeg;base64," + jpeg.base64EncodedString()
+    }
+}
+
+// Per-record encrypted SQLite storage. A transaction commits mirror, pending values
+// and revision together; rollback leaves the previous state readable on disk.
+final class JourneyRecordDatabase {
+    private var db: OpaquePointer?
+    private let key: SymmetricKey
+    init(directory: URL, key: Data, maximumPages: Int? = nil) throws {
+        self.key = SymmetricKey(data: key)
+        let url = directory.appendingPathComponent("journey-records.sqlite")
+        guard sqlite3_open(url.path, &db) == SQLITE_OK else { sqlite3_close(db);db=nil;throw NSError(domain:"JourneyStorage",code:1,userInfo:[NSLocalizedDescriptionKey:"Journey storage could not be opened. Existing data is preserved."]) }
+        do {
+            try execute("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, value BLOB NOT NULL);")
+            if let pages=maximumPages {try execute("PRAGMA max_page_count=\(pages)")}
+            #if os(iOS)
+            try FileManager.default.setAttributes([.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication],ofItemAtPath:url.path)
+            #endif
+        } catch { sqlite3_close(db); db=nil; throw error }
+    }
+    deinit { sqlite3_close(db) }
+    private func execute(_ sql: String) throws {
+        guard sqlite3_exec(db,sql,nil,nil,nil)==SQLITE_OK else { throw error() }
+    }
+    private func error() -> NSError {
+        NSError(domain:"JourneyStorage",code:Int(sqlite3_errcode(db)),userInfo:[NSLocalizedDescriptionKey:"Journey storage could not be committed. Existing data is preserved. \(String(cString:sqlite3_errmsg(db)))"])
+    }
+    func read() throws -> [String:Any] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db,"SELECT key,value FROM records",-1,&statement,nil)==SQLITE_OK else {throw error()}
+        defer {sqlite3_finalize(statement)}
+        var rows:[String:Any]=[:]
+        while true {
+            let step=sqlite3_step(statement)
+            if step==SQLITE_DONE {return rows}
+            guard step==SQLITE_ROW, let name=sqlite3_column_text(statement,0),let bytes=sqlite3_column_blob(statement,1) else {throw error()}
+            let sealed=Data(bytes:bytes,count:Int(sqlite3_column_bytes(statement,1)))
+            let data=try AES.GCM.open(AES.GCM.SealedBox(combined:sealed),using:key)
+            rows[String(cString:name)]=try JSONSerialization.jsonObject(with:data,options:.fragmentsAllowed)
+        }
+    }
+    func commit(_ operations:[[String:Any]]) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            for operation in operations {
+                guard let name=operation["key"] as? String else {throw error()}
+                let remove=operation["remove"] as? Bool == true
+                let sql=remove ? "DELETE FROM records WHERE key=?" : "INSERT INTO records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                var statement:OpaquePointer?
+                guard sqlite3_prepare_v2(db,sql,-1,&statement,nil)==SQLITE_OK else {throw error()}
+                defer {sqlite3_finalize(statement)}
+                let transient=unsafeBitCast(-1,to:sqlite3_destructor_type.self)
+                guard sqlite3_bind_text(statement,1,name,-1,transient)==SQLITE_OK else {throw error()}
+                if !remove {
+                    let data=try JSONSerialization.data(withJSONObject:operation["value"] ?? NSNull(),options:.fragmentsAllowed)
+                    let sealed=try AES.GCM.seal(data,using:key).combined!
+                    guard sealed.count<=Int32.max else {throw error()}
+                    let bound=sealed.withUnsafeBytes {sqlite3_bind_blob(statement,2,$0.baseAddress,Int32(sealed.count),transient)}
+                    guard bound==SQLITE_OK else {throw error()}
+                }
+                guard sqlite3_step(statement)==SQLITE_DONE else {throw error()}
+            }
+            try execute("COMMIT")
+        } catch {try? execute("ROLLBACK");throw error}
     }
 }

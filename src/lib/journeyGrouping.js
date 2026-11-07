@@ -11,7 +11,7 @@ import {routeGaps,gapKey,snapshotCurrent,savedDistance,combineEstimates} from '.
 export const GROUPING_VERSION=1;
 const moving=t=>(t.activity==='Driving'||t.activity==='Unknown')&&t.endedAt!=null&&t.state!=='recording';
 const point=p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180;
-const edge=(a,b)=>JSON.stringify([a,b]);
+const edge=(a,b)=>JSON.stringify([a,b].sort());
 const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
 // A stopped journey that may still be continued is a provisional record. It is
@@ -28,7 +28,14 @@ export function validateGrouping(m,owner){
    !['titles','places','stopEdits'].every(key=>record(m[key]))||
    !['types','manualTags','hiddenTags','roads','enriched','distanceSummaries'].every(key=>m[key]==null||record(m[key]))||
    (m.sourceLinks!=null&&!Array.isArray(m.sourceLinks)))return null;
-  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{},sourceLinks:m.sourceLinks||[]};
+  const canonical=key=>{const pair=JSON.parse(key);if(!Array.isArray(pair)||pair.length!==2||!pair.every(id=>typeof id==='string'))throw new Error('Invalid pair');return edge(...pair);};
+  const stopEdits={};
+  for(const [key,value] of Object.entries(m.stopEdits)){
+   const target=key.startsWith('[')?canonical(key):key;
+   if(Object.hasOwn(stopEdits,target)&&JSON.stringify(stopEdits[target])!==JSON.stringify(value))return null;
+   stopEdits[target]=value;
+  }
+  return {...emptyGrouping(owner),...m,links:m.links.map(canonical),cuts:m.cuts.map(canonical),stopEdits,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{},sourceLinks:m.sourceLinks||[]};
  }catch{return null;}
 }
 export function parseGrouping(serialized,owner){return serialized?validateGrouping(safeParse(serialized),owner):emptyGrouping(owner);}
@@ -182,7 +189,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  for(const t of activities){if(isProvisional(t))continue;if((t.ownerID||t.owner_id)&&(t.ownerID||t.owner_id)!==owner)continue;const old=unique.get(t.id);if(!old||(t.updatedAt||0)>(old.updatedAt||0))unique.set(t.id,t);}
  const sorted=[...unique.values()].sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  const positions=new Map(sorted.map((s,i)=>[s.id,i]));
- const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[a,b]]:[];}catch{return [];}});
+ const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[Math.min(a,b),Math.max(a,b)]]:[];}catch{return [];}});
  const groups=[],suggestions=[];let previous;
  const drives=sorted.filter(moving);
  for(const t of drives){const group=groups.at(-1),stop=previous?makeStop(previous,t,context):null;
@@ -206,7 +213,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   const a=groups.findIndex(g=>g.some(t=>t.id===ids[0]));
   const b=groups.findIndex(g=>g.some(t=>t.id===ids[1]));
   if(a<0||b<0||a===b)continue;
-  const left=sorted.find(t=>t.id===ids[0]),right=sorted.find(t=>t.id===ids[1]);
+  const [left,right]=ids.map(id=>sorted.find(t=>t.id===id)).sort((x,y)=>(x?.startedAt??0)-(y?.startedAt??0));
   if(!left||!right||left.endedAt==null||right.startedAt<left.endedAt||right.startedAt-left.endedAt>86400)continue;
   if(metadata.cuts.includes(key))continue;
   const merged=[...groups[a],...groups[b]].sort((x,y)=>x.startedAt-y.startedAt||x.id.localeCompare(y.id));
@@ -267,7 +274,9 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
   next.manualTags[action.anchor]=[...new Set(action.tags.map(t=>t.trim()).filter(Boolean))];
  }else if(action.type==='hideTag'){
   if(!ordered.some(t=>t.id===action.anchor)||typeof action.tag!=='string'||!action.tag.trim()||action.tag.length>60)throw new Error('Invalid tag.');
-  next.hiddenTags[action.anchor]=[...new Set([...(next.hiddenTags[action.anchor]||[]),action.tag.trim()])].slice(-60);
+  const hidden=[...new Set([...(next.hiddenTags[action.anchor]||[]),action.tag.trim()])];
+  if(hidden.length>60)throw new Error('Restore a hidden tag before hiding another; all 60 existing choices have been kept.');
+  next.hiddenTags[action.anchor]=hidden;
  }else if(action.type==='restoreTag'){
   next.hiddenTags[action.anchor]=(next.hiddenTags[action.anchor]||[]).filter(t=>t.toLowerCase()!==action.tag?.toLowerCase());
  }else if(action.type==='sourceLink'){

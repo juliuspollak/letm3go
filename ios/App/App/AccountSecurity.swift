@@ -49,10 +49,8 @@ struct AccountPreferences: Codable {
     // per-account preferences so they can be backed up.
     var archivedTrips: [String]?
     var journeyGrouping: String?
-    // Journey metadata is stored as owner-scoped records in Postgres. The mirror above
-    // keeps the grouping readable offline; these two keep the values still waiting to
-    // be sent and how far the last pass got, so a save of one cannot drop the other and
-    // an interrupted sync resumes where it stopped.
+    // Legacy import keys. New mirror/pending records live in encrypted SQLite,
+    // outside preferences, and these values are cleared only after durable import.
     var journeyMetadataQueue: String?
     var journeyMetadata: JourneyMetadataStatus?
     var syncReceipts: [String: SyncReceipt]?
@@ -328,7 +326,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     var appleState: String?
     var appleController: ASAuthorizationController?
     var bindingGeneration = 0
-    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
+    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","readJourneyRecords","commitJourneyRecords","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
     func storageKey(_ call: CAPPluginCall) -> String? {
         // Supabase may add bounded suffixes for PKCE/session bookkeeping between
         // client releases. Keep the bridge confined to Letm3go's auth namespace,
@@ -417,6 +415,29 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         r.recordDiagnostic("account","Private interface locked; recorder kept running")
         call.resolve()
     } }
+    private static let journeyQueue=DispatchQueue(label:"letm3go.journey-records")
+    private func journeyRecords(_ call: CAPPluginCall, write: Bool) {
+        DispatchQueue.main.async {
+            let r=LocationRecorder.shared
+            guard let owner=call.getString("ownerID")?.lowercased(), owner==r.ownerID,
+                  r.uiUnlocked,r.storeOpened,!r.accountDeleting,!r.accountSuspended,let storage=r.storage else {
+                call.reject("Sign in to open private journey storage.");return
+            }
+            do {
+                let key=try AccountKeychain.accountKey(owner),directory=storage.directory
+                let operations=call.getArray("operations",[String:Any].self) ?? []
+                Self.journeyQueue.async {
+                    do {
+                        let database=try JourneyRecordDatabase(directory:directory,key:key)
+                        if write {try database.commit(operations);call.resolve()}
+                        else {call.resolve(["records":try database.read()])}
+                    } catch {call.reject(error.localizedDescription)}
+                }
+            } catch {call.reject(error.localizedDescription)}
+        }
+    }
+    @objc func readJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:false)}
+    @objc func commitJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:true)}
     @objc func savePreferences(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID, let object = call.getObject("preferences") else { call.reject("Missing settings."); return }
         do { let data = try JSONSerialization.data(withJSONObject:object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences)

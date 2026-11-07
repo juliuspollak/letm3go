@@ -21,7 +21,7 @@ export const JOURNEY_CACHE_BYTES=900000;
 export const ACTIVITY_TYPES=['Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Other','Unknown'];
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const list=value=>Array.isArray(value)?value:[];
-const strings=value=>list(value).filter(entry=>typeof entry==='string'&&entry.length>0&&entry.length<=60).slice(0,20);
+const strings=value=>list(value).filter(entry=>typeof entry==='string'&&entry.length>0&&entry.length<=60).slice(0,60);
 const text=(value,limit)=>typeof value==='string'&&value.length>0&&value.length<=limit?value:null;
 const finite=value=>typeof value==='number'&&Number.isFinite(value)?value:null;
 const pairKey=(left,right)=>[left,right].sort().join('|');
@@ -121,7 +121,14 @@ export function mergeChanges(base,extra){
  for(const name of DOMAINS){
   const index=new Map();
   for(const item of list(base?.[name]))if(record(item)&&KEY_OF[name](item))index.set(KEY_OF[name](item),item);
-  for(const item of list(extra?.[name]))if(record(item)&&KEY_OF[name](item))index.set(KEY_OF[name](item),item);
+  for(const value of list(extra?.[name]))if(record(value)&&KEY_OF[name](value)){
+   let item=value;
+   if(name==='pairs'&&['link','cut'].includes(item.relation)){
+    const previous=[...index.values()].find(entry=>['link','cut'].includes(entry.relation)&&pairKey(entry.left,entry.right)===pairKey(item.left,item.right));
+    if(previous&&Object.hasOwn(previous,'_baseRelation'))item={...item,_baseRelation:previous._baseRelation};
+   }
+   const prior=index.get(KEY_OF[name](item));index.set(KEY_OF[name](item),prior?coalesceRecord(prior,item):item);
+  }
   if(index.size)merged[name]=[...index.values()];
  }
  const enrichFrom=finite(extra?.enrichFrom)??finite(base?.enrichFrom);
@@ -188,11 +195,14 @@ export function applyChanges(metadata,changes){
   if(typeof left!=='string'||typeof right!=='string'||!left||!right||left.length>80||right.length>80)continue;
   const same=ids=>Array.isArray(ids)&&pairKey(ids[0],ids[1])===pairKey(left,right);
   const other=entry=>{const pair=edgePair(entry);return !pair||pairKey(pair[0],pair[1])!==pairKey(left,right);};
-  next.links=next.links.filter(other);next.cuts=next.cuts.filter(other);
-  next.sourceLinks=next.sourceLinks.filter(ids=>!same(ids));
+  if(item.relation==='link')next.links=next.links.filter(other);
+  if(item.relation==='cut')next.cuts=next.cuts.filter(other);
+  if(item.relation==='source')next.sourceLinks=next.sourceLinks.filter(ids=>!same(ids));
   if(item.delete===true)continue;
-  if(item.relation==='link')next.links=[...next.links,JSON.stringify([left,right])];
-  else if(item.relation==='cut')next.cuts=[...next.cuts,JSON.stringify([left,right])];
+  if(item.relation==='link')next.cuts=next.cuts.filter(other);
+  if(item.relation==='cut')next.links=next.links.filter(other);
+  if(item.relation==='link')next.links=[...next.links,JSON.stringify([left,right].sort())];
+  else if(item.relation==='cut')next.cuts=[...next.cuts,JSON.stringify([left,right].sort())];
   else if(item.relation==='source')next.sourceLinks=[...next.sourceLinks,[left,right]];
  }
  for(const item of list(changes?.stops)){
@@ -221,14 +231,18 @@ export function groupingChanges(before,after){
  const from=describeGrouping(before),to=describeGrouping(after),changes={};
  for(const name of ['activities','stops','places','roads','summaries']){
   const changed=[];
-  for(const [key,item] of to[name])if(JSON.stringify(from[name].get(key))!==JSON.stringify(item))changed.push(item);
-  for(const [key,item] of from[name])if(!to[name].has(key))changed.push({...item,delete:true});
+  for(const [key,item] of to[name])if(JSON.stringify(from[name].get(key))!==JSON.stringify(item))changed.push(withFields(name,from[name].get(key),item));
+  for(const [key,item] of from[name])if(!to[name].has(key))changed.push(withFields(name,item,{...item,delete:true}));
   if(changed.length)changes[name]=changed;
  }
  const pairs=[];
  for(const [key,item] of to.pairs)if(JSON.stringify(from.pairs.get(key))!==JSON.stringify(item))pairs.push(item);
  for(const [key,item] of from.pairs)if(!to.pairs.has(key))pairs.push({relation:item.relation,left:item.left,right:item.right,delete:true});
- if(pairs.length)changes.pairs=pairs;
+ if(pairs.length)changes.pairs=pairs.map(item=>{
+  if(!['link','cut'].includes(item.relation))return item;
+  const previous=[...from.pairs.values()].find(entry=>['link','cut'].includes(entry.relation)&&pairKey(entry.left,entry.right)===pairKey(item.left,item.right));
+  return {...item,_baseRelation:previous?.relation??null};
+ });
  if(to.enrichFrom!==null&&to.enrichFrom!==from.enrichFrom)changes.enrichFrom=to.enrichFrom;
  return changes;
 }
@@ -267,54 +281,90 @@ export function fitCache(metadata,limit=JOURNEY_CACHE_BYTES){
  return {metadata:next,evicted};
 }
 
-// The queue of record values still to send is bounded too, because it lives in the
-// same preference file and an unbounded queue would eventually be refused by the
-// device - which blocks every other setting, not just this one. It gives up its
-// recomputable half first and oldest first: a place lookup, a rebuilt road or a
-// distance summary can be asked for again, while a title, a merge, a tag or a stop
-// correction is what the person decided and is never dropped. What was given up is
-// counted and reported, so a queued answer never disappears without a trace.
-export const JOURNEY_QUEUE_BYTES=400000;
-// A last resort this build should never reach: past this size the device would refuse
-// the whole preference file, so the oldest decisions go too and the count says so.
+// Pending writes are never evicted. Capacity failures must reject the transaction.
+export const JOURNEY_QUEUE_BYTES=400000; // old builds' threshold, for upgrade tests
 export const JOURNEY_QUEUE_HARD_BYTES=800000;
-export const QUEUE_DERIVED=['roads','places','summaries'];
-export const QUEUE_EVICTION_ORDER=['roads','places','summaries','activities','pairs','stops'];
-const evictable=item=>record(item)&&item.delete!==true;
-function trimQueue(queue,limit,counts,domains=QUEUE_EVICTION_ORDER){
- let size=JSON.stringify(queue).length;
- for(const name of domains){
-  if(size<=limit)break;
-  const entries=list(queue[name]);
-  if(!entries.length)continue;
-  const kept=[];
-  for(const item of entries){
-   const cost=JSON.stringify(item).length+1;
-   // Oldest first: the records queued earliest are the ones the mirror trims first
-   // too, so both halves of the device copy give up the same answers.
-   if(size>limit&&evictable(item)){size-=cost;counts[name]=(counts[name]||0)+1;continue;}
-   kept.push(item);
-  }
-  queue[name]=kept;
- }
- return queue;
-}
-export function fitQueue(changes,{limit=JOURNEY_QUEUE_BYTES,hard=JOURNEY_QUEUE_HARD_BYTES,dropped={}}={}){
- const queue=mergeChanges({},changes);
- // An empty queue has nothing left to report: what was given up was given up in order
- // to send what is still waiting, and nothing is waiting any more.
- if(changesEmpty(queue))return {queue:{},dropped:{}};
- // The count accumulates for as long as the queue is unsent, so an answer given up
- // three sync passes ago is still reported; it disappears with the queue.
- const counts={};
- for(const [name,value] of Object.entries(dropped||{}))if(Number(value)>0)counts[name]=Number(value);
- if(JSON.stringify(queue).length<=limit)return {queue,dropped:counts};
- // Recomputable answers go first, and only they are given up while the decisions fit.
- trimQueue(queue,limit,counts,QUEUE_DERIVED);
- // Decisions are kept up to the size the device can still store, and only beyond it
- // is the oldest of them lost - reported, never silent.
- trimQueue(queue,hard,counts);
- return {queue,dropped:counts};
-}
+export function fitQueue(changes,{dropped={}}={}){return {queue:mergeChanges({},changes),dropped};}
 export function queueSize(changes){return JSON.stringify(mergeChanges({},changes)).length;}
 export function droppedTotal(dropped){return Object.values(dropped||{}).reduce((sum,count)=>sum+(Number(count)||0),0);}
+
+const FIELDS={activities:['title','type','manualTags','hiddenTags','enrichedAt'],stops:['name','tags','replaceTags','ignored']};
+const normalized=(item,field)=>item?.delete?defaultField(field):item?.[field]??defaultField(field);
+const defaultField=field=>['manualTags','hiddenTags','tags'].includes(field)?[]:['replaceTags','ignored'].includes(field)?false:null;
+const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+function withFields(domain,before,after){
+ if(!FIELDS[domain])return after;
+ const fields=FIELDS[domain].filter(field=>!equal(normalized(before,field),normalized(after,field)));
+ return {...after,_fields:fields,_base:Object.fromEntries(fields.map(field=>[field,normalized(before,field)]))};
+}
+function coalesceRecord(prior,item){
+ if(!item._fields)return item;
+ if(!prior._fields){
+  const preserved={...item,_fields:undefined,_base:undefined};
+  for(const field of ['title','type','manualTags','hiddenTags','enrichedAt','name','tags','replaceTags','ignored'])
+   if(!item._fields.includes(field)&&Object.hasOwn(prior,field))preserved[field]=prior[field];
+  return preserved;
+ }
+ return {...item,_fields:[...new Set([...prior._fields,...item._fields])],_base:{...item._base,...prior._base}};
+}
+// Three-way merge under the account revision CAS. Independent fields commute;
+// competing values of the same field stay queued and are reported, never replaced.
+export function rebaseChanges(changes,remote){
+ const described=describeGrouping(remote),result=mergeChanges({},changes),conflicts=[];
+ const relationships=new Map([...described.pairs.values()].filter(item=>['link','cut'].includes(item.relation)).map(item=>[pairKey(item.left,item.right),item.relation]));
+ const desired=new Map((result.pairs||[]).filter(item=>['link','cut'].includes(item.relation)&&!item.delete).map(item=>[pairKey(item.left,item.right),item.relation]));
+ if(result.pairs)result.pairs=result.pairs.map(item=>{
+  if(!['link','cut'].includes(item.relation))return item;
+  const key=pairKey(item.left,item.right),stored=relationships.get(key)??null,wanted=desired.get(key)??null;
+  if(stored!==wanted&&(Object.hasOwn(item,'_baseRelation')?stored!==item._baseRelation:stored!==null))
+   conflicts.push({domain:'pairs',ref:JSON.stringify([item.left,item.right].sort()),field:'grouping',local:wanted,remote:stored});
+  return {...item,_baseRelation:stored};
+ });
+
+ for(const domain of ['activities','stops']){
+  result[domain]=(result[domain]||[]).map(item=>{
+   const current=described[domain].get(item.ref);
+   if(!item._fields){
+    if(current&&!equal(current,item)&&!equal({...current,delete:true},item))conflicts.push({domain,ref:item.ref,field:'legacy record',local:item,remote:current});
+    return item;
+   }
+   const next={...(current||{ref:item.ref}),_fields:item._fields,_base:{}};
+   for(const field of item._fields){
+    const value=normalized(item,field),stored=normalized(current,field),base=item._base[field];
+    if(!equal(stored,base)&&!equal(stored,value))conflicts.push({domain,ref:item.ref,field,local:value,remote:stored});
+    next[field]=value;next._base[field]=stored;
+   }
+   return next;
+  });
+  if(!result[domain].length)delete result[domain];
+ }
+ return {changes:result,conflicts};
+}
+
+// Fail visibly on legacy values the current record protocol cannot represent.
+// Keeping the original disk rows is safer than verifying a truncated projection.
+export function assertLosslessGrouping(metadata){
+ if(!metadata)return;
+ const described=describeGrouping(metadata),changes={};
+ for(const domain of DOMAINS)changes[domain]=[...described[domain].values()];
+ const projected=applyChanges(emptyGrouping(metadata.owner),changes);
+ const canonical=value=>JSON.stringify(value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b))):value);
+ for(const field of ['titles','types','manualTags','hiddenTags','enriched','stopEdits','places','roads','distanceSummaries']){
+  for(const [ref,raw] of Object.entries(metadata[field]||{})){
+   let value=raw;
+   if(field==='stopEdits'&&record(raw)){
+    value={...raw};
+    if(Array.isArray(value.tags)&&!value.tags.length)delete value.tags;
+    for(const flag of ['replaceTags','ignored'])if(value[flag]===false)delete value[flag];
+    if(value.name==null||value.name==='')delete value.name;
+    if(!Object.keys(value).length)value=undefined;
+   }
+   if(['manualTags','hiddenTags'].includes(field)&&Array.isArray(value)&&!value.length)value=undefined;
+   if(['titles','types','enriched'].includes(field)&&value===null)value=undefined;
+   if(canonical(projected[field][ref])!==canonical(value))
+    throw new Error(`Saved journey ${field} for ${ref} cannot be migrated without loss. The original device records were preserved.`);
+  }
+ }
+ for(const field of ['links','cuts','sourceLinks'])if((metadata[field]||[]).length!==projected[field].length)
+  throw new Error('Saved journey pairs cannot be migrated without loss. The original device records were preserved.');
+}

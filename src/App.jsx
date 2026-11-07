@@ -1,3 +1,4 @@
+import {useSyncExternalStore} from 'react';
 import {forgetActivityPhotos} from './lib/privateMedia.js';
 import {localRecorderJourneys} from './lib/recorder.js';
 import {deletionIDs} from './lib/tripsList.js';
@@ -122,11 +123,8 @@ function PrivateApp(){
  const localProjectionCache=useMemo(()=>({owner:session.user.id,timeZone:localTimeZone,values:new WeakMap()}),[session.user.id,localTimeZone]);
  const realJourneys=useMemo(()=>localRecorderJourneys({ownerID:recording.state.ownerID,trips:recording.state.trips},session.user.id,localProjectionCache.values),[recording.state.trips,recording.state.ownerID,session.user.id,localProjectionCache]);
  const groupingActivities=useMemo(()=>realJourneys.filter(t=>!t.provisional).concat(fleet.activities),[realJourneys,fleet.activities]);
- // Journey metadata is stored as owner-scoped records in Postgres; the preferences
- // file keeps the mirror, the queue of values still to send and how far the last sync
- // got. One adapter per account, built from the preferences restored for that account
- // and saved through the auth context, which writes from its own refs, so it never
- // reads render state it does not own: an edit queued here is the edit that is sent.
+ // One durable adapter per account. Preferences are imported once; subsequent
+ // edits and cloud pulls update encrypted/transactional records and notify React.
  // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilt only when the account changes
  const journeySync=useMemo(()=>createJourneySync({owner:session.user.id,preferences:auth.preferences,savePreferences:auth.savePreferences}),[session.user.id]);
  // AuthContext reads this account's file before the app renders, so the adapter starts
@@ -134,8 +132,10 @@ function PrivateApp(){
  // that arrives after a rendered screen, would hand it an empty file instead - and the
  // first edit from that empty state would replace everything the device knows. This
  // re-reads the file while nothing has been written yet, and is a no-op afterwards.
- useEffect(()=>{journeySync.reseed(auth.preferences);},[journeySync,auth.preferences]);
- const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,telemetry:fleet.charges,places:recording.state.places||NO_PLACES,vehicles,serialized:auth.preferences.journeyGrouping,savePreferences:auth.savePreferences,sync:journeySync});
+ useEffect(()=>{journeySync.reseed(auth.preferences);void journeySync.ready().catch(()=>{});},[journeySync,auth.preferences]);
+ useSyncExternalStore(journeySync.subscribe,journeySync.getSnapshot);
+
+ const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,telemetry:fleet.charges,places:recording.state.places||NO_PLACES,vehicles,metadataValue:journeySync.read().metadata,savePreferences:auth.savePreferences,sync:journeySync});
  // A removed Collection item leaves an explicit tombstone receipt so the cloud
  // copy is deleted on the next sync. Restore therefore cannot resurrect it.
  const setVehicles=async next=>{

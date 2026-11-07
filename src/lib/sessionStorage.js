@@ -1,3 +1,4 @@
+import {removeJourneyRecords} from './journeyDurableStorage.js';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 const secure=registerPlugin('SecureSession');
 export const AUTH_STORAGE_KEY='letm3go-auth';
@@ -45,6 +46,6 @@ export const accountStore={
   if(!webOwner||webOwner!==ownerID)throw new Error('Sign in to save settings.');localStorage.setItem(`letm3go-account-${webOwner}`,JSON.stringify(preferences));return {ownerID:webOwner,preferences};
  },
  async prepareDelete(){if(Capacitor.isNativePlatform())await secure.prepareDeletion();},
- async deleteLocal(){if(Capacitor.isNativePlatform())await secure.deleteLocalAccount({confirmation:'DELETE'});else if(webOwner){localStorage.removeItem(`letm3go-account-${webOwner}`);webOwner=null;}},
+ async deleteLocal(){if(Capacitor.isNativePlatform())await secure.deleteLocalAccount({confirmation:'DELETE'});else if(webOwner){await removeJourneyRecords(webOwner);localStorage.removeItem(`letm3go-account-${webOwner}`);webOwner=null;}},
 };
 export const defaultPreferences=defaults;

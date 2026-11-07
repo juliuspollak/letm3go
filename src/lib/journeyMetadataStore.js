@@ -3,8 +3,9 @@
 // the record of truth. Every write is a set of record values keyed by domain and
 // applied by the same reducer on both sides, so a retried, duplicated or reordered
 // write converges instead of clobbering another device.
+import {journeyDurableStorage} from './journeyDurableStorage.js';
 import {emptyGrouping,parseGrouping,validateGrouping} from './journeyGrouping.js';
-import {applyChanges,changesEmpty,clearPushed,fitCache,fitQueue,mergeChanges,missingRecords,migrationChanges,recordCounts} from './journeyMetadata.js';
+import {assertLosslessGrouping,applyChanges,changesEmpty,clearPushed,rebaseChanges,mergeChanges,missingRecords,migrationChanges,recordCounts} from './journeyMetadata.js';
 export const QUEUE_VERSION=1;
 export const SNAPSHOT_FUNCTION='journey_metadata_snapshot';
 export const APPLY_FUNCTION='journey_apply_changes';
@@ -18,19 +19,17 @@ const counts=value=>{
  return found;
 };
 const recordTotal=metadata=>Object.values(recordCounts(metadata)).reduce((sum,value)=>sum+(Number(value)||0),0);
-// The queue of records still to send. It keeps values, not operations, so replaying
-// it after a restart cannot duplicate or invert anything. `dropped` is the count of
-// recomputable answers this device had to give up to stay inside its own preference
-// file (journeyMetadata.js, fitQueue): it is stored next to the queue so the loss is
-// reported by the same save that made it, and it disappears once the queue is sent.
+// Legacy preferences are imported once. Unknown/corrupt queues block migration;
+// they are not silently treated as an empty backlog.
 export function readQueue(serialized,owner){
  const empty={version:QUEUE_VERSION,owner,changes:{},dropped:{}};
  if(!serialized)return empty;
  try{
   const value=JSON.parse(serialized);
-  if(!value||typeof value!=='object'||value.version!==QUEUE_VERSION||value.owner!==owner)return empty;
+  if(!value||typeof value!=='object'||value.version!==QUEUE_VERSION||value.owner!==owner)return {...empty,error:'Pending journey writes have an unsupported format or owner. Existing preferences were preserved.'};
+  if(!value.changes||typeof value.changes!=='object'||Array.isArray(value.changes)||Object.keys(value.changes).some(key=>key!=='enrichFrom'&&!DOMAINS.includes(key))||DOMAINS.some(key=>value.changes[key]!==undefined&&(!Array.isArray(value.changes[key])||value.changes[key].some(item=>!item||typeof item!=='object'||(key==='pairs'?typeof item.left!=='string'||typeof item.right!=='string':typeof item.ref!=='string')))))throw new Error('Invalid pending writes');
   return {version:QUEUE_VERSION,owner,changes:mergeChanges({},value.changes),dropped:counts(value.dropped)};
- }catch{return empty;}
+ }catch{return {...empty,error:'Pending journey writes could not be read. Existing preferences were preserved.'};}
 }
 export function encodeQueue(changes,owner,dropped={}){
  const clean=mergeChanges({},changes);
@@ -57,99 +56,78 @@ export function localMetadata(serialized,owner){
  return metadata?{metadata,state:'ready'}:{metadata:null,state:'unreadable'};
 }
 
-// The device half of the sync: the mirror the grouping screen reads, the record
-// values still to send, and how far the last run got. They live under three keys of
-// the account preferences and are written together, so a crash cannot leave a queued
-// value without the edit that produced it.
+// Legacy preference keys, retained for safe import and older installation recovery.
 export const MIRROR_KEY='journeyGrouping',QUEUE_KEY='journeyMetadataQueue',STATUS_KEY='journeyMetadata';
 export function readJourneyState(preferences,owner){
  const mirror=localMetadata(preferences?.[MIRROR_KEY],owner),queue=readQueue(preferences?.[QUEUE_KEY],owner);
- return {metadata:mirror.metadata,queue:queue.changes,dropped:queue.dropped,status:readStatus(preferences,owner)};
+ return {storageError:queue.error,metadata:mirror.metadata,queue:queue.changes,dropped:queue.dropped,status:readStatus(preferences,owner)};
 }
-// The store writes into memory and this turns the touched keys into one preferences
-// patch. Nothing else in the preferences file is rewritten, so an unrelated setting
-// saved at the same moment cannot be undone by a sync pass.
-export function journeyStatePatch(state,owner,keys){
- const patch={};
- // An unreadable mirror stays as it is: replacing it with nothing would destroy the
- // only copy of what the device knows, which is the one thing a sync must never do.
- if(keys.has('metadata')&&state.metadata)patch[MIRROR_KEY]=JSON.stringify(state.metadata);
- if(keys.has('queue'))patch[QUEUE_KEY]=encodeQueue(state.queue,owner,state.dropped);
- if(keys.has('status'))patch[STATUS_KEY]=state.status;
- return patch;
+// Rows have independent keys: no ever-growing preferences blob, file-size eviction,
+// or partial mirror/queue commit. Both adapters provide an atomic transaction.
+const MIRROR_LISTS=['links','cuts','sourceLinks','history'];
+const MIRROR_MAPS=['titles','types','manualTags','hiddenTags','enriched','stopEdits','places','roads','distanceSummaries'];
+export function journeyRows(state){
+ const rows={control:{format:2,status:state.status,dropped:state.dropped,readable:state.metadata!==null,enrichFrom:state.metadata?.enrichFrom??null}};
+ // Keep raw legacy values on disk too. Conversion/validation must never erase the
+ // only copy of a record a future build might need to recover.
+ if(state.metadata)for(const field of [...MIRROR_MAPS,...MIRROR_LISTS]){
+  for(const [ref,value] of Object.entries(state.metadata[field]||{}))rows[JSON.stringify(['mirror',field,ref])]=value;
+ }
+ for(const domain of DOMAINS)for(const item of state.queue?.[domain]||[])
+  rows[JSON.stringify(['queue',domain,domain==='pairs'?[item.relation,...[item.left,item.right].sort()]:item.ref])]=item;
+ if(Number.isFinite(state.queue?.enrichFrom))rows.queueEnrichFrom=state.queue.enrichFrom;
+ return rows;
 }
-// What the sync engine reads and writes, backed by the preferences file. Reads are
-// synchronous and immediate (the engine writes, then reads what it wrote), while the
-// save is coalesced: one edit, one preferences write, no matter how many record
-// groups it touched. The starting state is the account's own file, read once when the
-// adapter is created for that account, so a restored account never inherits another's
-// queue.
-//
-// The queue is fitted here, at the one place every edit and every sync pass goes
-// through, so a device that has been offline for a week still writes a preferences
-// file its own secure storage accepts: recomputable answers are given up first and
-// counted, decisions are kept.
-export function createJourneySync({owner,preferences=null,savePreferences}){
- const state={metadata:null,queue:{},dropped:{},status:emptyStatus(owner)};
- Object.assign(state,readJourneyState(preferences,owner));
- const dirty=new Set();
- let scheduled=null;
- const keys=()=>[...dirty];
- // One write at a time: a save already in flight is what a caller waits for, so an edit
- // and the status it produced cannot become two preferences writes.
- let inFlight=null;
- const save=()=>{
-  if(inFlight)return inFlight;
-  if(!dirty.size)return Promise.resolve(state);
-  const sent=keys(),patch=journeyStatePatch(state,owner,new Set(sent));
-  // A key stops being dirty only once the device has accepted it, so a locked or full
-  // device cannot lose an edit that was made while the write was failing.
-  inFlight=Promise.resolve().then(()=>savePreferences(patch))
-   .then(()=>{for(const key of sent)dirty.delete(key);return state;})
-   .finally(()=>{inFlight=null;});
-  return inFlight;
+export function stateFromJourneyRows(rows,owner){
+ if(rows.control?.format!==2||rows.control.status?.owner!==owner)throw new Error('Journey storage is incomplete or belongs to another account. Existing records were preserved.');
+ const metadata=rows.control.readable?emptyGrouping(owner):null,queue={};
+ for(const [key,value] of Object.entries(rows)){
+  if(!key.startsWith('['))continue;
+  const [scope,domain,ref]=JSON.parse(key);
+  if(scope==='mirror'&&metadata&&[...MIRROR_MAPS,...MIRROR_LISTS].includes(domain))metadata[domain][ref]=value;
+  else if(scope==='queue'&&DOMAINS.includes(domain))(queue[domain]??=[]).push(value);
+  else throw new Error('Unrecognized journey record. Existing records were preserved.');
+ }
+ if(Number.isFinite(rows.queueEnrichFrom))queue.enrichFrom=rows.queueEnrichFrom;
+ if(metadata)metadata.enrichFrom=rows.control.enrichFrom;
+ return {metadata,queue,status:rows.control.status,dropped:rows.control.dropped||{}};
+}
+export function createJourneySync({owner,preferences=null,savePreferences,storage=journeyDurableStorage(owner)}){
+ let state=readJourneyState(preferences,owner),rows={},tail=Promise.resolve(),lastWrite=null,started=false,version=0;
+ const listeners=new Set(),notify=()=>{version++;for(const listener of listeners)listener();};
+ let ready;
+ const initialize=async()=>{
+  started=true;
+  const stored=await storage.read();
+  if(Object.keys(stored).length){state=stateFromJourneyRows(stored,owner);rows=stored;}
+  else {if(state.storageError)throw new Error(state.storageError);const initial=journeyRows(state);await storage.commit(Object.entries(initial).map(([key,value])=>({key,value})));rows=initial;}
+  notify();
+  // Only clear legacy preferences after the complete transaction is durable. A
+  // failure here leaves the old file intact and can be retried without reimporting.
+  if(state.metadata!==null)await savePreferences({journeyGrouping:null,journeyMetadataQueue:null,journeyMetadata:null});
+  return state;
  };
- const drain=()=>save().then(()=>dirty.size?drain():state);
- // A failed preferences write is reported through the status the next run reads, so the
- // values stay in the queue and are sent again; it is not thrown at the caller of an
- // action that already happened.
- const schedule=()=>{
-  if(scheduled)return;
-  scheduled=Promise.resolve().then(()=>{scheduled=null;return drain();}).catch(error=>{
-   state.status={...state.status,state:'offline',error:message(error)};
-  });
- };
+ const ensureReady=()=>ready??=(Promise.resolve().then(initialize).catch(error=>{
+  state={...state,status:{...state.status,state:'offline',error:message(error)}};notify();ready=null;throw error;
+ }));
  return {
-  read(){return state;},
+  read:()=>state,
+  getSnapshot:()=>version,
+  subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+  ready:ensureReady,
   write(patch){
-   let changed=false;
-   for(const key of ['metadata','queue','status']){
-    if(!Object.prototype.hasOwnProperty.call(patch,key))continue;
-    if(key==='queue'){
-     const fitted=fitQueue(patch.queue??{}, {dropped:patch.dropped??state.dropped});
-     state.queue=fitted.queue;state.dropped=fitted.dropped;
-    }else state[key]=patch[key];
-    dirty.add(key);changed=true;
-   }
-   if(changed)schedule();
+   const operation=async()=>{
+    await ensureReady();
+    const next={...state,...(typeof patch==='function'?patch(state):patch)},wanted=journeyRows(next),operations=[];
+    for(const [key,value] of Object.entries(wanted))if(rows[key]!==value&&JSON.stringify(rows[key])!==JSON.stringify(value))operations.push({key,value});
+    for(const key of Object.keys(rows))if(!Object.hasOwn(wanted,key))operations.push({key,remove:true});
+    await storage.commit(operations);
+    rows=wanted;state=next;notify();return state;
+   };
+   const result=tail.then(operation,operation);tail=result.catch(()=>{});lastWrite=result;return result;
   },
-  // AuthContext reads the account file before the app renders, so this adapter is
-  // normally handed the real file when it is created. A restored session, an offline
-  // start or a screen that opens earlier could hand it an empty one first, and writing
-  // an edit from that empty state would replace mirror and queue with almost nothing.
-  // Re-reading the file is therefore allowed exactly while nothing has been written
-  // here yet: no dirty key, no save in flight, no queued edit and no completed
-  // migration. That is a no-op for a fresh account and a recovery for a late
-  // hydration, and it can never replace an edit this device already made.
-  reseed(preferences){
-   if(dirty.size||inFlight||!changesEmpty(state.queue)||state.status.migratedAt||state.status.revision!==null)return state;
-   const next=readJourneyState(preferences,owner);
-   state.metadata=next.metadata;state.queue=next.queue;state.dropped=next.dropped;state.status=next.status;
-   return state;
-  },
-  // Waits for the pending preferences write, so a test or a screen that is closing can
-  // be sure the queue reached the device.
-  flush(){return drain();}
+  reseed(next){if(!started)state=readJourneyState(next,owner);return state;},
+  async flush(){await ensureReady();await lastWrite;return state;}
  };
 }
 
@@ -157,12 +135,11 @@ export function createJourneySync({owner,preferences=null,savePreferences}){
 // device can seed the records instead of asking the user to start over.
 export async function readLegacyBlob(client,owner){
  if(!client?.from||!owner)return null;
- try{
-  const {data,error}=await client.from('account_settings').select('payload').eq('owner_id',owner).maybeSingle();
-  if(error||!data||!data.payload||typeof data.payload!=='object')return null;
-  const value=data.payload.journeyGrouping;
-  return typeof value==='string'&&value?value:null;
- }catch{return null;}
+ const {data,error}=await client.from('account_settings').select('payload').eq('owner_id',owner).maybeSingle();
+ if(error)throw new Error('Legacy journey backup could not be checked. Migration will retry without replacing local data.');
+ if(!data?.payload||typeof data.payload!=='object')return null;
+ const value=data.payload.journeyGrouping;
+ return typeof value==='string'&&value?value:null;
 }
 export async function loadSnapshot(client,owner){
  if(!client?.rpc)throw new Error('Cloud sync is not available on this device.');
@@ -205,7 +182,7 @@ export function chunkChanges(changes,{maxRecords=200,maxBytes=120000}={}){
  const enrichFrom=changes?.enrichFrom;
  if(Number.isFinite(enrichFrom))current.enrichFrom=enrichFrom;
  for(const name of DOMAINS)for(const item of Array.isArray(changes?.[name])?changes[name]:[]){
-  const size=JSON.stringify(item).length+1;
+  const size=new TextEncoder().encode(JSON.stringify(item)).length+1;
   if(count&&(count>=maxRecords||bytes+size>maxBytes))flush();
   current[name]=[...(current[name]||[]),item];count+=1;bytes+=size;
  }
@@ -242,6 +219,7 @@ export function overwrittenSummary(overwritten){
 // not stamped, and everything the cloud already has is skipped the second time.
 export async function migrateJourneyMetadata({client,owner,read,write,now=Date.now}){
  const state=read(),local=state.metadata,queued=state.queue??{};
+ assertLosslessGrouping(local);
  const snapshot=await loadSnapshot(client,owner);
  const stored=recordTotal(snapshot.metadata),readable=local!==null;
  // What this device knows is its own mirror plus the values still queued behind it.
@@ -253,12 +231,14 @@ export async function migrateJourneyMetadata({client,owner,read,write,now=Date.n
  if(recordTotal(source)===0&&stored===0){
   const legacy=await readLegacyBlob(client,owner);
   const recovered=legacy?parseGrouping(legacy,owner):null;
+  if(legacy&&!recovered)throw new Error('Legacy cloud journey information could not be read. The original backup was preserved.');
+  assertLosslessGrouping(recovered);
   if(recordTotal(recovered)>0)source=applyChanges(recovered,queued);
  }
  if(recordTotal(source)===0){
   if(!readable&&stored===0){
    const error='Saved journey information on this device could not be read and no cloud copy was found. Nothing has been replaced.';
-   write({status:{...read().status,state:'recoveryRequired',error}});
+   await write({status:{...read().status,state:'recoveryRequired',error}});
    return {state:'recoveryRequired',error};
   }
   // Nothing to upload: an empty account, or a device adopting the cloud copy.
@@ -268,30 +248,46 @@ export async function migrateJourneyMetadata({client,owner,read,write,now=Date.n
  // A queued value is this device's newest answer and goes on top of what the cloud
  // already has, so an edit made between the upgrade and this first run is not dropped
  // when the local mirror is replaced.
- const wanted=mergeChanges(changes,queued);
+ if(Object.values(conflicts).some(Boolean)){
+  const error='Legacy journey records differ from cloud records. Both copies are preserved; resolve the differences before migration.';
+  await write({status:{...read().status,state:'incomplete',error,conflicts:conflictSummary(conflicts)}});
+  return {state:'incomplete',error};
+ }
+ const acceptedQueued={...queued};
+ // The account cutoff is immutable; a fresh device's provisional cutoff must
+ // not prevent it from adopting the existing account history.
+ if(Number.isFinite(snapshot.metadata.enrichFrom))delete acceptedQueued.enrichFrom;
+ const rebased=stored?rebaseChanges(acceptedQueued,snapshot.metadata):{changes:acceptedQueued,conflicts:[]};
+ if(rebased.conflicts.length)throw new Error('Conflicting pending journey fields. Local and cloud values are preserved.');
+ const wanted=mergeChanges(changes,rebased.changes);
  const pushed=await pushAll(client,owner,wanted,snapshot.revision);
  const verified=await loadSnapshot(client,owner);
  const missing=missingRecords(applyChanges(snapshot.metadata,wanted),verified.metadata);
  if(missing.length){
   const error=`${missing.length} saved ${missing.length===1?'detail was':'details were'} not stored in the cloud. Nothing on this device has been replaced.`;
-  write({status:{...read().status,revision:pushed.revision,state:'incomplete',error}});
+  await write({status:{...read().status,revision:pushed.revision,state:'incomplete',error}});
   return {state:'incomplete',error,missing:missing.length};
  }
- const effective=applyChanges({...verified.metadata,history:source.history},wanted);
  const reported=conflictSummary(conflicts)??overwrittenSummary(pushed.overwritten);
- write({metadata:fitCache(effective).metadata,queue:{},dropped:{},
-  status:{owner,revision:pushed.revision,migratedAt:now(),state:'active',error:null,
-   conflicts:reported,updatedAt:verified.updatedAt??null}});
+ await write(latest=>{
+  const remaining=clearPushed(latest.queue,queued);
+  const effective=applyChanges({...verified.metadata,history:latest.metadata?.history||source.history},remaining);
+  return {metadata:effective,queue:remaining,dropped:{},
+   status:{owner,revision:verified.revision??pushed.revision,migratedAt:now(),state:'active',error:null,conflicts:reported,updatedAt:verified.updatedAt??null}};
+ });
  return {state:'active',conflicts:reported};
 }
 // The steady state: read first, so an edit made on another device while this one was
 // away becomes a pull instead of a conflict; then send what is queued.
-async function pullJourneyMetadata({client,owner,read,write},revision){
+async function pullJourneyMetadata({client,owner,write},revision){
  const snapshot=await loadSnapshot(client,owner);
- const latest=read();
- const merged=applyChanges({...snapshot.metadata,history:latest.metadata?.history||[]},latest.queue);
- write({metadata:fitCache(merged).metadata,
-  status:{...latest.status,revision:snapshot.revision??revision,state:'active',error:null,updatedAt:snapshot.updatedAt??null}});
+ await write(latest=>{
+  const rebased=rebaseChanges(latest.queue,snapshot.metadata);
+  if(rebased.conflicts.length)throw new Error(`Conflicting journey fields on another device: ${rebased.conflicts.map(item=>`${item.ref}.${item.field}`).join(', ')}. Both versions are preserved: the pending edit on this device and the cloud value. Resolve before syncing.`);
+  const merged=applyChanges({...snapshot.metadata,history:latest.metadata?.history||[]},rebased.changes);
+  return {metadata:merged,queue:rebased.changes,
+   status:{...latest.status,revision:snapshot.revision??revision,state:'active',error:null,updatedAt:snapshot.updatedAt??null}};
+ });
  return snapshot.revision??revision;
 }
 export async function flushJourneyMetadata({client,owner,read,write,now=Date.now}){
@@ -306,10 +302,11 @@ export async function flushJourneyMetadata({client,owner,read,write,now=Date.now
  if(remote!==null&&remote!==revision)revision=await pullJourneyMetadata({client,owner,read,write},remote);
  const pending=read().queue;
  if(!changesEmpty(pending)){
-  let sent=pending;
+  assertLosslessGrouping(read().metadata);
+  let sent=read().queue;
   try{
    const pushed=await pushAll(client,owner,sent,revision);
-   revision=pushed.revision;conflicts=overwrittenSummary(pushed.overwritten);
+   revision=pushed.revision;
   }catch(error){
    // Both devices wrote between the read and the write. Keep the remote records and
    // send the queued values on top of them once, because a record is a value.
@@ -318,14 +315,15 @@ export async function flushJourneyMetadata({client,owner,read,write,now=Date.now
    revision=await pullJourneyMetadata({client,owner,read,write},latest);
    sent=read().queue;
    const pushed=await pushAll(client,owner,sent,revision);
-   revision=pushed.revision;conflicts=overwrittenSummary(pushed.overwritten)??conflicts;
+   revision=pushed.revision;
   }
-  write({queue:clearPushed(read().queue,sent),
-   status:{...read().status,revision,state:'active',error:null,...(conflicts?{conflicts}:{})}});
+  await write(latest=>({queue:clearPushed(latest.queue,sent),
+   status:{...latest.status,revision,state:'active',error:null,...(conflicts?{conflicts}:{})}}));
  }
  return {state:'active',revision};
 }
-export async function runJourneySync({client,owner,read,write,now=Date.now}){
+export async function runJourneySync({client,owner,read,write,ready,now=Date.now}){
+ if(ready)await ready();
  if(!client||!owner)return {state:'idle'};
  const status=read().status??emptyStatus(owner);
  try{
@@ -336,7 +334,7 @@ export async function runJourneySync({client,owner,read,write,now=Date.now}){
   return await migrateJourneyMetadata({client,owner,read,write,now});
  }catch(error){
   const failure=message(error);
-  write({status:{...read().status,state:'offline',error:failure}});
+  await write({status:{...read().status,state:'offline',error:failure}});
   return {state:'offline',error:failure};
  }
 }

@@ -146,51 +146,11 @@ describe('the device mirror stays inside its limit',()=>{
   expect(JOURNEY_CACHE_BYTES).toBe(900000);
  });
 });
-describe('the queue of unsent values stays inside its limit',()=>{
- const road=index=>({ref:`a:${1700000000+index}:${1700000060+index}`,
-  record:{version:2,status:'route',distanceMeters:800,line:'x'.repeat(400),lookedUpAt:1700000000000+index}});
- it('leaves a queue that already fits untouched, with nothing reported',()=>{
-  const queue={activities:[{ref:'a',title:'Morning drive'}]};
-  expect(fitQueue(queue)).toEqual({queue,dropped:{}});
- });
- it('keeps every decision and gives up the oldest recomputable answer first',()=>{
-  const decisions={activities:[{ref:'a',title:'Keep me'}],pairs:[{relation:'link',left:'a',right:'b'}],
-   stops:[{ref:DWELL,name:'Cafe',tags:['coffee']}],enrichFrom:1699999999000};
-  const queue={...decisions,roads:Array.from({length:100},(_,index)=>road(index)),places:[{ref:'1,2',lookup:{kind:'park'}}]};
-  const fitted=fitQueue(queue,{limit:20000});
-  expect(JSON.stringify(fitted.queue).length).toBeLessThanOrEqual(20000);
-  expect(fitted.queue.activities).toEqual(decisions.activities);
-  expect(fitted.queue.pairs).toEqual(decisions.pairs);
-  expect(fitted.queue.stops).toEqual(decisions.stops);
-  expect(fitted.queue.enrichFrom).toBe(decisions.enrichFrom);
-  expect(fitted.dropped.roads).toBeGreaterThan(0);
-  // Newest first out: the road queued last is still waiting to be sent.
-  expect(fitted.queue.roads.at(-1)).toEqual(road(99));
-  expect(fitted.queue.roads[0]).not.toEqual(road(0));
-  // A place lookup is given up only after every road has gone.
-  expect(fitted.dropped.places).toBeUndefined();
- });
- it('reports what it gave up for as long as the queue is unsent',()=>{
-  const fitted=fitQueue({roads:Array.from({length:100},(_,index)=>road(index))},{limit:5000,dropped:{roads:7}});
-  expect(fitted.dropped.roads).toBeGreaterThan(7);
-  // An empty queue has nothing left to report.
-  expect(fitQueue({},{dropped:{roads:7}})).toEqual({queue:{},dropped:{}});
- });
- it('keeps a large number of decisions and only bounds them past what the device can store',()=>{
-  // 9 000 renames is already far more than anyone makes; it is kept whole, because a
-  // decision is never the thing this queue gives up.
-  const plenty=Array.from({length:9000},(_,index)=>({ref:`recording-${index}`,title:`Journey number ${index}`}));
-  const kept=fitQueue({activities:plenty});
-  expect(kept.dropped).toEqual({});
-  expect(kept.queue.activities).toHaveLength(9000);
-  // Past the size the device refuses outright, the oldest are lost - and counted.
-  const absurd=Array.from({length:24000},(_,index)=>({ref:`recording-${index}`,title:`Journey number ${index}`}));
-  expect(JSON.stringify({activities:absurd}).length).toBeGreaterThan(JOURNEY_QUEUE_HARD_BYTES);
-  const fitted=fitQueue({activities:absurd});
-  expect(JSON.stringify(fitted.queue).length).toBeLessThanOrEqual(JOURNEY_QUEUE_HARD_BYTES);
-  expect(fitted.dropped.activities).toBeGreaterThan(0);
-  // The newest decisions are the ones kept.
-  expect(fitted.queue.activities.at(-1).ref).toBe('recording-23999');
+describe('pending values are never evicted',()=>{
+ it('keeps all decisions and reconstructed routes beyond the old limits',()=>{
+  const queue={activities:Array.from({length:24000},(_,i)=>({ref:`a${i}`,title:`Journey ${i}`})),roads:Array.from({length:100},(_,i)=>({ref:`a:${i}:${i+1}`,record:{line:'x'.repeat(5000)}}))};
+  expect(JSON.stringify(queue).length).toBeGreaterThan(JOURNEY_QUEUE_HARD_BYTES);
+  expect(fitQueue(queue,{limit:JOURNEY_QUEUE_BYTES})).toEqual({queue,dropped:{}});
  });
 });
 describe('what one grouping is worth',()=>{
@@ -217,3 +177,11 @@ describe('what one grouping is worth',()=>{
  });
 });
 
+it('does not lose an unversioned legacy pending edit when a new field is edited',()=>{
+ const before=populated(),after={...before,manualTags:{a:['new tag']}};
+ const queue=mergeChanges({activities:[{ref:'a',title:'Unsent legacy title'}]},groupingChanges(before,after));
+ expect(queue.activities[0]._fields).toBeUndefined();
+ // Unknown ancestry remains a complete record requiring conservative reconciliation.
+ expect(queue.activities[0].manualTags).toEqual(['new tag']);
+ expect(queue.activities[0].title).toBe('Unsent legacy title');
+});

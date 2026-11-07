@@ -141,3 +141,10 @@ it('reuses a projection across unrelated place updates and invalidates relevant 
  expect(changed).not.toBe(first);expect(changed.tags).toContain('Named trailhead');
  buildJourneys([],{...options,metadata:other});expect(projectionCache.size).toBe(0);
 });
+
+it('refuses a 61st hidden tag without discarding an earlier user decision',()=>{
+ const {activities,meta}=setup();meta.hiddenTags.a=Array.from({length:60},(_,i)=>`Hidden ${i}`);
+ const before=structuredClone(meta);
+ expect(()=>changeGrouping(meta,{type:'hideTag',anchor:'a',tag:'New hidden tag'},{owner,activities,vehicles})).toThrow('existing choices have been kept');
+ expect(meta).toEqual(before);
+});

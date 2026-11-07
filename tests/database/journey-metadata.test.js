@@ -198,3 +198,123 @@ it('removes every record with the account', async () => {
     (select count(*) from public.journey_place_metadata where owner_id='${c}') as places`);
   expect(left.rows[0]).toEqual({ state: 0, activities: 0, places: 0 });
 });
+
+// End-to-end application reducers -> real SQL -> validation -> app reducers.
+it('round trips merges, splits, source links, stop edits and reloads through SQL',async()=>{
+ const {emptyGrouping,changeGrouping,buildJourneys}=await import('../../src/lib/journeyGrouping.js');
+ const {groupingChanges}=await import('../../src/lib/journeyMetadata.js');
+ const {loadSnapshot}=await import('../../src/lib/journeyMetadataStore.js');
+ const owner='44444444-4444-4444-8444-444444444444';
+ await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
+ const client={async rpc(name,args){try{
+  const data=name==='journey_metadata_snapshot'?await read(owner):(await mine(owner,args.p_changes,args.p_expected_revision??'null')).rows[0].data;
+  return {data,error:null};
+ }catch(error){return {data:null,error:{message:error.message}};}}};
+ const point=(latitude,timestamp)=>({latitude,longitude:151.2,timestamp,accuracy:5,speed:2,segment:0});
+ const activities=[0,1,2].map((n)=>({id:['z','a','b'][n],ownerID:owner,source:'device',state:'finished',activity:'Walking',title:`Leg ${n}`,startedAt:10000+n*400,endedAt:10300+n*400,durationSeconds:300,distanceMeters:400,points:[point(-33.86+n*.001,10000+n*400),point(-33.859+n*.001,10300+n*400)],details:{tags:[]}}));
+ const context={owner,activities,vehicles:[],places:[]};
+ let local=emptyGrouping(owner),rev=null;
+ const roundTrip=async action=>{
+  const next=changeGrouping(local,action,context);
+  rev=(await mine(owner,groupingChanges(local,next),rev??'null')).rows[0].data.revision;
+  local=(await loadSnapshot(client,owner)).metadata;return local;
+ };
+ await roundTrip({type:'merge',ids:['z','a','b']});
+ expect(local.links).toEqual(['["a","b"]','["a","z"]']);
+ expect(buildJourneys(activities,{...context,metadata:local}).journeys[0].segmentIDs).toEqual(['z','a','b']);
+ await roundTrip({type:'stop',id:'["a","z"]',name:'Cafe',tags:['coffee'],replaceTags:true});
+ expect(local.stopEdits['["a","z"]']).toEqual({name:'Cafe',tags:['coffee'],replaceTags:true});
+ await roundTrip({type:'split',after:'z',before:'a'});
+ expect(local.links).toEqual(['["a","b"]']);expect(local.cuts).toEqual(['["a","z"]']);
+ expect(buildJourneys(activities,{...context,metadata:local}).journeys).toHaveLength(2);
+ const next={...local,sourceLinks:[['linked:z','z']]};
+ await mine(owner,groupingChanges(local,next),rev);
+ const reloaded=(await loadSnapshot(client,owner)).metadata;
+ expect(reloaded.sourceLinks).toEqual([['linked:z','z']]);
+ expect(reloaded.cuts.every(pair=>typeof pair==='string'&&Array.isArray(JSON.parse(pair)))).toBe(true);
+ expect(reloaded.stopEdits).toEqual(local.stopEdits);
+});
+
+it('merges independent offline fields and preserves competing field values with real revision checks',async()=>{
+ const {emptyGrouping}=await import('../../src/lib/journeyGrouping.js');
+ const {groupingChanges,mergeChanges}=await import('../../src/lib/journeyMetadata.js');
+ const {runJourneySync,emptyStatus}=await import('../../src/lib/journeyMetadataStore.js');
+ const owner='55555555-5555-4555-8555-555555555555';
+ await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
+ const client={async rpc(name,args){try{
+  let data;
+  if(name==='journey_metadata_snapshot')data=await read(owner);
+  else if(name==='journey_metadata_revision')data=(await as('authenticated',owner,revision(owner))).rows[0].revision;
+  else data=(await mine(owner,args.p_changes,args.p_expected_revision??'null')).rows[0].data;
+  return {data,error:null};
+ }catch(error){return {data:null,error:{message:error.message}};}}};
+ const device=()=>{
+  const state={metadata:emptyGrouping(owner),queue:{},status:emptyStatus(owner)};
+  return {read:()=>state,write:async patch=>Object.assign(state,typeof patch==='function'?patch(state):patch)};
+ };
+ const one=device(),two=device(),sync=device=>runJourneySync({client,owner,...device});
+ await sync(one);await sync(two);
+ const edit=(device,patch)=>{const s=device.read(),next={...s.metadata,...patch};s.queue=mergeChanges(s.queue,groupingChanges(s.metadata,next));s.metadata=next;};
+ edit(one,{titles:{a:'From A'}});await sync(one);
+ // B had no edits: its revision check discovers A's title.
+ await sync(two);expect(two.read().metadata.titles.a).toBe('From A');
+ // Both go offline and edit unrelated fields of the same activity.
+ edit(one,{titles:{a:'A title offline'}});edit(two,{manualTags:{a:['B tag offline']}});
+ await sync(one);expect((await sync(two)).state).toBe('active');await sync(one);
+ expect((await read(owner))).toMatchObject({titles:{a:'A title offline'},manualTags:{a:['B tag offline']}});
+ expect(one.read().metadata.manualTags.a).toEqual(['B tag offline']);
+ edit(one,{stopEdits:{'native:a:10':{name:'Cafe'}}});
+ edit(two,{stopEdits:{'native:a:10':{tags:['coffee'],replaceTags:true}}});
+ await sync(one);expect((await sync(two)).state).toBe('active');await sync(one);
+ expect((await read(owner)).stopEdits['native:a:10']).toEqual({name:'Cafe',tags:['coffee'],replaceTags:true});
+ edit(two,{manualTags:{a:[]}});expect((await sync(two)).state).toBe('active');await sync(one);
+ expect((await read(owner)).manualTags.a).toBeUndefined();
+ // Concurrent changes of the same field are not last-writer-wins.
+ edit(one,{titles:{a:'A competing title'}});edit(two,{titles:{a:'B competing title'}});
+ await sync(one);expect((await sync(two)).state).toBe('offline');
+ expect((await read(owner)).titles.a).toBe('A competing title');
+ expect(two.read().queue.activities[0].title).toBe('B competing title');
+ expect(two.read().status.error).toContain('a.title');
+ // CAS refuses an actual stale device without storing even its unrelated edits.
+ await expect(mine(owner,{activities:[{ref:'untouched',title:'stale'}]},1)).rejects.toThrow('conflict');
+ expect((await read(owner)).titles.untouched).toBeUndefined();
+});
+
+it('can reapply the unshipped migration without losing existing records',async()=>{
+ const before=await read();
+ await db.exec(`reset role`);
+ await db.exec(await readFile('supabase/migrations/20261120000000_journey_metadata_records.sql','utf8'));
+ expect(await read()).toEqual(before);
+});
+
+it('preserves a large reconstructed route and all 60 legacy hidden tags',async()=>{
+ const owner='66666666-6666-4666-8666-666666666666';
+ await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
+ const hiddenTags=Array.from({length:60},(_,i)=>`hidden ${i}`),line='abc'.repeat(180000);
+ await mine(owner,{activities:[{ref:'large',hiddenTags}],roads:[{ref:'large:10:20',record:{version:1,status:'route',line,distanceMeters:1000}}]});
+ const result=await read(owner);
+ expect(result.hiddenTags.large).toEqual(hiddenTags);expect(result.roads['large:10:20'].line).toBe(line);
+});
+
+it('does not erase the only legacy cloud copy during an ordinary settings backup',async()=>{
+ const owner='77777777-7777-4777-8777-777777777777',fingerprint='1'.repeat(64),next='2'.repeat(64);
+ await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
+ const legacy=JSON.stringify({version:1,owner,titles:{a:'Legacy title'},links:[],cuts:[],history:[],places:{},stopEdits:{}});
+ await as('authenticated',owner,`select public.backup_account_settings('${owner}',$payload$${JSON.stringify({displayName:'Old',journeyGrouping:legacy})}$payload$,'${fingerprint}',null)`);
+ await as('authenticated',owner,`select public.backup_account_settings('${owner}','{"displayName":"New settings"}','${next}',1)`);
+ const stored=(await as('authenticated',owner,`select payload from public.account_settings where owner_id='${owner}'`)).rows[0].payload;
+ expect(stored.displayName).toBe('New settings');expect(stored.journeyGrouping).toBe(legacy);
+});
+
+it('preserves contradictory offline merge/split choices instead of replacing the remote choice',async()=>{
+ const {emptyGrouping}=await import('../../src/lib/journeyGrouping.js');
+ const {groupingChanges,rebaseChanges}=await import('../../src/lib/journeyMetadata.js');
+ const owner='88888888-8888-4888-8888-888888888888';
+ await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
+ const before=emptyGrouping(owner),merge={...before,links:['["a","b"]']},split={...before,cuts:['["a","b"]']};
+ await mine(owner,groupingChanges(before,merge));
+ const {revision:_r,updatedAt:_t,...remote}=await read(owner);void _r;void _t;
+ const pending=groupingChanges(before,split),rebased=rebaseChanges(pending,remote);
+ expect(rebased.conflicts).toMatchObject([{domain:'pairs',field:'grouping',local:'cut',remote:'link'}]);
+ expect((await read(owner)).links).toEqual(['["a","b"]']);expect(pending.pairs[0].relation).toBe('cut');
+});

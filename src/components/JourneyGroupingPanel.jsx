@@ -8,6 +8,6 @@ export default function JourneyGroupingPanel({activities,grouping,onClose,onRevi
  <h3>Select activities to merge</h3><div className="journey-merge-list">{drives.map(t=><label key={t.id}><input type="checkbox" checked={selected.includes(t.id)} onChange={e=>setSelected(e.target.checked?[...selected,t.id]:selected.filter(id=>id!==t.id))}/><span><strong>{t.title}</strong><small>{new Date(t.startedAt*1000).toLocaleString()} · {t.distance} km · {t.vehicle||'No vehicle'}</small></span></label>)}</div>
  {!drives.length&&<p>No completed activities yet.</p>}<button type="button" className="primary full" disabled={grouping.busy||selected.length<2} onClick={async()=>{if(await grouping.act({type:'merge',ids:selected})){setSelected([]);onClose();}}}>Merge selected activities</button>
  {(grouping.metadata.history||[]).length>0&&<button type="button" className="secondary full" disabled={grouping.busy} onClick={()=>grouping.act({type:'undo'})}>Undo last grouping change</button>}
- {grouping.conflicts?.total>0&&<p role="status" className="notice">Some journey details were also changed on another device. The newest answer is shown here; nothing else was touched.</p>}
+ {grouping.conflicts?.total>0&&<p role="status" className="notice">Journey changes need review. Pending local values are preserved; check the sync error for details.</p>}
  {grouping.error&&<p role="alert" className="error">{grouping.error}</p>}</section>;
 }

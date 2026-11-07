@@ -4,8 +4,8 @@
 // while offline survive a restart.
 import {describe,it,expect} from 'vitest';
 import {emptyGrouping} from './journeyGrouping.js';
-import {JOURNEY_QUEUE_BYTES,applyChanges,missingRecords} from './journeyMetadata.js';
-import {APPLY_FUNCTION,REVISION_FUNCTION,SNAPSHOT_FUNCTION,createJourneySync,emptyStatus,encodeQueue,journeyStatePatch,localMetadata,readJourneyState,readQueue,readStatus,runJourneySync} from './journeyMetadataStore.js';
+import {applyChanges,groupingChanges,missingRecords} from './journeyMetadata.js';
+import {APPLY_FUNCTION,REVISION_FUNCTION,SNAPSHOT_FUNCTION,createJourneySync,emptyStatus,encodeQueue,localMetadata,readQueue,readStatus,runJourneySync} from './journeyMetadataStore.js';
 const OWNER='owner-1';
 const EDGE=JSON.stringify(['a','b']);
 function grouping(){
@@ -15,7 +15,7 @@ function grouping(){
  m.roads={['a:1700000000:1700000900']:{version:2,status:'route',distanceMeters:800,line:'abc',lookedUpAt:1700000000000}};
  return m;
 }
-const activity=(ref,title)=>({ref,title,enrichedAt:null,enrichmentState:'pending',enrichmentVersion:1});
+const activity=(ref,title)=>({ref,title,enrichedAt:null,enrichmentState:'pending',enrichmentVersion:1,_fields:['title'],_base:{title:ref==='a'?'Morning drive':null}});
 // The server's own report of what a write replaced, reduced to the fields this engine
 // reads. It is what the migration and the device status are built from.
 function overwritten(before,changes){
@@ -56,7 +56,7 @@ function fakeCloud({metadata=emptyGrouping(OWNER),revision=1,legacy=null}={}){
 function harness({metadata=null,queue={},status=emptyStatus(OWNER)}={}){
  const store={metadata,queue,status};
  const writes=[];
- return {store,writes,read:()=>store,write:patch=>{Object.assign(store,patch);writes.push(patch);}};
+ return {store,writes,read:()=>store,write:patch=>{const value=typeof patch==='function'?patch(store):patch;Object.assign(store,value);writes.push(value);}};
 }
 describe('the queue that survives a restart',()=>{
  it('round trips and refuses another account',()=>{
@@ -228,18 +228,18 @@ describe('editing while the cloud is unreachable',()=>{
   expect(h.store.status.state).toBe('active');
   expect(h.store.queue).toEqual({});
  });
- it('reports a same-record race instead of hiding it',async()=>{
+ it('preserves a competing same-field edit instead of overwriting it',async()=>{
   // Both devices renamed journey 'a'. The later write wins, because a record is a
   // value, but the device is told which record it replaced.
   const cloud=fakeCloud({metadata:grouping(),revision:6});
   cloud.state.metadata=applyChanges(cloud.state.metadata,{activities:[activity('a','Renamed on my iPad')]});
-  const h=harness({metadata:grouping(),status:{...settled(),revision:6},
+  const h=harness({metadata:grouping(),status:{...settled(),revision:5},
    queue:{activities:[activity('a','Renamed on this iPhone')]}});
   const result=await runJourneySync({client:cloud.client,owner:OWNER,read:h.read,write:h.write});
-  expect(result.state).toBe('active');
-  expect(cloud.state.metadata.titles.a).toBe('Renamed on this iPhone');
-  expect(h.store.status.conflicts).toEqual({activities:1,total:1});
-  expect(h.store.queue).toEqual({});
+  expect(result.state).toBe('offline');
+  expect(cloud.state.metadata.titles.a).toBe('Renamed on my iPad');
+  expect(h.store.status.error).toContain('Conflicting journey fields');
+  expect(h.store.queue.activities[0].title).toBe('Renamed on this iPhone');
  });
  it('asks one cheap question when nothing has changed',async()=>{
   const cloud=fakeCloud({metadata:grouping(),revision:4});
@@ -261,118 +261,108 @@ describe('editing while the cloud is unreachable',()=>{
   expect(h.store.status).toMatchObject({state:'active',revision:cloud.state.revision});
  });
 });
-describe('the preferences-backed store the app reads',()=>{
+function disk(){
+ let rows={};let fail=false;
+ return {get rows(){return rows;},set fail(value){fail=value;},
+  async read(){return structuredClone(rows);},
+  async commit(operations){if(fail)throw new Error('Disk full');const next=structuredClone(rows);for(const op of operations)if(op.remove)delete next[op.key];else next[op.key]=structuredClone(op.value);rows=next;}
+ };
+}
+describe('transactional per-record device storage',()=>{
  const settled={...emptyStatus(OWNER),revision:3,migratedAt:1700000000000,state:'active'};
- const queued={activities:[activity('a','Renamed offline')]};
- function device(preferences={}){
-  const saves=[],value={...preferences};
-  return {value,saves,sync:createJourneySync({owner:OWNER,preferences:value,savePreferences:patch=>{saves.push(patch);Object.assign(value,patch);}})};
- }
- it('reads the mirror, the queue and the status of this account only',()=>{
-  const preferences={journeyGrouping:JSON.stringify(grouping()),journeyMetadataQueue:encodeQueue(queued,OWNER),journeyMetadata:settled};
-  const state=readJourneyState(preferences,OWNER);
-  expect(state.metadata.titles).toEqual({a:'Morning drive'});
-  expect(state.queue.activities).toHaveLength(1);
-  expect(state.status).toMatchObject({revision:3,state:'active'});
-  const other=readJourneyState(preferences,'someone-else');
-  expect(other.queue).toEqual({});expect(other.status).toEqual(emptyStatus('someone-else'));
-  // Another account's file is reported as unreadable rather than adopted or replaced.
-  expect(other.metadata).toBe(null);
+ it('migrates every legacy value before clearing preferences and survives restarts',async()=>{
+  const storage=disk(),savePreferences=patch=>Object.assign(preferences,patch);
+  const preferences={displayName:'Jules',journeyGrouping:JSON.stringify(grouping()),journeyMetadata:settled};
+  const sync=createJourneySync({owner:OWNER,preferences,savePreferences,storage});
+  await sync.ready();
+  expect(preferences).toMatchObject({displayName:'Jules',journeyGrouping:null,journeyMetadataQueue:null});
+  const next={...sync.read().metadata,titles:{a:'Offline rename'}};
+  await sync.write({metadata:next,queue:groupingChanges(sync.read().metadata,next)});
+  const restarted=createJourneySync({owner:OWNER,preferences,savePreferences,storage});await restarted.ready();
+  expect(restarted.read().metadata.titles.a).toBe('Offline rename');
+  expect(restarted.read().queue.activities[0].title).toBe('Offline rename');
  });
- it('writes only the keys that changed, never the whole preferences file',()=>{
-  const state={metadata:grouping(),queue:queued,status:settled};
-  expect(journeyStatePatch(state,OWNER,new Set(['queue']))).toEqual({journeyMetadataQueue:encodeQueue(queued,OWNER)});
-  expect(journeyStatePatch({...state,metadata:null},OWNER,new Set(['metadata']))).toEqual({});
+ it('never acknowledges a failed transaction and allows later recovery',async()=>{
+  const storage=disk(),sync=createJourneySync({owner:OWNER,preferences:{journeyGrouping:JSON.stringify(grouping())},savePreferences:()=>{},storage});
+  await sync.ready();const before=structuredClone(storage.rows);storage.fail=true;
+  await expect(sync.write({queue:{activities:[activity('a','Not saved')]}})).rejects.toThrow('Disk full');
+  expect(sync.read().queue).toEqual({});expect(storage.rows).toEqual(before);
+  storage.fail=false;await sync.write({queue:{activities:[activity('a','Saved')]}});
+  expect(sync.read().queue.activities[0].title).toBe('Saved');
  });
- it('turns an edit and the status into one preferences save',async()=>{
-  const {value,saves,sync}=device({displayName:'Jules',journeyMetadata:settled});
-  sync.write({metadata:grouping(),queue:queued,status:{...settled,state:'offline'}});
-  expect(sync.read().queue.activities).toHaveLength(1);
-  expect(saves).toHaveLength(0);
-  await sync.flush();
-  expect(saves).toHaveLength(1);
-  expect(Object.keys(saves[0]).sort()).toEqual(['journeyGrouping','journeyMetadata','journeyMetadataQueue']);
-  expect(JSON.parse(value.journeyGrouping).titles).toEqual({a:'Morning drive'});
-  expect(value.journeyMetadata.state).toBe('offline');
-  expect(value.displayName).toBe('Jules');
+ it('keeps multi-megabyte reconstructed routes and all offline decisions across restart',async()=>{
+  const storage=disk(),preferences={},savePreferences=patch=>Object.assign(preferences,patch);
+  const sync=createJourneySync({owner:OWNER,preferences,savePreferences,storage});await sync.ready();
+  const roads=Array.from({length:900},(_,i)=>({ref:`a:${i}:${i+1}`,record:{line:'x'.repeat(6000),status:'route',version:2}}));
+  const pending={roads,activities:Array.from({length:5000},(_,i)=>activity(`a${i}`,'A permanent decision'))};
+  await sync.write({metadata:applyChanges(emptyGrouping(OWNER),pending),queue:pending});
+  expect(JSON.stringify(storage.rows).length).toBeGreaterThan(10000000);
+  expect(JSON.stringify(preferences).length).toBeLessThan(1000);
+  const restarted=createJourneySync({owner:OWNER,preferences,savePreferences,storage});await restarted.ready();
+  expect(restarted.read().queue.roads).toHaveLength(900);expect(restarted.read().queue.activities).toHaveLength(5000);
+  expect(Object.keys(restarted.read().metadata.roads)).toHaveLength(900);
+  const cloud=fakeCloud();
+  expect((await runJourneySync({client:cloud.client,owner:OWNER,...restarted})).state).toBe('active');
+  await restarted.flush();
+  expect(restarted.read().queue).toEqual({});expect(Object.keys(restarted.read().metadata.roads)).toHaveLength(900);
+  expect(Object.keys(cloud.state.metadata.titles)).toHaveLength(5000);
  });
- it('keeps an edit queued when the device refuses the write',async()=>{
-  let fail=true;const saves=[];
-  const sync=createJourneySync({owner:OWNER,preferences:{},savePreferences:patch=>{if(fail)throw new Error('Sign in to change account settings.');saves.push(patch);}});
-  sync.write({queue:queued});
-  await sync.flush().catch(()=>{});
-  expect(saves).toEqual([]);
-  fail=false;
-  await sync.flush();
-  expect(saves).toHaveLength(1);
-  expect(readQueue(saves[0].journeyMetadataQueue,OWNER).changes.activities).toHaveLength(1);
+ it('serializes overlapping writes and preserves edits made during a commit',async()=>{
+  const storage=disk(),sync=createJourneySync({owner:OWNER,preferences:{},savePreferences:()=>{},storage});await sync.ready();
+  await Promise.all(['a','b','c'].map(ref=>sync.write(latest=>({queue:{activities:[...(latest.queue.activities||[]),activity(ref,ref)]}}))));
+  expect(sync.read().queue.activities.map(item=>item.ref)).toEqual(['a','b','c']);
  });
- it('recovers the account file when it is handed an empty one first',async()=>{
-  // The adapter is created before the account file has been read: without this the
-  // first edit would be written from an empty mirror over the real one.
-  const preferences={displayName:'Jules',journeyGrouping:JSON.stringify(grouping()),
-   journeyMetadataQueue:encodeQueue(queued,OWNER),journeyMetadata:settled};
-  const saves=[];
-  const sync=createJourneySync({owner:OWNER,preferences:{},savePreferences:patch=>saves.push(patch)});
-  expect(sync.read().metadata.titles).toEqual({});
-  sync.reseed(preferences);
-  expect(sync.read().metadata.titles).toEqual({a:'Morning drive'});
-  expect(sync.read().queue.activities).toHaveLength(1);
-  expect(sync.read().status).toMatchObject({revision:3,migratedAt:settled.migratedAt});
-  expect(saves).toEqual([]);
+ it('leaves the old preferences intact on failed migration and retries safely',async()=>{
+  const storage=disk(),preferences={journeyGrouping:JSON.stringify(grouping())},savePreferences=patch=>Object.assign(preferences,patch);
+  storage.fail=true;
+  const sync=createJourneySync({owner:OWNER,preferences,savePreferences,storage});
+  await expect(sync.ready()).rejects.toThrow('Disk full');expect(preferences.journeyGrouping).not.toBeNull();
+  storage.fail=false;await sync.ready();expect(sync.read().metadata.titles.a).toBe('Morning drive');expect(preferences.journeyGrouping).toBeNull();
  });
- it('never lets a late hydration undo an edit this device already made',async()=>{
-  const sync=createJourneySync({owner:OWNER,preferences:{},savePreferences:()=>{}});
-  sync.write({metadata:grouping(),queue:queued});
-  sync.reseed({journeyGrouping:JSON.stringify(emptyGrouping(OWNER)),
-   journeyMetadata:{owner:OWNER,revision:2,migratedAt:5,state:'active'}});
-  expect(sync.read().metadata.titles).toEqual({a:'Morning drive'});
-  expect(sync.read().queue.activities).toHaveLength(1);
-  expect(sync.read().status.migratedAt).toBe(null);
-  await sync.flush();
- });
-});
-describe('a device that has been offline long enough to fill its queue',()=>{
- const road=index=>({ref:`a:${1700000000+index}:${1700000060+index}`,
-  record:{version:2,status:'route',distanceMeters:800,line:'x'.repeat(2000),lookedUpAt:1700000000000+index}});
- const place=index=>({ref:`${index}.0000,13.0000`,lookup:{nearbyName:`Place ${index}`,categories:['park'],detail:'y'.repeat(1500)}});
- const decisions={activities:[activity('a','Morning drive')],pairs:[{relation:'link',left:'a',right:'b'}],
-  stops:[{ref:'dwell:a:1700000000',name:'Cafe',tags:['coffee']}]};
- function device(){const saves=[],value={};return {value,saves,sync:createJourneySync({owner:OWNER,preferences:{},
-  savePreferences:patch=>{saves.push(patch);Object.assign(value,patch);}})};}
- it('gives up recomputable answers first, counts them, and never a decision',async()=>{
-  const backlog={...decisions,roads:Array.from({length:300},(_,index)=>road(index)),
-   places:Array.from({length:60},(_,index)=>place(index))};
-  // The demonstration: two days of road reconstruction and place lookups is far more
-  // than the device will ever accept in one preference value.
-  expect(JSON.stringify(backlog).length).toBeGreaterThan(JOURNEY_QUEUE_BYTES*1.5);
-  const {value,saves,sync}=device();
-  sync.write({queue:backlog});
-  await sync.flush();
-  expect(saves).toHaveLength(1);
-  const stored=readQueue(value.journeyMetadataQueue,OWNER);
-  // Every decision survives, unchanged and complete.
-  expect(stored.changes.activities).toEqual(decisions.activities);
-  expect(stored.changes.pairs).toEqual(decisions.pairs);
-  expect(stored.changes.stops).toEqual(decisions.stops);
-  // The recomputable half is bounded by the queue budget and reports what it gave up.
-  expect(JSON.stringify(stored.changes).length).toBeLessThanOrEqual(JOURNEY_QUEUE_BYTES);
-  expect(stored.dropped.roads).toBeGreaterThan(0);
-  expect(JSON.stringify(stored.dropped)).not.toContain('undefined');
-  // Oldest first, so the road the device rebuilt last is the one it still sends.
-  expect(stored.changes.roads.at(-1)).toEqual(road(299));
-  // One preference value, well inside the 1 MB the native store accepts, so the
-  // save that carries it (and every unrelated setting) still succeeds.
-  expect(value.journeyMetadataQueue.length).toBeLessThan(900000);
- });
- it('forgets the count once the queue has been sent',async()=>{
-  const sync=createJourneySync({owner:OWNER,preferences:{},savePreferences:()=>{}});
-  sync.write({queue:{...decisions,roads:Array.from({length:300},(_,index)=>road(index))}});
-  expect(Object.keys(sync.read().dropped)).not.toEqual([]);
-  sync.write({queue:{}});
-  await sync.flush();
-  expect(sync.read().dropped).toEqual({});
+ it('refuses to erase a corrupt pending queue',async()=>{
+  const storage=disk(),preferences={journeyMetadataQueue:'not JSON'},saves=[];
+  const sync=createJourneySync({owner:OWNER,preferences,savePreferences:patch=>saves.push(patch),storage});
+  await expect(sync.ready()).rejects.toThrow('could not be read');expect(saves).toEqual([]);expect(storage.rows).toEqual({});
  });
 });
 
+it('preserves malformed legacy fields instead of migrating a truncated projection',async()=>{
+ const storage=disk(),original={...grouping(),titles:{a:'x'.repeat(151)}},preferences={journeyGrouping:JSON.stringify(original)};
+ const sync=createJourneySync({owner:OWNER,preferences,savePreferences:patch=>Object.assign(preferences,patch),storage});await sync.ready();
+ const cloud=fakeCloud();expect((await runJourneySync({client:cloud.client,owner:OWNER,...sync})).state).toBe('offline');
+ expect(sync.read().metadata.titles.a).toHaveLength(151);expect(cloud.state.requests).toEqual([]);
+ const restarted=createJourneySync({owner:OWNER,preferences,savePreferences:()=>{},storage});await restarted.ready();
+ expect(restarted.read().metadata.titles.a).toHaveLength(151);
+});
 
+it('does not mark migration complete when the legacy backup cannot be checked',async()=>{
+ const cloud=fakeCloud(),h=harness({metadata:emptyGrouping(OWNER)});
+ const client={...cloud.client,from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({error:{message:'network failed'}})})})})};
+ expect((await runJourneySync({client,owner:OWNER,...h})).state).toBe('offline');
+ expect(h.store.status.migratedAt).toBeNull();expect(cloud.state.requests).toEqual([SNAPSHOT_FUNCTION]);
+ expect((await runJourneySync({client:cloud.client,owner:OWNER,...h})).state).toBe('active');
+});
+
+it('adopts the existing account cutoff instead of stalling on a new device provisional cutoff',async()=>{
+ const cloud=fakeCloud({metadata:grouping(),revision:5});
+ const local={...emptyGrouping(OWNER),enrichFrom:1800000000000};
+ const h=harness({metadata:local,queue:{enrichFrom:1800000000000}});
+ expect((await runJourneySync({client:cloud.client,owner:OWNER,...h})).state).toBe('active');
+ expect(h.store.metadata.enrichFrom).toBe(1699999999000);expect(h.store.queue).toEqual({});
+});
+
+it('retains an edit committed while migration is finishing its durable write',async()=>{
+ const cloud=fakeCloud(),h=harness({metadata:grouping()});
+ const write=async patch=>{
+  if(typeof patch==='function'){
+   const next={...h.store.metadata,titles:{a:'Edited during migration'}};
+   h.store.queue=groupingChanges(h.store.metadata,next);h.store.metadata=next;
+  }
+  h.write(patch);
+ };
+ expect((await runJourneySync({client:cloud.client,owner:OWNER,read:h.read,write})).state).toBe('active');
+ expect(h.store.metadata.titles.a).toBe('Edited during migration');expect(h.store.queue.activities[0].title).toBe('Edited during migration');
+ expect(cloud.state.metadata.titles.a).toBe('Morning drive');
+ expect((await runJourneySync({client:cloud.client,owner:OWNER,...h})).state).toBe('active');
+ expect(cloud.state.metadata.titles.a).toBe('Edited during migration');
+});

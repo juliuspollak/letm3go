@@ -33,7 +33,7 @@ create table if not exists public.journey_activity_metadata (
  title text check (title is null or char_length(title) between 1 and 150),
  type text check (type is null or type in ('Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Other','Unknown')),
  manual_tags text[] not null default '{}' check (cardinality(manual_tags) <= 20),
- hidden_tags text[] not null default '{}' check (cardinality(hidden_tags) <= 20),
+ hidden_tags text[] not null default '{}' check (cardinality(hidden_tags) <= 60),
  enriched_at bigint check (enriched_at is null or enriched_at > 0),
  updated_at timestamptz not null default now(),
  primary key (owner_id, ref)
@@ -84,7 +84,7 @@ create table if not exists public.journey_place_metadata (
 create table if not exists public.journey_road_metadata (
  owner_id uuid not null references auth.users(id) on delete cascade,
  ref text not null check (char_length(ref) between 1 and 120),
- record jsonb not null check (jsonb_typeof(record) = 'object' and octet_length(record::text) <= 40000),
+ record jsonb not null check (jsonb_typeof(record) = 'object' and octet_length(record::text) <= 4000000),
  updated_at timestamptz not null default now(),
  primary key (owner_id, ref)
 );
@@ -98,6 +98,12 @@ create table if not exists public.journey_distance_summary (
  updated_at timestamptz not null default now(),
  primary key (owner_id, ref)
 );
+
+-- Upgrade constraints as well when reapplying an earlier staging revision.
+alter table public.journey_activity_metadata drop constraint if exists journey_activity_metadata_hidden_tags_check;
+alter table public.journey_activity_metadata add constraint journey_activity_metadata_hidden_tags_check check (cardinality(hidden_tags)<=60);
+alter table public.journey_road_metadata drop constraint if exists journey_road_metadata_record_check;
+alter table public.journey_road_metadata add constraint journey_road_metadata_record_check check (jsonb_typeof(record)='object' and octet_length(record::text)<=4000000);
 
 -- 3. Access. Owner only, and never while the account is awaiting deletion. The
 --    functions below are security invoker, so these policies and the write guard
@@ -114,6 +120,7 @@ do $$ declare table_name text; begin
   execute format('drop policy if exists account_active on public.%I',table_name);
   execute format('create policy %I_owner on public.%I for all to authenticated using (owner_id=(select auth.uid())) with check (owner_id=(select auth.uid()))',table_name,table_name);
   execute format('create policy account_active on public.%I as restrictive for all to authenticated using ((select public.account_is_active())) with check ((select public.account_is_active()))',table_name);
+  execute format('drop trigger if exists guard_owner_write on public.%I',table_name);
   execute format('create trigger guard_owner_write before insert or update on public.%I for each row execute function public.guard_owner_write(''owner_id'')',table_name);
  end loop;
 end $$;
@@ -199,7 +206,7 @@ begin
  if p_changes is null or jsonb_typeof(p_changes)<>'object' then raise exception 'Journey changes must be an object'; end if;
  -- A batch carries record values, so its size is bounded by one reasonable grouping,
  -- not by how long a device has been offline.
- if octet_length(p_changes::text)>240000 then raise exception 'Journey changes are too large'; end if;
+ if octet_length(p_changes::text)>6000000 then raise exception 'Journey changes are too large'; end if;
  if exists(select 1 from jsonb_object_keys(p_changes) as k(name)
    where k.name not in ('enrichFrom','activities','pairs','stops','places','roads','summaries')) then
   raise exception 'Unsupported journey change domain';
@@ -257,7 +264,7 @@ begin
    from jsonb_array_elements_text(case when jsonb_typeof(item->'hiddenTags')='array' then item->'hiddenTags' else '[]'::jsonb end)
     with ordinality as t(value,ord)
    where t.value is not null and t.value<>'';
-  if cardinality(v_tags)>20 or cardinality(v_hidden)>20 then raise exception 'Too many journey tags'; end if;
+  if cardinality(v_tags)>20 or cardinality(v_hidden)>60 then raise exception 'Too many journey tags'; end if;
   if exists(select 1 from unnest(v_tags) as t(tag) where char_length(t.tag)>60)
    or exists(select 1 from unnest(v_hidden) as t(tag) where char_length(t.tag)>60) then raise exception 'Invalid journey tag'; end if;
   if v_title is null and v_type is null and v_enriched is null and cardinality(v_tags)=0 and cardinality(v_hidden)=0 then
@@ -290,6 +297,10 @@ begin
   if item->>'delete'='true' then
    delete from public.journey_pair_metadata where owner_id=p_owner and relation=v_relation and left_id=v_left and right_id=v_right;
   else
+   if v_relation in ('link','cut') then
+    delete from public.journey_pair_metadata where owner_id=p_owner and left_id=v_left and right_id=v_right
+     and relation in ('link','cut') and relation<>v_relation;
+   end if;
    insert into public.journey_pair_metadata(owner_id,relation,left_id,right_id) values(p_owner,v_relation,v_left,v_right)
    on conflict (owner_id,relation,left_id,right_id) do update set updated_at=now();
   end if;
@@ -383,5 +394,19 @@ begin
 end $$;
 revoke all on function public.journey_apply_changes(uuid,jsonb,integer) from public,anon,authenticated;
 grant execute on function public.journey_apply_changes(uuid,jsonb,integer) to authenticated;
+
+-- During rollout an old settings backup may still be the only journey copy.
+-- A settings-only upload from a new device must not erase it before migration.
+create or replace function public.protect_account_settings() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ if new.owner_id<>old.owner_id then raise exception 'Owner is immutable'; end if;
+ if old.payload ? 'journeyGrouping' and not (new.payload ? 'journeyGrouping') then
+  new.payload:=new.payload||jsonb_build_object('journeyGrouping',old.payload->'journeyGrouping');
+ end if;
+ new.revision:=old.revision+1;
+ new.updated_at:=now();
+ return new;
+end $$;
 
 commit;
