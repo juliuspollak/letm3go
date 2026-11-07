@@ -129,15 +129,29 @@ as $$
  order by a.started_at desc limit 100
 $$;
 
+create or replace function public.my_social_publications()
+returns table(activity_id uuid,title text,audience text,mode text,token text)
+language sql security definer set search_path=''
+as $$
+ select j.activity_id,j.snapshot->>'title',j.audience::text,p.mode,j.token::text
+ from public.shared_journeys j
+ left join public.social_journey_policies p on p.activity_id=j.activity_id and p.owner_id=j.owner_id
+ where auth.uid() is not null and j.owner_id=auth.uid()
+   and j.audience in ('public','friends','household')
+ order by j.created_at desc limit 100
+$$;
+
 revoke all on function public.can_view_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.prepare_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.configure_social_journey(uuid,text,uuid[]) from public,anon,authenticated;
 revoke all on function public.read_social_journey(uuid) from public,anon,authenticated;
 revoke all on function public.my_social_journey_feed() from public,anon,authenticated;
+revoke all on function public.my_social_publications() from public,anon,authenticated;
 grant execute on function public.prepare_social_journey(uuid) to authenticated;
 grant execute on function public.configure_social_journey(uuid,text,uuid[]) to authenticated;
 grant execute on function public.read_social_journey(uuid) to authenticated;
 grant execute on function public.my_social_journey_feed() to authenticated;
+grant execute on function public.my_social_publications() to authenticated;
 -- Deny direct table reads even if an old RLS policy was permissive. Public
 -- reads happen through the Edge Function with an explicit public audience check.
 revoke select on public.shared_journeys from anon, authenticated;
