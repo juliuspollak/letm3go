@@ -7,6 +7,7 @@ import {publicJourneyMap} from '../lib/publicJourneyMap.js';
 import {sharingSelection} from '../lib/socialSelection.js';
 import JourneyMap from './JourneyMap.jsx';
 import PublicJourney from './PublicJourney.jsx';
+import PrivateImage from './PrivateImage.jsx';
 
 // An activity is never auto-shared because it belongs to a household or because
 // live location is enabled. This is an explicit foreground publishing workflow.
@@ -98,7 +99,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
    </fieldset>
    {rawPhotos.length>0&&<fieldset><legend>Photographs to include</legend>
     <p className="muted small-copy">Unselected photos stay private. Photos at protected Home or Work locations are excluded by the server.</p>
-    {rawPhotos.map(photo=><label key={photo.id}><input type="checkbox" checked={photoIDs.includes(photo.id)} onChange={e=>setPhotoIDs(ids=>e.target.checked?[...ids,photo.id]:ids.filter(id=>id!==photo.id))}/> {photo.caption||'Activity photograph'}</label>)}
+    {rawPhotos.map(photo=><label key={photo.id}><input type="checkbox" checked={photoIDs.includes(photo.id)} onChange={e=>setPhotoIDs(ids=>e.target.checked?[...ids,photo.id]:ids.filter(id=>id!==photo.id))}/> <PrivateImage className="social-photo-thumb" src={`private-photo:${ownerID}/${chosen.id}/${photo.id}`} alt={photo.caption||'Activity photograph'}/><span>{photo.caption||'Activity photograph'}</span></label>)}
    </fieldset>}
    <div className="social-share-actions"><button type="button" className="primary" disabled={loading} onClick={()=>void share()}>{loading?'Publishing…':'Publish reviewed activity'}</button>
     <button type="button" className="secondary" disabled={loading} onClick={()=>setChosen(null)}>Cancel</button>
