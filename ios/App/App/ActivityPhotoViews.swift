@@ -17,7 +17,7 @@ struct PrivateThumbnail: View {
         }
         .task(id: photoID) {
             let loaded: UIImage?
-            if let model, model.presentation.header.readOnly { loaded = await model.photoImage(photoID, pixels: size) }
+            if let model, model.presentation.header.source == "shared" { loaded = await model.photoImage(photoID, pixels: size) }
             else { loaded = await service.thumbnail(photoID: photoID, size: size) }
             if !Task.isCancelled { image = loaded }
         }
