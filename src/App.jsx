@@ -370,10 +370,7 @@ function PrivateApp(){
   else if(kind==='equipment'){widenDefaultDate();setEquipmentFilter(value);}
   else if(kind==='sort'){setSortPreference(value);localStorage.setItem('letm3go-trip-sort',value);setMetricView(null);}
  }
- const sharedRows=useMemo(()=>sharedFeed.items.map(item=>{
-  const person=[...friendMembers,...householdMembers].find(member=>member.user_id===item.owner_id);
-  return sharedActivityRow(item,person?.display_name||'Friend');
- }).filter(Boolean),[sharedFeed.items,friendMembers,householdMembers]);
+ const sharedRows=useMemo(()=>sharedFeed.items.map(item=>sharedActivityRow(item,item.owner_name||'Friend')).filter(Boolean),[sharedFeed.items]);
  const activityRows=useMemo(()=>filterActivityScope(visibleJourneys,sharedRows,includeSharedActivities),[visibleJourneys,sharedRows,includeSharedActivities]);
  const filtered=useMemo(()=>activityRows.filter(t=>
   (t.isShared?(!showArchived&&!favouritesOnly&&!activeEquipmentFilter):(showArchived?archivedTrips.includes(t.id):!archivedTrips.includes(t.id))&&(!favouritesOnly||saved.includes(t.id)))&&
