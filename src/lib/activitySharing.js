@@ -12,7 +12,7 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  if(!Array.isArray(photoIDs)||photoIDs.length>50||photoIDs.some(p=>typeof p!=='string'))throw new Error('Invalid photo selection.');
  const {data:auth,error}=await client.auth.getUser();const owner=auth?.user?.id;
  if(error||!owner||state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('This activity belongs to a different account.');
- const trip=state.trips.find(t=>t.id===id);if(!trip||trip.source!=='device'||!trip.endedAt)throw new Error('Only completed iPhone activities can be shared.');
+ const trip=state.trips.find(t=>t.id===id);if(!trip||!['device','watch'].includes(trip.source)||!trip.endedAt)throw new Error('Only completed recordings from this account can be shared.');
  if(reviewedTrip&&(JSON.stringify(trip.points)!==JSON.stringify(reviewedTrip.points)||trip.activity!==reviewedTrip.activity||(trip.details?.description||'')!==(reviewedTrip.description||'')))throw new Error('Activity changed. Close privacy controls and review the latest activity before publishing.');
  const backup=await syncPrivateActivities(client,{...state,trips:[trip],deletedIDs:[]},receipts,{checkpoint});
  const {data:current,error:readError}=await client.from('activities').select('revision').eq('id',id).eq('owner_id',owner).single();
