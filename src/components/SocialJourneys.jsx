@@ -38,7 +38,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   return()=>{clearTimeout(timer);clearInterval(poll);document.removeEventListener('visibilitychange',listener);};
  },[refresh]);
  const personName=userID=>friends.find(p=>p.user_id===userID)?.display_name||members.find(p=>p.user_id===userID)?.display_name||'Shared by a friend';
- const available=useMemo(()=>activities.filter(t=>t.source==='device'&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
+ const available=useMemo(()=>activities.filter(t=>['device','watch'].includes(t.source)&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
  const rawPhotos=chosen?.details?.photos||[];
  const preview=useMemo(()=>{
   if(!chosen)return null;
