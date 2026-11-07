@@ -5,7 +5,7 @@ import {activityCode} from './activityNames.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 import {recognisedStopVenue} from './stopVenueRecognition.js';
-import {routeGaps,gapKey,estimatedDistance,combineEstimates} from './gapReconstruction.js';
+import {routeGaps,gapKey,snapshotCurrent,savedDistance,combineEstimates} from './gapReconstruction.js';
 // A non-destructive projection of existing recorded activities, not another recorder.
 // Only account-scoped metadata is persisted; segment telemetry is never rewritten.
 export const GROUPING_VERSION=1;
@@ -17,7 +17,7 @@ export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixe
 // A stopped journey that may still be continued is a provisional record. It is
 // not grouped, shared or backed up until the recorder finalises it.
 export const isProvisional=t=>t?.details?.provisional===true;
-export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{},roads:{},enriched:{}};}
+export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{},roads:{},enriched:{},distanceSummaries:{}};}
 // Parsing and write authorization share one validator. A fallback may be shown,
 // but must never replace an existing record that failed validation.
 export function parseGrouping(serialized,owner){
@@ -28,9 +28,9 @@ export function parseGrouping(serialized,owner){
   if(!record(m)||m.version!==GROUPING_VERSION||m.owner!==owner||
    !['links','cuts','history'].every(key=>Array.isArray(m[key]))||
    !['titles','places','stopEdits'].every(key=>record(m[key]))||
-   !['types','manualTags','hiddenTags','roads','enriched'].every(key=>m[key]==null||record(m[key]))||
+   !['types','manualTags','hiddenTags','roads','enriched','distanceSummaries'].every(key=>m[key]==null||record(m[key]))||
    (m.sourceLinks!=null&&!Array.isArray(m.sourceLinks)))return null;
-  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{}};
+  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{}};
  }catch{return null;}
 }
 export function readGrouping(serialized,owner){return parseGrouping(serialized,owner)??emptyGrouping(owner);}
@@ -216,9 +216,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  const journeys=groups.map(segments=>{
   if(segments.length===1){const s=segments[0],cacheID=`${owner}:${s.id}`,previous=projectionCache?.get(cacheID);
    const keys=previous?.source===s?previous.keys:[...new Set((s.points||[]).map(placeKey))];
-   const gaps=previous?.source===s?previous.gaps:routeGaps(s);
-   const recordKey=JSON.stringify([keys.map(key=>metadata.places[key]),gaps.map(g=>metadata.roads?.[gapKey(s.id,g)])]);
-   const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],metadata.stopEdits,metadata.enriched?.[s.id]??null,metadata.enrichFrom??null]);
+   // A saved distance summary (written once at save time) replaces the GPS gap scan.
+   const saved=metadata.distanceSummaries?.[s.id];
+   const gaps=previous?.source===s?previous.gaps:snapshotCurrent(s,saved)?(saved.summary?.gaps||[]):routeGaps(s);
+   const recordKey=JSON.stringify([keys.map(key=>metadata.places[key]),gaps.map(g=>metadata.roads?.[g.key||gapKey(s.id,g)]),saved]);
+   // Only this activity's own stop edits invalidate its projection.
+   const ownStopEdits=Object.entries(metadata.stopEdits||{}).filter(([key])=>key.startsWith(`native:${s.id}:`)||key.startsWith(`dwell:${s.id}:`));
+   const edits=JSON.stringify([metadata.titles[s.id],metadata.manualTags?.[s.id],metadata.hiddenTags?.[s.id],ownStopEdits,metadata.enriched?.[s.id]??null,metadata.enrichFrom??null]);
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
    const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
@@ -237,7 +241,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    // manual titles remain authoritative.
    const generatedNativeStopTitle=!!stopTitle&&nativeStopTitle;
    const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
-   withEstimate(journey,estimatedDistance(s,metadata.roads),metadata);
+   withEstimate(journey,savedDistance(s,metadata),metadata);
    projectionCache?.set(cacheID,{source:s,keys,gaps,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
   const stops=segments.flatMap(t=>[...internalStops(t,context),...nativeStops(t,context)]);
@@ -245,7 +249,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   stops.sort((a,b)=>a.startedAt-b.startedAt);
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
   const tags=visibleTags([...segments.flatMap(s=>s.tags||[]),...segments.flatMap(s=>metadata.manualTags?.[s.id]||[]),...activityPlaceTags(first,start,end,stops),...segments.flatMap(s=>routeTags(s,metadata))],segments,metadata);
-  const estimates=segments.map(s=>estimatedDistance(s,metadata.roads)),estimate=combineEstimates(segments,estimates);
+  const estimates=segments.map(s=>savedDistance(s,metadata)),estimate=combineEstimates(segments,estimates);
   const distanceMeters=segments.reduce((n,s,i)=>n+(estimates[i]?.estimatedMeters??(s.distanceMeters||0)),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
   return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments:segments.map((s,i)=>estimates[i]?withEstimate({...s},estimates[i],metadata):s),stops,title:manualTitle||contextualJourneyTitle(metadata.types[first.id]||first.activity,start,end,metres(endpoint(first,false),endpoint(last,true))<700),titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null,...(estimate?{recordedDistanceMeters:estimate.recordedMeters,distanceEstimate:estimate}:{})};
  });
