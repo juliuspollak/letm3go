@@ -319,10 +319,14 @@ The migration has not been applied to any project yet, and this branch is not
 production-ready until the checks below have passed, in this order.
 
 ```bash
-# 1. Apply the migration to the test project (linked with `supabase link`).
-supabase migration list --linked            # confirm 20261120000000 is pending
-supabase db push --linked                   # applies only pending migrations
-supabase migration list --linked            # confirm it is now applied
+# 1. Apply the migration to the test project with the repository wrapper (never a
+#    bare npx supabase, which bypasses the token guards). This project's remote
+#    migration ledger is not reconciled, so the file is applied directly and then
+#    recorded - see docs/cloud-sync-deployment.md and docs/supabase-connection.md.
+npm run supabase -- migration list --linked        # 20261120000000 must be the only pending entry
+npm run supabase -- db query --linked --file supabase/migrations/20261120000000_journey_metadata_records.sql
+npm run supabase -- migration repair 20261120000000 --status applied --linked
+npm run supabase -- migration list --linked        # confirm it is recorded as applied
 
 # 2. Re-run the whole database suite against the local Postgres build of every
 #    migration, then the app suite.
@@ -330,12 +334,14 @@ npm run test:database
 npm run check
 ```
 
-```sql
--- 3. Confirm the functions and policies exist on the test project.
-select proname, prosecdef from pg_proc
- where proname in ('journey_metadata_snapshot','journey_metadata_revision','journey_apply_changes');
-select tablename, policyname, permissive, cmd from pg_policies
- where tablename like 'journey\_%' order by tablename, policyname;
+```bash
+# 3. Confirm the functions, policies and grants on the test project (read-only).
+npm run supabase -- db query --linked "select proname, prosecdef from pg_proc
+ where proname in ('journey_metadata_snapshot','journey_metadata_revision','journey_apply_changes');"
+npm run supabase -- db query --linked "select tablename, policyname, permissive, cmd from pg_policies
+ where tablename like 'journey_%' order by tablename, policyname;"
+npm run supabase -- db query --linked "select count(*) as rls_tables from pg_tables
+ where schemaname='public' and tablename like 'journey_%' and rowsecurity;"
 ```
 
 Then, on real devices:
@@ -345,7 +351,9 @@ Then, on real devices:
    journey on each device while both are in airplane mode → reconnect both → both
    renames are present on both devices. Rename the *same* journey on both while
    offline → reconnect → the later write wins on both, and the grouping panel on the
-   loser says the details were also changed on another device.
+   loser says the details were also changed on another device. Delete the journey on
+   A → B follows; check `activities`/`account_settings` for account A are untouched
+   apart from the journey records.
 2. **Upgrade.** Install this build over the previous one on a device with existing
    journeys and merges. Confirm every title, merge, tag and corrected stop is still
    there, `journeyMetadata.migratedAt` is set exactly once, `journeyMetadataQueue`
