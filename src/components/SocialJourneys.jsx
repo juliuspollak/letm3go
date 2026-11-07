@@ -13,7 +13,7 @@ import PrivateImage from './PrivateImage.jsx';
 // live location is enabled. This is an explicit foreground publishing workflow.
 const idOf=item=>String(item?.id||'');
 const same=(a,b)=>idOf(a)===idOf(b);
-export default function SocialJourneys({activities=[],ownerID,receipts={},saveReceipts}) {
+export default function SocialJourneys({activities=[],ownerID,receipts={},saveReceipts,onSetHome=null}) {
  const [friends,setFriends]=useState([]),[householdReady,setHouseholdReady]=useState(false),[members,setMembers]=useState([]);
  const [feed,setFeed]=useState([]),[mine,setMine]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false);
  const [chosen,setChosen]=useState(null),[openID,setOpenID]=useState(null);
@@ -40,6 +40,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
  const personName=userID=>friends.find(p=>p.user_id===userID)?.display_name||members.find(p=>p.user_id===userID)?.display_name||'Shared by a friend';
  const available=useMemo(()=>activities.filter(t=>['device','watch'].includes(t.source)&&t.state!=='recording'&&t.endedAt&&!t.provisional&&!t.readOnly&&!t.isGroupedJourney).slice(0,100),[activities]);
  const rawPhotos=chosen?.details?.photos||[];
+ const homeReady=Boolean(chosen?.__savedPlaces?.some(p=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)));
  const preview=useMemo(()=>{
   if(!chosen)return null;
   const selected=publicationPreview({...chosen,photos:rawPhotos.map(photo=>({...photo,point:photo.latitude!=null&&photo.longitude!=null?[photo.latitude,photo.longitude]:null}))},chosen.__savedPlaces||[],photoIDs);
@@ -97,6 +98,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
   </details>:<div className="social-share-review">
    <h3>Review before sharing: {chosen.title||chosen.activity}</h3>
    <p className="muted small-copy">The map below masks saved Home and Work areas. Only the server-approved route is delivered to viewers.</p>
+   {!homeReady&&<div className="notice" role="alert"><p>Set your Home location under Places before publishing, so your route can be safely masked.</p>{onSetHome&&<button type="button" className="secondary" onClick={onSetHome}>Set Home in Places</button>}<p className="muted small-copy">Reopen this activity after saving Home to review the protected route.</p></div>}
    {preview?.routeSegments?.some(line=>line.length>1)&&<JourneyMap journeys={[preview]}/>}
    <fieldset><legend>Who can see this activity?</legend>
     {householdReady&&<label><input type="checkbox" checked={household} disabled={link} onChange={e=>setHousehold(e.target.checked)}/> My household</label>}
@@ -108,7 +110,7 @@ export default function SocialJourneys({activities=[],ownerID,receipts={},saveRe
     <p className="muted small-copy">Unselected photos stay private. Photos at protected Home or Work locations are excluded by the server.</p>
     {rawPhotos.map(photo=><label key={photo.id}><input type="checkbox" checked={photoIDs.includes(photo.id)} onChange={e=>setPhotoIDs(ids=>e.target.checked?[...ids,photo.id]:ids.filter(id=>id!==photo.id))}/> <PrivateImage className="social-photo-thumb" src={`private-photo:${ownerID}/${chosen.id}/${photo.id}`} alt={photo.caption||'Activity photograph'}/><span>{photo.caption||'Activity photograph'}</span></label>)}
    </fieldset>}
-   <div className="social-share-actions"><button type="button" className="primary" disabled={loading} onClick={()=>void share()}>{loading?'Publishing…':'Publish reviewed activity'}</button>
+   <div className="social-share-actions"><button type="button" className="primary" disabled={loading||!homeReady} onClick={()=>void share()}>{loading?'Publishing…':'Publish reviewed activity'}</button>
     <button type="button" className="secondary" disabled={loading} onClick={()=>setChosen(null)}>Cancel</button>
     <button type="button" className="secondary" disabled={loading} onClick={()=>void unshare(chosen)}>Make private</button>
    </div>
