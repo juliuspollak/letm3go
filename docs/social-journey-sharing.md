@@ -61,8 +61,10 @@ separate and remain opt-in.
   authenticated private route/photo reads and selected snapshot data.
 - `src/components/SocialJourneys.jsx`: owner publishing, recipient picker,
   photo picker, feed and revocation.
-- `src/components/PublicJourney.jsx`: shared read-only detail; also opens
-  from the main Map via `useSocialJourneyMap.js`.
+- `src/components/SharedActivityDetail.jsx`: loads the authorised saved snapshot
+  and opens the existing native `ActivityDetailScreen`; public browser links
+  use the existing `JourneyMap`.
+- `src/lib/useSocialJourneyMap.js`: optional shared routes in the main Map.
 - `src/lib/activitySharing.js`: private-backup-before-publish and recipient
   configuration, fail-closed after an incomplete publish.
 
