@@ -14,6 +14,18 @@ create table if not exists public.social_journey_recipients (
  user_id uuid not null references auth.users(id) on delete cascade,
  primary key(activity_id,user_id)
 );
+-- Revocation and owner edits delete the publication. Clear all recipient
+-- grants in that same transaction, including after a previously public share.
+create or replace function public.clear_social_journey_policy()
+returns trigger language plpgsql security definer set search_path='' as $
+begin
+ delete from public.social_journey_policies where activity_id=old.activity_id;
+ return old;
+end $;
+drop trigger if exists clear_social_journey_policy on public.shared_journeys;
+create trigger clear_social_journey_policy after delete on public.shared_journeys
+for each row execute function public.clear_social_journey_policy();
+
 create index if not exists social_journey_policies_owner_idx on public.social_journey_policies(owner_id);
 alter table public.social_journey_policies enable row level security;
 alter table public.social_journey_recipients enable row level security;
