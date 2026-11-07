@@ -55,13 +55,13 @@ begin
 end $$;
 
 create or replace function public.prepare_social_journey(p_activity uuid)
-returns void language plpgsql security definer set search_path='' as $
+returns void language plpgsql security definer set search_path='' as $$
 begin
  if auth.uid() is null or not exists(select 1 from public.shared_journeys j where j.activity_id=p_activity and j.owner_id=auth.uid()) then
   raise exception 'Only the owner can change journey sharing';
  end if;
  delete from public.social_journey_policies where activity_id=p_activity and owner_id=auth.uid();
-end $;
+end $$;
 
 create or replace function public.configure_social_journey(
  p_activity uuid, p_mode text, p_recipients uuid[] default '{}'::uuid[])
