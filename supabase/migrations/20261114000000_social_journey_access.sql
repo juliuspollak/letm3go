@@ -6,7 +6,7 @@ begin;
 create table if not exists public.social_journey_policies (
  activity_id uuid primary key,
  owner_id uuid not null references auth.users(id) on delete cascade,
- mode text not null check(mode in ('friends','household','selected')),
+ mode text not null check(mode in ('friends','household','selected','mixed','all')),
  created_at timestamptz not null default now()
 );
 create table if not exists public.social_journey_recipients (
@@ -35,19 +35,17 @@ begin
  where j.activity_id=p_activity;
  if not found then return false; end if;
  if auth.uid()=v_owner then return true; end if;
- if v_mode='household' and v_audience='household' then
-  return exists (
+ if v_mode in ('household','mixed','all') and v_audience in ('household','friends') and exists (
    select 1 from public.household_members() as m
    where (to_jsonb(m)->>'user_id')=v_owner::text
-  );
- end if;
+  ) then return true; end if;
  if v_audience<>'friends' then return false; end if;
  if not exists (
   select 1 from public.my_friends() as f
   where (to_jsonb(f)->>'user_id')=v_owner::text
  ) then return false; end if;
- if v_mode='friends' then return true; end if;
- if v_mode='selected' then
+ if v_mode in ('friends','all') then return true; end if;
+ if v_mode in ('selected','mixed') then
   return exists (
    select 1 from public.social_journey_recipients r
    where r.activity_id=p_activity and r.user_id=auth.uid()
@@ -72,7 +70,7 @@ language plpgsql security definer set search_path=''
 as $$
 declare v_audience text; v_id uuid;
 begin
- if auth.uid() is null or p_mode not in ('friends','household','selected') then
+ if auth.uid() is null or p_mode not in ('friends','household','selected','mixed','all') then
   raise exception 'Invalid social audience';
  end if;
  if coalesce(array_length(p_recipients,1),0)>100 then raise exception 'Too many recipients'; end if;
@@ -81,11 +79,11 @@ begin
  if not found or v_audience<>(case when p_mode='household' then 'household' else 'friends' end) then
   raise exception 'Journey publication does not match this audience';
  end if;
- if p_mode='household' and not exists(select 1 from public.household_members() as m
+ if p_mode in ('household','mixed','all') and not exists(select 1 from public.household_members() as m
   where (to_jsonb(m)->>'user_id')=auth.uid()::text) then
   raise exception 'Household membership required';
  end if;
- if p_mode='selected' then
+ if p_mode in ('selected','mixed') then
   if coalesce(array_length(p_recipients,1),0)=0 then raise exception 'Select a friend'; end if;
   foreach v_id in array p_recipients loop
    if v_id=auth.uid() or not exists(
@@ -97,7 +95,7 @@ begin
  values(p_activity,auth.uid(),p_mode)
  on conflict(activity_id) do update set owner_id=excluded.owner_id,mode=excluded.mode;
  delete from public.social_journey_recipients where activity_id=p_activity;
- if p_mode='selected' then
+ if p_mode in ('selected','mixed') then
   insert into public.social_journey_recipients(activity_id,user_id)
    select p_activity, unnest(p_recipients) on conflict do nothing;
  end if;
