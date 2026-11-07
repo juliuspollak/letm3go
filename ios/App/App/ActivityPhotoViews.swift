@@ -7,6 +7,7 @@ struct PrivateThumbnail: View {
     let photoID: String
     let size: CGFloat
     let service: ActivityDetailsService
+    var model: ActivityDetailsViewModel? = nil
     @State private var image: UIImage?
     var body: some View {
         ZStack {
@@ -15,7 +16,7 @@ struct PrivateThumbnail: View {
             else { Image(systemName: "photo").foregroundColor(DetailStyle.muted) }
         }
         .task(id: photoID) {
-            let loaded = await service.thumbnail(photoID: photoID, size: size)
+            let loaded = await (model?.presentation.header.readOnly == true ? model?.photoImage(photoID, pixels: size) : service.thumbnail(photoID: photoID, size: size))
             if !Task.isCancelled { image = loaded }
         }
     }
@@ -29,7 +30,7 @@ struct ActivityMomentsSection: View {
             if let cover = ordered.first {
                 Button { model.showPhoto(cover.id) } label: {
                     GeometryReader { geometry in
-                        PrivateThumbnail(photoID: cover.id, size: 640, service: model.service)
+                        PrivateThumbnail(photoID: cover.id, size: 640, service: model.service, model: model)
                             .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                     }
                     .aspectRatio(16 / 10, contentMode: .fit)
@@ -41,7 +42,7 @@ struct ActivityMomentsSection: View {
                         LazyHStack(spacing: 8) {
                             ForEach(ordered.dropFirst()) { photo in
                                 Button { model.showPhoto(photo.id) } label: {
-                                    PrivateThumbnail(photoID: photo.id, size: 88, service: model.service)
+                                    PrivateThumbnail(photoID: photo.id, size: 88, service: model.service, model: model)
                                         .frame(width: 88, height: 88).clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 }.accessibilityLabel(photo.caption.isEmpty ? "Open photo" : "Open photo: \(photo.caption)")
                             }
@@ -91,6 +92,7 @@ private struct FullPhoto: View {
     let activityID: String
     let photoID: String
     let service: ActivityDetailsService
+    var model: ActivityDetailsViewModel? = nil
     @State private var image: UIImage?
     @State private var missing = false
     var body: some View {
@@ -101,7 +103,7 @@ private struct FullPhoto: View {
         }
         .task(id: photoID) {
             let pixels = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height) * UIScreen.main.scale * 1.5
-            let loaded = await service.fullImage(activityID: activityID, photoID: photoID, pixels: pixels)
+            let loaded = await (model?.presentation.header.readOnly == true ? model?.photoImage(photoID, pixels: pixels) : service.fullImage(activityID: activityID, photoID: photoID, pixels: pixels))
             if Task.isCancelled { return }
             image = loaded; missing = loaded == nil
         }
@@ -143,7 +145,7 @@ struct ActivityPhotoViewer: View {
             Color.black.ignoresSafeArea()
             TabView(selection: $current) {
                 ForEach(photos.ordered) { item in
-                    FullPhoto(activityID: model.presentation.activityID, photoID: item.id, service: model.service).tag(item.id)
+                    FullPhoto(activityID: model.presentation.activityID, photoID: item.id, service: model.service, model: model).tag(item.id)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .automatic))
@@ -151,7 +153,7 @@ struct ActivityPhotoViewer: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let photo {
                     if !photo.caption.isEmpty { Text(photo.caption).font(.subheadline).foregroundColor(.white) }
-                    Text("\(photo.locationSource) · Private").font(.caption).foregroundColor(.white.opacity(0.75))
+                    Text("\(photo.locationSource) · \(model.presentation.header.readOnly ? "Shared" : "Private")").font(.caption).foregroundColor(.white.opacity(0.75))
                     if photos.local {
                         HStack {
                             Button("Caption") { caption = photo.caption; editing = true }.buttonStyle(PhotoViewerButtonStyle())
