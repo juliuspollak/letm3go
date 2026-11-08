@@ -850,12 +850,12 @@ struct ActivityDetails: Codable {
     // Readings from a ride recorded before the Watch knew any account. Never shown or
     // counted until the person confirms they are theirs, and removed if they say not.
     var unverifiedHeartRate: ActivityHeartRate?
-    // Energy is local/private until an approved backup schema exists. Unverified
+    // Confirmed energy uses owner-private backup. Unverified
     // body ownership is quarantined independently of heart-rate confirmation.
     var energy: ActivityEnergy?
     var unverifiedEnergy: ActivityEnergy?
     // Durable source measurements after destructive route trim. Not rendered
-    // as calories for the resulting route subset and never cloud-backed up.
+    // as calories for the resulting route subset; backed up only owner-privately.
     var wholeWorkoutEnergy: ActivityEnergy?
     var unverifiedWholeWorkoutEnergy: ActivityEnergy?
     // Binding/revision/consent captured at import; used to validate late enrichment.

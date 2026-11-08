@@ -133,6 +133,8 @@ export function snapshotCurrent(trip, saved) {
    saved.visibleRouteEnd===(trip.visibleRouteEnd??null);
 }
 export function savedDistance(trip, metadata) {
+ const light=metadata?.distanceSummaries?.[trip.id];
+ if(light?.listOnly&&(trip.geometryLoaded===false||snapshotCurrent(trip,light)))return light.summary?{...light.summary,gaps:[],lines:[]}:null;
  const saved=metadata.distanceSummaries?.[trip.id];
  if(snapshotCurrent(trip,saved)) {
   if(!saved.summary)return null; // A complete recording with no GPS gaps.

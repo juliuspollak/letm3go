@@ -131,3 +131,16 @@ describe('rides through a segment',()=>{
   expect(report).not.toMatch(/-34\.|150\.9/);
  });
 });
+
+it('automatically matches an approved community segment without its creator recording, including after replacement',()=>{
+ const mine=ride('private-on-replacement',1000,[5]);
+ const geometry=mine.points.slice(0,121).map(p=>[p.latitude,p.longitude]);
+ const published={id:'public-123',name:'Community descent',geometry,direction:'forward',status:'approved',visibility:'public',version:1,creator_id:'another-user',updated_at:'2026-11-08T00:00:00Z'};
+ const result=segmentRides(mine,[mine],[published]);
+ expect(result).toHaveLength(1);expect(result[0]).toMatchObject({id:published.id,owned:false,thisRide:1,total:1,rideCount:1});
+ expect(result[0].passes.every(pass=>pass.activityID===mine.id)).toBe(true);
+ forgetSegmentRides();
+ expect(segmentRides(structuredClone(mine),[structuredClone(mine)],[JSON.parse(JSON.stringify(published))])).toEqual(result);
+ expect(segmentRides(mine,[mine],[{...published,status:'submitted',visibility:'private'}])).toEqual([]);
+ expect(segmentRides(mine,[mine],[{...published,direction:'reverse'}])).toEqual([]);
+});

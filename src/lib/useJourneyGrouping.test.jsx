@@ -259,3 +259,20 @@ it('retains completed enrichment durably so restarting does not repeat provider 
  expect(restarted.read().metadata.places[placeKey(trip.points[0])]).toBeDefined();
  expect(restarted.read().queue.places).toHaveLength(1);
 });
+
+it('does no provider work when completed history was evicted, even with no local enrichment values',async()=>{
+ const {createJourneySync}=await import('./journeyMetadataStore.js');
+ const sync=createJourneySync({owner:'owner',preferences:{},savePreferences:async()=>{},storage:{read:async()=>({}),commit:async()=>{}}});await sync.ready();
+ await sync.write(latest=>({metadata:{...latest.metadata,enrichFrom:0},cache:{...latest.cache,work:{a:{state:'done'}}}}));
+ const p=props();renderHook(()=>useJourneyGrouping({...p,sync,metadataValue:sync.read().metadata}));await act(async()=>{});
+ expect(mock.lookup).not.toHaveBeenCalled();expect(mock.road).not.toHaveBeenCalled();
+});
+it('processes a newly finalized recording even when the visible list is on another day',async()=>{
+ const {createJourneySync}=await import('./journeyMetadataStore.js');
+ const sync=createJourneySync({owner:'owner',preferences:{},savePreferences:async()=>{},storage:{read:async()=>({}),commit:async()=>{}}});await sync.ready();
+ await sync.write(latest=>({metadata:{...latest.metadata,enrichFrom:0}}));
+ mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ const p=props();renderHook(()=>useJourneyGrouping({...p,activities:[],processingActivities:[trip],sync,metadataValue:sync.read().metadata}));
+ await waitFor(()=>expect(sync.read().cache.work.a.state).toBe('done'));
+ expect(mock.lookup).toHaveBeenCalledTimes(1);expect(sync.read().queue.places).toHaveLength(1);
+});

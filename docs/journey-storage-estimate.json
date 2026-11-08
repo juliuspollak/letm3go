@@ -1,0 +1,44 @@
+{
+  "kind": "synthetic uncompressed JSON estimate; not observed user history",
+  "assumptions": {
+    "roadsPerActivity": 1,
+    "encodedRoadBytes": 65536,
+    "poiRecordsPerActivity": 8,
+    "poiDescriptionBytes": 500,
+    "gpsPointsPerActivity": 2000,
+    "globalDownloadBefore": "journey metadata only; raw GPS separate",
+    "normalPageRoots": 50,
+    "cacheActivities": 200,
+    "cacheBytes": 16777216,
+    "cacheExcludes": "pending writes, active context, unfinished enrichment, migration sources, essential control/work ledger; native originals remain safety archive"
+  },
+  "measured": {
+    "perActivityMetadataBytes": 71202,
+    "listRowBytes": 717,
+    "fiftyRawSummaryRowsBytes": 35901,
+    "oneRawGpsRouteBytes": 238001
+  },
+  "estimates": [
+    {
+      "activities": 1000,
+      "previousFullMetadataBytes": 71202241,
+      "previousRawGpsIfFullyRestoredBytes": 238001000,
+      "newNormalPageRawSummaryBytes": 35901,
+      "newOnDemandRawGpsPerOpenedRecordingBytes": 238001
+    },
+    {
+      "activities": 5000,
+      "previousFullMetadataBytes": 356010241,
+      "previousRawGpsIfFullyRestoredBytes": 1190005000,
+      "newNormalPageRawSummaryBytes": 35901,
+      "newOnDemandRawGpsPerOpenedRecordingBytes": 238001
+    },
+    {
+      "activities": 20000,
+      "previousFullMetadataBytes": 1424040241,
+      "previousRawGpsIfFullyRestoredBytes": 4760020000,
+      "newNormalPageRawSummaryBytes": 35901,
+      "newOnDemandRawGpsPerOpenedRecordingBytes": 238001
+    }
+  ]
+}

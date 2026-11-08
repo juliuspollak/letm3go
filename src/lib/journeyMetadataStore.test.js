@@ -4,7 +4,7 @@
 // while offline survive a restart.
 import {describe,it,expect} from 'vitest';
 import {emptyGrouping} from './journeyGrouping.js';
-import {applyChanges,groupingChanges,missingRecords} from './journeyMetadata.js';
+import {applyChanges,describeGrouping,groupingChanges,missingRecords} from './journeyMetadata.js';
 import {APPLY_FUNCTION,REVISION_FUNCTION,SNAPSHOT_FUNCTION,createJourneySync,emptyStatus,encodeQueue,localMetadata,readQueue,readStatus,runJourneySync} from './journeyMetadataStore.js';
 const OWNER='owner-1';
 const EDGE=JSON.stringify(['a','b']);
@@ -38,7 +38,18 @@ function fakeCloud({metadata=emptyGrouping(OWNER),revision=1,legacy=null}={}){
    async rpc(name,args){
     state.requests.push(name);
     if(name===REVISION_FUNCTION)return {data:state.revision,error:null};
-    if(name===SNAPSHOT_FUNCTION)return {data:{...structuredClone(state.metadata),revision:state.revision,updatedAt:'2026-01-01T00:00:00.000Z'},error:null};
+    if(name===SNAPSHOT_FUNCTION){
+     if(args.p_refs){
+      const refs=args.p_refs,described=describeGrouping(state.metadata),changes={};
+      for(const name of ['activities','summaries','stops'])changes[name]=[...described[name].values()].filter(item=>refs.includes(item.ref));
+      changes.pairs=[...described.pairs.values()].filter(item=>refs.includes(item.left)||refs.includes(item.right));
+      changes.roads=args.p_detail_refs?.length?[...described.roads.values()].filter(item=>args.p_detail_refs.some(id=>item.ref.startsWith(id+':'))):[];
+      changes.places=[...described.places.values()].filter(item=>(args.p_place_refs||[]).includes(item.ref));
+      const metadata=applyChanges(emptyGrouping(OWNER),changes);metadata.enrichFrom=state.metadata.enrichFrom;
+      return {data:{...metadata,scope:refs,details:args.p_detail_refs||[],complete:true,recordsExist:Object.values(described).some(value=>value instanceof Map&&value.size),activityRows:[],invalidations:[],next:null,atRevision:state.revision,revision:state.revision},error:null};
+     }
+     return {data:{...structuredClone(state.metadata),revision:state.revision,updatedAt:'2026-01-01T00:00:00.000Z'},error:null};
+    }
     if(name===APPLY_FUNCTION){
      if(args.p_expected_revision!==null&&args.p_expected_revision!==state.revision)return {data:null,error:{message:'Cloud settings conflict; reload before overwriting'}};
      const replaced=overwritten(state.metadata,args.p_changes);
@@ -306,7 +317,8 @@ describe('transactional per-record device storage',()=>{
   await restarted.flush();
   expect(restarted.read().queue).toEqual({});expect(Object.keys(restarted.read().metadata.roads)).toHaveLength(900);
   expect(Object.keys(cloud.state.metadata.titles)).toHaveLength(5000);
- });
+  expect(Object.keys(restarted.read().metadata.titles).length).toBeLessThanOrEqual(200);
+ },30000);
  it('serializes overlapping writes and preserves edits made during a commit',async()=>{
   const storage=disk(),sync=createJourneySync({owner:OWNER,preferences:{},savePreferences:()=>{},storage});await sync.ready();
   await Promise.all(['a','b','c'].map(ref=>sync.write(latest=>({queue:{activities:[...(latest.queue.activities||[]),activity(ref,ref)]}}))));
@@ -317,7 +329,9 @@ describe('transactional per-record device storage',()=>{
   storage.fail=true;
   const sync=createJourneySync({owner:OWNER,preferences,savePreferences,storage});
   await expect(sync.ready()).rejects.toThrow('Disk full');expect(preferences.journeyGrouping).not.toBeNull();
-  storage.fail=false;await sync.ready();expect(sync.read().metadata.titles.a).toBe('Morning drive');expect(preferences.journeyGrouping).toBeNull();
+  storage.fail=false;await sync.ready();expect(sync.read().metadata.titles.a).toBe('Morning drive');expect(preferences.journeyGrouping).not.toBeNull();
+  const cloud=fakeCloud();await runJourneySync({client:cloud.client,owner:OWNER,...sync});
+  expect(preferences.journeyGrouping).toBeNull();
  });
  it('refuses to erase a corrupt pending queue',async()=>{
   const storage=disk(),preferences={journeyMetadataQueue:'not JSON'},saves=[];

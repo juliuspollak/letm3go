@@ -55,8 +55,9 @@ export default function AutoCloudSync({state,journeySync=null}){
      return {receipts:next};
     });
     if(!journeysOnly){
-     const trips=await syncPrivateActivities(supabase,recordings,receipts,{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
+     const trips=await syncPrivateActivities(supabase,recordings,receipts,{maxActivities:20,checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
      receipts=trips.receipts;
+     if(trips.pending)failure=failure||new Error('Activity backup continues in the next batch.');
      if(alive)await user.savePreferences({syncReceipts:receipts,lastBackup:trips.lastSync});
     }
     if(failure)throw failure;

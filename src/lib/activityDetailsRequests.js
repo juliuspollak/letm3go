@@ -18,6 +18,11 @@ const trailDistance=m=>Number.isFinite(m)?(m>=1000?`${(m/1000).toFixed(1)} km`:`
 // reply always reflects the current account and activity. Every operation here is
 // the one the React screen calls.
 export const activityDetailsRequests={
+ async sharedPhoto({client,trip},{photoID}){
+  if(trip.source!=='cloud'||!trip.photos?.some(photo=>photo.id===photoID))throw new Error('Photo unavailable.');
+  const {data,error}=await client.functions.invoke('journeys',{body:{action:'download',id:trip.id,mediaID:photoID}});
+  if(error||!data?.url)throw new Error('Saved photo is unavailable.');return {url:data.url};
+ },
  // The Share sheet: who can see this activity now, and who it could be shared
  // with. The database is the authority for both (my_activity_sharing).
  async privacyStatus({client,trip}){

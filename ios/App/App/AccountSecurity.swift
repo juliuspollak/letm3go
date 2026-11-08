@@ -79,6 +79,7 @@ struct SyncReceipt: Codable {
     // The activity's updatedAt when it was backed up: an unchanged activity is not
     // serialised and hashed again on the next backup.
     var updatedAt: Double?
+    var backupVersion: Int?
 }
 struct LocalVehicle: Codable {
     var source: String?
@@ -263,7 +264,7 @@ extension LocationRecorder {
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
-              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.journeyMetadataQueue?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
+              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.journeyMetadataQueue?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 100_000,
               (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
               updated.vehicles.allSatisfy({ vehicle in
                 let category = vehicle.category ?? "car"

@@ -1,3 +1,4 @@
+import {usePublicSegments} from '../lib/usePublicSegments.js';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
@@ -45,12 +46,13 @@ export default function NativeActivityDetail(props){
  const metadata=grouping?.metadata,destinations=grouping?.destinations,groupedJourneys=grouping?.journeys;
  // Looked up just after opening, so a long history never delays the screen.
  const library=journeys||activities||NONE;
+ const community=usePublicSegments(sharedReadOnly?null:trip);
  const [ridden,setRidden]=useState(NO_SEGMENTS);
  useEffect(()=>{
   if(sharedReadOnly){queueMicrotask(()=>setRidden(NO_SEGMENTS));return;}
-  const timer=setTimeout(()=>setRidden({rows:segmentRides(trip,library),nearby:nearbySegmentLayers(trip,library),report:segmentMatchReport(trip,library)}),0);
+  const timer=setTimeout(()=>setRidden({rows:segmentRides(trip,library,community.segments),nearby:nearbySegmentLayers(trip,library),report:segmentMatchReport(trip,library)}),0);
   return()=>clearTimeout(timer);
- },[trip,library,sharedReadOnly]);
+ },[trip,library,sharedReadOnly,community.segments]);
  const presentation=useMemo(()=>activityPresentation(trip,{ownerID,segmentRides:ridden.rows,segmentReport:ridden.report,nearbySegments:ridden.nearby,editSegmentID,places,vehicles,grouping:metadata?{metadata,destinations,journeys:groupedJourneys}:null,unit,maximumHeartRate,selectedPhotoID,canOpenActivities:Boolean(onSource)}),[trip,ownerID,ridden,editSegmentID,places,vehicles,metadata,destinations,groupedJourneys,unit,maximumHeartRate,selectedPhotoID,onSource]);
  // Native requests read the current account, activity and callbacks when they run.
  const context=useRef(null);
@@ -107,14 +109,14 @@ export default function NativeActivityDetail(props){
 
  const sent=useRef('');
  useEffect(()=>{
-  const key=JSON.stringify(presentation);
+  const key=JSON.stringify([presentation,community.error]);
   if(key===sent.current)return;
   sent.current=key;
-  const message={...presentation,revision:++session.revision};
+  const message={...presentation,notices:[...(presentation.notices||[]),...(community.error?[{id:'public-segments',tone:'info',text:community.error}]:[])],revision:++session.revision};
   if(session.open){void nativeDetails.update(message).catch(()=>{});return;}
   session.open=true;
   void nativeDetails.present(message).catch(error=>{session.open=false;setFailure(error?.message||'This activity could not be opened.');});
- },[presentation]);
+ },[presentation,community.error]);
 
  if(failure)return <div className="notice" role="alert"><p>{failure}</p><button type="button" className="secondary" onClick={onBack}>Back to activities</button></div>;
  return <div className="native-activity-detail" aria-hidden="true"/>;

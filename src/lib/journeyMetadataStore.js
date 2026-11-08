@@ -1,11 +1,10 @@
-// The sync engine behind journey grouping. The preferences file keeps a mirror so
-// the grouping screen opens instantly and works offline; the records in Postgres are
-// the record of truth. Every write is a set of record values keyed by domain and
-// applied by the same reducer on both sides, so a retried, duplicated or reordered
-// write converges instead of clobbering another device.
+// One sync engine for durable pending writes and selective journey context.
+// Supabase owns confirmed history; encrypted SQLite/IndexedDB retain active scopes,
+// offline decisions and enrichment work. Preferences are a legacy import source.
+import {cachedScope,emptyJourneyCache,invalidateJourneyCache,mergeScope,recordActivityRefs,trimJourneyCache} from './journeyCache.js';
 import {journeyDurableStorage} from './journeyDurableStorage.js';
 import {emptyGrouping,parseGrouping,validateGrouping} from './journeyGrouping.js';
-import {assertLosslessGrouping,applyChanges,changesEmpty,clearPushed,rebaseChanges,mergeChanges,missingRecords,migrationChanges,recordCounts} from './journeyMetadata.js';
+import {assertLosslessGrouping,applyChanges,changesEmpty,clearPushed,groupingChanges,rebaseChanges,mergeChanges,missingRecords,migrationChanges,recordCounts} from './journeyMetadata.js';
 export const QUEUE_VERSION=1;
 export const SNAPSHOT_FUNCTION='journey_metadata_snapshot';
 export const APPLY_FUNCTION='journey_apply_changes';
@@ -67,7 +66,7 @@ export function readJourneyState(preferences,owner){
 const MIRROR_LISTS=['links','cuts','sourceLinks','history'];
 const MIRROR_MAPS=['titles','types','manualTags','hiddenTags','enriched','stopEdits','places','roads','distanceSummaries'];
 export function journeyRows(state){
- const rows={control:{format:2,status:state.status,dropped:state.dropped,readable:state.metadata!==null,enrichFrom:state.metadata?.enrichFrom??null}};
+ const rows={control:{format:2,status:state.status,dropped:state.dropped,readable:state.metadata!==null,enrichFrom:state.metadata?.enrichFrom??null,cache:state.cache?{active:state.cache.active,migrationRequired:state.cache.migrationRequired}:null}};
  // Keep raw legacy values on disk too. Conversion/validation must never erase the
  // only copy of a record a future build might need to recover.
  if(state.metadata)for(const field of [...MIRROR_MAPS,...MIRROR_LISTS]){
@@ -75,36 +74,46 @@ export function journeyRows(state){
  }
  for(const domain of DOMAINS)for(const item of state.queue?.[domain]||[])
   rows[JSON.stringify(['queue',domain,domain==='pairs'?[item.relation,...[item.left,item.right].sort()]:item.ref])]=item;
+ for(const place of state.savedPlaces||[])rows[JSON.stringify(['savedPlace',place.id])]=place;
+ for(const [ref,value] of Object.entries(state.activityRows||{}))rows[JSON.stringify(['activityRows',ref])]=value;
+ for(const kind of ['scopes','work','pages'])for(const [ref,value] of Object.entries(state.cache?.[kind]||{}))rows[JSON.stringify([kind,ref])]=value;
  if(Number.isFinite(state.queue?.enrichFrom))rows.queueEnrichFrom=state.queue.enrichFrom;
  return rows;
 }
 export function stateFromJourneyRows(rows,owner){
  if(rows.control?.format!==2||rows.control.status?.owner!==owner)throw new Error('Journey storage is incomplete or belongs to another account. Existing records were preserved.');
- const metadata=rows.control.readable?emptyGrouping(owner):null,queue={};
+ const metadata=rows.control.readable?emptyGrouping(owner):null,queue={},activityRows={},savedPlaces=[],cache={...emptyJourneyCache(),...rows.control.cache};
  for(const [key,value] of Object.entries(rows)){
   if(!key.startsWith('['))continue;
   const [scope,domain,ref]=JSON.parse(key);
+  if(scope==='savedPlace'){savedPlaces.push(value);continue;}
+  if(scope==='activityRows'){activityRows[domain]=value;continue;}
+  if(['scopes','work','pages'].includes(scope)){cache[scope][domain]=value;continue;}
   if(scope==='mirror'&&metadata&&[...MIRROR_MAPS,...MIRROR_LISTS].includes(domain))metadata[domain][ref]=value;
   else if(scope==='queue'&&DOMAINS.includes(domain))(queue[domain]??=[]).push(value);
   else throw new Error('Unrecognized journey record. Existing records were preserved.');
  }
  if(Number.isFinite(rows.queueEnrichFrom))queue.enrichFrom=rows.queueEnrichFrom;
  if(metadata)metadata.enrichFrom=rows.control.enrichFrom;
- return {metadata,queue,status:rows.control.status,dropped:rows.control.dropped||{}};
+ if(!rows.control.cache){cache.migrationRequired=!rows.control.status?.migratedAt&&recordTotal(metadata)>0;for(const [ref,at] of Object.entries(metadata?.enriched||{}))cache.work[ref]={state:'done',at};}
+ return {metadata,queue,status:rows.control.status,dropped:rows.control.dropped||{},cache,activityRows,savedPlaces};
 }
 export function createJourneySync({owner,preferences=null,savePreferences,storage=journeyDurableStorage(owner)}){
  let state=readJourneyState(preferences,owner),rows={},tail=Promise.resolve(),lastWrite=null,started=false,version=0;
+ let requested={refs:[],details:[]};
  const listeners=new Set(),notify=()=>{version++;for(const listener of listeners)listener();};
- let ready;
+ let ready,legacyCleared=false;
+ const cleanupLegacy=async()=>{if(!legacyCleared&&state.status?.migratedAt&&!state.cache?.migrationRequired&&changesEmpty(state.queue)){await savePreferences({journeyGrouping:null,journeyMetadataQueue:null,journeyMetadata:null});legacyCleared=true;}};
  const initialize=async()=>{
   started=true;
   const stored=await storage.read();
   if(Object.keys(stored).length){state=stateFromJourneyRows(stored,owner);rows=stored;}
   else {if(state.storageError)throw new Error(state.storageError);const initial=journeyRows(state);await storage.commit(Object.entries(initial).map(([key,value])=>({key,value})));rows=initial;}
+  if(!state.cache){const cache=emptyJourneyCache();cache.migrationRequired=!state.status?.migratedAt&&(recordTotal(state.metadata)>0||!changesEmpty(state.queue));for(const [ref,at] of Object.entries(state.metadata?.enriched||{}))cache.work[ref]={state:'done',at};state={...state,cache};}
   notify();
   // Only clear legacy preferences after the complete transaction is durable. A
   // failure here leaves the old file intact and can be retried without reimporting.
-  if(state.metadata!==null)await savePreferences({journeyGrouping:null,journeyMetadataQueue:null,journeyMetadata:null});
+  await cleanupLegacy();
   return state;
  };
  const ensureReady=()=>ready??=(Promise.resolve().then(initialize).catch(error=>{
@@ -115,6 +124,8 @@ export function createJourneySync({owner,preferences=null,savePreferences,storag
   getSnapshot:()=>version,
   subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
   ready:ensureReady,
+  scope:()=>requested,
+  configureScope(refs,details=[]){requested={refs:[...new Set(refs)],details:[...new Set(details)]};},
   write(patch){
    const operation=async()=>{
     await ensureReady();
@@ -122,7 +133,7 @@ export function createJourneySync({owner,preferences=null,savePreferences,storag
     for(const [key,value] of Object.entries(wanted))if(rows[key]!==value&&JSON.stringify(rows[key])!==JSON.stringify(value))operations.push({key,value});
     for(const key of Object.keys(rows))if(!Object.hasOwn(wanted,key))operations.push({key,remove:true});
     await storage.commit(operations);
-    rows=wanted;state=next;notify();return state;
+    rows=wanted;state=next;notify();await cleanupLegacy();return state;
    };
    const result=tail.then(operation,operation);tail=result.catch(()=>{});lastWrite=result;return result;
   },
@@ -272,7 +283,8 @@ export async function migrateJourneyMetadata({client,owner,read,write,now=Date.n
  await write(latest=>{
   const remaining=clearPushed(latest.queue,queued);
   const effective=applyChanges({...verified.metadata,history:latest.metadata?.history||source.history},remaining);
-  return {metadata:effective,queue:remaining,dropped:{},
+  const cache=latest.cache?{...latest.cache,migrationRequired:false,work:{...latest.cache.work,...Object.fromEntries(Object.entries(effective.enriched||{}).map(([id,at])=>[id,{state:'done',at}]))}}:undefined;
+  return {metadata:effective,queue:remaining,dropped:{},...(cache?{cache}:{}),
    status:{owner,revision:verified.revision??pushed.revision,migratedAt:now(),state:'active',error:null,conflicts:reported,updatedAt:verified.updatedAt??null}};
  });
  return {state:'active',conflicts:reported};
@@ -290,7 +302,8 @@ async function pullJourneyMetadata({client,owner,write},revision){
  });
  return snapshot.revision??revision;
 }
-export async function flushJourneyMetadata({client,owner,read,write,now=Date.now}){
+export async function flushJourneyMetadata({client,owner,read,write,scope,now=Date.now}){
+ if(scope)return flushScopedJourneyMetadata({client,owner,read,write,scope,now});
  const status=read().status??emptyStatus(owner);
  let revision=status.revision,conflicts=null;
  // One cheap call decides whether anything changed at all, so an idle device does not
@@ -322,7 +335,7 @@ export async function flushJourneyMetadata({client,owner,read,write,now=Date.now
  }
  return {state:'active',revision};
 }
-export async function runJourneySync({client,owner,read,write,ready,now=Date.now}){
+export async function runJourneySync({client,owner,read,write,ready,scope,now=Date.now}){
  if(ready)await ready();
  if(!client||!owner)return {state:'idle'};
  const status=read().status??emptyStatus(owner);
@@ -330,11 +343,103 @@ export async function runJourneySync({client,owner,read,write,ready,now=Date.now
   // A device whose own copy cannot be read is not abandoned: another device may upload
   // the records later, and the migration path adopts them. Only a device with nothing
   // readable anywhere stays in recoveryRequired, and it never replaces its own copy.
-  if(status.migratedAt)return await flushJourneyMetadata({client,owner,read,write});
+  if(scope&&!read().cache?.migrationRequired)return await flushJourneyMetadata({client,owner,read,write,scope,now});
+  if(status.migratedAt)return await flushJourneyMetadata({client,owner,read,write,scope,now});
   return await migrateJourneyMetadata({client,owner,read,write,now});
  }catch(error){
   const failure=message(error);
   await write({status:{...read().status,state:'offline',error:failure}});
   return {state:'offline',error:failure};
  }
+}
+
+// The runtime snapshot overload returns one requested relationship context, never
+// the account history. The original RPC shape is retained only for legacy import.
+export async function loadJourneyScope(client,owner,refs,details=[],placeRefs=[],request={}){
+ const {data,error}=await client.rpc(SNAPSHOT_FUNCTION,{p_owner:owner,p_refs:refs,p_detail_refs:details,p_place_refs:placeRefs,p_geometry:details.length>0,...request});
+ if(error)throw new Error(error.message);
+ const {unavailableRefs=[],savedPlaces,activityRows=[],pageRefs,nextActivity,recordsExist,scope,details:loadedDetails,invalidations:_i,next:_n,atRevision:_a,complete,revision,updatedAt,...raw}=data||{};
+ void _i;void _n;void _a;
+ const metadata=validateGrouping(raw,owner);
+ if(!metadata||!Array.isArray(scope)||complete!==true)throw new Error('Saved journey context is unavailable or incomplete.');
+ return {metadata,scope,details:loadedDetails||[],revision,updatedAt,activityRows,pageRefs,nextActivity,recordsExist,savedPlaces,unavailableRefs};
+}
+function scopedChanges(changes,refs){
+ const ids=new Set(refs),subset={};
+ for(const name of DOMAINS){
+  const items=(changes?.[name]||[]).filter(item=>recordActivityRefs({[name]:[item]}).some(id=>ids.has(id)));
+  if(items.length)subset[name]=items;
+ }
+ return subset;
+}
+export function rebaseJourneyScope(state,fetched,refs,details=[]){
+ const subset=scopedChanges(state.queue,fetched.scope),rebased=rebaseChanges(subset,fetched.metadata);
+ if(rebased.conflicts.length)throw new Error(`Conflicting journey fields on another device: ${rebased.conflicts.map(item=>`${item.ref}.${item.field}`).join(', ')}. Both local and cloud versions are preserved.`);
+ const queue=mergeChanges(clearPushed(state.queue,subset),rebased.changes);
+ return mergeScope({...state,queue},fetched,refs,details);
+}
+export async function ensureJourneyScope({client,owner,read,write},refs,details=[],{force=false}={}){
+ if(!force&&cachedScope(read(),refs,details))return;
+ const fetched=await loadJourneyScope(client,owner,refs,details);
+ await write(latest=>rebaseJourneyScope(latest,fetched,refs,details));
+ return fetched;
+}
+async function readJourneyInvalidations({client,owner,read,write},head){
+ let cursor=null,at=head;
+ do{
+  const {data,error}=await client.rpc(SNAPSHOT_FUNCTION,{p_owner:owner,p_refs:[],p_since_revision:read().status.cursorRevision??read().status.revision??0,p_cursor:cursor,p_at_revision:at});
+  if(error)throw new Error(error.message);
+  if(!Array.isArray(data?.invalidations))throw new Error('Journey changes could not be read.');
+  at=data.atRevision;cursor=data.next;
+  await write(latest=>invalidateJourneyCache(latest,data.invalidations));
+  if(data.invalidations.some(item=>item.domain==='savedPlaces')){const control=await loadJourneyScope(client,owner,[],[]);await write({savedPlaces:control.savedPlaces||[]});}
+ }while(cursor);
+ await write(latest=>({status:{...latest.status,cursorRevision:at,revision:at}}));
+}
+async function flushScopedJourneyMetadata(context){
+ const {client,owner,read,write,scope,now}=context;
+ const requested=scope();
+ let head=await loadRevision(client,owner);
+ if(!read().status.migratedAt){
+  const control=await loadJourneyScope(client,owner,[],[]);
+  if(!control.recordsExist){
+   const legacy=await readLegacyBlob(client,owner);
+   if(legacy){const metadata=parseGrouping(legacy,owner);if(!metadata)throw new Error('Legacy cloud journey data could not be read.');await write(latest=>({metadata:applyChanges(metadata,latest.queue),cache:{...latest.cache,migrationRequired:true}}));return migrateJourneyMetadata(context);}
+  }
+  await write(latest=>({savedPlaces:control.savedPlaces||latest.savedPlaces,metadata:{...latest.metadata,enrichFrom:control.metadata.enrichFrom??latest.metadata?.enrichFrom},queue:Number.isFinite(control.metadata.enrichFrom)?Object.fromEntries(Object.entries(latest.queue).filter(([key])=>key!=='enrichFrom')):latest.queue,status:{...latest.status,revision:head,cursorRevision:head,migratedAt:now(),state:'active',error:null}}));
+ }else if(head===null&&read().status.revision!==null){
+  throw new Error('Cloud journey history is unavailable. Cached data and pending work were preserved; restore the cloud project before syncing.');
+ }else if(head!==(read().status.cursorRevision??read().status.revision))await readJourneyInvalidations(context,head);
+ await write(latest=>({cache:{...latest.cache,active:requested.refs}}));
+ // Empty scope still fetches the account cutoff once, but no roads or POI data.
+ if(requested.refs.length)await ensureJourneyScope(context,requested.refs,requested.details);
+ for(let attempt=0;attempt<2;attempt++){
+  const pending=read().queue;
+  if(changesEmpty(pending))break;
+  try{
+   for(const sent of chunkChanges(pending).flatMap(chunk=>recordActivityRefs({roads:chunk.roads,summaries:chunk.summaries}).length>50?chunkChanges(chunk,{maxRecords:50}):[chunk])){
+    const refs=recordActivityRefs(sent);
+    let revision=read().status.revision;
+    if(refs.length){const fetched=await ensureJourneyScope(context,refs,[],{force:true});revision=fetched.revision;}
+    const actual={};
+    for(const domain of DOMAINS){const matching=(read().queue[domain]||[]).filter(item=>(sent[domain]||[]).some(old=>domain==='pairs'?old.relation===item.relation&&old.left===item.left&&old.right===item.right:old.ref===item.ref));if(matching.length)actual[domain]=matching;}
+    // Derived places and the once-per-account cutoff have no activity identity.
+    if(sent.places)actual.places=sent.places;
+    if(Number.isFinite(sent.enrichFrom))actual.enrichFrom=sent.enrichFrom;
+    const pushed=await pushAll(client,owner,actual,revision);
+    // Read back this bounded context before releasing pending derived results.
+    if(refs.length||actual.places?.length){
+     const confirmed=await loadJourneyScope(client,owner,refs,recordActivityRefs({roads:actual.roads,summaries:actual.summaries}),(actual.places||[]).map(item=>item.ref),{p_geometry:false});
+     if(!changesEmpty(groupingChanges(confirmed.metadata,applyChanges(confirmed.metadata,actual))))throw new Error('Journey upload could not be verified. Pending records were preserved.');
+    }
+    await write(latest=>({queue:clearPushed(latest.queue,actual),status:{...latest.status,revision:pushed.revision,state:'active',error:null}}));
+   }
+   break;
+  }catch(error){
+   if(attempt||!/conflict/i.test(message(error)))throw error;
+   head=await loadRevision(client,owner);await readJourneyInvalidations(context,head);
+  }
+ }
+ await write(latest=>trimJourneyCache({...latest,status:{...latest.status,state:'active',error:null}}));
+ return {state:'active',revision:read().status.revision};
 }

@@ -407,3 +407,14 @@ export function effortStats(efforts) {
  const last = elapsed[elapsed.length - 1];
  return {count, best, average, last};
 }
+
+// Community definitions contain geometry only. Reuse the exact reference builder
+// and matcher without inventing a private source activity or publishing GPS times.
+export function publicSegmentDefinition(segment,{reverse=false}={}){
+ if(segment?.status!=='approved'||segment?.visibility!=='public'||!Array.isArray(segment.geometry))return null;
+ const geometry=reverse?[...segment.geometry].reverse():segment.geometry;
+ const points=geometry.map(([latitude,longitude],timestamp)=>({latitude,longitude,timestamp}));
+ const definition=segmentDefinition({id:segment.id+(reverse?':reverse':''),ownerID:segment.creator_id,name:segment.name,trip:{points},start:0,end:points.length-1,saved:true});
+ if(!definition)return null;
+ delete definition.source;return {...definition,public:true};
+}

@@ -61,9 +61,9 @@ describe('segment rules (mirroring NamedSegmentCore.swift)',()=>{
 });
 
 describe('cloud backup of segments',()=>{
- it('stays off until the migration is applied, and never sends a geometry copy',async()=>{
+ it('backs up private references with the required migration, and never sends a geometry copy',async()=>{
   const {NAMED_SEGMENT_BACKUP,backupSegments}=await import('./cloudSync.js');
-  expect(NAMED_SEGMENT_BACKUP).toBe(false);
+  expect(NAMED_SEGMENT_BACKUP).toBe(true);
   const out=backupSegments([{...saved('a1b2c3d4-0000-4000-8000-000000000001','A',2,12),geometry:[[[1,2],[3,4]]],visibility:'public'},saved('short','B',2,12)]);
   expect(out).toHaveLength(1);
   expect(out[0].geometry).toBeUndefined();

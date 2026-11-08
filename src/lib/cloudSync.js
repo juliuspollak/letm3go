@@ -1,22 +1,13 @@
+import {sliceActivityRoute} from './mtbSegment.js';
 import {backupClassification} from './stopBackup.js';
 import {resolvePhoto} from './privateMedia.js';
-// Explicit foreground backup. Native records remain authoritative and durable.
-// This is not a download/reconciliation service or a background sync scheduler.
-// Presentation metadata includes the trimmed route window, recognised places and
-// chosen cover photo. Stop annotations travel in the existing classification
-// JSONB field; transient motion evidence and provisional state remain local.
-// Named segments are backed up with their activity once the database accepts
-// them (migration 20261107000000_activity_named_segments.sql). Until that
-// migration is applied, sending them would make every backup of a segmented
-// activity fail the view_metadata check, so they stay on the iPhone only.
-export const NAMED_SEGMENT_BACKUP=false;
-// Apple Watch rides are backed up too: they are the user's own recordings,
-// imported into this account only after the watch-ownership check. Until the
-// same migration allows recording_mode 'watch', they are sent as 'manual' (a
-// recording the user started), which the current schema accepts; a restore then
-// shows them as iPhone recordings. Same id either way, so enabling this later
-// updates the row instead of duplicating it.
-export const WATCH_MODE_BACKUP=false;
+// Owner-private permanent activity backup. Local originals stay durable until
+// confirmation. Requires the existing named-segment/Watch schema migration;
+// community MTB publication is a separate, moderated selected-geometry proposal.
+export const PRIVATE_BACKUP_VERSION=2;
+export const NAMED_SEGMENT_BACKUP=true;
+// Ownership-confirmed Watch recordings retain their provenance on replacement.
+export const WATCH_MODE_BACKUP=true;
 export const BACKED_UP_SOURCES=['device','watch'];
 export function cloudRecordingMode(trip){
  if(trip.source==='watch')return WATCH_MODE_BACKUP?'watch':'manual';
@@ -38,13 +29,13 @@ function viewMetadata(details){
  if(NAMED_SEGMENT_BACKUP&&segments.length)out.namedSegments=segments;
  return out;
 }
-export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto}={}){
+export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity}={}){
  const {data,error}=await client.auth.getUser();if(error||!data.user)throw new Error('Sign in before backing up.');
  const owner=data.user.id;
  if(state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('Backup account does not match the native recordings.');
  if(!cryptoImpl.subtle)throw new Error('Secure backup hashing is unavailable on this device.');
  const hash=async value=>Array.from(new Uint8Array(await cryptoImpl.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)))),b=>b.toString(16).padStart(2,'0')).join('');
- const updated={...receipts};let uploaded=0,deleted=0;
+ const updated={...receipts};let uploaded=0,deleted=0,processed=0,pending=false;
  const acknowledge=async()=>checkpoint({...updated});
  for(const id of state.deletedIDs||[]){
   const receipt=updated[id];if(receipt&&receipt.owner!==owner)throw new Error('Backup receipts belong to another account.');
@@ -72,15 +63,30 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(!finished(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   // Unchanged since its last backup: not serialised or hashed again.
-  if(previous&&!previous.deleted&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
+  if(previous&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
+  if(processed>=maxActivities){pending=true;break;}processed++;
   const details=trip.details||{};
-  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification(details,trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
+  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
-  if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,updatedAt:trip.updatedAt};}continue;}
+  if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}continue;}
   const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
-  updated[trip.id]={owner,fingerprint,revision,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
+  updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
+ }
+ // Public MTB definitions are proposals in the existing moderation system.
+ // Native section IDs are durable idempotency keys; retrying cannot duplicate one.
+ for(const trip of state.trips||[]){
+  if(!finished(trip)||trip.activity!=='MTB'||updated[trip.id]?.backupVersion!==PRIVATE_BACKUP_VERSION)continue;
+  for(const segment of trip.details?.namedSegments||[]){
+   const key=`mtb-segment:${segment.id}`;
+   if(updated[key]?.owner===owner&&updated[key]?.uploaded)continue;
+   const selection=sliceActivityRoute(trip.points,segment.startIndex,segment.endIndex);
+   if(!selection)throw new Error('MTB segment geometry could not be saved. The original recording is preserved.');
+   const {data,error}=await client.rpc('create_mtb_segment',{p_client_id:segment.id,p_name:segment.name,p_geometry:selection.geometry.map(([lat,lon])=>[lat,lon]),p_distance_meters:selection.distanceMeters,p_direction:'both',p_access:'unknown'});
+   if(error||data!==segment.id)throw new Error('MTB segment submission was not confirmed. It remains on this device for retry.');
+   updated[key]={owner,uploaded:true};await acknowledge();
+  }
  }
  let photosUploaded=0;
  for(const trip of state.trips||[]){
@@ -107,5 +113,5 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
   }
  }
- return {receipts:updated,uploaded,photosUploaded,deleted,lastSync:new Date().toISOString()};
+ return {receipts:updated,uploaded,photosUploaded,deleted,pending,lastSync:new Date().toISOString()};
 }

@@ -4,9 +4,10 @@ import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {buildJourneys,changeGrouping,emptyGrouping,placeKey,parseGrouping,validateGrouping,internalStops,nativeStops} from './journeyGrouping.js';
 import {applyChanges,groupingChanges,mergeChanges} from './journeyMetadata.js';
 import {recorder,recorderAvailable} from './recorder.js';
+import {scopeKey} from './journeyCache.js';
 import {STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
 import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,estimatedDistance,distanceSnapshot,ROAD_CACHE_BYTES,ROAD_VERSION} from './gapReconstruction.js';
-export function useJourneyGrouping({owner,activities,places,vehicles,serialized,metadataValue,savePreferences,telemetry=[],sync=null}){
+export function useJourneyGrouping({owner,activities,processingActivities=activities,places,vehicles,serialized,metadataValue,savePreferences,receipts={},telemetry=[],sync=null}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const parsed=useMemo(()=>metadataValue===undefined?parseGrouping(serialized,owner):metadataValue,[serialized,owner,metadataValue]);
  const metadata=useMemo(()=>parsed??emptyGrouping(owner),[parsed,owner]);
@@ -39,6 +40,15 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
   const result=queue.current.then(operation,operation);queue.current=result.catch(()=>{});return result;
  },[owner,savePreferences,sync]);
  const reconciled=useMemo(()=>reconcileSources(activities,{owner,vehicles,links:metadata.sourceLinks||[]}),[activities,owner,vehicles,metadata.sourceLinks]);
+ // Save already-confirmed source associations using the existing pair records.
+ // A replacement phone can reuse the decision without downloading both GPS routes.
+ const sourceLinks=JSON.stringify(reconciled.activities.filter(t=>t.isReconciled&&t.sourceRecords?.every(source=>source.geometryLoaded!==false)).flatMap(t=>t.sourceRecords.slice(1).map(source=>[t.sourceRecords[0].id,source.id].sort())));
+ useEffect(()=>{
+  if(!sync?.scope)return;
+  const links=JSON.parse(sourceLinks);if(!links.length)return;
+  const missing=links.filter(pair=>!current.current.sourceLinks.some(old=>JSON.stringify([...old].sort())===JSON.stringify(pair)));
+  if(missing.length)void persist(meta=>({...meta,sourceLinks:[...new Map([...meta.sourceLinks,...missing].map(pair=>[JSON.stringify([...pair].sort()),pair])).values()]})).catch(error=>setError(error.message));
+ },[sourceLinks,sync,persist]);
  const model=useMemo(()=>{const own=buildJourneys(reconciled.activities,{owner,metadata,places,vehicles,telemetry,projectionCache:projectionCache.values});const shared=reconciled.activities.filter(t=>t.ownerID&&t.ownerID!==owner&&t.sharedToHousehold);const publicPlaces=Object.fromEntries(Object.entries(metadata.places).filter(([,p])=>p.source==='apple-geocoder-mapkit'));const sharedJourneys=[...new Set(shared.map(t=>t.ownerID))].flatMap(sharedOwner=>buildJourneys(shared.filter(t=>t.ownerID===sharedOwner),{owner:sharedOwner,metadata:{...emptyGrouping(sharedOwner),places:publicPlaces},places:[],vehicles:[],telemetry}).journeys.map(j=>({...j,readOnly:true})));return {...own,journeys:[...own.journeys,...sharedJourneys]};},[reconciled.activities,owner,metadata,places,vehicles,telemetry,projectionCache]);
  // Enrichment runs once, for an activity as it is saved: its places and road
  // estimates are retrieved, kept, and the activity is marked done
@@ -47,9 +57,9 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
  // (metadata.enrichFrom, set the first time this build runs) qualify. Recordings
  // in progress and provisional stops are still changing and wait until finalised.
  const enrichFrom=metadata.enrichFrom;
- const settled=t=>Number.isFinite(enrichFrom)&&t.endedAt!=null&&t.endedAt*1000>=enrichFrom&&t.state!=='recording'&&t.details?.provisional!==true&&(!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner);
+ const settled=t=>t.source!=='cloud'&&t.geometryLoaded!==false&&Number.isFinite(enrichFrom)&&t.endedAt!=null&&t.endedAt*1000>=enrichFrom&&t.state!=='recording'&&t.details?.provisional!==true&&(!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner);
  // Not keyed on the done markers: saving them must not restart a run part-way.
- const fingerprint=JSON.stringify([readable,enrichFrom,activities.filter(settled).map(t=>[t.id,t.updatedAt,t.points?.length])]);
+ const fingerprint=JSON.stringify([readable,enrichFrom,processingActivities.filter(settled).map(t=>[t.id,t.updatedAt,t.points?.length])]);
  useEffect(()=>{
   if(!recorderAvailable()||!owner)return;let alive=true,timer;
   // Saved metadata that exists but could not be read as this account's is never
@@ -91,10 +101,11 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
    // Retry retained writes before doing any more provider work or done markers.
    await flush();if(!alive)return;
    requested=false;
-   const todo=activities.filter(t=>settled(t)&&!current.current.enriched?.[t.id]&&!pending.enriched[t.id]).sort((a,b)=>b.startedAt-a.startedAt);
+   const todo=processingActivities.filter(t=>settled(t)&&!current.current.enriched?.[t.id]&&!pending.enriched[t.id]&&(!sync?.scope||sync.read().cache?.work?.[t.id]?.state==='pending'||(!sync.read().cache?.work?.[t.id]&&!receipts[t.id]?.fingerprint))).sort((a,b)=>b.startedAt-a.startedAt);
    let roadLookups=0,next=Infinity;
    for(const t of todo){
     if(!alive)return;
+    if(sync?.scope)await sync.write(latest=>({cache:{...latest.cache,work:{...latest.cache.work,[t.id]:{state:'pending',at:Date.now()}}}}));
     let waiting=false;
     const points=t.points||[];
     if(points.length){
@@ -137,9 +148,23 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
      if(result.retryAfter){waiting=true;next=Math.min(next,result.retryAfter);}
     }
     // Done: the distance summary is saved once, with the done marker, so the list never rescans this activity's GPS.
-    // Only activities with GPS gaps: a summary per gap-free activity would fill the
-    // account's journey metadata over a year, and those cost nothing to recompute.
-    if(!waiting){const estimate=estimatedDistance(t,{...current.current.roads,...pending.roads});if(estimate)await hold('distanceSummaries',t.id,distanceSnapshot(t,estimate));await hold('enriched',t.id,Date.now());}
+    // Cloud-backed lists also save the lightweight presentation of gap-free routes.
+    if(!waiting){
+     const finalMetadata={...current.current,places:{...current.current.places,...pending.places},roads:{...current.current.roads,...pending.roads}};
+     const estimate=estimatedDistance(t,finalMetadata.roads);
+     if(estimate||sync?.scope){
+      const projected=buildJourneys([t],{owner,metadata:finalMetadata,places,vehicles,telemetry:[]}).journeys[0];
+      const presentation=projected?{title:projected.title,generatedTitle:projected.generatedTitle,location:projected.location,tags:projected.tags,recognisedStops:(projected.recognisedStops||[]).map(({id,segmentID,afterSegmentID,beforeSegmentID,name,tags,startedAt,endedAt,durationSeconds,verdict,meaningful,nearbyName,charging,pointIndex,latitude,longitude})=>({id,segmentID,afterSegmentID,beforeSegmentID,name,tags,startedAt,endedAt,durationSeconds,verdict,meaningful,nearbyName,charging,pointIndex,latitude,longitude}))}:null;
+      await hold('distanceSummaries',t.id,{...distanceSnapshot(t,estimate),...(sync?.scope?{presentation}:{})});
+     }
+     await hold('enriched',t.id,Date.now());
+     if(sync?.scope)await sync.write(latest=>{
+      const keys=new Set((t.points||[]).map(placeKey));
+      const places=Object.keys(latest.metadata.places).filter(key=>keys.has(key));
+      const prior=latest.cache.scopes[scopeKey([t.id])];
+      return {cache:{...latest.cache,work:{...latest.cache.work,[t.id]:{state:'done',at:Date.now()}},scopes:{...latest.cache.scopes,[scopeKey([t.id])]:{ids:prior?.ids||[t.id],details:[t.id],places,at:Date.now(),revision:latest.status.revision,stale:false}}}};
+     });
+    }
    }
    if(alive){await flush();if(alive)setEnrichmentError('');}
    // Nothing runs again unless something is still waiting for a retry.
@@ -160,5 +185,5 @@ export function useJourneyGrouping({owner,activities,places,vehicles,serialized,
  // record status the adapter keeps, so a person who edited the same journey on two
  // phones is told instead of quietly seeing one version disappear.
  const conflicts=sync?.read?.().status?.conflicts||null;
- return {...model,records:reconciled.activities,sourceSuggestions:reconciled.suggestions,metadata,act,busy,conflicts,error:error||sync?.read?.().status?.error||(!readable?'Saved journey metadata could not be read. It has been left unchanged.':enrichmentError)};
+ return {...model,records:reconciled.activities,sourceSuggestions:reconciled.suggestions,sourceContextIncomplete:reconciled.incomplete,metadata,act,busy,conflicts,error:error||sync?.read?.().status?.error||(!readable?'Saved journey metadata could not be read. It has been left unchanged.':enrichmentError)};
 }

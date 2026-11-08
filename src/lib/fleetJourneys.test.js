@@ -9,3 +9,12 @@ it('does not deduplicate different vehicles or unrelated household members',()=>
 it('suggests linking incomplete routes and honours explicit same-vehicle source linking',()=>{const partial={...b,points:[]};expect(reconcileSources([a,partial],context).suggestions).toHaveLength(1);expect(reconcileSources([a,partial],{...context,links:[['phone','fleet']]}).activities).toHaveLength(1);});
 it('deduplicates repeat deliveries and waits for source association when vehicle identity is missing',()=>{expect(reconcileSources([a,b,b],context).activities).toHaveLength(1);expect(reconcileSources([{...a,vehicle:null,vehicleID:null},b],context).activities).toHaveLength(2);});
 it('allows an explicitly shared household vehicle source only when the same known vehicle and route match',()=>{const shared={...b,ownerID:'other',sharedToHousehold:true,vehicleID:'household-car',providerVehicleID:'123'};expect(reconcileSources([a,shared],context).activities).toHaveLength(1);expect(reconcileSources([a,{...shared,providerVehicleID:'different'}],context).activities).toHaveLength(2);});
+
+it('marks unresolved selective source evidence and reuses a saved association without GPS',()=>{
+ const phone={id:'phone-selective',ownerID:'owner',source:'cloud',activity:'Driving',state:'finished',startedAt:100,endedAt:200,durationSeconds:100,vehicleID:'car',points:[],geometryLoaded:false};
+ const car={...phone,id:'tesla-selective',source:'tesla'};
+ const unresolved=reconcileSources([phone,car],{owner:'owner'});
+ expect(unresolved.incomplete).toBe(true);expect(unresolved.activities).toHaveLength(2);
+ const saved=reconcileSources([phone,car],{owner:'owner',links:[[phone.id,car.id]]});
+ expect(saved.incomplete).toBe(false);expect(saved.activities).toHaveLength(1);expect(saved.activities[0].sourceRecords).toHaveLength(2);
+});

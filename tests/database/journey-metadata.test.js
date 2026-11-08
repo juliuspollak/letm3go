@@ -318,3 +318,138 @@ it('preserves contradictory offline merge/split choices instead of replacing the
  expect(rebased.conflicts).toMatchObject([{domain:'pairs',field:'grouping',local:'cut',remote:'link'}]);
  expect((await read(owner)).links).toEqual(['["a","b"]']);expect(pending.pairs[0].relation).toBe('cut');
 });
+
+const selectiveOwner='99999999-9999-4999-8999-999999999999';
+const selectiveID=i=>`d${String(i).padStart(7,'0')}-0000-4000-8000-000000000000`;
+const sqlValue=value=>value===null?'null':Array.isArray(value)?`array[${value.map(sqlValue).join(',')}]::text[]`:typeof value==='string'?`'${value.replaceAll("'","''")}'`:String(value);
+const selectiveRPC=async (args,owner=selectiveOwner)=> (await as('authenticated',owner,`select public.journey_metadata_snapshot(${Object.entries({p_owner:owner,...args}).map(([key,value])=>`${key}=>${sqlValue(value)}`).join(',')}) as data`)).rows[0].data;
+it('selectively lists a 5000-activity account without downloading historical geometry',async()=>{
+ await db.exec(`reset role; insert into auth.users values('${selectiveOwner}','{}');
+  insert into public.journey_metadata_state(owner_id,enrich_from,revision) values('${selectiveOwner}',1700000000000,1);
+  alter table public.activities disable trigger journey_activity_change;
+  insert into public.activities(id,owner_id,title,activity,recording_mode,started_at,ended_at,distance_meters,duration_seconds,route_points)
+   select ('d'||lpad(i::text,7,'0')||'-0000-4000-8000-000000000000')::uuid,'${selectiveOwner}','Walk '||i,'Walking','manual',
+    '2026-11-08T10:00:00Z'::timestamptz-i*interval '1 day','2026-11-08T11:00:00Z'::timestamptz-i*interval '1 day',1000,3600,
+    '[{"latitude":-34,"longitude":151,"timestamp":1},{"latitude":-34.01,"longitude":151.01,"timestamp":2}]'::jsonb from generate_series(0,4999) i;
+  alter table public.activities enable trigger journey_activity_change;
+  insert into public.journey_activity_metadata(owner_id,ref,enriched_at) select '${selectiveOwner}',id::text,1700000000001 from public.activities where owner_id='${selectiveOwner}';
+  insert into public.journey_road_metadata(owner_id,ref,record) select '${selectiveOwner}',id::text||':1:2',jsonb_build_object('line',repeat('x',2000),'distanceMeters',2000,'status','route','version',1) from public.activities where owner_id='${selectiveOwner}';`);
+ const today=await selectiveRPC({p_refs:[],p_list:true,p_from:'2026-11-08T00:00:00Z',p_to:'2026-11-09T00:00:00Z'});
+ expect(today.pageRefs).toEqual([selectiveID(0)]);expect(today.activityRows).toHaveLength(1);
+ expect(today.activityRows[0].route_points).toBeNull();expect(today.roads).toEqual({});expect(today.places).toEqual({});
+ expect(JSON.stringify(today).length).toBeLessThan(10000);
+ const first=await selectiveRPC({p_refs:[],p_list:true});
+ expect(first.pageRefs).toHaveLength(50);expect(first.activityRows).toHaveLength(50);expect(first.nextActivity.id).toBe(selectiveID(49));
+ const second=await selectiveRPC({p_refs:[],p_list:true,p_before:first.nextActivity.at,p_before_id:first.nextActivity.id,p_before_metric:first.nextActivity.metric});
+ expect(second.pageRefs[0]).toBe(selectiveID(50));expect(second.pageRefs).toHaveLength(50);
+ const detail=await selectiveRPC({p_refs:[selectiveID(4999)],p_detail_refs:[selectiveID(4999)],p_geometry:true});
+ expect(Object.keys(detail.roads)).toEqual([selectiveID(4999)+':1:2']);expect(detail.activityRows[0].route_points).toHaveLength(2);
+ expect(detail.scope).toEqual([selectiveID(4999)]);
+},30000);
+
+it('returns cursor-paged invalidations and retains deletion tombstones without historical payloads',async()=>{
+ const before=(await selectiveRPC({p_refs:[]})).revision;
+ await mine(selectiveOwner,{activities:[{ref:selectiveID(0),title:'Changed on A'},{ref:selectiveID(1),title:'Second rename'}]},before);
+ let first=await selectiveRPC({p_refs:[],p_since_revision:before,p_limit:1});
+ expect(first.invalidations).toHaveLength(1);expect(first.next).toBeTruthy();expect(first.activityRows).toEqual([]);expect(first.roads).toEqual({});
+ const second=await selectiveRPC({p_refs:[],p_since_revision:before,p_limit:1,p_at_revision:first.atRevision,p_cursor:first.next});
+ expect(second.invalidations).toHaveLength(1);expect(second.next).toBeNull();
+ await mine(selectiveOwner,{roads:[{ref:selectiveID(0)+':1:2',delete:true}]},first.revision);
+ first=await selectiveRPC({p_refs:[],p_since_revision:first.revision});
+ expect(first.invalidations).toMatchObject([{domain:'roads',deleted:true}]);expect(JSON.stringify(first).length).toBeLessThan(2000);
+});
+
+it('closes merged/split/source context across dates and page boundaries',async()=>{
+ const revision=(await selectiveRPC({p_refs:[]})).revision;
+ await mine(selectiveOwner,{pairs:[{relation:'link',left:selectiveID(49),right:selectiveID(50)},{relation:'source',left:selectiveID(50),right:selectiveID(51)},{relation:'cut',left:selectiveID(51),right:selectiveID(52)}],stops:[{ref:JSON.stringify([selectiveID(49),selectiveID(50)]),name:'Across dates'}]},revision);
+ const scoped=await selectiveRPC({p_refs:[selectiveID(49)]});
+ expect(new Set(scoped.scope)).toEqual(new Set([selectiveID(49),selectiveID(50),selectiveID(51)]));
+ expect(scoped.activityRows).toHaveLength(3);expect(scoped.links).toEqual([JSON.stringify([selectiveID(49),selectiveID(50)])]);
+ expect(scoped.cuts).toEqual([JSON.stringify([selectiveID(51),selectiveID(52)])]);
+ expect(scoped.stopEdits[JSON.stringify([selectiveID(49),selectiveID(50)])].name).toBe('Across dates');
+ await expect(selectiveRPC({p_refs:[selectiveID(0)]},a)).resolves.toMatchObject({activityRows:[],roads:{}});
+ await expect(as('authenticated',a,`select public.journey_metadata_snapshot('${selectiveOwner}',array['${selectiveID(0)}'])`)).rejects.toThrow('owner mismatch');
+});
+
+it('persists idempotent MTB proposals through existing moderation without revealing private activities',async()=>{
+ const id='e0000000-0000-4000-8000-000000000001';
+ const geometry=JSON.stringify(Array.from({length:10},(_,i)=>[-34+i*0.0001,151]));
+ const proposal=`select public.create_mtb_segment(p_client_id=>'${id}',p_name=>'Shared selected descent',p_geometry=>'${geometry}'::jsonb,p_distance_meters=>100) as id`;
+ expect((await as('authenticated',a,proposal)).rows[0].id).toBe(id);
+ expect((await as('authenticated',a,proposal)).rows[0].id).toBe(id);
+ expect((await as('authenticated',a,`select status,visibility from public.mtb_segments where id='${id}'`)).rows[0]).toEqual({status:'submitted',visibility:'private'});
+ expect((await as('authenticated',b,`select id from public.mtb_segments where id='${id}'`)).rows).toEqual([]);
+ await expect(as('authenticated',b,proposal)).rejects.toThrow('another creator');
+ await expect(as('anon','',proposal)).rejects.toThrow();
+ await as('service_role','',`insert into public.moderators(user_id) values('${b}') on conflict do nothing`);
+ await as('authenticated',b,`select public.moderate_mtb('segment','${id}','approved')`);
+ // A replacement client and another ordinary user discover the same permanent row.
+ const publicRows=(await as('authenticated',selectiveOwner,`select * from public.mtb_segments_in_bbox(-34.1,-33.9,150.9,151.1)`)).rows;
+ expect(publicRows.some(row=>row.id===id&&row.status==='approved'&&row.visibility==='public')).toBe(true);
+ const shared=publicRows.find(row=>row.id===id);
+ expect(shared.geometry).toEqual(JSON.parse(geometry));
+ expect(JSON.stringify(shared)).not.toMatch(/route_points|heartRate|energy|timestamp|privateActivity/);
+ expect((await as('authenticated',selectiveOwner,`select id from public.activities where owner_id='${a}'`)).rows).toEqual([]);
+ expect((await as('authenticated',a,proposal)).rows[0].id).toBe(id);
+ await expect(as('authenticated',a,proposal.replace('Shared selected descent','Bypass moderation'))).rejects.toThrow('moderation');
+ expect(Number((await as('service_role','',`select count(*) from public.mtb_segment_geometry where segment_id='${id}'`)).rows[0].count)).toBe(1);
+});
+
+it('cleans metadata only for an actual cloud recording deletion and journals all removed records',async()=>{
+ const id=selectiveID(49),peer=selectiveID(50);
+ await mine(selectiveOwner,{activities:[{ref:id,title:'Delete me'}],roads:[{ref:`${id}:1:2`,record:{line:'saved'}}],summaries:[{ref:id,snapshot:{pointCount:2}}],stops:[{ref:`native:${id}:1`,name:'Stop'}],pairs:[{relation:'source',left:id,right:peer}]});
+ const before=(await as('authenticated',selectiveOwner,revision(selectiveOwner))).rows[0].revision;
+ await as('authenticated',selectiveOwner,`delete from public.activities where id='${id}'`);
+ const scoped=await selectiveRPC({p_refs:[id],p_detail_refs:[id]});
+ expect(scoped.unavailableRefs).toContain(id);expect(scoped.titles[id]).toBeUndefined();expect(scoped.roads[`${id}:1:2`]).toBeUndefined();expect(scoped.distanceSummaries[id]).toBeUndefined();expect(scoped.stopEdits[`native:${id}:1`]).toBeUndefined();
+ const changed=await selectiveRPC({p_refs:[],p_since_revision:before});
+ expect(changed.invalidations).toContainEqual(expect.objectContaining({domain:'activityRows',ref:id,deleted:true}));
+ expect(changed.invalidations).toContainEqual(expect.objectContaining({domain:'activities',ref:id,deleted:true}));
+});
+
+it('reapplies selective/cache and segment migrations without removing saved records',async()=>{
+ await as('service_role','',`select 1`);
+ const before=(await db.query(`select count(*) from public.journey_road_metadata`)).rows;
+ await db.exec('reset role');
+ for(const file of ['20261121000000_selective_journey_cache.sql','20261122000000_mtb_segment_persistence.sql'])await db.exec(await readFile('supabase/migrations/'+file,'utf8'));
+ expect((await db.query(`select count(*) from public.journey_road_metadata`)).rows).toEqual(before);
+});
+
+it('uses the real scoped engine for idle-device discovery, offline field merges and preserved same-field conflicts',async()=>{
+ const {createJourneySync,runJourneySync}=await import('../../src/lib/journeyMetadataStore.js');
+ const {groupingChanges}=await import('../../src/lib/journeyMetadata.js');
+ const owner='85858585-8585-4585-8585-858585858585',id=selectiveID(7000),calls=[];
+ await db.exec(`reset role;insert into auth.users values('${owner}','{}');insert into public.activities(id,owner_id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points) values('${id}','${owner}','Original','Walking','manual','2026-11-08T00:00:00Z','2026-11-08T01:00:00Z',3600,100,'[]')`);
+ const client={rpc:async(name,args)=>{calls.push({name,args});try{return {data:(await as('authenticated',owner,`select public.${name}(${Object.entries(args).map(([key,value])=>`${key}=>${key==='p_changes'?`$json$${JSON.stringify(value)}$json$::jsonb`:sqlValue(value)}`).join(',')}) as data`)).rows[0].data};}catch(error){return {error};}},from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({data:null})})})})};
+ const makeDevice=()=>{let rows={};return createJourneySync({owner,preferences:{},savePreferences:async()=>{},storage:{read:async()=>structuredClone(rows),commit:async ops=>{const next=structuredClone(rows);for(const op of ops)if(op.remove)delete next[op.key];else next[op.key]=structuredClone(op.value);rows=next;}}});};
+ const A=makeDevice(),B=makeDevice();await A.ready();await B.ready();A.configureScope([id]);B.configureScope([id]);
+ const sync=device=>runJourneySync({client,owner,...device});
+ expect((await sync(A)).state).toBe('active');expect((await sync(B)).state).toBe('active');
+ const edit=async(device,patch)=>device.write(latest=>{const metadata={...latest.metadata,...patch};return {metadata,queue:groupingChanges(latest.metadata,metadata)};});
+ await edit(A,{titles:{[id]:'From A'}});expect((await sync(A)).state).toBe('active');
+ expect(B.read().queue).toEqual({});expect((await sync(B)).state).toBe('active');expect(B.read().metadata.titles[id]).toBe('From A');
+ // Both start from the same cloud baseline, then make independent offline fields.
+ await edit(A,{titles:{[id]:'Second title'}});await edit(B,{manualTags:{[id]:['offline tag']}});
+ await sync(A);expect((await sync(B)).state).toBe('active');await sync(A);
+ expect(A.read().metadata.titles[id]).toBe('Second title');expect(A.read().metadata.manualTags[id]).toEqual(['offline tag']);
+ await edit(A,{titles:{[id]:'First conflicting value'}});await edit(B,{titles:{[id]:'Second conflicting value'}});
+ await sync(A);expect((await sync(B)).error).toContain('.title');
+ expect(B.read().queue.activities[0].title).toBe('Second conflicting value');
+ expect((await selectiveRPC({p_refs:[id]},owner)).titles[id]).toBe('First conflicting value');
+ expect(calls.filter(call=>call.name==='journey_metadata_snapshot').every(call=>Array.isArray(call.args.p_refs))).toBe(true);
+ // Once settled, an idle device needs only the revision, no historical snapshot.
+ await sync(A);calls.length=0;await sync(A);expect(calls.map(call=>call.name)).toEqual(['journey_metadata_revision']);
+});
+
+it('invalidates saved home places and private photo descriptors independently of local activity edits',async()=>{
+ const id=selectiveID(0),place='c1000000-0000-4000-8000-000000000001',photo='c2000000-0000-4000-8000-000000000001';
+ const before=(await as('authenticated',selectiveOwner,revision(selectiveOwner))).rows[0].revision;
+ await as('authenticated',selectiveOwner,`insert into public.saved_places(id,owner_id,name,kind,latitude,longitude,radius) values('${place}','${selectiveOwner}','My home','home',-34,151,100)`);
+ await as('authenticated',selectiveOwner,`insert into public.media_assets(id,owner_id,activity_id,object_key,byte_size,mime_type) values('${photo}','${selectiveOwner}','${id}','${selectiveOwner}/${id}/${photo}.jpg',100,'image/jpeg')`);
+ const changed=await selectiveRPC({p_refs:[],p_since_revision:before});
+ expect(changed.invalidations).toContainEqual(expect.objectContaining({domain:'savedPlaces',ref:place}));
+ expect(changed.invalidations).toContainEqual(expect.objectContaining({domain:'activityRows',ref:id}));
+ expect((await selectiveRPC({p_refs:[]})).savedPlaces).toContainEqual(expect.objectContaining({id:place,name:'My home'}));
+ expect((await selectiveRPC({p_refs:[id],p_detail_refs:[id],p_geometry:true})).activityRows[0].photos).toContainEqual(expect.objectContaining({id:photo}));
+ await expect(selectiveRPC({p_refs:[],p_since_revision:0,p_limit:null})).rejects.toThrow('scope is too large');
+});
