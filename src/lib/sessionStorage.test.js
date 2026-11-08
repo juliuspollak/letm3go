@@ -18,3 +18,14 @@ it('does not restore a late SDK cache write after an explicit logout',async()=>{
  await accountStore.bind({user:{id:'A'}});await accountStore.lock();localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify({user:{id:'A'}}));
  expect(await authStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();await accountStore.beginSignIn();expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
 });
+
+it('deletes only the current account durable journey records on local account deletion',async()=>{
+ await import('fake-indexeddb/auto');
+ const {journeyDurableStorage}=await import('./journeyDurableStorage.js');
+ await accountStore.bind({user:{id:'delete-A'}});
+ await journeyDurableStorage('delete-A').commit([{key:'private',value:'A'}]);
+ await journeyDurableStorage('delete-B').commit([{key:'private',value:'B'}]);
+ await accountStore.deleteLocal();
+ expect(await journeyDurableStorage('delete-A').read()).toEqual({});
+ expect(await journeyDurableStorage('delete-B').read()).toEqual({private:'B'});
+});

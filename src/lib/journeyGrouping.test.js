@@ -141,3 +141,25 @@ it('reuses a projection across unrelated place updates and invalidates relevant 
  expect(changed).not.toBe(first);expect(changed.tags).toContain('Named trailhead');
  buildJourneys([],{...options,metadata:other});expect(projectionCache.size).toBe(0);
 });
+
+it('refuses a 61st hidden tag without discarding an earlier user decision',()=>{
+ const {activities,meta}=setup();meta.hiddenTags.a=Array.from({length:60},(_,i)=>`Hidden ${i}`);
+ const before=structuredClone(meta);
+ expect(()=>changeGrouping(meta,{type:'hideTag',anchor:'a',tag:'New hidden tag'},{owner,activities,vehicles})).toThrow('existing choices have been kept');
+ expect(meta).toEqual(before);
+});
+
+it('keeps saved stop names and tags in merged lightweight cloud rows without route points',()=>{
+ const {activities,meta}=setup();
+ const light=activities.map(t=>({...t,source:'cloud',points:[],geometryLoaded:false,startPoint:t.points[0],endPoint:t.points.at(-1)}));
+ meta.distanceSummaries.a={presentation:{tags:['saved venue'],recognisedStops:[{id:'native:a:11000',name:'Saved cafe',tags:['coffee'],startedAt:11000,endedAt:11500,durationSeconds:500}]}};
+ meta.stopEdits['native:a:11000']={name:'Renamed cafe'};
+ const result=build(light,meta).journeys;
+ expect(result).toHaveLength(1);expect(result[0].stops.some(stop=>stop.name==='Renamed cafe')).toBe(true);expect(result[0].tags).toContain('saved venue');
+});
+it('includes unsent local driving context across a calendar boundary without inspecting GPS',async()=>{
+ const {localJourneyRefs}=await import('./journeyGrouping.js');
+ const a=drive('before',locations.sydney,locations.kew,23*3600,1800),b=drive('after',locations.kew,locations.coffs,24*3600+300,1800);
+ const result=localJourneyRefs([a,b],['after'],emptyGrouping(owner));expect(result.incomplete).toBe(false);expect(result.ids.sort()).toEqual(['after','before']);
+ expect(localJourneyRefs([a,b],['after'],emptyGrouping(owner),1).incomplete).toBe(true);
+});

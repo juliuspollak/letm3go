@@ -33,6 +33,24 @@ it('never looks up an answered place again, however old, and marks the activity 
  const saved=JSON.parse(p.savePreferences.mock.calls[0][0].journeyGrouping);
  expect(saved.places[key]).toEqual(meta.places[key]);expect(saved.enriched).toEqual({a:expect.any(Number)});
 });
+// With the records store attached the edit is queued as record values and the mirror
+// is only what the screen reads, so nothing here writes a whole grouping blob.
+it('queues the change as record values instead of a blob',async()=>{
+ const p=props();mock.lookup.mockResolvedValue({candidates:[{name:'Park',placeID:'apple:park'}],source:'apple-geocoder-mapkit'});
+ const store={metadata:JSON.parse(p.serialized),queue:{},status:{owner:'owner'}};
+ const sync={read:()=>store,write:patch=>Object.assign(store,typeof patch==='function'?patch(store):patch),flush:async()=>store};
+ const {result,rerender}=renderHook(()=>useJourneyGrouping({...p,sync}));
+ await waitFor(()=>expect(store.queue.activities).toBeDefined());
+ expect(p.savePreferences).not.toHaveBeenCalled();
+ expect(store.queue.places).toHaveLength(1);
+ expect(store.metadata.enriched).toEqual({a:expect.any(Number)});
+ // A record another device replaced is reported to the screen, never hidden.
+ expect(result.current.conflicts).toBe(null);
+ store.status={owner:'owner',conflicts:{activities:1,total:1}};
+ rerender();
+ await waitFor(()=>expect(result.current.conflicts).toEqual({activities:1,total:1}));
+});
+
 it('a done activity is not read again: no lookups, no saves',async()=>{
  const p=props(),meta={...emptyGrouping('owner'),enrichFrom:0};meta.enriched={a:1};p.serialized=JSON.stringify(meta);
  renderHook(()=>useJourneyGrouping(p));
@@ -207,3 +225,54 @@ it('records a capacity fallback instead of silently dropping a GPS gap',async()=
  expect(mock.road).not.toHaveBeenCalled();
  expect(saved.enriched.a).toEqual(expect.any(Number));
 },15000);
+
+it('acknowledges a user edit only after the durable transaction succeeds',async()=>{
+ const {createJourneySync}=await import('./journeyMetadataStore.js');
+ let rows={},fail=false;
+ const storage={read:async()=>structuredClone(rows),commit:async ops=>{
+  if(fail)throw new Error('Disk full');
+  const next=structuredClone(rows);for(const op of ops)if(op.remove)delete next[op.key];else next[op.key]=structuredClone(op.value);rows=next;
+ }};
+ const p=props(),meta=JSON.parse(p.serialized);meta.enriched={a:1};p.serialized=JSON.stringify(meta);
+ const sync=createJourneySync({owner:'owner',preferences:{journeyGrouping:p.serialized},savePreferences:async()=>{},storage});await sync.ready();
+ const {result}=renderHook(()=>useJourneyGrouping({...p,sync,metadataValue:sync.read().metadata}));
+ fail=true;
+ await act(async()=>{expect(await result.current.act({type:'rename',anchor:'a',title:'Must not acknowledge'})).toBe(false);});
+ expect(sync.read().metadata.titles.a).toBeUndefined();expect(result.current.error).toBe('Disk full');
+ fail=false;
+ await act(async()=>{expect(await result.current.act({type:'rename',anchor:'a',title:'Durable title'})).toBe(true);});
+ expect(sync.read().metadata.titles.a).toBe('Durable title');expect(sync.read().queue.activities[0].title).toBe('Durable title');
+});
+
+it('retains completed enrichment durably so restarting does not repeat provider work',async()=>{
+ const {createJourneySync}=await import('./journeyMetadataStore.js');
+ let rows={};
+ const storage={read:async()=>structuredClone(rows),commit:async ops=>{const next=structuredClone(rows);for(const op of ops)if(op.remove)delete next[op.key];else next[op.key]=structuredClone(op.value);rows=next;}};
+ const p=props();mock.lookup.mockResolvedValue({candidates:[{name:'Park',placeID:'apple:park'}],source:'apple-geocoder-mapkit'});
+ const open=()=>createJourneySync({owner:'owner',preferences:{journeyGrouping:p.serialized},savePreferences:async()=>{},storage});
+ const sync=open();await sync.ready();const first=renderHook(()=>useJourneyGrouping({...p,sync,metadataValue:sync.read().metadata}));
+ await waitFor(()=>expect(sync.read().metadata.enriched.a).toBeDefined());
+ first.unmount();const count=mock.lookup.mock.calls.length,restarted=open();await restarted.ready();
+ renderHook(()=>useJourneyGrouping({...p,sync:restarted,metadataValue:restarted.read().metadata}));
+ await act(async()=>{});
+ expect(mock.lookup).toHaveBeenCalledTimes(count);
+ expect(restarted.read().metadata.places[placeKey(trip.points[0])]).toBeDefined();
+ expect(restarted.read().queue.places).toHaveLength(1);
+});
+
+it('does no provider work when completed history was evicted, even with no local enrichment values',async()=>{
+ const {createJourneySync}=await import('./journeyMetadataStore.js');
+ const sync=createJourneySync({owner:'owner',preferences:{},savePreferences:async()=>{},storage:{read:async()=>({}),commit:async()=>{}}});await sync.ready();
+ await sync.write(latest=>({metadata:{...latest.metadata,enrichFrom:0},cache:{...latest.cache,work:{a:{state:'done'}}}}));
+ const p=props();renderHook(()=>useJourneyGrouping({...p,sync,metadataValue:sync.read().metadata}));await act(async()=>{});
+ expect(mock.lookup).not.toHaveBeenCalled();expect(mock.road).not.toHaveBeenCalled();
+});
+it('processes a newly finalized recording even when the visible list is on another day',async()=>{
+ const {createJourneySync}=await import('./journeyMetadataStore.js');
+ const sync=createJourneySync({owner:'owner',preferences:{},savePreferences:async()=>{},storage:{read:async()=>({}),commit:async()=>{}}});await sync.ready();
+ await sync.write(latest=>({metadata:{...latest.metadata,enrichFrom:0}}));
+ mock.lookup.mockResolvedValue({candidates:[],source:'apple-geocoder-mapkit'});
+ const p=props();renderHook(()=>useJourneyGrouping({...p,activities:[],processingActivities:[trip],sync,metadataValue:sync.read().metadata}));
+ await waitFor(()=>expect(sync.read().cache.work.a.state).toBe('done'));
+ expect(mock.lookup).toHaveBeenCalledTimes(1);expect(sync.read().queue.places).toHaveLength(1);
+});

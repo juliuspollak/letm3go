@@ -49,8 +49,23 @@ struct AccountPreferences: Codable {
     // per-account preferences so they can be backed up.
     var archivedTrips: [String]?
     var journeyGrouping: String?
+    // Legacy import keys. New mirror/pending records live in encrypted SQLite,
+    // outside preferences, and these values are cleared only after durable import.
+    var journeyMetadataQueue: String?
+    var journeyMetadata: JourneyMetadataStatus?
     var syncReceipts: [String: SyncReceipt]?
     var lastBackup: String?
+}
+// Progress of the journey metadata sync. Every field is optional so a preferences file
+// written by an earlier build still decodes without a migration.
+struct JourneyMetadataStatus: Codable {
+    var owner: String
+    var revision: Int?
+    var migratedAt: Double?
+    var state: String?
+    var error: String?
+    var conflicts: [String: Int]?
+    var updatedAt: Double?
 }
 struct SyncReceipt: Codable {
     var owner: String
@@ -64,6 +79,7 @@ struct SyncReceipt: Codable {
     // The activity's updatedAt when it was backed up: an unchanged activity is not
     // serialised and hashed again on the next backup.
     var updatedAt: Double?
+    var backupVersion: Int?
 }
 struct LocalVehicle: Codable {
     var source: String?
@@ -248,7 +264,7 @@ extension LocationRecorder {
     func savePreferences(_ updated: AccountPreferences) throws {
         guard let storage = storage, uiUnlocked, storeOpened else { throw failure("Sign in to change account settings.") }
         guard updated.displayName.count <= 100, updated.onboardingStep >= 0, updated.onboardingStep <= 5,
-              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 10_000,
+              updated.vehicles.count <= 50, (updated.avatar?.utf8.count ?? 0) < 500_000, (updated.demoOverrides?.utf8.count ?? 0) < 250_000, (updated.bookmarks?.count ?? 0) <= 1000, (updated.archivedTrips?.count ?? 0) <= 2000, (updated.journeyGrouping?.utf8.count ?? 0) <= 1_000_000, (updated.journeyMetadataQueue?.utf8.count ?? 0) <= 1_000_000, (updated.syncReceipts?.count ?? 0) <= 100_000,
               (updated.syncReceipts ?? [:]).values.allSatisfy({ $0.owner.lowercased() == ownerID && ($0.fingerprint?.count ?? 0) <= 64 }),
               updated.vehicles.allSatisfy({ vehicle in
                 let category = vehicle.category ?? "car"
@@ -261,6 +277,13 @@ extension LocationRecorder {
               }) else { throw failure("Account settings are invalid or too large.") }
         if let value=updated.journeyGrouping {
             guard let data=value.data(using:.utf8),let meta=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],(meta["owner"] as? String)?.lowercased()==ownerID,(meta["version"] as? Int)==1 else {throw failure("Journey metadata belongs to another account or is invalid.")}
+        }
+        // The queue is record values, so an empty one is written as an empty string.
+        if let value=updated.journeyMetadataQueue, !value.isEmpty {
+            guard let data=value.data(using:.utf8),let queue=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any],(queue["owner"] as? String)?.lowercased()==ownerID,(queue["version"] as? Int)==1,(queue["changes"] as? [String:Any]) != nil else {throw failure("Pending journey changes belong to another account or are invalid.")}
+        }
+        if let status=updated.journeyMetadata {
+            guard status.owner.lowercased()==ownerID, (status.state?.count ?? 0) <= 32, (status.error?.count ?? 0) <= 1_000, (status.conflicts?.count ?? 0) <= 16 else {throw failure("Journey sync status belongs to another account or is invalid.")}
         }
         if let avatar = updated.avatar, !avatar.hasPrefix("data:image/jpeg;base64,") { throw failure("Use a JPEG profile image.") }
         try storage.writeData(JSONEncoder().encode(updated),name:"preferences.data"); preferences = updated
@@ -304,7 +327,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     var appleState: String?
     var appleController: ASAuthorizationController?
     var bindingGeneration = 0
-    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
+    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","readJourneyRecords","commitJourneyRecords","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
     func storageKey(_ call: CAPPluginCall) -> String? {
         // Supabase may add bounded suffixes for PKCE/session bookkeeping between
         // client releases. Keep the bridge confined to Letm3go's auth namespace,
@@ -393,6 +416,29 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         r.recordDiagnostic("account","Private interface locked; recorder kept running")
         call.resolve()
     } }
+    private static let journeyQueue=DispatchQueue(label:"letm3go.journey-records")
+    private func journeyRecords(_ call: CAPPluginCall, write: Bool) {
+        DispatchQueue.main.async {
+            let r=LocationRecorder.shared
+            guard let owner=call.getString("ownerID")?.lowercased(), owner==r.ownerID,
+                  r.uiUnlocked,r.storeOpened,!r.accountDeleting,!r.accountSuspended,let storage=r.storage else {
+                call.reject("Sign in to open private journey storage.");return
+            }
+            do {
+                let key=try AccountKeychain.accountKey(owner),directory=storage.directory
+                let operations=call.getArray("operations",[String:Any].self) ?? []
+                Self.journeyQueue.async {
+                    do {
+                        let database=try JourneyRecordDatabase(directory:directory,key:key)
+                        if write {try database.commit(operations);call.resolve()}
+                        else {call.resolve(["records":try database.read()])}
+                    } catch {call.reject(error.localizedDescription)}
+                }
+            } catch {call.reject(error.localizedDescription)}
+        }
+    }
+    @objc func readJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:false)}
+    @objc func commitJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:true)}
     @objc func savePreferences(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID, let object = call.getObject("preferences") else { call.reject("Missing settings."); return }
         do { let data = try JSONSerialization.data(withJSONObject:object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences)

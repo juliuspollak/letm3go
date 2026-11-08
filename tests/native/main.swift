@@ -5183,3 +5183,33 @@ print("\(assertions) native assertions including automatic policy and scenario r
 let unsupportedSpeed=SmartClassifier.classifyAutomatic(motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),speed:20,displacement:100,seconds:30,accuracy:8,now:1022)
 check(unsupportedSpeed.predicted == "Unknown" && unsupportedSpeed.evidence.contains("Motion and GPS speed disagree"),"automatic filtering preserves the actual reason for uncertain sensor evidence")
 print("Final native assertion count: \(assertions)")
+
+// Real native encrypted SQLite storage, not a JavaScript stand-in.
+do {
+    let directory=FileManager.default.temporaryDirectory.appendingPathComponent("journey-record-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+    defer {try? FileManager.default.removeItem(at:directory)}
+    let key=Data(repeating:42,count:32)
+    do {
+        let database=try JourneyRecordDatabase(directory:directory,key:key,maximumPages:10)
+        try database.commit([["key":"title","value":"durably saved"]])
+        do {
+            try database.commit([["key":"title","value":"not saved"],["key":"large","value":String(repeating:"x",count:100000)]])
+            check(false,"native journal refuses disk capacity overflow")
+        } catch {check(true,"native journal reports capacity exhaustion")}
+        let afterOverflow=try database.read()
+        check(afterOverflow["title"] as? String == "durably saved","native overflow rolls back the whole transaction")
+    }
+    let reopened=try JourneyRecordDatabase(directory:directory,key:key,maximumPages:10000)
+    let afterRestart=try reopened.read()
+    check(afterRestart["title"] as? String == "durably saved","native metadata survives closing and reopening")
+    try reopened.commit([["key":"large","value":String(repeating:"y",count:2000000)]])
+    let afterRecovery=try reopened.read()
+    check((afterRecovery["large"] as? String)?.count == 2000000,"native storage recovers and retains a large route")
+    let bytes=try Data(contentsOf:directory.appendingPathComponent("journey-records.sqlite"))
+    check(bytes.range(of:Data("durably saved".utf8)) == nil,"native SQLite values are encrypted at rest")
+    let wrong=try JourneyRecordDatabase(directory:directory,key:Data(repeating:43,count:32))
+    do {_ = try wrong.read();check(false,"wrong account key must fail")}
+    catch {check(true,"wrong account key cannot read journey records")}
+} catch {check(false,"native journey storage failed: \(error)")}
+print("Final native assertion count including durable journey storage: \(assertions)")

@@ -11,8 +11,8 @@ import {routeGaps,gapKey,snapshotCurrent,savedDistance,combineEstimates} from '.
 export const GROUPING_VERSION=1;
 const moving=t=>(t.activity==='Driving'||t.activity==='Unknown')&&t.endedAt!=null&&t.state!=='recording';
 const point=p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180;
-const edge=(a,b)=>JSON.stringify([a,b]);
-const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0];
+const edge=(a,b)=>JSON.stringify([a,b].sort());
+const endpoint=(t,end)=>t.points?.[end?t.points.length-1:0]||(end?t.endPoint:t.startPoint);
 export const placeKey=p=>point(p)?`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`:null;
 // A stopped journey that may still be continued is a provisional record. It is
 // not grouped, shared or backed up until the recorder finalises it.
@@ -20,19 +20,26 @@ export const isProvisional=t=>t?.details?.provisional===true;
 export function emptyGrouping(owner){return {version:GROUPING_VERSION,owner,links:[],cuts:[],titles:{},types:{},places:{},stopEdits:{},history:[],sourceLinks:[],manualTags:{},hiddenTags:{},roads:{},enriched:{},distanceSummaries:{}};}
 // Parsing and write authorization share one validator. A fallback may be shown,
 // but must never replace an existing record that failed validation.
-export function parseGrouping(serialized,owner){
- if(!serialized)return emptyGrouping(owner);
+export function validateGrouping(m,owner){
  const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
  try{
-  const m=JSON.parse(serialized);
   if(!record(m)||m.version!==GROUPING_VERSION||m.owner!==owner||
    !['links','cuts','history'].every(key=>Array.isArray(m[key]))||
    !['titles','places','stopEdits'].every(key=>record(m[key]))||
    !['types','manualTags','hiddenTags','roads','enriched','distanceSummaries'].every(key=>m[key]==null||record(m[key]))||
    (m.sourceLinks!=null&&!Array.isArray(m.sourceLinks)))return null;
-  return {...emptyGrouping(owner),...m,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{}};
+  const canonical=key=>{const pair=JSON.parse(key);if(!Array.isArray(pair)||pair.length!==2||!pair.every(id=>typeof id==='string'))throw new Error('Invalid pair');return edge(...pair);};
+  const stopEdits={};
+  for(const [key,value] of Object.entries(m.stopEdits)){
+   const target=key.startsWith('[')?canonical(key):key;
+   if(Object.hasOwn(stopEdits,target)&&JSON.stringify(stopEdits[target])!==JSON.stringify(value))return null;
+   stopEdits[target]=value;
+  }
+  return {...emptyGrouping(owner),...m,links:m.links.map(canonical),cuts:m.cuts.map(canonical),stopEdits,types:m.types||{},manualTags:m.manualTags||{},hiddenTags:m.hiddenTags||{},roads:m.roads||{},enriched:m.enriched||{},distanceSummaries:m.distanceSummaries||{},sourceLinks:m.sourceLinks||[]};
  }catch{return null;}
 }
+export function parseGrouping(serialized,owner){return serialized?validateGrouping(safeParse(serialized),owner):emptyGrouping(owner);}
+function safeParse(serialized){try{return JSON.parse(serialized);}catch{return null;}}
 export function readGrouping(serialized,owner){return parseGrouping(serialized,owner)??emptyGrouping(owner);}
 function vehicle(t,vehicles){if(t.vehicleID)return t.vehicleID;const matches=vehicles.filter(v=>v.name===t.vehicle);return matches.length===1?matches[0].id:null;}
 function visibleTags(tags,segments,metadata){const ids=segments.map(s=>s.id);const hidden=new Set(ids.flatMap(id=>metadata.hiddenTags?.[id]||[]).map(x=>x.toLowerCase()));return [...new Set(tags.filter(t=>typeof t==='string'&&t.trim()&&!hidden.has(t.toLowerCase())))];}
@@ -182,7 +189,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
  for(const t of activities){if(isProvisional(t))continue;if((t.ownerID||t.owner_id)&&(t.ownerID||t.owner_id)!==owner)continue;const old=unique.get(t.id);if(!old||(t.updatedAt||0)>(old.updatedAt||0))unique.set(t.id,t);}
  const sorted=[...unique.values()].sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  const positions=new Map(sorted.map((s,i)=>[s.id,i]));
- const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[a,b]]:[];}catch{return [];}});
+ const cutRanges=metadata.cuts.flatMap(k=>{try{const [after,before]=JSON.parse(k),a=positions.get(after),b=positions.get(before);return a!=null&&b!=null?[[Math.min(a,b),Math.max(a,b)]]:[];}catch{return [];}});
  const groups=[],suggestions=[];let previous;
  const drives=sorted.filter(moving);
  for(const t of drives){const group=groups.at(-1),stop=previous?makeStop(previous,t,context):null;
@@ -206,7 +213,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
   const a=groups.findIndex(g=>g.some(t=>t.id===ids[0]));
   const b=groups.findIndex(g=>g.some(t=>t.id===ids[1]));
   if(a<0||b<0||a===b)continue;
-  const left=sorted.find(t=>t.id===ids[0]),right=sorted.find(t=>t.id===ids[1]);
+  const [left,right]=ids.map(id=>sorted.find(t=>t.id===id)).sort((x,y)=>(x?.startedAt??0)-(y?.startedAt??0));
   if(!left||!right||left.endedAt==null||right.startedAt<left.endedAt||right.startedAt-left.endedAt>86400)continue;
   if(metadata.cuts.includes(key))continue;
   const merged=[...groups[a],...groups[b]].sort((x,y)=>x.startedAt-y.startedAt||x.id.localeCompare(y.id));
@@ -241,14 +248,31 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    // manual titles remain authoritative.
    const generatedNativeStopTitle=!!stopTitle&&nativeStopTitle;
    const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
+   const presentation=saved?.presentation;
+   if(presentation&&s.geometryLoaded!==true){
+    journey.title=metadata.titles[s.id]||presentation.title||journey.title;
+    journey.location=presentation.location||journey.location;
+    journey.tags=visibleTags([...(presentation.tags||[]),...(s.tags||[]),...(metadata.manualTags?.[s.id]||[])],[s],metadata);
+    journey.recognisedStops=(presentation.recognisedStops||[]).flatMap(stop=>{
+     const edit=metadata.stopEdits[stop.id];if(edit?.ignored)return [];
+     return [{...stop,...(edit?.name?{name:edit.name}:{}),tags:edit?.replaceTags?edit.tags||[]:[...new Set([...(stop.tags||[]),...(edit?.tags||[])])]}];
+    });
+   }
    withEstimate(journey,savedDistance(s,metadata),metadata);
    projectionCache?.set(cacheID,{source:s,keys,gaps,recordKey,edits,places,vehicles,telemetry,journey});return journey;}
   const first=segments[0],last=segments.at(-1),start=geo(endpoint(first,false),places,metadata),end=geo(endpoint(last,true),places,metadata);
-  const stops=segments.flatMap(t=>[...internalStops(t,context),...nativeStops(t,context)]);
+  const stops=segments.flatMap(t=>{
+   const saved=metadata.distanceSummaries?.[t.id]?.presentation;
+   if(t.geometryLoaded!==true&&saved?.recognisedStops)return saved.recognisedStops.flatMap(stop=>{
+    const edit=metadata.stopEdits[stop.id];if(edit?.ignored)return [];
+    return [{...stop,...(edit?.name?{name:edit.name}:{}),tags:edit?.replaceTags?edit.tags||[]:[...new Set([...(stop.tags||[]),...(edit?.tags||[])])]}];
+   });
+   return [...internalStops(t,context),...nativeStops(t,context)];
+  });
   for(let i=1;i<segments.length;i++){const s=makeStop(segments[i-1],segments[i],context);if(s?.meaningful)stops.push(s);}
   stops.sort((a,b)=>a.startedAt-b.startedAt);
   const manualTitle=segments.map(s=>metadata.titles[s.id]).find(Boolean);
-  const tags=visibleTags([...segments.flatMap(s=>s.tags||[]),...segments.flatMap(s=>metadata.manualTags?.[s.id]||[]),...activityPlaceTags(first,start,end,stops),...segments.flatMap(s=>routeTags(s,metadata))],segments,metadata);
+  const tags=visibleTags([...segments.flatMap(s=>[...(s.tags||[]),...(s.geometryLoaded!==true?metadata.distanceSummaries?.[s.id]?.presentation?.tags||[]:[])]),...segments.flatMap(s=>metadata.manualTags?.[s.id]||[]),...activityPlaceTags(first,start,end,stops),...segments.flatMap(s=>routeTags(s,metadata))],segments,metadata);
   const estimates=segments.map(s=>savedDistance(s,metadata)),estimate=combineEstimates(segments,estimates);
   const distanceMeters=segments.reduce((n,s,i)=>n+(estimates[i]?.estimatedMeters??(s.distanceMeters||0)),0),durationSeconds=segments.reduce((n,s)=>n+(s.durationSeconds||0),0);
   return {...first,activity:metadata.types[first.id]||first.activity,id:`journey:${first.id}`,isGroupedJourney:true,segmentIDs:segments.map(s=>s.id),segments:segments.map((s,i)=>estimates[i]?withEstimate({...s},estimates[i],metadata):s),stops,title:manualTitle||contextualJourneyTitle(metadata.types[first.id]||first.activity,start,end,metres(endpoint(first,false),endpoint(last,true))<700),titleIsAutomatic:!manualTitle,endedAt:last.endedAt,startedAt:first.startedAt,distanceMeters,distance:Math.round(distanceMeters/100)/10,durationSeconds,minutes:Math.floor(durationSeconds/60),elapsedSeconds:last.endedAt-first.startedAt,tags,notes:segments.map(s=>s.notes||'').join(' '),location:`${start.name} → ${end.name}`,route:[],routeSegments:segments.flatMap(s=>s.routeSegments||[]),photos:segments.flatMap(s=>s.photos||[]),source:null,...(estimate?{recordedDistanceMeters:estimate.recordedMeters,distanceEstimate:estimate}:{})};
@@ -260,14 +284,27 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
 export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=[]}){
  if(meta.owner!==owner)throw new Error('Account changed. Grouping was not saved.');
  const next=structuredClone(meta);next.manualTags ||= {};const snapshot={links:meta.links,cuts:meta.cuts,titles:meta.titles,types:meta.types||{},stopEdits:meta.stopEdits,sourceLinks:meta.sourceLinks||[],manualTags:meta.manualTags||{},hiddenTags:meta.hiddenTags||{}};
- if(action.type==='undo'){const prior=next.history.pop();if(!prior)throw new Error('Nothing to undo.');return {...next,...prior};}
+ if(action.type==='undo'){
+  const prior=next.history.pop();if(!prior)throw new Error('Nothing to undo.');
+  if(!prior._touched)throw new Error('This older undo cannot safely change selectively cached history. Edit the journey directly.');
+  for(const [field,keys] of Object.entries(prior._touched)){
+   if(Array.isArray(next[field])){
+    const keyOf=value=>Array.isArray(value)?JSON.stringify([...value].sort()):value;
+    next[field]=next[field].filter(value=>!keys.includes(keyOf(value)));
+    next[field].push(...prior[field]);
+   }else for(const key of keys)if(Object.hasOwn(prior[field],key))next[field][key]=prior[field][key];else delete next[field][key];
+  }
+  return next;
+ }
  const ordered=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  if(action.type==='manualTags'){
   if(!ordered.some(t=>t.id===action.anchor)||!Array.isArray(action.tags)||action.tags.length>20||action.tags.some(t=>typeof t!=='string'||t.length>50))throw new Error('Choose up to 20 short tags.');
   next.manualTags[action.anchor]=[...new Set(action.tags.map(t=>t.trim()).filter(Boolean))];
  }else if(action.type==='hideTag'){
   if(!ordered.some(t=>t.id===action.anchor)||typeof action.tag!=='string'||!action.tag.trim()||action.tag.length>60)throw new Error('Invalid tag.');
-  next.hiddenTags[action.anchor]=[...new Set([...(next.hiddenTags[action.anchor]||[]),action.tag.trim()])].slice(-60);
+  const hidden=[...new Set([...(next.hiddenTags[action.anchor]||[]),action.tag.trim()])];
+  if(hidden.length>60)throw new Error('Restore a hidden tag before hiding another; all 60 existing choices have been kept.');
+  next.hiddenTags[action.anchor]=hidden;
  }else if(action.type==='restoreTag'){
   next.hiddenTags[action.anchor]=(next.hiddenTags[action.anchor]||[]).filter(t=>t.toLowerCase()!==action.tag?.toLowerCase());
  }else if(action.type==='sourceLink'){
@@ -296,5 +333,34 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
  }else if(action.type==='stop'){
   if(!action.id||!action.name?.trim()||action.name.length>100||action.tags?.some(t=>t.length>60))throw new Error('Enter a stop name and short tags.');next.stopEdits[action.id]={name:action.name.trim(),tags:(action.tags||[]).slice(0,20),replaceTags:action.replaceTags===true,ignored:action.ignored===true};
  }else throw new Error('Unsupported grouping change.');
+ snapshot._touched={};
+ for(const field of ['links','cuts','titles','types','stopEdits','sourceLinks','manualTags','hiddenTags']){
+  if(Array.isArray(next[field])){
+   const keyOf=value=>Array.isArray(value)?JSON.stringify([...value].sort()):value;
+   const before=new Set((snapshot[field]||[]).map(keyOf)),after=new Set(next[field].map(keyOf));
+   const touched=[...new Set([...before,...after])].filter(key=>before.has(key)!==after.has(key));
+   if(touched.length){snapshot._touched[field]=touched;snapshot[field]=(snapshot[field]||[]).filter(value=>touched.includes(keyOf(value)));}else delete snapshot[field];
+  }else{
+   const touched=[...new Set([...Object.keys(snapshot[field]||{}),...Object.keys(next[field]||{})])].filter(key=>JSON.stringify(snapshot[field]?.[key])!==JSON.stringify(next[field]?.[key]));
+   if(touched.length){snapshot._touched[field]=touched;snapshot[field]=Object.fromEntries(touched.filter(key=>Object.hasOwn(snapshot[field]||{},key)).map(key=>[key,snapshot[field][key]]));}else delete snapshot[field];
+  }
+ }
  next.history=[...next.history,snapshot].slice(-20);return next;
+}
+
+// Local unsent recordings cannot be discovered by a cloud scope. Include their
+// existing grouping context without reading or scanning any GPS coordinates.
+export function localJourneyRefs(activities,roots,metadata,limit=1000){
+ const ids=new Set(roots),ordered=activities.filter(moving).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
+ const positions=new Map(ordered.map((trip,index)=>[trip.id,index]));
+ const pairs=[...(metadata?.links||[]).map(key=>{try{return JSON.parse(key);}catch{return [];}}),...(metadata?.sourceLinks||[])];
+ let changed=true;
+ while(changed){changed=false;const add=id=>{if(id&&!ids.has(id)){ids.add(id);changed=true;}};
+  for(const pair of pairs)if(pair.some(id=>ids.has(id)))for(const id of pair)add(id);
+  for(const id of [...ids]){const index=positions.get(id);if(index===undefined)continue;const trip=ordered[index];
+   for(const neighbour of [ordered[index-1],ordered[index+1]])if(neighbour&&Math.max(trip.startedAt,neighbour.startedAt)-Math.min(trip.endedAt,neighbour.endedAt)<=21600)add(neighbour.id);
+  }
+  if(ids.size>limit)return {ids:[...ids].slice(0,limit),incomplete:true};
+ }
+ return {ids:[...ids],incomplete:false};
 }

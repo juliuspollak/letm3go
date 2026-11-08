@@ -7,6 +7,9 @@ const { identity, recorderHook, mapProps, mapLocationHook }=vi.hoisted(()=>({ide
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
+// Navigation fixtures contain native history; cloud lifecycle is exercised separately.
+vi.mock('./lib/useCloudJourneyPage.js',()=>({useCloudJourneyPage:()=>({ids:[],loading:false,error:'',more:false,refresh:()=>{}})}));
+vi.mock('./lib/useJourneyScope.js',()=>({useJourneyScope:()=>({loading:false,error:''})}));
 // These tests browse every activity and route; the defaults have their own tests.
 vi.mock('./lib/activityFilters.js',async original=>({...await original(),DEFAULT_TRIP_DATE:'all'}));
 vi.mock('./lib/mapLayers.js',async original=>{const actual=await original();return {...actual,loadMapView:owner=>({...actual.loadMapView(owner),routes:null})};});

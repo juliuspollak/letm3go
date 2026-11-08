@@ -1,5 +1,5 @@
 import {namedSegments,segmentColor,segmentRuns} from './namedSegments.js';
-import {SEGMENT_MATCHER_VERSION,matchEfforts,segmentDefinition} from './segmentMatcher.js';
+import {SEGMENT_MATCHER_VERSION,matchEfforts,segmentDefinition,publicSegmentDefinition} from './segmentMatcher.js';
 import {thinLine} from './mapContent.js';
 
 // A segment is a stretch of trail, not one lap of one ride. It is drawn once, on the
@@ -58,15 +58,15 @@ export function nearbySegmentLayers(trip,trips){
  return {styled,pins};
 }
 
-function passesOf({segment,owner,definition},trips){
+function passesOf({segment,owner,definition,definitions,isPublic=false},trips){
  const version=`${segment.updatedAt||0}`;
  const passes=[];
  for(const trip of trips){
-  for(const effort of definition?effortsOn(definition,version,trip):[])passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:Math.max(0,effort.elapsedSeconds-effort.gapSeconds),interrupted:effort.gapSeconds>0});
+  for(const effort of (definitions||[definition]).filter(Boolean).flatMap(def=>effortsOn(def,version,trip)))passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:Math.max(0,effort.elapsedSeconds-effort.gapSeconds),interrupted:effort.gapSeconds>0});
  }
  // A section made across a GPS gap cannot be looked for elsewhere, and a segment always
  // counts on the ride that made it.
- if(!passes.some(pass=>pass.trip.id===owner.id))passes.push({trip:owner,startedAt:segment.startTimestamp,elapsedSeconds:segment.durationSeconds});
+ if(!isPublic&&!passes.some(pass=>pass.trip.id===owner.id))passes.push({trip:owner,startedAt:segment.startTimestamp,elapsedSeconds:segment.durationSeconds});
  return onePerLap(passes,trips);
 }
 
@@ -91,11 +91,14 @@ function onePerLap(passes,trips){
 const fastestFirst=(a,b)=>Boolean(a.interrupted)-Boolean(b.interrupted)||a.elapsedSeconds-b.elapsedSeconds||a.startedAt-b.startedAt;
 const bestOf=passes=>{const clean=passes.find(pass=>!pass.interrupted);return clean?clock(clean.elapsedSeconds):'—';};
 const MAX_LISTED=200;
-export function segmentRides(trip,trips){
+export function segmentRides(trip,trips,publicSegments=[]){
  const library=riddenTrips(trips);
  if(!trip?.id||!library.length)return [];
  const rows=[];
- for(const entry of allSegments(library)){
+ const local=allSegments(library),localIDs=new Set(local.map(entry=>entry.segment.id));
+ const community=publicSegments.filter(row=>!localIDs.has(row.id)).map(row=>({segment:{id:row.id,name:row.name,colorIndex:0,updatedAt:row.updated_at},owner:{id:'public:'+row.id},isPublic:true,
+  definitions:[...(row.direction!=='reverse'?[publicSegmentDefinition(row)]:[]),...(row.direction!=='forward'?[publicSegmentDefinition(row,{reverse:true})]:[])]}));
+ for(const entry of [...local,...community]){
   const passes=passesOf(entry,library).sort(fastestFirst);
   const thisRide=passes.filter(pass=>pass.trip.id===trip.id).length;
   if(!thisRide)continue;

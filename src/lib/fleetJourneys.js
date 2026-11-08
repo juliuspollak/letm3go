@@ -5,12 +5,13 @@ export function fleetActivity(row,owner){
 }
 function identity(t,vehicles){if(t.providerVehicleID)return `tesla:${t.providerVehicleID}`;const v=vehicles.filter(v=>t.vehicleID?v.id===t.vehicleID:v.name===t.vehicle);return v.length===1?(v[0].teslaVehicleID?`tesla:${v[0].teslaVehicleID}`:v[0].id):t.vehicleID;}
 export function reconcileSources(activities,{owner,vehicles=[],links=[]}){
- const records=[...new Map(activities.filter(t=>!isProvisional(t)&&(t.ownerID===owner||!t.ownerID||t.sharedToHousehold===true)).map(t=>[t.id,t])).values()],used=new Set(),result=[],suggestions=[];
+ const records=[...new Map(activities.filter(t=>!isProvisional(t)&&(t.ownerID===owner||!t.ownerID||t.sharedToHousehold===true)).map(t=>[t.id,t])).values()],used=new Set(),result=[],suggestions=[];let incomplete=false;
  for(const a of records){if(used.has(a.id))continue;const sources=[a];
   for(const b of records){if(a.id===b.id||used.has(b.id)||a.source===b.source||![a.source,b.source].includes('tesla'))continue;
    const av=identity(a,vehicles),bv=identity(b,vehicles);if(av&&bv&&av!==bv)continue;
    const overlap=Math.max(0,Math.min(a.endedAt,b.endedAt)-Math.max(a.startedAt,b.startedAt))/Math.max(1,Math.min(a.durationSeconds,b.durationSeconds));if(overlap<0.8)continue;
    const ap=a.points||[],bp=b.points||[];
+   if((a.geometryLoaded===false||b.geometryLoaded===false)&&!links.some(ids=>ids.includes(a.id)&&ids.includes(b.id)))incomplete=true;
    const endpoints=ap.length&&bp.length&&metres(ap[0],bp[0])<=200&&metres(ap.at(-1),bp.at(-1))<=200;
    const sampled=ap.filter((_,i)=>i%Math.max(1,Math.floor(ap.length/10))===0).slice(0,11);
    const similarity=sampled.length&&bp.length&&sampled.filter(p=>bp.some(q=>Math.abs(q.timestamp-p.timestamp)<=60&&metres(p,q)<=200)).length/sampled.length>=0.7;
@@ -25,5 +26,5 @@ export function reconcileSources(activities,{owner,vehicles=[],links=[]}){
   const canonical=sources.find(t=>t.source==='tesla');
   result.push({...preferred,id:`linked:${canonical.id}`,ownerID:owner,vehicleID:canonical.vehicleID,providerVehicleID:canonical.providerVehicleID,isReconciled:true,source:'combined',sourceRecords:sources,title:sources.find(s=>s.corrected||(s.source==='device'&&s.titleIsAutomatic===false))?.title||preferred.title,photos:sources.flatMap(s=>s.photos||[]),tags:[...new Set(sources.flatMap(s=>s.tags||[]))],notes:sources.map(s=>s.notes||'').filter(Boolean).join('\n'),startedAt:Math.min(...sources.map(s=>s.startedAt)),endedAt:Math.max(...sources.map(s=>s.endedAt))});
  }
- return {activities:result,suggestions};
+ return {activities:result,suggestions,incomplete};
 }
