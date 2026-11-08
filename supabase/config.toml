@@ -89,7 +89,7 @@ entrypoint = "./functions/telemetry-ingest/index.ts"
 verify_jwt = false
 entrypoint = "./functions/tesla-recording/index.ts"
 
-# Signed-in "wake" only: drains the notification outbox to APNs. No schedule.
+# Called by the database dispatcher with PUSH_WORKER_SECRET; drains the outbox to APNs.
 [functions.send-push-notifications]
 verify_jwt = false
 entrypoint = "./functions/send-push-notifications/index.ts"

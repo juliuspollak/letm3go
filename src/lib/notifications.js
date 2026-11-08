@@ -1,24 +1,20 @@
-// The unread inbox behind the profile badge, pokes, and the push wake-up.
-// Notifications are written by the database (migration 20261123000000); the app
-// only reads its own, marks them read, and wakes the push sender after an action.
+// The unread inbox behind the profile badge, and pokes. Notifications are written
+// and pushed by the database (20261123000000, 20261124000000); the app only reads
+// its own and marks them read.
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {Capacitor} from '@capacitor/core';
 import {App as NativeApp} from '@capacitor/app';
 import {PushNotifications} from '@capacitor/push-notifications';
 import {supabase} from './supabase.js';
-import {wakePush as wake} from './pushWake.js';
 
 export const FEEDBACK_KINDS=['feedback_new','feedback_reply','feedback_status'];
 export const REVIEW_KINDS=['segment_submitted'];
 const EMPTY=[];
 
-export const wakePush=(client=supabase)=>wake(client);
-
 export async function sendPoke(userID,client=supabase){
  if(!client)throw new Error('Sign in to poke someone.');
  const {data,error}=await client.rpc('send_poke',{p_to:userID});
  if(error)throw new Error(error.message||'The poke was not sent.');
- void wakePush(client);
  return data;
 }
 
@@ -59,13 +55,11 @@ export function useNotifications(owner,{onOpen=()=>{}}={}){
  useEffect(()=>{
   if(!owner)return undefined;
   let alive=true;const handles=[];
-  void wakePush();
-  const wake=()=>{refresh();void wakePush();};
-  const visible=()=>{if(document.visibilityState==='visible')wake();};
+  const visible=()=>{if(document.visibilityState==='visible')refresh();};
   document.addEventListener('visibilitychange',visible);
   if(Capacitor.isNativePlatform()){
    const keep=promise=>promise.then(handle=>{if(alive)handles.push(handle);else void handle.remove();}).catch(()=>{});
-   keep(NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)wake();}));
+   keep(NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)refresh();}));
    keep(PushNotifications.addListener('pushNotificationReceived',()=>refresh()));
    keep(PushNotifications.addListener('pushNotificationActionPerformed',({notification})=>{
     refresh();const target=notificationTarget(notification?.data);if(target)open.current(target);

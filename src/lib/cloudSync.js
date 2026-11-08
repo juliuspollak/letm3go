@@ -1,7 +1,6 @@
 import {sliceActivityRoute} from './mtbSegment.js';
 import {backupClassification} from './stopBackup.js';
 import {resolvePhoto} from './privateMedia.js';
-import {wakePush} from './pushWake.js';
 import {isCommunitySegmentActivity} from './namedSegments.js';
 // Owner-private permanent activity backup. Local originals stay durable until
 // confirmation. Requires the existing named-segment/Watch schema migration;
@@ -92,8 +91,6 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    if(error&&/already exists|Invalid segment proposal|another creator/i.test(error.message||'')){updated[key]={owner,skipped:'refused'};await acknowledge();continue;}
    if(error||data!==segment.id){segmentFailure=segmentFailure||new Error('Segment submission was not confirmed. It remains on this device for retry.');continue;}
    updated[key]={owner,uploaded:true};await acknowledge();
-   // Moderators are told a new segment is waiting for review.
-   void wakePush(client);
   }
  }
  let photosUploaded=0;

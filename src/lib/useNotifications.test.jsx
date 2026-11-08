@@ -15,11 +15,11 @@ const {useNotifications}=await import('./notifications.js');
 
 beforeEach(()=>{rows.current=[];invoke.mockClear();rpc.mockClear();removeDelivered.mockClear();});
 
-it('loads the unread inbox on open and wakes the push sender',async()=>{
+it('loads the unread inbox on open and never calls the push function (no polling, no wake)',async()=>{
  rows.current=[{id:1,kind:'feedback_new',title:'New feedback',body:'Ann: crash'}];
  const {result}=renderHook(()=>useNotifications('owner'));
  await waitFor(()=>expect(result.current.count).toBe(1));
- expect(invoke).toHaveBeenCalledWith('send-push-notifications',{body:{}});
+ expect(invoke).not.toHaveBeenCalled();
 });
 
 it('a push arriving while the app is open refreshes the badge (foreground)',async()=>{
@@ -30,15 +30,17 @@ it('a push arriving while the app is open refreshes the badge (foreground)',asyn
  await waitFor(()=>expect(result.current.items[0]?.kind).toBe('poke'));
 });
 
-it('tapping a push opens its screen (background or cold start) and returning to the app refreshes',async()=>{
+it('tapping a push opens its screen (background or cold start); returning to the app re-reads the inbox only',async()=>{
  const onOpen=vi.fn();
  renderHook(()=>useNotifications('owner',{onOpen}));
  await waitFor(()=>expect(listeners.pushNotificationActionPerformed).toBeTypeOf('function'));
  act(()=>listeners.pushNotificationActionPerformed({notification:{data:{kind:'feedback_reply',screen:'feedback',id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'}}}));
  expect(onOpen).toHaveBeenCalledWith({screen:'feedback',id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'});
- invoke.mockClear();
+ let reads=0;const original=query.limit;query.limit=async()=>{reads++;return {data:rows.current};};
  act(()=>listeners.appStateChange({isActive:true}));
- expect(invoke).toHaveBeenCalledTimes(1);
+ await waitFor(()=>expect(reads).toBe(1));
+ query.limit=original;
+ expect(invoke).not.toHaveBeenCalled();
 });
 
 it('marking a kind read clears it locally, in the database and from Notification Centre',async()=>{
@@ -51,7 +53,7 @@ it('marking a kind read clears it locally, in the database and from Notification
  expect(removeDelivered).toHaveBeenCalled();
 });
 
-it('signed out: no inbox, no listeners, no wake',async()=>{
+it('signed out: no inbox and no listeners',async()=>{
  renderHook(()=>useNotifications(null));
  await new Promise(resolve=>setTimeout(resolve,10));
  expect(invoke).not.toHaveBeenCalled();

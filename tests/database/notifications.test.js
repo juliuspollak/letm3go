@@ -27,7 +27,13 @@ beforeAll(async()=>{
  grant usage on schema auth to anon,authenticated,service_role;
  grant execute on function auth.uid(),auth.jwt() to anon,authenticated,service_role;
  alter default privileges in schema public grant all on tables to anon,authenticated,service_role;
- alter default privileges in schema public grant execute on functions to anon,authenticated,service_role;`);
+ alter default privileges in schema public grant execute on functions to anon,authenticated,service_role;
+ -- Stand-ins for Supabase Vault and pg_net: calls are recorded, not sent.
+ create schema vault;create table vault.decrypted_secrets(name text primary key,decrypted_secret text);
+ create schema net;create table net.calls(id serial primary key,url text,body jsonb,headers jsonb);create table net.fail(on_ boolean);
+ create function net.http_post(url text,body jsonb,headers jsonb,timeout_milliseconds integer) returns bigint language plpgsql as $$
+  begin if exists(select 1 from net.fail where on_) then raise exception 'network down'; end if;
+  insert into net.calls(url,body,headers) values(url,body,headers); return currval('net.calls_id_seq'); end $$;`);
  for(const filename of (await readdir('supabase/migrations')).filter(x=>x.endsWith('.sql')).sort())
   await db.exec(await readFile('supabase/migrations/'+filename,'utf8'));
  await db.exec(`reset role;insert into public.profiles(id,display_name) values('${ann}','Ann'),('${bob}','Bob'),('${admin}','Julius') on conflict (id) do update set display_name=excluded.display_name;
@@ -170,5 +176,48 @@ describe('push delivery lifecycle',()=>{
   expect(again.map(r=>r.delivery_id)).toEqual([row.delivery_id]);
   expect(again[0].claim_token).not.toBe(row.claim_token);
   expect((await finish(row,'sent')).rows[0].s).toBeNull(); // the stale claim cannot complete it
+ });
+});
+
+describe('server-side dispatch (20261124000000): pushes go out while every app is closed',()=>{
+ const sql=async q=>{await db.exec('reset role');return db.query(q);};
+ const calls=async()=>(await sql('select url,headers from net.calls order by id')).rows;
+ const reset=()=>db.exec('reset role;delete from net.calls;delete from net.fail;delete from public.pokes');
+ it('does nothing until the worker URL and secret are in Vault',async()=>{
+  await reset();
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect(await calls()).toEqual([]);
+ });
+ it('one poke calls the worker once, with the secret, straight from the database',async()=>{
+  await db.exec(`reset role;insert into vault.decrypted_secrets values('push_worker_url','https://example.supabase.co/functions/v1/send-push-notifications'),('push_worker_secret','s3cret') on conflict do nothing`);
+  await reset();
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect(await calls()).toEqual([{url:'https://example.supabase.co/functions/v1/send-push-notifications',headers:{'Content-Type':'application/json',Authorization:'Bearer s3cret'}}]);
+ });
+ it('feedback to several admins is one statement and one worker call',async()=>{
+  await db.exec(`reset role;insert into public.app_admins(user_id) values('${moderator}') on conflict do nothing`);
+  await reset();
+  await feedback(ann,'Two admins');
+  expect((await sql(`select count(*)::int n from public.notifications where kind='feedback_new' and push_processed_at is null`)).rows[0].n).toBeGreaterThanOrEqual(2);
+  expect(await calls()).toHaveLength(1);
+ });
+ it('a failed dispatch never undoes the poke; the recovery check picks it up',async()=>{
+  await reset();await db.exec('insert into net.fail values(true)');
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect((await sql(`select count(*)::int n from public.pokes`)).rows[0].n).toBe(1);
+  expect(await calls()).toEqual([]);
+  await db.exec('delete from net.fail');
+  expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(true);
+  expect(await calls()).toHaveLength(1);
+ });
+ it('the recovery check makes no request when nothing is due',async()=>{
+  await db.exec(`reset role;update public.notifications set push_processed_at=now() where push_processed_at is null;update public.notification_deliveries set status='sent',claim_token=null,lease_expires_at=null where status<>'sent'`);
+  await reset();
+  expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(false);
+  expect(await calls()).toEqual([]);
+ });
+ it('only the database can dispatch',async()=>{
+  for(const role of ['anon','authenticated'])await expect(as(role,ann,'select public.dispatch_push()')).rejects.toThrow();
+  await expect(as('authenticated',ann,'select public.dispatch_due_pushes()')).rejects.toThrow();
  });
 });

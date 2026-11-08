@@ -1,5 +1,6 @@
-// The outbox drain, free of Deno/npm imports so it can be unit-tested. index.ts
-// supplies the Supabase clients, fetch and the ES256 signer.
+// The outbox drain (ImBored's send-push-notifications worker, adapted), free of
+// Deno/npm imports so it can be unit-tested. index.ts supplies the Supabase
+// client, fetch and the ES256 signer.
 import { apnsPayload, classifyApns, providerRejected } from './apns.js';
 
 export const BUNDLE_ID = 'au.jpollak.journey';
@@ -8,7 +9,15 @@ const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Head
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers });
 export const apnsHost = environment => environment === 'sandbox' ? 'https://api.sandbox.push.apple.com' : 'https://api.push.apple.com';
 
-// deps: { env(key), caller(authorization), admin(), fetch, sign({kid,team,pem}), now(), log(event) }
+// From ImBored's workerCore.ts: compare digests so timing does not reveal the secret.
+export async function constantTimeEqual(left, right) {
+  const [a, b] = await Promise.all([left, right].map(value => crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))));
+  const aa = new Uint8Array(a), bb = new Uint8Array(b); let difference = 0;
+  for (let index = 0; index < aa.length; index += 1) difference |= aa[index] ^ bb[index];
+  return difference === 0;
+}
+
+// deps: { env(key), admin(), fetch, sign({kid,team,pem}), now(), log(event) }
 export function createPushHandler(deps) {
   let provider = null;
   const now = deps.now || Date.now, log = deps.log || (event => console.log(JSON.stringify(event)));
@@ -23,11 +32,26 @@ export function createPushHandler(deps) {
   return async request => {
     if (request.method === 'OPTIONS') return new Response(null, { headers });
     if (request.method !== 'POST') return reply({ error: 'Method not allowed' }, 405);
-    const { data: identity, error: identityError } = await deps.caller(request.headers.get('Authorization') || '').auth.getUser();
-    if (identityError || !identity?.user) return reply({ error: 'Sign in required' }, 401);
+    // Only the database dispatcher (20261124000000) calls this, with the worker
+    // secret, as ImBored's scheduled worker does. Apps never call it.
+    const expected = deps.env('PUSH_WORKER_SECRET') || '', supplied = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+    if (!expected || !supplied || !(await constantTimeEqual(supplied, expected))) return reply({ error: 'Unauthorized' }, 401);
+    const body = await request.json().catch(() => ({}));
+    // Adapted from ImBored's apns-auth-check: asks Apple itself whether it accepts our
+    // key, using an all-zero device token that no phone has. 'BadDeviceToken' means
+    // the key and topic were accepted; 'InvalidProviderToken' means they were not.
+    if (body?.mode === 'apns-check') {
+      let token;
+      try { token = await providerToken(); } catch (caught) { return reply({ ok: false, mode: 'apns-check', reason: caught instanceof Error && caught.message === 'ApnsNotConfigured' ? 'ApnsNotConfigured' : 'ApnsKeyUnusable' }); }
+      try {
+        const response = await deps.fetch(`${apnsHost('production')}/3/device/${'0'.repeat(64)}`, { method: 'POST', signal: AbortSignal.timeout(12000), headers: { authorization: `bearer ${token}`, 'apns-topic': BUNDLE_ID, 'apns-push-type': 'alert', 'apns-priority': '10', 'content-type': 'application/json' }, body: JSON.stringify({ aps: { alert: { title: 'check', body: 'check' } } }) });
+        const result = await response.json().catch(() => ({}));
+        const reason = typeof result.reason === 'string' ? result.reason : 'Unknown';
+        if (providerRejected(response.status, reason)) provider = null;
+        return reply({ ok: true, mode: 'apns-check', http: response.status, reason, credentialsAccepted: response.status === 400 && reason === 'BadDeviceToken' });
+      } catch (caught) { return reply({ ok: false, mode: 'apns-check', reason: caught instanceof Error ? caught.name : 'NetworkError' }); }
+    }
     const admin = deps.admin();
-    const { data: budget } = await admin.rpc('consume_operation', { p_key: `push-wake:${identity.user.id}`, p_max: 240 });
-    if (!budget) return reply({ ok: true, rateLimited: true }, 202);
 
     const { data: claimed, error } = await admin.rpc('claim_push_deliveries', { p_batch: 20 });
     if (error) { log({ event: 'push_claim_error', code: error.code || 'unknown' }); return reply({ error: 'Push queue unavailable' }, 500); }

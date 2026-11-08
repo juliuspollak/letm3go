@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPushHandler, BUNDLE_ID } from './handler.js';
+import { createPushHandler, constantTimeEqual, BUNDLE_ID, PROVIDER_TOKEN_MS } from './handler.js';
 
 const TOKEN_A = 'a'.repeat(64), TOKEN_B = 'b'.repeat(64);
 const delivery = (id, token, extra = {}) => ({ delivery_id: id, claim_token: `claim-${id}`, apns_token: token, environment: 'production', notification_id: 100 + id, kind: 'poke', title: 'Poke', body: 'Ann poked you 👋', route: { screen: 'home' }, badge: 1, ...extra });
-const secrets = { APNS_KEY_ID: 'KEY1234567', APNS_TEAM_ID: 'TEAM123456', APNS_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----' };
+const secrets = { PUSH_WORKER_SECRET: 'worker-secret-value', APNS_KEY_ID: 'KEY1234567', APNS_TEAM_ID: 'TEAM123456', APNS_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----' };
 const apple = (status, reason) => new Response(reason ? JSON.stringify({ reason }) : '', { status });
 
-function setup({ claimed = [], env = secrets, user = { id: 'u1' }, budget = true, responses = [] } = {}) {
+function setup({ claimed = [], env = secrets, responses = [], now = () => 0 } = {}) {
   const finished = [], logs = [], queue = [...responses];
+  let admins = 0;
   const rpc = vi.fn(async (name, args) => {
-    if (name === 'consume_operation') return { data: budget };
     if (name === 'claim_push_deliveries') { const rows = claimed; claimed = []; return { data: rows }; }
     if (name === 'finish_push_delivery') { finished.push(args); return { data: args.p_status === 'invalid_token' ? 'failed' : args.p_status }; }
     return { data: null };
@@ -17,12 +17,12 @@ function setup({ claimed = [], env = secrets, user = { id: 'u1' }, budget = true
   const fetch = vi.fn(async () => { const next = queue.shift(); if (next instanceof Error) throw next; return next || apple(200); });
   const sign = vi.fn(async ({ pem }) => { if (!pem.includes('\nabc\n')) throw new Error('bad pem'); return 'provider.jwt'; });
   const handler = createPushHandler({
-    env: key => env[key], fetch, sign, log: event => logs.push(event),
-    caller: () => ({ auth: { getUser: async () => (user ? { data: { user } } : { data: { user: null }, error: { message: 'no' } }) } }),
-    admin: () => ({ rpc }),
+    env: key => env[key], fetch, sign, now, log: event => logs.push(event),
+    admin: () => { admins++; return { rpc }; },
   });
-  const wake = () => handler(new Request('https://x/functions/v1/send-push-notifications', { method: 'POST', headers: { Authorization: 'Bearer user.jwt' }, body: '{}' }));
-  return { wake, fetch, sign, rpc, finished, logs };
+  const call = (secret = secrets.PUSH_WORKER_SECRET, body = {}) => handler(new Request('https://x/functions/v1/send-push-notifications', { method: 'POST', headers: secret == null ? {} : { Authorization: `Bearer ${secret}` }, body: JSON.stringify(body) }));
+  const wake = () => call();
+  return { wake, call, fetch, sign, rpc, finished, logs, admins: () => admins };
 }
 
 describe('send-push-notifications', () => {
@@ -66,7 +66,7 @@ describe('send-push-notifications', () => {
   });
 
   it('missing secrets put the claims back without calling Apple', async () => {
-    const t = setup({ claimed: [delivery(1, TOKEN_A)], env: {} });
+    const t = setup({ claimed: [delivery(1, TOKEN_A)], env: { PUSH_WORKER_SECRET: secrets.PUSH_WORKER_SECRET } });
     const response = await t.wake();
     expect(response.status).toBe(500);
     expect(t.fetch).not.toHaveBeenCalled();
@@ -88,11 +88,54 @@ describe('send-push-notifications', () => {
     expect(t.sign).toHaveBeenCalledTimes(1);
   });
 
-  it('requires a signed-in caller and respects the wake budget', async () => {
-    expect((await setup({ user: null }).wake()).status).toBe(401);
-    const limited = setup({ budget: false, claimed: [delivery(1, TOKEN_A)] });
-    expect(await (await limited.wake()).json()).toMatchObject({ rateLimited: true });
-    expect(limited.fetch).not.toHaveBeenCalled();
+  // From ImBored's handler.test.ts / workerCore.test.ts.
+  it('a missing or wrong worker secret is rejected before any database access', async () => {
+    for (const secret of [null, '', 'wrong', 'worker-secret-valu', 'user.jwt']) {
+      const t = setup({ claimed: [delivery(1, TOKEN_A)] });
+      expect((await t.call(secret)).status).toBe(401);
+      expect(t.admins()).toBe(0); expect(t.fetch).not.toHaveBeenCalled();
+    }
+    const unset = setup({ env: { ...secrets, PUSH_WORKER_SECRET: '' } });
+    expect((await unset.call('')).status).toBe(401);
+  });
+  it('worker secret comparison accepts only the complete secret', async () => {
+    expect(await constantTimeEqual('correct', 'correct')).toBe(true);
+    expect(await constantTimeEqual('correct', 'correc')).toBe(false);
+    expect(await constantTimeEqual('correct', 'correct ')).toBe(false);
+  });
+  it('one notification fans out to production and sandbox devices in the same batch', async () => {
+    const t = setup({ claimed: [delivery(1, TOKEN_A, { notification_id: 7 }), delivery(2, TOKEN_B, { notification_id: 7, environment: 'sandbox' })] });
+    await t.wake();
+    expect(t.fetch.mock.calls.map(([url]) => new URL(url).host)).toEqual(['api.push.apple.com', 'api.sandbox.push.apple.com']);
+    expect(t.finished.map(f => f.p_status)).toEqual(['sent', 'sent']);
+  });
+  it('reuses a warm provider token and refreshes it before Apple expires it', async () => {
+    let clock = 0;
+    const t = setup({ claimed: [delivery(1, TOKEN_A)], now: () => clock });
+    await t.wake();
+    t.rpc.mockImplementationOnce(async () => ({ data: [delivery(2, TOKEN_B)] }));
+    clock = PROVIDER_TOKEN_MS - 1; await t.wake();
+    expect(t.sign).toHaveBeenCalledTimes(1);
+    t.rpc.mockImplementationOnce(async () => ({ data: [delivery(3, TOKEN_B)] }));
+    clock = PROVIDER_TOKEN_MS + 1; await t.wake();
+    expect(t.sign).toHaveBeenCalledTimes(2);
+  });
+  it('a claim failure returns only a safe message', async () => {
+    const t = setup();
+    t.rpc.mockImplementationOnce(async () => ({ error: { code: '42883', message: 'function secret_detail does not exist' } }));
+    const response = await t.wake();
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain('secret_detail');
+  });
+  it('apns-check asks Apple about the key with a dummy token and reports acceptance without sending to anyone', async () => {
+    const accepted = setup({ responses: [apple(400, 'BadDeviceToken')] });
+    expect(await (await accepted.call(undefined, { mode: 'apns-check' })).json()).toMatchObject({ mode: 'apns-check', http: 400, reason: 'BadDeviceToken', credentialsAccepted: true });
+    expect(accepted.fetch.mock.calls[0][0]).toBe(`https://api.push.apple.com/3/device/${'0'.repeat(64)}`);
+    expect(accepted.fetch.mock.calls[0][1].headers['apns-topic']).toBe(BUNDLE_ID);
+    expect(accepted.admins()).toBe(0);
+    const rejected = setup({ responses: [apple(403, 'InvalidProviderToken')] });
+    expect(await (await rejected.call(undefined, { mode: 'apns-check' })).json()).toMatchObject({ credentialsAccepted: false, reason: 'InvalidProviderToken' });
+    expect((await setup().call('wrong', { mode: 'apns-check' })).status).toBe(401);
   });
 
   it('logs delivery metadata but never device tokens, message text or key material', async () => {
@@ -100,6 +143,6 @@ describe('send-push-notifications', () => {
     await t.wake();
     const text = JSON.stringify(t.logs);
     expect(text).toContain('apns_delivery');
-    for (const secret of [TOKEN_A, 'Ann poked you', 'provider.jwt', 'PRIVATE KEY', 'KEY1234567']) expect(text).not.toContain(secret);
+    for (const secret of [TOKEN_A, 'Ann poked you', 'provider.jwt', 'PRIVATE KEY', 'KEY1234567', 'worker-secret-value']) expect(text).not.toContain(secret);
   });
 });
