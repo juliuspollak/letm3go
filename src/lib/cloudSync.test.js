@@ -84,3 +84,14 @@ it('submits only selected MTB geometry, retries a lost acknowledgement, and rest
  expect(result.receipts['mtb-segment:'+segmentID]).toEqual({owner:'owner',uploaded:true});
  const count=api.rpc.mock.calls.length;await run(api,{...state,trips:[ride]},result.receipts);expect(api.rpc.mock.calls).toHaveLength(count);
 });
+
+it('submits segments from every activity that can have them',async()=>{
+ const points=Array.from({length:21},(_,i)=>({latitude:-34+i*0.0001,longitude:151,timestamp:100+i*5,accuracy:5,segment:0}));
+ const submitted=async activity=>{
+  const api=client();api.rpc.mockImplementation(async(name,args)=>name==='backup_private_activity'?{data:1,error:null}:{data:args.p_client_id,error:null});
+  await run(api,{...state,trips:[{...trip,activity,points,details:{namedSegments:[{id:'a1b2c3d4-0000-4000-8000-000000000002',name:'Climb',startIndex:5,endIndex:15}]}}]});
+  return api.rpc.mock.calls.some(([name])=>name==='create_mtb_segment');
+ };
+ for(const activity of ['MTB','Cycling','Road cycling','Walking','Running','Hiking'])expect(await submitted(activity)).toBe(true);
+ expect(await submitted('Driving')).toBe(false);
+});

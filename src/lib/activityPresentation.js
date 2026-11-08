@@ -8,7 +8,7 @@ import {estimateExplanation} from './gapReconstruction.js';
 import {heartRateOf,heartRateRuns,routeAt,timeInZones} from './heartRate.js';
 import {compareRoutes} from './journeyGeometry.js';
 import {canLinkTrail,trailLinkLabel} from './mtbLink.js';
-import {canCreateSegments,namedSegments,segmentColor,segmentLayers} from './namedSegments.js';
+import {canCreateSegments,isCommunitySegmentActivity,namedSegments,segmentColor,segmentLayers} from './namedSegments.js';
 import {paceLabel,speedLabel} from './recorder.js';
 import {recordedRouteSegments} from './mapGeometry.js';
 import {deletionIDs} from './tripsList.js';
@@ -173,7 +173,7 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
   sources:(trip.sourceRecords||[]).map(s=>({id:String(s.id),label:`View ${s.source==='tesla'?'Tesla':'iPhone'} recording`})),
   photos:{coverID,local,items:photos.map(photo=>({id:String(photo.id),caption:photo.caption||'',locationSource:photo.locationSource||'unlocated',captureTime:photo.captureTime??null,assetID:photo.assetID??null}))},
   heart:heartSection(trip,{unit,maximumHeartRate}),
-  segments:{allowed:segmentsAllowed,ridden:segmentRides,editID:editSegmentID,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · ${trip.activity==='MTB'?'Community segment submission':'Private section'}`}))},
+  segments:{allowed:segmentsAllowed,ridden:segmentRides,editID:editSegmentID,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · ${isCommunitySegmentActivity(trip.activity)?'Community segment submission':'Private section'}`}))},
   trail:canLinkTrail(trip)?{linkedID:trip.trail?.id??null,linkedLabel:trip.trail?trailLinkLabel(trip.trail):null}:null,
   trim:!segmentsBlockedTrim(trip,pointCount)?{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??pointCount-1,pointCount}:null,
   diagnostics:diagnostics(trip,segmentReport),

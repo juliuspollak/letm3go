@@ -205,9 +205,7 @@ struct SegmentEditorCard: View {
         let figures = draft.start < draft.end && draft.end < points.count ? NamedSegments.measure(points, start: draft.start, end: draft.end, automatic: model.automatic) : nil
         let problem = NamedSegments.problem(start: draft.start, end: draft.end, points: points, automatic: model.automatic)
         return DetailCard(title: draft.existing ? "Edit segment" : "Create segment", symbol: "flag") {
-            if model.presentation.header.activity == "MTB" {
-                DetailFootnote(text: "This MTB section is submitted for community review during sync. Your full activity and health measurements stay private.")
-            }
+            DetailFootnote(text: "This section is submitted for community review during sync. Your full activity and health measurements stay private.")
             RangeSlider(start: draft.start, end: draft.end, first: draft.window.lowerBound, last: draft.window.upperBound, startLabel: "Segment start", endLabel: "Segment finish", onBegin: model.rememberSegmentRange) { model.setSegment(start: $0, end: $1) }
             HStack {
                 NudgeReadout(label: "Start") { model.nudgeSegment(start: $0) }

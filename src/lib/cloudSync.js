@@ -2,6 +2,7 @@ import {sliceActivityRoute} from './mtbSegment.js';
 import {backupClassification} from './stopBackup.js';
 import {resolvePhoto} from './privateMedia.js';
 import {wakePush} from './pushWake.js';
+import {isCommunitySegmentActivity} from './namedSegments.js';
 // Owner-private permanent activity backup. Local originals stay durable until
 // confirmation. Requires the existing named-segment/Watch schema migration;
 // community MTB publication is a separate, moderated selected-geometry proposal.
@@ -75,17 +76,21 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
   updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
  }
- // Public MTB definitions are proposals in the existing moderation system.
+ // Public segment definitions are proposals in the existing moderation system.
  // Native section IDs are durable idempotency keys; retrying cannot duplicate one.
+ let segmentFailure=null;
  for(const trip of state.trips||[]){
-  if(!finished(trip)||trip.activity!=='MTB'||updated[trip.id]?.backupVersion!==PRIVATE_BACKUP_VERSION)continue;
+  if(!finished(trip)||!isCommunitySegmentActivity(trip.activity)||updated[trip.id]?.backupVersion!==PRIVATE_BACKUP_VERSION)continue;
   for(const segment of trip.details?.namedSegments||[]){
    const key=`mtb-segment:${segment.id}`;
-   if(updated[key]?.owner===owner&&updated[key]?.uploaded)continue;
+   if(updated[key]?.owner===owner&&(updated[key]?.uploaded||updated[key]?.skipped))continue;
+   // One segment can never hold up the rest of the backup: an unusable one is
+   // recorded as skipped, a temporary failure is reported after everything else.
    const selection=sliceActivityRoute(trip.points,segment.startIndex,segment.endIndex);
-   if(!selection)throw new Error('MTB segment geometry could not be saved. The original recording is preserved.');
+   if(!selection){updated[key]={owner,skipped:'geometry'};await acknowledge();continue;}
    const {data,error}=await client.rpc('create_mtb_segment',{p_client_id:segment.id,p_name:segment.name,p_geometry:selection.geometry.map(([lat,lon])=>[lat,lon]),p_distance_meters:selection.distanceMeters,p_direction:'both',p_access:'unknown'});
-   if(error||data!==segment.id)throw new Error('MTB segment submission was not confirmed. It remains on this device for retry.');
+   if(error&&/already exists|Invalid segment proposal|another creator/i.test(error.message||'')){updated[key]={owner,skipped:'refused'};await acknowledge();continue;}
+   if(error||data!==segment.id){segmentFailure=segmentFailure||new Error('Segment submission was not confirmed. It remains on this device for retry.');continue;}
    updated[key]={owner,uploaded:true};await acknowledge();
    // Moderators are told a new segment is waiting for review.
    void wakePush(client);
@@ -116,5 +121,6 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
   }
  }
+ if(segmentFailure)throw segmentFailure;
  return {receipts:updated,uploaded,photosUploaded,deleted,pending,lastSync:new Date().toISOString()};
 }
