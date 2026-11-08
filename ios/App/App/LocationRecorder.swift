@@ -5,6 +5,12 @@ import WebKit
 import CoreMotion
 
 final class LocationRecorder: NSObject, CLLocationManagerDelegate {
+    // Debug builds are signed for the APNs sandbox; TestFlight and App Store builds for production.
+    #if DEBUG
+    static let apnsEnvironment = "sandbox"
+    #else
+    static let apnsEnvironment = "production"
+    #endif
     static let shared = LocationRecorder()
     let manager = CLLocationManager()
     var storage: RecordingStorage?

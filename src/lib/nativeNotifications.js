@@ -1,6 +1,12 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { config } from './config.js';
+const secure = registerPlugin('SecureSession');
+// The build decides the gateway (Debug: sandbox, TestFlight/App Store: production).
+async function apnsEnvironment() {
+  try { const { environment } = await secure.pushEnvironment(); if (environment === 'sandbox' || environment === 'production') return environment; } catch { /* older native build */ }
+  return config.apnsEnvironment;
+}
 
 // Call only from an explicit user action after signing in. The future backend
 // adapter must own registration, logout revocation, and authenticated token storage.
@@ -12,7 +18,7 @@ export async function enableNativePush({ persistToken, onError }) {
   try {
     handles.push(await PushNotifications.addListener('registration', ({ value }) => {
       // Never log device tokens or send them to an unverified endpoint.
-      Promise.resolve().then(() => persistToken({ token: value, environment: config.apnsEnvironment })).catch(onError);
+      apnsEnvironment().then(environment => persistToken({ token: value, environment })).catch(onError);
     }));
     handles.push(await PushNotifications.addListener('registrationError', () => onError(new Error('Push registration failed.'))));
     let permission = await PushNotifications.checkPermissions();
