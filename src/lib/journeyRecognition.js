@@ -37,6 +37,9 @@ export function failedLookup(previous,now=Date.now()){
 // route evidence or measured dwell; POI search regions are never area boundaries.
 export function assessRoutePlaces(trip,records=[],{hidden=[]}={}){
  const points=(trip.points||[]).filter(p=>Number.isFinite(p.accuracy)&&p.accuracy>=0&&p.accuracy<=40);
+ // Every recorded fix, whatever its accuracy, for containment in a saved place:
+ // the person's own statement about a location does not depend on the fix quality.
+ const raw=(trip.points||[]).filter(p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
  const excluded=new Set(hidden.map(normalized)),unique=new Map();
  for(const record of records)for(const raw of record?.candidates||[]){
   const category=/\bcar\s?park(?:ing)?$/i.test(raw?.name||'')?'parking':({'MKPOICategoryHiking':'trail','MKPOICategoryLandmark':'landmark'}[raw?.category]||raw?.category);
@@ -62,14 +65,33 @@ export function assessRoutePlaces(trip,records=[],{hidden=[]}={}){
   const dwellSupported=dwellSeconds>=(candidate.category==='parking'?45:120);
   const savedRadius=candidate.userSaved?Math.max(50,Math.min(2000,Number(candidate.radius)||150)):0;
   const savedCoverage=savedRadius&&points.length?distances.filter(d=>d<=savedRadius).length/points.length:0;
-  const savedSupported=savedCoverage>=.7&&points.length>=3&&points.at(-1).timestamp-points[0].timestamp>=300;
+  // A drive to a shop never covers the shop's radius, so a saved place is
+  // recognised where the activity ended instead: the last fixes sit inside the
+  // saved radius, with the final fix inside and at least two of the last three.
+  // Home and Work are personal places, not destinations, and keep the existing
+  // route-coverage rule so a drive home is never titled as a destination.
+  const savedSensitive=candidate.userSaved===true&&['home','work'].includes(String(candidate.kind||'').toLocaleLowerCase());
+  const insideRaw=raw.map(p=>metres(p,candidate)<=savedRadius);
+  const savedEnd=!!savedRadius&&!savedSensitive&&raw.length>=2&&insideRaw.at(-1)===true&&insideRaw.slice(-3).filter(Boolean).length>=2;
+  const savedSupported=savedEnd||(savedCoverage>=.7&&points.length>=3&&points.at(-1).timestamp-points[0].timestamp>=300);
+  // Two saved places can overlap. The nearer one to where the activity ended is
+  // the destination; the name breaks an exact tie, so matching never depends on
+  // the order the places were saved in.
+  const savedEndMetres=savedEnd?Math.min(...raw.slice(-3).map(p=>metres(p,candidate))):null;
   const supported=routeSupported||dwellSupported||savedSupported;
   const endpoint=[trip.points?.[0],trip.points?.at(-1)].some(p=>p&&metres(p,candidate)<=40);
   const confidence=supported?Math.min(.97,.72+(routeSupported ? .12 : 0)+(dwellSupported ? .08 : 0)+(candidate.placeID ? .03 : 0)):.25;
-  const role=supported?(candidate.category==='parking'?'startFinish':significant?'destination':'visited'):'nearby';
-  return {...candidate,role,supported,confidence,score:(routeSupported?50:0)+(dwellSupported?25:0)+(candidate.verifiedTrail?35:0)+({nationalPark:24,reserve:22,park:18,trail:16,lookout:12,landmark:10}[candidate.category]||0),
-   evidence:{nearestMeters:Number.isFinite(nearest)?Math.round(nearest):null,routeCoverage:coverage,dwellSeconds:Math.round(dwellSeconds),endpoint,routeSupported,containment:savedSupported?'user-saved geofence':false},
-   reason:supported?(savedSupported?'user-saved geofence and sustained observations':routeSupported?'category and sustained route coverage':'observed dwell'):'insufficient visit evidence'};
+  // Where the person saved the place the activity ended at, that place is the
+  // destination even if its name reads like parking ("Bunnings car park"): they
+  // chose it as the end of the trip, not as a car park they merely passed.
+  const role=supported?(candidate.category==='parking'&&!savedEnd?'startFinish':significant||savedEnd?'destination':'visited'):'nearby';
+  // An explicit saved place outranks any POI inference: the person named this
+  // location themselves, so no evidence score can overtake it. Within that tier
+  // the place nearest the end of the activity ranks higher.
+  const savedScore=savedEnd?1000+60-Math.min(20,savedEndMetres/10):0;
+  return {...candidate,role,supported,confidence,score:savedScore+(routeSupported?50:0)+(dwellSupported?25:0)+(candidate.verifiedTrail?35:0)+({nationalPark:24,reserve:22,park:18,trail:16,lookout:12,landmark:10}[candidate.category]||0),
+   evidence:{nearestMeters:Number.isFinite(nearest)?Math.round(nearest):null,routeCoverage:coverage,dwellSeconds:Math.round(dwellSeconds),endpoint,routeSupported,savedEnd,containment:savedSupported?'user-saved geofence':false},
+   reason:supported?(savedEnd?'user-saved place where the activity ended':savedSupported?'user-saved geofence and sustained observations':routeSupported?'category and sustained route coverage':'observed dwell'):'insufficient visit evidence'};
  }).sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name));
  const primary=assessed.find(c=>c.role==='destination')||null;
  return {primary,startFinish:assessed.filter(c=>c.role==='startFinish'),visited:assessed.filter(c=>c.supported).slice(0,6),nearby:assessed.filter(c=>!c.supported).slice(0,12),candidates:assessed};

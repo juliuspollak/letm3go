@@ -78,7 +78,10 @@ describe('activityPresentation',()=>{
  });
  it('is the contract ActivityDetailsCore.swift decodes',()=>{
   const fixture=`${process.cwd()}/tests/fixtures/activity-presentation.json`;
-  const current=JSON.stringify({...present(journey,{maximumHeartRate:190,segmentRides:segmentRides(journey,[journey])}),revision:1},null,1)+'\n';
+  // The tag history travels with the projection so the tags section can offer the
+  // names already in use without a second read of the journal.
+  const history=[{id:'older',startedAt:1790000000,tags:['Bunnings','Coffee']},{id:'newer',startedAt:1794000000,tags:['Coast walk']}];
+  const current=JSON.stringify({...present(journey,{maximumHeartRate:190,segmentRides:segmentRides(journey,[journey]),grouping:{...grouping,journeys:history}}),revision:1},null,1)+'\n';
   if(process.env.UPDATE_FIXTURES)writeFileSync(fixture,current);
   // The shape is the contract. Displayed times differ by the machine's time zone.
   const shape=value=>Array.isArray(value)?value.slice(0,1).map(shape):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,shape(value[key])])):value===null?'null':typeof value;

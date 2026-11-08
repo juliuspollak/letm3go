@@ -90,3 +90,45 @@ it('does not turn a car park labelled as a park by the provider into the primary
  expect(result.candidates[0].category).toBe('parking');
  expect(result.candidates[0].providerCategory).toBe('park');
 });
+
+// A drive to a shop never covers the shop's radius the way a loop covers a park.
+// The person's own saved place is recognised where the activity ended instead.
+const drivePoints=Array.from({length:30},(_,i)=>({...center,latitude:center.latitude+.004*(29-i)/29,longitude:center.longitude+.0004*(29-i)/29,timestamp:1000+i*20,accuracy:6,segment:0}));
+const drive={...trip,id:'drive',activity:'Driving',title:'Driving · 1 Nov 2026',points:drivePoints,startedAt:1000,endedAt:1000+29*20,state:'finished',tags:[],details:{}};
+const savedBunnings={...center,id:'bunnings',name:'Bunnings',kind:'favourite',radius:200};
+const savedCandidates=places=>[{candidates:places.map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}];
+it('recognises a saved place where a drive ended, though the route never covered it',()=>{
+ const result=assessRoutePlaces(drive,savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+ expect(result.primary.evidence.savedEnd).toBe(true);
+ expect(result.primary.evidence.containment).toBe('user-saved geofence');
+ expect(result.primary.reason).toBe('user-saved place where the activity ended');
+ expect(result.visited.map(p=>p.name)).toEqual(['Bunnings']);
+});
+it('never titles a drive home as a destination, saved place or not',()=>{
+ expect(assessRoutePlaces(drive,savedCandidates([{...savedBunnings,id:'home',name:'Home',kind:'home'}])).primary).toBeNull();
+ expect(assessRoutePlaces(drive,savedCandidates([{...savedBunnings,id:'work',name:'Work',kind:'work'}])).primary).toBeNull();
+});
+it('picks the saved place nearest the end when two overlap, whatever the save order',()=>{
+ const twin={...savedBunnings,id:'warehouse',name:'Bunnings Warehouse',latitude:center.latitude+.0006,radius:300};
+ expect(assessRoutePlaces(drive,savedCandidates([savedBunnings,twin])).primary.name).toBe('Bunnings');
+ expect(assessRoutePlaces(drive,savedCandidates([twin,savedBunnings])).primary.name).toBe('Bunnings');
+});
+it('tags the drive with the saved place it ended at',()=>{
+ const result=buildJourneys([drive],{owner:'owner',metadata:emptyGrouping('owner'),places:[savedBunnings]});
+ expect(result.journeys[0].recognition.primary.name).toBe('Bunnings');
+ expect(result.journeys[0].tags).toContain('Bunnings');
+ expect(result.destinations[0].name).toBe('Bunnings');
+});
+it('keeps a saved place as the destination even when its name reads like parking',()=>{
+ const parking={...savedBunnings,id:'bunnings-carpark',name:'Bunnings car park'};
+ const result=assessRoutePlaces(drive,savedCandidates([parking]));
+ expect(result.primary.name).toBe('Bunnings car park');
+ expect(result.startFinish).toEqual([]);
+});
+it('lets the saved place outrank a park the same drive passed',()=>{
+ const park={...center,latitude:center.latitude+.002,name:'Bass Point Reserve',placeID:'apple:reserve',category:'park'};
+ const result=assessRoutePlaces(drive,[...savedCandidates([savedBunnings]),{candidates:[park]}]);
+ expect(result.primary.name).toBe('Bunnings');
+ expect(result.nearby.map(p=>p.name)).toContain('Bass Point Reserve');
+});

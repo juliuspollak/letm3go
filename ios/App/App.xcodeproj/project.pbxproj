@@ -20,6 +20,7 @@
 		AD200000000000000000000A /* ActivityPhotoViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD100000000000000000000A; };
 		AD200000000000000000000B /* ActivityDetailsFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD100000000000000000000B; };
 		AD200000000000000000000C /* RecorderHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD100000000000000000000C; };
+		AD200000000000000000000D /* TagSearchCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD100000000000000000000D; };
 		AD3000000000000000000001 /* FloatingPanel in Frameworks */ = {isa = PBXBuildFile; productRef = AD3000000000000000000002 /* FloatingPanel */; };
 		E10000000000000000000001 /* PlaceSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000002; };
 		BB0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002; };
@@ -112,6 +113,7 @@
 		AD100000000000000000000A /* ActivityPhotoViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityPhotoViews.swift; sourceTree = "<group>"; };
 		AD100000000000000000000B /* ActivityDetailsFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityDetailsFixture.swift; sourceTree = "<group>"; };
 		AD100000000000000000000C /* RecorderHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderHarness.swift; sourceTree = "<group>"; };
+		AD100000000000000000000D /* TagSearchCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagSearchCore.swift; sourceTree = "<group>"; };
 		E10000000000000000000002 /* PlaceSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceSearch.swift; sourceTree = "<group>"; };
 		BB0000000000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		BA0000000000000000000002 /* AppleMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMaps.swift; sourceTree = "<group>"; };
@@ -215,6 +217,7 @@
 				AD100000000000000000000A /* ActivityPhotoViews.swift */,
 				AD100000000000000000000B /* ActivityDetailsFixture.swift */,
 				AD100000000000000000000C /* RecorderHarness.swift */,
+				AD100000000000000000000D /* TagSearchCore.swift */,
 				B10000000000000000000003 /* WatchActivityCore.swift */,
 				B10000000000000000000033 /* WatchRecordingCore.swift */,
 				B30000000000000000000001 /* AutomaticTracking.swift */,
@@ -422,6 +425,7 @@
 				AD200000000000000000000A /* ActivityPhotoViews.swift in Sources */,
 				AD200000000000000000000B /* ActivityDetailsFixture.swift in Sources */,
 				AD200000000000000000000C /* RecorderHarness.swift in Sources */,
+				AD200000000000000000000D /* TagSearchCore.swift in Sources */,
 				B20000000000000000000003 /* WatchActivityCore.swift in Sources */,
 				B20000000000000000000033 /* WatchRecordingCore.swift in Sources */,
 				B40000000000000000000001 /* AutomaticTracking.swift in Sources */,

@@ -299,7 +299,14 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
  const ordered=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  if(action.type==='manualTags'){
   if(!ordered.some(t=>t.id===action.anchor)||!Array.isArray(action.tags)||action.tags.length>20||action.tags.some(t=>typeof t!=='string'||t.length>50))throw new Error('Choose up to 20 short tags.');
-  next.manualTags[action.anchor]=[...new Set(action.tags.map(t=>t.trim()).filter(Boolean))];
+  // One name however it was typed: "Bunnings", "bunnings " and "BUNNINGS " are
+  // the same tag. The spelling typed first is kept.
+  const seen=new Set();
+  next.manualTags[action.anchor]=action.tags.map(t=>t.trim().replace(/\s+/g,' ')).filter(tag=>{
+   const key=tag.toLocaleLowerCase();
+   if(!tag||seen.has(key))return false;
+   seen.add(key);return true;
+  });
  }else if(action.type==='hideTag'){
   if(!ordered.some(t=>t.id===action.anchor)||typeof action.tag!=='string'||!action.tag.trim()||action.tag.length>60)throw new Error('Invalid tag.');
   const hidden=[...new Set([...(next.hiddenTags[action.anchor]||[]),action.tag.trim()])];

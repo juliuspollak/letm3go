@@ -2,7 +2,11 @@ import {recognitionSampleIndexes,assessRoutePlaces} from './journeyRecognition.j
 import {rankPlaceCandidates} from './placeTagPolicy.js';
 import {recorder} from './recorder.js';
 import {placeKey} from './journeyGrouping.js';
+import {metres} from './journeyGeometry.js';
 import {suggestedStopVenues,STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
+// How near the end of an activity a named place has to be to be offered as its
+// destination rather than as an ordinary point along the route.
+export const DESTINATION_METRES = 150;
 
 // Looks up named places along a route for the person to review. Shared by the
 // React tags section and the native Activity Details screen. `signal` stops a
@@ -51,13 +55,23 @@ export async function scanRoutePlaces(trip,{hidden=[],places={},onProgress,signa
      result.push({name:venue.name,tag:venue.name,kind:'stop',source:venue.source});
   }
   const assessed=assessRoutePlaces(trip,[place],{hidden});
-  for(const candidate of assessed.candidates){if(!result.some(x=>x.name.toLowerCase()===candidate.name.toLowerCase()))result.push({...candidate,tag:candidate.name,kind:'route',source:place?.source||'Apple Maps'});}
+  // The last sample is where the activity ended. A named place there is a
+  // destination candidate: a driving policy ignores ordinary route samples, so a
+  // shop reached at the end of a drive would otherwise never be offered at all.
+  const atDestination=n===samples.length-1;
+  for(const candidate of assessed.candidates){
+   if(result.some(x=>x.name.toLowerCase()===candidate.name.toLowerCase()))continue;
+   const destination=atDestination&&Number.isFinite(candidate.latitude)&&Number.isFinite(candidate.longitude)&&metres(point,candidate)<=DESTINATION_METRES;
+   result.push({...candidate,tag:candidate.name,kind:destination?'destination':'route',source:place?.source||'Apple Maps'});
+  }
   for(const name of [place?.nearbyName,...(place?.categories||[]),...(place?.nearbyName?[]:[place?.locality])].filter(Boolean)){
    if(typeof name!=='string'||name.length>50||result.some(x=>x.tag.toLowerCase()===name.toLowerCase())||hidden.some(x=>x.toLowerCase()===name.toLowerCase()))continue;
-   result.push({tag:name,name,kind:stop?'stop':n===samples.length-1?'destination':n===0?'start':'route',point:n,source:place?.source||'Apple Maps'});
+   result.push({tag:name,name,kind:stop?'stop':atDestination?'destination':n===0?'start':'route',point:n,source:place?.source||'Apple Maps'});
   }
   onProgress?.({notice:`Checking place ${n+1} of ${samples.length}…`,suggestions:ranked()});
  }
  const available=ranked();
- return {suggestions:available,notice:available.length?`Found ${available.length} place suggestions. Review them below.`:errors.length===samples.length?'Place lookup could not run. Check your connection and try again on your iPhone.':errors.length?`No new places found; ${errors.length} lookups failed. Try again with a connection.`:'No additional named places found along this route. You can still add a place name manually.'};
+ // Adding a suggestion is a tag on this activity. The place is only remembered
+ // when the person turns on "Remember this destination", and the notice says so.
+ return {suggestions:available,notice:available.length?`Found ${available.length} place suggestion${available.length===1?'':'s'}. Adding ${available.length===1?'it':'one'} tags this trip only.`:errors.length===samples.length?'Place lookup could not run. Check your connection and try again on your iPhone.':errors.length?`No new places found; ${errors.length} lookups failed. Try again with a connection.`:'No additional named places found along this route. You can still add a place name manually.'};
 }

@@ -163,6 +163,11 @@ struct ActivityPresentation: Decodable, Equatable {
         var activities: [RelatedActivity]
     }
     struct Tags: Decodable, Equatable {
+        struct Remembered: Decodable, Equatable {
+            var name: String
+            var radius: Double
+            var distanceMeters: Double
+        }
         var anchor: String
         var auto: [String]
         var custom: [String]
@@ -171,6 +176,37 @@ struct ActivityPresentation: Decodable, Equatable {
         var canRemember: Bool
         var limit: Int
         var destination: Destination?
+        // Whether this destination is already a saved place, and the wording that
+        // separates tagging this trip from remembering the destination. These are
+        // additive: an older projection still opens its tags section.
+        var remembered: Remembered?
+        var note: String
+        var rememberLabel: String
+        var addedNote: String
+        var savedNote: String
+        var known: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case anchor, auto, custom, hidden, readOnly, canRemember, limit, destination
+            case remembered, note, rememberLabel, addedNote, savedNote, known
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            anchor = try c.decode(String.self, forKey: .anchor)
+            auto = try c.decode([String].self, forKey: .auto)
+            custom = try c.decode([String].self, forKey: .custom)
+            hidden = try c.decode([String].self, forKey: .hidden)
+            readOnly = try c.decode(Bool.self, forKey: .readOnly)
+            canRemember = try c.decode(Bool.self, forKey: .canRemember)
+            limit = try c.decode(Int.self, forKey: .limit)
+            destination = try c.decodeIfPresent(Destination.self, forKey: .destination)
+            remembered = try c.decodeIfPresent(Remembered.self, forKey: .remembered)
+            note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+            rememberLabel = try c.decodeIfPresent(String.self, forKey: .rememberLabel) ?? ""
+            addedNote = try c.decodeIfPresent(String.self, forKey: .addedNote) ?? ""
+            savedNote = try c.decodeIfPresent(String.self, forKey: .savedNote) ?? ""
+            known = try c.decodeIfPresent([String].self, forKey: .known) ?? []
+        }
     }
     struct Facts: Decodable, Equatable {
         var lines: [String]

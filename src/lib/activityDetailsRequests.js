@@ -9,6 +9,7 @@ import {scanRoutePlaces} from './routePlaceScan.js';
 import {saveMaximum} from './heartRate.js';
 import {sendReportAsFeedback,feedbackReference} from './feedback.js';
 import {buildCollectionItem,collectionItemError,categoriesForActivity,COLLECTION_CATEGORIES} from './collection.js';
+import {rememberDestinationPlace} from './rememberedPlace.js';
 
 const trailDistance=m=>Number.isFinite(m)?(m>=1000?`${(m/1000).toFixed(1)} km`:`${Math.round(m)} m`):'Unknown length';
 
@@ -75,12 +76,11 @@ export const activityDetailsRequests={
   const result=await scanRoutePlaces(trip,{hidden:grouping?.metadata?.hiddenTags?.[anchor]||[],places:grouping?.metadata?.places,signal,onProgress:({notice})=>progress?.(notice)});
   return {notice:result.notice,suggestions:result.suggestions.map(item=>({tag:item.tag,source:item.source||'Apple Maps'}))};
  },
- async rememberPlace({trip,run},{name}){
-  const end=(trip.segments?.at(-1)||trip).points?.at(-1);
-  if(!Number.isFinite(end?.latitude)||!Number.isFinite(end?.longitude))throw new Error('Could not save the destination. No tag was added.');
-  const result=await run('savePlace',{name,kind:'favourite',latitude:end.latitude,longitude:end.longitude,radius:200});
-  if(!result)throw new Error('Could not save the destination. No tag was added.');
-  return {};
+ // Remembering a destination is the only way a place becomes recognised on future
+ // visits. It is independent of the activity's tags, so a tag already on the
+ // activity never blocks it.
+ async rememberPlace({trip,run,grouping},{name}){
+  return rememberDestinationPlace({trip,run,grouping,name});
  },
  async findTrails({trip}){
   const route=Array.isArray(trip.route)?trip.route:[];

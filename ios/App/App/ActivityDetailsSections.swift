@@ -584,7 +584,7 @@ struct ActivityTagsSection: View {
     var body: some View {
         if let tags = model.presentation.tags {
             DetailCard(title: "Your tags", symbol: "tag") {
-                DetailFootnote(text: "Personal tags describe this trip. To recognise a destination on future visits, also save it as a place.")
+                DetailFootnote(text: tags.note.isEmpty ? "Personal tags describe this trip. To recognise a destination on future visits, also save it as a place." : tags.note)
                 FlowTags(items: tags.auto + tags.custom, disabled: working || tags.readOnly) { tag in
                     if tags.custom.contains(tag) { act(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom.filter { $0 != tag }]) }
                     else { act(["type": "hideTag", "anchor": tags.anchor, "tag": tag]) }
@@ -622,10 +622,24 @@ struct ActivityTagsSection: View {
                         }.font(.footnote)
                     }
                     HStack {
-                        TextField("e.g. Stockland Shellharbour", text: $value).textFieldStyle(.roundedBorder).accessibilityLabel("New custom tag")
-                        Button("Add tag") { add(tags) }.buttonStyle(DetailButtonStyle()).disabled(working || value.trimmingCharacters(in: .whitespaces).isEmpty || tags.custom.count >= tags.limit)
+                        TextField("Search or add a tag", text: $value).textFieldStyle(.roundedBorder)
+                            .textInputAutocapitalization(.words).autocorrectionDisabled()
+                            .accessibilityLabel("New custom tag")
+                        Button(pick(tags).applied ? "Remember" : "Add tag") { add(tags) }
+                            .buttonStyle(DetailButtonStyle())
+                            .disabled(working || pick(tags).name.isEmpty || (!pick(tags).applied && tags.custom.count >= tags.limit))
                     }
-                    if tags.canRemember { Toggle("Remember the destination for future trips (200 m radius)", isOn: $remember).font(.footnote) }
+                    // The tags this person already uses, filtered as they type. Nothing
+                    // is looked up: the history arrived with the presentation.
+                    ForEach(matches(tags), id: \.self) { name in
+                        Button(name) { add(tags, name: name) }
+                            .font(.footnote)
+                            .accessibilityLabel("Use tag \(name)")
+                    }
+                    if tags.canRemember {
+                        Toggle(tags.rememberLabel.isEmpty ? "Remember the destination for future trips (200 m radius)" : tags.rememberLabel, isOn: $remember)
+                            .font(.footnote)
+                    }
                 }
                 if !notice.isEmpty { DetailFootnote(text: notice) }
             }
@@ -653,22 +667,46 @@ struct ActivityTagsSection: View {
             } catch { notice = error.localizedDescription }
         }
     }
-    private func add(_ tags: ActivityPresentation.Tags) {
-        let tag = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !tag.isEmpty, !tags.custom.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) else { return }
+    private func add(_ tags: ActivityPresentation.Tags, name: String? = nil) {
+        let chosen = TagSearch.choice(known: tags.known, applied: tags.auto + tags.custom, query: name ?? value)
+        guard !chosen.name.isEmpty else { return }
         let remembering = remember && tags.canRemember
+        // A tag already on this trip never blocks remembering the destination: the
+        // tag is skipped, the place is still saved. This is the silent no-op the
+        // section used to fall into.
+        if chosen.applied && !remembering {
+            notice = "That tag is already on this trip. Turn on \(rememberToggle(tags)) to save it as a place."
+            return
+        }
         working = true; notice = ""
         Task {
             defer { working = false }
             if remembering {
-                do { _ = try await model.request("rememberPlace", args: ["name": tag]) }
+                do { _ = try await model.request("rememberPlace", args: ["name": chosen.name]) }
                 catch { notice = error.localizedDescription; return }
             }
-            if await model.groupingAct(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom + [tag]]) {
-                value = ""; remember = false
-                notice = remembering ? "Saved as a favourite place. Future trips ending nearby will use this name." : "Tag added to this trip."
+            if !chosen.applied {
+                guard await model.groupingAct(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom + [chosen.name]]) else { return }
             }
+            value = ""; remember = false
+            notice = remembering ? savedNotice(tags, name: chosen.name) : (tags.addedNote.isEmpty ? "Tag added to this trip only." : tags.addedNote)
         }
+    }
+    private func pick(_ tags: ActivityPresentation.Tags) -> (name: String, applied: Bool, create: Bool) {
+        TagSearch.choice(known: tags.known, applied: tags.auto + tags.custom, query: value)
+    }
+    private func matches(_ tags: ActivityPresentation.Tags) -> [String] {
+        TagSearch.suggestions(known: tags.known, applied: tags.auto + tags.custom, query: value)
+    }
+    private func rememberToggle(_ tags: ActivityPresentation.Tags) -> String {
+        tags.rememberLabel.isEmpty ? "Remember the destination for future trips" : tags.rememberLabel
+    }
+    // The sentence comes from src/lib/tagMessaging.js through the presentation; the
+    // destination's name is only known where the person typed it.
+    private func savedNotice(_ tags: ActivityPresentation.Tags, name: String) -> String {
+        let radius = String(Int(tags.remembered?.radius ?? 200))
+        guard !tags.savedNote.isEmpty else { return "Saved \(name) as a place. Future trips ending within \(radius) m are named \(name)." }
+        return tags.savedNote.replacingOccurrences(of: "{name}", with: name).replacingOccurrences(of: "{radius}", with: radius)
     }
 }
 
