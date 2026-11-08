@@ -17,5 +17,8 @@ describe('APNs payload', () => {
     expect(classifyApns(429, 'TooManyRequests')).toBe('retry');
     expect(classifyApns(503, 'ServiceUnavailable')).toBe('retry');
     expect(classifyApns(400, 'PayloadTooLarge')).toBe('failed');
+    expect(classifyApns(403, 'InvalidProviderToken')).toBe('retry');
+    expect(classifyApns(403, 'ExpiredProviderToken')).toBe('retry');
+    expect(classifyApns(403, 'Forbidden')).toBe('failed');
   });
 });

@@ -1,5 +1,4 @@
 import { supabase } from './supabase.js';
-import { wakePush } from './pushWake.js';
 
 // Thin wrappers over the MTB Supabase RPCs. Every call is inert (returns null or
 // an empty list) when Supabase is not configured, so the app runs normally without
@@ -47,7 +46,6 @@ export async function submitMtb(kind, id) {
   if (!supabase) return;
   const { error } = await supabase.rpc('submit_mtb', { p_kind: kind, p_id: id });
   if (error) throw new Error(error.message || 'Could not submit.');
-  void wakePush(supabase);
 }
 
 export async function moderateMtb(kind, id, action, note = '') {

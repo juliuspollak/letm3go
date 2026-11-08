@@ -1,6 +1,6 @@
 import {PGlite} from '@electric-sql/pglite';
 import {readFile,readdir} from 'node:fs/promises';
-import {beforeAll,afterAll,expect,it} from 'vitest';
+import {beforeAll,afterAll,describe,expect,it} from 'vitest';
 // Notifications and pokes (20261123000000): who is told about what, the unread
 // inbox behind the profile badge, and the push outbox drained by the Edge Function.
 const db=new PGlite();
@@ -27,7 +27,13 @@ beforeAll(async()=>{
  grant usage on schema auth to anon,authenticated,service_role;
  grant execute on function auth.uid(),auth.jwt() to anon,authenticated,service_role;
  alter default privileges in schema public grant all on tables to anon,authenticated,service_role;
- alter default privileges in schema public grant execute on functions to anon,authenticated,service_role;`);
+ alter default privileges in schema public grant execute on functions to anon,authenticated,service_role;
+ -- Stand-ins for Supabase Vault and pg_net: calls are recorded, not sent.
+ create schema vault;create table vault.decrypted_secrets(name text primary key,decrypted_secret text);
+ create schema net;create table net.calls(id serial primary key,url text,body jsonb,headers jsonb);create table net.fail(on_ boolean);
+ create function net.http_post(url text,body jsonb,headers jsonb,timeout_milliseconds integer) returns bigint language plpgsql as $$
+  begin if exists(select 1 from net.fail where on_) then raise exception 'network down'; end if;
+  insert into net.calls(url,body,headers) values(url,body,headers); return currval('net.calls_id_seq'); end $$;`);
  for(const filename of (await readdir('supabase/migrations')).filter(x=>x.endsWith('.sql')).sort())
   await db.exec(await readFile('supabase/migrations/'+filename,'utf8'));
  await db.exec(`reset role;insert into public.profiles(id,display_name) values('${ann}','Ann'),('${bob}','Bob'),('${admin}','Julius') on conflict (id) do update set display_name=excluded.display_name;
@@ -112,3 +118,115 @@ it('a device whose session ended receives nothing',async()=>{
  await as('authenticated',bob,`select public.send_poke('${ann}')`);
  expect((await as('service_role','','select * from public.claim_push_deliveries(10)')).rows).toEqual([]);
 });
+
+describe('push delivery lifecycle',()=>{
+ const bobSession='b0000000-0000-4000-8000-00000000000b',bobSession2='b0000000-0000-4000-8000-00000000000c';
+ const phone='d1000000-0000-4000-8000-000000000001',ipad='d1000000-0000-4000-8000-000000000002';
+ const register=(user,session,installation,token)=>as('authenticated',user,`select public.register_push_device('${installation}','${token}','production','${user}')`,`{"session_id":"${session}"}`);
+ const claim=async()=>(await as('service_role','','select * from public.claim_push_deliveries(50)')).rows;
+ const finish=(row,status)=>as('service_role','',`select public.finish_push_delivery(${row.delivery_id},'${row.claim_token}','${status}',0,'test') as s`);
+ const poke=async(from,to)=>{await db.exec('reset role;delete from public.pokes');await as('authenticated',from,`select public.send_poke('${to}')`);};
+ beforeAll(async()=>{
+  await db.exec(`reset role;delete from public.push_devices;insert into auth.sessions(id,user_id) values('${bobSession}','${bob}'),('${bobSession2}','${bob}'),('${annSession}','${ann}') on conflict do nothing`);
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('fans one notification out to every signed-in device of the recipient, and only theirs',async()=>{
+  await register(bob,bobSession,phone,'1'.repeat(64));await register(bob,bobSession2,ipad,'2'.repeat(64));
+  await poke(ann,bob);
+  const rows=await claim();
+  expect(rows.map(row=>row.apns_token).sort()).toEqual(['1'.repeat(64),'2'.repeat(64)]);
+  expect(new Set(rows.map(row=>row.notification_id)).size).toBe(1);
+  for(const row of rows)await finish(row,'sent');
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('switching account on one phone moves the device: the previous user gets nothing there',async()=>{
+  await register(ann,annSession,phone,'1'.repeat(64));
+  expect((await as('service_role','',`select owner_id from public.push_devices where installation_id='${phone}'`)).rows[0].owner_id).toBe(ann);
+  await poke(ann,bob);
+  expect((await claim()).map(row=>row.apns_token)).toEqual(['2'.repeat(64)]);
+  await db.exec(`reset role;update public.notification_deliveries set status='sent',claim_token=null,lease_expires_at=null where status='sending'`);
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('a temporary failure is retried with backoff and gives up after five attempts',async()=>{
+  await poke(ann,bob);
+  let [row]=await claim();
+  for(let attempt=1;attempt<=5;attempt++){
+   expect((await finish(row,'retry')).rows[0].s).toBe(attempt<5?'retry':'failed');
+   if(attempt<5){
+    expect(await claim()).toEqual([]); // backoff: not claimable straight away
+    await db.exec(`reset role;update public.notification_deliveries set next_attempt_at=now() where id=${row.delivery_id}`);
+    [row]=await claim();expect(row.delivery_id).toBeDefined();
+   }
+  }
+  await db.exec(`reset role;update public.notification_deliveries set next_attempt_at=now() where id=${row.delivery_id}`);
+  expect(await claim()).toEqual([]);
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('a notification older than a day is never pushed',async()=>{
+  await poke(ann,bob);
+  await db.exec(`reset role;update public.notifications set created_at=now()-interval '25 hours' where push_processed_at is null`);
+  expect(await claim()).toEqual([]);
+ });
+ it('a stuck send whose lease expired is reclaimed once, not duplicated',async()=>{
+  await poke(ann,bob);
+  const [row]=await claim();
+  expect(await claim()).toEqual([]);
+  await db.exec(`reset role;update public.notification_deliveries set lease_expires_at=now()-interval '1 second' where id=${row.delivery_id}`);
+  const again=await claim();
+  expect(again.map(r=>r.delivery_id)).toEqual([row.delivery_id]);
+  expect(again[0].claim_token).not.toBe(row.claim_token);
+  expect((await finish(row,'sent')).rows[0].s).toBeNull(); // the stale claim cannot complete it
+ });
+});
+
+describe('server-side dispatch (20261124000000): pushes go out while every app is closed',()=>{
+ const sql=async q=>{await db.exec('reset role');return db.query(q);};
+ const calls=async()=>(await sql('select url,headers from net.calls order by id')).rows;
+ const reset=()=>db.exec('reset role;delete from net.calls;delete from net.fail;delete from public.pokes');
+ it('does nothing until the worker URL and secret are in Vault',async()=>{
+  await reset();
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect(await calls()).toEqual([]);
+ });
+ it('one poke calls the worker once, with the secret, straight from the database',async()=>{
+  await db.exec(`reset role;insert into vault.decrypted_secrets values('push_worker_url','https://example.supabase.co/functions/v1/send-push-notifications'),('push_worker_secret','s3cret') on conflict do nothing`);
+  await reset();
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect(await calls()).toEqual([{url:'https://example.supabase.co/functions/v1/send-push-notifications',headers:{'Content-Type':'application/json',Authorization:'Bearer s3cret'}}]);
+ });
+ it('feedback to several admins is one statement and one worker call',async()=>{
+  await db.exec(`reset role;insert into public.app_admins(user_id) values('${moderator}') on conflict do nothing`);
+  await reset();
+  await feedback(ann,'Two admins');
+  expect((await sql(`select count(*)::int n from public.notifications where kind='feedback_new' and push_processed_at is null`)).rows[0].n).toBeGreaterThanOrEqual(2);
+  expect(await calls()).toHaveLength(1);
+ });
+ it('a failed dispatch never undoes the poke; the recovery check picks it up',async()=>{
+  await reset();await db.exec('insert into net.fail values(true)');
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect((await sql(`select count(*)::int n from public.pokes`)).rows[0].n).toBe(1);
+  expect(await calls()).toEqual([]);
+  await db.exec('delete from net.fail');
+  expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(true);
+  expect(await calls()).toHaveLength(1);
+ });
+ it('the recovery check makes no request when nothing is due',async()=>{
+  await db.exec(`reset role;update public.notifications set push_processed_at=now() where push_processed_at is null;update public.notification_deliveries set status='sent',claim_token=null,lease_expires_at=null where status<>'sent'`);
+  await reset();
+  expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(false);
+  expect(await calls()).toEqual([]);
+ });
+ it('only the database can dispatch',async()=>{
+  for(const role of ['anon','authenticated'])await expect(as(role,ann,'select public.dispatch_push()')).rejects.toThrow();
+  await expect(as('authenticated',ann,'select public.dispatch_due_pushes()')).rejects.toThrow();
+ });
+ it('fan-out marks only the batch it actually fanned out; the rest stay queued and due',async()=>{
+  await db.exec(`reset role;update public.notifications set push_processed_at=now() where push_processed_at is null;
+   insert into public.notifications(event_key,recipient_id,kind,title,body) select 'bulk:'||g,'${bob}','poke','Poke','Hi' from generate_series(1,501) g`);
+  await db.exec('reset role');await db.query('select * from public.claim_push_deliveries(1)');
+  expect((await sql(`select count(*)::int n from public.notifications where push_processed_at is null`)).rows[0].n).toBe(1);
+  expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(true);
+  await db.exec(`reset role;update public.notifications set read_at=now() where event_key like 'bulk:%'`);
+ });
+});
+
