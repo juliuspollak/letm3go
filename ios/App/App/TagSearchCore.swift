@@ -40,7 +40,9 @@ enum TagSearch {
             let aPrefix = a.hasPrefix(needle), bPrefix = b.hasPrefix(needle)
             if aPrefix != bPrefix { return aPrefix }
             if a.count != b.count { return a.count < b.count }
-            return (names[a] ?? a) < (names[b] ?? b)
+            // localeCompare in JavaScript: alphabetical in the device locale, so
+            // "bar" comes before "Car" (a code-point < would put capitals first).
+            return (names[a] ?? a).localizedCompare(names[b] ?? b) == .orderedAscending
         }
         return sorted.prefix(max(0, limit)).compactMap { names[$0] }
     }
