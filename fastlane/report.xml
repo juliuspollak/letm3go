@@ -5,22 +5,22 @@
     
     
       
-      <testcase classname="fastlane.lanes" name="0: default_platform" time="0.000203">
+      <testcase classname="fastlane.lanes" name="0: default_platform" time="0.000269">
         
       </testcase>
     
       
-      <testcase classname="fastlane.lanes" name="1: python3 /Users/juliuspollak/Projects/letm3go/scripts/validate-ipa.py /Users/juliuspollak/Projects/letm3go/.build/release/Letm3go.ipa" time="0.256772">
+      <testcase classname="fastlane.lanes" name="1: python3 /Users/juliuspollak/Projects/letm3go/scripts/validate-ipa.py /Users/juliuspollak/Projects/letm3go/.build/release/Letm3go.ipa" time="0.237045">
         
       </testcase>
     
       
-      <testcase classname="fastlane.lanes" name="2: app_store_connect_api_key" time="0.002403">
+      <testcase classname="fastlane.lanes" name="2: app_store_connect_api_key" time="0.002894">
         
       </testcase>
     
       
-      <testcase classname="fastlane.lanes" name="3: upload_to_testflight" time="202.714691">
+      <testcase classname="fastlane.lanes" name="3: upload_to_testflight" time="237.898758">
         
       </testcase>
     
