@@ -2,6 +2,7 @@ import {metres} from './journeyGeometry.js';
 export {metres} from './journeyGeometry.js';
 import {assessRoutePlaces,destinationTitle,destinationVisits} from './journeyRecognition.js';
 import {activityCode} from './activityNames.js';
+import {personalPlace} from './rememberedPlace.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 import {recognisedStopVenue} from './stopVenueRecognition.js';
@@ -233,6 +234,12 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    if(previous?.source===s&&previous.recordKey===recordKey&&previous.edits===edits&&previous.places===places&&previous.vehicles===vehicles&&previous.telemetry===telemetry)return previous.journey;
    const from=geo(endpoint(s,false),places,metadata),to=geo(endpoint(s,true),places,metadata),stops=[...internalStops(s,context),...nativeStops(s,context)].sort((a,b)=>a.startedAt-b.startedAt);
    const recognition=assessRoutePlaces(s,[...(s.points||[]).map(p=>metadata.places[placeKey(p)]),{candidates:places.filter(p=>p.id).map(p=>({...p,placeID:`saved:${p.id}`,category:'savedPlace',userSaved:true}))}],{hidden:metadata.hiddenTags?.[s.id]||[]});
+   // The end point lying inside a saved place is not enough to tag the trip with it:
+   // only the place recognition says the activity ended at (its final run of fixes,
+   // nearest of overlapping fences) is the saved destination. Home and Work, and the
+   // "A → B" location line, keep the end point as they always have.
+   const endedAt=recognition.candidates.find(c=>c.userSaved&&c.evidence.savedEnd)?.name;
+   const toTag=to.kind&&!personalPlace(to)&&to.nearbyName!==endedAt?{...to,kind:'',nearbyName:metadata.places[placeKey(endpoint(s,true))]?.nearbyName||''}:to;
    const hiddenNames=new Set((metadata.hiddenTags?.[s.id]||[]).map(name=>String(name).trim().toLocaleLowerCase()));
    // A saved place (other than Home) at the stop names it as firmly as a rename.
    const destinationStop=stops.filter(stop=>stop.id.startsWith('native:')&&(stop.stopVenue||metadata.stopEdits[stop.id]?.name||(stop.kind&&stop.kind!=='home'))&&
@@ -247,7 +254,7 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    // A hidden inferred name must not survive in a previously projected title;
    // manual titles remain authoritative.
    const generatedNativeStopTitle=!!stopTitle&&nativeStopTitle;
-   const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,to,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
+   const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,toTag,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
    const presentation=saved?.presentation;
    if(presentation&&s.geometryLoaded!==true){
     journey.title=metadata.titles[s.id]||presentation.title||journey.title;
@@ -299,7 +306,14 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[],places=
  const ordered=activities.filter(t=>!(t.ownerID||t.owner_id)||(t.ownerID||t.owner_id)===owner).sort((a,b)=>a.startedAt-b.startedAt||a.id.localeCompare(b.id));
  if(action.type==='manualTags'){
   if(!ordered.some(t=>t.id===action.anchor)||!Array.isArray(action.tags)||action.tags.length>20||action.tags.some(t=>typeof t!=='string'||t.length>50))throw new Error('Choose up to 20 short tags.');
-  next.manualTags[action.anchor]=[...new Set(action.tags.map(t=>t.trim()).filter(Boolean))];
+  // One name however it was typed: "Bunnings", "bunnings " and "BUNNINGS " are
+  // the same tag. The spelling typed first is kept.
+  const seen=new Set();
+  next.manualTags[action.anchor]=action.tags.map(t=>t.trim().replace(/\s+/g,' ')).filter(tag=>{
+   const key=tag.toLocaleLowerCase();
+   if(!tag||seen.has(key))return false;
+   seen.add(key);return true;
+  });
  }else if(action.type==='hideTag'){
   if(!ordered.some(t=>t.id===action.anchor)||typeof action.tag!=='string'||!action.tag.trim()||action.tag.length>60)throw new Error('Invalid tag.');
   const hidden=[...new Set([...(next.hiddenTags[action.anchor]||[]),action.tag.trim()])];

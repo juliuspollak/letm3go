@@ -9,7 +9,7 @@
   "recordedTitle": "Morning ride",
   "activity": "MTB",
   "activityLabel": "Mountain biking",
-  "subtitle": "Mountain biking · 2026-09-21",
+  "subtitle": "Mountain biking · 2026-09-22",
   "location": "Recorded on this iPhone",
   "state": "finished",
   "source": "device",
@@ -2727,7 +2727,7 @@
       "rank": 1,
       "time": "1:30",
       "interrupted": false,
-      "when": "21 Sept 2026 · 2:13 pm",
+      "when": "22 Sept 2026 · 12:13 am",
       "title": "Morning ride",
       "current": true
      }
@@ -2743,7 +2743,7 @@
     "startIndex": 2,
     "endIndex": 20,
     "summary": "900 m · 1 min 30 s",
-    "detail": "2:13:30 pm – 2:15:00 pm · 19 GPS points · Private"
+    "detail": "12:13:30 am – 12:15:00 am · 19 GPS points · Community segment submission"
    }
   ]
  },
@@ -2799,6 +2799,22 @@
   "readOnly": false,
   "canRemember": true,
   "limit": 20,
+  "remembered": null,
+  "note": "Tags describe this trip only. To recognise this destination on future visits, turn on Remember the destination.",
+  "rememberLabel": "Remember this destination on future trips (within 200 m)",
+  "addedNote": "Tag added to this trip only.",
+  "savedNote": "Saved {name} as a place. Future trips ending within {radius} m are named {name}.",
+  "labels": {
+   "add": "Add tag",
+   "remember": "Remember",
+   "applied": "Already on this trip"
+  },
+  "appliedNote": "That tag is already on this trip. Turn on “Remember the destination” to save it as a place.",
+  "known": [
+   "Coast walk",
+   "Bunnings",
+   "Coffee"
+  ],
   "destination": null
  },
  "facts": {

@@ -3,6 +3,8 @@ import {readFileSync,writeFileSync} from 'node:fs';
 import {activityMap,activityPresentation,HEART_CHART_SAMPLES,PRESENTATION_SCHEMA} from './activityPresentation.js';
 import {recordedJourney} from './recorder.js';
 import {segmentRides} from './segmentRides.js';
+import {alreadyApplied,PLACE_SAVED_TEMPLATE,TAG_ACTION_LABELS} from './tagMessaging.js';
+import {TAG_LIMIT} from './tagSearch.js';
 
 const owner='11111111-1111-4111-8111-111111111111';
 const points=Array.from({length:60},(_,i)=>({latitude:-34.42+i*0.0005,longitude:150.89+i*0.0004,timestamp:1790000000+i*5,accuracy:5,altitude:20+i,speed:3,segment:i<30?0:1}));
@@ -76,9 +78,22 @@ describe('activityPresentation',()=>{
   expect(present().trim).toEqual({start:0,end:59,pointCount:60});
   expect(present({...journey,source:'watch'}).trim).toBeNull();
  });
+ it('carries the button wording and the tag limit both screens show',()=>{
+  const shown=present(journey,{maximumHeartRate:190,segmentRides:segmentRides(journey,[journey]),grouping:{...grouping,journeys:[journey]}});
+  // Wording lives in tagMessaging.js, so the native section cannot name a press
+  // differently from the React one, and the limit is the same 20 for both.
+  expect(shown.tags.labels).toEqual(TAG_ACTION_LABELS);
+  expect(shown.tags.appliedNote).toBe(alreadyApplied);
+  expect(shown.tags.limit).toBe(TAG_LIMIT);
+  expect(shown.tags.savedNote).toBe(PLACE_SAVED_TEMPLATE);
+  expect(shown.tags.known).toEqual(['Dirt']);
+ });
  it('is the contract ActivityDetailsCore.swift decodes',()=>{
   const fixture=`${process.cwd()}/tests/fixtures/activity-presentation.json`;
-  const current=JSON.stringify({...present(journey,{maximumHeartRate:190,segmentRides:segmentRides(journey,[journey])}),revision:1},null,1)+'\n';
+  // The tag history travels with the projection so the tags section can offer the
+  // names already in use without a second read of the journal.
+  const history=[{id:'older',startedAt:1790000000,tags:['Bunnings','Coffee']},{id:'newer',startedAt:1794000000,tags:['Coast walk']}];
+  const current=JSON.stringify({...present(journey,{maximumHeartRate:190,segmentRides:segmentRides(journey,[journey]),grouping:{...grouping,journeys:history}}),revision:1},null,1)+'\n';
   if(process.env.UPDATE_FIXTURES)writeFileSync(fixture,current);
   // The shape is the contract. Displayed times differ by the machine's time zone.
   const shape=value=>Array.isArray(value)?value.slice(0,1).map(shape):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,shape(value[key])])):value===null?'null':typeof value;

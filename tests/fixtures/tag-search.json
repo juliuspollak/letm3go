@@ -1,0 +1,188 @@
+{
+ "limits": {
+  "suggestion": 6,
+  "tagLength": 50,
+  "tagLimit": 20
+ },
+ "labels": {
+  "add": "Add tag",
+  "remember": "Remember",
+  "applied": "Already on this trip"
+ },
+ "known": [
+  "Bunnings",
+  "Coffee",
+  "Coffee stop",
+  "Coast walk",
+  "Bike shop",
+  "Bunnings Warehouse",
+  "bunnings tyre centre",
+  "BUNNINGS"
+ ],
+ "cases": [
+  {
+   "query": "bun",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [
+    "Bunnings",
+    "Bunnings Warehouse",
+    "bunnings tyre centre"
+   ],
+   "choice": {
+    "name": "bun",
+    "applied": false,
+    "create": true
+   }
+  },
+  {
+   "query": " co ",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [
+    "Coffee",
+    "Coast walk",
+    "Coffee stop"
+   ],
+   "choice": {
+    "name": "co",
+    "applied": false,
+    "create": true
+   }
+  },
+  {
+   "query": "COF",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [
+    "Coffee",
+    "Coffee stop"
+   ],
+   "choice": {
+    "name": "COF",
+    "applied": false,
+    "create": true
+   }
+  },
+  {
+   "query": "co",
+   "applied": [
+    "Coffee"
+   ],
+   "limit": 6,
+   "suggestions": [
+    "Coast walk",
+    "Coffee stop"
+   ],
+   "choice": {
+    "name": "co",
+    "applied": false,
+    "create": true
+   }
+  },
+  {
+   "query": "bunnings",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [
+    "Bunnings",
+    "Bunnings Warehouse",
+    "bunnings tyre centre"
+   ],
+   "choice": {
+    "name": "Bunnings",
+    "applied": false,
+    "create": false
+   }
+  },
+  {
+   "query": "coffee",
+   "applied": [
+    "Coffee"
+   ],
+   "limit": 6,
+   "suggestions": [
+    "Coffee stop"
+   ],
+   "choice": {
+    "name": "Coffee",
+    "applied": true,
+    "create": false
+   }
+  },
+  {
+   "query": "zzz",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [],
+   "choice": {
+    "name": "zzz",
+    "applied": false,
+    "create": true
+   }
+  },
+  {
+   "query": "   ",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [],
+   "choice": {
+    "name": "",
+    "applied": false,
+    "create": false
+   }
+  },
+  {
+   "query": "co",
+   "applied": [],
+   "limit": 2,
+   "suggestions": [
+    "Coffee",
+    "Coast walk"
+   ],
+   "choice": {
+    "name": "co",
+    "applied": false,
+    "create": true
+   }
+  }
+ ],
+ "actions": [
+  {
+   "name": "",
+   "applied": false,
+   "remembering": false,
+   "action": null
+  },
+  {
+   "name": "Burger",
+   "applied": false,
+   "remembering": false,
+   "action": "add"
+  },
+  {
+   "name": "Burger",
+   "applied": false,
+   "remembering": true,
+   "action": "remember"
+  },
+  {
+   "name": "Bunnings",
+   "applied": true,
+   "remembering": false,
+   "action": "applied"
+  },
+  {
+   "name": "Bunnings",
+   "applied": true,
+   "remembering": true,
+   "action": "remember"
+  },
+  {
+   "name": "  ",
+   "applied": true,
+   "remembering": true,
+   "action": null
+  }
+ ]
+}

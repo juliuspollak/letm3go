@@ -9,6 +9,9 @@ import {scanRoutePlaces} from './routePlaceScan.js';
 import {saveMaximum} from './heartRate.js';
 import {sendReportAsFeedback,feedbackReference} from './feedback.js';
 import {buildCollectionItem,collectionItemError,categoriesForActivity,COLLECTION_CATEGORIES} from './collection.js';
+import {rememberDestinationPlace} from './rememberedPlace.js';
+import {cachedKnownTags,TAG_LIMIT} from './tagSearch.js';
+import {commitTagAndPlace} from './tagCommit.js';
 
 const trailDistance=m=>Number.isFinite(m)?(m>=1000?`${(m/1000).toFixed(1)} km`:`${Math.round(m)} m`):'Unknown length';
 
@@ -75,12 +78,18 @@ export const activityDetailsRequests={
   const result=await scanRoutePlaces(trip,{hidden:grouping?.metadata?.hiddenTags?.[anchor]||[],places:grouping?.metadata?.places,signal,onProgress:({notice})=>progress?.(notice)});
   return {notice:result.notice,suggestions:result.suggestions.map(item=>({tag:item.tag,source:item.source||'Apple Maps'}))};
  },
- async rememberPlace({trip,run},{name}){
-  const end=(trip.segments?.at(-1)||trip).points?.at(-1);
-  if(!Number.isFinite(end?.latitude)||!Number.isFinite(end?.longitude))throw new Error('Could not save the destination. No tag was added.');
-  const result=await run('savePlace',{name,kind:'favourite',latitude:end.latitude,longitude:end.longitude,radius:200});
-  if(!result)throw new Error('Could not save the destination. No tag was added.');
-  return {};
+ // One press of the tags button: the same coordinator the React section uses, so
+ // a partial failure reads the same on both and leaves the same things for a
+ // retry. The activity's own tags are read here rather than sent from Swift, so a
+ // screen that is a moment out of date can never drop a tag added meanwhile.
+ async tagAndRemember({trip,run,grouping,places,lastError},{name,remember=false}){
+  const anchor=trip.segmentIDs?.[0]||trip.id;
+  const custom=grouping?.metadata?.manualTags?.[anchor]||[];
+  const auto=(trip.tags||[]).filter(tag=>!custom.some(own=>own.toLowerCase()===tag.toLowerCase()));
+  return commitTagAndPlace({name,known:cachedKnownTags(grouping?.journeys),applied:[...auto,...custom],custom,
+   remember:remember===true,canRemember:true,limit:TAG_LIMIT,
+   addTag:tags=>grouping.act({type:'manualTags',anchor,tags}),
+   savePlace:label=>rememberDestinationPlace({trip,run,places,name:label,lastError})});
  },
  async findTrails({trip}){
   const route=Array.isArray(trip.route)?trip.route:[];

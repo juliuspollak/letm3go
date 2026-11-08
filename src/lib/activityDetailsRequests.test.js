@@ -21,6 +21,41 @@ describe('native requests',()=>{
  it('refuses to open an unknown activity',async()=>{
   await expect(requests.openActivity({activities:[],trip:{},onSource:()=>{}},{id:'x'})).rejects.toThrow('not available');
  });
+ // The native tags section sends one request and shows one answer, so a partial
+ // failure reads the same there as in React.
+ const tagTrip={id:'a',activity:'Driving',tags:['Bunnings'],segmentIDs:['s1'],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
+ it('adds a tag and remembers the destination in one request',async()=>{
+  const act=vi.fn().mockResolvedValue(true),run=vi.fn().mockResolvedValue({places:[]});
+  const result=await requests.tagAndRemember({trip:tagTrip,run,grouping:{metadata:{manualTags:{s1:[]}},act}},{name:'Fuel',remember:true});
+  expect(act).toHaveBeenCalledWith({type:'manualTags',anchor:'s1',tags:['Fuel']});
+  expect(run).toHaveBeenCalledWith('savePlace',{name:'Fuel',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200});
+  expect(result).toEqual({tag:'added',place:'saved',name:'Fuel',clear:true,notice:'Saved Fuel as a place. Future trips ending within 200 m are named Fuel.'});
+ });
+ it('reuses the saved place already covering the end (from the recorder list, not the lookup cache)',async()=>{
+  const act=vi.fn().mockResolvedValue(true),run=vi.fn().mockResolvedValue({places:[]});
+  const saved={id:'11111111-1111-4111-8111-111111111111',name:'Fuel',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200};
+  await requests.tagAndRemember({trip:tagTrip,run,places:[saved],grouping:{metadata:{manualTags:{s1:[]},places:{'-34.4000,150.9000':{nearbyName:'Fuel'}}},act}},{name:'fuel',remember:true});
+  expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:saved.id}));
+ });
+ it('remembers the destination without rewriting a tag the activity carries',async()=>{
+  const act=vi.fn(),run=vi.fn().mockResolvedValue({places:[]});
+  const result=await requests.tagAndRemember({trip:tagTrip,run,grouping:{metadata:{},act}},{name:'bunnings',remember:true});
+  expect(act).not.toHaveBeenCalled();
+  expect(result).toMatchObject({tag:'applied',place:'saved',clear:true});
+ });
+ it('reports the half that failed, with the recorder reason, and keeps the typed name',async()=>{
+  const act=vi.fn().mockResolvedValue(true),run=vi.fn().mockResolvedValue(null);
+  const result=await requests.tagAndRemember({trip:tagTrip,run,grouping:{metadata:{},act},lastError:()=>'The recorder is offline.'},{name:'Fuel',remember:true});
+  expect(result).toEqual({tag:'added',place:'failed',name:'Fuel',clear:false,
+   notice:'Tag added to this trip only. The recorder is offline. Try again to save the destination.'});
+ });
+ it('holds the tag back until the trip has room, without saving the place either',async()=>{
+  const act=vi.fn(),run=vi.fn();
+  const full=Array.from({length:20},(_,i)=>`Tag ${i}`);
+  const result=await requests.tagAndRemember({trip:tagTrip,run,grouping:{metadata:{manualTags:{s1:full}},act}},{name:'Fuel',remember:true});
+  expect(act).not.toHaveBeenCalled();expect(run).not.toHaveBeenCalled();
+  expect(result).toMatchObject({tag:'failed',place:'skipped',clear:false});
+ });
  it('updates the selection after a native write and leaves after a delete',async()=>{
   const onUpdated=vi.fn(),onDeleted=vi.fn(),run=vi.fn().mockResolvedValue({trips:[{id:'a',title:'New'}]});
   await acceptNativeMutation({run,onUpdated,onDeleted,activityID:'a',kind:'updated'});

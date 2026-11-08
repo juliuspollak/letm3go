@@ -33,6 +33,34 @@ do {
     gate.accept(newer)
     check(gate.verdict(decoded, ownerID: decoded.ownerID) == .stale, "a late older revision cannot replace a newer one")
 
+    // Tags: the destination can be remembered without the tag being re-added, and
+    // search-as-you-type obeys the same rules as the React section.
+    check(decoded.tags?.remembered == nil && decoded.tags?.known.contains("Bunnings") == true, "the tags section carries the tag history")
+    check(decoded.tags?.note.isEmpty == false && decoded.tags?.rememberLabel.contains("200 m") == true && decoded.tags?.savedNote.contains("{name}") == true, "the tags section carries its wording")
+    let searchFixture = FileManager.default.contents(atPath: "tests/fixtures/tag-search.json")!
+    let search = try! JSONSerialization.jsonObject(with: searchFixture) as! [String: Any]
+    let limits = search["limits"] as! [String: Int]
+    check(limits["suggestion"] == TagSearch.suggestionLimit && limits["tagLength"] == TagSearch.tagLengthLimit, "tag search limits match JavaScript")
+    let known = search["known"] as! [String]
+    for row in search["cases"] as! [[String: Any]] {
+        let query = row["query"] as! String
+        let applied = row["applied"] as? [String] ?? []
+        let limit = row["limit"] as? Int ?? TagSearch.suggestionLimit
+        check(TagSearch.suggestions(known: known, applied: applied, query: query, limit: limit) == row["suggestions"] as! [String], "tag suggestions match JavaScript for \"\(query)\"")
+        let expected = row["choice"] as! [String: Any]
+        let chosen = TagSearch.choice(known: known, applied: applied, query: query)
+        check(chosen.name == expected["name"] as! String && chosen.applied == expected["applied"] as! Bool && chosen.create == expected["create"] as! Bool, "tag choice matches JavaScript for \"\(query)\"")
+    }
+    check(TagSearch.normalise("  Bike   shop ") == "Bike shop" && TagSearch.key(" BUNNINGS ") == "bunnings", "one tag however it is typed")
+    check(TagSearch.suggestions(known: known, applied: [], query: "   ").isEmpty, "nothing is offered before a letter is typed")
+    check(decoded.tags?.actionLabels.applied == "Already on this trip" && decoded.tags?.appliedExplanation.contains("already on this trip") == true, "the tags section carries the button wording")
+    for row in search["actions"] as! [[String: Any]] {
+        let name = row["name"] as! String
+        let action = TagSearch.action(name: name, applied: row["applied"] as! Bool, remembering: row["remembering"] as! Bool)
+        check(action?.rawValue == row["action"] as? String, "the button action matches JavaScript for \"\(name)\"")
+    }
+    check(TagSearch.action(name: "  ", applied: true, remembering: true) == nil, "nothing typed, nothing offered")
+
     var camera = ActivityMapCameraPolicy()
     check(!camera.recentre(), "nothing to recentre before a fit")
     check(!camera.shouldFit(activityID: "a", hasRoute: false), "no route, no fit")

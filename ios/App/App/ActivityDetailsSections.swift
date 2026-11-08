@@ -584,7 +584,7 @@ struct ActivityTagsSection: View {
     var body: some View {
         if let tags = model.presentation.tags {
             DetailCard(title: "Your tags", symbol: "tag") {
-                DetailFootnote(text: "Personal tags describe this trip. To recognise a destination on future visits, also save it as a place.")
+                DetailFootnote(text: tags.note.isEmpty ? "Personal tags describe this trip. To recognise a destination on future visits, also save it as a place." : tags.note)
                 FlowTags(items: tags.auto + tags.custom, disabled: working || tags.readOnly) { tag in
                     if tags.custom.contains(tag) { act(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom.filter { $0 != tag }]) }
                     else { act(["type": "hideTag", "anchor": tags.anchor, "tag": tag]) }
@@ -622,10 +622,31 @@ struct ActivityTagsSection: View {
                         }.font(.footnote)
                     }
                     HStack {
-                        TextField("e.g. Stockland Shellharbour", text: $value).textFieldStyle(.roundedBorder).accessibilityLabel("New custom tag")
-                        Button("Add tag") { add(tags) }.buttonStyle(DetailButtonStyle()).disabled(working || value.trimmingCharacters(in: .whitespaces).isEmpty || tags.custom.count >= tags.limit)
+                        TextField("Search or add a tag", text: $value).textFieldStyle(.roundedBorder)
+                            .textInputAutocapitalization(.words).autocorrectionDisabled()
+                            .accessibilityLabel("New custom tag")
+                        // The label says what a press will do. A tag the activity
+                        // already carries has nothing to add, so it is named and
+                        // disabled until the Remember toggle gives it something to do.
+                        Button(actionLabel(tags)) { add(tags) }
+                            .buttonStyle(DetailButtonStyle())
+                            .disabled(working || actionKind(tags) == nil || actionKind(tags) == .applied
+                                || (!pick(tags).applied && tags.custom.count >= tags.limit))
                     }
-                    if tags.canRemember { Toggle("Remember the destination for future trips (200 m radius)", isOn: $remember).font(.footnote) }
+                    if actionKind(tags) == .applied {
+                        DetailFootnote(text: tags.appliedExplanation)
+                    }
+                    // The tags this person already uses, filtered as they type. Nothing
+                    // is looked up: the history arrived with the presentation.
+                    ForEach(matches(tags), id: \.self) { name in
+                        Button(name) { add(tags, name: name) }
+                            .font(.footnote)
+                            .accessibilityLabel("Use tag \(name)")
+                    }
+                    if tags.canRemember {
+                        Toggle(tags.rememberLabel.isEmpty ? "Remember the destination for future trips (200 m radius)" : tags.rememberLabel, isOn: $remember)
+                            .font(.footnote)
+                    }
                 }
                 if !notice.isEmpty { DetailFootnote(text: notice) }
             }
@@ -653,21 +674,47 @@ struct ActivityTagsSection: View {
             } catch { notice = error.localizedDescription }
         }
     }
-    private func add(_ tags: ActivityPresentation.Tags) {
-        let tag = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !tag.isEmpty, !tags.custom.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) else { return }
+    private func add(_ tags: ActivityPresentation.Tags, name: String? = nil) {
+        guard !working else { return }
+        let chosen = TagSearch.choice(known: tags.known, applied: tags.auto + tags.custom, query: name ?? value)
+        guard !chosen.name.isEmpty else { return }
         let remembering = remember && tags.canRemember
+        // A tag already on this trip never blocks remembering the destination: the
+        // tag is skipped, the place is still saved. This is the silent no-op the
+        // section used to fall into.
+        if chosen.applied && !remembering {
+            notice = tags.appliedExplanation
+            return
+        }
         working = true; notice = ""
         Task {
             defer { working = false }
-            if remembering {
-                do { _ = try await model.request("rememberPlace", args: ["name": tag]) }
-                catch { notice = error.localizedDescription; return }
-            }
-            if await model.groupingAct(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom + [tag]]) {
-                value = ""; remember = false
-                notice = remembering ? "Saved as a favourite place. Future trips ending nearby will use this name." : "Tag added to this trip."
-            }
+            do {
+                // One request, coordinated in JavaScript, so a partial failure says
+                // the same thing here as it does in React and keeps the typed name
+                // and the tick for the retry.
+                let result = try await model.request("tagAndRemember", args: ["name": chosen.name, "remember": remembering])
+                notice = result["notice"] as? String ?? ""
+                if result["clear"] as? Bool == true { value = ""; remember = false }
+            } catch { notice = error.localizedDescription }
+        }
+    }
+    private func pick(_ tags: ActivityPresentation.Tags) -> (name: String, applied: Bool, create: Bool) {
+        TagSearch.choice(known: tags.known, applied: tags.auto + tags.custom, query: value)
+    }
+    private func matches(_ tags: ActivityPresentation.Tags) -> [String] {
+        TagSearch.suggestions(known: tags.known, applied: tags.auto + tags.custom, query: value)
+    }
+    private func actionKind(_ tags: ActivityPresentation.Tags) -> TagSearch.Action? {
+        TagSearch.action(name: value, applied: pick(tags).applied, remembering: remember && tags.canRemember)
+    }
+    private func actionLabel(_ tags: ActivityPresentation.Tags) -> String {
+        let labels = tags.actionLabels
+        switch actionKind(tags) {
+        case .add: return labels.add
+        case .remember: return labels.remember
+        case .applied: return labels.applied
+        case nil: return labels.add
         }
     }
 }

@@ -13,6 +13,9 @@ import {paceLabel,speedLabel} from './recorder.js';
 import {recordedRouteSegments} from './mapGeometry.js';
 import {deletionIDs} from './tripsList.js';
 import {tripDiagnostics} from './tripDiagnostics.js';
+import {cachedKnownTags,TAG_LIMIT} from './tagSearch.js';
+import {tagNote,rememberLabel,tagAdded,alreadyApplied,TAG_ACTION_LABELS,PLACE_SAVED_TEMPLATE,REMEMBER_RADIUS} from './tagMessaging.js';
+import {rememberedPlaceAt} from './rememberedPlace.js';
 import {equipmentActionLabel,equipmentForActivity,isDerivedEquipment,itemCategory,itemDetail,itemTitle,tripEquipment} from './collection.js';
 
 // The one description of an activity the native screen renders. Every rule that
@@ -101,7 +104,7 @@ function equipmentSection(trip,vehicles){
   options:[...extras,...compatible].map(item=>({id:String(item.id),title:itemTitle(item),detail:[itemDetail(item),itemCategory(item).label].filter(Boolean).join(' · '),archived:item.archived===true}))};
 }
 
-function tagSection(trip,grouping,onActivityAvailable){
+function tagSection(trip,grouping,onActivityAvailable,places){
  if(!grouping||trip.state==='recording')return null;
  const anchor=trip.segmentIDs?.[0]||trip.id;
  const custom=grouping.metadata?.manualTags?.[anchor]||[];
@@ -109,7 +112,17 @@ function tagSection(trip,grouping,onActivityAvailable){
  const destination=grouping.destinations?.find(d=>d.placeID===trip.recognition?.primary?.placeID);
  const auto=(trip.tags||[]).filter(t=>!custom.some(c=>c.toLowerCase()===t.toLowerCase()));
  const end=(trip.segments?.at(-1)||trip).points?.at(-1);
- return {anchor,auto,custom,hidden,readOnly:trip.readOnly===true,canRemember:Number.isFinite(end?.latitude)&&Number.isFinite(end?.longitude),limit:20,
+ // Whether this destination is already a saved place decides what the section may
+ // promise. Nothing here creates a place; only "Remember the destination" does.
+ const saved=rememberedPlaceAt(places,end);
+ return {anchor,auto,custom,hidden,readOnly:trip.readOnly===true,canRemember:Number.isFinite(end?.latitude)&&Number.isFinite(end?.longitude),limit:TAG_LIMIT,
+  remembered:saved?{name:saved.name,radius:saved.radius,distanceMeters:Math.round(saved.metres)}:null,
+  note:tagNote({remembered:saved}),rememberLabel:rememberLabel(saved?.radius||REMEMBER_RADIUS),addedNote:tagAdded,savedNote:PLACE_SAVED_TEMPLATE,
+  // The button's wording, and the explanation for a name the activity already
+  // carries, come from tagMessaging.js, so the native section cannot word them
+  // differently from React.
+  labels:TAG_ACTION_LABELS,appliedNote:alreadyApplied,
+  known:cachedKnownTags(grouping.journeys),
   destination:destination?{name:destination.name,summary:`Visited ${destination.visits} ${destination.visits===1?'time':'times'}`,activities:destination.activities.map(activity=>{
    const related=grouping.journeys?.find(j=>j.id===activity.id),comparison=related&&related.id!==trip.id?compareRoutes(trip,related):null;
    return {id:String(activity.id),title:`${activity.title} · ${new Date(activity.startedAt*1000).toLocaleDateString('en-AU')}`,openable:Boolean(related&&onActivityAvailable),comparison:comparison?comparison.similar?'Similar GPS route':comparison.partial?'Partial route overlap':'Same destination; different or unverified route':null};
@@ -177,7 +190,7 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
   trail:canLinkTrail(trip)?{linkedID:trip.trail?.id??null,linkedLabel:trip.trail?trailLinkLabel(trip.trail):null}:null,
   trim:!segmentsBlockedTrim(trip,pointCount)?{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??pointCount-1,pointCount}:null,
   diagnostics:diagnostics(trip,segmentReport),
-  tags:tagSection(trip,grouping,canOpenActivities),
+  tags:tagSection(trip,grouping,canOpenActivities,places),
   facts:{lines:factLines(trip,local,pointCount),evidence:trip.classification?.evidence||[]},
   stops:(trip.recognisedStops||[]).map(stop=>({id:String(stop.id),name:stop.name,tags:stop.tags||[],detail:`${Math.round(stop.durationSeconds/60)} min${stop.charging==='possible'?' · Possible charging':stop.charging==='confirmed'?' · Charging confirmed by vehicle':''}${stop.verdict==='ambiguous'&&typeof stop.reasons?.[1]==='string'?` · ${stop.reasons[1]}`:''}`,nearby:stop.nearbyName||null,canIgnore:!trip.readOnly})),
   story:{description:trip.description||'',notes:trip.notes||'',tags:trip.tags||[]},

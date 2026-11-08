@@ -234,6 +234,10 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .journey-custom-tags form{display:flex;gap:9px;margin-top:13px}
 .journey-custom-tags form input{min-width:0;flex:1;padding:11px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px;font-size:16px}
 .journey-custom-tags form button{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.journey-custom-tags .tag-picker{position:relative;display:flex;gap:9px;flex:1}
+.journey-custom-tags .tag-suggestions{position:absolute;z-index:20;top:calc(100% + 4px);left:0;right:0;margin:0;padding:4px;list-style:none;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 10px 24px #0000001f;max-height:220px;overflow:auto}
+.journey-custom-tags .tag-suggestions button{display:flex;align-items:center;gap:7px;width:100%;padding:9px 10px;border:0;border-radius:8px;background:none;color:var(--ink);font-size:14px;text-align:left}
+.journey-custom-tags .tag-suggestions button:hover,.journey-custom-tags .tag-suggestions button:focus-visible{background:var(--soft)}
 .journey-custom-tags .manual-tag{display:inline-flex;align-items:center;gap:6px}
 .journey-custom-tags .manual-tag button{display:inline-flex;padding:2px;color:inherit}
 @media(max-width:760px){.trips-search-active{position:sticky;top:8px;background:var(--bg);padding:8px 0;margin-top:-8px;border-radius:12px;box-shadow:0 8px 15px #00000010}.trips-search-active .select-filter{display:none}.journey-custom-tags form{flex-wrap:wrap}.journey-custom-tags form button{min-height:40px}}
