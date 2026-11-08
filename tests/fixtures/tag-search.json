@@ -1,7 +1,13 @@
 {
  "limits": {
   "suggestion": 6,
-  "tagLength": 50
+  "tagLength": 50,
+  "tagLimit": 20
+ },
+ "labels": {
+  "add": "Add tag",
+  "remember": "Remember",
+  "applied": "Already on this trip"
  },
  "known": [
   "Bunnings",
@@ -139,6 +145,44 @@
     "applied": false,
     "create": true
    }
+  }
+ ],
+ "actions": [
+  {
+   "name": "",
+   "applied": false,
+   "remembering": false,
+   "action": null
+  },
+  {
+   "name": "Burger",
+   "applied": false,
+   "remembering": false,
+   "action": "add"
+  },
+  {
+   "name": "Burger",
+   "applied": false,
+   "remembering": true,
+   "action": "remember"
+  },
+  {
+   "name": "Bunnings",
+   "applied": true,
+   "remembering": false,
+   "action": "applied"
+  },
+  {
+   "name": "Bunnings",
+   "applied": true,
+   "remembering": true,
+   "action": "remember"
+  },
+  {
+   "name": "  ",
+   "applied": true,
+   "remembering": true,
+   "action": null
   }
  ]
 }

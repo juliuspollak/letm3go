@@ -58,7 +58,7 @@ export default function NativeActivityDetail(props){
  const context=useRef(null);
  const handlers=useRef(null);
  useEffect(()=>{
-  context.current={client:supabase,trip,ownerID,sharedReadOnly,activities:sharedReadOnly?[]:journeys||activities||[],grouping:sharedReadOnly?null:grouping||journeyGrouping,run:sharedReadOnly?null:run,auth,onSource:sharedReadOnly?null:onSource,addEquipmentItem:sharedReadOnly?null:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
+  context.current={client:supabase,trip,ownerID,sharedReadOnly,activities:sharedReadOnly?[]:journeys||activities||[],grouping:sharedReadOnly?null:grouping||journeyGrouping,run:sharedReadOnly?null:run,lastError:props.lastError,auth,onSource:sharedReadOnly?null:onSource,addEquipmentItem:sharedReadOnly?null:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
   handlers.current={onBack,onDeleted,onUpdated,run};
  });
 

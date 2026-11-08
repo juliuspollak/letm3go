@@ -15,6 +15,13 @@ final class ActivityDetailsFixtureService: ActivityDetailsService {
         switch op {
         case "privacyStatus": return ["audience": "private", "household": false, "friends": [String](), "options": ["friends": [["id": "f1", "name": "Ava"]], "household": "Family"]]
         case "findTrails": return ["trails": []]
+        // The sample screen answers the one op the tags section sends, with the same
+        // sentences the app shows, so driving it by hand matches the real thing.
+        case "tagAndRemember":
+            let name = args["name"] as? String ?? ""
+            return ["notice": args["remember"] as? Bool == true
+                ? "Saved \(name) as a place. Future trips ending within 200 m are named \(name)."
+                : "Tag added to this trip only.", "clear": true]
         default: return [:]
         }
     }

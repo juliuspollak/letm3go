@@ -54,4 +54,17 @@ enum TagSearch {
         let existing = onActivity ?? known.first { key($0) == needle }
         return (name: existing.map { normalise($0) } ?? text, applied: onActivity != nil, create: !text.isEmpty && existing == nil)
     }
+
+    // What the submit button will do, so its label never promises an action a press
+    // will not take: a tag the activity already carries has nothing to add, and is
+    // only worth pressing once remembering the destination gives it something to do.
+    // `tagAction` in src/lib/tagMessaging.js answers the same three cases; the
+    // wording comes from the presentation, so only the rule is duplicated here.
+    enum Action: String { case add, remember, applied }
+
+    static func action(name: String, applied: Bool, remembering: Bool) -> Action? {
+        guard !normalise(name).isEmpty else { return nil }
+        if remembering { return .remember }
+        return applied ? .applied : .add
+    }
 }

@@ -53,6 +53,13 @@ do {
     }
     check(TagSearch.normalise("  Bike   shop ") == "Bike shop" && TagSearch.key(" BUNNINGS ") == "bunnings", "one tag however it is typed")
     check(TagSearch.suggestions(known: known, applied: [], query: "   ").isEmpty, "nothing is offered before a letter is typed")
+    check(decoded.tags?.actionLabels.applied == "Already on this trip" && decoded.tags?.appliedExplanation.contains("already on this trip") == true, "the tags section carries the button wording")
+    for row in search["actions"] as! [[String: Any]] {
+        let name = row["name"] as! String
+        let action = TagSearch.action(name: name, applied: row["applied"] as! Bool, remembering: row["remembering"] as! Bool)
+        check(action?.rawValue == row["action"] as? String, "the button action matches JavaScript for \"\(name)\"")
+    }
+    check(TagSearch.action(name: "  ", applied: true, remembering: true) == nil, "nothing typed, nothing offered")
 
     var camera = ActivityMapCameraPolicy()
     check(!camera.recentre(), "nothing to recentre before a fit")

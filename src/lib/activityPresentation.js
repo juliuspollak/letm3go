@@ -13,8 +13,8 @@ import {paceLabel,speedLabel} from './recorder.js';
 import {recordedRouteSegments} from './mapGeometry.js';
 import {deletionIDs} from './tripsList.js';
 import {tripDiagnostics} from './tripDiagnostics.js';
-import {cachedKnownTags} from './tagSearch.js';
-import {tagNote,rememberLabel,tagAdded,PLACE_SAVED_TEMPLATE,REMEMBER_RADIUS} from './tagMessaging.js';
+import {cachedKnownTags,TAG_LIMIT} from './tagSearch.js';
+import {tagNote,rememberLabel,tagAdded,alreadyApplied,TAG_ACTION_LABELS,PLACE_SAVED_TEMPLATE,REMEMBER_RADIUS} from './tagMessaging.js';
 import {rememberedPlaceAt} from './rememberedPlace.js';
 import {equipmentActionLabel,equipmentForActivity,isDerivedEquipment,itemCategory,itemDetail,itemTitle,tripEquipment} from './collection.js';
 
@@ -115,9 +115,13 @@ function tagSection(trip,grouping,onActivityAvailable,places){
  // Whether this destination is already a saved place decides what the section may
  // promise. Nothing here creates a place; only "Remember the destination" does.
  const saved=rememberedPlaceAt(places,end);
- return {anchor,auto,custom,hidden,readOnly:trip.readOnly===true,canRemember:Number.isFinite(end?.latitude)&&Number.isFinite(end?.longitude),limit:20,
+ return {anchor,auto,custom,hidden,readOnly:trip.readOnly===true,canRemember:Number.isFinite(end?.latitude)&&Number.isFinite(end?.longitude),limit:TAG_LIMIT,
   remembered:saved?{name:saved.name,radius:saved.radius,distanceMeters:Math.round(saved.metres)}:null,
   note:tagNote({remembered:saved}),rememberLabel:rememberLabel(saved?.radius||REMEMBER_RADIUS),addedNote:tagAdded,savedNote:PLACE_SAVED_TEMPLATE,
+  // The button's wording, and the explanation for a name the activity already
+  // carries, come from tagMessaging.js, so the native section cannot word them
+  // differently from React.
+  labels:TAG_ACTION_LABELS,appliedNote:alreadyApplied,
   known:cachedKnownTags(grouping.journeys),
   destination:destination?{name:destination.name,summary:`Visited ${destination.visits} ${destination.visits===1?'time':'times'}`,activities:destination.activities.map(activity=>{
    const related=grouping.journeys?.find(j=>j.id===activity.id),comparison=related&&related.id!==trip.id?compareRoutes(trip,related):null;

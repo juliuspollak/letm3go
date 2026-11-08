@@ -27,7 +27,7 @@ Unless a row says otherwise, nothing here has had structured testing on a physic
 | Add to Collection | `ActivityNewEquipmentView` | `collection.js` | `addEquipment` | Inline error | None |
 | Edit activity | `ActivityEditorSheet` | Recorder | `updateActivity` | Stale form refused | Core, UI (open and cancel) |
 | Privacy, preview, publish, revoke | `ActivityPrivacySheet` | `activitySharing.js`, backend | `privacyStatus`, `privacySave` | Offline message; last state not assumed | UI (status) |
-| Tags, search-as-you-type, hide, restore, scan, remember destination | `ActivityTagsSection` | `journeyGrouping`, `tagSearch.js`, `routePlaceScan.js` | `groupingAct`, `scanPlaces`, `rememberPlace` | Notice; a tag already on the trip never blocks remembering the destination | JS, Core |
+| Tags, search-as-you-type, hide, restore, scan, remember destination | `ActivityTagsSection` | `journeyGrouping`, `tagSearch.js`, `tagCommit.js`, `routePlaceScan.js` | `groupingAct`, `scanPlaces`, `tagAndRemember` | One press, two writes: a partial failure names the half still outstanding and keeps the typed name and the tick for a retry; a tag already on the trip never blocks remembering the destination; the button names what it will do | JS, Core |
 | Stops, Not a stop | `ActivityStopsSection` | `journeyGrouping` | `groupingAct` | Inline error | None |
 | Story | `ActivityStorySection` | JS projection | Read | n/a | JS |
 | Recording, provisional, telemetry, indoor notices | `ActivityNoticesSection` | JS projection | Read | n/a | JS |

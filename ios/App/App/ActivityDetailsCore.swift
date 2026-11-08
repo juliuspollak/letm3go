@@ -168,6 +168,13 @@ struct ActivityPresentation: Decodable, Equatable {
             var radius: Double
             var distanceMeters: Double
         }
+        // The button's wording for the same three states React has, so the two
+        // screens never name the same operation differently.
+        struct Labels: Decodable, Equatable {
+            var add: String
+            var remember: String
+            var applied: String
+        }
         var anchor: String
         var auto: [String]
         var custom: [String]
@@ -184,11 +191,23 @@ struct ActivityPresentation: Decodable, Equatable {
         var rememberLabel: String
         var addedNote: String
         var savedNote: String
+        var labels: Labels?
+        var appliedNote: String
         var known: [String]
+
+        // What a press is called, and the sentence for a name the activity already
+        // carries. A projection from an older build carries neither, so the section
+        // falls back to the same sentences tagMessaging.js owns.
+        var actionLabels: (add: String, remember: String, applied: String) {
+            (labels?.add ?? "Add tag", labels?.remember ?? "Remember", labels?.applied ?? "Already on this trip")
+        }
+        var appliedExplanation: String {
+            appliedNote.isEmpty ? "That tag is already on this trip." : appliedNote
+        }
 
         enum CodingKeys: String, CodingKey {
             case anchor, auto, custom, hidden, readOnly, canRemember, limit, destination
-            case remembered, note, rememberLabel, addedNote, savedNote, known
+            case remembered, note, rememberLabel, addedNote, savedNote, labels, appliedNote, known
         }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -205,6 +224,8 @@ struct ActivityPresentation: Decodable, Equatable {
             rememberLabel = try c.decodeIfPresent(String.self, forKey: .rememberLabel) ?? ""
             addedNote = try c.decodeIfPresent(String.self, forKey: .addedNote) ?? ""
             savedNote = try c.decodeIfPresent(String.self, forKey: .savedNote) ?? ""
+            labels = try c.decodeIfPresent(Labels.self, forKey: .labels)
+            appliedNote = try c.decodeIfPresent(String.self, forKey: .appliedNote) ?? ""
             known = try c.decodeIfPresent([String].self, forKey: .known) ?? []
         }
     }

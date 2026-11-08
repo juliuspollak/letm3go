@@ -625,9 +625,16 @@ struct ActivityTagsSection: View {
                         TextField("Search or add a tag", text: $value).textFieldStyle(.roundedBorder)
                             .textInputAutocapitalization(.words).autocorrectionDisabled()
                             .accessibilityLabel("New custom tag")
-                        Button(pick(tags).applied ? "Remember" : "Add tag") { add(tags) }
+                        // The label says what a press will do. A tag the activity
+                        // already carries has nothing to add, so it is named and
+                        // disabled until the Remember toggle gives it something to do.
+                        Button(actionLabel(tags)) { add(tags) }
                             .buttonStyle(DetailButtonStyle())
-                            .disabled(working || pick(tags).name.isEmpty || (!pick(tags).applied && tags.custom.count >= tags.limit))
+                            .disabled(working || actionKind(tags) == nil || actionKind(tags) == .applied
+                                || (!pick(tags).applied && tags.custom.count >= tags.limit))
+                    }
+                    if actionKind(tags) == .applied {
+                        DetailFootnote(text: tags.appliedExplanation)
                     }
                     // The tags this person already uses, filtered as they type. Nothing
                     // is looked up: the history arrived with the presentation.
@@ -668,6 +675,7 @@ struct ActivityTagsSection: View {
         }
     }
     private func add(_ tags: ActivityPresentation.Tags, name: String? = nil) {
+        guard !working else { return }
         let chosen = TagSearch.choice(known: tags.known, applied: tags.auto + tags.custom, query: name ?? value)
         guard !chosen.name.isEmpty else { return }
         let remembering = remember && tags.canRemember
@@ -675,21 +683,20 @@ struct ActivityTagsSection: View {
         // tag is skipped, the place is still saved. This is the silent no-op the
         // section used to fall into.
         if chosen.applied && !remembering {
-            notice = "That tag is already on this trip. Turn on \(rememberToggle(tags)) to save it as a place."
+            notice = tags.appliedExplanation
             return
         }
         working = true; notice = ""
         Task {
             defer { working = false }
-            if remembering {
-                do { _ = try await model.request("rememberPlace", args: ["name": chosen.name]) }
-                catch { notice = error.localizedDescription; return }
-            }
-            if !chosen.applied {
-                guard await model.groupingAct(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom + [chosen.name]]) else { return }
-            }
-            value = ""; remember = false
-            notice = remembering ? savedNotice(tags, name: chosen.name) : (tags.addedNote.isEmpty ? "Tag added to this trip only." : tags.addedNote)
+            do {
+                // One request, coordinated in JavaScript, so a partial failure says
+                // the same thing here as it does in React and keeps the typed name
+                // and the tick for the retry.
+                let result = try await model.request("tagAndRemember", args: ["name": chosen.name, "remember": remembering])
+                notice = result["notice"] as? String ?? ""
+                if result["clear"] as? Bool == true { value = ""; remember = false }
+            } catch { notice = error.localizedDescription }
         }
     }
     private func pick(_ tags: ActivityPresentation.Tags) -> (name: String, applied: Bool, create: Bool) {
@@ -698,15 +705,17 @@ struct ActivityTagsSection: View {
     private func matches(_ tags: ActivityPresentation.Tags) -> [String] {
         TagSearch.suggestions(known: tags.known, applied: tags.auto + tags.custom, query: value)
     }
-    private func rememberToggle(_ tags: ActivityPresentation.Tags) -> String {
-        tags.rememberLabel.isEmpty ? "Remember the destination for future trips" : tags.rememberLabel
+    private func actionKind(_ tags: ActivityPresentation.Tags) -> TagSearch.Action? {
+        TagSearch.action(name: value, applied: pick(tags).applied, remembering: remember && tags.canRemember)
     }
-    // The sentence comes from src/lib/tagMessaging.js through the presentation; the
-    // destination's name is only known where the person typed it.
-    private func savedNotice(_ tags: ActivityPresentation.Tags, name: String) -> String {
-        let radius = String(Int(tags.remembered?.radius ?? 200))
-        guard !tags.savedNote.isEmpty else { return "Saved \(name) as a place. Future trips ending within \(radius) m are named \(name)." }
-        return tags.savedNote.replacingOccurrences(of: "{name}", with: name).replacingOccurrences(of: "{radius}", with: radius)
+    private func actionLabel(_ tags: ActivityPresentation.Tags) -> String {
+        let labels = tags.actionLabels
+        switch actionKind(tags) {
+        case .add: return labels.add
+        case .remember: return labels.remember
+        case .applied: return labels.applied
+        case nil: return labels.add
+        }
     }
 }
 

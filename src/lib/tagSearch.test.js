@@ -1,6 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {readFileSync,writeFileSync} from 'node:fs';
-import {cachedKnownTags,knownTags,normaliseTag,tagChoice,tagKey,tagSuggestions,KNOWN_TAG_LIMIT,TAG_SUGGESTION_LIMIT} from './tagSearch.js';
+import {cachedKnownTags,knownTags,normaliseTag,tagChoice,tagKey,tagSuggestions,TAG_LIMIT,TAG_SUGGESTION_LIMIT} from './tagSearch.js';
+import {alreadyApplied,tagAction,TAG_ACTION_LABELS} from './tagMessaging.js';
 
 describe('tags the person already uses',()=>{
  it('treats capitals and extra spacing as one tag, never a second one',()=>{
@@ -17,7 +18,17 @@ describe('tags the person already uses',()=>{
   const journeys=[{startedAt:1,tags:['Coffee']}];
   expect(cachedKnownTags(journeys)).toBe(cachedKnownTags(journeys));
   expect(cachedKnownTags(undefined)).toEqual([]);
-  expect(knownTags(Array.from({length:KNOWN_TAG_LIMIT+40},(_,i)=>({startedAt:i,tags:[`Tag ${i}`]})))).toHaveLength(KNOWN_TAG_LIMIT);
+ });
+ it('still offers a tag that only an old trip carries',()=>{
+  // The journal is ordered newest first, so a cap on the list used to hide exactly
+  // the names a person was least likely to remember typing.
+  const journeys=Array.from({length:400},(_,i)=>({startedAt:10_000-i,tags:[`Tag ${i}`]}));
+  const known=knownTags(journeys);
+  expect(known).toHaveLength(400);
+  expect(known.at(-1)).toBe('Tag 399');
+  expect(tagSuggestions({known,query:'tag 399'})).toEqual(['Tag 399']);
+  expect(knownTags([{startedAt:1,tags:['Bunnings']}])).toHaveLength(1);
+  expect(TAG_LIMIT).toBe(20);
  });
  it('suggests matching tags as the person types, prefixes first',()=>{
   const known=['Bike shop','Coffee','Coffee stop','Coast walk'];
@@ -51,9 +62,26 @@ describe('tags the person already uses',()=>{
    {query:'   ',applied:[],limit:TAG_SUGGESTION_LIMIT},
    {query:'co',applied:[],limit:2}
   ].map(test=>({...test,suggestions:tagSuggestions({known,query:test.query,applied:test.applied,limit:test.limit}),choice:tagChoice({known,query:test.query,applied:test.applied})}));
-  const current=JSON.stringify({limits:{suggestion:TAG_SUGGESTION_LIMIT,tagLength:50},known,cases},null,1)+'\n';
+  // The button's rule travels with the search contract: both screens must name a
+  // press the same way, and neither may offer to remember when it will not.
+  const actions=[
+   {name:'',applied:false,remembering:false},
+   {name:'Burger',applied:false,remembering:false},
+   {name:'Burger',applied:false,remembering:true},
+   {name:'Bunnings',applied:true,remembering:false},
+   {name:'Bunnings',applied:true,remembering:true},
+   {name:'  ',applied:true,remembering:true}
+  ].map(test=>({...test,action:tagAction(test)?.kind||null}));
+  const current=JSON.stringify({limits:{suggestion:TAG_SUGGESTION_LIMIT,tagLength:50,tagLimit:TAG_LIMIT},labels:TAG_ACTION_LABELS,known,cases,actions},null,1)+'\n';
   const fixture=`${process.cwd()}/tests/fixtures/tag-search.json`;
   if(process.env.UPDATE_FIXTURES)writeFileSync(fixture,current);
   expect(JSON.parse(readFileSync(fixture,'utf8'))).toEqual(JSON.parse(current));
+ });
+ it('names the action a press will take instead of promising nothing',()=>{
+  expect(tagAction({name:'Burger'})).toEqual({kind:'add',label:TAG_ACTION_LABELS.add,enabled:true});
+  expect(tagAction({name:'Burger',remembering:true})).toEqual({kind:'remember',label:TAG_ACTION_LABELS.remember,enabled:true});
+  expect(tagAction({name:'Bunnings',applied:true})).toMatchObject({kind:'applied',label:TAG_ACTION_LABELS.applied,enabled:false,explanation:alreadyApplied});
+  expect(tagAction({name:'Bunnings',applied:true,remembering:true})).toEqual({kind:'remember',label:TAG_ACTION_LABELS.remember,enabled:true});
+  expect(tagAction({name:'  '})).toBeNull();
  });
 });

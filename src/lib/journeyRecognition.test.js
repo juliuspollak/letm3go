@@ -132,3 +132,66 @@ it('lets the saved place outrank a park the same drive passed',()=>{
  expect(result.primary.name).toBe('Bunnings');
  expect(result.nearby.map(p=>p.name)).toContain('Bass Point Reserve');
 });
+// A stopped car leaves the recorder with a drifting fix, and a phone can stop
+// supplying fixes at all. Neither may lose a genuine arrival, and neither may
+// invent one.
+it('keeps a saved destination when the last fixes drift after the trip arrives',()=>{
+ const drifted=[...drivePoints,
+  {...center,latitude:center.latitude+.006,longitude:center.longitude+.008,timestamp:1000+30*20,accuracy:320,segment:0},
+  {...center,latitude:center.latitude-.007,longitude:center.longitude-.004,timestamp:1000+31*20,accuracy:900,segment:0}];
+ const result=assessRoutePlaces({...drive,points:drifted},savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+ expect(result.primary.evidence.savedEnd).toBe(true);
+ // Measured from the last fix worth believing, not from the drift after it.
+ expect(result.primary.evidence.savedEndMetres).toBe(0);
+ expect(result.primary.evidence.endpoint).toBe(true);
+});
+it('keeps a saved destination when the recording stops as the trip arrives',()=>{
+ const arrived=drivePoints.slice(0,25);
+ const result=assessRoutePlaces({...drive,points:arrived},savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+ expect(result.primary.evidence.savedEnd).toBe(true);
+});
+it('does not claim a saved place the drive only passed on the way home',()=>{
+ const onward=Array.from({length:6},(_,i)=>({...center,latitude:center.latitude+.003*(i+1),timestamp:1000+(30+i)*20,accuracy:6,segment:0}));
+ const result=assessRoutePlaces({...drive,points:[...drivePoints,...onward]},savedCandidates([savedBunnings]));
+ expect(result.primary).toBeNull();
+ const passed=result.candidates.find(c=>c.name==='Bunnings');
+ expect(passed.evidence.savedEnd).toBe(false);
+ // Below the tier a saved place only reaches by ending there, so no inferred
+ // place is overtaken by a fence the trip merely crossed.
+ expect(passed.score).toBeLessThan(1000);
+ expect(result.nearby.map(p=>p.name)).toContain('Bunnings');
+});
+it('does not treat one fix inside the fence as an arrival',()=>{
+ const spike=[.01,.005,.004,.008,.0015].map((lat,i)=>({...center,latitude:center.latitude+lat,timestamp:1000+i*20,accuracy:6,segment:0}));
+ const result=assessRoutePlaces({...drive,points:spike},savedCandidates([savedBunnings]));
+ expect(result.candidates[0].evidence.savedEnd).toBe(false);
+ expect(result.primary).toBeNull();
+});
+it('judges a trip recorded with only poor fixes on the fixes it has',()=>{
+ const weak=drivePoints.map(p=>({...p,accuracy:90}));
+ const result=assessRoutePlaces({...drive,points:weak},savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+ expect(result.primary.evidence.savedEnd).toBe(true);
+});
+it('names one saved destination per trip even when two fences overlap',()=>{
+ const twin={...savedBunnings,id:'warehouse',name:'Bunnings Warehouse',latitude:center.latitude+.0006,radius:300};
+ const result=assessRoutePlaces(drive,savedCandidates([twin,savedBunnings]));
+ expect(result.candidates.filter(c=>c.role==='destination').map(c=>c.name)).toEqual(['Bunnings']);
+ const loser=result.candidates.find(c=>c.name==='Bunnings Warehouse');
+ expect(loser.role).toBe('nearby');
+ expect(loser.supported).toBe(false);
+ expect(loser.evidence.savedEnd).toBe(false);
+ expect(loser.evidence.supersededBy).toBe('Bunnings');
+ expect(result.visited.map(p=>p.name)).toEqual(['Bunnings']);
+ const tagged=buildJourneys([drive],{owner:'owner',metadata:emptyGrouping('owner'),places:[twin,savedBunnings]});
+ expect(tagged.journeys[0].tags).toContain('Bunnings');
+ expect(tagged.journeys[0].tags).not.toContain('Bunnings Warehouse');
+});
+it('recognises a place saved beside Home while leaving Home a personal place',()=>{
+ const home={...savedBunnings,id:'home',name:'Home',kind:'home',latitude:center.latitude+.0003,radius:150};
+ expect(assessRoutePlaces(drive,savedCandidates([home])).primary).toBeNull();
+ const studio={...savedBunnings,id:'studio',name:'Lilyfield Studio',kind:'favourite',latitude:center.latitude+.0003};
+ expect(assessRoutePlaces(drive,savedCandidates([home,studio])).primary.name).toBe('Lilyfield Studio');
+});

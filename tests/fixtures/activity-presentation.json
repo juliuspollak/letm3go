@@ -2804,6 +2804,12 @@
   "rememberLabel": "Remember this destination on future trips (within 200 m)",
   "addedNote": "Tag added to this trip only.",
   "savedNote": "Saved {name} as a place. Future trips ending within {radius} m are named {name}.",
+  "labels": {
+   "add": "Add tag",
+   "remember": "Remember",
+   "applied": "Already on this trip"
+  },
+  "appliedNote": "That tag is already on this trip. Turn on “Remember the destination” to save it as a place.",
   "known": [
    "Coast walk",
    "Bunnings",

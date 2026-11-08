@@ -51,14 +51,73 @@ it('remembers the destination even when that tag is already on the trip',async()
  expect(act).not.toHaveBeenCalled();
  expect(await screen.findByRole('status')).toHaveTextContent('Saved Bunnings as a place.');
 });
-it('explains a tag that is already on the trip instead of doing nothing',async()=>{
+it('names a tag that is already on the trip instead of offering to remember it',async()=>{
  const act=vi.fn().mockResolvedValue(true);
  const trip={id:'a',activity:'Driving',tags:['Bunnings'],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
  render(<JourneyTags trip={trip} grouping={{metadata:{manualTags:{a:['Bunnings']},act},journeys:[trip]}} run={vi.fn()}/>);
  fireEvent.change(screen.getByLabelText('New custom tag'),{target:{value:'Bunnings'}});
- fireEvent.click(screen.getByRole('button',{name:'Remember'}));
- expect(await screen.findByRole('status')).toHaveTextContent('That tag is already on this trip. Turn on “Remember the destination” to save it as a place.');
+ expect(screen.getByRole('button',{name:/Already on this trip/})).toBeDisabled();
+ expect(screen.getByText(/That tag is already on this trip. Turn on “Remember the destination”/)).toBeInTheDocument();
+ // Turning the toggle on gives the press something to do.
+ fireEvent.click(screen.getByRole('checkbox',{name:/Remember this destination/}));
+ expect(screen.getByRole('button',{name:/Remember/})).toBeEnabled();
  expect(act).not.toHaveBeenCalled();
+});
+it('says it once when a tag already on the trip is submitted from the keyboard',async()=>{
+ const act=vi.fn().mockResolvedValue(true);
+ const trip={id:'a',activity:'Driving',tags:['Bunnings'],points:[]};
+ const {container}=render(<JourneyTags trip={trip} grouping={{metadata:{manualTags:{a:['Bunnings']},act}}}/>);
+ fireEvent.change(screen.getByLabelText('New custom tag'),{target:{value:'Bunnings'}});
+ fireEvent.submit(container.querySelector('form'));
+ await waitFor(()=>expect(screen.getByRole('status')).toBeInTheDocument());
+ expect(screen.getAllByText(/That tag is already on this trip/)).toHaveLength(1);
+ expect(act).not.toHaveBeenCalled();
+});
+it('keeps the tag when saving the place fails, and names the half still outstanding',async()=>{
+ const act=vi.fn().mockResolvedValue(true);
+ const run=vi.fn().mockResolvedValue(null);
+ const trip={id:'a',activity:'Driving',tags:[],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
+ render(<JourneyTags trip={trip} grouping={{metadata:{},act}} run={run} lastError={()=>'The recorder is offline.'}/>);
+ fireEvent.click(screen.getByRole('checkbox',{name:/Remember this destination/}));
+ fireEvent.change(screen.getByLabelText('New custom tag'),{target:{value:'Bunnings'}});
+ fireEvent.click(screen.getByRole('button',{name:/Remember/}));
+ await waitFor(()=>expect(act).toHaveBeenCalledWith({type:'manualTags',anchor:'a',tags:['Bunnings']}));
+ // The reason comes from the recorder rather than being guessed, and the tag that
+ // did land is not reported as a failed press.
+ expect(await screen.findByRole('status')).toHaveTextContent('Tag added to this trip only. The recorder is offline. Try again to save the destination.');
+ expect(screen.getByLabelText('New custom tag')).toHaveValue('Bunnings');
+ expect(screen.getByRole('checkbox',{name:/Remember this destination/})).toBeChecked();
+});
+it('keeps the saved place when the tag write fails, and retrying finishes it',async()=>{
+ const act=vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+ const run=vi.fn().mockResolvedValue({places:[]});
+ const trip={id:'a',activity:'Driving',tags:[],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
+ render(<JourneyTags trip={trip} grouping={{metadata:{},act}} run={run}/>);
+ fireEvent.click(screen.getByRole('checkbox',{name:/Remember this destination/}));
+ fireEvent.change(screen.getByLabelText('New custom tag'),{target:{value:'Bunnings'}});
+ fireEvent.click(screen.getByRole('button',{name:/Remember/}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',{name:'Bunnings',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200}));
+ expect(await screen.findByRole('status')).toHaveTextContent('Saved Bunnings as a place. Future trips ending within 200 m are named Bunnings. The tag was not added. Try again to add it.');
+ expect(screen.getByLabelText('New custom tag')).toHaveValue('Bunnings');
+ fireEvent.click(screen.getByRole('button',{name:/Remember/}));
+ await waitFor(()=>expect(act).toHaveBeenCalledTimes(2));
+ expect(await screen.findByRole('status')).toHaveTextContent('Saved Bunnings as a place. Future trips ending within 200 m are named Bunnings.');
+ expect(screen.getByLabelText('New custom tag')).toHaveValue('');
+});
+it('does not write twice when the press is repeated while the first is in flight',async()=>{
+ let release=()=>{};
+ const act=vi.fn(()=>new Promise(resolve=>{release=()=>resolve(true);}));
+ const trip={id:'a',activity:'Driving',tags:[],points:[]};
+ render(<JourneyTags trip={trip} grouping={{metadata:{},act}}/>);
+ fireEvent.change(screen.getByLabelText('New custom tag'),{target:{value:'Bunnings'}});
+ const submit=screen.getByRole('button',{name:/Add tag/});
+ fireEvent.click(submit);
+ await waitFor(()=>expect(submit).toBeDisabled());
+ fireEvent.click(submit);
+ expect(act).toHaveBeenCalledTimes(1);
+ release();
+ await waitFor(()=>expect(screen.getByRole('status')).toHaveTextContent('Tag added to this trip only.'));
+ expect(act).toHaveBeenCalledTimes(1);
 });
 it('says which destination is already recognised',()=>{
  const trip={id:'a',activity:'Driving',tags:[],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};

@@ -4,15 +4,19 @@
 // The same rules are implemented in TagSearch (ios/App/App/TagSearchCore.swift) for
 // the native tags field; tests/fixtures/tag-search.json pins both.
 export const TAG_SUGGESTION_LIMIT = 6;
-// Most recent first, so the tags a person still uses lead the list.
-export const KNOWN_TAG_LIMIT = 200;
+// A trip keeps at most this many of its own tags. The tag rules own the number, so
+// the React section, the projection and the native screen cannot disagree.
+export const TAG_LIMIT = 20;
 
 export const normaliseTag = value => String(value ?? '').replace(/\s+/g, ' ').trim();
 export const tagKey = value => normaliseTag(value).toLocaleLowerCase();
 
 // Distinct tags across the activities already built for the journal, newest
-// activity first. `journeys` is the projection App already holds, so typing
-// never scans GPS history or asks a provider.
+// activity first. `journeys` is the projection App already holds, so typing never
+// scans GPS history or asks a provider. There is no cap on how many names are
+// collected: a tag only a trip five years ago carries is still a tag the person
+// uses, and dropping it would make the oldest names unfindable. The cost is one
+// pass over the tags of journeys already in memory, not over their routes.
 export function knownTags(journeys = []) {
  const seen = new Map();
  for (const journey of [...journeys].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))) {
@@ -23,7 +27,7 @@ export function knownTags(journeys = []) {
    if (!seen.has(key)) seen.set(key, name);
   }
  }
- return [...seen.values()].slice(0, KNOWN_TAG_LIMIT);
+ return [...seen.values()];
 }
 
 // The journal projection is rebuilt often; the tag list is derived from one

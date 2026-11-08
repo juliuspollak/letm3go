@@ -1,10 +1,20 @@
 import {activityCode} from './activityNames.js';
 import {metres} from './journeyGeometry.js';
+import {personalPlace,savedPlaceRadius} from './rememberedPlace.js';
 
 export const LOOKUP_VERSION=2;
 const outdoor=new Set(['Walking','Hiking','Running','Cycling','MTB','Road cycling']);
 const natural=new Set(['park','nationalPark','reserve','trail','lookout','landmark','savedPlace']);
 const normalized=s=>String(s||'').trim().toLocaleLowerCase();
+// One cut-off for a fix worth believing, shared by route evidence, dwell and the
+// end-of-trip rule below, so no part of recognition disagrees about what a usable
+// fix is.
+const USABLE_ACCURACY=40;
+// A place the person saved sits in its own score tier, above every inferred score
+// (the highest a POI can reach is 134: 50 route + 25 dwell + 35 verified trail +
+// 24 national park), so a provider's guess never overtakes a name the person chose.
+const SAVED_TIER=1000;
+
 export function recognitionSampleIndexes(trip,stops=[]){
  const points=trip.points||[];
  if(!points.length)return [];
@@ -33,17 +43,59 @@ export function failedLookup(previous,now=Date.now()){
  const {retryAfter:_drop,...kept}=previous||{};void _drop;
  return attempts<LOOKUP_ATTEMPTS?{...kept,attempts,retryAfter:now+backoff(attempts)}:{candidates:[],...kept,attempts,lookedUpAt:now,unavailable:true};
 }
+// Where an activity ended, for one saved place. The end of an activity is the last
+// position the recorder could be sure of, not simply the last row in the file:
+// - a fix inside the fence is evidence of being there; one outside it is evidence
+//   of having left;
+// - a fix less accurate than USABLE_ACCURACY is neither. iOS often hands back a
+//   drifting fix once a car has stopped, and a genuine destination must not be lost
+//   to it — nor invented by it;
+// - the activity ended in the place when the last usable fix is inside it and at
+//   least two recorded fixes fell inside it (a single fix can be a drift spike). A
+//   drive that only passes is rejected because its later usable fixes are outside
+//   the fence again, and one that stopped short of the fence has no fix inside it.
+// A trip recorded entirely with poor fixes is judged on the fixes it has, so weak
+// GPS still works where there is nothing better to use.
+// `metres` is measured from the same final usable fix for every place, so two saved
+// places whose fences overlap are ranked by how near the activity's end they are,
+// never by which one was saved first.
+function savedEndEvidence(candidate,fixes,radius){
+ const usable=fixes.filter(fix=>fix.usable),judged=usable.length?usable:fixes;
+ if(judged.length<2)return null;
+ let lastInside=-1,lastOutside=-1,inside=0;
+ for(let i=0;i<judged.length;i++){
+  if(metres(judged[i].point,candidate)<=radius){lastInside=i;inside+=1;}
+  else lastOutside=i;
+ }
+ if(inside<2||lastInside<lastOutside)return null;
+ return {metres:metres(judged.at(-1).point,candidate)};
+}
+// Only one place can be where the activity ended. The nearest saved place keeps the
+// destination; any other saved place whose fence this trip also ended inside is
+// kept as a nearby place, so one trip is never tagged with two remembered names.
+function singleSavedEnd(places){
+ const ended=places.find(place=>place.role==='destination'&&place.evidence.savedEnd);
+ if(!ended)return;
+ for(const place of places){
+  if(place===ended||!place.evidence.savedEnd)continue;
+  place.role='nearby';place.supported=false;place.score=0;
+  place.evidence={...place.evidence,savedEnd:false,containment:false,supersededBy:ended.name};
+  place.reason=`user-saved place near where the activity ended, not the end point (${ended.name})`;
+ }
+}
 // A nearby pin is never containment. Promotion requires category plus substantial
 // route evidence or measured dwell; POI search regions are never area boundaries.
 export function assessRoutePlaces(trip,records=[],{hidden=[]}={}){
- const points=(trip.points||[]).filter(p=>Number.isFinite(p.accuracy)&&p.accuracy>=0&&p.accuracy<=40);
+ const points=(trip.points||[]).filter(p=>Number.isFinite(p.accuracy)&&p.accuracy>=0&&p.accuracy<=USABLE_ACCURACY);
  // Every recorded fix, whatever its accuracy, for containment in a saved place:
- // the person's own statement about a location does not depend on the fix quality.
- const raw=(trip.points||[]).filter(p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
+ // the person's own statement about a location does not depend on the fix quality,
+ // and savedEndEvidence decides how far each fix is trusted.
+ const fixes=(trip.points||[]).filter(p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude))
+  .map(point=>({point,usable:Number.isFinite(point.accuracy)&&point.accuracy>=0&&point.accuracy<=USABLE_ACCURACY}));
  const excluded=new Set(hidden.map(normalized)),unique=new Map();
- for(const record of records)for(const raw of record?.candidates||[]){
-  const category=/\bcar\s?park(?:ing)?$/i.test(raw?.name||'')?'parking':({'MKPOICategoryHiking':'trail','MKPOICategoryLandmark':'landmark'}[raw?.category]||raw?.category);
-  const candidate={...raw,providerCategory:raw?.providerCategory||raw?.category,category};
+ for(const record of records)for(const found of record?.candidates||[]){
+  const category=/\bcar\s?park(?:ing)?$/i.test(found?.name||'')?'parking':({'MKPOICategoryHiking':'trail','MKPOICategoryLandmark':'landmark'}[found?.category]||found?.category);
+  const candidate={...found,providerCategory:found?.providerCategory||found?.category,category};
   if(!candidate?.name||excluded.has(normalized(candidate.name))||(!candidate.userSaved&&/^(park|reserve|trail|car park|parking|lookout|nature|outdoors)$/i.test(candidate.name.trim())))continue;
   const key=candidate.placeID||`${normalized(candidate.name)}:${candidate.latitude}:${candidate.longitude}`;
   if(!unique.has(key))unique.set(key,candidate);
@@ -63,36 +115,33 @@ export function assessRoutePlaces(trip,records=[],{hidden=[]}={}){
   const significant=natural.has(candidate.category);
   const routeSupported=outdoor.has(activityCode(trip.activity))&&significant&&nearest<=50&&coverage>=0.65&&extent>=75&&span>=300;
   const dwellSupported=dwellSeconds>=(candidate.category==='parking'?45:120);
-  const savedRadius=candidate.userSaved?Math.max(50,Math.min(2000,Number(candidate.radius)||150)):0;
+  const savedRadius=candidate.userSaved?savedPlaceRadius(candidate):0;
   const savedCoverage=savedRadius&&points.length?distances.filter(d=>d<=savedRadius).length/points.length:0;
   // A drive to a shop never covers the shop's radius, so a saved place is
-  // recognised where the activity ended instead: the last fixes sit inside the
-  // saved radius, with the final fix inside and at least two of the last three.
-  // Home and Work are personal places, not destinations, and keep the existing
-  // route-coverage rule so a drive home is never titled as a destination.
-  const savedSensitive=candidate.userSaved===true&&['home','work'].includes(String(candidate.kind||'').toLocaleLowerCase());
-  const insideRaw=raw.map(p=>metres(p,candidate)<=savedRadius);
-  const savedEnd=!!savedRadius&&!savedSensitive&&raw.length>=2&&insideRaw.at(-1)===true&&insideRaw.slice(-3).filter(Boolean).length>=2;
-  const savedSupported=savedEnd||(savedCoverage>=.7&&points.length>=3&&points.at(-1).timestamp-points[0].timestamp>=300);
-  // Two saved places can overlap. The nearer one to where the activity ended is
-  // the destination; the name breaks an exact tie, so matching never depends on
-  // the order the places were saved in.
-  const savedEndMetres=savedEnd?Math.min(...raw.slice(-3).map(p=>metres(p,candidate))):null;
+  // recognised where the activity ended instead. Home and Work are personal places,
+  // not destinations, and keep the existing route-coverage rule so a drive home is
+  // never titled as a destination.
+  const savedEnd=savedRadius&&!personalPlace(candidate)?savedEndEvidence(candidate,fixes,savedRadius):null;
+  const savedSupported=!!savedEnd||(savedCoverage>=.7&&points.length>=3&&points.at(-1).timestamp-points[0].timestamp>=300);
   const supported=routeSupported||dwellSupported||savedSupported;
-  const endpoint=[trip.points?.[0],trip.points?.at(-1)].some(p=>p&&metres(p,candidate)<=40);
-  const confidence=supported?Math.min(.97,.72+(routeSupported ? .12 : 0)+(dwellSupported ? .08 : 0)+(candidate.placeID ? .03 : 0)):.25;
+  // The two ends of the activity, judged on the same fixes every other rule trusts,
+  // so one drifting fix at the end cannot deny that this is where the trip stopped.
+  const usableFixes=fixes.filter(fix=>fix.usable);
+  const endpoint=[(usableFixes[0]||fixes[0])?.point,(usableFixes.at(-1)||fixes.at(-1))?.point].some(p=>p&&metres(p,candidate)<=40);
+  const confidence=supported?Math.min(.97,.72+(savedEnd ? .2 : 0)+(routeSupported ? .12 : 0)+(dwellSupported ? .08 : 0)+(candidate.placeID ? .03 : 0)):.25;
   // Where the person saved the place the activity ended at, that place is the
   // destination even if its name reads like parking ("Bunnings car park"): they
   // chose it as the end of the trip, not as a car park they merely passed.
-  const role=supported?(candidate.category==='parking'&&!savedEnd?'startFinish':significant||savedEnd?'destination':'visited'):'nearby';
-  // An explicit saved place outranks any POI inference: the person named this
-  // location themselves, so no evidence score can overtake it. Within that tier
-  // the place nearest the end of the activity ranks higher.
-  const savedScore=savedEnd?1000+60-Math.min(20,savedEndMetres/10):0;
+  const role=supported?(candidate.category==='parking'&&!savedEnd?'startFinish':savedEnd||significant?'destination':'visited'):'nearby';
+  // Within the tier the place nearest the activity's end ranks first, and the bonus
+  // is monotonic in distance, so it orders any number of overlapping places without
+  // ever reaching the tier above.
+  const savedScore=savedEnd?SAVED_TIER+100/(1+savedEnd.metres):0;
   return {...candidate,role,supported,confidence,score:savedScore+(routeSupported?50:0)+(dwellSupported?25:0)+(candidate.verifiedTrail?35:0)+({nationalPark:24,reserve:22,park:18,trail:16,lookout:12,landmark:10}[candidate.category]||0),
-   evidence:{nearestMeters:Number.isFinite(nearest)?Math.round(nearest):null,routeCoverage:coverage,dwellSeconds:Math.round(dwellSeconds),endpoint,routeSupported,savedEnd,containment:savedSupported?'user-saved geofence':false},
+   evidence:{nearestMeters:Number.isFinite(nearest)?Math.round(nearest):null,routeCoverage:coverage,dwellSeconds:Math.round(dwellSeconds),endpoint,routeSupported,savedEnd:!!savedEnd,savedEndMetres:savedEnd?Math.round(savedEnd.metres):null,containment:savedSupported?'user-saved geofence':false},
    reason:supported?(savedEnd?'user-saved place where the activity ended':savedSupported?'user-saved geofence and sustained observations':routeSupported?'category and sustained route coverage':'observed dwell'):'insufficient visit evidence'};
  }).sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name));
+ singleSavedEnd(assessed);
  const primary=assessed.find(c=>c.role==='destination')||null;
  return {primary,startFinish:assessed.filter(c=>c.role==='startFinish'),visited:assessed.filter(c=>c.supported).slice(0,6),nearby:assessed.filter(c=>!c.supported).slice(0,12),candidates:assessed};
 }
