@@ -15,3 +15,15 @@ it('ignores late token callbacks after logout or an account change',async()=>{
  await stopAccountPush();mocks.rpc.mockClear();await old({token:'old-token',environment:'sandbox'});expect(mocks.rpc).not.toHaveBeenCalled();
  await enableAccountPush('B',vi.fn());await old({token:'old-token',environment:'sandbox'});expect(mocks.rpc).not.toHaveBeenCalled();
 });
+
+it('records the registration outcome for Account settings, never the token',async()=>{
+ const {pushStatus}=await import('./pushAccount.js');
+ const token='f'.repeat(64);
+ mocks.getUser.mockResolvedValue({data:{user:{id:'A'}}});mocks.rpc.mockResolvedValue({error:null});
+ await enableAccountPush('A',vi.fn());await mocks.persist({token,environment:'production'});
+ expect(pushStatus()).toMatchObject({owner:'A',state:'registered (production)',reason:''});
+ expect(JSON.stringify(pushStatus())).not.toContain(token);
+ mocks.rpc.mockResolvedValue({error:{message:'A current authenticated session is required'}});
+ await expect(mocks.persist({token,environment:'production'})).rejects.toThrow();
+ expect(pushStatus()).toMatchObject({owner:'A',state:'failed',reason:'A current authenticated session is required'});
+});

@@ -1,6 +1,6 @@
 import {PGlite} from '@electric-sql/pglite';
 import {readFile,readdir} from 'node:fs/promises';
-import {beforeAll,afterAll,expect,it} from 'vitest';
+import {beforeAll,afterAll,describe,expect,it} from 'vitest';
 // Notifications and pokes (20261123000000): who is told about what, the unread
 // inbox behind the profile badge, and the push outbox drained by the Edge Function.
 const db=new PGlite();
@@ -111,4 +111,64 @@ it('a device whose session ended receives nothing',async()=>{
  await db.exec(`reset role;delete from auth.sessions where id='${annSession}';delete from public.pokes`);
  await as('authenticated',bob,`select public.send_poke('${ann}')`);
  expect((await as('service_role','','select * from public.claim_push_deliveries(10)')).rows).toEqual([]);
+});
+
+describe('push delivery lifecycle',()=>{
+ const bobSession='b0000000-0000-4000-8000-00000000000b',bobSession2='b0000000-0000-4000-8000-00000000000c';
+ const phone='d1000000-0000-4000-8000-000000000001',ipad='d1000000-0000-4000-8000-000000000002';
+ const register=(user,session,installation,token)=>as('authenticated',user,`select public.register_push_device('${installation}','${token}','production','${user}')`,`{"session_id":"${session}"}`);
+ const claim=async()=>(await as('service_role','','select * from public.claim_push_deliveries(50)')).rows;
+ const finish=(row,status)=>as('service_role','',`select public.finish_push_delivery(${row.delivery_id},'${row.claim_token}','${status}',0,'test') as s`);
+ const poke=async(from,to)=>{await db.exec('reset role;delete from public.pokes');await as('authenticated',from,`select public.send_poke('${to}')`);};
+ beforeAll(async()=>{
+  await db.exec(`reset role;delete from public.push_devices;insert into auth.sessions(id,user_id) values('${bobSession}','${bob}'),('${bobSession2}','${bob}'),('${annSession}','${ann}') on conflict do nothing`);
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('fans one notification out to every signed-in device of the recipient, and only theirs',async()=>{
+  await register(bob,bobSession,phone,'1'.repeat(64));await register(bob,bobSession2,ipad,'2'.repeat(64));
+  await poke(ann,bob);
+  const rows=await claim();
+  expect(rows.map(row=>row.apns_token).sort()).toEqual(['1'.repeat(64),'2'.repeat(64)]);
+  expect(new Set(rows.map(row=>row.notification_id)).size).toBe(1);
+  for(const row of rows)await finish(row,'sent');
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('switching account on one phone moves the device: the previous user gets nothing there',async()=>{
+  await register(ann,annSession,phone,'1'.repeat(64));
+  expect((await as('service_role','',`select owner_id from public.push_devices where installation_id='${phone}'`)).rows[0].owner_id).toBe(ann);
+  await poke(ann,bob);
+  expect((await claim()).map(row=>row.apns_token)).toEqual(['2'.repeat(64)]);
+  await db.exec(`reset role;update public.notification_deliveries set status='sent',claim_token=null,lease_expires_at=null where status='sending'`);
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('a temporary failure is retried with backoff and gives up after five attempts',async()=>{
+  await poke(ann,bob);
+  let [row]=await claim();
+  for(let attempt=1;attempt<=5;attempt++){
+   expect((await finish(row,'retry')).rows[0].s).toBe(attempt<5?'retry':'failed');
+   if(attempt<5){
+    expect(await claim()).toEqual([]); // backoff: not claimable straight away
+    await db.exec(`reset role;update public.notification_deliveries set next_attempt_at=now() where id=${row.delivery_id}`);
+    [row]=await claim();expect(row.delivery_id).toBeDefined();
+   }
+  }
+  await db.exec(`reset role;update public.notification_deliveries set next_attempt_at=now() where id=${row.delivery_id}`);
+  expect(await claim()).toEqual([]);
+  await as('authenticated',bob,'select public.mark_notifications_read()');
+ });
+ it('a notification older than a day is never pushed',async()=>{
+  await poke(ann,bob);
+  await db.exec(`reset role;update public.notifications set created_at=now()-interval '25 hours' where push_processed_at is null`);
+  expect(await claim()).toEqual([]);
+ });
+ it('a stuck send whose lease expired is reclaimed once, not duplicated',async()=>{
+  await poke(ann,bob);
+  const [row]=await claim();
+  expect(await claim()).toEqual([]);
+  await db.exec(`reset role;update public.notification_deliveries set lease_expires_at=now()-interval '1 second' where id=${row.delivery_id}`);
+  const again=await claim();
+  expect(again.map(r=>r.delivery_id)).toEqual([row.delivery_id]);
+  expect(again[0].claim_token).not.toBe(row.claim_token);
+  expect((await finish(row,'sent')).rows[0].s).toBeNull(); // the stale claim cannot complete it
+ });
 });

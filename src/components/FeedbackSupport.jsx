@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Life
 import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabase.js';
+import { wakePush } from '../lib/pushWake.js';
 import Switch from './Switch.jsx';
 import FeedbackPhotos from './FeedbackPhotos.jsx';
 import {
@@ -241,6 +242,8 @@ export default function FeedbackSupport({ recording }) {
     try {
       const { error: replyFailure } = await supabase.rpc('add_feedback_message', { p_feedback_id: ticket.id, p_body: body });
       if (replyFailure) throw replyFailure;
+      // Admins are told about the reply straight away.
+      void wakePush(supabase);
       setHistory(current => ({
         ...current,
         tickets: current.tickets.map(item => item.id === ticket.id ? {
