@@ -14,8 +14,10 @@
 begin;
 
 do $$ begin
- if exists(select 1 from pg_available_extensions where name='pg_net') then create extension if not exists pg_net; end if;
- if exists(select 1 from pg_available_extensions where name='pg_cron') then create extension if not exists pg_cron; end if;
+ -- Supabase's convention: extension objects in 'extensions' (pg_net's functions
+ -- still live in its own 'net' schema; pg_cron's in 'cron').
+ if exists(select 1 from pg_available_extensions where name='pg_net') then create extension if not exists pg_net with schema extensions; end if;
+ if exists(select 1 from pg_available_extensions where name='pg_cron') then create extension if not exists pg_cron with schema pg_catalog; end if;
 end $$;
 
 -- One asynchronous request to the worker per transaction (feedback to several admins
@@ -33,7 +35,7 @@ begin
  if target is null or secret is null then return; end if;
  perform set_config('letm3go.push_dispatched','1',true);
  begin
-  execute 'select net.http_post(url:=$1,body:=$2,headers:=$3,timeout_milliseconds:=10000)'
+  execute 'select net.http_post(url:=$1,body:=$2,headers:=$3,timeout_milliseconds:=30000)'
    using target,'{}'::jsonb,jsonb_build_object('Content-Type','application/json','Authorization','Bearer '||secret);
  exception when others then return; end;
 end $$;
@@ -46,6 +48,49 @@ revoke all on function public.dispatch_new_notifications() from public,anon,auth
 drop trigger if exists dispatch_new_notifications on public.notifications;
 create trigger dispatch_new_notifications after insert on public.notifications
  for each statement execute function public.dispatch_new_notifications();
+
+-- Fan-out fix. The 20261123 claim inserted deliveries for the unprocessed
+-- notifications, then marked *all* unprocessed ones processed in a second
+-- statement. A notification committed between the two statements was marked
+-- processed with no delivery and never pushed. Now the batch is locked first and
+-- exactly that batch is fanned out and marked; concurrent workers skip it.
+create or replace function public.claim_push_deliveries(p_batch integer default 20)
+returns table(delivery_id bigint,claim_token uuid,apns_token text,environment text,notification_id bigint,kind text,title text,body text,route jsonb,badge integer)
+language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
+declare due bigint[];
+begin
+ select coalesce(array_agg(n.id),'{}') into due from (
+  select id from public.notifications where push_processed_at is null order by id limit 500 for update skip locked) n;
+ insert into public.notification_deliveries(notification_id,installation_id)
+  select n.id,d.installation_id from public.notifications n
+  join public.push_devices d on d.owner_id=n.recipient_id
+  join auth.sessions s on s.id=d.session_id and s.user_id=d.owner_id
+  -- Already seen in the app (or too old to matter): no push for it.
+  where n.id=any(due) and n.read_at is null and n.created_at>now()-interval '1 day'
+ on conflict do nothing;
+ update public.notifications set push_processed_at=now() where id=any(due);
+ -- A push not delivered within a day is no longer worth sending.
+ update public.notification_deliveries set status='failed',claim_token=null,lease_expires_at=null,last_reason='Expired'
+  where status in ('pending','retry','sending') and notification_id in (select id from public.notifications where created_at<now()-interval '1 day');
+ update public.notification_deliveries set status='failed',claim_token=null,lease_expires_at=null,last_reason='LeaseExpiredAfterMaxAttempts'
+  where status='sending' and lease_expires_at<=now() and attempt_count>=5;
+ return query
+ with claimed as (
+  select x.id from public.notification_deliveries x
+  where ((x.status in ('pending','retry') and x.next_attempt_at<=now()) or (x.status='sending' and x.lease_expires_at<=now())) and x.attempt_count<5
+  order by x.id for update skip locked limit greatest(1,least(coalesce(p_batch,20),50))
+ ), updated as (
+  update public.notification_deliveries x set status='sending',attempt_count=x.attempt_count+1,
+   lease_expires_at=now()+interval '2 minutes',claim_token=gen_random_uuid()
+  from claimed where x.id=claimed.id returning x.*
+ )
+ select u.id,u.claim_token,d.apns_token,d.environment,n.id,n.kind,n.title,n.body,n.route,
+  (select count(*)::integer from public.notifications r where r.recipient_id=n.recipient_id and r.read_at is null)
+ from updated u join public.push_devices d on d.installation_id=u.installation_id join public.notifications n on n.id=u.notification_id;
+end $$;
+revoke all on function public.claim_push_deliveries(integer) from public,anon,authenticated;
+grant execute on function public.claim_push_deliveries(integer) to service_role;
 
 -- The recovery check: call the worker only when something is due.
 create or replace function public.dispatch_due_pushes() returns boolean

@@ -220,4 +220,13 @@ describe('server-side dispatch (20261124000000): pushes go out while every app i
   for(const role of ['anon','authenticated'])await expect(as(role,ann,'select public.dispatch_push()')).rejects.toThrow();
   await expect(as('authenticated',ann,'select public.dispatch_due_pushes()')).rejects.toThrow();
  });
+ it('fan-out marks only the batch it actually fanned out; the rest stay queued and due',async()=>{
+  await db.exec(`reset role;update public.notifications set push_processed_at=now() where push_processed_at is null;
+   insert into public.notifications(event_key,recipient_id,kind,title,body) select 'bulk:'||g,'${bob}','poke','Poke','Hi' from generate_series(1,501) g`);
+  await db.exec('reset role');await db.query('select * from public.claim_push_deliveries(1)');
+  expect((await sql(`select count(*)::int n from public.notifications where push_processed_at is null`)).rows[0].n).toBe(1);
+  expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(true);
+  await db.exec(`reset role;update public.notifications set read_at=now() where event_key like 'bulk:%'`);
+ });
 });
+

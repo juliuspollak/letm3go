@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPushHandler, constantTimeEqual, BUNDLE_ID, PROVIDER_TOKEN_MS } from './handler.js';
+import { createPushHandler, constantTimeEqual, BUNDLE_ID, PROVIDER_TOKEN_MS, BATCH, MAX_ROUNDS } from './handler.js';
 
 const TOKEN_A = 'a'.repeat(64), TOKEN_B = 'b'.repeat(64);
 const delivery = (id, token, extra = {}) => ({ delivery_id: id, claim_token: `claim-${id}`, apns_token: token, environment: 'production', notification_id: 100 + id, kind: 'poke', title: 'Poke', body: 'Ann poked you 👋', route: { screen: 'home' }, badge: 1, ...extra });
@@ -145,4 +145,22 @@ describe('send-push-notifications', () => {
     expect(text).toContain('apns_delivery');
     for (const secret of [TOKEN_A, 'Ann poked you', 'provider.jwt', 'PRIVATE KEY', 'KEY1234567', 'worker-secret-value']) expect(text).not.toContain(secret);
   });
+
+  it('drains several full batches in one call and stops when a batch is short', async () => {
+    const t = setup();
+    const batches = [Array.from({ length: BATCH }, (_, i) => delivery(i + 1, TOKEN_A)), Array.from({ length: BATCH }, (_, i) => delivery(i + 100, TOKEN_A)), [delivery(500, TOKEN_B)]];
+    t.rpc.mockImplementation(async (name, args) => name === 'claim_push_deliveries' ? { data: batches.shift() || [] } : { data: args.p_status });
+    const body = await (await t.wake()).json();
+    expect(body).toMatchObject({ claimed: 2 * BATCH + 1, sent: 2 * BATCH + 1 });
+    expect(t.rpc.mock.calls.filter(([name]) => name === 'claim_push_deliveries')).toHaveLength(3);
+  });
+
+  it('never runs more than the bounded number of rounds in one call', async () => {
+    const t = setup();
+    let id = 0;
+    t.rpc.mockImplementation(async (name, args) => name === 'claim_push_deliveries' ? { data: Array.from({ length: BATCH }, () => delivery(++id, TOKEN_A)) } : { data: args.p_status });
+    await t.wake();
+    expect(t.rpc.mock.calls.filter(([name]) => name === 'claim_push_deliveries')).toHaveLength(MAX_ROUNDS);
+  });
 });
+
