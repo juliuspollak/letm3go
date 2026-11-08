@@ -2,7 +2,7 @@ import PersonAvatar from './PersonAvatar.jsx';
 import {Clock3,House,TriangleAlert} from 'lucide-react';
 
 // Everyone in Friends and Household: the same avatar, size, status dot and words.
-// A person with a position opens the map on them; anyone else is not a button.
+// A tile with an action (on Home: poke them) is a button; anyone else is not.
 //
 // person: {id, userId, name, self, status:{text,tone}, role, onSelect}
 export default function PeopleGrid({people,photos=null,selfId=null,selfAvatar=null,label}){
@@ -27,6 +27,6 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  </>;
  const description=[shown,person.status?.text,person.role].filter(Boolean).join(', ');
  return person.onSelect
-  ?<button type="button" className="person-tile is-button" aria-label={`Show ${shown} on the map. ${person.status?.text||''}`.trim()} onClick={person.onSelect}>{body}</button>
+  ?<button type="button" className="person-tile is-button" aria-label={`${person.actionLabel||`Show ${shown} on the map.`} ${person.status?.text||''}`.trim()} onClick={person.onSelect}>{body}</button>
   :<div className="person-tile" role="group" aria-label={description}>{body}</div>;
 }

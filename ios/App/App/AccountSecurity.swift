@@ -327,7 +327,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     var appleState: String?
     var appleController: ASAuthorizationController?
     var bindingGeneration = 0
-    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","readJourneyRecords","commitJourneyRecords","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
+    public let pluginMethods: [CAPPluginMethod] = ["beginSignIn","preserveLegacy","signInWithApple","get","set","remove","bindAccount","lockAccount","suspendInterface","savePreferences","pushEnvironment","readJourneyRecords","commitJourneyRecords","prepareDeletion","deleteLocalAccount"].compactMap { CAPPluginMethod(name:$0,returnType:CAPPluginReturnPromise) }
     func storageKey(_ call: CAPPluginCall) -> String? {
         // Supabase may add bounded suffixes for PKCE/session bookkeeping between
         // client releases. Keep the bridge confined to Letm3go's auth namespace,
@@ -437,6 +437,8 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             } catch {call.reject(error.localizedDescription)}
         }
     }
+    // Which APNs gateway this build's device token belongs to (Debug: sandbox).
+    @objc func pushEnvironment(_ call: CAPPluginCall) {call.resolve(["environment":LocationRecorder.apnsEnvironment])}
     @objc func readJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:false)}
     @objc func commitJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:true)}
     @objc func savePreferences(_ call: CAPPluginCall) { DispatchQueue.main.async {

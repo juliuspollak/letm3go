@@ -1,6 +1,7 @@
 import {sliceActivityRoute} from './mtbSegment.js';
 import {backupClassification} from './stopBackup.js';
 import {resolvePhoto} from './privateMedia.js';
+import {wakePush} from './pushWake.js';
 // Owner-private permanent activity backup. Local originals stay durable until
 // confirmation. Requires the existing named-segment/Watch schema migration;
 // community MTB publication is a separate, moderated selected-geometry proposal.
@@ -86,6 +87,8 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    const {data,error}=await client.rpc('create_mtb_segment',{p_client_id:segment.id,p_name:segment.name,p_geometry:selection.geometry.map(([lat,lon])=>[lat,lon]),p_distance_meters:selection.distanceMeters,p_direction:'both',p_access:'unknown'});
    if(error||data!==segment.id)throw new Error('MTB segment submission was not confirmed. It remains on this device for retry.');
    updated[key]={owner,uploaded:true};await acknowledge();
+   // Moderators are told a new segment is waiting for review.
+   void wakePush(client);
   }
  }
  let photosUploaded=0;

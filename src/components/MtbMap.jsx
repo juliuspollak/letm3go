@@ -13,12 +13,15 @@ function fmtMeters(m) { return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Ma
 // The dedicated MTB map and community workflow. Trails and approved segments are
 // rendered over the same Apple Maps view as the rest of the app; a rider can draw
 // unmapped singletrack, save a draft and submit it for community approval.
-export default function MtbMap({ currentPosition, onRecordTrail, controls = null, onControl = null, onLocate = null, locateVersion = 0 }) {
+export default function MtbMap({ currentPosition, onRecordTrail, controls = null, onControl = null, onLocate = null, locateVersion = 0, initialView = 'map', onViewChange = null }) {
   // The auth context spreads the identity (status, session, preferences) into its value.
   const { status } = useAuth();
   const signedIn = status === 'authenticated';
   const [layers, setLayers] = useState(['trails', 'segments']);
-  const [view, setView] = useState('map');
+  const [view, setView] = useState(initialView);
+  // A notification opens the Review tab directly (App remounts this with a new key);
+  // opening Review counts as seen.
+  useEffect(() => { onViewChange?.(view); }, [view, onViewChange]);
   const [creating, setCreating] = useState(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');

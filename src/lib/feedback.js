@@ -1,6 +1,7 @@
 // Pure helpers for Feedback & Support: validation, optional diagnostics, history shaping
 // and the idempotent submission pipeline used by both the app and its tests.
 import { config } from './config.js';
+import { wakePush } from './pushWake.js';
 import { newUUID } from './uuid.js';
 import { REPORT_KINDS } from './reportKinds.js';
 
@@ -245,6 +246,8 @@ export async function submitFeedbackTicket(client, {
   const ticket = Array.isArray(data) ? data[0] : data;
   if (!ticket?.id) throw new Error('The server did not confirm your feedback. Please retry.');
   onEvent({ phase: 'ticket', ticket });
+  // Admins are told about it straight away.
+  void wakePush(client);
   let photoError = '';
   let cancelled = false;
   for (const attachment of attachments) {
@@ -391,6 +394,7 @@ export async function feedbackIsAdmin(client) {
 export async function adminReplyFeedback(client, id, body) {
   const { error } = await client.rpc('admin_reply_feedback', { p_feedback_id: id, p_body: body });
   if (error) throw new Error(feedbackErrorMessage(error, 'The reply could not be sent. Please retry.'));
+  void wakePush(client);
 }
 export async function adminSetFeedbackHidden(client, id, hidden) {
   const { error } = await client.rpc('admin_set_feedback_deleted', { p_feedback_id: id, p_deleted: hidden });
@@ -402,6 +406,7 @@ export async function adminSetFeedbackHidden(client, id, hidden) {
 export async function adminSetFeedbackStatus(client, id, status) {
   const { data, error } = await client.rpc('admin_set_feedback_status', { p_feedback_id: id, p_status: status });
   if (error) throw new Error(feedbackErrorMessage(error, 'The status could not be changed. Please retry.'));
+  void wakePush(client);
   const keys = Array.isArray(data) ? data : [];
   if (!keys.length) return { removed: 0, filesLeft: 0 };
   try {
