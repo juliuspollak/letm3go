@@ -50,7 +50,9 @@ describe('tags the person already uses',()=>{
   expect(tagChoice({query:'   '})).toEqual({name:'',applied:false,create:false});
  });
  it('is the contract TagSearch (ActivityDetailsCore.swift) implements',()=>{
-  const known=['Bunnings','Coffee','Coffee stop','Coast walk','Bike shop','Bunnings Warehouse','bunnings tyre centre','BUNNINGS'];
+  // 'Car', 'bar' and 'Ear' tie on prefix and length for 'ar': the order then comes
+  // from localeCompare (alphabetical, not uppercase-first), which Swift must match.
+  const known=['Bunnings','Coffee','Coffee stop','Coast walk','Bike shop','Bunnings Warehouse','bunnings tyre centre','BUNNINGS','Car','bar','Ear'];
   const cases=[
    {query:'bun',applied:[],limit:TAG_SUGGESTION_LIMIT},
    {query:' co ',applied:[],limit:TAG_SUGGESTION_LIMIT},
@@ -60,7 +62,8 @@ describe('tags the person already uses',()=>{
    {query:'coffee',applied:['Coffee'],limit:TAG_SUGGESTION_LIMIT},
    {query:'zzz',applied:[],limit:TAG_SUGGESTION_LIMIT},
    {query:'   ',applied:[],limit:TAG_SUGGESTION_LIMIT},
-   {query:'co',applied:[],limit:2}
+   {query:'co',applied:[],limit:2},
+   {query:'ar',applied:[],limit:TAG_SUGGESTION_LIMIT}
   ].map(test=>({...test,suggestions:tagSuggestions({known,query:test.query,applied:test.applied,limit:test.limit}),choice:tagChoice({known,query:test.query,applied:test.applied})}));
   // The button's rule travels with the search contract: both screens must name a
   // press the same way, and neither may offer to remember when it will not.

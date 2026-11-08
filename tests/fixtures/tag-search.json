@@ -17,7 +17,10 @@
   "Bike shop",
   "Bunnings Warehouse",
   "bunnings tyre centre",
-  "BUNNINGS"
+  "BUNNINGS",
+  "Car",
+  "bar",
+  "Ear"
  ],
  "cases": [
   {
@@ -142,6 +145,22 @@
    ],
    "choice": {
     "name": "co",
+    "applied": false,
+    "create": true
+   }
+  },
+  {
+   "query": "ar",
+   "applied": [],
+   "limit": 6,
+   "suggestions": [
+    "bar",
+    "Car",
+    "Ear",
+    "Bunnings Warehouse"
+   ],
+   "choice": {
+    "name": "ar",
     "applied": false,
     "create": true
    }
