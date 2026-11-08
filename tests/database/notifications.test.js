@@ -228,5 +228,15 @@ describe('server-side dispatch (20261124000000): pushes go out while every app i
   expect((await sql('select public.dispatch_due_pushes() as due')).rows[0].due).toBe(true);
   await db.exec(`reset role;update public.notifications set read_at=now() where event_key like 'bulk:%'`);
  });
+ it('app roles cannot read the pg_net queue (where the worker secret waits) or call it; dispatch still works',async()=>{
+  for(const role of ['anon','authenticated']){
+   await expect(as(role,ann,'select * from net.calls')).rejects.toThrow();
+   await expect(as(role,ann,`select net.http_post('https://example.com','{}'::jsonb,'{}'::jsonb,1)`)).rejects.toThrow();
+  }
+  // ...while the database's own dispatch still works.
+  await reset();
+  await as('authenticated',ann,`select public.send_poke('${bob}')`);
+  expect(await calls()).toHaveLength(1);
+ });
 });
 
