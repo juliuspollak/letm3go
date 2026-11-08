@@ -11,7 +11,9 @@ import {rememberDestinationPlace,rememberedPlaceAt} from '../lib/rememberedPlace
 // person already uses (from the journal already in memory, so no lookup per
 // keystroke) and offers the ones not yet on this activity. A name that differs only
 // by capitals or spacing reuses the existing spelling instead of adding a twin.
-export default function JourneyTags({trip,grouping,run,lastError,onActivity}){
+// `places` are the saved places; grouping.metadata.places is the provider lookup
+// cache, which only the route scan below reads.
+export default function JourneyTags({trip,grouping,places=[],run,lastError,onActivity}){
  const anchor=trip.segmentIDs?.[0]||trip.id;
  const custom=grouping.metadata.manualTags?.[anchor]||[];
  const hidden=grouping.metadata.hiddenTags?.[anchor]||[];
@@ -20,7 +22,7 @@ export default function JourneyTags({trip,grouping,run,lastError,onActivity}){
  const applied=[...autoTags,...custom];
  const known=cachedKnownTags(grouping.journeys);
  const end=(trip.segments?.at(-1)||trip).points?.at(-1);
- const remembered=rememberedPlaceAt(grouping.metadata.places,end);
+ const remembered=rememberedPlaceAt(places,end);
  const canRemember=Number.isFinite(end?.latitude)&&Number.isFinite(end?.longitude)&&typeof run==='function';
  const [value,setValue]=useState(''),[remember,setRemember]=useState(false),[notice,setNotice]=useState('');
  const [picking,setPicking]=useState(false),[working,setWorking]=useState(false);
@@ -54,7 +56,7 @@ export default function JourneyTags({trip,grouping,run,lastError,onActivity}){
   try{
    const outcome=await commitTagAndPlace({name:chosen.name,known,applied,custom,remember:remember&&canRemember,limit:TAG_LIMIT,
     addTag:tags=>grouping.act({type:'manualTags',anchor,tags}),
-    savePlace:label=>rememberDestinationPlace({trip,run,grouping,name:label,lastError})});
+    savePlace:label=>rememberDestinationPlace({trip,run,places,name:label,lastError})});
    setNotice(outcome.notice);
    if(outcome.clear){setValue('');setRemember(false);setPicking(false);}
   }finally{setWorking(false);}

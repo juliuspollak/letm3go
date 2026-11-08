@@ -40,15 +40,16 @@ export function rememberedPlaceAt(places,point,{includePersonal=false}={}){
 // then match against. A place of the same name already covering that spot is
 // reused, so one destination keeps one record. Nothing here edits the activity, so
 // it works whether or not the tag is already on it — the silent no-op is gone.
-// `lastError` is the recorder's reason for a failed call, so a failure names its
-// cause instead of guessing one.
-export async function rememberDestinationPlace({trip,run,grouping,name,lastError}){
+// `places` are the person's saved places (the recorder's list, not the journey
+// metadata's lookup cache). `lastError` is the recorder's reason for a failed call,
+// so a failure names its cause instead of guessing one.
+export async function rememberDestinationPlace({trip,run,places,name,lastError}){
  const end=(trip?.segments?.at(-1)||trip)?.points?.at(-1);
  if(!Number.isFinite(end?.latitude)||!Number.isFinite(end?.longitude))throw new Error('This activity has no end point to remember.');
  if(typeof run!=='function')throw new Error('Saving a place needs the recorder on this device.');
  const label=normaliseTag(name);
  if(!label)throw new Error('Enter a name to remember this destination.');
- const existing=Object.values(grouping?.metadata?.places||{}).find(place=>place?.id&&UUID.test(String(place.id))
+ const existing=listOf(places).find(place=>place?.id&&UUID.test(String(place.id))
   &&!personalPlace(place)&&tagKey(place.name)===tagKey(label)
   &&Number.isFinite(place.latitude)&&Number.isFinite(place.longitude)
   &&metres(place,end)<=savedPlaceRadius(place));

@@ -15,18 +15,18 @@ describe('remembered places',()=>{
  });
  it('saves one place where the activity ended, so future trips recognise it',async()=>{
   const run=vi.fn().mockResolvedValue({places:[]});
-  const saved=await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{}}},name:'  Bunnings  '});
+  const saved=await rememberDestinationPlace({trip,run,places:[],name:'  Bunnings  '});
   expect(run).toHaveBeenCalledWith('savePlace',{name:'Bunnings',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200});
   expect(saved).toMatchObject({name:'Bunnings',radius:200,notice:'Saved Bunnings as a place. Future trips ending within 200 m are named Bunnings.'});
  });
  it('reuses the place already covering the end instead of adding a twin',async()=>{
   const run=vi.fn().mockResolvedValue({places:[]});
-  await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{a:bunnings}}},name:'bunnings'});
+  await rememberDestinationPlace({trip,run,places:[bunnings],name:'bunnings'});
   expect(run).toHaveBeenCalledWith('savePlace',{id:bunnings.id,name:'bunnings',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200});
  });
  it('leaves a foreign place id alone',async()=>{
   const run=vi.fn().mockResolvedValue({places:[]});
-  await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{a:{...bunnings,id:'apple:shop'}}}},name:'Bunnings'});
+  await rememberDestinationPlace({trip,run,places:[{...bunnings,id:'apple:shop'}],name:'Bunnings'});
   expect(run.mock.calls[0][1]).not.toHaveProperty('id');
  });
  it('says why it could not save rather than failing silently',async()=>{
@@ -67,22 +67,22 @@ describe('remembered places',()=>{
  it('does not reuse a place of the same name that is somewhere else',async()=>{
   const run=vi.fn().mockResolvedValue({places:[]});
   const far={...bunnings,latitude:-34.9};
-  await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{a:far}}},name:'Bunnings'});
+  await rememberDestinationPlace({trip,run,places:[far],name:'Bunnings'});
   expect(run.mock.calls[0][1]).not.toHaveProperty('id');
  });
  it('never reuses Home as the destination, even under the same name',async()=>{
   const run=vi.fn().mockResolvedValue({places:[]});
   const named={...home,kind:'favourite'};
-  await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{a:named}}},name:'Home'});
+  await rememberDestinationPlace({trip,run,places:[named],name:'Home'});
   expect(run.mock.calls[0][1]).toMatchObject({name:'Home',kind:'favourite'});
   const work={...home,id:'33333333-3333-4333-8333-333333333333',name:'Work',kind:'work'};
-  await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{b:work}}},name:'Work'});
+  await rememberDestinationPlace({trip,run,places:[work],name:'Work'});
   expect(run.mock.calls[1][1]).not.toHaveProperty('id');
  });
  it('reuses the place where the activity ends and keeps the existing radius',async()=>{
   const run=vi.fn().mockResolvedValue({places:[]});
   const wide={...bunnings,radius:800};
-  const saved=await rememberDestinationPlace({trip,run,grouping:{metadata:{places:{a:wide}}},name:'Bunnings'});
+  const saved=await rememberDestinationPlace({trip,run,places:[wide],name:'Bunnings'});
   // Reusing the record does not silently resize the fence the person already has.
   expect(run.mock.calls[0][1]).toMatchObject({id:bunnings.id});
   expect(saved).toMatchObject({id:bunnings.id,name:'Bunnings'});

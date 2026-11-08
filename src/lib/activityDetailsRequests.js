@@ -82,14 +82,14 @@ export const activityDetailsRequests={
  // a partial failure reads the same on both and leaves the same things for a
  // retry. The activity's own tags are read here rather than sent from Swift, so a
  // screen that is a moment out of date can never drop a tag added meanwhile.
- async tagAndRemember({trip,run,grouping,lastError},{name,remember=false}){
+ async tagAndRemember({trip,run,grouping,places,lastError},{name,remember=false}){
   const anchor=trip.segmentIDs?.[0]||trip.id;
   const custom=grouping?.metadata?.manualTags?.[anchor]||[];
   const auto=(trip.tags||[]).filter(tag=>!custom.some(own=>own.toLowerCase()===tag.toLowerCase()));
   return commitTagAndPlace({name,known:cachedKnownTags(grouping?.journeys),applied:[...auto,...custom],custom,
    remember:remember===true,canRemember:true,limit:TAG_LIMIT,
    addTag:tags=>grouping.act({type:'manualTags',anchor,tags}),
-   savePlace:label=>rememberDestinationPlace({trip,run,grouping,name:label,lastError})});
+   savePlace:label=>rememberDestinationPlace({trip,run,places,name:label,lastError})});
  },
  async findTrails({trip}){
   const route=Array.isArray(trip.route)?trip.route:[];

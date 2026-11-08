@@ -195,3 +195,86 @@ it('recognises a place saved beside Home while leaving Home a personal place',()
  const studio={...savedBunnings,id:'studio',name:'Lilyfield Studio',kind:'favourite',latitude:center.latitude+.0003};
  expect(assessRoutePlaces(drive,savedCandidates([home,studio])).primary.name).toBe('Lilyfield Studio');
 });
+
+// PR #37 review: overlapping saved places are decided by end distance alone, and
+// only the way the activity arrived at its end counts as evidence of ending there.
+const savedRecord=(place,extra={})=>({...place,placeID:`saved:${place.id}`,category:'savedPlace',userSaved:true,...extra});
+it('the saved place nearest the end wins even when the farther one has more route, dwell or category evidence',()=>{
+ const near={...savedBunnings,id:'near',name:'Near Shop',latitude:center.latitude+.00027};
+ const far={...savedBunnings,id:'far',name:'Far Reserve',latitude:center.latitude-.00036};
+ // The far place carries the biggest inferred bonuses there are (verified trail +
+ // national park): under the old formula they outweighed a 10 m difference.
+ const records=[{candidates:[savedRecord(near),savedRecord(far,{category:'nationalPark',verifiedTrail:true})]}];
+ for(const order of [records,[{candidates:[...records[0].candidates].reverse()}]]){
+  const result=assessRoutePlaces(drive,order);
+  expect(result.primary.name).toBe('Near Shop');
+  expect(result.candidates.find(c=>c.name==='Far Reserve')).toMatchObject({role:'nearby',supported:false,evidence:{savedEnd:false,supersededBy:'Near Shop'}});
+ }
+});
+it('breaks an exact distance tie deterministically, whatever the order the places arrive in',()=>{
+ const east={...savedBunnings,id:'b',name:'Beta Store',longitude:center.longitude+.0003};
+ const west={...savedBunnings,id:'a',name:'Alpha Store',longitude:center.longitude-.0003};
+ expect(assessRoutePlaces(drive,savedCandidates([east,west])).primary.name).toBe('Alpha Store');
+ expect(assessRoutePlaces(drive,savedCandidates([west,east])).primary.name).toBe('Alpha Store');
+});
+it('tags only the winning saved destination when fences overlap',()=>{
+ const east={...savedBunnings,id:'b',name:'Beta Store',longitude:center.longitude+.0003};
+ const west={...savedBunnings,id:'a',name:'Alpha Store',longitude:center.longitude-.0003};
+ const tagged=buildJourneys([drive],{owner:'owner',metadata:emptyGrouping('owner'),places:[east,west]});
+ expect(tagged.journeys[0].tags).toContain('Alpha Store');
+ expect(tagged.journeys[0].tags).not.toContain('Beta Store');
+ expect(tagged.destinations.map(d=>d.name)).toEqual(['Alpha Store']);
+});
+// A drive that passes Bunnings (several fixes inside its fence), heads 1.3 km north
+// and then comes back.
+const passed=[.004,.002,.0005,0,-.0005,-.002].map(lat=>({...center,latitude:center.latitude+lat,accuracy:6}));
+const away=[.006,.009,.012,.009,.006,.004].map(lat=>({...center,latitude:center.latitude+lat,accuracy:6}));
+const timed=points=>points.map((p,i)=>({...p,timestamp:1000+i*20,segment:0}));
+const roundTrip=back=>{const points=timed([...passed,...away,...back]);return {...drive,points,endedAt:points.at(-1).timestamp};};
+it('does not add up fixes from passing earlier: one final inside fix after coming back is not an arrival',()=>{
+ const trip=roundTrip([{...center,latitude:center.latitude+.0012,accuracy:6}]);
+ const result=assessRoutePlaces(trip,savedCandidates([savedBunnings]));
+ expect(result.primary).toBeNull();
+ expect(result.candidates.find(c=>c.name==='Bunnings').evidence.savedEnd).toBe(false);
+ expect(buildJourneys([trip],{owner:'owner',metadata:emptyGrouping('owner'),places:[savedBunnings]}).journeys[0].tags).not.toContain('Bunnings');
+});
+it('recognises Bunnings when the drive genuinely returns and stops there',()=>{
+ const trip=roundTrip([.0015,.0008,.0003,0].map(lat=>({...center,latitude:center.latitude+lat,accuracy:6})));
+ const result=assessRoutePlaces(trip,savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+ expect(buildJourneys([trip],{owner:'owner',metadata:emptyGrouping('owner'),places:[savedBunnings]}).journeys[0].tags).toContain('Bunnings');
+});
+it('keeps an arrival through drift: poor fixes, and a usable fix too uncertain to say it left',()=>{
+ const arrived=roundTrip([.0015,.0008,.0003,0].map(lat=>({...center,latitude:center.latitude+lat,accuracy:6})));
+ const drift=[
+  {...center,latitude:center.latitude+.006,accuracy:400},          // wildly off, unusable
+  {...center,latitude:center.latitude+.0021,accuracy:35},          // 233 m: outside the 200 m fence by less than its accuracy
+ ];
+ const points=timed([...arrived.points,...drift]);
+ const result=assessRoutePlaces({...arrived,points,endedAt:points.at(-1).timestamp},savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+});
+it('a usable fix clearly outside the fence after arriving means the trip left',()=>{
+ const arrived=roundTrip([.0015,.0008,.0003,0].map(lat=>({...center,latitude:center.latitude+lat,accuracy:6})));
+ const points=timed([...arrived.points,{...center,latitude:center.latitude+.004,accuracy:10}]);
+ expect(assessRoutePlaces({...arrived,points},savedCandidates([savedBunnings])).primary).toBeNull();
+});
+it('keeps an arrival when GPS stops after it (a long gap before the recording ends)',()=>{
+ const arrived=roundTrip([.0015,.0008,.0003,0].map(lat=>({...center,latitude:center.latitude+lat,accuracy:6})));
+ const result=assessRoutePlaces({...arrived,endedAt:arrived.endedAt+45*60},savedCandidates([savedBunnings]));
+ expect(result.primary.name).toBe('Bunnings');
+});
+it('rejects a single isolated inside fix even when GPS is weak throughout',()=>{
+ const weakPass=roundTrip([{...center,latitude:center.latitude+.0012}]).points.map(p=>({...p,accuracy:90}));
+ expect(assessRoutePlaces({...drive,points:weakPass},savedCandidates([savedBunnings])).primary).toBeNull();
+ // ...but a weak-GPS arrival with a run of fixes in the fence is still recognised.
+ const weakArrival=roundTrip([.0015,.0008,.0003,0].map(lat=>({...center,latitude:center.latitude+lat}))).points.map(p=>({...p,accuracy:90}));
+ expect(assessRoutePlaces({...drive,points:weakArrival},savedCandidates([savedBunnings])).primary.name).toBe('Bunnings');
+});
+it('ordinary POIs and Home/Work are unaffected by the saved-place selection',()=>{
+ expect(assessRoutePlaces(trip,records).primary.name).toBe('Bass Point Reserve');
+ const home={...savedBunnings,id:'home',name:'Home',kind:'home'};
+ expect(assessRoutePlaces(drive,savedCandidates([home])).primary).toBeNull();
+ const tagged=buildJourneys([drive],{owner:'owner',metadata:emptyGrouping('owner'),places:[home,savedBunnings]});
+ expect(tagged.journeys[0].recognition.primary.name).toBe('Bunnings');
+});

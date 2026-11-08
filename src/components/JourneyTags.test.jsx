@@ -122,7 +122,15 @@ it('does not write twice when the press is repeated while the first is in flight
 it('says which destination is already recognised',()=>{
  const trip={id:'a',activity:'Driving',tags:[],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
  const places={p:{id:'11111111-1111-4111-8111-111111111111',name:'Bunnings',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200}};
- render(<JourneyTags trip={trip} grouping={{metadata:{places},journeys:[]}}/>);
+ render(<JourneyTags trip={trip} grouping={{metadata:{places:{}},journeys:[]}} places={Object.values(places)}/>);
  expect(screen.getByText('Saved place: trips ending within 200 m of Bunnings are named Bunnings.')).toBeInTheDocument();
+});
+// grouping.metadata.places is the provider lookup cache ("lat,lon" -> lookup), not
+// the saved places: reading it as saved places never found one.
+it('reads saved places, not the provider lookup cache, to say a destination is already saved',()=>{
+ const trip={id:'a',activity:'Driving',tags:[],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
+ const lookupCache={'-34.4000,150.9000':{nearbyName:'Bunnings',locality:'Shellharbour',candidates:[]}};
+ render(<JourneyTags trip={trip} grouping={{metadata:{places:lookupCache},journeys:[]}} places={[]}/>);
+ expect(screen.queryByText(/^Saved place:/)).not.toBeInTheDocument();
 });
 

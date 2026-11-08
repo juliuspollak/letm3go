@@ -31,6 +31,12 @@ describe('native requests',()=>{
   expect(run).toHaveBeenCalledWith('savePlace',{name:'Fuel',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200});
   expect(result).toEqual({tag:'added',place:'saved',name:'Fuel',clear:true,notice:'Saved Fuel as a place. Future trips ending within 200 m are named Fuel.'});
  });
+ it('reuses the saved place already covering the end (from the recorder list, not the lookup cache)',async()=>{
+  const act=vi.fn().mockResolvedValue(true),run=vi.fn().mockResolvedValue({places:[]});
+  const saved={id:'11111111-1111-4111-8111-111111111111',name:'Fuel',kind:'favourite',latitude:-34.4,longitude:150.9,radius:200};
+  await requests.tagAndRemember({trip:tagTrip,run,places:[saved],grouping:{metadata:{manualTags:{s1:[]},places:{'-34.4000,150.9000':{nearbyName:'Fuel'}}},act}},{name:'fuel',remember:true});
+  expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:saved.id}));
+ });
  it('remembers the destination without rewriting a tag the activity carries',async()=>{
   const act=vi.fn(),run=vi.fn().mockResolvedValue({places:[]});
   const result=await requests.tagAndRemember({trip:tagTrip,run,grouping:{metadata:{},act}},{name:'bunnings',remember:true});

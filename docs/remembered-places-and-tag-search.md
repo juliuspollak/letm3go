@@ -13,13 +13,16 @@ A tag describes one activity; a saved place is what lets a *future* trip recogni
 ## The rule now
 
 - `tagAndRemember` — the one operation the tags section sends, from React (`JourneyTags.jsx`) and from SwiftUI (`activityDetailsRequests.tagAndRemember`) — delegates to `commitTagAndPlace` (`src/lib/tagCommit.js`): it saves the end point of the activity as a `favourite` place with a 200 m radius, independent of any tag, and refuses with a message instead of doing nothing. A place of the same name already covering the end is reused, and a place with a foreign id (an Apple Maps identifier) is never overwritten.
-- `savedEnd` recognises a saved place where the activity ended. The end of an activity is the last position the recorder could be sure of, not simply the last row in the file:
-  - a fix inside the fence is evidence of being there, one outside it is evidence of having left, and a fix less accurate than `USABLE_ACCURACY` (40 m) is neither — iOS often returns a drifting fix once a car has stopped;
-  - the activity ended in the place when the last *usable* fix is inside the fence and at least two recorded fixes fell inside it: a single fix can be a drift spike, a drive that only passes has usable fixes outside again afterwards, and a trip that stopped short has no fix inside;
-  - a trip recorded only with poor fixes is judged on the fixes it has, so weak GPS still works where there is nothing better to use. The route-coverage rule stays for the cases it was written for.
+- `savedEnd` recognises a saved place where the activity ended, from how the activity *arrived* at its end, not from every fix the journey ever recorded inside the fence:
+  - only the final unbroken run of fixes inside the fence counts. A drive that passes the place, leaves and comes back starts counting again on its return, so fixes from passing earlier never add up to an arrival;
+  - a fix less accurate than `USABLE_ACCURACY` (40 m) is neither inside nor outside — iOS often returns a drifting fix once a car has stopped;
+  - a usable fix ends the run only when it is outside the fence by more than its own stated accuracy; a fix at the fence edge, which could be either, neither breaks nor extends it, so parking at the edge of a place is not "leaving";
+  - the run must hold at least two fixes, because one can be a spike. A drive records every 5 m and the smallest fence has a 50 m radius, so a real arrival leaves several, and stopping in the place then losing GPS keeps the run already recorded;
+  - a trip recorded only with poor fixes is judged on the fixes it has, by the same rule. The route-coverage rule stays for the cases it was written for.
 - Home and Work are excluded from `savedEnd` (`PERSONAL_PLACE_KINDS`): they are personal places, not destinations, and a drive home must not be titled as one. A place saved beside Home is still a destination.
 - A saved place where the activity ended is the destination, and outranks every inferred place: the person named this location, so a park the same drive passed stays `nearby`. A name that reads like parking ("Bunnings car park") is not demoted to a start/finish for the same reason. The tier is only reached by ending there, so a fence a trip merely crossed cannot overtake an inferred score.
-- One trip names one saved destination (`singleSavedEnd`). When two fences overlap, both are measured from the same final usable fix, so the nearest keeps the destination and any other is kept as `nearby` with `evidence.supersededBy` naming the winner: the result never depends on the order places were saved in, and an activity is never tagged with two remembered names.
+- One trip names one saved destination (`singleSavedEnd`). When two fences overlap, the winner is chosen by distance from the same final fix alone (route, dwell and category evidence never decide it), with name and then ID breaking an exact tie; every other one is kept as `nearby` with `evidence.supersededBy` naming the winner. The result never depends on the order places were saved in.
+- The journey's end-point tag follows recognition: a non-personal saved place covering the last point is only tagged if it is the place recognition says the trip ended at, so an overlapping fence or a single final fix cannot add a second remembered name. Home/Work end-point tags and the "A → B" location line are unchanged.
 - The end-of-trip rule feeds the rest of the pipeline unchanged: `assessRoutePlaces` promotes the place to `primary`, `visited` adds the name to the journey's tags, and `destinationVisits` counts the visit.
 
 ## Two writes, one press
@@ -56,7 +59,7 @@ A submit is two decisions, not one. If the typed name is already on the trip the
 - `src/lib/tagSearch.test.js` and `tests/fixtures/tag-search.json` pin the search contract, the tag limit and the button rule; `tests/native-details/main.swift` replays every fixture case — search and action — through `TagSearch`.
 - `src/lib/tagCommit.test.js` covers both halves of a press: success, a tag already there, the limit, each partial failure, an empty name and duplicate prevention.
 - `src/lib/rememberedPlace.test.js` covers saving, reuse, foreign ids, Home/Work exclusion, the shared radius and each refusal, including the recorder's own reason.
-- `src/lib/journeyRecognition.test.js` covers the end-of-trip rule — drifting fixes, a recording that stops on arrival, a drive that only passed, one fix inside the fence, an all-weak recording — the Home/Work exclusion, a place saved beside Home, overlapping fences and the resulting tag.
+- `src/lib/journeyRecognition.test.js` covers the end-of-trip rule — drifting fixes (poor, and usable at the fence edge), a recording that stops on arrival or loses GPS afterwards, a drive that only passed, a drive that passes, leaves and comes back with one fix or genuinely stops, one fix inside the fence, all-weak recordings — the Home/Work exclusion, a place saved beside Home, overlapping fences decided by distance whatever their other evidence, deterministic ties and the resulting single tag.
 - `src/components/JourneyTags.test.jsx` covers the button wording, both partial failures with a retry, the typed name surviving a failure, and a repeated press while a write is in flight.
 - `tests/fixtures/activity-presentation.json` carries `remembered`, `note`, `rememberLabel`, `addedNote`, `savedNote`, `labels`, `appliedNote` and `known` for the native decoder.
 
@@ -64,5 +67,5 @@ A submit is two decisions, not one. If the typed name is already on the trip the
 
 Whether the reported Bunnings trip had a saved place at all. Recognition cannot name a place that was never saved, and the silent no-op above is the most likely reason it was not. The fix makes both halves observable: the save now fails loudly with the recorder's reason, and the section states which saved place covers the destination.
 
-Recognition of a stopped car is tested against synthesised fixes, not a real recording: the 40 m usable threshold and the "last usable fix inside the fence" rule have not been replayed against a device trace of the reported drive. Nothing here has had structured testing on a physical iPhone.
+Recognition of a stopped car is tested against synthesised fixes, not a real recording: the 40 m usable threshold and the "final run of fixes inside the fence" rule have not been replayed against a device trace of the reported drive. Nothing here has had structured testing on a physical iPhone.
 
