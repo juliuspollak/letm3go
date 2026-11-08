@@ -44,6 +44,9 @@ declare who uuid; identity text; rev integer;
 begin
  if TG_OP='DELETE' then who:=old.owner_id;identity:=old.id::text;else who:=new.owner_id;identity:=new.id::text;end if;
  if not exists(select 1 from auth.users where id=who) then return null;end if;
+ -- A touch that changes only bookkeeping (a saved-place edit touches every activity)
+ -- is not new content: one revision per activity would re-sync the whole history.
+ if TG_OP='UPDATE' and (to_jsonb(new)-'updated_at'-'revision')=(to_jsonb(old)-'updated_at'-'revision') then return null;end if;
  insert into public.journey_metadata_state(owner_id,revision) values(who,1) on conflict(owner_id) do update set revision=journey_metadata_state.revision+1,updated_at=now() returning revision into rev;
  insert into public.journey_metadata_changes(owner_id,domain,ref,revision,deleted) values(who,coalesce(TG_ARGV[0],'activityRows'),identity,rev,TG_OP='DELETE') on conflict(owner_id,domain,ref) do update set revision=excluded.revision,deleted=excluded.deleted;
  if TG_OP='DELETE' and TG_TABLE_NAME='activities' then

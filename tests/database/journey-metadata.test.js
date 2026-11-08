@@ -445,8 +445,10 @@ it('invalidates saved home places and private photo descriptors independently of
  const id=selectiveID(0),place='c1000000-0000-4000-8000-000000000001',photo='c2000000-0000-4000-8000-000000000001';
  const before=(await as('authenticated',selectiveOwner,revision(selectiveOwner))).rows[0].revision;
  await as('authenticated',selectiveOwner,`insert into public.saved_places(id,owner_id,name,kind,latitude,longitude,radius) values('${place}','${selectiveOwner}','My home','home',-34,151,100)`);
- await as('authenticated',selectiveOwner,`insert into public.media_assets(id,owner_id,activity_id,object_key,byte_size,mime_type) values('${photo}','${selectiveOwner}','${id}','${selectiveOwner}/${id}/${photo}.jpg',100,'image/jpeg')`);
+ await as('service_role','',`insert into public.media_assets(id,owner_id,activity_id,object_key,byte_size,mime_type) values('${photo}','${selectiveOwner}','${id}','${selectiveOwner}/${id}/${photo}.jpg',100,'image/jpeg')`);
  const changed=await selectiveRPC({p_refs:[],p_since_revision:before});
+ // Saving a place touches every activity's updated_at; that must not journal the whole history.
+ expect(changed.revision-before).toBeLessThan(5);expect(changed.invalidations.length).toBeLessThan(5);
  expect(changed.invalidations).toContainEqual(expect.objectContaining({domain:'savedPlaces',ref:place}));
  expect(changed.invalidations).toContainEqual(expect.objectContaining({domain:'activityRows',ref:id}));
  expect((await selectiveRPC({p_refs:[]})).savedPlaces).toContainEqual(expect.objectContaining({id:place,name:'My home'}));
