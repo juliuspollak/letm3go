@@ -699,7 +699,8 @@ extension LocationRecorder {
                             let seconds=added.timestamp-last.timestamp,lowPower=ProcessInfo.processInfo.isLowPowerModeEnabled
                             let suspended=GapCause.suspendedSeconds(gapStart:last.timestamp,executingSince:executingSince,lastExecutionGap:lastExecutionGapSeconds)
                             let note=GapCause.note(seconds:seconds,meters:last.distance(to:added),suspendedSeconds:suspended,lowPower:lowPower,
-                                activitySession:backgroundActivitySession != nil,keepAlive:keepAliveTask != nil)
+                                activitySession:backgroundSessionKeepsAppRunning,keepAlive:keepAliveTask != nil,
+                                sessionRejoined:backgroundSessionRejoinedOnly)
                             trip.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
                             recordDiagnostic("gap","Automatic route segment break",details:["gapSeconds":String(Int(seconds)),"gapMeters":String(Int(last.distance(to:added))),
                                 "suspendedSeconds":String(Int(suspended)),"lowPowerMode":String(lowPower),"backgroundSession":backgroundSessionState,

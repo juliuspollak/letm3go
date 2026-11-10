@@ -604,7 +604,7 @@ enum RecorderHarness {
               "stage A: the coalesced reconcile decides again and leaves passive rest (mode \(r.locationMode.rawValue); \(r.sharingRestReason))")
         r.disableFriendLiveSharing()
         let recovery = BackgroundRecovery.evaluate(r.backgroundRecoveryInputs)
-        check(recovery.status == .notNeeded || r.backgroundActivitySession == nil, "stage A: recovery reports notNeeded only while the session is held (\(recovery.status.rawValue))")
+        check(recovery.status == .notNeeded || !r.backgroundSessionKeepsAppRunning, "stage A: recovery reports notNeeded only while the session is held (\(recovery.status.rawValue))")
         r.disableHouseholdLiveSharing(forget: false)
     }
 
