@@ -325,7 +325,9 @@ enum KeepAlivePolicy {
         return (automaticAvailable && (precise || stopOpen)) || sharingWithoutSession
     }
     static func reason(precise: Bool, stopOpen: Bool = true) -> String {
-        precise ? "precise GPS without a background activity session"
+        // "keeping the app running": a session rejoined after a background launch
+        // does not, so the keep-alive also runs beside one (BackgroundSessionPolicy).
+        precise ? "precise GPS without a background activity session keeping the app running"
             : stopOpen ? "a published stop is waiting for a continuation without a background activity session"
             : "live sharing without a background activity session"
     }

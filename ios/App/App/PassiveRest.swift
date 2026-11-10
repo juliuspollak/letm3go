@@ -462,7 +462,8 @@ extension LocationRecorder {
         KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: manualRecordingLive,
             // The open-stop case is part of the device test until it is measured.
             precise: locationMode == .precise, stopOpen: sharingRestEnabled && settledTripID != nil && locationMode != .passive,
-            sessionHeld: backgroundActivitySession != nil, serviceSessionHeld: serviceSession != nil,
+            // A rejoined session does not keep the app running, so the keep-alive stays on.
+            sessionHeld: backgroundSessionKeepsAppRunning, serviceSessionHeld: serviceSession != nil,
             sharingWithoutSession: sharingRestEnabled && liveSharingHoldsLocation && locationMode != .passive,
             lowPowerRunning: adaptive.lowPowerRunning)
     }
@@ -501,7 +502,7 @@ extension LocationRecorder {
 
     // MARK: Background recovery
     var backgroundRecoveryInputs: BackgroundRecoveryInputs {
-        BackgroundRecoveryInputs(automaticAvailable: automaticAvailable, activitySessionHeld: backgroundActivitySession != nil,
+        BackgroundRecoveryInputs(automaticAvailable: automaticAvailable, activitySessionHeld: backgroundSessionKeepsAppRunning,
             alwaysAuthorized: manager.authorizationStatus == .authorizedAlways, exitRegion: registeredPlaceRegion != nil,
             significantChanges: significantLocationRequested, visits: visitMonitoringRequested, monitoringFailed: monitoringFailures.active,
             serviceSessionHeld: serviceSession != nil, serviceSessionInUse: !serviceSessionInsufficient,

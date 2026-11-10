@@ -330,6 +330,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // may need background capability. Typed AnyObject because the deployment
     // target predates the class. See BackgroundSessionPolicy.
     var backgroundActivitySession: AnyObject?
+    // True only for a session started in the foreground of this process; a
+    // rejoined one is not relied on to keep the app running (BackgroundSessionPolicy).
+    var backgroundSessionStartedThisProcess = false
+    // The rejoined session, kept beside the one that replaced it in the
+    // foreground: releasing it could end the system session the new one joins.
+    // Both are invalidated together by endBackgroundSession.
+    var replacedBackgroundSession: AnyObject?
     var backgroundSessionState = "none"
     static let backgroundSessionKey = "letm3go-background-session-held"
     static let commit: String = {
@@ -402,7 +409,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let battery=UIDevice.current
         let confirmedHome=homeRest.insideSince != nil && homePlace.map{homeRest.homeKey?.hasPrefix($0.id+"|")==true} == true
         return ["timezone":TimeZone.current.identifier,"utcOffsetSeconds":String(TimeZone.current.secondsFromGMT()),
-            "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
+            "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundSessionKeepsAppRunning":String(backgroundSessionKeepsAppRunning),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
             // HomeRest is the reduced-accuracy rest at the current place (or the saved
             // Home), not the confirmed rest that allows passive rest (restConfirmed).
             // The homeRest* keys keep their names so older reports compare.
@@ -557,6 +564,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     // MARK: Background location session
     var backgroundSessionSupported: Bool { if #available(iOS 17.0, *) { return true }; return false }
+    // Only a session started in the foreground of this process is relied on to
+    // keep the app running; a rejoined one is not (BackgroundSessionPolicy).
+    var backgroundSessionKeepsAppRunning: Bool {
+        BackgroundSessionPolicy.keepsAppRunning(held: backgroundActivitySession != nil, startedThisProcess: backgroundSessionStartedThisProcess)
+    }
+    var backgroundSessionRejoinedOnly: Bool { backgroundActivitySession != nil && !backgroundSessionStartedThisProcess }
     // Rejoin at launch, before any location service starts (Apple: recreate the
     // session immediately on a background launch).
     func rejoinBackgroundSessionAtLaunch() {
@@ -573,15 +586,22 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func reconcileBackgroundSession(_ reason: String) {
         let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: active?.state == "recording",
             passiveRest: locationMode == .passive, liveSharing: liveSharingHoldsLocation)
-        let action = BackgroundSessionPolicy.decide(wanted: wanted, held: backgroundActivitySession != nil,
+        let held = backgroundActivitySession != nil
+        let action = BackgroundSessionPolicy.decide(wanted: wanted, held: held,
             foreground: UIApplication.shared.applicationState == .active,
-            previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported)
+            previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported,
+            rejoinedOnly: backgroundSessionRejoinedOnly)
         switch action {
         case .start, .rejoin:
+            // Replacing a rejoined session keeps the rejoined object alive beside it.
+            if action == .start && held && replacedBackgroundSession == nil { replacedBackgroundSession = backgroundActivitySession }
             if #available(iOS 17.0, *) { backgroundActivitySession = CLBackgroundActivitySession() }
+            backgroundSessionStartedThisProcess = action == .start
             UserDefaults.standard.set(true, forKey: Self.backgroundSessionKey)
             backgroundSessionState = action == .start ? "held" : "rejoined"
-            recordDiagnostic("session", action == .start ? "Background location session started" : "Background location session rejoined", details: ["reason": reason])
+            recordDiagnostic("session", action == .rejoin ? "Background location session rejoined" : held ? "Background location session restarted in the foreground, replacing the rejoined one" : "Background location session started", details: ["reason": reason])
+            // A session that now keeps the app running ends the keep-alive it made unnecessary.
+            if action == .start && keepAliveTask != nil { reconcileKeepAlive(now: Date().timeIntervalSince1970) }
         case .deferUntilForeground:
             // A user launch is inactive until didBecomeActive, which starts it.
             guard backgroundSessionState != "awaitingForeground", UIApplication.shared.applicationState == .background else { return }
@@ -602,8 +622,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if #available(iOS 17.0, *) {
             // A session held before a relaunch is released by rejoining and invalidating it.
             ((backgroundActivitySession as? CLBackgroundActivitySession) ?? CLBackgroundActivitySession()).invalidate()
+            (replacedBackgroundSession as? CLBackgroundActivitySession)?.invalidate()
         }
-        backgroundActivitySession = nil
+        backgroundActivitySession = nil; replacedBackgroundSession = nil; backgroundSessionStartedThisProcess = false
         UserDefaults.standard.set(false, forKey: Self.backgroundSessionKey)
         backgroundSessionState = "none"
         recordDiagnostic("session", "Background location session ended", details: ["reason": reason])

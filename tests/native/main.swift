@@ -1527,6 +1527,14 @@ check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:false,pre
 check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:false,previouslyHeld:true,supported:true) == .rejoin,"a background wake rejoins a session held before termination")
 check(BackgroundSessionPolicy.decide(wanted:false,held:false,foreground:true,previouslyHeld:false,supported:true) == .none,"no session without tracking")
 check(BackgroundSessionPolicy.decide(wanted:true,held:false,foreground:true,previouslyHeld:false,supported:false) == .none,"iOS before 17 keeps the legacy configuration")
+// A session rejoined after a background launch does not keep the app running
+// (feedback #12-#14): the foreground replaces it, the background cannot.
+check(BackgroundSessionPolicy.decide(wanted:true,held:true,foreground:true,previouslyHeld:true,supported:true,rejoinedOnly:true) == .start,"opening the app replaces a session that was only rejoined after a background launch")
+check(BackgroundSessionPolicy.decide(wanted:true,held:true,foreground:false,previouslyHeld:true,supported:true,rejoinedOnly:true) == .none,"a rejoined session is not replaced from the background, where no new session can start")
+check(BackgroundSessionPolicy.decide(wanted:false,held:true,foreground:true,previouslyHeld:true,supported:true,rejoinedOnly:true) == .none,"a rejoined session nobody needs is not restarted")
+check(BackgroundSessionPolicy.keepsAppRunning(held:true,startedThisProcess:true),"a session started in the foreground of this process keeps the app running")
+check(!BackgroundSessionPolicy.keepsAppRunning(held:true,startedThisProcess:false),"a rejoined session is not relied on to keep the app running")
+check(!BackgroundSessionPolicy.keepsAppRunning(held:false,startedThisProcess:true),"no session keeps nothing running")
 check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true) == .rejoin,"a relaunch rejoins before location services restart")
 check(BackgroundSessionPolicy.onLaunch(previouslyHeld:false,supported:true) == .none,"a relaunch without a held session creates nothing from the background")
 check(BackgroundSessionPolicy.wanted(automaticAvailable:false,manualRecording:true),"manual recording also wants a background session")
@@ -2769,6 +2777,9 @@ do {
     check(keepAlive(precise: true) && keepAlive(stop: true), "precise GPS and a published stop keep the app resumable after the session was released")
     check(!keepAlive(), "plain standby starts no second location stream")
     check(!keepAlive(precise: true, session: true), "a held activity session needs no keep-alive")
+    // The recorder passes keepsAppRunning, so a rejoined session leaves sessionHeld false.
+    check(keepAlive(precise: true, session: BackgroundSessionPolicy.keepsAppRunning(held: true, startedThisProcess: false)),
+          "precise GPS in a background-launched process with only a rejoined session runs the keep-alive")
     check(!keepAlive(precise: true, service: false), "without an Always service session the keep-alive cannot resume the app, so it is not started")
     check(!keepAlive(precise: true, manual: true) && !keepAlive(stop: true, automatic: false), "manual recordings and Watch ownership never start it")
     check(KeepAlivePolicy.wanted(automaticAvailable: false, manualRecording: false, precise: false, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, sharingWithoutSession: true),
@@ -5114,6 +5125,12 @@ check(GapCause.suspendedSeconds(gapStart: 1000, executingSince: 900, lastExecuti
 let runningGap = GapCause.note(seconds: 120, meters: 900, suspendedSeconds: 0, lowPower: false, activitySession: true, keepAlive: false)
 check(runningGap.contains("the app was running but no GPS fix arrived") && runningGap.contains("background session held") && !runningGap.contains("Low Power"), "a gap with the app running is reported as missing fixes, not suspension")
 check(GapCause.note(seconds: 60, meters: 400, suspendedSeconds: 900, lowPower: false, activitySession: false, keepAlive: true).contains("suspended the app for 60s"), "suspension is never reported as longer than the gap")
+// Feedback #12-#14 (build 101, iOS 26.6): a session rejoined after a background
+// launch did not keep the app running, so it is never reported as "held".
+let rejoinedGap = GapCause.note(seconds: 2076, meters: 234, suspendedSeconds: 2075, lowPower: false, activitySession: false, keepAlive: false, sessionRejoined: true)
+check(rejoinedGap.contains("background session only rejoined after a background launch; no keep-alive") && !rejoinedGap.contains("session held"), "a rejoined session is reported as rejoined, not held")
+check(GapCause.note(seconds: 90, meters: 500, suspendedSeconds: 0, lowPower: false, activitySession: false, keepAlive: true, sessionRejoined: true).contains("rejoined after a background launch; keep-alive running"), "a rejoined session with the keep-alive says both")
+check(GapCause.note(seconds: 90, meters: 500, suspendedSeconds: 0, lowPower: false, activitySession: false, keepAlive: true).contains("no background session; keep-alive running"), "the no-session keep-alive wording is unchanged")
 print("\(assertions) native recorder/auth assertions passed")
 
 // Automatic-only policy regressions. No private coordinates or personal timeline

@@ -1847,7 +1847,19 @@ enum HouseholdPublisher {
 // the app may only rejoin one that was never invalidated. The session is therefore
 // started in the foreground whenever tracking may need it, rejoined at launch
 // before any location service starts, and ended only for an explicit reason.
+//
+// A rejoined session is not relied on to keep the app running. Build 101 on
+// iOS 26.6 (feedback #12–#14, 10 Nov 2026): in every process iOS launched in the
+// background, the rejoined session was reported held while the recorder went
+// unexecuted for 77–2075 s between location wake-ups, and drives recorded 1–8
+// fixes a minute; the same phone recorded 26–52 a minute once the app had been
+// opened in that process, and 44 a minute in a background launch with no session
+// to rejoin, where the liveUpdates keep-alive ran. So only a session started in
+// the foreground of this process counts as keeping the app running
+// (`keepsAppRunning`); a rejoined one leaves the keep-alive on, and opening the
+// app replaces it with a new session.
 enum BackgroundSessionPolicy {
+    static func keepsAppRunning(held: Bool, startedThisProcess: Bool) -> Bool { held && startedThisProcess }
     enum Action: Equatable { case none, start, rejoin, deferUntilForeground }
     // Passive rest (PassiveRestPolicy) is the one automatic state that releases
     // it: no location service runs, and Core Location's wake-ups restore precise
@@ -1861,8 +1873,11 @@ enum BackgroundSessionPolicy {
     static func onLaunch(previouslyHeld: Bool, supported: Bool) -> Action {
         supported && previouslyHeld ? .rejoin : .none
     }
-    static func decide(wanted: Bool, held: Bool, foreground: Bool, previouslyHeld: Bool, supported: Bool) -> Action {
-        guard supported, wanted, !held else { return .none }
+    // `rejoinedOnly`: the held session was rejoined after a background launch, not
+    // started in this process. The foreground replaces it with a new one.
+    static func decide(wanted: Bool, held: Bool, foreground: Bool, previouslyHeld: Bool, supported: Bool, rejoinedOnly: Bool = false) -> Action {
+        guard supported, wanted else { return .none }
+        if held { return foreground && rejoinedOnly ? .start : .none }
         if foreground { return .start }
         return previouslyHeld ? .rejoin : .deferUntilForeground
     }
@@ -1984,11 +1999,14 @@ struct ExecutionHeartbeat {
 // Low Power Mode was on, and what was meant to keep the app running.
 enum GapCause {
     static func note(seconds: Double, meters: Double, suspendedSeconds: Double, lowPower: Bool,
-                     activitySession: Bool, keepAlive: Bool) -> String {
+                     activitySession: Bool, keepAlive: Bool, sessionRejoined: Bool = false) -> String {
         var parts = ["GPS resumed after \(Int(seconds))s without saved route samples; \(Int(meters))m straight-line gap excluded from distance"]
         parts.append(suspendedSeconds >= 1 ? "iOS suspended the app for \(Int(min(seconds, suspendedSeconds)))s of it" : "the app was running but no GPS fix arrived")
         if lowPower { parts.append("Low Power Mode on") }
-        parts.append(activitySession ? "background session held" : keepAlive ? "no background session; keep-alive running" : "no background session or keep-alive")
+        // `activitySession` is a session started in the foreground of this process;
+        // a rejoined one is reported as such, because it does not keep the app running.
+        let session = activitySession ? "background session held" : sessionRejoined ? "background session only rejoined after a background launch" : "no background session"
+        parts.append(activitySession ? session : session + (keepAlive ? "; keep-alive running" : sessionRejoined ? "; no keep-alive" : " or keep-alive"))
         return parts.joined(separator: " · ")
     }
     // The part of the gap the process slept through: it last resumed after the fix
