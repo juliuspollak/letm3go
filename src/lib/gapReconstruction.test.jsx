@@ -2,12 +2,16 @@
 // reported Low Power Mode drive; Apple Maps answers are stand-ins (roadFor), so
 // this tests the app's handling, not live MapKit results.
 import {renderHook,waitFor,cleanup,render,screen} from '@testing-library/react';
+import {useSyncExternalStore} from 'react';
 import {describe,it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mock=vi.hoisted(()=>({lookup:vi.fn(),road:vi.fn()}));
+const mock=vi.hoisted(()=>({lookup:vi.fn(),road:vi.fn(),supabase:{rpc:(...args)=>mock.rpc(...args)},rpc:null}));
+vi.mock('./supabase.js',()=>({supabase:mock.supabase}));
 vi.mock('./recorder.js',async()=>({...(await vi.importActual('./recorder.js')),recorderAvailable:()=>true,recorder:{recogniseTripPlace:mock.lookup,roadRoute:mock.road}}));
 import {routeGaps,gapKey,plausibleRoute,chooseRoute,roadRecord,failedRecord,roadLookupDue,estimateExplanation,estimatedDistance,distanceSnapshot,savedDistance,encodeLine,decodeLine,ROAD_VERSION} from './gapReconstruction.js';
 import {buildJourneys,emptyGrouping,placeKey} from './journeyGrouping.js';
 import {useJourneyGrouping} from './useJourneyGrouping.js';
+import {createJourneySync,APPLY_FUNCTION} from './journeyMetadataStore.js';
+import {fakeSupabase,memoryStorage} from '../test/journeyServer.js';
 import {recordedJourney} from './recorder.js';
 import {tripDistanceText} from './distanceUnits.js';
 import {activitySummary} from './activitySummary.js';
@@ -142,54 +146,59 @@ describe('road route plausibility',()=>{
  });
 });
 
+// The device's cache and Supabase both start from `meta`; answers are saved to Supabase as they are found.
+async function run(trips,meta,{owner=OWNER,server=null}={}){
+ const backend=server||fakeSupabase({owner});
+ backend.server.metadata={...backend.server.metadata,...structuredClone(meta)};
+ mock.rpc=backend.rpc;
+ const sync=createJourneySync({owner,storage:memoryStorage()});await sync.ready();
+ await sync.write(latest=>({metadata:{...latest.metadata,...structuredClone(meta)}}));
+ const view=renderHook(current=>{useSyncExternalStore(sync.subscribe,sync.getSnapshot);return useJourneyGrouping({...current,metadataValue:sync.read().metadata});},{initialProps:{owner,activities:trips.map(recordedJourney),places:[],vehicles:[],sync}});
+ return {...backend,sync,view};
+}
 describe('road estimates when an activity is saved',()=>{
  // Places are cached so only road lookups run; a short trip keeps the test quick.
  function threeGapDrive(id='three',startedAt){const t=lowPowerDrive({id,...(startedAt?{startedAt}:{})});const keep=t.points.filter(p=>p.segment<=3);return {...t,points:keep,endedAt:keep.at(-1).timestamp};}
  function cachedPlaces(trips){const m={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();for(const t of trips)for(const p of t.points)m.places[placeKey(p)]={source:'apple-geocoder-mapkit',candidates:[{name:'x'}],lookupVersion:2,expiresAt:now+86400000};return m;}
- function run(trips,meta){const savePreferences=vi.fn().mockResolvedValue();renderHook(()=>useJourneyGrouping({owner:OWNER,activities:trips.map(recordedJourney),places:[],vehicles:[],serialized:JSON.stringify(meta),savePreferences}));return savePreferences;}
- const last=save=>JSON.parse(save.mock.calls.at(-1)[0].journeyGrouping);
  it('estimates each gap of newly saved recordings once, newest first, and never asks again',async()=>{
   const recent=threeGapDrive(),old=threeGapDrive('old',1700000000);
   mock.road.mockImplementation(async from=>{const g=[...routeGaps(recent),...routeGaps(old)].find(x=>x.from===from||x.from.timestamp===from.timestamp);return {routes:[roadFor(g)]};});
-  const save=run([old,recent],cachedPlaces([old,recent]));
-  // Six road lookups, one batched save.
-  await waitFor(()=>expect(save).toHaveBeenCalledTimes(1),{timeout:15000});
+  const {server}=await run([old,recent],cachedPlaces([old,recent]));
+  await waitFor(()=>expect(Object.keys(server.metadata.distanceSummaries)).toHaveLength(2),{timeout:15000});
   expect(mock.road).toHaveBeenCalledTimes(6);
   expect(mock.road.mock.calls[0][0].timestamp).toBe(routeGaps(recent)[0].from.timestamp);
-  const meta=last(save);
+  const meta=structuredClone(server.metadata);
   expect(Object.values(meta.roads).every(r=>r.status==='route')).toBe(true);
   // Each drive's distance summary is saved once it is done, so the list never rescans it.
   expect(Object.keys(meta.distanceSummaries).sort()).toEqual([old.id,recent.id].sort());
   expect(meta.distanceSummaries[recent.id].summary).toMatchObject({gapCount:3,roadGaps:3});
   expect(Object.keys(meta.roads)).toHaveLength(6);
   cleanup();mock.road.mockClear();
-  run([old,recent],meta);await new Promise(r=>setTimeout(r,400));
+  await run([old,recent],meta);await new Promise(r=>setTimeout(r,400));
   expect(mock.road).not.toHaveBeenCalled();
   expect(project([old],meta.roads)[0].distanceEstimate.confidence).toBe('road');
  },20000);
  it('offline: keeps what it had, schedules a retry and shows the straight-line estimate meanwhile',async()=>{
   const trip=threeGapDrive();mock.road.mockRejectedValue(new Error('Road routes are unavailable: NSURLErrorDomain:-1009'));
-  const save=run([trip],cachedPlaces([trip]));
-  await waitFor(()=>expect(save).toHaveBeenCalledTimes(1),{timeout:15000});
-  const meta=last(save);
+  const {server}=await run([trip],cachedPlaces([trip]));
+  await waitFor(()=>expect(Object.keys(server.metadata.roads)).toHaveLength(3),{timeout:15000});
+  const meta=server.metadata;
   expect(Object.values(meta.roads).every(r=>r.retryAfter>Date.now()&&r.failures===1&&!r.status)).toBe(true);
   expect(project([trip],meta.roads)[0].distanceEstimate.confidence).toBe('straight');
  },20000);
  it('no road found: falls back to the straight line without retrying every cycle',async()=>{
   const trip=threeGapDrive();mock.road.mockResolvedValue({routes:[]});
-  const save=run([trip],cachedPlaces([trip]));
-  await waitFor(()=>expect(save).toHaveBeenCalledTimes(1),{timeout:15000});
-  const meta=last(save);
-  expect(Object.values(meta.roads).every(r=>r.status==='none'&&!roadLookupDue(r))).toBe(true);
+  const {server}=await run([trip],cachedPlaces([trip]));
+  await waitFor(()=>expect(Object.keys(server.metadata.roads)).toHaveLength(3),{timeout:15000});
+  expect(Object.values(server.metadata.roads).every(r=>r.status==='none'&&!roadLookupDue(r))).toBe(true);
  },20000);
  it('discards a road result that arrives after the account changed',async()=>{
   const trip=threeGapDrive();let finish;mock.road.mockImplementation(()=>new Promise(r=>{finish=r;}));
-  const savePreferences=vi.fn().mockResolvedValue();
-  const {rerender}=renderHook(p=>useJourneyGrouping(p),{initialProps:{owner:OWNER,activities:[recordedJourney(trip)],places:[],vehicles:[],serialized:JSON.stringify(cachedPlaces([trip])),savePreferences}});
+  const {server,view}=await run([trip],cachedPlaces([trip]));
   await waitFor(()=>expect(mock.road).toHaveBeenCalledTimes(1),{timeout:5000});
-  rerender({owner:'other',activities:[],places:[],vehicles:[],serialized:JSON.stringify({...emptyGrouping('other'),enrichFrom:0}),savePreferences});
+  view.rerender({owner:'other',activities:[],places:[],vehicles:[],sync:view.result.current.sync});
   finish({routes:[roadFor(routeGaps(trip)[0])]});await new Promise(r=>setTimeout(r,200));
-  expect(savePreferences).not.toHaveBeenCalled();
+  expect(server.calls.filter(([name])=>name===APPLY_FUNCTION).some(([,args])=>args.p_owner==='other')).toBe(false);
  },10000);
 });
 
@@ -261,16 +270,12 @@ it('persists a no-gap result and does not rescan clean GPS recordings',()=>{
  }})};
  expect(savedDistance(guarded,meta)).toBeNull();
 });
-it('saves no distance summary for an activity without GPS gaps, keeping account metadata small',async()=>{
- const {useJourneyGrouping:hook}=await import('./useJourneyGrouping.js');
+it('an activity without GPS gaps still gets its lightweight list summary and no road lookups',async()=>{
  const clean=lowPowerDrive();clean.points=clean.points.map(p=>({...p,segment:0}));
  const meta={...emptyGrouping(OWNER),enrichFrom:0};
  const now=Date.now();for(const p of clean.points)meta.places[placeKey(p)]={source:'apple-geocoder-mapkit',candidates:[{name:'x'}],lookupVersion:2,lookedUpAt:now};
- const savePreferences=vi.fn().mockResolvedValue();
- renderHook(()=>hook({owner:OWNER,activities:[recordedJourney(clean)],places:[],vehicles:[],serialized:JSON.stringify(meta),savePreferences}));
- await waitFor(()=>expect(savePreferences).toHaveBeenCalled(),{timeout:5000});
- const saved=JSON.parse(savePreferences.mock.lastCall[0].journeyGrouping);
- expect(saved.enriched[clean.id]).toEqual(expect.any(Number));
- expect(saved.distanceSummaries||{}).toEqual({});
+ const {server}=await run([clean],meta);
+ await waitFor(()=>expect(server.metadata.enriched[clean.id]).toEqual(expect.any(Number)),{timeout:5000});
+ expect(server.metadata.distanceSummaries[clean.id]).toMatchObject({presentation:expect.any(Object)});
  expect(mock.road).not.toHaveBeenCalled();
 });

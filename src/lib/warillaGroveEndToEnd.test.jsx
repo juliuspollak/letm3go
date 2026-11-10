@@ -4,10 +4,14 @@
 // is not itself a live MapKit check. No destination name is preset anywhere:
 // Warilla Grove has to come from the provider records.
 import {renderHook,waitFor,cleanup,render,screen} from '@testing-library/react';
+import {useSyncExternalStore} from 'react';
 import {it,expect,vi,beforeEach,afterEach,describe} from 'vitest';
-const mock=vi.hoisted(()=>({lookup:vi.fn()}));
+const mock=vi.hoisted(()=>({lookup:vi.fn(),supabase:{rpc:(...args)=>mock.rpc(...args)},rpc:null}));
+vi.mock('./supabase.js',()=>({supabase:mock.supabase}));
 vi.mock('./recorder.js',async()=>({...(await vi.importActual('./recorder.js')),recorderAvailable:()=>true,recorder:{recogniseTripPlace:mock.lookup}}));
 import {useJourneyGrouping} from './useJourneyGrouping.js';
+import {createJourneySync} from './journeyMetadataStore.js';
+import {fakeSupabase,memoryStorage} from '../test/journeyServer.js';
 import {buildJourneys,emptyGrouping,placeKey,nativeStops,changeGrouping} from './journeyGrouping.js';
 import {recognisedStopVenue,suggestedStopVenues,STOP_LOOKUP_VERSION} from './stopVenueRecognition.js';
 import {recordedJourney} from './recorder.js';
@@ -31,13 +35,24 @@ function nativeLookup(trip,{stop,route}){
   return structuredClone(route);
  };
 }
-// One save for the whole cycle: lookups are batched (useJourneyGrouping).
-async function enrich(trip,responses,serialized=JSON.stringify({...emptyGrouping(OWNER),enrichFrom:0}),calls=1){
+// The device's cache and Supabase both start from `meta`; every answer is saved to Supabase.
+async function mountGrouping(trip,meta){
+ const backend=fakeSupabase({owner:OWNER});
+ backend.server.metadata={...backend.server.metadata,...structuredClone(meta)};
+ mock.rpc=backend.rpc;
+ const sync=createJourneySync({owner:OWNER,storage:memoryStorage()});await sync.ready();
+ await sync.write(latest=>({metadata:{...latest.metadata,...structuredClone(meta)}}));
+ renderHook(()=>{useSyncExternalStore(sync.subscribe,sync.getSnapshot);return useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],sync,metadataValue:sync.read().metadata});});
+ return backend;
+}
+async function enrich(trip,responses,start={...emptyGrouping(OWNER),enrichFrom:0}){
  mock.lookup.mockImplementation(nativeLookup(trip,responses));
- const savePreferences=vi.fn().mockResolvedValue();
- renderHook(()=>useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],serialized,savePreferences}));
- await waitFor(()=>expect(savePreferences).toHaveBeenCalledTimes(calls),{timeout:9000});
- return JSON.parse(savePreferences.mock.calls.at(-1)[0].journeyGrouping);
+ const {server}=await mountGrouping(trip,start);
+ await waitFor(()=>expect(server.metadata.enriched[trip.id]).toEqual(expect.any(Number)),{timeout:9000});
+ // The saved list presentation is for rows without geometry; this test reads the route's own result.
+ const meta=structuredClone(server.metadata);
+ for(const summary of Object.values(meta.distanceSummaries))delete summary.presentation;
+ return meta;
 }
 const project=(trip,metadata,places=[HOME_PLACE])=>buildJourneys([recordedJourney(trip)],{owner:OWNER,metadata,places}).journeys[0];
 const patchedMeta=()=>{const m=emptyGrouping(OWNER);m.places[placeKey(PARKED)]={...live.stopPatched,stopLookup:STOP_LOOKUP_VERSION};return m;};
@@ -102,7 +117,7 @@ describe('automatic pipeline',()=>{
   const trip=warillaGroveRecording(),old={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();
   for(const [key,record] of [[placeKey(PARKED),{...live.stopMerged,stopLookup:true}],[placeKey(trip.points[0]),savedPlace],[placeKey(trip.points[143]),live.routeMerged]])
    old.places[key]={...record,lookupVersion:2,lookedUpAt:now,expiresAt:now-1};
-  const meta=await enrich(trip,{stop:live.stopPatched,route:live.routePatched},JSON.stringify(old),1);
+  const meta=await enrich(trip,{stop:live.stopPatched,route:live.routePatched},old);
   expect(mock.lookup).not.toHaveBeenCalled();
   expect(meta.enriched).toEqual({[trip.id]:expect.any(Number)});
   // The earlier answer had no centre; the person can still add one by hand.
@@ -114,7 +129,7 @@ describe('automatic pipeline',()=>{
   for(const [key,record] of [[placeKey(PARKED),{...live.stopMerged,stopLookup:true,retryAfter:now+300000}],[placeKey(trip.points[0]),savedPlace],[placeKey(trip.points[143]),live.routeMerged]])
    old.places[key]={lookupVersion:2,expiresAt:now+86400000,...record};
   mock.lookup.mockImplementation(nativeLookup(trip,{stop:live.stopPatched,route:live.routePatched}));
-  renderHook(()=>useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],serialized:JSON.stringify(old),savePreferences:vi.fn()}));
+  await mountGrouping(trip,old);
   await new Promise(r=>setTimeout(r,300));
   expect(mock.lookup).not.toHaveBeenCalled();
  });
@@ -122,10 +137,9 @@ describe('automatic pipeline',()=>{
   const trip=warillaGroveRecording(),old={...emptyGrouping(OWNER),enrichFrom:0},now=Date.now();
   for(const [key,record] of [[placeKey(trip.points[0]),savedPlace],[placeKey(trip.points[143]),live.routeMerged]])old.places[key]={...record,lookupVersion:2,lookedUpAt:now};
   mock.lookup.mockRejectedValue(new Error('Place recognition is unavailable offline. It will retry later.'));
-  const savePreferences=vi.fn().mockResolvedValue();
-  renderHook(()=>useJourneyGrouping({owner:OWNER,activities:[recordedJourney(trip)],places:[HOME_PLACE],vehicles:[],serialized:JSON.stringify(old),savePreferences}));
-  await waitFor(()=>expect(savePreferences).toHaveBeenCalled(),{timeout:5000});
-  const saved=JSON.parse(savePreferences.mock.calls[0][0].journeyGrouping);
+  const {server}=await mountGrouping(trip,old);
+  await waitFor(()=>expect(server.metadata.places[placeKey(PARKED)]).toMatchObject({attempts:1}),{timeout:5000});
+  const saved=server.metadata;
   expect(mock.lookup).toHaveBeenCalledTimes(1);
   expect(saved.places[placeKey(PARKED)]).toMatchObject({attempts:1,retryAfter:expect.any(Number)});
   expect(saved.places[placeKey(trip.points[143])]).toEqual(old.places[placeKey(trip.points[143])]);

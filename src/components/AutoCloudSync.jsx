@@ -10,7 +10,7 @@ import {syncPrivateActivities,syncSegmentEfforts,syncPublicSegments} from '../li
 export const SEGMENT_CATCH_UP_MS=6*3600*1000;
 import {syncCollections} from '../lib/collectionSync.js';
 import {syncAccountSettings} from '../lib/settingsSync.js';
-import {runJourneySync} from '../lib/journeyMetadataStore.js';
+import {refreshJourneyMetadata} from '../lib/journeyMetadataStore.js';
 import {SYNC_NOW_EVENT} from '../lib/syncNow.js';
 import {receiptPatch,saveSyncReceipts} from '../lib/syncReceipts.js';
 import {notifySegmentsChanged} from '../lib/segmentEvents.js';
@@ -50,12 +50,10 @@ export default function AutoCloudSync({state,journeySync=null}){
    if(!ownsRecordings&&!journeys)return;
    // Work only after something was saved, edited or deleted: an unchanged history
    // (the recorder's history token), places and settings need no backup pass.
-   // Journey metadata is left out of this signature on purpose. It has its own queue
-   // and revision, so renaming a journey sends one record instead of re-uploading a
-   // day of routes and photos - and reading it back does not look like a settings
-   // change on every two-minute check.
-   const {syncReceipts:_r,lastBackup:_b,journeyGrouping:_g,journeyMetadataQueue:_q,journeyMetadata:_m,...settings}=user.preferences;
-   void _r;void _b;void _g;void _q;void _m;
+   // Journey metadata is left out of this signature on purpose: it lives in Supabase and
+   // is refreshed below, so reading it back never looks like a settings change.
+   const {syncReceipts:_r,lastBackup:_b,...settings}=user.preferences;
+   void _r;void _b;
    const signature=JSON.stringify([owner,recordings?.historyToken||null,recordings?.places||[],recordings?.deletedIDs||[],settings]);
    const journeysOnly=!ownsRecordings||signature===synced.current;
    // Nothing local changed, but other people may have published segments since.
@@ -72,14 +70,11 @@ export default function AutoCloudSync({state,journeySync=null}){
      await attempt(next=>syncAccountSettings(supabase,{owner:recordings.ownerID,preferences:user.preferences,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
      await attempt(next=>syncCollections(supabase,{owner:recordings.ownerID,vehicles:user.preferences.vehicles,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
     }
-    // Titles, merges, tags and the answers derived for them are records, not one blob:
-    // the queue is replayed and the revision carried over, so a retry is harmless.
-    // Anything short of active stays queued and makes the pass count as unfinished, so
-    // the next tick tries again instead of recording this state as already synced.
+    // Journey metadata is Supabase's: this only refreshes the device's read-only cache of
+    // it (start, return to the app, the periodic check). Nothing is uploaded here.
     if(journeys)await attempt(async next=>{
-     const journey=await runJourneySync({client:supabase,owner,...journeys});
+     await refreshJourneyMetadata({client:supabase,owner,...journeys});
      await journeys.flush();
-     if(journey.state!=='active'&&journey.state!=='idle')throw new Error(journey.error||'Journey metadata could not be stored in the cloud.');
      return {receipts:next};
     });
     if(!journeysOnly&&config.backupEnabled){
