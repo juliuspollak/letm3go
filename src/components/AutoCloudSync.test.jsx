@@ -9,7 +9,7 @@ vi.mock('../lib/config.js',()=>({config:{get backupEnabled(){return mocks.backup
 vi.mock('../lib/cloudSync.js',()=>({syncPublicSegments:mocks.publications,syncPrivateActivities:mocks.activities,syncSegmentEfforts:mocks.efforts}));
 vi.mock('../lib/settingsSync.js',()=>({syncAccountSettings:mocks.settings}));
 vi.mock('../lib/collectionSync.js',()=>({syncCollections:mocks.collections}));
-vi.mock('../lib/journeyMetadataStore.js',()=>({runJourneySync:mocks.journey}));
+vi.mock('../lib/journeyMetadataStore.js',async importOriginal=>({...await importOriginal(),refreshJourneyMetadata:mocks.journey}));
 import AutoCloudSync from './AutoCloudSync.jsx';
 
 const state=(token)=>({ownerID:'owner',historyToken:token,places:[],deletedIDs:[],trips:[]});
@@ -44,7 +44,7 @@ it('a failed backup is tried again at the next check',async()=>{
  await tick(5000);await tick(2*120000);
  expect(mocks.activities).toHaveBeenCalledTimes(2);
 });
-it('sends the queued journey records and waits for the device to keep them',async()=>{
+it('refreshes the device’s cache of Supabase metadata, uploading nothing',async()=>{
  const journeySync={read:vi.fn(()=>({})),write:vi.fn(),flush:vi.fn(async()=>{})};
  mocks.journey.mockResolvedValue({state:'active',revision:4});
  render(<AutoCloudSync state={state('h1')} journeySync={journeySync}/>);
@@ -53,30 +53,26 @@ it('sends the queued journey records and waits for the device to keep them',asyn
  expect(journeySync.flush).toHaveBeenCalled();
  expect(mocks.auth.preferences.lastBackup).toBe('now');
 });
-it('a journey sync that could not reach the cloud is retried, not counted as done',async()=>{
+it('a metadata refresh that could not reach Supabase is retried, not counted as done',async()=>{
  const journeySync={flush:vi.fn(async()=>{})};
- mocks.journey.mockResolvedValue({state:'offline',error:'Network request failed'});
+ mocks.journey.mockRejectedValue(new Error('Network request failed'));
  render(<AutoCloudSync state={state('h1')} journeySync={journeySync}/>);
  await tick(5000);
  expect(mocks.journey).toHaveBeenCalledTimes(1);
  await tick(2*120000);
  expect(mocks.journey).toHaveBeenCalledTimes(3);
 });
-it('a journey edit alone sends records, not a fresh route and photo backup',async()=>{
- const device={status:{revision:4,state:'active'},queue:{},dropped:{}};
- const journeySync={read:vi.fn(()=>device),write:vi.fn(),flush:vi.fn(async()=>{})};
- mocks.journey.mockImplementation(async()=>{device.queue={};device.status={revision:5,state:'active'};return {state:'active',revision:5};});
+it('a metadata refresh alone does not repeat the route and photo backup, and an idle device saves nothing',async()=>{
+ const journeySync={read:vi.fn(()=>({})),write:vi.fn(),flush:vi.fn(async()=>{})};
+ mocks.journey.mockResolvedValue({state:'active',revision:5});
  render(<AutoCloudSync state={state('h1')} journeySync={journeySync}/>);
  await tick(5000);
  expect(mocks.activities).toHaveBeenCalledTimes(1);
- // A rename queues one record: only the journey pass runs, no routes or photos.
- device.queue={activities:[{ref:'a',title:'Renamed'}]};
  await tick(2*120000);
  expect(mocks.journey).toHaveBeenCalledTimes(3);
  expect(mocks.activities).toHaveBeenCalledTimes(1);
  expect(mocks.settings).toHaveBeenCalledTimes(1);
  expect(mocks.collections).toHaveBeenCalledTimes(1);
- // An idle device still checks the remote revision, without other backup work.
  const saves=mocks.auth.savePreferences.mock.calls.length;
  await tick(2*120000);
  expect(mocks.journey).toHaveBeenCalledTimes(5);
@@ -84,22 +80,22 @@ it('a journey edit alone sends records, not a fresh route and photo backup',asyn
  expect(mocks.auth.savePreferences.mock.calls.length).toBe(saves);
 });
 
-it('discovers device A rename while device B is idle, including an immediate foreground check',async()=>{
- const {runJourneySync}=await vi.importActual('../lib/journeyMetadataStore.js');
- const {emptyGrouping}=await vi.importActual('../lib/journeyGrouping.js');
- const cloud={revision:1,metadata:{...emptyGrouping('owner'),titles:{a:'Original'}}},requests=[];
- const client={rpc:async name=>{requests.push(name);return {data:name==='journey_metadata_revision'?cloud.revision:{...cloud.metadata,revision:cloud.revision},error:null};}};
- const device={metadata:cloud.metadata,queue:{},status:{owner:'owner',revision:1,migratedAt:1,state:'active'}};
- const journeySync={read:()=>device,write:async patch=>Object.assign(device,typeof patch==='function'?patch(device):patch),flush:async()=>{}};
- mocks.journey.mockImplementation(args=>runJourneySync({...args,client}));
+it('picks up a rename made on another phone when returning to the app, and an idle check only asks for the revision',async()=>{
+ const {refreshJourneyMetadata,createJourneySync}=await vi.importActual('../lib/journeyMetadataStore.js');
+ const {fakeSupabase,memoryStorage}=await import('../test/journeyServer.js');
+ const {rpc,server}=fakeSupabase({titles:{a:'Original'}});
+ const journeySync=createJourneySync({owner:'owner',storage:memoryStorage()});await journeySync.ready();
+ journeySync.configureScope(['a']);
+ mocks.journey.mockImplementation(args=>refreshJourneyMetadata({...args,client:{rpc}}));
  render(<AutoCloudSync state={state('h1')} journeySync={journeySync}/>);await tick(5000);
- expect(requests).toEqual(['journey_metadata_revision']);
- cloud.metadata={...cloud.metadata,titles:{a:'Rename from device A'}};cloud.revision=2;
+ expect(journeySync.read().metadata.titles.a).toBe('Original');
+ server.metadata.titles.a='Rename from device A';server.revision=2;
  await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
- expect(device.metadata.titles.a).toBe('Rename from device A');
- expect(requests).toEqual(['journey_metadata_revision','journey_metadata_revision','journey_metadata_snapshot']);
+ expect(journeySync.read().metadata.titles.a).toBe('Rename from device A');
+ const snapshots=server.calls.filter(([name])=>name==='journey_metadata_snapshot').length;
  await tick(2*120000);
- expect(requests.filter(name=>name==='journey_metadata_snapshot')).toHaveLength(1);
+ expect(server.calls.filter(([name])=>name==='journey_metadata_snapshot')).toHaveLength(snapshots);
+ expect(server.calls.some(([name])=>name==='journey_apply_changes')).toBe(false);
  expect(mocks.activities).toHaveBeenCalledTimes(1);expect(mocks.settings).toHaveBeenCalledTimes(1);expect(mocks.collections).toHaveBeenCalledTimes(1);
 });
 

@@ -203,7 +203,8 @@ it('removes every record with the account', async () => {
 it('round trips merges, splits, source links, stop edits and reloads through SQL',async()=>{
  const {emptyGrouping,changeGrouping,buildJourneys}=await import('../../src/lib/journeyGrouping.js');
  const {groupingChanges}=await import('../../src/lib/journeyMetadata.js');
- const {loadSnapshot}=await import('../../src/lib/journeyMetadataStore.js');
+ const {validateGrouping}=await import('../../src/lib/journeyGrouping.js');
+ const loadSnapshot=async()=>({metadata:validateGrouping(grouping(await read(owner)),owner)});
  const owner='44444444-4444-4444-8444-444444444444';
  await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
  const client={async rpc(name,args){try{
@@ -235,47 +236,37 @@ it('round trips merges, splits, source links, stop edits and reloads through SQL
  expect(reloaded.stopEdits).toEqual(local.stopEdits);
 });
 
-it('merges independent offline fields and preserves competing field values with real revision checks',async()=>{
- const {emptyGrouping}=await import('../../src/lib/journeyGrouping.js');
- const {groupingChanges,mergeChanges}=await import('../../src/lib/journeyMetadata.js');
- const {runJourneySync,emptyStatus}=await import('../../src/lib/journeyMetadataStore.js');
- const owner='55555555-5555-4555-8555-555555555555';
- await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
- const client={async rpc(name,args){try{
-  let data;
-  if(name==='journey_metadata_snapshot')data=await read(owner);
-  else if(name==='journey_metadata_revision')data=(await as('authenticated',owner,revision(owner))).rows[0].revision;
-  else data=(await mine(owner,args.p_changes,args.p_expected_revision??'null')).rows[0].data;
-  return {data,error:null};
- }catch(error){return {data:null,error:{message:error.message}};}}};
- const device=()=>{
-  const state={metadata:emptyGrouping(owner),queue:{},status:emptyStatus(owner)};
-  return {read:()=>state,write:async patch=>Object.assign(state,typeof patch==='function'?patch(state):patch)};
- };
- const one=device(),two=device(),sync=device=>runJourneySync({client,owner,...device});
- await sync(one);await sync(two);
- const edit=(device,patch)=>{const s=device.read(),next={...s.metadata,...patch};s.queue=mergeChanges(s.queue,groupingChanges(s.metadata,next));s.metadata=next;};
- edit(one,{titles:{a:'From A'}});await sync(one);
- // B had no edits: its revision check discovers A's title.
- await sync(two);expect(two.read().metadata.titles.a).toBe('From A');
- // Both go offline and edit unrelated fields of the same activity.
- edit(one,{titles:{a:'A title offline'}});edit(two,{manualTags:{a:['B tag offline']}});
- await sync(one);expect((await sync(two)).state).toBe('active');await sync(one);
- expect((await read(owner))).toMatchObject({titles:{a:'A title offline'},manualTags:{a:['B tag offline']}});
- expect(one.read().metadata.manualTags.a).toEqual(['B tag offline']);
- edit(one,{stopEdits:{'native:a:10':{name:'Cafe'}}});
- edit(two,{stopEdits:{'native:a:10':{tags:['coffee'],replaceTags:true}}});
- await sync(one);expect((await sync(two)).state).toBe('active');await sync(one);
- expect((await read(owner)).stopEdits['native:a:10']).toEqual({name:'Cafe',tags:['coffee'],replaceTags:true});
- edit(two,{manualTags:{a:[]}});expect((await sync(two)).state).toBe('active');await sync(one);
- expect((await read(owner)).manualTags.a).toBeUndefined();
- // Concurrent changes of the same field are not last-writer-wins.
- edit(one,{titles:{a:'A competing title'}});edit(two,{titles:{a:'B competing title'}});
- await sync(one);expect((await sync(two)).state).toBe('offline');
- expect((await read(owner)).titles.a).toBe('A competing title');
- expect(two.read().queue.activities[0].title).toBe('B competing title');
- expect(two.read().status.error).toContain('a.title');
- // CAS refuses an actual stale device without storing even its unrelated edits.
+// A client for the app's journey store that runs each RPC as the signed-in person against real SQL.
+const sqlClient=(owner,calls=[])=>({rpc:async(name,args)=>{calls.push({name,args});try{
+ return {data:(await as('authenticated',owner,`select public.${name}(${Object.entries(args).map(([key,value])=>`${key}=>${key==='p_changes'?`$json$${JSON.stringify(value)}$json$::jsonb`:sqlValue(value)}`).join(',')}) as data`)).rows[0].data};
+}catch(error){return {error:{message:error.message}};}}});
+const memoryDevice=async(createJourneySync,owner)=>{let rows={};const device=createJourneySync({owner,preferences:{},savePreferences:async()=>{},storage:{read:async()=>structuredClone(rows),commit:async ops=>{const next=structuredClone(rows);for(const op of ops)if(op.remove)delete next[op.key];else next[op.key]=structuredClone(op.value);rows=next;}}});await device.ready();return device;};
+
+it('two phones editing online with real revision checks: each edit builds on Supabase current state, so nothing is lost or duplicated',async()=>{
+ const {createJourneySync,commitJourneyChanges,refreshJourneyMetadata}=await import('../../src/lib/journeyMetadataStore.js');
+ const owner='55555555-5555-4555-8555-555555555555',id=selectiveID(7100);
+ await db.exec(`reset role; insert into auth.users values('${owner}','{}');insert into public.activities(id,owner_id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points) values('${id}','${owner}','Original','Walking','manual','2026-11-08T00:00:00Z','2026-11-08T01:00:00Z',3600,100,'[]')`);
+ const calls=[],client=sqlClient(owner,calls);
+ const one=await memoryDevice(createJourneySync,owner),two=await memoryDevice(createJourneySync,owner);
+ one.configureScope([id]);two.configureScope([id]);
+ const context=device=>({client,owner,read:device.read,write:device.write,ready:device.ready,scope:device.scope});
+ await refreshJourneyMetadata(context(one));await refreshJourneyMetadata(context(two));
+ await commitJourneyChanges(context(one),base=>({...base,titles:{...base.titles,[id]:'From A'}}));
+ // B returns to the app and sees A's title; it never had a copy of its own to reconcile.
+ await refreshJourneyMetadata(context(two));
+ expect(two.read().metadata.titles[id]).toBe('From A');
+ // Both then edit different fields of the same journey. B's edit reads Supabase first, so A's title survives.
+ await commitJourneyChanges(context(one),base=>({...base,titles:{...base.titles,[id]:'A second title'}}));
+ await commitJourneyChanges(context(two),base=>({...base,manualTags:{...base.manualTags,[id]:['B tag']}}));
+ expect(await read(owner)).toMatchObject({titles:{[id]:'A second title'},manualTags:{[id]:['B tag']}});
+ // The same field: the later confirmed edit is the one Supabase holds, and A adopts it on refresh.
+ await commitJourneyChanges(context(one),base=>({...base,titles:{...base.titles,[id]:'A competing title'}}));
+ await commitJourneyChanges(context(two),base=>({...base,titles:{...base.titles,[id]:'B competing title'}}));
+ expect((await read(owner)).titles[id]).toBe('B competing title');
+ await refreshJourneyMetadata(context(one));
+ expect(one.read().metadata.titles[id]).toBe('B competing title');
+ expect(one.read().metadata.manualTags[id]).toEqual(['B tag']);
+ // The server itself refuses a write built on a stale revision, without storing any of it.
  await expect(mine(owner,{activities:[{ref:'untouched',title:'stale'}]},1)).rejects.toThrow('conflict');
  expect((await read(owner)).titles.untouched).toBeUndefined();
 });
@@ -306,17 +297,17 @@ it('does not erase the only legacy cloud copy during an ordinary settings backup
  expect(stored.displayName).toBe('New settings');expect(stored.journeyGrouping).toBe(legacy);
 });
 
-it('preserves contradictory offline merge/split choices instead of replacing the remote choice',async()=>{
+it('a merge and a later split of the same pair leave one confirmed choice',async()=>{
  const {emptyGrouping}=await import('../../src/lib/journeyGrouping.js');
- const {groupingChanges,rebaseChanges}=await import('../../src/lib/journeyMetadata.js');
+ const {groupingChanges}=await import('../../src/lib/journeyMetadata.js');
  const owner='88888888-8888-4888-8888-888888888888';
  await db.exec(`reset role; insert into auth.users values('${owner}','{}')`);
  const before=emptyGrouping(owner),merge={...before,links:['["a","b"]']},split={...before,cuts:['["a","b"]']};
  await mine(owner,groupingChanges(before,merge));
- const {revision:_r,updatedAt:_t,...remote}=await read(owner);void _r;void _t;
- const pending=groupingChanges(before,split),rebased=rebaseChanges(pending,remote);
- expect(rebased.conflicts).toMatchObject([{domain:'pairs',field:'grouping',local:'cut',remote:'link'}]);
- expect((await read(owner)).links).toEqual(['["a","b"]']);expect(pending.pairs[0].relation).toBe('cut');
+ expect((await read(owner)).links).toEqual(['["a","b"]']);
+ await mine(owner,groupingChanges(merge,split));
+ const stored=await read(owner);
+ expect(stored.links).toEqual([]);expect(stored.cuts).toEqual(['["a","b"]']);
 });
 
 const selectiveOwner='99999999-9999-4999-8999-999999999999';
@@ -416,30 +407,21 @@ it('reapplies selective/cache and segment migrations without removing saved reco
  expect((await db.query(`select count(*) from public.journey_road_metadata`)).rows).toEqual(before);
 });
 
-it('uses the real scoped engine for idle-device discovery, offline field merges and preserved same-field conflicts',async()=>{
- const {createJourneySync,runJourneySync}=await import('../../src/lib/journeyMetadataStore.js');
- const {groupingChanges}=await import('../../src/lib/journeyMetadata.js');
+it('refreshing from real SQL: an idle phone asks only for the revision, and a change elsewhere is read as an invalidation',async()=>{
+ const {createJourneySync,commitJourneyChanges,refreshJourneyMetadata}=await import('../../src/lib/journeyMetadataStore.js');
  const owner='85858585-8585-4585-8585-858585858585',id=selectiveID(7000),calls=[];
  await db.exec(`reset role;insert into auth.users values('${owner}','{}');insert into public.activities(id,owner_id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points) values('${id}','${owner}','Original','Walking','manual','2026-11-08T00:00:00Z','2026-11-08T01:00:00Z',3600,100,'[]')`);
- const client={rpc:async(name,args)=>{calls.push({name,args});try{return {data:(await as('authenticated',owner,`select public.${name}(${Object.entries(args).map(([key,value])=>`${key}=>${key==='p_changes'?`$json$${JSON.stringify(value)}$json$::jsonb`:sqlValue(value)}`).join(',')}) as data`)).rows[0].data};}catch(error){return {error};}},from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({data:null})})})})};
- const makeDevice=()=>{let rows={};return createJourneySync({owner,preferences:{},savePreferences:async()=>{},storage:{read:async()=>structuredClone(rows),commit:async ops=>{const next=structuredClone(rows);for(const op of ops)if(op.remove)delete next[op.key];else next[op.key]=structuredClone(op.value);rows=next;}}});};
- const A=makeDevice(),B=makeDevice();await A.ready();await B.ready();A.configureScope([id]);B.configureScope([id]);
- const sync=device=>runJourneySync({client,owner,...device});
- expect((await sync(A)).state).toBe('active');expect((await sync(B)).state).toBe('active');
- const edit=async(device,patch)=>device.write(latest=>{const metadata={...latest.metadata,...patch};return {metadata,queue:groupingChanges(latest.metadata,metadata)};});
- await edit(A,{titles:{[id]:'From A'}});expect((await sync(A)).state).toBe('active');
- expect(B.read().queue).toEqual({});expect((await sync(B)).state).toBe('active');expect(B.read().metadata.titles[id]).toBe('From A');
- // Both start from the same cloud baseline, then make independent offline fields.
- await edit(A,{titles:{[id]:'Second title'}});await edit(B,{manualTags:{[id]:['offline tag']}});
- await sync(A);expect((await sync(B)).state).toBe('active');await sync(A);
- expect(A.read().metadata.titles[id]).toBe('Second title');expect(A.read().metadata.manualTags[id]).toEqual(['offline tag']);
- await edit(A,{titles:{[id]:'First conflicting value'}});await edit(B,{titles:{[id]:'Second conflicting value'}});
- await sync(A);expect((await sync(B)).error).toContain('.title');
- expect(B.read().queue.activities[0].title).toBe('Second conflicting value');
- expect((await selectiveRPC({p_refs:[id]},owner)).titles[id]).toBe('First conflicting value');
+ const client=sqlClient(owner,calls);
+ const A=await memoryDevice(createJourneySync,owner),B=await memoryDevice(createJourneySync,owner);A.configureScope([id]);B.configureScope([id]);
+ const context=device=>({client,owner,read:device.read,write:device.write,ready:device.ready,scope:device.scope});
+ expect((await refreshJourneyMetadata(context(A))).state).toBe('active');expect((await refreshJourneyMetadata(context(B))).state).toBe('active');
+ await commitJourneyChanges(context(A),base=>({...base,titles:{...base.titles,[id]:'From A'}}));
+ await refreshJourneyMetadata(context(B));
+ expect(B.read().metadata.titles[id]).toBe('From A');
  expect(calls.filter(call=>call.name==='journey_metadata_snapshot').every(call=>Array.isArray(call.args.p_refs))).toBe(true);
- // Once settled, an idle device needs only the revision, no historical snapshot.
- await sync(A);calls.length=0;await sync(A);expect(calls.map(call=>call.name)).toEqual(['journey_metadata_revision']);
+ // Settled, a refresh needs only the revision: no snapshot, no write.
+ await refreshJourneyMetadata(context(B));calls.length=0;await refreshJourneyMetadata(context(B));
+ expect(calls.map(call=>call.name)).toEqual(['journey_metadata_revision']);
 });
 
 it('invalidates saved home places and private photo descriptors independently of local activity edits',async()=>{

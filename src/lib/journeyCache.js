@@ -1,11 +1,12 @@
-// Selective journey records only. Pending writes and unfinished work are never a
-// cache: they are pinned until their cloud transaction has been confirmed.
+// A bounded, read-only cache of selected Supabase journey records, for speed and
+// offline viewing. It is only ever replaced from Supabase (mergeScope) or updated
+// after Supabase confirmed a write; it is never uploaded.
 import {emptyGrouping} from './journeyGrouping.js';
-import {applyChanges,edgePair,gapRefs,stopRefs} from './journeyMetadata.js';
+import {edgePair,gapRefs,stopRefs} from './journeyMetadata.js';
 export const JOURNEY_CACHE_ACTIVITIES=200,JOURNEY_CACHE_BYTES=16*1024*1024,JOURNEY_CACHE_DAYS=30;
 const maps=['titles','types','manualTags','hiddenTags','enriched','distanceSummaries'];
 export const scopeKey=refs=>JSON.stringify([...new Set(refs)].sort());
-export function emptyJourneyCache(){return {scopes:{},work:{},pages:{},active:[],migrationRequired:false};}
+export function emptyJourneyCache(){return {scopes:{},work:{},pages:{},active:[]};}
 export function recordActivityRefs(changes){
  const ids=new Set();
  for(const domain of ['activities','summaries'])for(const item of changes?.[domain]||[])ids.add(item.ref);
@@ -25,7 +26,6 @@ export function omitScope(metadata,refs,{details=false}={}){
  return next;
 }
 export function mergeScope(state,snapshot,requested,details,now=Date.now()){
- if(state.cache?.migrationRequired)throw new Error('Legacy journey metadata must finish cloud verification before cached history can be replaced. Existing data was preserved.');
  const ids=snapshot.scope,base=omitScope(state.metadata||emptyGrouping(snapshot.metadata.owner),ids);
  const metadata={...base,roads:Object.fromEntries(Object.entries(base.roads||{}).filter(([ref])=>!details.includes(gapRefs(ref))))};
  for(const field of maps)metadata[field]={...base[field],...snapshot.metadata[field]};
@@ -38,7 +38,7 @@ export function mergeScope(state,snapshot,requested,details,now=Date.now()){
  cache.scopes[scopeKey(requested)]={ids,details,places:Object.keys(snapshot.metadata.places),at:now,revision:snapshot.revision,stale:false,unavailable:snapshot.unavailableRefs||[]};
  const activityRows={...state.activityRows};
  for(const row of snapshot.activityRows||[]){const old=activityRows[row.id];activityRows[row.id]=Array.isArray(old?.route_points)&&old.revision===row.revision&&!Array.isArray(row.route_points)?old:row;}
- return {...state,metadata:applyChanges(metadata,state.queue),cache,activityRows,...(Array.isArray(snapshot.savedPlaces)?{savedPlaces:snapshot.savedPlaces}:{})};
+ return {...state,metadata,cache,activityRows,...(Array.isArray(snapshot.savedPlaces)?{savedPlaces:snapshot.savedPlaces}:{})};
 }
 export function cachedScope(state,refs,details=[],now=Date.now()){
  return Object.values(state.cache?.scopes||{}).find(scope=>!scope.stale&&now-scope.at<JOURNEY_CACHE_DAYS*86400000&&refs.every(id=>scope.ids.includes(id))&&details.every(id=>scope.details.includes(id)));
@@ -57,8 +57,8 @@ export function invalidateJourneyCache(state,changes){
  return {...state,cache};
 }
 export function trimJourneyCache(state,{maxActivities=JOURNEY_CACHE_ACTIVITIES,maxBytes=JOURNEY_CACHE_BYTES,now=Date.now()}={}){
- if(!state.metadata||!state.status?.migratedAt||state.cache?.migrationRequired)return state;
- const cache=state.cache||emptyJourneyCache(),pinned=new Set([...cache.active,...recordActivityRefs(state.queue),...Object.entries(cache.work).filter(([,job])=>job.state!=='done').map(([id])=>id)]);
+ if(!state.metadata)return state;
+ const cache=state.cache||emptyJourneyCache(),pinned=new Set([...cache.active,...Object.entries(cache.work).filter(([,job])=>job.state!=='done').map(([id])=>id)]);
  const scopes=Object.entries(cache.scopes).sort(([,a],[,b])=>b.at-a.at),kept={};let ids=new Set(pinned);
  for(const [key,scope] of scopes){
   const union=new Set([...ids,...scope.ids]);
@@ -77,9 +77,9 @@ export function trimJourneyCache(state,{maxActivities=JOURNEY_CACHE_ACTIVITIES,m
   next.sourceLinks=(m.sourceLinks||[]).filter(pair=>pair.some(id=>lightIDs.has(id)));
   next.stopEdits=Object.fromEntries(Object.entries(m.stopEdits||{}).filter(([ref])=>belongsStop(ref,lightIDs)));
   next.roads=Object.fromEntries(Object.entries(m.roads||{}).filter(([ref])=>ids.has(gapRefs(ref))));
-  const placeRefs=new Set([...Object.values(cache.work).some(job=>job.state!=='done')?Object.keys(m.places||{}):[],...Object.values(kept).flatMap(s=>s.places),...(state.queue?.places||[]).map(item=>item.ref)]);
+  const placeRefs=new Set([...Object.values(cache.work).some(job=>job.state!=='done')?Object.keys(m.places||{}):[],...Object.values(kept).flatMap(s=>s.places)]);
   next.places=Object.fromEntries(Object.entries(m.places||{}).filter(([ref])=>placeRefs.has(ref)));
-  return applyChanges(next,state.queue);
+  return next;
  };
  let metadata=project();
  // Evict complete synced scopes, not arbitrary records inside a journey.

@@ -134,16 +134,11 @@ function PrivateApp(){
  const localProjectionCache=useMemo(()=>({owner:session.user.id,timeZone:localTimeZone,values:new WeakMap()}),[session.user.id,localTimeZone]);
  const realJourneys=useMemo(()=>localRecorderJourneys({ownerID:recording.state.ownerID,trips:recording.state.trips},session.user.id,localProjectionCache.values),[recording.state.trips,recording.state.ownerID,session.user.id,localProjectionCache]);
  const localGroupingActivities=useMemo(()=>realJourneys.filter(t=>!t.provisional).concat(fleet.activities),[realJourneys,fleet.activities]);
- // One durable adapter per account. Preferences are imported once; subsequent
- // edits and cloud pulls update encrypted/transactional records and notify React.
+ // One cache of Supabase's journey metadata per account (read-only; edits go to Supabase
+ // first). A leftover copy from earlier builds in the preferences file is cleared once.
  // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilt only when the account changes
  const journeySync=useMemo(()=>createJourneySync({owner:session.user.id,preferences:auth.preferences,savePreferences:auth.savePreferences}),[session.user.id]);
- // AuthContext reads this account's file before the app renders, so the adapter starts
- // from the real mirror, queue and status. A restore that is still finishing, or one
- // that arrives after a rendered screen, would hand it an empty file instead - and the
- // first edit from that empty state would replace everything the device knows. This
- // re-reads the file while nothing has been written yet, and is a no-op afterwards.
- useEffect(()=>{journeySync.reseed(auth.preferences);void journeySync.ready().catch(()=>{});},[journeySync,auth.preferences]);
+ useEffect(()=>{void journeySync.ready().catch(()=>{});},[journeySync]);
  useSyncExternalStore(journeySync.subscribe,journeySync.getSnapshot);
 
 
@@ -300,7 +295,7 @@ function PrivateApp(){
  },[localGroupingActivities,rows,contextKey,detailKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
- const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,savePreferences:auth.savePreferences,receipts:auth.preferences.syncReceipts,sync:journeySync});
+ const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,receipts:auth.preferences.syncReceipts,sync:journeySync});
  const sharedFeed=useSharedActivityFeed(tab==='Trips'&&includeSharedActivities,session.user.id);
  // Who can see my shared activities: reloaded when an activity's details close.
  const mySharing=useMySharing(tab==='Trips',session.user.id,selected?.id??'list');

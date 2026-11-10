@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
-import {loadJourneyScope,ensureJourneyScope,rebaseJourneyScope,ensureJourneyCacheReady} from './journeyMetadataStore.js';
-import {trimJourneyCache} from './journeyCache.js';
+import {loadJourneyScope,ensureJourneyScope} from './journeyMetadataStore.js';
+import {mergeScope,trimJourneyCache} from './journeyCache.js';
 import {activityFromCloudRow} from './cloudActivity.js';
 import {activityCode} from './activityNames.js';
 const EMPTY=[];
@@ -30,13 +30,12 @@ export function useCloudJourneyPage({owner,sync,date='today',query='',activity='
     if(!cached||!cached.ids.every(id=>input.sync.read().activityRows?.[id]))throw new Error('This history is not cached. Reconnect to load it.');
     if(turn===generation.current)setView({key:input.key,ids:cached.ids,next:cached.next,paged:cached.paged||false,loading:false,error:''});return;
    }
-   await ensureJourneyCacheReady({client:supabase,owner:input.owner,read:input.sync.read,write:input.sync.write});
    const cursor=more?view.next:null;
    const fetched=await loadJourneyScope(supabase,input.owner,[],[],[],{...input.request,...(cursor?{p_before:cursor.at,p_before_id:cursor.id,p_before_metric:cursor.metric}: {})});
    if(turn!==generation.current||input.key!==current.current.key)return;
    const ids=[...new Set([...(more?view.ids:[]),...(fetched.pageRefs||[])])].slice(-100);
    await input.sync.write(latest=>{
-    const next=rebaseJourneyScope(latest,fetched,fetched.pageRefs||[],[]);
+    const next=mergeScope(latest,fetched,fetched.pageRefs||[],[]);
     next.cache={...next.cache,active:ids,pages:{...next.cache.pages,[input.key]:{ids,next:fetched.nextActivity,paged:more,at:Date.now()}}};
     return trimJourneyCache(next);
    });
@@ -48,13 +47,12 @@ export function useCloudJourneyPage({owner,sync,date='today',query='',activity='
   finally{if(busy.current?.turn===turn)busy.current=null;}
  };
  const cursorRevision=sync.read().status?.cursorRevision;
- const migrating=sync.read().cache?.migrationRequired;
  useEffect(()=>{
   const timer=setTimeout(()=>void load(),query?300:0);
   return()=>{clearTimeout(timer);generation.current=Symbol();};
  // The request key contains the complete filter; metadata revisions refresh summaries only.
  // eslint-disable-next-line react-hooks/exhaustive-deps
- },[key,cursorRevision,migrating]);
+ },[key,cursorRevision]);
  const scoped=view.key===key?view.ids:EMPTY;
  return {ids:scoped,paged:view.key===key&&Boolean(view.paged),loading:view.key!==key||view.loading,error:view.key===key?view.error:'',more:Boolean(view.next),loadMore:()=>load(true),refresh:()=>load(false)};
 }

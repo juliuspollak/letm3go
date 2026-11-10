@@ -1,11 +1,10 @@
 // Journey metadata is the record of what the user decided about a grouping, plus the
-// enrichment answers saved for its recordings. These tests pin the two properties the
-// sync depends on: describing a grouping is stable, and replaying a change set is
-// idempotent, so a retried request cannot double anything.
+// enrichment answers saved for its recordings. These tests pin what the Supabase write
+// path depends on: describing a grouping is stable, a change set rebuilds it, and
+// replaying a change set is idempotent, so a retried request cannot double anything.
 import {describe,it,expect} from 'vitest';
 import {emptyGrouping} from './journeyGrouping.js';
-import {applyChanges,changesEmpty,clearPushed,describeGrouping,edgePair,fitCache,gapRefs,groupingChanges,
- fitQueue,mergeChanges,migrationChanges,missingRecords,recordCounts,stopRefs,JOURNEY_CACHE_BYTES,JOURNEY_QUEUE_BYTES,JOURNEY_QUEUE_HARD_BYTES,ACTIVITY_TYPES} from './journeyMetadata.js';
+import {applyChanges,changesEmpty,describeGrouping,edgePair,gapRefs,groupingChanges,mergeChanges,stopRefs,ACTIVITY_TYPES} from './journeyMetadata.js';
 const OWNER='owner-1';
 const EDGE=JSON.stringify(['a','b']);
 const DWELL='dwell:a:1700000000';
@@ -85,79 +84,24 @@ describe('a change set rebuilds the grouping',()=>{
   expect(merged.cuts).toEqual([JSON.stringify(['c','d']),EDGE]);
  });
 });
-describe('what the queue holds and forgets',()=>{
- const sent={activities:[{ref:'a',title:'Sent',enrichedAt:1700000000000,enrichmentState:'done',enrichmentVersion:1}]};
- it('keeps the newest value when a record is edited twice before it is sent',()=>{
-  const queued=mergeChanges(sent,{activities:[{ref:'a',title:'Edited after the request',enrichedAt:1700000000000,enrichmentState:'done',enrichmentVersion:1}]});
-  expect(queued.activities).toHaveLength(1);
-  expect(queued.activities[0].title).toBe('Edited after the request');
+describe('batches of records',()=>{
+ it('keeps the newest value when a record appears twice in one batch',()=>{
+  const first={activities:[{ref:'a',title:'First',enrichedAt:1700000000000}]};
+  const merged=mergeChanges(first,{activities:[{ref:'a',title:'Second',enrichedAt:1700000000000}]});
+  expect(merged.activities).toHaveLength(1);
+  expect(merged.activities[0].title).toBe('Second');
  });
- it('forgets only the records the cloud confirmed',()=>{
-  expect(clearPushed(sent,sent)).toEqual({});
-  const edited={activities:[{...sent.activities[0],title:'Edited after the request'}]};
-  expect(clearPushed(edited,sent).activities[0].title).toBe('Edited after the request');
- });
-});
-describe('bringing an existing device into the cloud',()=>{
- it('adds what the cloud lacks and never overwrites what it has',()=>{
-  const local=populated(),cloud=emptyGrouping(OWNER);
-  cloud.titles={a:'Named on my iPad'};
-  const {changes,conflicts}=migrationChanges(local,cloud);
-  expect(changes.activities.map(item=>item.ref)).toEqual(['b']);
-  expect(changes.activities[0].title).toBe('Errands');
-  expect(conflicts.activities).toBe(1);
-  expect(changes.enrichFrom).toBe(1699999999000);
-  // Once migrated, the same device finds nothing left to add.
-  const migrated=applyChanges(cloud,changes);
-  expect(changesEmpty(migrationChanges(migrated,migrated).changes)).toBe(true);
-  expect(missingRecords(migrated,migrated)).toEqual([]);
- });
- it('lets an account-wide enrichment cutoff set in the cloud win',()=>{
-  const local=populated(),cloud={...emptyGrouping(OWNER),enrichFrom:1600000000000};
-  const {changes}=migrationChanges(local,cloud);
-  expect(changes.enrichFrom).toBeUndefined();
- });
- it('reports everything the cloud is still missing, so nothing is replaced early',()=>{
-  const local=populated(),cloud=emptyGrouping(OWNER),{changes}=migrationChanges(local,cloud);
-  expect(missingRecords(applyChanges(cloud,changes),cloud).length).toBeGreaterThan(0);
-  const missing=missingRecords(applyChanges(cloud,changes),applyChanges(cloud,changes));
-  expect(missing).toEqual([]);
- });
-});
-describe('the device mirror stays inside its limit',()=>{
- it('leaves a grouping that already fits untouched',()=>{
-  const meta=populated();
-  expect(fitCache(meta)).toEqual({metadata:meta,evicted:0});
- });
- it('drops the oldest derived enrichment before any user decision',()=>{
-  const meta=emptyGrouping(OWNER);
-  meta.titles={a:'Keep me'};meta.manualTags={a:['work']};meta.stopEdits={[DWELL]:{name:'Cafe'}};
-  for(let i=0;i<200;i++)meta.roads[`a:${1700000000+i}:${1700000060+i}`]={version:2,status:'route',distanceMeters:800,
-   line:'x'.repeat(200),lookedUpAt:1700000000000+i};
-  const {metadata,evicted}=fitCache(meta,20000);
-  expect(evicted).toBeGreaterThan(0);
-  expect(JSON.stringify(metadata).length).toBeLessThanOrEqual(20000);
-  expect(metadata.titles).toEqual({a:'Keep me'});
-  expect(metadata.manualTags).toEqual({a:['work']});
-  expect(metadata.stopEdits).toEqual({[DWELL]:{name:'Cafe'}});
-  // The newest road survives; the oldest went first.
-  expect(metadata.roads['a:1700000199:1700000259']).toBeDefined();
-  expect(metadata.roads['a:1700000000:1700000060']).toBeUndefined();
-  expect(JOURNEY_CACHE_BYTES).toBe(900000);
- });
-});
-describe('pending values are never evicted',()=>{
- it('keeps all decisions and reconstructed routes beyond the old limits',()=>{
-  const queue={activities:Array.from({length:24000},(_,i)=>({ref:`a${i}`,title:`Journey ${i}`})),roads:Array.from({length:100},(_,i)=>({ref:`a:${i}:${i+1}`,record:{line:'x'.repeat(5000)}}))};
-  expect(JSON.stringify(queue).length).toBeGreaterThan(JOURNEY_QUEUE_HARD_BYTES);
-  expect(fitQueue(queue,{limit:JOURNEY_QUEUE_BYTES})).toEqual({queue,dropped:{}});
+ it('sends only the records that changed, with no merge bookkeeping',()=>{
+  const before=populated(),after={...before,titles:{...before.titles,a:'Renamed'}};
+  const changes=groupingChanges(before,after);
+  expect(Object.keys(changes)).toEqual(['activities']);
+  expect(changes.activities).toHaveLength(1);
+  expect(changes.activities[0]).toMatchObject({ref:'a',title:'Renamed'});
+  expect(Object.keys(changes.activities[0]).filter(key=>key.startsWith('_'))).toEqual([]);
+  expect(groupingChanges(before,{...before,history:[{note:'local undo only'}]})).toEqual({});
  });
 });
 describe('what one grouping is worth',()=>{
- it('counts one record per activity, pair, stop, place, road and summary',()=>{
-  expect(recordCounts(emptyGrouping(OWNER))).toEqual({activities:0,pairs:0,stops:0,places:0,roads:0,summaries:0,enrichFrom:false});
-  expect(recordCounts(populated())).toEqual({activities:2,pairs:4,stops:3,places:1,roads:2,summaries:1,enrichFrom:true});
- });
  it('ignores anything the grouping screen could not have produced',()=>{
   const junk={...emptyGrouping(OWNER),titles:{a:'ok',b:'x'.repeat(200)},types:{a:'Teleporting',c:'Driving'},
    manualTags:{a:['fine','t'.repeat(80)]},stopEdits:{[DWELL]:'not an edit'},roads:{a:'nope'},
@@ -173,15 +117,9 @@ describe('what one grouping is worth',()=>{
  });
  it('lists the activity types the app is allowed to store',()=>{
   expect(ACTIVITY_TYPES).toContain('Driving');
+  // Gym is a recordable activity; the server accepts it, so an edit to it must not be dropped.
+  expect(ACTIVITY_TYPES).toContain('Gym');
+  expect(applyChanges(emptyGrouping(OWNER),{activities:[{ref:'g',type:'Gym'}]}).types).toEqual({g:'Gym'});
   expect(ACTIVITY_TYPES).not.toContain('Teleporting');
  });
-});
-
-it('does not lose an unversioned legacy pending edit when a new field is edited',()=>{
- const before=populated(),after={...before,manualTags:{a:['new tag']}};
- const queue=mergeChanges({activities:[{ref:'a',title:'Unsent legacy title'}]},groupingChanges(before,after));
- expect(queue.activities[0]._fields).toBeUndefined();
- // Unknown ancestry remains a complete record requiring conservative reconciliation.
- expect(queue.activities[0].manualTags).toEqual(['new tag']);
- expect(queue.activities[0].title).toBe('Unsent legacy title');
 });

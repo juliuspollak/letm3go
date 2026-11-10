@@ -1,5 +1,8 @@
 # PR #28: journey metadata records — review and validation
 
+> Historical. The device-side queue, migration and conflict handling described here were
+> removed; see [journey-metadata.md](journey-metadata.md) for the current design.
+
 This branch is intentionally **unmerged**. The migration has **not been applied to
 production** by this review. Automated database tests run against disposable
 PGlite PostgreSQL instances, not the linked hosted Supabase project. A passing
