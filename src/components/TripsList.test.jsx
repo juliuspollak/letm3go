@@ -286,3 +286,9 @@ it('a tap on the merge handle still selects the activity for merging',()=>{
  pointer(handle,'pointerdown',300,100);pointer(handle,'pointerup');fireEvent.click(handle);
  expect(props.onMergeSelect).toHaveBeenCalledWith('a');
 });
+
+it('shows Gym duration rather than a zero GPS distance',()=>{
+ const {container}=renderList({journeys:[trip('gym',{activity:'Gym',distanceMeters:0,durationSeconds:1800})]});
+ expect(container.querySelector('.recent-activity-distance')).toHaveTextContent('30 min');
+ expect(container.querySelector('.recent-activity-distance')).not.toHaveTextContent('km');
+});

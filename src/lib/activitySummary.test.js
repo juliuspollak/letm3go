@@ -109,3 +109,10 @@ it('exposes held measured energy for an explicit consent decision without ever c
  expect(heldEnergy({details:{unverifiedWholeWorkoutEnergy:{...energy,state:'pending'}}})).toEqual({state:'pending'});
  expect(activeCalories({source:'watch',details:{unverifiedEnergy:energy}})).toBeNull();
 });
+
+it('shows Gym time, heart rate and calories without route metrics',()=>{
+ const rows=activitySummary({activity:'Gym',source:'watch',durationSeconds:1800,distanceMeters:0,details:{indoor:true,heartRate:{summary:{average:130,maximum:165}},energy:{schema:1,source:'healthkit',state:'final',unit:'kcal',active:200}}});
+ expect(rows.map(row=>row.id)).toEqual(['elapsed','heart','calories']);
+ expect(rows.find(row=>row.id==='heart').value).toBe('130 BPM');
+ expect(rows.find(row=>row.id==='calories').value).toBe('200 kcal');
+});

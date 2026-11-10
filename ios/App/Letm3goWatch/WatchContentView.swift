@@ -298,7 +298,7 @@ struct WatchReadyView: View {
 
     private func begin(anyway: Bool) {
         var chosen = setup
-        chosen.indoor = indoor && WatchCatalog.supportsIndoor(setup.activity) ? true : nil
+        chosen.indoor = setup.activity == "Gym" || (indoor && WatchCatalog.supportsIndoor(setup.activity)) ? true : nil
         recorder.start(chosen, anyway: anyway)
         path = recorder.hasRide ? [.recording] : path
     }
@@ -322,6 +322,7 @@ struct WatchReadyView: View {
                 if WatchCatalog.supportsIndoor(setup.activity) {
                     Toggle("Indoor", isOn: $indoor).font(.footnote).tint(WatchStyle.accent)
                 }
+                if setup.activity == "Gym" { Text("Indoor · Heart rate & active calories · No GPS").font(.footnote).foregroundStyle(.secondary) }
                 if RecordingPrecision.offered(for: setup.activity), !indoor {
                     Button {
                         let all = RecordingPrecision.allCases
@@ -570,7 +571,7 @@ struct WatchSummaryView: View {
                     Text(ride.config.title).font(.headline)
                     if let bike = ride.equipmentName { Text(bike).font(.footnote).foregroundStyle(.secondary) }
                     HStack {
-                        summaryMetric(WatchFormat.distance(ride.distanceMeters), "DISTANCE")
+                        if ride.config.indoor != true { summaryMetric(WatchFormat.distance(ride.distanceMeters), "DISTANCE") }
                         summaryMetric(WatchFormat.clock(ride.activeSeconds), "TIME")
                     }
                     if ride.averageHeartRate != nil {
@@ -638,7 +639,7 @@ struct WatchHistoryList: View {
                         WatchActivityIcon(symbol: WatchCatalog.choice(ride.activity)?.symbol ?? "figure.walk", size: 14)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(WatchCatalog.choice(ride.activity)?.title ?? ride.activity).font(.headline).lineLimit(1).minimumScaleFactor(0.8)
-                            Text("\(WatchFormat.date(ride.startedAt)) · \(WatchFormat.distance(ride.distanceMeters)) · \(WatchFormat.clock(ride.activeSeconds))")
+                            Text(ride.config.indoor == true ? "\(WatchFormat.date(ride.startedAt)) · \(WatchFormat.clock(ride.activeSeconds))" : "\(WatchFormat.date(ride.startedAt)) · \(WatchFormat.distance(ride.distanceMeters)) · \(WatchFormat.clock(ride.activeSeconds))")
                                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                             WatchSyncBadge(status: WatchHistory.status(ride, outbox: outbox))
                         }
@@ -676,7 +677,7 @@ struct WatchHistoryDetail: View {
                     if let bike = ride.equipmentName { Text(bike).font(.footnote).foregroundStyle(.secondary) }
                     Text(WatchFormat.date(ride.startedAt)).font(.footnote).foregroundStyle(.secondary)
                     HStack {
-                        VStack { Text(WatchFormat.distance(ride.distanceMeters)).font(.title3.weight(.semibold)); Text("DISTANCE").font(.system(size: 10)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
+                        if ride.config.indoor != true { VStack { Text(WatchFormat.distance(ride.distanceMeters)).font(.title3.weight(.semibold)); Text("DISTANCE").font(.system(size: 10)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity) }
                         VStack { Text(WatchFormat.clock(ride.activeSeconds)).font(.title3.weight(.semibold)).monospacedDigit(); Text("TIME").font(.system(size: 10)).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
                     }
                     if ride.averageHeartRate != nil {

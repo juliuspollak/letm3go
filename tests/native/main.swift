@@ -2986,9 +2986,9 @@ do {
 // MARK: Watch start choices, equipment and history
 do {
     // Only the iPhone's own activity values, and Cycling's subtypes in one family.
-    let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
-    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 9, "the watch records only iPhone activity values")
-    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Other"], "the watch offers every iPhone activity value")
+    let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Other"]
+    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 10, "the watch records only iPhone activity values")
+    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Gym", "Other"], "the watch offers every iPhone activity value")
     check(WatchCatalog.family(of: "MTB")?.id == "Cycling" && WatchCatalog.family(of: "MTB")?.hasSubtypes == true, "mountain biking is a Cycling subtype")
     check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
     check(WatchCatalog.usesBicycle("MTB") && !WatchCatalog.usesBicycle("Running"), "only rides offer a bike")
@@ -3587,6 +3587,10 @@ do {
     check(indoorTransfer != nil && indoorTransfer?.points.isEmpty == true && indoorTransfer?.indoor == true, "indoor workout transfers")
     let indoorTrip = WatchActivityImport.activity(from: indoorTransfer!, now: start + 700)
     check(indoorTrip?.points.isEmpty == true && indoorTrip?.details?.indoor == true && indoorTrip?.accumulatedSeconds == 600 && indoorTrip?.details?.heartRate?.summary.samples == 1, "indoor workout imports")
+    var gymTransfer = indoorTransfer!
+    gymTransfer.activity = "Gym"
+    let gymTrip = WatchActivityImport.activity(from: gymTransfer, now: start + 700)
+    check(gymTrip?.activity == "Gym" && gymTrip?.details?.heartRate?.summary.samples == 1 && gymTrip?.points.isEmpty == true, "Gym imports heart rate without GPS")
     var tap = WatchRideDraft(activity: "Running", startedAt: start)
     tap.finish(at: start + 8)
     check(tap.isKeepable && tap.transfer(now: start + 8, ownerID: nil, deviceID: nil) != nil, "a short saved workout is kept")
@@ -5230,3 +5234,20 @@ do {
     catch {check(true,"wrong account key cannot read journey records")}
 } catch {check(false,"native journey storage failed: \(error)")}
 print("Final native assertion count including durable journey storage: \(assertions)")
+
+// Gym is a timed indoor workout; neither device needs route samples.
+do {
+    let setup = WatchStartConfig(activity: "Gym")
+    check(setup.isValid && setup.indoor == true && setup.title == "Gym", "Gym is always indoor")
+    check(!RecordingPrecision.offered(for: "Gym"), "Gym offers no GPS precision")
+    check(WatchWorkoutClassifier.classify("Gym", indoor: false) == WatchWorkoutClass(type: "mixedCardio", indoor: true, savesToHealth: true), "Gym saves an indoor cardio workout")
+    var timer = RecordedActivity(activity: "Gym", startedAt: 1000, resumedAt: 1000, title: "Gym")
+    timer.recoverAfterInterruption()
+    check(timer.state == "recording" && timer.duration(at: 1600) == 600, "indoor timer continues across suspension or relaunch")
+    let gps = GPSPoint(latitude: -34, longitude: 151, timestamp: 1600, accuracy: 5, altitude: 10, speed: 0)
+    check(!timer.accept(gps, now: 1600) && timer.points.isEmpty, "Gym never accepts location fixes")
+    timer.pause(at: 1600); timer.resume(at: 1700); timer.finish(at: 1800)
+    check(timer.accumulatedSeconds == 700 && timer.distanceMeters == 0, "Gym pause and finish preserve active time without distance")
+}
+
+print("Final native assertion count including Gym: \(assertions)")

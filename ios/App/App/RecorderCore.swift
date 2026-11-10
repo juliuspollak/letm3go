@@ -50,6 +50,7 @@ struct RecordedActivity: Codable {
     var details: ActivityDetails?
     var equipment: [EquipmentRef]?
     var updatedAt: Double?
+    var requiresGPS: Bool { activity != "Gym" && details?.indoor != true }
     mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
         if recordingMode == "automatic" {
@@ -126,7 +127,7 @@ struct RecordedActivity: Codable {
         segment += 1
     }
     mutating func recoverAfterInterruption() {
-        guard state == "recording" else { return }
+        guard state == "recording", requiresGPS else { return }
         pause(at: max(resumedAt ?? startedAt, points.last?.timestamp ?? startedAt))
     }
     mutating func resume(at now: Double) {
@@ -248,6 +249,7 @@ struct RecordedActivity: Codable {
     }
     // Do not connect pauses, long signal gaps, stale fixes, or implausible jumps.
     mutating func accept(_ sample: GPSPoint, now: Double) -> Bool {
+        guard requiresGPS else { return false }
         guard state == "recording", sample.accuracy >= 0, sample.accuracy <= 65,
               abs(now - sample.timestamp) <= 20, sample.latitude.isFinite, sample.longitude.isFinite,
               abs(sample.latitude) <= 90, abs(sample.longitude) <= 180,

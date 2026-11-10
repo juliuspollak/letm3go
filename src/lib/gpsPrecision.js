@@ -5,7 +5,7 @@ export const GPS_PRECISIONS=[
  {id:'balanced',label:'Balanced',detail:'Good for most activities.'},
  {id:'saver',label:'Battery saver',detail:'For long days. Corners look rougher.'},
 ];
-export const precisionOffered=activity=>activity!=='Driving';
+export const precisionOffered=activity=>!['Driving','Gym'].includes(activity);
 export const defaultPrecision=activity=>activity==='MTB'?'high':'balanced';
 const key=activity=>`letm3go-gps-precision:${activity}`;
 export function savedPrecision(activity,storage=globalThis.localStorage){

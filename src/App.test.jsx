@@ -338,7 +338,7 @@ describe('Activities filters',()=>{
  it('offers every activity type that was on offer before',()=>{
   open([raw('a','Park',noon(0))]);fireEvent.click(filters());click('Activity type');
   const types=within(screen.getByRole('group',{name:'Activity type'})).getAllByRole('button').map(button=>button.textContent);
-  expect(types).toEqual(['All activities','Unknown','Cycling','Mountain biking','Hiking','Walking','Running','Road cycling','Kitesurfing','Driving','Other']);
+  expect(types).toEqual(['All activities','Unknown','Cycling','Mountain biking','Hiking','Walking','Running','Road cycling','Kitesurfing','Driving','Gym','Other']);
  });
  it('keeps one date selection across the arrows, the panel and the picker',()=>{
   open([raw('t','Today walk',noon(0)),raw('y','Yesterday walk',noon(-1)),raw('o','Old walk',noon(-20))]);

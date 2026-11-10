@@ -335,7 +335,7 @@ struct WatchRideFix {
 // validation lives here so it is unit-testable without WatchConnectivity, and so
 // a malformed or hostile payload can never enter the encrypted journal.
 enum WatchActivityImport {
-    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Other"]
+    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Other"]
 
     // A short reason keeps diagnostics useful without exposing payload contents.
     // `nil` means the transfer is valid.
@@ -630,7 +630,7 @@ struct WatchRideDraft {
         self.id = id
         self.ownerID = WatchOwnership.normalize(ownerID)
         self.ownerCaptured = true
-        self.indoor = indoor
+        self.indoor = indoor || activity == "Gym"
         self.pausedAt = nil
         self.pausePeriods = []
         self.heartRate = []
@@ -2116,7 +2116,7 @@ enum RecordingPrecision: String, CaseIterable, Codable {
     }
     static func defaultFor(activity: String) -> RecordingPrecision { activity == "MTB" ? .high : .balanced }
     static func resolved(_ raw: String?, activity: String) -> RecordingPrecision { raw.flatMap(RecordingPrecision.init(rawValue:)) ?? defaultFor(activity: activity) }
-    static func offered(for activity: String) -> Bool { activity != "Driving" }
+    static func offered(for activity: String) -> Bool { !["Driving", "Gym"].contains(activity) }
     // Metres between fixes; -1 asks for every fix.
     var distanceFilter: Double {
         switch self {
@@ -2143,6 +2143,8 @@ enum WatchCatalog {
                             choices: [WatchActivityChoice(activity: "Kitesurfing", title: "Kitesurfing", symbol: "wind")]),
         WatchActivityFamily(id: "Driving", title: "Driving", symbol: "car.fill",
                             choices: [WatchActivityChoice(activity: "Driving", title: "Driving", symbol: "car.fill")]),
+        WatchActivityFamily(id: "Gym", title: "Gym", symbol: "figure.mixed.cardio",
+                            choices: [WatchActivityChoice(activity: "Gym", title: "Gym", symbol: "figure.mixed.cardio")]),
         WatchActivityFamily(id: "Other", title: "Other", symbol: "figure.mixed.cardio",
                             choices: [WatchActivityChoice(activity: "Other", title: "Other", symbol: "figure.mixed.cardio")]),
     ]
@@ -2210,14 +2212,14 @@ struct WatchStartConfig: Codable, Equatable, Hashable {
     var indoor: Bool?
     init(activity: String, equipment: WatchEquipment? = nil, indoor: Bool = false) {
         self.activity = activity
-        self.indoor = indoor && WatchCatalog.supportsIndoor(activity) ? true : nil
+        self.indoor = activity == "Gym" || (indoor && WatchCatalog.supportsIndoor(activity)) ? true : nil
         equipmentID = equipment?.id; equipmentName = equipment?.name; equipmentKind = equipment?.kind
     }
     var equipment: WatchEquipment? {
         guard let id = equipmentID, let name = equipmentName else { return nil }
         return WatchEquipment(id: id, name: name, kind: equipmentKind ?? "bicycle")
     }
-    var title: String { indoor == true ? "Indoor " + WatchCatalog.title(activity) : WatchCatalog.title(activity) }
+    var title: String { indoor == true && activity != "Gym" ? "Indoor " + WatchCatalog.title(activity) : WatchCatalog.title(activity) }
     var detail: String? { equipmentName }
     var isValid: Bool { WatchCatalog.choice(activity) != nil && (equipmentID == nil || WatchCatalog.usesBicycle(activity)) }
 }

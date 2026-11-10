@@ -121,7 +121,7 @@ export function activitySummary(trip,{unit='km'}={}){
  const entries=[];
  const distanceKm=finite(trip?.distanceMeters)?trip.distanceMeters/1000:finite(trip?.distance)?trip.distance:null;
  // Includes estimates for GPS gaps: read as approximate, with the recorded part beside it.
- if(distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
+ if(trip?.activity!=='Gym'&&trip?.details?.indoor!==true&&distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
   ...(trip?.distanceEstimate?{detail:`${distanceText(trip.distanceEstimate.recordedMeters/1000,unit)} recorded`}:{})});
  const movingSeconds=[trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds].find(value=>finite(value)&&value>0);
  const elapsedSeconds=finite(trip?.durationSeconds)?trip.durationSeconds:Number.isFinite(trip?.minutes)?trip.minutes*60:null;
@@ -129,7 +129,7 @@ export function activitySummary(trip,{unit='km'}={}){
  if(elapsedSeconds!=null)entries.push({id:'elapsed',label:movingSeconds!=null?'Elapsed time':'Time',value:durationText(elapsedSeconds)});
  const elevation=elevationGainMeters(trip);
  const savedElevation=[trip?.details?.elevationGain,trip?.details?.elevationGainMeters,trip?.elevationGainMeters,trip?.elevationGain].some(value=>finite(value)&&value>=0);
- if(elevation!=null)entries.push({id:'elevation',label:'Elevation gain',value:`${Math.round(elevation)} m`,detail:savedElevation?null:'Estimated from recorded altitude'});
+ if(trip?.activity!=='Gym'&&trip?.details?.indoor!==true&&elevation!=null)entries.push({id:'elevation',label:'Elevation gain',value:`${Math.round(elevation)} m`,detail:savedElevation?null:'Estimated from recorded altitude'});
  const heart=heartRateSummary(trip);
  if(heart)entries.push({id:'heart',label:'Avg heart rate',value:`${heart.average} BPM`,detail:heart.maximum?`Max ${heart.maximum} BPM`:null});
  const energy=activeCalories(trip);
