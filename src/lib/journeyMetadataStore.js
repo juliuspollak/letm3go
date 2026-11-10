@@ -69,7 +69,8 @@ export function createJourneySync({owner,preferences=null,savePreferences=null,s
   }
   notify();
   // Earlier builds mirrored this metadata in the preferences file. It is not used.
-  if(savePreferences&&LEGACY_PREFERENCES.some(key=>preferences?.[key]!=null))await savePreferences(Object.fromEntries(LEGACY_PREFERENCES.map(key=>[key,null]))).catch(()=>{});
+  // Not awaited: it must never hold up the first edit or refresh behind a preferences write.
+  if(savePreferences&&LEGACY_PREFERENCES.some(key=>preferences?.[key]!=null))void savePreferences(Object.fromEntries(LEGACY_PREFERENCES.map(key=>[key,null]))).catch(()=>{});
   return state;
  };
  const ensureReady=()=>ready??=Promise.resolve().then(initialize).catch(error=>{ready=null;throw error;});
@@ -188,7 +189,7 @@ async function refreshOnce({client,owner,read,write,ready,scope}){
   await write(latest=>({savedPlaces:control.savedPlaces||latest.savedPlaces,metadata:{...latest.metadata,enrichFrom:control.metadata.enrichFrom??latest.metadata.enrichFrom},status:{...latest.status,revision:current,cursorRevision:current}}));
  }else if(head===null&&cursor>0){
   // The account has no journey records any more (an emptied project): the cache follows.
-  await write({...emptyState(owner),status:{owner,revision:0,cursorRevision:0}});
+  await write(latest=>({...emptyState(owner),savedPlaces:latest.savedPlaces,status:{owner,revision:0,cursorRevision:0}}));
  }else if(current!==cursor)await readJourneyInvalidations(context,current);
  const wanted=scope?scope():{refs:[],details:[]};
  await write(latest=>({cache:{...latest.cache,active:wanted.refs}}));
@@ -226,17 +227,22 @@ export async function commitJourneyChanges({client,owner,read,write,ready},build
    const pushed=await pushAll(client,owner,changes,revision);
    // Supabase has it. The cache takes the same change on top of whatever it holds now (a
    // refresh may have run meanwhile); if that cannot be stored, the next refresh catches up.
+   // The account's enrichment cutoff is decided once, by whoever saved first: read it back.
+   const control=Number.isFinite(changes.enrichFrom)?await loadJourneyScope(client,owner,[],[]).catch(()=>null):null;
    await write(latest=>{
     const was=latest.status,current=revision!==null&&was.cursorRevision===revision;
-    return {metadata:{...applyChanges(latest.metadata,changes),history:next.history},
+    const merged={...applyChanges(latest.metadata,changes),history:next.history};
+    if(control)merged.enrichFrom=control.metadata.enrichFrom??merged.enrichFrom;
+    return {metadata:merged,
      status:{...was,revision:pushed.revision,...(current?{cursorRevision:pushed.revision}:{})}};
    }).catch(()=>{});
    return {changed:true,revision:pushed.revision};
   }catch(error){
    const text=message(error);
-   if(!derived&&attempt===0&&/conflict/i.test(text))continue;
-   if(/conflict/i.test(text))throw new Error('This journey was changed on another device. Try again.',{cause:error});
-   if(!online()||/fetch|network|offline|timed out|connection/i.test(text))throw new Error(OFFLINE_MESSAGE,{cause:error});
+   const conflict=/\(conflict\)|changed on another device|removed on another device/i.test(text);
+   if(!derived&&attempt===0&&conflict)continue;
+   if(conflict)throw new Error('This journey was changed on another device. Try again.',{cause:error});
+   if(!online()||/failed to fetch|network request failed|networkerror|offline|timed out/i.test(text))throw new Error(OFFLINE_MESSAGE,{cause:error});
    throw new Error(derived?text:`Your change was not saved: ${text}`,{cause:error});
   }
  }
