@@ -1,7 +1,7 @@
 import {activityLabel,activityCode} from '../lib/activityNames.js';
 import { useId, useState } from 'react';
 import {itemCategory,itemTitle} from '../lib/collection.js';
-const types=['Walking','Running','Cycling','MTB','Road cycling','Other','Driving','Kitesurfing','Hiking','Unknown'];
+const types=['Walking','Running','Cycling','MTB','Road cycling','Gym','Other','Driving','Kitesurfing','Hiking','Unknown'];
 export default function ActivityEditor({trip,vehicles=[],run,onSaved,busy,error,historical=false}){
  const [message,setMessage]=useState('');
  const formID=useId();

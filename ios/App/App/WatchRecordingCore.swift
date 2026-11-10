@@ -598,9 +598,10 @@ enum WatchWorkoutClassifier {
         // HealthKit has no separate mountain-bike or road-bike type.
         case "MTB", "Cycling", "Road cycling": type = "cycling"
         case "Kitesurfing": type = "surfingSports"
+        case "Gym": type = "mixedCardio"
         default: type = "other"
         }
-        return WatchWorkoutClass(type: type, indoor: indoor, savesToHealth: activity != "Driving")
+        return WatchWorkoutClass(type: type, indoor: indoor || activity == "Gym", savesToHealth: activity != "Driving")
     }
 }
 

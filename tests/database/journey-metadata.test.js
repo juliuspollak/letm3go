@@ -456,3 +456,11 @@ it('invalidates saved home places and private photo descriptors independently of
  expect((await selectiveRPC({p_refs:[id],p_detail_refs:[id],p_geometry:true})).activityRows[0].photos).toContainEqual(expect.objectContaining({id:photo}));
  await expect(selectiveRPC({p_refs:[],p_since_revision:0,p_limit:null})).rejects.toThrow('scope is too large');
 });
+
+it('syncs a private Gym classification and preserves owner access',async()=>{
+ await db.exec('reset role');
+ await db.exec(await readFile('supabase/migrations/20261128000000_gym_activity.sql','utf8'));
+ await mine(a,{activities:[{ref:'gym-session',title:'Gym cardio',type:'Gym'}]});
+ expect((await as('authenticated',a,"select type from public.journey_activity_metadata where ref='gym-session'")).rows).toEqual([{type:'Gym'}]);
+ expect((await as('authenticated',b,"select type from public.journey_activity_metadata where ref='gym-session'")).rows).toEqual([]);
+});

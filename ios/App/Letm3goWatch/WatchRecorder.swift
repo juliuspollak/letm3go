@@ -314,6 +314,7 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func start() {
         guard draft == nil else { return }
+        if config.indoor == true { beginRide(); return }
         switch manager.authorizationStatus {
         case .notDetermined:
             // Wait for the delegate to report an authorised status: starting now
@@ -1284,6 +1285,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         case "hiking": return .hiking
         case "cycling": return .cycling
         case "surfingSports": return .surfingSports
+        case "mixedCardio": return .mixedCardio
         default: return .other
         }
     }

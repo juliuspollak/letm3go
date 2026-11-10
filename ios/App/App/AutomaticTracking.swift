@@ -164,7 +164,7 @@ extension LocationRecorder {
     // iPhone. The background and service sessions stay held: iOS cannot start them
     // again on a locked phone, and detection has to come back without being opened.
     func suspendAutomaticEngine() {
-        let plan=ManualExclusionServices.plan(phoneManual:active != nil,phoneRecording:active?.state == "recording",
+        let plan=ManualExclusionServices.plan(phoneManual:active != nil,phoneRecording:manualGPSRecording,
             liveSharing:liveSharingArmed,automaticPermitted:automaticPermitted)
         adaptive.shutdown(reason:"a manual recording owns the iPhone")
         automaticProbeTimer?.invalidate();automaticProbeTimer=nil
@@ -181,7 +181,7 @@ extension LocationRecorder {
     }
     // A running Watch recording leaves only live sharing as a reason for GPS.
     func holdSuspendedLocation() {
-        let plan=ManualExclusionServices.plan(phoneManual:active != nil,phoneRecording:active?.state == "recording",
+        let plan=ManualExclusionServices.plan(phoneManual:active != nil,phoneRecording:manualGPSRecording,
             liveSharing:liveSharingArmed,automaticPermitted:automaticPermitted)
         switch plan.location {
         case .manualRecording: locationMode = .off
@@ -409,7 +409,7 @@ extension LocationRecorder {
         switch change {
         case .none: break
         case .acquired(let owner), .transferred(let owner):
-            let services = ManualExclusionServices.plan(phoneManual: active != nil, phoneRecording: active?.state == "recording", liveSharing: liveSharingArmed, automaticPermitted: automaticPermitted)
+            let services = ManualExclusionServices.plan(phoneManual: active != nil, phoneRecording: manualGPSRecording, liveSharing: liveSharingArmed, automaticPermitted: automaticPermitted)
             recordDiagnostic("watch", owner.device == RecordingPresence.watch ? "Automatic recording excluded by Watch ownership" : "Automatic recording excluded by iPhone manual recording",
                 details: ["activity": owner.activity, "manualState": owner.state, "location": services.location.rawValue, "motion": String(services.motion), "significantChange": String(services.significantChange)])
         case .wentQuiet: recordDiagnostic("watch", "Apple Watch went quiet; ownership held under the lease", details: ["leaseEndsAt": String(manualExclusion.current?.leaseEndsAt ?? 0)])
