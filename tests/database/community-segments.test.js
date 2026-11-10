@@ -310,9 +310,11 @@ describe('participation privacy',()=>{
   const rows=await inbox(cat);
   expect(rows.map(r=>r.body)).toEqual(['Privacy hill: Someone completed it']);
   expect(JSON.stringify(rows)).not.toMatch(/Dee/);
+  expect((await as('authenticated',cat,`select actor_id from public.notifications where route->>'id'='${seg}'`)).rows).toEqual([{actor_id:null}]);
   await clear(cat);
   await effort(dee,'dee-2',seg,80);
   expect((await inbox(cat)).find(r=>r.kind==='segment_record').body).toBe('Privacy hill: Someone set 00:01:20');
+  expect((await as('authenticated',cat,`select actor_id from public.notifications where route->>'id'='${seg}'`)).rows.every(row=>row.actor_id===null)).toBe(true);
   expect((await one(cat,`select public.segment_detail('${seg}') as d`)).d.stats).toMatchObject({efforts:2,athletes:1,best_seconds:80});
  });
  it('with efforts off nothing is stored, and earlier efforts can be removed',async()=>{

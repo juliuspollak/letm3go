@@ -8,6 +8,19 @@ afterEach(cleanup);
 beforeEach(()=>{for(const fn of Object.values(api))fn.mockReset();api.loadNotificationSettings.mockResolvedValue({segment_community:true,segment_personal:true,segment_participation:'anonymous'});});
 const flush=()=>act(async()=>{await Promise.resolve();await Promise.resolve();});
 
+it('locks preferences and effort removal until the privacy save completes',async()=>{
+ let finish;
+ api.saveNotificationSettings.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+ render(<SegmentNotificationSettings owner="me"/>);await flush();
+ fireEvent.click(screen.getByRole('radio',{name:/Don’t record my efforts/}));
+ for(const input of screen.getAllByRole('radio'))expect(input).toBeDisabled();
+ for(const input of screen.getAllByRole('checkbox'))expect(input).toBeDisabled();
+ expect(screen.getByRole('button',{name:'Remove my earlier efforts'})).toBeDisabled();
+ await act(async()=>finish());
+ expect(screen.getByRole('radio',{name:/Show my name/})).toBeEnabled();
+ expect(screen.getByRole('button',{name:'Remove my earlier efforts'})).toBeEnabled();
+});
+
 it('loads and saves segment notification preferences, and restores the box when saving fails',async()=>{
  api.saveNotificationSettings.mockResolvedValueOnce().mockRejectedValueOnce(new Error('Notification settings were not saved.'));
  render(<SegmentNotificationSettings owner="me"/>);await flush();

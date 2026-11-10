@@ -21,6 +21,19 @@ alter table public.notification_settings drop constraint if exists notification_
 alter table public.notification_settings add constraint notification_settings_segment_participation_check
  check (segment_participation in ('public','anonymous','off'));
 
+-- Recording, changing participation and removing efforts share a per-athlete
+-- lock. An in-flight recording cannot reappear after opt-out and removal finish.
+create or replace function public.lock_segment_participation() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ perform pg_advisory_xact_lock(hashtextextended('segment-athlete:'||new.user_id,0));
+ return new;
+end $$;
+revoke all on function public.lock_segment_participation() from public,anon,authenticated;
+drop trigger if exists lock_segment_participation on public.notification_settings;
+create trigger lock_segment_participation before insert or update on public.notification_settings
+ for each row execute function public.lock_segment_participation();
+
 create or replace function public.segment_participation_of(p_user uuid) returns text
 language sql stable security definer set search_path='' as $$
  select coalesce((select segment_participation from public.notification_settings where user_id=p_user),'anonymous');
@@ -37,13 +50,15 @@ create or replace function public.record_segment_effort(p_client_key text,p_segm
  p_started_at timestamptz,p_matcher_version integer default 1) returns uuid
 language plpgsql security definer set search_path='' as $$
 declare seg public.mtb_segments; v_length double precision; new_id uuid; my_best double precision; others_best double precision;
- me uuid:=auth.uid(); day text; done_today integer; athlete text;
+ me uuid:=auth.uid(); day text; done_today integer; athlete text; actor uuid;
 begin
  if me is null or not public.account_is_active() then raise exception 'Sign in to record an effort.'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('segment-athlete:'||me,0));
  -- The athlete chose not to take part: nothing is stored.
  if public.segment_participation_of(me)='off' then raise exception 'Segment efforts are off'; end if;
  -- Named only to people who chose to be named; otherwise "Someone".
  athlete:=public.segment_athlete_name(me);
+ actor:=case when public.segment_participation_of(me)='public' then me else null end;
  if p_client_key is null or char_length(p_client_key) not between 16 and 100 then raise exception 'Invalid effort'; end if;
  select * into seg from public.mtb_segments where id=p_segment_id;
  if not found or seg.deleted_at is not null or not ((seg.visibility='public' and seg.status='approved') or seg.creator_id=me) then
@@ -74,7 +89,7 @@ begin
   select count(distinct athlete_id) into done_today from public.segment_efforts
    where segment_id=seg.id and athlete_id<>seg.creator_id and created_at>=date_trunc('day',now() at time zone 'utc') at time zone 'utc';
   insert into public.notifications(event_key,recipient_id,actor_id,kind,title,body,route)
-   values('segment-done:'||seg.id||':'||day,seg.creator_id,me,'segment_completed','Your segment was completed',
+   values('segment-done:'||seg.id||':'||day,seg.creator_id,actor,'segment_completed','Your segment was completed',
     left(left(seg.name,120)||': '||athlete||' completed it',180),jsonb_build_object('screen','segment','id',seg.id))
    on conflict (event_key) do update set body=left(left(seg.name,120)||': '||done_today||' people completed it today',180);
  end if;
@@ -87,7 +102,7 @@ begin
  if seg.creator_id is not null and seg.creator_id<>me and (my_best is not null or others_best is not null)
   and p_elapsed_seconds<least(coalesce(my_best,'infinity'),coalesce(others_best,'infinity'))
   and public.wants_segment_notification(seg.creator_id,false) then
-  perform public.notify('segment-record:'||new_id,seg.creator_id,me,'segment_record','New record on your segment',
+  perform public.notify('segment-record:'||new_id,seg.creator_id,actor,'segment_record','New record on your segment',
    left(seg.name,120)||': '||athlete||' set '||to_char(make_interval(secs=>round(p_elapsed_seconds)),'HH24:MI:SS'),
    jsonb_build_object('screen','segment','id',seg.id));
  end if;
@@ -99,8 +114,14 @@ grant execute on function public.record_segment_effort(text,uuid,double precisio
 
 -- Remove every effort I recorded (choosing "off" stops new ones; this clears the rest).
 create or replace function public.delete_my_segment_efforts() returns integer
-language sql security definer set search_path='' as $$
- with gone as (delete from public.segment_efforts where athlete_id=auth.uid() returning 1) select count(*)::integer from gone;
+language plpgsql security definer set search_path='' as $$
+declare removed integer;
+begin
+ perform pg_advisory_xact_lock(hashtextextended('segment-athlete:'||auth.uid(),0));
+ delete from public.segment_efforts where athlete_id=auth.uid();
+ get diagnostics removed = row_count;
+ return removed;
+end;
 $$;
 revoke all on function public.delete_my_segment_efforts() from public,anon,authenticated;
 grant execute on function public.delete_my_segment_efforts() to authenticated;

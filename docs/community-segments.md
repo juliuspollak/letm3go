@@ -43,7 +43,7 @@ Still to deploy, in this order (nothing runs automatically):
 2. **Apply it:** `npm run supabase -- db push --linked`
    Adds `notification_settings.segment_participation` (default `anonymous`),
    `segment_participation_of`, `segment_athlete_name`, `delete_my_segment_efforts`,
-   `segment_catalogue_since` and an index, and replaces the body of
+   `segment_catalogue_since`, a participation-lock trigger and an index, and replaces the body of
    `record_segment_effort` (same signature). No row is changed or deleted.
 3. **Verify (read-only):** `npm run supabase -- migration list --linked` shows
    `20261127000000` on both sides; rerun
@@ -81,9 +81,8 @@ migration; the new column and functions can stay unused.
 - Publishing and discovery across two accounts on two iPhones (above).
 - Segment pin taps and visible-area reporting in the native map (new delegate events).
 - Push delivery and opening a segment from a tapped push (after the Edge Function deploy).
-- Matching real rides: the matcher is unchanged and only runs on synced rides; a
-  segment created after a ride is matched against that ride only when the ride changes
-  or the matcher version changes.
+- Matching real rides, including an unchanged older ride after a new segment is
+  published (the bounded catalogue catch-up pass).
 - The avatar wiggle and Reduce Motion behaviour in WKWebView.
 - A device whose receipt predates this build (no record of what it sent) republishes without changing the name or route; a later device-side rename then needs one more edit to reach the server. Production had no published segments, so no such receipts are expected.
 - Leaderboards are per route version: trimming or replacing a route starts a new board; earlier efforts stay stored.
