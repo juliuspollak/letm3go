@@ -15,6 +15,12 @@ export const BACKED_UP_SOURCES=['device','watch'];
 // At most this many rides are matched against community segments per sync, newest
 // first, so a first sync after installing never stalls on the whole history.
 export const EFFORT_TRIPS_PER_SYNC=5;
+// Matching older rides against segments published later: at most this many
+// ride-against-segment matches per sync, reading the catalogue in pages of this size.
+export const BACKFILL_MATCHES_PER_SYNC=20;
+export const BACKFILL_PAGE=50;
+// Having reached the end of the catalogue, it is not asked again for this long.
+export const CATALOGUE_RECHECK_MS=10*60*1000;
 // Why the server refused a segment, in words the Segments view can show.
 export function segmentRefusal(message=''){
  if(/another creator/i.test(message))return 'This segment ID belongs to someone else.';
@@ -23,6 +29,13 @@ export function segmentRefusal(message=''){
  if(/too long/i.test(message))return 'The section is longer than 100 km.';
  if(/too few points/i.test(message))return 'The section has too few GPS points.';
  return 'The server could not publish this section.';
+}
+function routeArea(points){
+ let minLat=90,maxLat=-90,minLon=180,maxLon=-180;
+ for(const p of points){if(!Number.isFinite(p?.latitude)||!Number.isFinite(p?.longitude))continue;minLat=Math.min(minLat,p.latitude);maxLat=Math.max(maxLat,p.latitude);minLon=Math.min(minLon,p.longitude);maxLon=Math.max(maxLon,p.longitude);}
+ if(minLat>maxLat)return null;
+ const r=v=>Math.round(v*1e4)/1e4;
+ return {minLat:r(minLat-0.001),maxLat:r(maxLat+0.001),minLon:r(minLon-0.001),maxLon:r(maxLon+0.001)};
 }
 // The small grid cells (about 11 km) the ride actually passes through, each a
 // separate request with room for 200 segments. Asking per cell along the route,
@@ -57,12 +70,140 @@ function viewMetadata(details){
  if(NAMED_SEGMENT_BACKUP&&segments.length)out.namedSegments=segments;
  return out;
 }
+// A stopped journey is published locally before it is complete. It is backed up
+// (and matched) only once finalised, so the cloud never receives a row that is
+// still growing and no duplicate revision is required to correct it.
+export function finishedTrip(state){
+ const tombstones=new Set((state.deletedIDs||[]).map(id=>id.toLowerCase()));
+ return trip=>BACKED_UP_SOURCES.includes(trip.source)&&trip.details?.provisional!==true&&Number.isFinite(trip.endedAt)&&!tombstones.has(trip.id.toLowerCase());
+}
+const hashWith=cryptoImpl=>async value=>Array.from(new Uint8Array(await cryptoImpl.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)))),b=>b.toString(16).padStart(2,'0')).join('');
+// Segment efforts on their own: run by syncPrivateActivities after a backup, and
+// by AutoCloudSync now and then even when nothing local changed, so rides already
+// recorded meet segments other people published since.
+export async function syncSegmentEfforts(client,state,updated,{owner,hash=hashWith(crypto),acknowledge=async()=>{},finished=finishedTrip(state),republish=new Set()}){
+ let pending=false,failure=null;
+ // Efforts. Only the segment, time taken and start time are sent, under a one-way
+ // hashed key, so the server learns nothing about the activity itself, and only
+ // if the person takes part (Account & settings → Segment efforts; anonymous by
+ // default). Two bounded passes:
+ //  1. each finished ride is matched once (again when it changes, the matcher
+ //     improves or one of its own segments was just published) against the public
+ //     segments around it;
+ //  2. segments published or changed later are matched against rides already done
+ //     (whose area overlaps), from a durable cursor over the public catalogue.
+ const eligible=trip=>finished(trip)&&isCommunitySegmentActivity(trip.activity)&&Array.isArray(trip.points)&&trip.points.length>=5;
+ // Nothing to match without a ride that can have efforts: no request is made.
+ let takingPart=false;
+ if((state.trips||[]).some(eligible)){
+  const {data:participation,error:participationError}=await client.from('notification_settings').select('segment_participation').eq('user_id',owner).maybeSingle();
+  takingPart=!participationError&&participation?.segment_participation!=='off';
+  if(participationError)failure=failure||new Error('Segment effort settings could not be read. Efforts will be recorded on the next sync.');
+ }
+ const keptPoints=trip=>{
+  // Only the part of the recording the person kept: a trimmed-off drive home
+  // never becomes an effort, let alone a record.
+  const start=trip.visibleRouteStart??trip.details?.visibleRouteStart??0,end=trip.visibleRouteEnd??trip.details?.visibleRouteEnd??trip.points.length-1;
+  return trip.points.slice(Math.max(0,start),end+1);
+ };
+ const recordEfforts=async(trip,points,rows)=>{
+  for(const row of rows){
+   const definition=publicSegmentDefinition({...row,status:'approved',visibility:'public'});
+   if(!definition)continue;
+   for(const effort of matchEfforts(definition,{...trip,points}).efforts){
+    // The route version is part of the key: a pass re-matched after the route
+    // changed is a new effort on the new board, not the old one again.
+    const clientKey=(await hash([owner,trip.id,row.id,row.version??1,effort.startTimestamp])).slice(0,40);
+    const {error:failed}=await client.rpc('record_segment_effort',{p_client_key:clientKey,p_segment_id:row.id,p_elapsed_seconds:effort.elapsedSeconds,
+     p_started_at:new Date(effort.startTimestamp*1000).toISOString(),p_matcher_version:SEGMENT_MATCHER_VERSION});
+    // An implausible time, a segment deleted meanwhile or participation switched
+    // off is skipped; anything else leaves the work to the next sync.
+    if(failed&&!/Invalid effort|Segment unavailable|Segment efforts are off/i.test(failed.message||''))throw failed;
+   }
+  }
+ };
+ let effortsChecked=0;
+ for(const trip of takingPart?[...(state.trips||[])].sort((a,b)=>b.startedAt-a.startedAt):[]){
+  if(!eligible(trip))continue;
+  const key=`segment-efforts:${trip.id}`,fingerprint=`${SEGMENT_MATCHER_VERSION}|${trip.updatedAt??''}`;
+  if(updated[key]?.owner===owner&&updated[key].fingerprint===fingerprint&&!republish.has(trip.id))continue;
+  // More rides are waiting: the next pass continues instead of treating this as done.
+  if(effortsChecked>=EFFORT_TRIPS_PER_SYNC){pending=true;break;}
+  effortsChecked++;
+  try{
+   const points=keptPoints(trip),segments=new Map();
+   // The cells the ride passes through, each with room for 200 segments.
+   for(const area of routeTiles(points)){
+    const {data,error}=await client.rpc('segments_for_map',{p_min_lat:area.minLat,p_max_lat:area.maxLat,p_min_lon:area.minLon,p_max_lon:area.maxLon,p_limit:200});
+    if(error)throw error;
+    for(const row of Array.isArray(data)?data:[])segments.set(row.id,row);
+   }
+   await recordEfforts(trip,points,segments.values());
+   // The ride's area is kept so a later segment can be checked against it cheaply.
+   updated[key]={owner,fingerprint,area:routeArea(points)};await acknowledge();
+  }catch{failure=failure||new Error('Segment efforts were not all recorded. They will retry on the next sync.');}
+ }
+ if(takingPart){
+  try{if(await catchUpOlderRides())pending=true;}
+  catch{failure=failure||new Error('Older rides were not all matched to new segments. They will continue on the next sync.');}
+ }
+ // Pass 2. The cursor and queue live in the receipts, so a sync cut short resumes
+ // exactly where it stopped; at most BACKFILL_MATCHES_PER_SYNC ride matches run per
+ // sync. Rides not matched yet are left to pass 1, which sees the whole catalogue.
+ async function catchUpOlderRides(){
+  const key='segment-catalogue',saved=updated[key]?.owner===owner?updated[key]:null;
+  let cursor={owner,since:saved?.since??null,after:saved?.after??null,checkedAt:saved?.checkedAt??0,queue:(saved?.queue||[]).map(item=>({...item,trips:[...item.trips]}))};
+  // Caught up a moment ago and nothing queued: no request at all.
+  if(!cursor.queue.length&&Date.now()-cursor.checkedAt<CATALOGUE_RECHECK_MS)return false;
+  const save=async()=>{updated[key]={...cursor,queue:cursor.queue.map(item=>({...item,trips:[...item.trips]}))};await acknowledge();};
+  const trips=new Map((state.trips||[]).filter(eligible).map(trip=>[trip.id,trip]));
+  const areaOf=trip=>{
+   const receipt=updated[`segment-efforts:${trip.id}`];
+   if(receipt?.owner!==owner)return null;
+   if(!receipt.area)updated[`segment-efforts:${trip.id}`]={...receipt,area:routeArea(keptPoints(trip))};
+   return updated[`segment-efforts:${trip.id}`].area;
+  };
+  let budget=BACKFILL_MATCHES_PER_SYNC,more=true;
+  while(budget>0){
+   if(!cursor.queue.length){
+    if(!more)break;
+    const {data,error}=await client.rpc('segment_catalogue_since',{p_since:cursor.since,p_after:cursor.after,p_limit:BACKFILL_PAGE});
+    if(error)throw error;
+    const rows=Array.isArray(data)?data:[];
+    more=rows.length===BACKFILL_PAGE;
+    if(!more)cursor={...cursor,checkedAt:Date.now()};
+    if(!rows.length){await save();break;}
+    for(const row of rows){
+     const overlapping=[...trips.values()].filter(trip=>{const a=areaOf(trip);return a&&a.minLat<=row.max_lat&&a.maxLat>=row.min_lat&&a.minLon<=row.max_lon&&a.maxLon>=row.min_lon;}).map(trip=>trip.id);
+     if(overlapping.length)cursor.queue.push({id:row.id,version:row.version,trips:overlapping});
+    }
+    cursor={...cursor,since:rows.at(-1).changed_at,after:rows.at(-1).id};
+    await save();continue;
+   }
+   const item=cursor.queue[0];
+   const {data:segment,error}=await client.rpc('segment_detail',{p_id:item.id});
+   if(error)throw error;
+   // Deleted, gone or changed again since (a later catalogue page brings it back).
+   if(!segment||segment.deleted||segment.version!==item.version||!Array.isArray(segment.geometry)){cursor.queue.shift();await save();continue;}
+   while(item.trips.length&&budget>0){
+    const trip=trips.get(item.trips[0]);
+    if(trip)await recordEfforts(trip,keptPoints(trip),[{id:segment.id,name:segment.name,version:segment.version,geometry:segment.geometry}]);
+    item.trips.shift();budget--;
+   }
+   if(!item.trips.length)cursor.queue.shift();
+   await save();
+  }
+  return cursor.queue.length>0||more&&budget===0;
+ }
+ return {pending,failure};
+}
+
 export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity}={}){
  const {data,error}=await client.auth.getUser();if(error||!data.user)throw new Error('Sign in before backing up.');
  const owner=data.user.id;
  if(state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('Backup account does not match the native recordings.');
  if(!cryptoImpl.subtle)throw new Error('Secure backup hashing is unavailable on this device.');
- const hash=async value=>Array.from(new Uint8Array(await cryptoImpl.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)))),b=>b.toString(16).padStart(2,'0')).join('');
+ const hash=hashWith(cryptoImpl);
  const updated={...receipts};let uploaded=0,deleted=0,processed=0,pending=false;
  const acknowledge=async()=>checkpoint({...updated});
  for(const id of state.deletedIDs||[]){
@@ -82,11 +223,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(receipt?.fingerprint===fingerprint)continue;
   const {error}=await client.from('saved_places').upsert(row);if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
  }
- const tombstones=new Set((state.deletedIDs||[]).map(id=>id.toLowerCase()));
- // A stopped journey is published locally before it is complete. It is backed up
- // only once finalised, so the cloud never receives a row that is still growing
- // and no duplicate revision is required to correct it.
- const finished=trip=>BACKED_UP_SOURCES.includes(trip.source)&&trip.details?.provisional!==true&&Number.isFinite(trip.endedAt)&&!tombstones.has(trip.id.toLowerCase());
+ const finished=finishedTrip(state);
  for(const trip of state.trips){
   if(!finished(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
@@ -138,46 +275,10 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    updated[key]={owner,fingerprint,uploaded:true,sent:{name:segment.name,start:segment.startIndex,end:segment.endIndex}};republish.add(trip.id);await acknowledge();
   }
  }
- // Efforts: each finished ride is matched once (again when it changes, the matcher
- // improves or one of its own segments was just published) against the public
- // segments around it. Only the segment, time taken and start time are sent; the
- // key is a one-way hash, so the server learns nothing about the activity itself.
- let effortsChecked=0;
- for(const trip of [...(state.trips||[])].sort((a,b)=>b.startedAt-a.startedAt)){
-  if(!finished(trip)||!isCommunitySegmentActivity(trip.activity)||!Array.isArray(trip.points)||trip.points.length<5)continue;
-  const key=`segment-efforts:${trip.id}`,fingerprint=`${SEGMENT_MATCHER_VERSION}|${trip.updatedAt??''}`;
-  if(updated[key]?.owner===owner&&updated[key].fingerprint===fingerprint&&!republish.has(trip.id))continue;
-  // More rides are waiting: the next pass continues instead of treating this as done.
-  if(effortsChecked>=EFFORT_TRIPS_PER_SYNC){pending=true;break;}
-  effortsChecked++;
-  try{
-   const segments=new Map();
-   // The ride's area in tiles the server accepts, each with room for 200 segments.
-   // Only the part of the recording the person kept: a trimmed-off drive home
-   // never becomes an effort, let alone a record.
-   const start=trip.visibleRouteStart??trip.details?.visibleRouteStart??0,end=trip.visibleRouteEnd??trip.details?.visibleRouteEnd??trip.points.length-1;
-   const kept={...trip,points:trip.points.slice(Math.max(0,start),end+1)};
-   for(const area of routeTiles(kept.points)){
-    const {data,error}=await client.rpc('segments_for_map',{p_min_lat:area.minLat,p_max_lat:area.maxLat,p_min_lon:area.minLon,p_max_lon:area.maxLon,p_limit:200});
-    if(error)throw error;
-    for(const row of Array.isArray(data)?data:[])segments.set(row.id,row);
-   }
-   for(const row of segments.values()){
-    const definition=publicSegmentDefinition({...row,status:'approved',visibility:'public'});
-    if(!definition)continue;
-    for(const effort of matchEfforts(definition,kept).efforts){
-     // The route version is part of the key: a pass re-matched after the route
-     // changed is a new effort on the new board, not the old one again.
-     const clientKey=(await hash([owner,trip.id,row.id,row.version??1,effort.startTimestamp])).slice(0,40);
-     const {error:failed}=await client.rpc('record_segment_effort',{p_client_key:clientKey,p_segment_id:row.id,p_elapsed_seconds:effort.elapsedSeconds,
-      p_started_at:new Date(effort.startTimestamp*1000).toISOString(),p_matcher_version:SEGMENT_MATCHER_VERSION});
-     // An implausible time or a segment deleted meanwhile is skipped; anything
-     // else leaves the ride to be matched again on the next sync.
-     if(failed&&!/Invalid effort|Segment unavailable/i.test(failed.message||''))throw failed;
-    }
-   }
-   updated[key]={owner,fingerprint};await acknowledge();
-  }catch{segmentFailure=segmentFailure||new Error('Segment efforts were not all recorded. They will retry on the next sync.');}
+ {
+  const efforts=await syncSegmentEfforts(client,state,updated,{owner,hash,acknowledge,finished,republish});
+  if(efforts.pending)pending=true;
+  segmentFailure=segmentFailure||efforts.failure;
  }
  let photosUploaded=0;
  for(const trip of state.trips||[]){

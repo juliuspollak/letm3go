@@ -96,13 +96,25 @@ export function useSegmentMapLayer(enabled,area,load=segmentsForMap,version=0){
 }
 
 export async function loadNotificationSettings(owner,client=supabase){
- const {data,error}=await need(client).from('notification_settings').select('segment_community,segment_personal').eq('user_id',owner).maybeSingle();
+ const {data,error}=await need(client).from('notification_settings').select('segment_community,segment_personal,segment_participation').eq('user_id',owner).maybeSingle();
  if(error)throw failure(error,'Notification settings could not be loaded.');
- return {segment_community:data?.segment_community??true,segment_personal:data?.segment_personal??true};
+ return {segment_community:data?.segment_community??true,segment_personal:data?.segment_personal??true,segment_participation:data?.segment_participation??'anonymous'};
 }
 export async function saveNotificationSettings(owner,settings,client=supabase){
  const {error}=await need(client).from('notification_settings').upsert({user_id:owner,...settings,updated_at:new Date().toISOString()});
  if(error)throw failure(error,'Notification settings were not saved.');
+}
+
+// Segment efforts: how a person takes part (the server enforces it).
+export const PARTICIPATION=[
+ ['anonymous','Count my times anonymously','Your times count in segment totals and best times. Nobody sees your name.'],
+ ['public','Show my name','Segment creators may see your name when you complete or set a record on their segment.'],
+ ['off','Don’t record my efforts','Nothing about your rides is sent for segments. Segments are still shown to you.'],
+];
+export async function deleteMyEfforts(client=supabase){
+ const {data,error}=await need(client).rpc('delete_my_segment_efforts');
+ if(error)throw failure(error,'Your efforts were not removed.');
+ return data||0;
 }
 
 // Seconds as m:ss or h:mm:ss for effort times.

@@ -4,14 +4,17 @@ import {Capacitor} from '@capacitor/core';
 import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
 import {config} from '../lib/config.js';
-import {syncPrivateActivities} from '../lib/cloudSync.js';
+import {syncPrivateActivities,syncSegmentEfforts} from '../lib/cloudSync.js';
+// Rides already recorded are checked against segments published since at most this
+// often when nothing local changed (on the foreground or the two-minute check).
+export const SEGMENT_CATCH_UP_MS=6*3600*1000;
 import {syncCollections} from '../lib/collectionSync.js';
 import {syncAccountSettings} from '../lib/settingsSync.js';
 import {runJourneySync} from '../lib/journeyMetadataStore.js';
 import {SYNC_NOW_EVENT} from '../lib/syncNow.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false);
+ const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false),segmentsCaughtUp=useRef(0);
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
   if(!config.backupEnabled||!supabase)return;
@@ -33,7 +36,9 @@ export default function AutoCloudSync({state,journeySync=null}){
    void _r;void _b;void _g;void _q;void _m;
    const signature=JSON.stringify([owner,recordings?.historyToken||null,recordings?.places||[],recordings?.deletedIDs||[],settings]);
    const journeysOnly=!ownsRecordings||signature===synced.current;
-   if(journeysOnly&&!journeys)return;
+   // Nothing local changed, but other people may have published segments since.
+   const segmentsDue=ownsRecordings&&journeysOnly&&Date.now()-segmentsCaughtUp.current>=SEGMENT_CATCH_UP_MS;
+   if(journeysOnly&&!journeys&&!segmentsDue)return;
    running.current=true;lastAttempt.current=Date.now();
    try{
     // Settings and the Collection are small and independent of the route upload,
@@ -60,6 +65,13 @@ export default function AutoCloudSync({state,journeySync=null}){
      receipts=trips.receipts;
      if(trips.pending)failure=failure||new Error('Activity backup continues in the next batch.');
      if(alive)await user.savePreferences({syncReceipts:receipts,lastBackup:trips.lastSync});
+     segmentsCaughtUp.current=Date.now();
+    }else if(segmentsDue){
+     const updated={...receipts};
+     const efforts=await syncSegmentEfforts(supabase,recordings,updated,{owner,acknowledge:()=>user.savePreferences({syncReceipts:{...updated}})});
+     // Unfinished work (more rides or segments) continues at the next check.
+     if(!efforts.pending&&!efforts.failure)segmentsCaughtUp.current=Date.now();
+     if(efforts.failure)failure=failure||efforts.failure;
     }
     if(failure)throw failure;
     synced.current=signature;

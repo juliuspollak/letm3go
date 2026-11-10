@@ -48,6 +48,7 @@ export default function SegmentDetail({id,unit='km',onChanged,onDeleted}){
    <div><dt>Your efforts</dt><dd>{stats.my_efforts??0}</dd></div>
   </dl>
   {!stats.efforts&&<p className="muted small-copy">No efforts yet. Rides, walks and runs that pass along it are matched after they sync.</p>}
+  <p className="muted small-copy">Only times are shared, never routes. Your times count anonymously unless you choose otherwise in Account &amp; settings.</p>
   {segment.mine&&segment.status!=='approved'&&<p className="notice">This segment is not public ({segment.status.replace('_',' ')}).</p>}
   {segment.can_edit&&mode===null&&<div className="detail-actions segment-actions">
    <button type="button" className="secondary" onClick={()=>setMode('rename')}><Pencil size={16}/> Rename</button>

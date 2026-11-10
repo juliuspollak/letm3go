@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { syncPrivateActivities } from './cloudSync.js';
 const trip={id:'trip',title:'Walk',activity:'Walking',source:'device',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:50,points:[]};
 const state={ownerID:'owner',trips:[trip],places:[]};
-function client(){const chain={};for(const name of ['delete','eq','upsert'])chain[name]=vi.fn(()=>chain);chain.then=resolve=>resolve({error:null});return {chain,auth:{getUser:vi.fn().mockResolvedValue({data:{user:{id:'owner'}}})},from:vi.fn(()=>chain),rpc:vi.fn().mockResolvedValue({data:1,error:null})};}
+function client(){const chain={};for(const name of ['delete','eq','upsert','select','maybeSingle'])chain[name]=vi.fn(()=>chain);chain.then=resolve=>resolve({error:null});return {chain,auth:{getUser:vi.fn().mockResolvedValue({data:{user:{id:'owner'}}})},from:vi.fn(()=>chain),rpc:vi.fn().mockResolvedValue({data:1,error:null})};}
 const run=(api,s=state,receipts={},opts={})=>syncPrivateActivities(api,s,receipts,{cryptoImpl:webcrypto,...opts});
 it('retries deletion without uploading deleted or simulator records',async()=>{const api=client();const result=await run(api,{...state,trips:[trip,{...trip,id:'sim',source:'simulator'}],deletedIDs:['trip']});expect(api.chain.delete).toHaveBeenCalled();expect(api.rpc).not.toHaveBeenCalled();expect(result.receipts.trip.deleted).toBe(true);});
 it('rejects an account switch before uploading any GPS',async()=>{const api=client();await expect(run(api,{...state,ownerID:'different'})).rejects.toThrow('account');expect(api.from).not.toHaveBeenCalled();expect(api.rpc).not.toHaveBeenCalled();});
@@ -105,10 +105,11 @@ describe('community segments',()=>{
  const ride=(extra={})=>({...trip,activity:'MTB',points,updatedAt:1,details:{namedSegments:[{id:segID,name:'Climb',startIndex:5,endIndex:30}]},...extra});
  // A public segment on the server: the same road as the ride, from fix 10 to 30.
  const publicSegment={id:'b0000000-0000-4000-8000-000000000001',name:'Road climb',geometry:points.slice(10,31).map(p=>[p.latitude,p.longitude]),distance_meters:222,version:1};
- function server({segments=[publicSegment],publish=(args)=>({data:args.p_client_id,error:null}),effort=()=>({data:'e',error:null})}={}){
+ function server({segments=[publicSegment],publish=(args)=>({data:args.p_client_id,error:null}),effort=()=>({data:'e',error:null}),catalogue=()=>[],details={}}={}){
   const api=client();
   api.rpc.mockImplementation(async(name,args)=>name==='backup_private_activity'?{data:1,error:null}:name==='segments_for_map'?{data:segments,error:null}
-   :name==='publish_segment'?publish(args):name==='record_segment_effort'?effort(args):{data:null,error:{message:'unexpected '+name}});
+   :name==='publish_segment'?publish(args):name==='record_segment_effort'?effort(args):name==='segment_catalogue_since'?{data:catalogue(args),error:null}
+   :name==='segment_detail'?{data:details[args.p_id]??null,error:null}:{data:null,error:{message:'unexpected '+name}});
   return api;
  }
  const calls=(api,name)=>api.rpc.mock.calls.filter(([n])=>n===name).map(([,args])=>args);
@@ -214,4 +215,79 @@ it('a refused re-section keeps what was last published, so the fix is sent as a 
  expect(refused.receipts['mtb-segment:'+id]).toMatchObject({skipped:'refused',sent:{name:'A',start:5,end:30}});
  refuse=false;await run(api,{...state,trips:[ride('B',6,30)]},refused.receipts);
  expect(api.rpc.mock.calls.filter(([n])=>n==='publish_segment').at(-1)[1]).toMatchObject({p_name:'B',p_rename:true,p_reroute:true});
+});
+
+describe('older rides meet newer segments',()=>{
+ const points=Array.from({length:41},(_,i)=>({latitude:-34+i*0.0001,longitude:151,timestamp:1000+i*5,accuracy:5,segment:0}));
+ const ride=(id,extra={})=>({...trip,id,activity:'MTB',points,updatedAt:1,startedAt:100,details:{},...extra});
+ const geometry=points.slice(10,31).map(p=>[p.latitude,p.longitude]);
+ const newSegment={id:'c0000000-0000-4000-8000-000000000001',version:1,changed_at:'2026-11-12T00:00:00Z',min_lat:-33.999,max_lat:-33.997,min_lon:150.9999,max_lon:151.0001};
+ function backend({catalogue=[newSegment],detail={id:newSegment.id,name:'New',version:1,deleted:false,geometry},participation='anonymous',segmentsAround=[]}={}){
+  const api=client();
+  api.chain.then=resolve=>resolve({data:{segment_participation:participation},error:null});
+  api.rpc.mockImplementation(async(name,args)=>name==='backup_private_activity'?{data:1,error:null}
+   :name==='segments_for_map'?{data:segmentsAround,error:null}
+   :name==='segment_catalogue_since'?{data:args.p_since?catalogue.filter(r=>r.changed_at>args.p_since):catalogue,error:null}
+   :name==='segment_detail'?{data:args.p_id===detail?.id?detail:null,error:null}
+   :name==='record_segment_effort'?{data:'e',error:null}:{data:null,error:{message:'unexpected '+name}});
+  return api;
+ }
+ const calls=(api,name)=>api.rpc.mock.calls.filter(([n])=>n===name).map(([,a])=>a);
+ it('a ride recorded before a segment existed is matched once it is published, without editing the ride',async()=>{
+  // First sync: the segment does not exist yet.
+  const before=backend({catalogue:[]});
+  const first=await run(before,{...state,trips:[ride('old')]});
+  expect(calls(before,'record_segment_effort')).toHaveLength(0);
+  expect(first.receipts['segment-efforts:old'].area).toMatchObject({minLat:expect.any(Number)});
+  // Later: someone publishes a segment along it. Same ride, unchanged.
+  vi.useFakeTimers({now:Date.now()+11*60*1000,toFake:['Date']});
+  try{
+   const after=backend();
+   const second=await run(after,{...state,trips:[ride('old')]},first.receipts);
+   expect(calls(after,'record_segment_effort')).toHaveLength(1);
+   expect(calls(after,'record_segment_effort')[0].p_segment_id).toBe(newSegment.id);
+   expect(second.receipts['segment-catalogue']).toMatchObject({since:newSegment.changed_at,after:newSegment.id,queue:[]});
+   expect(second.pending).toBe(false);
+   // The cursor has moved past it: nothing is matched twice.
+   vi.setSystemTime(Date.now()+11*60*1000);
+   const third=backend();
+   await run(third,{...state,trips:[ride('old')]},second.receipts);
+   expect(calls(third,'record_segment_effort')).toHaveLength(0);
+  }finally{vi.useRealTimers();}
+ });
+ it('works in bounded batches that resume across syncs, and checks only rides in the segment’s area',async()=>{
+  const {BACKFILL_MATCHES_PER_SYNC}=await import('./cloudSync.js');
+  const near=Array.from({length:BACKFILL_MATCHES_PER_SYNC+5},(_,i)=>ride(`near-${i}`));
+  const far=ride('far',{points:points.map(p=>({...p,latitude:p.latitude+1}))});
+  const receipts=Object.fromEntries([...near,far].map(t=>[`segment-efforts:${t.id}`,{owner:'owner',fingerprint:`1|1`}]));
+  const {SEGMENT_MATCHER_VERSION}=await import('./segmentMatcher.js');
+  for(const key of Object.keys(receipts))receipts[key].fingerprint=`${SEGMENT_MATCHER_VERSION}|1`;
+  const api=backend();
+  const first=await run(api,{...state,trips:[...near,far]},receipts);
+  expect(calls(api,'record_segment_effort')).toHaveLength(BACKFILL_MATCHES_PER_SYNC);
+  expect(first.pending).toBe(true);
+  const queued=first.receipts['segment-catalogue'].queue[0].trips;
+  expect(queued).toHaveLength(5);expect(queued).not.toContain('far');
+  // Areas were worked out once for receipts that predate them, and kept.
+  expect(first.receipts['segment-efforts:far'].area).toBeDefined();
+  const api2=backend();
+  const second=await run(api2,{...state,trips:[...near,far]},first.receipts);
+  expect(calls(api2,'record_segment_effort')).toHaveLength(5);
+  expect(second.pending).toBe(false);
+  const keys=[...calls(api,'record_segment_effort'),...calls(api2,'record_segment_effort')].map(a=>a.p_client_key);
+  expect(new Set(keys).size).toBe(keys.length);
+ });
+ it('drops a queued segment that was deleted or changed again, and does nothing with participation off',async()=>{
+  const receipts={'segment-efforts:old':{owner:'owner',fingerprint:'x',area:{minLat:-34.01,maxLat:-33.99,minLon:150.99,maxLon:151.01}}};
+  const {SEGMENT_MATCHER_VERSION}=await import('./segmentMatcher.js');receipts['segment-efforts:old'].fingerprint=`${SEGMENT_MATCHER_VERSION}|1`;
+  const gone=backend({detail:{id:newSegment.id,deleted:true}});
+  const result=await run(gone,{...state,trips:[ride('old')]},receipts);
+  expect(calls(gone,'record_segment_effort')).toHaveLength(0);
+  expect(result.receipts['segment-catalogue'].queue).toEqual([]);
+  const off=backend({participation:'off',segmentsAround:[{id:'s',geometry,version:1}]});
+  await run(off,{...state,trips:[ride('fresh')]});
+  expect(calls(off,'record_segment_effort')).toHaveLength(0);
+  expect(calls(off,'segment_catalogue_since')).toHaveLength(0);
+  expect(calls(off,'segments_for_map')).toHaveLength(0);
+ });
 });

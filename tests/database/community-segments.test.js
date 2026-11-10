@@ -157,6 +157,8 @@ describe('efforts and notifications',()=>{
  const seg=uuid(20);
  beforeAll(async()=>{await publish(ann,seg,'Fire trail',route(-35.0));for(const u of [ann,bob,cat])await clear(u);});
  it('records an effort idempotently and tells the creator once, grouped per day',async()=>{
+  // Bob chose to be named (Account & settings → Segment efforts → Show my name).
+  await as('authenticated',bob,`insert into public.notification_settings(user_id,segment_participation) values('${bob}','public')`);
   const first=(await effort(bob,'bob-1',seg,120)).rows[0].id;
   expect((await effort(bob,'bob-1',seg,120)).rows[0].id).toBe(first);
   expect((await as('service_role',admin,`select count(*)::int n from public.segment_efforts where segment_id='${seg}'`)).rows[0].n).toBe(1);
@@ -295,5 +297,109 @@ describe('review fixes',()=>{
  it('the map layer stays capped at 60 while matching may ask for up to 200',async()=>{
   const n=(await as('authenticated',bob,`select count(*)::int n from public.segments_for_map(-37,-33,148,152,1000)`)).rows[0].n;
   expect(n).toBeGreaterThan(0);expect(n).toBeLessThanOrEqual(200);
+ });
+});
+
+describe('participation privacy',()=>{
+ const seg=uuid(40);
+ beforeAll(async()=>{await publish(cat,seg,'Privacy hill',route(-36.5));await clear(cat);});
+ it('by default an effort counts but its athlete is never named to the creator',async()=>{
+  const dee='77777777-7777-4777-8777-777777777777';
+  await db.exec(`reset role;insert into auth.users(id) values('${dee}');insert into public.profiles(id,display_name) values('${dee}','Dee') on conflict (id) do update set display_name='Dee';`);
+  await effort(dee,'dee-1',seg,100);
+  const rows=await inbox(cat);
+  expect(rows.map(r=>r.body)).toEqual(['Privacy hill: Someone completed it']);
+  expect(JSON.stringify(rows)).not.toMatch(/Dee/);
+  await clear(cat);
+  await effort(dee,'dee-2',seg,80);
+  expect((await inbox(cat)).find(r=>r.kind==='segment_record').body).toBe('Privacy hill: Someone set 00:01:20');
+  expect((await one(cat,`select public.segment_detail('${seg}') as d`)).d.stats).toMatchObject({efforts:2,athletes:1,best_seconds:80});
+ });
+ it('with efforts off nothing is stored, and earlier efforts can be removed',async()=>{
+  await as('authenticated',bob,`update public.notification_settings set segment_participation='off' where user_id='${bob}'`);
+  expect(await fails(bob,`select public.record_segment_effort('${'o'.repeat(20)}','${seg}',90,now())`)).toMatch(/Segment efforts are off/);
+  const before=(await as('authenticated',bob,`select count(*)::int n from public.segment_efforts`)).rows[0].n;
+  expect(before).toBeGreaterThan(0);
+  expect((await one(bob,`select public.delete_my_segment_efforts() as n`)).n).toBe(before);
+  expect((await as('authenticated',bob,`select count(*)::int n from public.segment_efforts`)).rows[0].n).toBe(0);
+  // Someone else's efforts are untouched.
+  expect((await as('service_role',admin,`select count(*)::int n from public.segment_efforts where athlete_id<>'${bob}'`)).rows[0].n).toBeGreaterThan(0);
+  await as('authenticated',bob,`update public.notification_settings set segment_participation='public' where user_id='${bob}'`);
+ });
+ it('only the three choices are accepted, and only for yourself',async()=>{
+  expect(await fails(bob,`update public.notification_settings set segment_participation='everyone' where user_id='${bob}'`)).toMatch(/check/);
+  await as('authenticated',ann,`update public.notification_settings set segment_participation='off' where user_id='${bob}'`);
+  expect((await as('service_role',admin,`select segment_participation from public.notification_settings where user_id='${bob}'`)).rows[0].segment_participation).toBe('public');
+ });
+});
+
+describe('segment catalogue for older rides',()=>{
+ it('pages through public segments changed after a cursor, oldest first, without deleted or private ones',async()=>{
+  const all=(await as('authenticated',bob,`select id,changed_at from public.segment_catalogue_since(null,null,100)`)).rows;
+  expect(all.length).toBeGreaterThan(5);
+  const ids=all.map(r=>r.id);
+  expect(ids).not.toContain(uuid(4));expect(ids).not.toContain(uuid(5));expect(ids).not.toContain(uuid(14));
+  const firstPage=(await as('authenticated',bob,`select id,changed_at from public.segment_catalogue_since(null,null,3)`)).rows;
+  const last=firstPage.at(-1);
+  const next=(await as('authenticated',bob,`select id from public.segment_catalogue_since('${new Date(last.changed_at).toISOString()}','${last.id}',100)`)).rows.map(r=>r.id);
+  expect([...firstPage.map(r=>r.id),...next]).toEqual(ids);
+  // A newly published segment appears after the cursor.
+  const cursor=all.at(-1);
+  await publish(ann,uuid(50),'Brand new',route(-36.9));
+  const fresh=(await as('authenticated',bob,`select id,min_lat from public.segment_catalogue_since('${new Date(cursor.changed_at).toISOString()}','${cursor.id}',100)`)).rows;
+  expect(fresh.map(r=>r.id)).toEqual([uuid(50)]);
+  expect(fresh[0].min_lat).toBeCloseTo(-36.9,3);
+  let refused='';try{await as('anon',bob,`select * from public.segment_catalogue_since()`);}catch(e){refused=e.message;}
+  expect(refused).toMatch(/permission denied/);
+ });
+});
+
+// The end-to-end acceptance flow with two fresh people, A and B, and the admin.
+describe('acceptance: A creates, B discovers and completes',()=>{
+ const a='88888888-8888-4888-8888-888888888888',b='99999999-9999-4999-8999-999999999999',seg=uuid(60);
+ const path=route(-37.2,151.3);
+ beforeAll(async()=>{
+  await db.exec(`reset role;insert into auth.users(id) values('${a}'),('${b}');insert into public.profiles(id,display_name) values('${a}','Alex'),('${b}','Blair') on conflict (id) do update set display_name=excluded.display_name;`);
+ });
+ it('A publishes from a recorded activity without approval; B finds it in All, Nearby, on the Map and in details, and cannot change it',async()=>{
+  // B's catalogue cursor before A publishes.
+  const cursor=(await as('authenticated',b,`select changed_at,id from public.segment_catalogue_since(null,null,100)`)).rows.at(-1);
+  expect((await publish(a,seg,'Acceptance climb',path,'MTB')).rows[0].id).toBe(seg);
+  expect(await one(a,`select status,visibility from public.mtb_segments where id='${seg}'`)).toEqual({status:'approved',visibility:'public'});
+  expect((await list(b,'all',`,'acceptance'`)).map(r=>[r.id,r.creator_name,r.can_edit])).toEqual([[seg,'Alex',false]]);
+  expect((await list(b,'nearby',',null,null,-37.3,-37.1,151.2,151.4')).map(r=>r.id)).toContain(seg);
+  expect((await list(b,'nearby',',null,null,-30.3,-30.1,151.2,151.4')).map(r=>r.id)).not.toContain(seg);
+  expect((await as('authenticated',b,`select id from public.segments_for_map(-37.3,-37.1,151.2,151.4)`)).rows.map(r=>r.id)).toContain(seg);
+  expect((await one(b,`select public.segment_detail('${seg}') as d`)).d).toMatchObject({name:'Acceptance climb',creator_name:'Alex',can_edit:false,mine:false});
+  expect(await fails(b,`select public.update_segment('${seg}',p_name=>'Mine')`)).toMatch(/may not edit/);
+  expect(await fails(b,`select public.delete_segment('${seg}')`)).toMatch(/may not delete/);
+  // B's older rides learn about it from the catalogue, after B's cursor.
+  const fresh=(await as('authenticated',b,`select id from public.segment_catalogue_since('${new Date(cursor.changed_at).toISOString()}','${cursor.id}',100)`)).rows.map(r=>r.id);
+  expect(fresh).toContain(seg);
+ });
+ it('B completes it: the effort is stored per B’s privacy choice and A is told in the app, without push',async()=>{
+  await clear(a);
+  await effort(b,'acc-b-1',seg,120);
+  const rows=await inbox(a);
+  expect(rows).toEqual([expect.objectContaining({kind:'segment_completed',body:'Acceptance climb: Someone completed it',route:{screen:'segment',id:seg}})]);
+  expect((await as('service_role',admin,`select count(*)::int n from public.push_devices where owner_id='${a}'`)).rows[0].n).toBe(0);
+  // B chooses to be named: the next notification says so.
+  await as('authenticated',b,`insert into public.notification_settings(user_id,segment_participation) values('${b}','public')`);
+  await clear(a);
+  await effort(b,'acc-b-2',seg,100);
+  expect((await inbox(a)).find(r=>r.kind==='segment_record').body).toBe('Acceptance climb: Blair set 00:01:40');
+  expect((await one(a,`select public.segment_detail('${seg}') as d`)).d.stats).toMatchObject({efforts:2,athletes:1,best_seconds:100});
+ });
+ it('A and the admin manage it; once deleted it is gone and a retry cannot bring it back',async()=>{
+  await as('authenticated',a,`select public.update_segment('${seg}',p_name=>'Acceptance climb (A)')`);
+  await clear(a);
+  await as('authenticated',admin,`select public.update_segment('${seg}',p_name=>'Acceptance climb (checked)')`);
+  expect((await inbox(a)).map(r=>r.kind)).toEqual(['segment_changed']);
+  await as('authenticated',a,`select public.delete_segment('${seg}')`);
+  expect((await list(b,'all',`,'acceptance'`))).toEqual([]);
+  expect((await as('authenticated',b,`select id from public.segments_for_map(-37.3,-37.1,151.2,151.4)`)).rows.map(r=>r.id)).not.toContain(seg);
+  await publish(a,seg,'Acceptance climb',path,'MTB');
+  expect((await list(b,'all',`,'acceptance'`))).toEqual([]);
+  expect((await one(b,`select public.segment_detail('${seg}') as d`)).d).toBeNull();
  });
 });

@@ -13,8 +13,8 @@ admins can rename it, move its start and finish, replace its route and delete it
 | Discover | Activities → Segments (`SegmentsView`): All, Nearby (about 10 km around you), Mine, search, activity type. `list_segments` returns no geometry. Mine also lists segments made on this iPhone that are waiting, failed or refused, with Retry now. |
 | Details | `SegmentDetail` (one sheet, opened from the library, the Map and notifications): route, distance, creator, efforts, people, best time, your best. Edit actions appear only when the server says `can_edit`. |
 | Map | Map → Layers → Segments. Same map; the native map reports the settled visible area (`regionChanged`) and segment pin taps (`segmentSelected`). `segments_for_map` returns at most 60 segments and refuses areas wider than 5°. |
-| Efforts | After a ride syncs, `cloudSync.js` matches it against public segments around it (existing `segmentMatcher.js`) and records each pass with `record_segment_effort`: segment, time taken, start time and a one-way hashed key. No route, no activity ID. At most 5 rides per sync, newest first; the sync stays pending until every ride is matched. The ride's area is split into tiles of at most 4°, each returning up to 200 segments. |
-| Notifications | Existing inbox, push outbox and badge. New kinds: `segment_completed` (someone completed your segment; one per segment per day, its text updated with the count), `segment_pb`, `segment_record`, `segment_changed`, `segment_removed` (admin edits). In-app delivery does not depend on push. Preferences: `notification_settings` (Account & settings). |
+| Efforts | Only if the person takes part (Account & settings → Segment efforts: anonymous by default, show my name, or off with Remove my earlier efforts). After a ride syncs, `cloudSync.js` matches it against public segments around it (existing `segmentMatcher.js`) and records each pass with `record_segment_effort`: segment, time taken, start time and a one-way hashed key. No route, no activity ID. At most 5 rides per sync, newest first; the sync stays pending until every ride is matched. Rides already matched meet segments published later through `segment_catalogue_since`: a durable cursor and queue in the sync receipts, only rides whose stored area overlaps the segment, at most 20 ride matches per sync, checked after local changes and at least every 6 hours (`AutoCloudSync`), never when opening Activities, Segments or Map. The ride's area is split into tiles of at most 4°, each returning up to 200 segments. |
+| Notifications | Existing inbox, push outbox and badge. New kinds: `segment_completed` (someone completed your segment; one per segment per day, its text updated with the count; the athlete is "Someone" unless they chose Show my name), `segment_pb`, `segment_record`, `segment_changed`, `segment_removed` (admin edits). In-app delivery does not depend on push. Preferences: `notification_settings` (Account & settings). |
 | Header | The location pin is gone (location sharing stays in Social and Settings). The avatar shows the unread count at its lower right (`9+` above nine) and wiggles once when it rises, except with Reduce Motion. Profile lists notifications first. |
 
 Permissions are enforced by Supabase: no direct table writes; `update_segment` and
@@ -26,34 +26,40 @@ audit trail (`mtb_moderation_events`). Every geometry change is a new version.
 Nothing here changes a recorded activity. Deleting or editing a segment never touches
 the activity it came from.
 
-## Deployment (manual, in this order)
+## Deployment
 
-Nothing is applied automatically. Use the repository wrapper (`npm run supabase -- …`).
+State on 10 Nov 2026 (checked read-only): production has every migration up to and
+including `20261126000000_community_segments.sql` and
+`20261126000100_publish_existing_segments.sql`; the post-publish verification checks
+returned no problems (0 segments, 0 efforts); `send-push-notifications` version 8 is
+deployed and its source matches this branch.
 
-1. **Diagnostics (read-only).**
-   `npm run supabase -- db query --linked -f supabase/scripts/segments/01_pre_publish_diagnostics.sql`
-   Keep the output. On 10 Nov 2026 production had no segments or trails at all, so
-   the publish step is expected to change nothing until devices upload theirs.
-2. **Migrations.** `npm run supabase -- db push --linked` applies, in order:
-   - `20261126000000_community_segments.sql`: columns, RLS, RPCs, efforts,
-     notification kinds and settings. It also replaces `create_mtb_segment(p_client_id …)`
-     with a call to `publish_segment` (so older builds publish too) and drops the
-     hand-drawn draft overload.
-   - `20261126000100_publish_existing_segments.sql`: publishes eligible existing
-     segments. It is idempotent and non-destructive.
-3. **Verification (read-only).**
-   `npm run supabase -- db query --linked -f supabase/scripts/segments/03_post_publish_verification.sql`
-   Checks 2–5 must return no rows.
-4. **Edge Function.** `send-push-notifications` now lets the `segment` screen through
-   to the push payload. Redeploy it: `npm run supabase -- functions deploy send-push-notifications`.
-   Until it is redeployed, segment pushes arrive but open Home instead of the segment;
-   the in-app list is unaffected.
-5. **App.** Ship a TestFlight build. Segments that exist only on devices publish on
-   the build's next sync. SQL cannot reach them.
+Still to deploy, in this order (nothing runs automatically):
 
-Rollback: the migrations add columns, functions and one table and replace function
-bodies; none deletes data. To stop publishing, revert the app and recreate the
-previous `create_mtb_segment` body from `20261122000000_mtb_segment_persistence.sql`.
+1. **Confirm only the expected migration is pending** (executes nothing):
+   `npm run supabase -- db push --linked --dry-run`
+   It must list exactly `20261127000000_segment_history_and_privacy.sql`. If it lists
+   anything else, stop.
+2. **Apply it:** `npm run supabase -- db push --linked`
+   Adds `notification_settings.segment_participation` (default `anonymous`),
+   `segment_participation_of`, `segment_athlete_name`, `delete_my_segment_efforts`,
+   `segment_catalogue_since` and an index, and replaces the body of
+   `record_segment_effort` (same signature). No row is changed or deleted.
+3. **Verify (read-only):** `npm run supabase -- migration list --linked` shows
+   `20261127000000` on both sides; rerun
+   `supabase/scripts/segments/03_post_publish_verification.sql` (checks 2–5 empty). In
+   the app, Account & settings → Segment efforts shows "Count my times anonymously".
+4. **App:** TestFlight build from `main` after both PRs are merged.
+
+Order matters only in one direction: the new app reads `segment_participation` and
+calls `segment_catalogue_since`. Shipping the app first is safe but older rides are not
+caught up and participation reads fail (efforts are retried later, never sent).
+Applying the migration first is safe for build 102 (it never calls the new functions;
+its efforts become anonymous by default).
+
+Rollback / forward fix: nothing is destroyed, so roll forward. To undo the behaviour,
+recreate `record_segment_effort` from `20261126000000_community_segments.sql` in a new
+migration; the new column and functions can stay unused.
 
 ## Check that another person's segment is visible
 
