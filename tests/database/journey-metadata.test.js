@@ -371,18 +371,17 @@ it('closes merged/split/source context across dates and page boundaries',async()
  await expect(as('authenticated',a,`select public.journey_metadata_snapshot('${selectiveOwner}',array['${selectiveID(0)}'])`)).rejects.toThrow('owner mismatch');
 });
 
-it('persists idempotent MTB proposals through existing moderation without revealing private activities',async()=>{
+it('publishes idempotent segments from a private activity without revealing the activity',async()=>{
  const id='e0000000-0000-4000-8000-000000000001';
  const geometry=JSON.stringify(Array.from({length:10},(_,i)=>[-34+i*0.0001,151]));
  const proposal=`select public.create_mtb_segment(p_client_id=>'${id}',p_name=>'Shared selected descent',p_geometry=>'${geometry}'::jsonb,p_distance_meters=>100) as id`;
  expect((await as('authenticated',a,proposal)).rows[0].id).toBe(id);
  expect((await as('authenticated',a,proposal)).rows[0].id).toBe(id);
- expect((await as('authenticated',a,`select status,visibility from public.mtb_segments where id='${id}'`)).rows[0]).toEqual({status:'submitted',visibility:'private'});
- expect((await as('authenticated',b,`select id from public.mtb_segments where id='${id}'`)).rows).toEqual([]);
+ // Published at once: no moderation step.
+ expect((await as('authenticated',a,`select status,visibility from public.mtb_segments where id='${id}'`)).rows[0]).toEqual({status:'approved',visibility:'public'});
+ expect((await as('authenticated',b,`select id from public.mtb_segments where id='${id}'`)).rows).toEqual([{id}]);
  await expect(as('authenticated',b,proposal)).rejects.toThrow('another creator');
  await expect(as('anon','',proposal)).rejects.toThrow();
- await as('service_role','',`insert into public.moderators(user_id) values('${b}') on conflict do nothing`);
- await as('authenticated',b,`select public.moderate_mtb('segment','${id}','approved')`);
  // A replacement client and another ordinary user discover the same permanent row.
  const publicRows=(await as('authenticated',selectiveOwner,`select * from public.mtb_segments_in_bbox(-34.1,-33.9,150.9,151.1)`)).rows;
  expect(publicRows.some(row=>row.id===id&&row.status==='approved'&&row.visibility==='public')).toBe(true);
@@ -391,7 +390,9 @@ it('persists idempotent MTB proposals through existing moderation without reveal
  expect(JSON.stringify(shared)).not.toMatch(/route_points|heartRate|energy|timestamp|privateActivity/);
  expect((await as('authenticated',selectiveOwner,`select id from public.activities where owner_id='${a}'`)).rows).toEqual([]);
  expect((await as('authenticated',a,proposal)).rows[0].id).toBe(id);
- await expect(as('authenticated',a,proposal.replace('Shared selected descent','Bypass moderation'))).rejects.toThrow('moderation');
+ // The creator renaming on the device edits the same segment; the route is unchanged.
+ expect((await as('authenticated',a,proposal.replace('Shared selected descent','Renamed descent'))).rows[0].id).toBe(id);
+ expect((await as('authenticated',b,`select name from public.mtb_segments where id='${id}'`)).rows[0].name).toBe('Renamed descent');
  expect(Number((await as('service_role','',`select count(*) from public.mtb_segment_geometry where segment_id='${id}'`)).rows[0].count)).toBe(1);
 });
 

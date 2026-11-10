@@ -120,3 +120,19 @@ it('checks journey changes independently of an absent or not-yet-bound recorder'
  expect(mocks.journey).toHaveBeenCalledWith(expect.objectContaining({owner:'owner'}));
  expect(mocks.activities).not.toHaveBeenCalled();expect(mocks.settings).not.toHaveBeenCalled();
 });
+it('Retry now runs a full pass even when nothing changed, and is queued if a pass is already running',async()=>{
+ const {requestSync}=await import('../lib/syncNow.js');
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);expect(mocks.activities).toHaveBeenCalledTimes(1);
+ // Nothing changed, but the person asked: it runs.
+ await act(async()=>{requestSync();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(2);
+ // Asked again while a slow pass is running: run once more right after it, not dropped.
+ let finish;mocks.activities.mockImplementationOnce(()=>new Promise(resolve=>{finish=()=>resolve({receipts:{},lastSync:'now'});}));
+ await act(async()=>{requestSync();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(3);
+ await act(async()=>{requestSync();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(3);
+ await act(async()=>{finish();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(4);
+});

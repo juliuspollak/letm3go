@@ -4,6 +4,18 @@ export function withSegments(payload,layers){
  if(!layers)return payload;
  return {...payload,pins:[...payload.pins,...layers.pins],styled:layers.styled,...(layers.muted?{muted:true}:{})};
 }
+// The Map's Segments layer: each community segment as a styled line (the native
+// map draws at most 60) and a tappable pin at its start that opens its details.
+export const SEGMENT_LAYER_COLOR='#e8590c';
+export function withCommunitySegments(payload,segments){
+ if(!segments?.length)return payload;
+ const shown=segments.filter(s=>Array.isArray(s.geometry)&&s.geometry.length>1).slice(0,60);
+ return {...payload,
+  // `community` marks content that changes as the map moves: AppleMap sends it as
+  // an update, never as a re-embed (the native map redraws lines and pins in place).
+  styled:[...(payload.styled||[]),...shown.map(s=>({points:s.geometry,color:SEGMENT_LAYER_COLOR,width:4,community:true}))].slice(0,60),
+  pins:[...(payload.pins||[]),...shown.map(s=>({id:'community-segment:'+s.id,point:s.geometry[0],title:s.name,kind:'segment',color:SEGMENT_LAYER_COLOR,segmentID:s.id}))]};
+}
 // The part of a recording the trim handles keep, split where recording segments
 // change, so a gap is never drawn. Start and Finish move with the handles.
 // The native map draws up to 5000 points per line and cuts the rest, so a long

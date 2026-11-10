@@ -64,11 +64,14 @@ it('a staff reply and resolving the ticket notify the sender',async()=>{
  await clear(ann);
 });
 
-it('a submitted segment notifies moderators and admins, who can also review it',async()=>{
+it('a published segment needs no review, while a submitted trail still notifies moderators and admins',async()=>{
  const geometry=JSON.stringify(Array.from({length:10},(_,i)=>[-34+i*0.0001,151]));
  await as('authenticated',ann,`select public.create_mtb_segment(p_client_id=>'e0000000-0000-4000-8000-000000000001',p_name=>'Warilla descent',p_geometry=>'${geometry}'::jsonb,p_distance_meters=>100)`);
- for(const reviewer of [admin,moderator])expect(await inbox(reviewer)).toEqual([expect.objectContaining({kind:'segment_submitted',title:'New segment to review',body:'Warilla descent · Ann',route:{screen:'review'}})]);
- expect((await as('authenticated',admin,'select count(*)::int n from public.mtb_moderation_queue()')).rows[0].n).toBe(1);
+ for(const reviewer of [admin,moderator])expect(await inbox(reviewer)).toEqual([]);
+ expect((await as('authenticated',admin,'select count(*)::int n from public.mtb_moderation_queue()')).rows[0].n).toBe(0);
+ const trail=(await as('authenticated',ann,`select public.create_mtb_trail('Warilla loop','${geometry}'::jsonb) as id`)).rows[0].id;
+ await as('authenticated',ann,`select public.submit_mtb('trail','${trail}')`);
+ for(const reviewer of [admin,moderator])expect(await inbox(reviewer)).toEqual([expect.objectContaining({kind:'segment_submitted',title:'New trail to review',body:'Warilla loop · Ann',route:{screen:'review'}})]);
  await clear(admin);await clear(moderator);
 });
 

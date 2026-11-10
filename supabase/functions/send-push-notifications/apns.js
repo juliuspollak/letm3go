@@ -1,5 +1,5 @@
 // Pure APNs helpers, shared by the Edge Function and its unit tests.
-const SCREENS = new Set(['feedback', 'review', 'home']);
+const SCREENS = new Set(['feedback', 'review', 'home', 'segment']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Only known routing fields leave the database, and only in their expected shape.

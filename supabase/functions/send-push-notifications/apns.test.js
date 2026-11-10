@@ -7,6 +7,9 @@ describe('APNs payload', () => {
     const payload = JSON.parse(apnsPayload({ title: 'New feedback', body: 'Ann: crash', kind: 'feedback_new', route: { screen: 'feedback', id, extra: 'x' }, badge: 3, notification_id: 7 }));
     expect(payload).toEqual({ aps: { alert: { title: 'New feedback', body: 'Ann: crash' }, sound: 'default', badge: 3 }, kind: 'feedback_new', notificationId: '7', screen: 'feedback', id });
   });
+  it('routes a segment notification to that segment', () => {
+    expect(pushRoute({ screen: 'segment', id })).toEqual({ screen: 'segment', id });
+  });
   it('drops unknown screens and malformed ids', () => {
     expect(pushRoute({ screen: 'admin-secret', id: 'not-a-uuid', from: id })).toEqual({ from: id });
   });

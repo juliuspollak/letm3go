@@ -37,8 +37,10 @@ describe('route layers',()=>{
   expect(normaliseMapView({routes:'all',people:false})).toMatchObject({routes:'all',people:false,style:'standard',archived:true});
   expect(normaliseMapView({style:'neon',archived:false})).toMatchObject({style:'standard',archived:false});
  });
- it('shows no routes on Community trails',()=>{
-  expect(mapViewJourneys(journeys,view({content:'trails',routes:'all'}),'2026-10-27',[],[],now)).toEqual([]);
+ it('opens a view saved on Community trails on the one map, with the Segments layer on',()=>{
+  expect(normaliseMapView({content:'trails',routes:'all'})).toMatchObject({content:'routes',segments:true,routes:'all'});
+  expect(normaliseMapView({routes:'all'}).segments).toBe(false);
+  expect(mapViewJourneys(journeys,normaliseMapView({content:'trails',routes:'all'}),'2026-10-27',[],[],now).length).toBeGreaterThan(0);
  });
 });
 

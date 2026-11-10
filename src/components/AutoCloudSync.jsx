@@ -8,9 +8,10 @@ import {syncPrivateActivities} from '../lib/cloudSync.js';
 import {syncCollections} from '../lib/collectionSync.js';
 import {syncAccountSettings} from '../lib/settingsSync.js';
 import {runJourneySync} from '../lib/journeyMetadataStore.js';
+import {SYNC_NOW_EVENT} from '../lib/syncNow.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null);
+ const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false);
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
   if(!config.backupEnabled||!supabase)return;
@@ -64,13 +65,20 @@ export default function AutoCloudSync({state,journeySync=null}){
     synced.current=signature;
    }catch{
     // The Settings screen is the explicit retry/error surface. Nothing local is deleted.
-   }finally{running.current=false;}
+   }finally{
+    running.current=false;
+    // "Retry now" asked while this pass was running: run once more straight away.
+    if(again.current&&alive){again.current=false;synced.current=null;void sync(true);}
+   }
   }
   const starter=setTimeout(()=>void sync(),5000),periodic=setInterval(()=>void sync(true),120000);
   const resume=()=>void sync(true);
+  // "Retry now" (the Segments view): run a full pass even if nothing changed locally.
+  const now=()=>{synced.current=null;if(running.current)again.current=true;else void sync(true);};
+  window.addEventListener(SYNC_NOW_EVENT,now);
   window.addEventListener('online',resume);document.addEventListener('visibilitychange',resume);
   if(Capacitor.isNativePlatform())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)resume();}).then(handle=>{if(alive)listener=handle;else void handle.remove();}).catch(()=>{});
-  return()=>{alive=false;clearTimeout(starter);clearInterval(periodic);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
+  return()=>{alive=false;clearTimeout(starter);clearInterval(periodic);window.removeEventListener(SYNC_NOW_EVENT,now);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
  },[]);
  return null;
 }

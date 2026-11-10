@@ -1,7 +1,8 @@
 import {activityCode,activityLabel,sameActivity} from './activityNames.js';
 // What the Map tab shows, in one value:
-// - content: 'routes' (your own map) or 'trails' (Community trails). Mutually
-//   exclusive: they are different maps with different tools.
+// - content: always 'routes' (your own map). Community trails used to be a second
+//   map; a view saved then opens on this map with the Segments layer on.
+// - segments: the community Segments layer, drawn on the same map.
 // - people:  People & places, independent of everything else.
 // - routes:  null, 'today', 'pinned' (favourites) or 'all'. One at a time.
 // - activity / range: advanced filters for the routes; Today has its own range.
@@ -10,7 +11,7 @@ import {activityCode,activityLabel,sameActivity} from './activityNames.js';
 // A view saved before `version` existed has no real route choice: `null` was simply
 // the old default, so it moves to Today once. After that, `null` means routes off.
 export const MAP_VIEW_VERSION=2;
-export const DEFAULT_MAP_VIEW=Object.freeze({version:MAP_VIEW_VERSION,content:'routes',people:true,routes:'today',activity:'',range:'any',day:null,style:'standard',archived:true});
+export const DEFAULT_MAP_VIEW=Object.freeze({version:MAP_VIEW_VERSION,content:'routes',people:true,routes:'today',activity:'',range:'any',day:null,style:'standard',archived:true,segments:false});
 export const ROUTE_LAYERS=[['today','Today'],['pinned','Favourites'],['all','All routes']];
 export const RANGE_OPTIONS=[['any','Any time'],['7d','Past 7 days'],['30d','Past 30 days'],['365d','Past year']];
 export const RANGE_DAYS={'7d':7,'30d':30,'365d':365};
@@ -20,7 +21,8 @@ export function normaliseMapView(value){
  const migrating=!(value&&typeof value==='object'&&value.version>=MAP_VIEW_VERSION);
  return {
   version:MAP_VIEW_VERSION,
-  content:view.content==='trails'?'trails':'routes',
+  content:'routes',
+  segments:view.segments===true||view.content==='trails',
   people:view.people!==false,
   routes:ROUTE_LAYERS.some(([id])=>id===view.routes)?view.routes:migrating?'today':null,
   activity:typeof view.activity==='string'?activityCode(view.activity.slice(0,60)):'',
@@ -37,7 +39,7 @@ export function chooseRouteLayer(view,id){
 }
 export const clearMapFilters=view=>({...view,activity:'',range:'any',day:null});
 // Every filter back to its default; how the map is drawn is not a filter.
-export const resetMapFilters=view=>({...DEFAULT_MAP_VIEW,content:view.content,style:view.style});
+export const resetMapFilters=view=>({...DEFAULT_MAP_VIEW,content:view.content,style:view.style,segments:view.segments});
 
 // Advanced filters only apply to a route layer that supports them.
 export const supportsActivity=view=>view.content==='routes'&&Boolean(view.routes);
@@ -57,7 +59,7 @@ export function activeMapFilters(view,archivedCount=0){
   ...(view.routes&&!view.archived&&archivedCount>0?['Archived hidden']:[]),
  ];
 }
-export const mapLayersChanged=view=>view.content!=='routes'||view.style!=='standard';
+export const mapLayersChanged=view=>view.segments===true||view.style!=='standard';
 
 export function mapViewJourneys(journeys,view,today,saved=[],archivedTrips=[],nowMs=Date.now()){
  if(view.content!=='routes'||!view.routes)return [];

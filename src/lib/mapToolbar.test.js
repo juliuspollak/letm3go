@@ -19,7 +19,9 @@ it('keeps rolling preferences and favourites while selecting days, and ignores d
  expect(toolbarChange(day,'range:365d')).toEqual(original);
  expect(toolbarChange({...original,routes:'today'},'day:2026-10-01').routes).toBe('all');
  expect(toolbarChange({...original,routes:null},'day:2026-10-01').routes).toBe('all');
- expect(toolbarChange(toolbarChange(day,'mode:trails'),'mode:routes')).toEqual(day);
+ // The Segments layer is drawn on the same map and changes nothing else.
+ expect(toolbarChange(toolbarChange(day,'segments'),'segments')).toEqual(day);
+ expect(toolbarChange(day,'segments')).toEqual({...day,segments:true});
 });
 const controls=(view,panel=null,archived=0)=>mapControls({...DEFAULT_MAP_VIEW,routes:null,...view},panel,[],'2026-10-30',archived);
 it('offers a date bar only while routes are limited to one day',()=>{
@@ -30,7 +32,7 @@ it('offers a date bar only while routes are limited to one day',()=>{
  expect(controls({routes:'pinned',day:'2026-10-28'}).date).toMatchObject({today:{id:'day:2026-10-30'},clear:{id:'day:clear'},previous:{id:'day:2026-10-27'},next:{id:'day:2026-10-29'}});
  // A day the current view ignores must not look applied.
  expect(controls({routes:null,day:'2026-10-28'}).date).toBeNull();
- expect(controls({content:'trails',routes:'all',day:'2026-10-28'}).date).toBeNull();
+ expect(controls({segments:true,routes:'pinned',day:'2026-10-28'}).date).toMatchObject({clear:{id:'day:clear'}});
  // A panel covers the same space; the bar returns when it closes.
  expect(controls({routes:'today'},'filters').date).toBeNull();
 });
@@ -47,11 +49,15 @@ it('counts only filters that change the map, and treats layers separately',()=>{
  expect(controls({routes:'today',range:'7d'}).active).toBe(1);
  expect(controls({routes:'all',archived:false},null,0).active).toBe(1);
  expect(controls({routes:'all',archived:false},null,2).active).toBe(2);
- expect(controls({content:'trails',people:false,routes:'all'})).toMatchObject({active:0,filters:null,layers:{changed:true}});
+ // Segments is a layer, not a filter: it marks Layers as changed and keeps Filters.
+ expect(controls({segments:true})).toMatchObject({active:0,filters:{id:'panel:filters'},layers:{changed:true,label:'Map layers: Segments'}});
+ expect(controls({segments:true,style:'satellite'}).layers.label).toBe('Map layers: Satellite, Segments');
 });
-it('never opens the Filters panel on Community trails, and only opens what was asked',()=>{
- expect(controls({content:'trails'},'filters').panel).toBeNull();
- expect(controls({content:'trails'},'layers').panel.id).toBe('layers');
+it('only opens what was asked, and Layers offers Segments',()=>{
+ const layers=controls({},'layers').panel;
+ expect(layers.id).toBe('layers');
+ expect(layers.sections.find(s=>s.id==='community').options).toEqual([expect.objectContaining({id:'segments',label:'Segments',selected:false})]);
+ expect(layers.sections.some(s=>s.id==='mode')).toBe(false);
  expect(panelChange(null,'panel:filters')).toBe('filters');
  expect(panelChange('filters','panel:layers')).toBe('layers');
  expect(panelChange('layers','panel:layers')).toBeNull();

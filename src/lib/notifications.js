@@ -8,7 +8,9 @@ import {PushNotifications} from '@capacitor/push-notifications';
 import {supabase} from './supabase.js';
 
 export const FEEDBACK_KINDS=['feedback_new','feedback_reply','feedback_status'];
-export const REVIEW_KINDS=['segment_submitted'];
+export const SEGMENT_KINDS=['segment_completed','segment_pb','segment_record','segment_changed','segment_removed'];
+// The badge never shows more than this; above it reads "9+".
+export const badgeText=count=>count>9?'9+':String(count);
 const EMPTY=[];
 
 export async function sendPoke(userID,client=supabase){
@@ -26,10 +28,19 @@ export async function loadUnread(client=supabase){
 
 export function countKinds(items,kinds){return items.filter(item=>kinds.includes(item.kind)).length;}
 
+// Earlier notifications for the Profile list, read or not.
+export async function loadRecent(client=supabase,limit=30){
+ const {data,error}=await client.from('notifications').select('id,kind,title,body,route,actor_id,created_at,read_at').order('created_at',{ascending:false}).limit(limit);
+ if(error)throw error;
+ return data||EMPTY;
+}
+
 // Where a notification (in the app or tapped in iOS) takes you.
 export function notificationTarget(data){
  const screen=data?.screen||data?.route?.screen;
- if(screen==='feedback')return {screen:'feedback',id:data?.id||data?.route?.id||null};
+ const id=data?.id||data?.route?.id||null;
+ if(screen==='feedback')return {screen:'feedback',id};
+ if(screen==='segment'&&typeof id==='string'&&id)return {screen:'segment',id};
  if(screen==='review')return {screen:'review'};
  if(screen==='home')return {screen:'home'};
  return null;
@@ -73,5 +84,11 @@ export function useNotifications(owner,{onOpen=()=>{}}={}){
   try{await supabase.rpc('mark_notifications_read',{p_kinds:kinds||null});}catch{refresh();}
   if(Capacitor.isNativePlatform())void PushNotifications.removeAllDeliveredNotifications().catch(()=>{});
  },[items,refresh]);
- return {items,count:items.length,refresh,markRead};
+ // One notification opened from the Profile list.
+ const markOneRead=useCallback(async id=>{
+  setItems(current=>current.filter(item=>item.id!==id));
+  // supabase-js reports a failed call in `error` rather than throwing.
+  try{const {error}=await supabase.rpc('mark_notifications_read_ids',{p_ids:[id]});if(error)refresh();}catch{refresh();}
+ },[refresh]);
+ return {items,count:items.length,refresh,markRead,markOneRead};
 }

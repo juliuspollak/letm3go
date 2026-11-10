@@ -34,7 +34,7 @@ function filterSections(view,activities,today,archivedCount){
 }
 const layerSections=view=>[
  {id:'style',label:'Map style',options:[option('style:standard','Standard','map',view.style==='standard'),option('style:satellite','Satellite','globe.americas',view.style==='satellite')]},
- {id:'mode',label:'Show',options:[option('mode:routes','My map','person.2',view.content==='routes'),option('mode:trails','Community trails','mountain.2',view.content==='trails')]},
+ {id:'community',label:'Community',options:[option('segments','Segments','flag',view.segments===true)]},
 ];
 // Shown only while routes are limited to one day, so stepping through days never
 // needs the panel. The Today layer is one day too, and stepping leaves it.
@@ -58,9 +58,8 @@ export function mapControls(view,panel,activities=[],today=localDay(),archivedCo
  return {
   active:active.length,
   style:view.style,
-  // Community trails is its own map, with nothing here to filter.
   filters:view.content==='routes'?{id:'panel:filters',text:active.length?`Filters · ${summary}`:'Filters',label:active.length?`Filters, ${active.length} active: ${summary}`:'Filters',symbol:'line.3.horizontal.decrease',count:active.length,expanded:open==='filters'}:null,
-  layers:{id:'panel:layers',text:'Layers',label:mapLayersChanged(view)?`Map layers: ${view.content==='trails'?'Community trails':'Satellite'}`:'Map layers',symbol:'square.3.layers.3d',changed:mapLayersChanged(view),expanded:open==='layers'},
+  layers:{id:'panel:layers',text:'Layers',label:mapLayersChanged(view)?`Map layers: ${[view.style==='satellite'?'Satellite':null,view.segments?'Segments':null].filter(Boolean).join(', ')}`:'Map layers',symbol:'square.3.layers.3d',changed:mapLayersChanged(view),expanded:open==='layers'},
   date:open?null:dateBar(view,today),
   panel:open==='filters'?{id:'filters',title:'Filters',reset:active.length?{id:'reset',label:'Reset filters',text:'Reset'}:null,sections:filterSections(view,activities,today,archivedCount)}
    :open==='layers'?{id:'layers',title:'Map layers',reset:null,sections:layerSections(view)}:null,
@@ -73,7 +72,7 @@ export function panelChange(panel,id){
 }
 export function toolbarChange(view,id){
  const [kind,...rest]=id.split(':');const value=rest.join(':');
- if(kind==='mode')return {...view,content:value};
+ if(kind==='segments')return {...view,segments:!view.segments};
  if(kind==='people')return {...view,people:!view.people};
  if(kind==='route')return value==='off'?{...view,routes:null}:chooseRouteLayer(view,value);
  if(kind==='day')return value==='clear'?{...view,day:null}:chooseMapDay(view,value);
