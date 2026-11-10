@@ -1143,3 +1143,31 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .notification-row{display:flex;align-items:center;gap:10px;width:100%;padding:10px 6px;border-radius:12px;text-align:left;color:var(--ink)}.notification-row>span{flex:1;min-width:0;display:grid;gap:2px}.notification-row small{font-size:12px;color:var(--muted)}
 .notification-row--unread{background:var(--soft)}.notification-row--unread strong::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--danger);margin-right:6px;vertical-align:middle}.segment-notification-settings{border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:12px 0;display:grid;gap:10px;text-align:left}.segment-notification-settings legend{font-weight:650;padding:0 4px}.segment-notification-settings label{display:flex;gap:10px;align-items:flex-start;font-size:13px}
 .segment-notification-settings label>span{display:grid;gap:2px}.segment-notification-settings label small{font-size:12px}
+
+/* A single selection surface travels beneath the manual activity choices. */
+.record-types.manual-activity-picker{position:relative;isolation:isolate;gap:10px;margin:22px 0;--tile-accent:var(--accent)}
+.manual-activity-picker .activity-selection{position:absolute;top:0;left:0;z-index:0;pointer-events:none;border-radius:21px;background:var(--accent-soft);border:1.5px solid var(--accent);border:1.5px solid color-mix(in srgb,var(--tile-accent) 65%,var(--line));background:linear-gradient(145deg,color-mix(in srgb,var(--tile-accent) 15%,var(--surface)),color-mix(in srgb,var(--tile-accent) 5%,var(--surface)));box-shadow:0 8px 22px color-mix(in srgb,var(--tile-accent) 16%,transparent),inset 0 1px 0 color-mix(in srgb,var(--surface) 80%,transparent);opacity:0}
+.manual-activity-picker .activity-selection[data-ready]{opacity:1;transition:transform 480ms cubic-bezier(.22,1,.36,1),width 480ms cubic-bezier(.22,1,.36,1),height 480ms cubic-bezier(.22,1,.36,1),background 300ms,border-color 300ms,box-shadow 300ms}
+.manual-activity-picker .activity-tile{position:relative;z-index:1;overflow:hidden;min-height:112px;padding:15px 6px 13px;border-radius:21px;border:1px solid var(--line);background:var(--surface);background:color-mix(in srgb,var(--surface) 75%,transparent);color:var(--ink);gap:10px;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:transform 180ms ease,background 220ms,border-color 220ms,box-shadow 220ms}
+.manual-activity-picker .activity-tile.selected{background:transparent;border-color:transparent;color:var(--ink)}
+.manual-activity-picker .activity-tile:active{transform:scale(.95)}
+.manual-activity-picker .activity-tile:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.manual-activity-picker .activity-tile:last-child{grid-column:span 2;flex-direction:row;min-height:112px;gap:12px}
+.activity-tile-icon{display:grid;place-items:center;flex-shrink:0;width:45px;height:45px;border-radius:15px;color:var(--tile-accent);background:var(--soft);background:color-mix(in srgb,var(--tile-accent) 7%,var(--surface));transition:background 250ms,box-shadow 250ms}
+.activity-tile.selected .activity-tile-icon{background:color-mix(in srgb,var(--tile-accent) 14%,var(--surface));box-shadow:inset 0 1px 0 color-mix(in srgb,var(--surface) 60%,transparent)}
+.activity-tile-label{font-size:12px;font-weight:650;letter-spacing:-.15px}
+.activity-tile-check{position:absolute;right:9px;top:9px;display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:var(--tile-accent);color:#fff;opacity:0;transform:scale(.4);transition:opacity 180ms,transform 350ms cubic-bezier(.2,1.7,.5,1)}
+.activity-tile.selected .activity-tile-check{opacity:1;transform:scale(1)}
+.activity-tile.selected::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 30%,color-mix(in srgb,var(--surface) 45%,transparent) 48%,transparent 66%);transform:translateX(-120%);animation:activity-tile-sheen 650ms ease-out both}
+.activity-tile.selected .activity-tile-icon svg{animation:var(--tile-motion,activity-icon-explore) 600ms cubic-bezier(.2,.8,.3,1) both;transform-origin:center}
+.activity-tile[data-motion="walk"]{--tile-motion:activity-icon-walk}.activity-tile[data-motion="run"]{--tile-motion:activity-icon-run}.activity-tile[data-motion="ride"]{--tile-motion:activity-icon-ride}.activity-tile[data-motion="hike"]{--tile-motion:activity-icon-hike}.activity-tile[data-motion="drive"]{--tile-motion:activity-icon-drive}.activity-tile[data-motion="surf"]{--tile-motion:activity-icon-surf}.activity-tile[data-motion="lift"]{--tile-motion:activity-icon-lift}
+@keyframes activity-tile-sheen{from{transform:translateX(-120%)}to{transform:translateX(120%)}}
+@keyframes activity-icon-walk{0%,100%{transform:rotate(0)}25%{transform:rotate(-13deg) translateY(-2px)}65%{transform:rotate(10deg)}}
+@keyframes activity-icon-run{0%,100%{transform:translate(0,0)}30%{transform:translate(3px,-5px) rotate(-9deg)}65%{transform:translate(-2px,1px) rotate(5deg)}}
+@keyframes activity-icon-ride{0%,100%{transform:translateX(0) rotate(0)}25%{transform:translateX(-4px) rotate(-10deg)}65%{transform:translateX(4px) rotate(6deg)}}
+@keyframes activity-icon-hike{0%,100%{transform:translateY(0) scale(1)}45%{transform:translateY(-4px) scale(1.12)}}
+@keyframes activity-icon-drive{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}65%{transform:translateX(5px)}}
+@keyframes activity-icon-surf{0%,100%{transform:translateY(0) rotate(0)}30%{transform:translateY(-4px) rotate(-9deg)}70%{transform:translateY(2px) rotate(7deg)}}
+@keyframes activity-icon-lift{0%,100%{transform:translateY(0) rotate(0)}40%{transform:translateY(-6px) rotate(-12deg)}70%{transform:translateY(-2px) rotate(5deg)}}
+@keyframes activity-icon-explore{0%{transform:rotate(-35deg) scale(.85)}60%{transform:rotate(12deg) scale(1.08)}100%{transform:rotate(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){.manual-activity-picker .activity-selection,.manual-activity-picker .activity-tile,.activity-tile-icon,.activity-tile-check{transition:none!important}.manual-activity-picker .activity-tile:active{transform:none}.activity-tile.selected::after{display:none}.activity-tile.selected .activity-tile-icon svg{animation:none!important}}
