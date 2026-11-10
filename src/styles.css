@@ -1116,7 +1116,9 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 
 /* Let WebKit scroll vertically without waiting for JavaScript gesture arbitration. */
 .trips-activity-list,.trips-activity-list .trip-list-row{touch-action:pan-y pinch-zoom}
-.trips-activity-list .trip-swiping .trip-swipe-surface{transition:none}
+.trips-activity-list .trip-list-row[data-swiping] .trip-swipe-surface{transition:none}
+/* The merge handle is dragged, never scrolled: the browser leaves its touches to the app. */
+.trips-activity-list .trip-merge-button{touch-action:none}
 /* Keep variable-height rows and browser find/accessibility, but skip offscreen layout/paint. */
 .trips-activity-list .trip-list-row{content-visibility:auto;contain-intrinsic-size:auto 100px}
 
