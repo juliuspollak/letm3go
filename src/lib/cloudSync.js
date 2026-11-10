@@ -1,3 +1,4 @@
+import {SEGMENT_PUBLICATION_VERSION,segmentFingerprint,segmentReceipt} from './segmentSyncState.js';
 import {sliceActivityRoute} from './mtbSegment.js';
 import {backupClassification} from './stopBackup.js';
 import {resolvePhoto} from './privateMedia.js';
@@ -198,7 +199,85 @@ export async function syncSegmentEfforts(client,state,updated,{owner,hash=hashWi
  return {pending,failure};
 }
 
-export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity}={}){
+export const SEGMENTS_PER_PASS=10;
+const sameOwner=(a,b)=>typeof a==='string'&&typeof b==='string'&&a.toLowerCase()===b.toLowerCase();
+const segmentKey=id=>`mtb-segment:${id.toLowerCase()}`;
+// One publication mechanism for startup recovery, native saves and explicit
+// backup. Only selected geometry is sent; private routes/photos are independent.
+export async function syncPublicSegments(client,state,receipts={}, {owner,checkpoint=async()=>{},maxSegments=SEGMENTS_PER_PASS,now=Date.now}={}){
+ const updated={...receipts},republish=new Set();let failure=null,published=0;
+ const limit=Number.isFinite(maxSegments)?Math.min(SEGMENTS_PER_PASS,Math.max(1,Math.floor(maxSegments))):SEGMENTS_PER_PASS;
+ if(!sameOwner(state.ownerID,owner))throw new Error('Segment account does not match the native recordings.');
+ const candidates=[],seen=new Set(),finished=finishedTrip(state);
+ for(const trip of state.trips||[]){
+  if(!finished(trip)||!isCommunitySegmentActivity(trip.activity))continue;
+  for(const segment of trip.details?.namedSegments||[]){
+   if(typeof segment?.id!=='string'||seen.has(segment.id.toLowerCase()))continue;
+   seen.add(segment.id.toLowerCase());
+   const receipt=segmentReceipt(updated,segment.id),fingerprint=segmentFingerprint(segment);
+   if(sameOwner(receipt?.owner,owner)&&receipt.publicationVersion===SEGMENT_PUBLICATION_VERSION&&receipt.fingerprint===fingerprint&&!receipt.failed)continue;
+   candidates.push({trip,segment,receipt:sameOwner(receipt?.owner,owner)?receipt:null,fingerprint});
+  }
+ }
+ if(!candidates.length)return {receipts:updated,republish,published,pending:false,failure:null};
+ let token,data,authError;
+ try{
+  const session=client.auth.getSession?await client.auth.getSession():null;
+  token=session?.data?.session?.access_token;
+  if(client.auth.getSession&&(!token||session?.error))throw new Error('Session verification unavailable');
+  const result=await client.auth.getUser(token);data=result.data;authError=result.error;
+ }catch(error){authError=error;}
+ if(authError||!data?.user){
+  for(const {segment,receipt,fingerprint} of candidates.slice(0,limit))updated[segmentKey(segment.id)]={owner,fingerprint,publicationVersion:SEGMENT_PUBLICATION_VERSION,publicationAt:now(),
+   ...(receipt?.sent?{sent:receipt.sent}:{}),failed:'Sign-in verification is temporarily unavailable.',errorCode:'AUTH_UNAVAILABLE',attempts:(receipt?.attempts||0)+1,firstFailureAt:receipt?.firstFailureAt||now()};
+  await checkpoint({...updated});
+  return {receipts:updated,republish,published,pending:false,failure:new Error('Sign-in verification is temporarily unavailable.')};
+ }
+ if(!sameOwner(data.user.id,owner))throw new Error('Sign in to publish your segments.');
+ // A failing section cannot starve later entries. Attempts are durable, so each
+ // bounded pass resumes with sections not attempted yet, then the oldest retry.
+ candidates.sort((a,b)=>(a.receipt?.publicationAt||0)-(b.receipt?.publicationAt||0));
+ const request=builder=>token?builder.setHeader('Authorization',`Bearer ${token}`):builder;
+ const read=async id=>{
+  const {data,error}=await request(client.from('mtb_segments').select('id,creator_id,name,status,visibility,access,deleted_at,version').eq('id',id).maybeSingle());
+  if(error)throw error;
+  return data;
+ };
+ for(const {trip,segment,receipt,fingerprint} of candidates.slice(0,limit)){
+  const id=segment.id.toLowerCase(),key=segmentKey(id),sent=receipt?.sent;
+  const base={owner,fingerprint,publicationVersion:SEGMENT_PUBLICATION_VERSION,publicationAt:now(),...(sent?{sent}:{})};
+  try{
+   const existing=await read(id);
+   const blocked=existing&&(!sameOwner(existing.creator_id,owner)||existing.deleted_at||['hidden','rejected','retired','changes_requested'].includes(existing.status)||['restricted','closed_temporary','closed_permanent','sensitive'].includes(existing.access));
+   if(blocked){updated[key]={...base,blocked:true,serverStatus:existing.status,...(!sameOwner(existing.creator_id,owner)?{reason:'This section belongs to another account. Contact support to review it.',ownershipMismatch:true}:{})};await checkpoint({...updated});continue;}
+   const selection=sliceActivityRoute(trip.points,segment.startIndex,segment.endIndex);
+   if(!selection){updated[key]={...base,skipped:'geometry',reason:'Open the original activity and choose a section with at least five GPS points.'};await checkpoint({...updated});continue;}
+   // A receipt without a baseline (including old builds) must never overwrite
+   // an admin correction. New inserts ignore these edit flags on the server.
+   const {data,error}=await request(client.rpc('publish_segment',{p_client_id:id,p_name:segment.name,p_geometry:selection.geometry.map(([lat,lon])=>[lat,lon]),
+    p_activity:existing?null:activityCode(trip.activity),p_rename:Boolean(sent&&sent.name!==segment.name),
+    p_reroute:Boolean(sent&&(sent.start!==segment.startIndex||sent.end!==segment.endIndex))}));
+   if(error)throw error;
+   if(typeof data!=='string'||data.toLowerCase()!==id)throw new Error('The server did not confirm this section.');
+   const confirmed=await read(id);
+   if(!confirmed||!sameOwner(confirmed.creator_id,owner)||confirmed.deleted_at||confirmed.status!=='approved'||confirmed.visibility!=='public'||['restricted','closed_temporary','closed_permanent','sensitive'].includes(confirmed.access)){
+    updated[key]={...base,blocked:true,serverStatus:confirmed?.status||'unavailable'};
+   }else{
+    updated[key]={...base,uploaded:true,confirmedAt:now(),sent:{name:segment.name,start:segment.startIndex,end:segment.endIndex}};
+    published++;republish.add(trip.id);
+   }
+   await checkpoint({...updated});
+  }catch(error){
+   const permanent=/Invalid segment proposal|another creator/i.test(error.message||'');
+   updated[key]={...base,...(permanent?{skipped:'refused',reason:segmentRefusal(error.message)}:{failed:String(error.message||'Publication unavailable').slice(0,300),errorCode:String(error.code||'NETWORK').slice(0,30),attempts:(receipt?.attempts||0)+1,firstFailureAt:receipt?.firstFailureAt||now()})};
+   await checkpoint({...updated});
+   if(!permanent)failure=new Error('Segment publishing was not confirmed. It remains on this device for retry.');
+  }
+ }
+ return {receipts:updated,republish,published,pending:candidates.length>limit,failure};
+}
+
+export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity,publishSegments=true}={}){
  const {data,error}=await client.auth.getUser();if(error||!data.user)throw new Error('Sign in before backing up.');
  const owner=data.user.id;
  if(state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('Backup account does not match the native recordings.');
@@ -206,6 +285,12 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  const hash=hashWith(cryptoImpl);
  const updated={...receipts};let uploaded=0,deleted=0,processed=0,pending=false;
  const acknowledge=async()=>checkpoint({...updated});
+ let segmentFailure=null;const republish=new Set();
+ if(publishSegments){
+  const publication=await syncPublicSegments(client,state,updated,{owner,checkpoint});
+  Object.assign(updated,publication.receipts);segmentFailure=publication.failure;pending=publication.pending;
+  for(const id of publication.republish)republish.add(id);
+ }
  for(const id of state.deletedIDs||[]){
   const receipt=updated[id];if(receipt&&receipt.owner!==owner)throw new Error('Backup receipts belong to another account.');
   // A deletion the cloud already confirmed is not sent again on every backup.
@@ -238,42 +323,6 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
   if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
   updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
- }
- // Segments selected in an activity are published to the community as soon as
- // they reach the server (publish_segment): only the selected route, never the
- // activity. The section ID is the segment ID, so a retry cannot duplicate one,
- // and a later rename or re-section on this device is sent again as an edit.
- // The receipt keeps the outcome for the Segments view: published, refused with
- // the server's reason, or failed and waiting for the next sync.
- let segmentFailure=null;const republish=new Set();
- for(const trip of state.trips||[]){
-  if(!finished(trip)||!isCommunitySegmentActivity(trip.activity)||updated[trip.id]?.backupVersion!==PRIVATE_BACKUP_VERSION)continue;
-  for(const segment of trip.details?.namedSegments||[]){
-   const key=`mtb-segment:${segment.id}`,fingerprint=`${segment.name}|${segment.startIndex}|${segment.endIndex}`;
-   const receipt=updated[key];
-   if(receipt?.owner===owner&&receipt.fingerprint===fingerprint&&(receipt.uploaded||receipt.skipped))continue;
-   // One segment can never hold up the rest of the backup: an unusable one is
-   // recorded as refused, a temporary failure is reported after everything else.
-   const selection=sliceActivityRoute(trip.points,segment.startIndex,segment.endIndex);
-   // What was last published is kept through a refusal, so a later fix is sent as a change.
-   const lastSent=receipt?.owner===owner?receipt.sent:undefined;
-   if(!selection){updated[key]={owner,fingerprint,skipped:'geometry',reason:'The selected section has too few GPS points.',...(lastSent?{sent:lastSent}:{})};await acknowledge();continue;}
-   // Only what this device changed since its last upload is applied: a rename or
-   // route correction made on the server is never undone by an unrelated resend.
-   // A receipt from before this was recorded (no `sent`) changes neither.
-   // Never published (no `sent`): the server has nothing to protect, so send it all.
-   const sent=lastSent,known=Boolean(sent)||(receipt?.owner===owner&&receipt.uploaded===true);
-   const {data,error}=await client.rpc('publish_segment',{p_client_id:segment.id,p_name:segment.name,p_geometry:selection.geometry.map(([lat,lon])=>[lat,lon]),p_activity:activityCode(trip.activity),
-    p_rename:!known||(sent?sent.name!==segment.name:false),p_reroute:!known||(sent?sent.start!==segment.startIndex||sent.end!==segment.endIndex:false)});
-   if(error&&/Invalid segment proposal|another creator/i.test(error.message||'')){
-    updated[key]={owner,fingerprint,skipped:'refused',reason:segmentRefusal(error.message),...(lastSent?{sent:lastSent}:{})};await acknowledge();continue;
-   }
-   if(error||data!==segment.id){
-    updated[key]={...(receipt?.owner===owner?receipt:{}),owner,fingerprint:receipt?.fingerprint,failed:'Not published yet. It will retry on the next sync.'};
-    segmentFailure=segmentFailure||new Error('Segment publishing was not confirmed. It remains on this device for retry.');await acknowledge();continue;
-   }
-   updated[key]={owner,fingerprint,uploaded:true,sent:{name:segment.name,start:segment.startIndex,end:segment.endIndex}};republish.add(trip.id);await acknowledge();
-  }
  }
  {
   const efforts=await syncSegmentEfforts(client,state,updated,{owner,hash,acknowledge,finished,republish});

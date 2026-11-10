@@ -3,7 +3,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { syncPrivateActivities } from './cloudSync.js';
 const trip={id:'trip',title:'Walk',activity:'Walking',source:'device',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:50,points:[]};
 const state={ownerID:'owner',trips:[trip],places:[]};
-function client(){const chain={};for(const name of ['delete','eq','upsert','select','maybeSingle'])chain[name]=vi.fn(()=>chain);chain.then=resolve=>resolve({error:null});return {chain,auth:{getUser:vi.fn().mockResolvedValue({data:{user:{id:'owner'}}})},from:vi.fn(()=>chain),rpc:vi.fn().mockResolvedValue({data:1,error:null})};}
+function client(){
+ const chain={};for(const name of ['delete','eq','upsert','select','maybeSingle'])chain[name]=vi.fn(()=>chain);
+ chain.then=resolve=>resolve({error:null});
+ const api={chain,auth:{getUser:vi.fn().mockResolvedValue({data:{user:{id:'owner'}}})},rpc:vi.fn().mockResolvedValue({data:1,error:null})};
+ api.from=vi.fn(table=>{
+  if(table!=='mtb_segments')return chain;
+  let id;return {select(){return this;},eq(_key,value){id=value;return this;},async maybeSingle(){
+   const sent=api.rpc.mock.calls.filter(([name,args])=>name==='publish_segment'&&args.p_client_id.toLowerCase()===id.toLowerCase()).at(-1)?.[1];
+   return {data:sent?{id,creator_id:'owner',name:sent.p_name,status:'approved',visibility:'public',access:'unknown',version:1}:null,error:null};
+  }};
+ });return api;
+}
 const run=(api,s=state,receipts={},opts={})=>syncPrivateActivities(api,s,receipts,{cryptoImpl:webcrypto,...opts});
 it('retries deletion without uploading deleted or simulator records',async()=>{const api=client();const result=await run(api,{...state,trips:[trip,{...trip,id:'sim',source:'simulator'}],deletedIDs:['trip']});expect(api.chain.delete).toHaveBeenCalled();expect(api.rpc).not.toHaveBeenCalled();expect(result.receipts.trip.deleted).toBe(true);});
 it('rejects an account switch before uploading any GPS',async()=>{const api=client();await expect(run(api,{...state,ownerID:'different'})).rejects.toThrow('account');expect(api.from).not.toHaveBeenCalled();expect(api.rpc).not.toHaveBeenCalled();});
@@ -73,17 +84,17 @@ it('publishes only selected segment geometry, retries a lost acknowledgement, an
  api.rpc.mockImplementation(async(name,args)=>name==='backup_private_activity'?{data:1,error:null}:name==='segments_for_map'?{data:[],error:null}:fail?{error:{message:'lost acknowledgement'}}:{data:args.p_client_id,error:null});
  let saved={};await expect(run(api,{...state,trips:[ride]}, {},{checkpoint:async receipts=>{saved=receipts;}})).rejects.toThrow('publishing was not confirmed');
  // The failure is kept so the Segments view can say it will retry; it is not a refusal.
- expect(saved.trip.backupVersion).toBe(2);expect(saved['mtb-segment:'+segmentID]).toMatchObject({owner:'owner',failed:expect.stringMatching(/retry/)});
+ expect(saved.trip.backupVersion).toBe(2);expect(saved['mtb-segment:'+segmentID]).toMatchObject({owner:'owner',failed:expect.stringMatching(/lost acknowledgement/)});
  expect(saved['mtb-segment:'+segmentID].uploaded).toBeUndefined();
  const privateRow=api.rpc.mock.calls.find(([name])=>name==='backup_private_activity')[1].p_payload;
  const proposal=api.rpc.mock.calls.find(([name])=>name==='publish_segment')[1];
  expect(proposal.p_geometry).toHaveLength(11);expect(proposal.p_geometry[0]).toEqual([points[5].latitude,151]);
- expect(Object.keys(proposal).sort()).toEqual(['p_activity','p_client_id','p_geometry','p_name','p_rename','p_reroute']);expect(proposal).toMatchObject({p_activity:'MTB',p_rename:true,p_reroute:true});
+ expect(Object.keys(proposal).sort()).toEqual(['p_activity','p_client_id','p_geometry','p_name','p_rename','p_reroute']);expect(proposal).toMatchObject({p_activity:'MTB',p_rename:false,p_reroute:false});
  expect(JSON.stringify(proposal)).not.toMatch(/timestamp|heartRate|energy|activity_id|bpm/);
  const restored=rawActivityFromCloudRow({...privateRow,owner_id:'owner'});
  expect(restored.details.heartRate).toEqual(ride.details.heartRate);expect(restored.details.energy).toEqual(ride.details.energy);expect(restored.details.namedSegments).toHaveLength(1);
  fail=false;const result=await run(api,{...state,trips:[ride]},saved);
- expect(result.receipts['mtb-segment:'+segmentID]).toEqual({owner:'owner',fingerprint:'Selected route|5|15',uploaded:true,sent:{name:'Selected route',start:5,end:15}});
+ expect(result.receipts['mtb-segment:'+segmentID]).toMatchObject({owner:'owner',fingerprint:'Selected route|5|15',uploaded:true,sent:{name:'Selected route',start:5,end:15}});
  const count=api.rpc.mock.calls.length;await run(api,{...state,trips:[ride]},result.receipts);expect(api.rpc.mock.calls).toHaveLength(count);
 });
 
@@ -289,5 +300,24 @@ describe('older rides meet newer segments',()=>{
   expect(calls(off,'record_segment_effort')).toHaveLength(0);
   expect(calls(off,'segment_catalogue_since')).toHaveLength(0);
   expect(calls(off,'segments_for_map')).toHaveLength(0);
+ });
+});
+
+// Regression: sections saved in an old build must not wait for private backups.
+describe('existing segments recover independently of private activity backup',()=>{
+ const id='cccccccc-0000-4000-8000-000000000001';
+ const points=Array.from({length:25},(_,i)=>({latitude:-34+i*0.0001,longitude:151,timestamp:100+i*5,accuracy:5,altitude:10,speed:2}));
+ const oldRide={...trip,id:'old-unchanged-ride',activity:'MTB',updatedAt:1,points,details:{namedSegments:[{id,name:'Climb',startIndex:2,endIndex:20,createdAt:1,updatedAt:1}]}};
+ it('publishes the original old segment before a failing private backup',async()=>{
+  const api=client();api.rpc.mockImplementation(async(name,args)=>name==='publish_segment'?{data:args.p_client_id}:name==='segment_detail'?{data:{id,mine:true,status:'approved',visibility:'public',deleted:false}}:name==='backup_private_activity'?{error:{message:'backup unavailable'}}:{data:[]});
+  await run(api,{...state,trips:[oldRide]}).catch(()=>{});
+  expect(api.rpc).toHaveBeenCalledWith('publish_segment',expect.objectContaining({p_client_id:id,p_name:'Climb',p_geometry:points.slice(2,21).map(p=>[p.latitude,p.longitude])}));
+  expect(api.rpc.mock.calls.findIndex(([name])=>name==='publish_segment')).toBeLessThan(api.rpc.mock.calls.findIndex(([name])=>name==='backup_private_activity'));
+ });
+ it('does not gate publication on a parent activity waiting beyond the backup batch',async()=>{
+  const api=client();api.rpc.mockImplementation(async(name,args)=>name==='publish_segment'?{data:args.p_client_id}:name==='segment_detail'?{data:{id,mine:true,status:'approved',visibility:'public',deleted:false}}:{data:[]});
+  await run(api,{...state,trips:[oldRide]}, {},{maxActivities:0});
+  expect(api.rpc).toHaveBeenCalledWith('publish_segment',expect.objectContaining({p_client_id:id}));
+  expect(api.rpc.mock.calls.some(([name])=>name==='backup_private_activity')).toBe(false);
  });
 });

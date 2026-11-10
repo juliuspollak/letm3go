@@ -1,3 +1,4 @@
+import {saveSyncReceipts} from '../lib/syncReceipts.js';
 import { useEffect,useRef,useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Lock,Globe,ShieldQuestion,X,Check } from 'lucide-react';
@@ -15,7 +16,7 @@ export default function ActivityPrivacy({trip,places}){
  const mapped={route:preview.points.map(p=>[p.latitude,p.longitude]),routeSegments:preview.points.reduce((segments,p)=>{(segments[p.segment]??=[]).push([p.latitude,p.longitude]);return segments;},[]).filter(Boolean),photos:[]};
  async function save(){setBusy(true);setError('');setMessage('');try{
   if(choice==='private'){await makeActivityPrivate(supabase,trip.id);setAudience('private');setMessage('Private. Access to the shared copy has been revoked. Copies others already saved cannot be recalled.');}
-  else {await sharingRequest(supabase,'status',trip.id);const state=await recorder.getState();await publishActivity({client:supabase,state,id:trip.id,reviewedTrip:trip,receipts:auth.preferences.syncReceipts||{},checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});setAudience('public');setMessage('Public. The reviewed route copy is now available to others. Photos were not published.');}
+  else {await sharingRequest(supabase,'status',trip.id);const state=await recorder.getState();await publishActivity({client:supabase,state,id:trip.id,reviewedTrip:trip,receipts:auth.preferences.syncReceipts||{},checkpoint:syncReceipts=>saveSyncReceipts(auth.savePreferences,syncReceipts)});setAudience('public');setMessage('Public. The reviewed route copy is now available to others. Photos were not published.');}
  }catch(err){setAudience(null);setError(err.message);}finally{setBusy(false);}}
  const Icon=audience==='public'?Globe:audience==='private'?Lock:ShieldQuestion;
  const unchanged=choice===audience;

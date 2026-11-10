@@ -1,3 +1,4 @@
+import {receiptPatch,saveSyncReceipts} from '../lib/syncReceipts.js';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {useAuth} from '../lib/AuthContext.jsx';
 import {supabase} from '../lib/supabase.js';
@@ -16,9 +17,12 @@ export default function PrivateBackup({state}){
   try{
    const outcome=await restoreCloudJournal();
    // Additive merge: an item or setting this device already holds always wins.
-   const merged=mergeRestoredCollection(auth.preferences.vehicles||[],outcome.collection);
-   const settings=mergeRestoredSettings(auth.preferences,outcome.settings);
-   await auth.savePreferences({...settings,vehicles:merged.vehicles,syncReceipts:{...(auth.preferences.syncReceipts||{}),...outcome.receipts}});
+   let merged;
+   await auth.savePreferences(previous=>{
+    merged=mergeRestoredCollection(previous.vehicles||[],outcome.collection);
+    const settings=mergeRestoredSettings(previous,outcome.settings);
+    return receiptPatch(previous,outcome.receipts,{...settings,vehicles:merged.vehicles});
+   });
    setMessage(`Recovered ${outcome.restored} journeys, ${outcome.photosRestored} trip photos, ${merged.restored} Collection items and ${outcome.collectionPhotos} Collection photos. Reopen Trips to refresh.`);
   }catch(err){setError(err.message);}
   finally{setRestoring(false);}
@@ -29,12 +33,12 @@ export default function PrivateBackup({state}){
   active.current=true;setBusy(true);setError('');
   try{
    let receipts=user.preferences.syncReceipts||{};
-   const settings=await syncAccountSettings(supabase,{owner:latest.ownerID,preferences:user.preferences,receipts},{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
+   const settings=await syncAccountSettings(supabase,{owner:latest.ownerID,preferences:user.preferences,receipts},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)});
    receipts=settings.receipts;
-   const collection=await syncCollections(supabase,{owner:latest.ownerID,vehicles:user.preferences.vehicles,receipts},{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
+   const collection=await syncCollections(supabase,{owner:latest.ownerID,vehicles:user.preferences.vehicles,receipts},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)});
    receipts=collection.receipts;
-   const result=await syncPrivateActivities(supabase,latest,receipts,{checkpoint:syncReceipts=>user.savePreferences({syncReceipts})});
-   await user.savePreferences({syncReceipts:result.receipts,lastBackup:result.lastSync});
+   const result=await syncPrivateActivities(supabase,latest,receipts,{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)});
+   await saveSyncReceipts(user.savePreferences,result.receipts,{lastBackup:result.lastSync});
    setMessage(`Cloud synchronised · ${result.uploaded} activities, ${result.photosUploaded||0} trip photos, ${collection.uploaded} Collection items and ${collection.photosUploaded} Collection photos uploaded in this pass.`);
   }catch(err){setError(err.message||'Cloud sync failed; local recordings are preserved.');}
   finally{active.current=false;setBusy(false);}

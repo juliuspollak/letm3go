@@ -45,3 +45,27 @@ it('discards a late page response after switching filters',async()=>{
  await waitFor(()=>expect(result.current.loading).toBe(false));
  await act(async()=>finish({data:answer()}));expect(result.current.ids).toEqual([]);expect(sync.read().activityRows.a).toBeUndefined();
 });
+
+it('verifies legacy metadata before replacing a history page, including an old migratedAt stamp',async()=>{
+ const {applyChanges}=await import('./journeyMetadata.js');
+ const sync=await device();
+ await sync.write(latest=>({metadata:{...latest.metadata,titles:{old:'A saved legacy title'}},cache:{...latest.cache,migrationRequired:true}}));
+ let cloud=emptyGrouping(owner),revision=1,applied=0;
+ mocked.rpc.mockImplementation(async(name,args)=>{
+  if(name==='journey_apply_changes'){applied++;cloud=applyChanges(cloud,args.p_changes);return {data:{revision:++revision,overwritten:[]}};}
+  if(args?.p_refs)return {data:{...answer(),...cloud,revision}};
+  return {data:{...cloud,revision}};
+ });
+ const {result}=renderHook(()=>useCloudJourneyPage({owner,sync,date:'all'}));
+ await waitFor(()=>expect(result.current.ids).toEqual(['a']));
+ expect(cloud.titles.old).toBe('A saved legacy title');expect(applied).toBe(1);
+ expect(sync.read().cache.migrationRequired).toBe(false);expect(result.current.error).toBe('');
+});
+it('preserves the complete legacy mirror when cloud verification cannot finish',async()=>{
+ const sync=await device();await sync.write(latest=>({metadata:{...latest.metadata,titles:{old:'Keep this title'}},cache:{...latest.cache,migrationRequired:true}}));
+ mocked.rpc.mockResolvedValue({error:{message:'Network unavailable'}});
+ const {result}=renderHook(()=>useCloudJourneyPage({owner,sync,date:'all'}));
+ await waitFor(()=>expect(result.current.error).toContain('Network unavailable'));
+ expect(sync.read().metadata.titles.old).toBe('Keep this title');expect(sync.read().cache.migrationRequired).toBe(true);
+ expect(sync.read().activityRows||{}).toEqual({});
+});

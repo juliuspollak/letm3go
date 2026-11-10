@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
-import {loadJourneyScope,ensureJourneyScope,rebaseJourneyScope} from './journeyMetadataStore.js';
+import {loadJourneyScope,ensureJourneyScope,rebaseJourneyScope,ensureJourneyCacheReady} from './journeyMetadataStore.js';
 import {trimJourneyCache} from './journeyCache.js';
 import {activityFromCloudRow} from './cloudActivity.js';
 import {activityCode} from './activityNames.js';
@@ -21,40 +21,42 @@ export function useCloudJourneyPage({owner,sync,date='today',query='',activity='
  const generation=useRef(0),busy=useRef(false),current=useRef(null);
  current.current={owner,sync,request,key};
  const load=async(more=false)=>{
-  const input=current.current;if(busy.current===input.key)return;const turn=Symbol();generation.current=turn;busy.current=input.key;
+  const input=current.current;if(more&&busy.current?.key===input.key)return;const turn=Symbol();generation.current=turn;busy.current={key:input.key,turn};
   setView(old=>old.key===input.key?{...old,loading:true,error:''}:{key:input.key,ids:EMPTY,next:null,loading:true,error:''});
   try{
    await input.sync.ready();
    const cached=input.sync.read().cache.pages?.[input.key];
    if(!navigator.onLine){
     if(!cached||!cached.ids.every(id=>input.sync.read().activityRows?.[id]))throw new Error('This history is not cached. Reconnect to load it.');
-    if(turn===generation.current)setView({key:input.key,ids:cached.ids,next:cached.next,loading:false,error:''});return;
+    if(turn===generation.current)setView({key:input.key,ids:cached.ids,next:cached.next,paged:cached.paged||false,loading:false,error:''});return;
    }
+   await ensureJourneyCacheReady({client:supabase,owner:input.owner,read:input.sync.read,write:input.sync.write});
    const cursor=more?view.next:null;
    const fetched=await loadJourneyScope(supabase,input.owner,[],[],[],{...input.request,...(cursor?{p_before:cursor.at,p_before_id:cursor.id,p_before_metric:cursor.metric}: {})});
    if(turn!==generation.current||input.key!==current.current.key)return;
    const ids=[...new Set([...(more?view.ids:[]),...(fetched.pageRefs||[])])].slice(-100);
    await input.sync.write(latest=>{
     const next=rebaseJourneyScope(latest,fetched,fetched.pageRefs||[],[]);
-    next.cache={...next.cache,active:ids,pages:{...next.cache.pages,[input.key]:{ids,next:fetched.nextActivity,at:Date.now()}}};
+    next.cache={...next.cache,active:ids,pages:{...next.cache.pages,[input.key]:{ids,next:fetched.nextActivity,paged:more,at:Date.now()}}};
     return trimJourneyCache(next);
    });
-   if(turn===generation.current)setView({key:input.key,ids,next:fetched.nextActivity,loading:false,error:''});
+   if(turn===generation.current)setView({key:input.key,ids,next:fetched.nextActivity,paged:more,loading:false,error:''});
   }catch(error){
    const cached=input.sync.read().cache.pages?.[input.key];
    if(turn===generation.current)setView(old=>({...(old.key===input.key?old:{ids:EMPTY,next:null}),...(cached&&cached.ids.every(id=>input.sync.read().activityRows?.[id])?{ids:cached.ids,next:cached.next}:{}),key:input.key,loading:false,error:error.message||'Saved activities are unavailable.'}));
   }
-  finally{if(busy.current===input.key)busy.current=null;}
+  finally{if(busy.current?.turn===turn)busy.current=null;}
  };
  const cursorRevision=sync.read().status?.cursorRevision;
+ const migrating=sync.read().cache?.migrationRequired;
  useEffect(()=>{
   const timer=setTimeout(()=>void load(),query?300:0);
   return()=>{clearTimeout(timer);generation.current=Symbol();};
  // The request key contains the complete filter; metadata revisions refresh summaries only.
  // eslint-disable-next-line react-hooks/exhaustive-deps
- },[key,cursorRevision]);
+ },[key,cursorRevision,migrating]);
  const scoped=view.key===key?view.ids:EMPTY;
- return {ids:scoped,loading:view.key!==key||view.loading,error:view.key===key?view.error:'',more:Boolean(view.next),loadMore:()=>load(true),refresh:()=>load(false)};
+ return {ids:scoped,paged:view.key===key&&Boolean(view.paged),loading:view.key!==key||view.loading,error:view.key===key?view.error:'',more:Boolean(view.next),loadMore:()=>load(true),refresh:()=>load(false)};
 }
 export async function loadCloudJourneyDetail({owner,sync,refs,client=supabase}){
  await sync.ready();

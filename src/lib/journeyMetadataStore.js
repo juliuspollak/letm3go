@@ -285,7 +285,7 @@ export async function migrateJourneyMetadata({client,owner,read,write,now=Date.n
   const effective=applyChanges({...verified.metadata,history:latest.metadata?.history||source.history},remaining);
   const cache=latest.cache?{...latest.cache,migrationRequired:false,work:{...latest.cache.work,...Object.fromEntries(Object.entries(effective.enriched||{}).map(([id,at])=>[id,{state:'done',at}]))}}:undefined;
   return {metadata:effective,queue:remaining,dropped:{},...(cache?{cache}:{}),
-   status:{owner,revision:verified.revision??pushed.revision,migratedAt:now(),state:'active',error:null,conflicts:reported,updatedAt:verified.updatedAt??null}};
+   status:{owner,revision:verified.revision??pushed.revision,cursorRevision:verified.revision??pushed.revision,migratedAt:now(),state:'active',error:null,conflicts:reported,updatedAt:verified.updatedAt??null}};
  });
  return {state:'active',conflicts:reported};
 }
@@ -335,7 +335,13 @@ export async function flushJourneyMetadata({client,owner,read,write,scope,now=Da
  }
  return {state:'active',revision};
 }
-export async function runJourneySync({client,owner,read,write,ready,scope,now=Date.now}){
+const runningSyncs=new WeakMap();
+export function runJourneySync(context){
+ const existing=runningSyncs.get(context.read);if(existing)return existing;
+ const task=runJourneySyncOnce(context).finally(()=>{if(runningSyncs.get(context.read)===task)runningSyncs.delete(context.read);});
+ runningSyncs.set(context.read,task);return task;
+}
+async function runJourneySyncOnce({client,owner,read,write,ready,scope,now=Date.now}){
  if(ready)await ready();
  if(!client||!owner)return {state:'idle'};
  const status=read().status??emptyStatus(owner);
@@ -343,6 +349,7 @@ export async function runJourneySync({client,owner,read,write,ready,scope,now=Da
   // A device whose own copy cannot be read is not abandoned: another device may upload
   // the records later, and the migration path adopts them. Only a device with nothing
   // readable anywhere stays in recoveryRequired, and it never replaces its own copy.
+  if(read().cache?.migrationRequired)return await migrateJourneyMetadata({client,owner,read,write,now});
   if(scope&&!read().cache?.migrationRequired)return await flushJourneyMetadata({client,owner,read,write,scope,now});
   if(status.migratedAt)return await flushJourneyMetadata({client,owner,read,write,scope,now});
   return await migrateJourneyMetadata({client,owner,read,write,now});
@@ -378,7 +385,15 @@ export function rebaseJourneyScope(state,fetched,refs,details=[]){
  const queue=mergeChanges(clearPushed(state.queue,subset),rebased.changes);
  return mergeScope({...state,queue},fetched,refs,details);
 }
+// Do not pass an unverified legacy mirror into cache replacement. The same
+// serialized sync engine verifies it first; genuine conflicts keep both copies.
+export async function ensureJourneyCacheReady(context){
+ if(!context.read().cache?.migrationRequired)return;
+ const result=await runJourneySync(context);
+ if(context.read().cache?.migrationRequired||!['active','idle'].includes(result.state))throw new Error(result.error||'Saved journey details need verification. Existing data is safe.');
+}
 export async function ensureJourneyScope({client,owner,read,write},refs,details=[],{force=false}={}){
+ await ensureJourneyCacheReady({client,owner,read,write});
  if(!force&&cachedScope(read(),refs,details))return;
  const fetched=await loadJourneyScope(client,owner,refs,details);
  await write(latest=>rebaseJourneyScope(latest,fetched,refs,details));

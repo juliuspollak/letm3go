@@ -1,12 +1,12 @@
 import {render,cleanup,act} from '@testing-library/react';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mocks=vi.hoisted(()=>({efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
+const mocks=vi.hoisted(()=>({publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>mocks.native},registerPlugin:()=>({})}));
 vi.mock('@capacitor/app',()=>({App:{addListener:vi.fn(async(_event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};})}}));
 vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>mocks.auth}));
 vi.mock('../lib/supabase.js',()=>({supabase:{}}));
-vi.mock('../lib/config.js',()=>({config:{backupEnabled:true}}));
-vi.mock('../lib/cloudSync.js',()=>({syncPrivateActivities:mocks.activities,syncSegmentEfforts:mocks.efforts}));
+vi.mock('../lib/config.js',()=>({config:{get backupEnabled(){return mocks.backupEnabled;}}}));
+vi.mock('../lib/cloudSync.js',()=>({syncPublicSegments:mocks.publications,syncPrivateActivities:mocks.activities,syncSegmentEfforts:mocks.efforts}));
 vi.mock('../lib/settingsSync.js',()=>({syncAccountSettings:mocks.settings}));
 vi.mock('../lib/collectionSync.js',()=>({syncCollections:mocks.collections}));
 vi.mock('../lib/journeyMetadataStore.js',()=>({runJourneySync:mocks.journey}));
@@ -14,9 +14,9 @@ import AutoCloudSync from './AutoCloudSync.jsx';
 
 const state=(token)=>({ownerID:'owner',historyToken:token,places:[],deletedIDs:[],trips:[]});
 beforeEach(()=>{
- vi.useFakeTimers();mocks.native=false;mocks.foreground=null;
+ vi.useFakeTimers();mocks.backupEnabled=true;mocks.publications.mockResolvedValue({receipts:{},published:0,pending:false,failure:null});mocks.native=false;mocks.foreground=null;
  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'visible'});
- const savePreferences=vi.fn(async patch=>{mocks.auth={...mocks.auth,preferences:{...mocks.auth.preferences,...patch}};});
+ const savePreferences=vi.fn(async patch=>{const resolved=typeof patch==='function'?patch(mocks.auth.preferences):patch;mocks.auth={...mocks.auth,preferences:{...mocks.auth.preferences,...resolved}};return mocks.auth.preferences;});
  mocks.auth={status:'authenticated',session:{user:{id:'owner'}},preferences:{displayName:'J',syncReceipts:{}},savePreferences};
  mocks.activities.mockResolvedValue({receipts:{},lastSync:'now'});mocks.efforts.mockResolvedValue({pending:false,failure:null});
  mocks.settings.mockResolvedValue({receipts:{}});mocks.collections.mockResolvedValue({receipts:{}});
@@ -51,7 +51,7 @@ it('sends the queued journey records and waits for the device to keep them',asyn
  await tick(5000);
  expect(mocks.journey).toHaveBeenCalledWith(expect.objectContaining({owner:'owner',read:journeySync.read,write:journeySync.write}));
  expect(journeySync.flush).toHaveBeenCalled();
- expect(mocks.auth.savePreferences).toHaveBeenCalledWith(expect.objectContaining({lastBackup:'now'}));
+ expect(mocks.auth.preferences.lastBackup).toBe('now');
 });
 it('a journey sync that could not reach the cloud is retried, not counted as done',async()=>{
  const journeySync={flush:vi.fn(async()=>{})};
@@ -155,4 +155,58 @@ it('keeps going at the next check while older rides are still being matched',asy
  const after=mocks.efforts.mock.calls.length;
  await tick(120000);
  expect(mocks.efforts.mock.calls.length).toBe(after+1);
+});
+
+it('recovers existing sections immediately on startup without waiting for private backup',async()=>{
+ render(<AutoCloudSync state={state('old-history')}/>);await tick(0);
+ expect(mocks.publications).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({historyToken:'old-history'}),expect.anything(),expect.objectContaining({owner:'owner'}));
+ expect(mocks.activities).not.toHaveBeenCalled();
+});
+it('publishes a native segment-save snapshot while private uploads remain in flight',async()=>{
+ let complete;mocks.activities.mockImplementationOnce(()=>new Promise(resolve=>{complete=()=>resolve({receipts:{},lastSync:'now'});}));
+ const view=render(<AutoCloudSync state={state('old-history')}/>);await tick(5000);
+ expect(mocks.activities).toHaveBeenCalledTimes(1);
+ const before=mocks.publications.mock.calls.length;
+ view.rerender(<AutoCloudSync state={{...state('new-segment'),trips:[{id:'old-ride',details:{namedSegments:[{id:'section'}]}}]}}/>);await tick(0);
+ expect(mocks.publications).toHaveBeenCalledTimes(before+1);
+ await act(async()=>complete());
+});
+it('publishes sections even when private activity backup is disabled',async()=>{
+ mocks.backupEnabled=false;
+ render(<AutoCloudSync state={state('old-history')}/>);await tick(5000);
+ expect(mocks.publications).toHaveBeenCalledTimes(1);expect(mocks.activities).not.toHaveBeenCalled();
+ expect(mocks.settings).not.toHaveBeenCalled();expect(mocks.collections).not.toHaveBeenCalled();
+});
+it('automatically resumes a bounded backlog without waiting two minutes',async()=>{
+ mocks.publications.mockResolvedValueOnce({published:3,pending:true}).mockResolvedValue({published:1,pending:false});
+ render(<AutoCloudSync state={state('old-history')}/>);await tick(0);expect(mocks.publications).toHaveBeenCalledTimes(1);
+ await tick(250);expect(mocks.publications).toHaveBeenCalledTimes(2);expect(mocks.activities).not.toHaveBeenCalled();
+});
+it('automatically retries offline-created sections when the connection returns',async()=>{
+ let online=false;const spy=vi.spyOn(navigator,'onLine','get').mockImplementation(()=>online);
+ try{
+  render(<AutoCloudSync state={state('old-history')}/>);await tick(0);expect(mocks.publications).not.toHaveBeenCalled();
+  online=true;await act(async()=>window.dispatchEvent(new Event('online')));
+  expect(mocks.publications).toHaveBeenCalledTimes(1);
+ }finally{spy.mockRestore();}
+});
+it('starts recovery after sign-in and does not publish a mismatched native account',async()=>{
+ mocks.auth={...mocks.auth,status:'signedOut',session:null};
+ const view=render(<AutoCloudSync state={state('old-history')}/>);await tick(0);expect(mocks.publications).not.toHaveBeenCalled();
+ mocks.auth={...mocks.auth,status:'authenticated',session:{user:{id:'owner'}}};
+ view.rerender(<AutoCloudSync state={state('old-history')}/>);await tick(0);expect(mocks.publications).toHaveBeenCalledTimes(1);
+ view.rerender(<AutoCloudSync state={{...state('another'),ownerID:'someone-else'}}/>);await tick(0);expect(mocks.publications).toHaveBeenCalledTimes(1);
+});
+it('preserves a publication confirmation when an older backup checkpoint finishes later',async()=>{
+ const key='mtb-segment:section';let finish;
+ mocks.publications.mockImplementation(async(_client,_state,receipts,{checkpoint})=>{
+  await checkpoint({...receipts,[key]:{publicationAt:200,confirmedAt:200,uploaded:true}});return {published:1,pending:false};
+ });
+ mocks.activities.mockImplementationOnce(async(_client,_state,_receipts,{checkpoint})=>{
+  await new Promise(resolve=>{finish=resolve;});
+  const receipts={trip:{revision:4},[key]:{publicationAt:100,failed:'older attempt'}};await checkpoint(receipts);return {receipts,lastSync:'now'};
+ });
+ render(<AutoCloudSync state={state('old-history')}/>);await tick(5000);await act(async()=>finish());
+ expect(mocks.auth.preferences.syncReceipts[key]).toMatchObject({confirmedAt:200,uploaded:true});
+ expect(mocks.auth.preferences.syncReceipts.trip.revision).toBe(4);
 });

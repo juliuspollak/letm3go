@@ -102,6 +102,12 @@ export function feedbackDiagnostics({ state = {}, preferences = {}, session, nat
     cloud: {
       signedIn: Boolean(session?.user?.id),
       lastBackup: preferences.lastBackup || null,
+      segmentPublication: (()=>{
+        const receipts=Object.entries(preferences.syncReceipts||{}).filter(([key])=>key.startsWith('mtb-segment:')).map(([,value])=>value);
+        return {confirmed:receipts.filter(r=>r.uploaded&&r.confirmedAt).length,blocked:receipts.filter(r=>r.blocked).length,
+          failed:receipts.filter(r=>r.failed).length,refused:receipts.filter(r=>r.skipped).length,
+          failures:receipts.filter(r=>r.failed).slice(0,20).map(r=>({code:/^[A-Z0-9_]{1,30}$/.test(r.errorCode||'')?r.errorCode:'UNKNOWN',attempts:r.attempts||1,at:r.publicationAt||null}))};
+      })(),
     },
   };
 }

@@ -7,7 +7,7 @@ import {ensureJourneyScope} from './journeyMetadataStore.js';
 export function useJourneyScope({owner,sync,refs,details=[],localDetailIDs=[]}){
  const key=JSON.stringify([refs,details,localDetailIDs]),[state,setState]=useState({key:null,loading:false,error:''});
  const input=useMemo(()=>JSON.parse(key),[key]);
- const cursor=sync.read().status?.cursorRevision;
+ const cursor=sync.read().status?.cursorRevision,migrating=sync.read().cache?.migrationRequired;
  useEffect(()=>{
   let alive=true;
   const run=async()=>{
@@ -34,6 +34,6 @@ export function useJourneyScope({owner,sync,refs,details=[],localDetailIDs=[]}){
    }catch(error){if(alive)setState({key,loading:false,error:error.message||'Saved journey context is unavailable.'});}
   };
   void run();return()=>{alive=false;};
- },[sync,owner,key,input,cursor]);
+ },[sync,owner,key,input,cursor,migrating]);
  return state.key===key?state:{loading:true,error:''};
 }
