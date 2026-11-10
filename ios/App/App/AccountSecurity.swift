@@ -199,7 +199,9 @@ extension LocationRecorder {
                 record.recoverAfterInterruption()
                 try storage!.save(record)
                 active = record
-                recoveryMessage = "Recovered a paused activity. Resume when ready; interrupted time is excluded."
+                recoveryMessage = !record.requiresGPS && record.state == "recording"
+                    ? "Recovered your running indoor timer. Pause or finish when your workout ends."
+                    : "Recovered a paused activity. Resume when ready; interrupted time is excluded."
             } else {
                 throw failure("More than one unfinished manual activity needs recovery.")
             }
