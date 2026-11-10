@@ -221,3 +221,31 @@ describe('saving a change',()=>{
   expect(chunks[0].enrichFrom).toBe(5);
  });
 });
+
+describe('review follow-ups',()=>{
+ it('adopts the cutoff Supabase kept when another device had already set one',async()=>{
+  const sync=createJourneySync({owner,storage:memoryStorage()});await sync.ready();
+  const {rpc,server}=fakeSupabase();server.metadata.enrichFrom=1000;
+  const keep=rpc.getMockImplementation();
+  rpc.mockImplementation(async(name,args)=>{const answer=await keep(name,args);if(name===APPLY_FUNCTION)server.metadata.enrichFrom=1000;return answer;});
+  await commitJourneyChanges(context(sync,{rpc}),base=>({...base,enrichFrom:9999}),{derived:true});
+  expect(sync.read().metadata.enrichFrom).toBe(1000);
+ });
+ it('keeps saved places when the cache follows an emptied account',async()=>{
+  const sync=createJourneySync({owner,storage:memoryStorage()});await sync.ready();
+  await sync.write(latest=>({savedPlaces:[{id:'home'}],status:{...latest.status,revision:5,cursorRevision:5}}));
+  const rpc=vi.fn(async name=>name===REVISION_FUNCTION?{data:null,error:null}:{data:null,error:{message:'unexpected'}});
+  await refreshJourneyMetadata(context(sync,{rpc}));
+  expect(sync.read().savedPlaces).toEqual([{id:'home'}]);
+ });
+ it('does not mistake an unrelated server error for a conflict or for being offline',async()=>{
+  const sync=createJourneySync({owner,storage:memoryStorage()});await sync.ready();
+  const {rpc}=fakeSupabase({fail:{[APPLY_FUNCTION]:()=>({message:'conflicting key value violates exclusion constraint on connection pool'})}});
+  await expect(commitJourneyChanges(context(sync,{rpc}),base=>({...base,titles:{a:'x'}}))).rejects.toThrow('Your change was not saved: conflicting key value');
+  expect(rpc.mock.calls.filter(([name])=>name===APPLY_FUNCTION)).toHaveLength(1);
+ });
+ it('does not wait for the old preferences cleanup before becoming ready',async()=>{
+  const sync=createJourneySync({owner,preferences:{journeyGrouping:'{}'},savePreferences:()=>new Promise(()=>{}),storage:memoryStorage()});
+  await expect(sync.ready()).resolves.toBeDefined();
+ });
+});
