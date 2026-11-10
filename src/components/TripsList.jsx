@@ -56,9 +56,12 @@ export default function TripsList({journeys,unit,sort,query,favourites,vehicles,
  const [swiped,setSwiped]=useState(null);
  const [dragging,setDragging]=useState(null);
  const [dropTarget,setDropTarget]=useState(null);
+ const [floating,setFloating]=useState(null);
  const [limit,setLimit]=useState(TRIP_PAGE_SIZE);
  const latest=useRef({});
  const swipe=useRef(null);
+ const merge=useRef(null);
+ const floatingCard=useRef(null);
  const journeyByID=useMemo(()=>new Map(journeys.map(trip=>[trip.id,trip])),[journeys]);
  const favouriteIDs=useMemo(()=>new Set(favourites),[favourites]);
  const suppress=useRef(false);
@@ -66,20 +69,47 @@ export default function TripsList({journeys,unit,sort,query,favourites,vehicles,
  // Handlers read the newest props through a ref so the callbacks handed to memoised
  // rows never change identity. Written in an effect because a ref must not be
  // mutated during render.
- useEffect(()=>{latest.current={journeyByID,mergeSource,mergeTarget,dropTarget,swiped,busy,showArchived,onOpen,onBookmark,onEquipment,onArchive,onDelete,onRestore,onMergeSelect,onMergeTarget};});
+ useEffect(()=>{latest.current={journeyByID,mergeSource,mergeTarget,dropTarget,swiped,busy,showArchived,unit,onOpen,onBookmark,onEquipment,onArchive,onDelete,onRestore,onMergeSelect,onMergeTarget};});
  const openEquipment=useCallback(trip=>latest.current.onEquipment(trip),[]);
  const handlers=useMemo(()=>{
   const rowID=target=>target?.closest?.('[data-trip-id]')?.dataset.tripId||null;
   const find=id=>latest.current.journeyByID?.get(id)||null;
+  // The revealed actions' width, measured so it always matches what is drawn.
+  const actionWidth=(row,id)=>row.querySelector('.trip-swipe-actions')?.offsetWidth||(deletionIDs(find(id)).length?198:132);
+  // Swipe: the surface follows the finger with transitions off (a data attribute,
+  // which React never rewrites, unlike className). On release the final position is
+  // written once, with the transition back on, and the state is set to match it, so
+  // React's own style write is a no-op and the row animates exactly once.
+  const settle=(gesture,open)=>{
+   delete gesture.row.dataset.swiping;
+   const surface=gesture.row.querySelector('.trip-swipe-surface');
+   if(surface)surface.style.transform=open?`translateX(-${gesture.width}px)`:'';
+  };
+  // Merge: dragged from the merge handle only, so scrolling a row can never start
+  // one. The handle has touch-action:none, so no document scroll blocker is needed.
+  const endMerge=commit=>{
+   const gesture=merge.current;merge.current=null;
+   if(!gesture)return;
+   if(gesture.active){
+    // Selected only on drop: selecting at the start would show the merge hint
+    // above the list and shift the rows under the finger mid-drag.
+    if(commit&&gesture.target&&gesture.target!==gesture.id){latest.current.onMergeSelect(gesture.id);latest.current.onMergeTarget(gesture.target);}
+    setTimeout(()=>{suppress.current=false;},350);
+   }
+   setFloating(null);setDragging(null);setDropTarget(null);
+  };
   return {
    click(event){
     const action=event.target?.closest?.('[data-action]')?.dataset.action;
     const id=action&&rowID(event.target);
     const trip=id&&find(id);
     if(!trip)return;
-    if(action==='open'){if(suppress.current){suppress.current=false;return;}latest.current.onOpen(trip);}
+    if(suppress.current&&(action==='open'||action==='merge')){suppress.current=false;return;}
+    // Tapping an open row closes it, as in iOS lists, instead of opening the activity.
+    if(action==='open'&&latest.current.swiped===id){setSwiped(null);return;}
+    if(action==='open')latest.current.onOpen(trip);
     else if(trip.isShared)return;
-     else if(action==='pin')latest.current.onBookmark(id);
+    else if(action==='pin')latest.current.onBookmark(id);
     else if(action==='archive'){setSwiped(null);if(latest.current.showArchived)latest.current.onRestore(id);else latest.current.onArchive(trip);}
     else if(action==='delete'&&!latest.current.busy&&deletionIDs(trip).length){setSwiped(null);latest.current.onDelete?.(trip);}
     else if(action==='merge'){
@@ -92,48 +122,74 @@ export default function TripsList({journeys,unit,sort,query,favourites,vehicles,
     const row=event.target?.closest?.('[data-trip-id]');
     const trip=row&&find(row.dataset.tripId);
     if(!trip||trip.isShared)return;
-    swipe.current={id:trip.id,row,pointerId:event.pointerId,x:event.clientX,y:event.clientY,dx:0,axis:null};
-    // Touch pointers are implicitly captured by their original button. Keeping
-    // that target preserves the delegated click after an ordinary tap.
-
+    // Touching another row closes the open one.
+    if(latest.current.swiped&&latest.current.swiped!==trip.id)setSwiped(null);
+    if(event.target.closest('.trip-merge-button')){
+     if(canMergeTrip(trip)&&!latest.current.busy&&!latest.current.mergeTarget)merge.current={id:trip.id,pointerId:event.pointerId,x:event.clientX,y:event.clientY,active:false,target:null};
+     return;
+    }
+    swipe.current={id:trip.id,row,pointerId:event.pointerId,x:event.clientX,y:event.clientY,dx:0,axis:null,
+     open:latest.current.swiped===trip.id,width:actionWidth(row,trip.id),lastX:event.clientX,lastAt:performance.now(),velocity:0};
    },
-
    pointerMove(event){
+    const drag=merge.current;
+    if(drag&&event.pointerId===drag.pointerId){
+     const x=event.clientX,y=event.clientY;
+     if(!drag.active){
+      if(Math.hypot(x-drag.x,y-drag.y)<6)return;
+      const trip=find(drag.id);
+      drag.active=true;suppress.current=true;
+      setDragging(drag.id);
+      setFloating({title:trip?.title||'',activity:trip?.activity,distance:trip?tripDistanceText(trip,latest.current.unit):'',x,y});
+     }
+     // The card follows the finger directly; only a change of drop target re-renders.
+     if(floatingCard.current){floatingCard.current.style.left=`${x}px`;floatingCard.current.style.top=`${y}px`;}
+     const id=document.elementFromPoint?.(x,y)?.closest?.('[data-merge-id]')?.dataset.mergeId;
+     const target=id&&id!==drag.id?id:null;
+     if(target!==drag.target){drag.target=target;setDropTarget(target);}
+     return;
+    }
     const gesture=swipe.current;
     if(!gesture||event.pointerId!==gesture.pointerId)return;
     const dx=event.clientX-gesture.x,dy=event.clientY-gesture.y;
     if(!gesture.axis&&Math.max(Math.abs(dx),Math.abs(dy))>10)gesture.axis=Math.abs(dx)>Math.abs(dy)*1.25?'horizontal':'vertical';
     if(gesture.axis!=='horizontal')return;
-    gesture.dx=dx;
-    gesture.row.classList.add('trip-swiping');
+    const now=performance.now(),dt=now-gesture.lastAt;
+    if(dt>0)gesture.velocity=gesture.velocity*0.4+((event.clientX-gesture.lastX)/dt)*0.6;
+    gesture.lastX=event.clientX;gesture.lastAt=now;gesture.dx=dx;
+    gesture.row.dataset.swiping='true';
     const surface=gesture.row.querySelector('.trip-swipe-surface');
-    if(surface)surface.style.transform=`translateX(${Math.max(-285,Math.min(0,dx-(latest.current.swiped===gesture.id?(deletionIDs(find(gesture.id)).length?198:132):0)))}px)`;
+    if(surface)surface.style.transform=`translateX(${Math.max(-285,Math.min(0,dx-(gesture.open?gesture.width:0)))}px)`;
    },
    pointerUp(){
+    if(merge.current){endMerge(true);return;}
     const gesture=swipe.current;
     swipe.current=null;
-    if(gesture){
-     gesture.row.classList.remove('trip-swiping');
-     const surface=gesture.row.querySelector('.trip-swipe-surface');
-     if(surface)surface.style.transform=latest.current.swiped===gesture.id?`translateX(-${deletionIDs(find(gesture.id)).length?198:132}px)`:'';
-    }
-    if(gesture?.axis==='horizontal'){
-     suppress.current=true;
-     const trip=find(gesture.id);
-     // A deliberate full-width swipe archives (or restores) straight away; a short
-     // one reveals the actions so the same gesture cannot destroy data by accident.
-     if(gesture.dx<-Math.min(window.innerWidth*0.55,260)&&trip){setSwiped(null);if(latest.current.showArchived)latest.current.onRestore(trip.id);else latest.current.onArchive(trip);}
-     else if(gesture.dx<-55)setSwiped(gesture.id);
-     else if(gesture.dx>45)setSwiped(null);
-     setTimeout(()=>{suppress.current=false;},350);
+    if(!gesture)return;
+    if(gesture.axis!=='horizontal'){delete gesture.row.dataset.swiping;return;}
+    suppress.current=true;
+    setTimeout(()=>{suppress.current=false;},350);
+    const trip=find(gesture.id);
+    // A deliberate full-width swipe archives (or restores) straight away; a short
+    // one reveals the actions so the same gesture cannot destroy data by accident.
+    if(gesture.dx<-Math.min(window.innerWidth*0.55,260)&&trip){
+     settle(gesture,false);setSwiped(null);
+     if(latest.current.showArchived)latest.current.onRestore(trip.id);else latest.current.onArchive(trip);
      return;
     }
+    // A flick decides by its direction; otherwise the row settles on the nearer
+    // side, biased towards where it started so a small wobble does not toggle it.
+    const offset=Math.min(0,gesture.dx-(gesture.open?gesture.width:0));
+    // A finger that paused before lifting is not a flick.
+    const velocity=performance.now()-gesture.lastAt>80?0:gesture.velocity;
+    const open=velocity<-0.3?true:velocity>0.3?false:offset<-gesture.width*(gesture.open?0.65:0.35);
+    settle(gesture,open);
+    setSwiped(current=>open?gesture.id:current===gesture.id?null:current);
    },
    pointerCancel(){
-    const gesture=swipe.current,surface=gesture?.row.querySelector('.trip-swipe-surface');
-    gesture?.row.classList.remove('trip-swiping');
-    if(surface)surface.style.transform=latest.current.swiped===gesture.id?`translateX(-${deletionIDs(find(gesture.id)).length?198:132}px)`:'';
-    swipe.current=null;
+    if(merge.current){endMerge(false);return;}
+    const gesture=swipe.current;swipe.current=null;
+    if(gesture)settle(gesture,gesture.open);
    },
    dragStart(event){
     const id=rowID(event.target),trip=id&&find(id);
@@ -184,6 +240,7 @@ export default function TripsList({journeys,unit,sort,query,favourites,vehicles,
   <div className="recent-activities trips-activity-list" onClick={handlers.click} onPointerDown={handlers.pointerDown} onPointerMove={handlers.pointerMove} onPointerUp={handlers.pointerUp} onPointerCancel={handlers.pointerCancel} onLostPointerCapture={handlers.pointerCancel} onDragStart={handlers.dragStart} onDragOver={handlers.dragOver} onDragLeave={handlers.dragLeave} onDrop={handlers.drop} onDragEnd={handlers.dragEnd}>
    {rows}
   </div>
+  {floating&&<div ref={floatingCard} className="merge-floating-card" style={{left:floating.x,top:floating.y}} aria-hidden="true"><span className="merge-floating-icon"><ActivityIcon activity={activityLabel(floating.activity)} size={20}/></span><span className="merge-floating-copy"><strong>{floating.title}</strong><small>{floating.distance} · Drop on another activity</small></span></div>}
   {more&&<><div className="trip-load-sentinel" ref={sentinel} aria-hidden="true"/><button type="button" className="secondary full trip-load-more" onClick={()=>setLimit(value=>Math.min(value+TRIP_PAGE_SIZE,journeys.length))}>Show more activities</button></>}
 
  </>;

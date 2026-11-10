@@ -133,9 +133,9 @@ it('cancels a horizontal preview when the browser takes over a gesture',()=>{
  const {container,props}=renderList({journeys:[trip('a')]});
  const row=container.querySelector('[data-trip-id]');
  pointer(row,'pointerdown',250,100);pointer(row,'pointermove',150,100);
- expect(row).toHaveClass('trip-swiping');
+ expect(row).toHaveAttribute('data-swiping');
  pointer(row,'pointercancel');
- expect(row).not.toHaveClass('trip-swiping');
+ expect(row).not.toHaveAttribute('data-swiping');
  expect(row.querySelector('.trip-swipe-surface').style.transform).toBe('');
  expect(props.onArchive).not.toHaveBeenCalled();
 });
@@ -176,4 +176,113 @@ it('shows who shared an activity with me as an avatar, and who can see mine',()=
 it('marks a public link on my activity',()=>{
  const {container}=renderList({journeys:[trip('pub')],sharing:{pub:{audience:'public',household:false,friends:[]}}});
  expect(container.querySelector('[aria-label="Shared by public link"]')).toBeInTheDocument();
+});
+
+// Swipe and merge gestures with a controlled clock, so flick velocity is deliberate.
+function clock(){let now=1000;const spy=vi.spyOn(performance,'now').mockImplementation(()=>now);return {tick:ms=>{now+=ms;},restore:()=>spy.mockRestore()};}
+const surfaceOf=row=>row.querySelector('.trip-swipe-surface');
+function swipeRow(row,from,to,{step=16,pause=0,time}={}){
+ pointer(row,'pointerdown',from,100);
+ const steps=4;for(let i=1;i<=steps;i++){time.tick(step);pointer(row,'pointermove',from+(to-from)*i/steps,100);}
+ time.tick(pause);pointer(row,'pointerup');
+}
+it('opens and closes a row with one write of its resting position, never passing through the other state',()=>{
+ const time=clock();
+ try{
+  const {container}=renderList({journeys:[trip('a')]});
+  const row=container.querySelector('[data-trip-id]'),style=surfaceOf(row).style;
+  // Record every transform written to the surface, by the gesture or by React.
+  let value='';const writes=[];
+  Object.defineProperty(style,'transform',{configurable:true,get:()=>value,set:next=>{value=next??'';writes.push(value);}});
+  // Every write during release (the gesture's and React's) must be the resting value.
+  const release=()=>{writes.length=0;time.tick(120);pointer(row,'pointerup');return [...new Set(writes)];};
+  pointer(row,'pointerdown',250,100);time.tick(16);pointer(row,'pointermove',170,100);
+  // Opening settles straight at the open offset: it never snaps back to closed first.
+  expect(release()).toEqual(['translateX(-198px)']);
+  expect(row).not.toHaveAttribute('data-swiping');
+  pointer(row,'pointerdown',100,100);time.tick(16);pointer(row,'pointermove',200,100);
+  // Closing goes straight to rest: it is never set back to the open offset first.
+  expect(release()).toEqual(['']);
+  expect(value).toBe('');
+ }finally{time.restore();}
+});
+it('a small wobble on an open row keeps it open, and a flick closes it',()=>{
+ const time=clock();
+ try{
+  const {container}=renderList({journeys:[trip('a')]});
+  const row=container.querySelector('[data-trip-id]');
+  swipeRow(row,250,150,{time,pause:120});
+  expect(surfaceOf(row).style.transform).toBe('translateX(-198px)');
+  swipeRow(row,150,180,{time,pause:120});
+  expect(surfaceOf(row).style.transform).toBe('translateX(-198px)');
+  // A quick rightward flick closes it even though it travelled less than half the width.
+  swipeRow(row,150,200,{time,step:8});
+  expect(surfaceOf(row).style.transform).toBe('');
+ }finally{time.restore();}
+});
+it('tapping an open row closes it instead of opening the activity',()=>{
+ vi.useFakeTimers();
+ const time=clock();
+ try{
+  const {container,props}=renderList({journeys:[trip('a')]});
+  const row=container.querySelector('[data-trip-id]');
+  swipeRow(row,250,150,{time,pause:120});
+  // The click that follows a swipe is swallowed; wait for that window to pass.
+  act(()=>{vi.advanceTimersByTime(400);});
+  const open=within(row).getByRole('button',{name:'Open Ride a'});
+  fireEvent.click(open);
+  expect(props.onOpen).not.toHaveBeenCalled();
+  expect(surfaceOf(row).style.transform).toBe('');
+  fireEvent.click(open);
+  expect(props.onOpen).toHaveBeenCalledTimes(1);
+ }finally{time.restore();vi.useRealTimers();}
+});
+it('keeps following the finger when the row re-renders mid-swipe',()=>{
+ const journeys=[trip('a')];
+ const {container,rerender,props}=renderList({journeys});
+ const row=container.querySelector('[data-trip-id]');
+ pointer(row,'pointerdown',250,100);pointer(row,'pointermove',200,100);
+ rerender(<TripsList {...props} journeys={[...journeys]} swiped={null} busy={true}/>);
+ expect(row).toHaveAttribute('data-swiping');
+ pointer(row,'pointercancel');
+});
+it('drags from the merge handle onto another activity to merge them',()=>{
+ const journeys=[trip('a'),trip('b')];
+ const {container,props}=renderList({journeys});
+ const handle=screen.getByRole('button',{name:'Select Ride a to merge'});
+ const target=container.querySelector('[data-trip-id="b"] .trip-open-button');
+ const original=document.elementFromPoint;document.elementFromPoint=vi.fn(()=>target);
+ try{
+  pointer(handle,'pointerdown',300,100);
+  pointer(handle,'pointermove',300,130);
+  // Nothing is selected until the drop, so the merge hint never shifts the list mid-drag.
+  expect(props.onMergeSelect).not.toHaveBeenCalled();
+  expect(container.querySelector('.merge-floating-card')).toHaveTextContent('Ride a');
+  expect(container.querySelector('[data-trip-id="b"]')).toHaveClass('merge-drop-target');
+  expect(container.querySelector('[data-trip-id="a"]')).toHaveClass('merge-dragging');
+  pointer(handle,'pointerup');
+  fireEvent.click(handle);
+  expect(props.onMergeSelect).toHaveBeenCalledWith('a');
+  expect(props.onMergeTarget).toHaveBeenCalledWith('b');
+  expect(props.onMergeSelect).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('.merge-floating-card')).toBeNull();
+ }finally{document.elementFromPoint=original;}
+});
+it('a merge drag dropped nowhere, or cancelled, merges nothing',()=>{
+ const {container,props}=renderList({journeys:[trip('a'),trip('b')]});
+ const handle=screen.getByRole('button',{name:'Select Ride a to merge'});
+ const original=document.elementFromPoint;document.elementFromPoint=vi.fn(()=>null);
+ try{
+  pointer(handle,'pointerdown',300,100);pointer(handle,'pointermove',300,160);pointer(handle,'pointerup');
+  pointer(handle,'pointerdown',300,100);pointer(handle,'pointermove',300,160);pointer(handle,'pointercancel');
+  expect(props.onMergeTarget).not.toHaveBeenCalled();
+  expect(props.onMergeSelect).not.toHaveBeenCalled();
+  expect(container.querySelector('.merge-floating-card')).toBeNull();
+ }finally{document.elementFromPoint=original;}
+});
+it('a tap on the merge handle still selects the activity for merging',()=>{
+ const {props}=renderList({journeys:[trip('a'),trip('b')]});
+ const handle=screen.getByRole('button',{name:'Select Ride a to merge'});
+ pointer(handle,'pointerdown',300,100);pointer(handle,'pointerup');fireEvent.click(handle);
+ expect(props.onMergeSelect).toHaveBeenCalledWith('a');
 });
