@@ -124,12 +124,13 @@ export function AuthProvider({children}){
   const owner=identity.session?.user.id;
   const operation=async()=>{
    if(!owner||latestSession.current?.user.id!==owner)throw new Error('Account changed. Settings were not saved.');
-   const preferences={...preferencesRef.current,...patch};const result=await accountStore.save(preferences,owner);
+   const resolvedPatch=typeof patch==='function'?patch(preferencesRef.current):patch;
+   const preferences={...preferencesRef.current,...resolvedPatch};const result=await accountStore.save(preferences,owner);
    if(latestSession.current?.user.id!==owner)throw new Error('Account changed.');
    preferencesRef.current=result.preferences;setIdentity(old=>({...old,preferences:result.preferences}));
    // The decrypted device copy stays authoritative. The owner-only profile copy
    // of the photo is best-effort, so a replacement device can still show it.
-   if(supabase&&Object.hasOwn(patch,'avatar')&&latestSession.current?.user){
+   if(supabase&&Object.hasOwn(resolvedPatch,'avatar')&&latestSession.current?.user){
     try{await saveProfileAvatar(supabase,latestSession.current.user,result.preferences.avatar||null);}
     catch{setIntegrationWarning('Profile photo saved on this device but not yet in the cloud. Reconnect and choose it again if you replace this iPhone.');}
    }

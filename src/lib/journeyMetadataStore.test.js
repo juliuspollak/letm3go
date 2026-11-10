@@ -380,3 +380,20 @@ it('retains an edit committed while migration is finishing its durable write',as
  expect((await runJourneySync({client:cloud.client,owner:OWNER,...h})).state).toBe('active');
  expect(cloud.state.metadata.titles.a).toBe('Edited during migration');
 });
+
+it('verifies an old legacy cache even when an earlier build already stamped migratedAt',async()=>{
+ const cloud=fakeCloud(),h=harness({metadata:grouping(),status:{...emptyStatus(OWNER),migratedAt:1}});
+ h.store.cache={migrationRequired:true,scopes:{},work:{},pages:{},active:[]};
+ const result=await runJourneySync({client:cloud.client,owner:OWNER,read:h.read,write:h.write,scope:()=>({refs:['a'],details:[]})});
+ expect(result.state).toBe('active');expect(h.store.cache.migrationRequired).toBe(false);
+ expect(missingRecords(h.store.metadata,cloud.state.metadata)).toEqual([]);
+ expect(h.store.status.cursorRevision).toBe(cloud.state.revision);
+});
+it('joins simultaneous legacy verification attempts instead of racing cache replacement',async()=>{
+ const cloud=fakeCloud(),h=harness({metadata:grouping()});
+ h.store.cache={migrationRequired:true,scopes:{},work:{},pages:{},active:[]};
+ const context={client:cloud.client,owner:OWNER,read:h.read,write:h.write};
+ const first=runJourneySync(context),second=runJourneySync(context);expect(first).toBe(second);
+ await first;expect(h.store.cache.migrationRequired).toBe(false);
+ expect(missingRecords(h.store.metadata,cloud.state.metadata)).toEqual([]);
+});

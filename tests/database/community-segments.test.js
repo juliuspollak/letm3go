@@ -405,3 +405,56 @@ describe('acceptance: A creates, B discovers and completes',()=>{
   expect((await one(b,`select public.segment_detail('${seg}') as d`)).d).toBeNull();
  });
 });
+
+// Real RPCs and RLS, driven by the same client publication path used on startup.
+describe('old phone-only sections recover across two independent accounts',()=>{
+ const userA=uuid(900),userB=uuid(901),ids=[...Array.from({length:4},(_,i)=>uuid(910+i)),...Array.from({length:2},(_,i)=>uuid(920+i))];
+ const makeState=(owner,keys)=>({ownerID:owner,trips:[{id:uuid(owner===userA?950:951),activity:'MTB',source:'device',recordingMode:'manual',state:'finished',startedAt:1790000000,endedAt:1790000600,updatedAt:1790000600,
+  points:Array.from({length:60},(_,i)=>({latitude:-34.5+i*0.00018,longitude:150.85,timestamp:1790000000+i*5,accuracy:5,speed:2,altitude:10})),
+  details:{namedSegments:keys.map((id,i)=>({id:id.toUpperCase(),name:['Climb','Zoonotica','Captain Table','The Looters Cabin'][i],startIndex:i,endIndex:i+20,createdAt:1790000000,updatedAt:1790000000,distanceMeters:400}))}}],deletedIDs:[]});
+ const clientFor=user=>({auth:{getUser:async()=>({data:{user:{id:user}}})},
+  from(table){if(table!=='mtb_segments')throw new Error('Private backup must not be needed');let id;return {select(){return this;},eq(_key,value){id=value;return this;},async maybeSingle(){return {data:(await as('authenticated',user,`select id,creator_id,name,status,visibility,access,deleted_at,version from public.mtb_segments where id='${id}'`)).rows[0]||null};}};},
+  async rpc(name,args){if(name!=='publish_segment')throw new Error('Private backup must not be needed');try{
+   const escaped=value=>value==null?'null':`'${String(value).replaceAll("'","''")}'`;
+   const sql=`select public.publish_segment('${args.p_client_id}',${escaped(args.p_name)},'${JSON.stringify(args.p_geometry)}'::jsonb,${escaped(args.p_activity)},${args.p_rename},${args.p_reroute}) as id`;
+   return {data:(await as('authenticated',user,sql)).rows[0].id};
+  }catch(e){return {error:{message:e.message}};}}
+ });
+ let a,b,receiptA={};
+ beforeAll(async()=>{await db.exec(`reset role;insert into auth.users(id) values('${userA}'),('${userB}');insert into public.profiles(id,display_name) values('${userA}','Friend A'),('${userB}','Friend B') on conflict(id) do update set display_name=excluded.display_name;`);a=makeState(userA,ids.slice(0,4));b=makeState(userB,ids.slice(4));});
+ it('recovers unchanged old native sections without any parent backup, then both users discover each other',async()=>{
+  const {syncPublicSegments}=await import('../../src/lib/cloudSync.js');
+  const beforeA=structuredClone(a),beforeB=structuredClone(b);
+  const first=await syncPublicSegments(clientFor(userA),a,{}, {owner:userA,maxSegments:2});
+  expect(first.published).toBe(2);expect(first.pending).toBe(true);
+  const resumed=await syncPublicSegments(clientFor(userA),JSON.parse(JSON.stringify(a)),JSON.parse(JSON.stringify(first.receipts)),{owner:userA,maxSegments:2});
+  receiptA=resumed.receipts;expect(resumed.published).toBe(2);expect(resumed.failure).toBeNull();
+  const other=await syncPublicSegments(clientFor(userB),b,{}, {owner:userB});expect(other.published).toBe(2);
+  for(const user of [userA,userB]){
+   const all=(await list(user)).filter(row=>ids.includes(row.id));expect(all).toHaveLength(6);
+   expect(all.filter(row=>row.mine)).toHaveLength(user===userA?4:2);
+  }
+  expect((await list(userA,'mine')).filter(row=>ids.includes(row.id))).toHaveLength(4);
+  expect((await one(userA,`select public.segment_detail('${ids[4]}') as d`)).d).toMatchObject({creator_name:'Friend B',can_edit:false});
+  expect(await fails(userA,`select public.update_segment('${ids[4]}',p_name=>'Not mine')`)).toMatch(/may not edit/);
+  expect((await as('authenticated',userB,'select id from public.segments_for_map(-34.6,-34.4,150.8,150.9,200)')).rows.map(r=>r.id)).toEqual(expect.arrayContaining(ids));
+  expect(a).toEqual(beforeA);expect(b).toEqual(beforeB);
+  expect((await as('authenticated',userA,`select id from public.activities where id='${a.trips[0].id}'`)).rows).toEqual([]);
+ });
+ it('reconciles a pre-receipt server correction and does not create a duplicate',async()=>{
+  const {syncPublicSegments}=await import('../../src/lib/cloudSync.js');
+  await as('authenticated',admin,`select public.update_segment('${ids[0]}',p_name=>'Climb corrected',p_geometry=>'${route(-34.5,150.85,15)}'::jsonb)`);
+  await syncPublicSegments(clientFor(userA),a,{}, {owner:userA});
+  expect(await one(userA,`select name,version from public.mtb_segments where id='${ids[0]}'`)).toEqual({name:'Climb corrected',version:2});
+  expect((await as('authenticated',userA,`select count(*)::int n from public.mtb_segments where id in (${ids.map(id=>`'${id}'`).join(',')})`)).rows[0].n).toBe(6);
+ });
+ it('never restores a deleted or restricted section when an old phone retries',async()=>{
+  const {syncPublicSegments}=await import('../../src/lib/cloudSync.js');
+  await as('authenticated',userA,`select public.delete_segment('${ids[1]}')`);
+  await db.exec(`reset role;update public.mtb_segments set access='restricted',status='retired',visibility='private' where id='${ids[2]}'`);
+  const retried=await syncPublicSegments(clientFor(userA),a,{}, {owner:userA});
+  expect(retried.receipts['mtb-segment:'+ids[1]].blocked).toBe(true);expect(retried.receipts['mtb-segment:'+ids[2]].blocked).toBe(true);
+  const all=(await list(userB)).map(r=>r.id);expect(all).not.toContain(ids[1]);expect(all).not.toContain(ids[2]);
+  expect(Object.keys(receiptA).filter(k=>k.startsWith('mtb-segment:'))).toHaveLength(4);
+ });
+});

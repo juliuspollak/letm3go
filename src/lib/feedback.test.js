@@ -311,3 +311,9 @@ describe('reports sent as feedback, ticket numbers and admin actions', () => {
     expect(await feedbackIsAdmin({ rpc: vi.fn().mockRejectedValue(new Error('offline')) })).toBe(false);
   });
 });
+
+it('includes bounded publication diagnostics without segment IDs, names or GPS',()=>{
+ const diagnostics=feedbackDiagnostics({preferences:{syncReceipts:{'mtb-segment:private-id':{failed:'Private climb at 151.123',errorCode:'PGRST202',attempts:4,publicationAt:100}}}});
+ expect(diagnostics.cloud.segmentPublication).toMatchObject({failed:1,failures:[{code:'PGRST202',attempts:4,at:100}]});
+ expect(JSON.stringify(diagnostics)).not.toMatch(/private-id|Private climb|151.123/);
+});

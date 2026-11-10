@@ -1,29 +1,25 @@
-// Segments made on this iPhone, and how far each got towards the community
-// library, from the sync receipts cloudSync.js keeps (`mtb-segment:<id>`). The
-// server only knows a segment once it is published; until then this is the
-// only place the person can see that it is waiting, failed or was refused.
 import {isCommunitySegmentActivity} from './namedSegments.js';
+export const SEGMENT_PUBLICATION_VERSION=1;
+export function segmentReceipt(receipts,id){return receipts[`mtb-segment:${id.toLowerCase()}`]||receipts[`mtb-segment:${id}`];}
+export const segmentFingerprint=segment=>`${segment.name}|${segment.startIndex}|${segment.endIndex}`;
 
-export const SEGMENT_SYNC_LABELS={
- pending:'Waiting to publish. It publishes on the next sync.',
- failed:'Not published yet. It will retry on the next sync.',
- refused:'Not published.',
- published:'Published',
-};
-
+// Local sections are ordinary Mine entries while offline/recovering. Detailed
+// receipts stay private for retries and opt-in support diagnostics, not status UI.
 export function localSegmentStates(journeys,receipts={},owner=null){
- const rows=[];
+ const rows=[],seen=new Set();
  for(const trip of journeys||[]){
-  if(!isCommunitySegmentActivity(trip?.activity))continue;
+  if(!isCommunitySegmentActivity(trip?.activity)||trip.details?.provisional)continue;
   for(const segment of trip.details?.namedSegments||[]){
-   const receipt=receipts?.[`mtb-segment:${segment.id}`];
-   const mine=receipt&&(!owner||receipt.owner===owner);
-   const fingerprint=`${segment.name}|${segment.startIndex}|${segment.endIndex}`;
-   // An edit made since the last upload is waiting again, whatever happened before.
-   const current=mine&&(!receipt.fingerprint||receipt.fingerprint===fingerprint);
-   const state=!mine||!current?'pending':receipt.uploaded?'published':receipt.skipped?'refused':receipt.failed?'failed':'pending';
-   rows.push({id:segment.id,name:segment.name,activity:trip.activity,activityID:trip.id,state,
-    reason:state==='refused'?receipt.reason||'The server could not publish this section.':state==='failed'?receipt.failed:null});
+   if(typeof segment.id!=='string')continue;
+   const id=segment.id.toLowerCase();if(seen.has(id))continue;seen.add(id);
+   const receipt=segmentReceipt(receipts,segment.id);
+   const mine=receipt&&(!owner||receipt.owner?.toLowerCase()===owner.toLowerCase());
+   const current=mine&&receipt.fingerprint===segmentFingerprint(segment)&&receipt.publicationVersion===SEGMENT_PUBLICATION_VERSION;
+   if(current&&receipt.blocked&&!receipt.ownershipMismatch)continue;
+   const state=current&&receipt.ownershipMismatch?'refused':current&&receipt.uploaded?'published':current&&receipt.skipped?'refused':current&&receipt.failed?'failed':'pending';
+   const persistent=state==='failed'&&(receipt.attempts||0)>=3&&Date.now()-(receipt.firstFailureAt||Date.now())>=10*60000;
+   rows.push({id,name:segment.name,activity:trip.activity,activityID:trip.id,state,distanceMeters:segment.distanceMeters||0,
+    warning:state==='refused'?receipt.reason||'Open the original activity to adjust this section.':persistent?'This section could not be shared. Check your connection or contact support.':null});
   }
  }
  return rows;

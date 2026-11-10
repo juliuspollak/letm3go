@@ -1,3 +1,4 @@
+import {watchSegmentRefresh,notifySegmentsChanged} from './segmentEvents.js';
 // The community segment library (20261126000000_community_segments.sql): what the
 // Activities → Segments view, a segment's details and the Map's Segments layer
 // read and change. Permissions are enforced by the database; the app only shows
@@ -31,12 +32,14 @@ export async function segmentDetail(id,client=supabase){
 export async function updateSegment(id,{name=null,geometry=null,note=''}={},client=supabase){
  const {data,error}=await need(client).rpc('update_segment',{p_id:id,p_name:name,p_geometry:geometry,p_note:note});
  if(error)throw failure(error,'The segment was not changed.');
+ notifySegmentsChanged();
  return data;
 }
 
 export async function deleteSegment(id,note='',client=supabase){
  const {error}=await need(client).rpc('delete_segment',{p_id:id,p_note:note});
  if(error)throw failure(error,'The segment was not deleted.');
+ notifySegmentsChanged();
 }
 
 export async function segmentsForMap(area,client=supabase){
@@ -65,6 +68,7 @@ export function useSegmentMapLayer(enabled,area,load=segmentsForMap,version=0){
  const [retry,setRetry]=useState(0);
  // Keyed by version and area, so an edit makes every earlier entry unreachable.
  const cache=useRef(new Map());
+ useEffect(()=>{if(!enabled)return;return watchSegmentRefresh(()=>{cache.current.clear();setLoaded(previous=>({...previous,key:''}));setRetry(n=>n+1);},{interval:120000});},[enabled]);
  const wide=Boolean(area)&&tooWide(area);
  const key=enabled&&area&&!wide?`${version}|${areaKey(area)}`:'';
  useEffect(()=>{

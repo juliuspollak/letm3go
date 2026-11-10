@@ -65,7 +65,7 @@ it('draws community segments as lines with a tappable pin, capped at what the na
 
 it('describes where each segment made here stands',()=>{
  const trip={id:'t',activity:'Walking',details:{namedSegments:[{id:'a',name:'A',startIndex:1,endIndex:5},{id:'b',name:'B',startIndex:1,endIndex:5}]}};
- const receipts={'mtb-segment:a':{owner:'me',fingerprint:'A|1|5',uploaded:true},'mtb-segment:b':{owner:'me',fingerprint:'B|1|4',uploaded:true}};
+ const receipts={'mtb-segment:a':{owner:'me',fingerprint:'A|1|5',publicationVersion:1,uploaded:true},'mtb-segment:b':{owner:'me',fingerprint:'B|1|4',uploaded:true}};
  // B was re-sectioned since it was published: waiting again.
  expect(localSegmentStates([trip],receipts,'me').map(r=>[r.id,r.state])).toEqual([['a','published'],['b','pending']]);
  expect(localSegmentStates([{...trip,activity:'Driving'}],receipts,'me')).toEqual([]);
