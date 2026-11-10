@@ -1,12 +1,12 @@
 import {render,cleanup,act} from '@testing-library/react';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mocks=vi.hoisted(()=>({activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
+const mocks=vi.hoisted(()=>({efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>mocks.native},registerPlugin:()=>({})}));
 vi.mock('@capacitor/app',()=>({App:{addListener:vi.fn(async(_event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};})}}));
 vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>mocks.auth}));
 vi.mock('../lib/supabase.js',()=>({supabase:{}}));
 vi.mock('../lib/config.js',()=>({config:{backupEnabled:true}}));
-vi.mock('../lib/cloudSync.js',()=>({syncPrivateActivities:mocks.activities}));
+vi.mock('../lib/cloudSync.js',()=>({syncPrivateActivities:mocks.activities,syncSegmentEfforts:mocks.efforts}));
 vi.mock('../lib/settingsSync.js',()=>({syncAccountSettings:mocks.settings}));
 vi.mock('../lib/collectionSync.js',()=>({syncCollections:mocks.collections}));
 vi.mock('../lib/journeyMetadataStore.js',()=>({runJourneySync:mocks.journey}));
@@ -18,7 +18,7 @@ beforeEach(()=>{
  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'visible'});
  const savePreferences=vi.fn(async patch=>{mocks.auth={...mocks.auth,preferences:{...mocks.auth.preferences,...patch}};});
  mocks.auth={status:'authenticated',session:{user:{id:'owner'}},preferences:{displayName:'J',syncReceipts:{}},savePreferences};
- mocks.activities.mockResolvedValue({receipts:{},lastSync:'now'});
+ mocks.activities.mockResolvedValue({receipts:{},lastSync:'now'});mocks.efforts.mockResolvedValue({pending:false,failure:null});
  mocks.settings.mockResolvedValue({receipts:{}});mocks.collections.mockResolvedValue({receipts:{}});
 });
 afterEach(()=>{cleanup();vi.useRealTimers();vi.clearAllMocks();});
@@ -119,4 +119,40 @@ it('checks journey changes independently of an absent or not-yet-bound recorder'
  render(<AutoCloudSync state={{trips:[]}} journeySync={journeySync}/>);await tick(5000);
  expect(mocks.journey).toHaveBeenCalledWith(expect.objectContaining({owner:'owner'}));
  expect(mocks.activities).not.toHaveBeenCalled();expect(mocks.settings).not.toHaveBeenCalled();
+});
+it('Retry now runs a full pass even when nothing changed, and is queued if a pass is already running',async()=>{
+ const {requestSync}=await import('../lib/syncNow.js');
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);expect(mocks.activities).toHaveBeenCalledTimes(1);
+ // Nothing changed, but the person asked: it runs.
+ await act(async()=>{requestSync();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(2);
+ // Asked again while a slow pass is running: run once more right after it, not dropped.
+ let finish;mocks.activities.mockImplementationOnce(()=>new Promise(resolve=>{finish=()=>resolve({receipts:{},lastSync:'now'});}));
+ await act(async()=>{requestSync();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(3);
+ await act(async()=>{requestSync();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(3);
+ await act(async()=>{finish();});await tick(0);
+ expect(mocks.activities).toHaveBeenCalledTimes(4);
+});
+
+it('checks older rides against newly published segments every few hours even when nothing local changed',async()=>{
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);expect(mocks.activities).toHaveBeenCalledTimes(1);
+ // A full backup also matched efforts; nothing more for now.
+ await tick(3*120000);expect(mocks.efforts).not.toHaveBeenCalled();
+ // Six hours on, unchanged history: only the light segment pass runs.
+ await tick(6*3600*1000);
+ expect(mocks.efforts).toHaveBeenCalledTimes(1);expect(mocks.activities).toHaveBeenCalledTimes(1);
+ expect(mocks.efforts.mock.calls[0][1]).toMatchObject({ownerID:'owner'});
+ await tick(3*120000);expect(mocks.efforts).toHaveBeenCalledTimes(1);
+});
+it('keeps going at the next check while older rides are still being matched',async()=>{
+ mocks.efforts.mockResolvedValueOnce({pending:true,failure:null});
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);await tick(6*3600*1000);
+ const after=mocks.efforts.mock.calls.length;
+ await tick(120000);
+ expect(mocks.efforts.mock.calls.length).toBe(after+1);
 });

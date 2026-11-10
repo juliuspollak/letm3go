@@ -2150,6 +2150,13 @@ extension AppleMapsPlugin: MKMapViewDelegate {
     public func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator(for:mapView)?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator(for:mapView)?.select(photo:pin);return}
+        // A community segment on the Map's Segments layer opens its details in the
+        // web layer; the pin is deselected so tapping it again works.
+        if let pin=view.annotation as? JourneyPin,let segmentID=pin.metadata["segmentID"] as? String,!segmentID.isEmpty,let id=mapID(for:mapView) {
+            mapView.deselectAnnotation(pin,animated:false)
+            notifyListeners("segmentSelected",data:["mapID":id,"segmentID":segmentID])
+            return
+        }
         reportPhotoSelection(mapView,view.annotation)
     }
     public func mapView(_ mapView:MKMapView,didDeselect view:MKAnnotationView) {
@@ -2157,6 +2164,14 @@ extension AppleMapsPlugin: MKMapViewDelegate {
     }
     public func mapView(_ mapView:MKMapView,regionDidChangeAnimated animated:Bool) {
         coordinator(for:mapView)?.regionDidChange()
+        // The visible area once the map settles, so the web layer can load what is
+        // in view (the Segments layer) instead of everything.
+        if let id=mapID(for:mapView) {
+            let region=mapView.region
+            notifyListeners("regionChanged",data:["mapID":id,
+                "minLat":region.center.latitude-region.span.latitudeDelta/2,"maxLat":region.center.latitude+region.span.latitudeDelta/2,
+                "minLon":region.center.longitude-region.span.longitudeDelta/2,"maxLon":region.center.longitude+region.span.longitudeDelta/2])
+        }
     }
     // Called for every frame of a pan, pinch or camera animation, so edge avatars
     // track the map smoothly.

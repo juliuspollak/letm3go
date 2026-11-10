@@ -228,15 +228,20 @@ it('opens the Map showing everyone until your position is known',()=>{
  expect(option('route:all').selected).toBe(true);
  expect(option('people').selected).toBe(true);
  expect(mapProps.value.camera).toMatchObject({includeRoutes:mapProps.value.overview!==null});
- // Choosing the other map stays in Layers; Community trails has no people camera.
+ // Segments is a layer on the same map: no second map, and it listens for the
+ // visible area and segment taps only while on.
+ // The visible area is always tracked (so turning Segments on loads where you are
+ // looking); segment taps only while the layer is on.
+ expect(mapProps.value.onSegment).toBeNull();expect(typeof mapProps.value.onRegion).toBe('function');
  act(()=>mapProps.value.onControl('panel:layers'));
- act(()=>mapProps.value.onControl('mode:trails'));
- expect(screen.queryByRole('dialog',{name:'Map layers'})).not.toBeInTheDocument();
- expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
+ act(()=>mapProps.value.onControl('segments'));
+ expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();
+ expect(mapProps.value.camera).toMatchObject({mode:'free',command});
+ expect(typeof mapProps.value.onSegment).toBe('function');expect(typeof mapProps.value.onRegion).toBe('function');
  // The choice is kept across tabs.
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
- expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();
+ expect(typeof mapProps.value.onSegment).toBe('function');
 });
 
 it('leaves archived journeys on the Map until hidden, closes panels with the page, and never moves the camera for a filter',()=>{

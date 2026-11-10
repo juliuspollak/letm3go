@@ -154,7 +154,7 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .home-highlights{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}.home-highlight-card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:17px;min-width:0}.home-highlight-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.home-highlight-heading h2{font-size:16px}.home-last-activity,.home-friends-preview{width:100%;display:flex;align-items:center;gap:12px;text-align:left;min-width:0;padding:5px 0}.home-last-activity-info,.home-friends-preview>span:nth-child(2){flex:1;min-width:0}.home-last-activity-info strong,.home-friends-preview strong{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.home-last-activity-info small,.home-friends-preview small{display:block;font-size:11px;color:var(--muted);margin-top:5px;line-height:1.4}.home-friends-avatar{width:44px;height:44px;flex-shrink:0;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);border-radius:50%}
 @media(max-width:760px){.home-highlights{grid-template-columns:1fr;gap:12px}.home-highlight-card{padding:16px}}
 
-.presence-toggle{border-radius:50%;transition:background .2s,color .2s,box-shadow .2s}.presence-toggle.presence-hidden{background:var(--soft);color:var(--muted)}.presence-toggle.presence-visible{background:var(--accent-soft);color:var(--accent)}.presence-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.home-friends-avatar.home-presence-hidden{background:var(--soft);color:var(--muted);border:1px dashed var(--line)}
+.home-friends-avatar.home-presence-hidden{background:var(--soft);color:var(--muted);border:1px dashed var(--line)}
 
 .household-presence,.household-friends,.household-garage{margin-top:20px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.household-presence h3,.household-garage h3{font-size:15px;margin:16px 0 8px}.household-presence form label,.household-friends form label,.household-garage form label,.household-vehicle-link label{display:block;margin:12px 0;font-size:12px}.household-presence select,.household-presence input,.household-friends input,.household-garage input,.household-vehicle-link select{display:block;width:100%;border:1px solid var(--line);padding:12px;border-radius:9px;background:var(--bg);color:var(--ink);margin-top:6px;font-size:16px}.home-friends-avatar.friend-moving{outline:2px solid var(--accent);outline-offset:3px;animation:presence-pulse 2.5s ease-in-out infinite}@keyframes presence-pulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 7px var(--accent-soft)}}@media(prefers-reduced-motion:reduce){.home-friends-avatar.friend-moving{animation:none}}
 
@@ -279,9 +279,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 
 /* Stable wordmark spacing and consistent accent on the digit and arrow. */
-/* Status is a fixed circular control even in narrow iPhone headers. */
-.top-actions .presence-toggle{display:grid;place-items:center;flex:0 0 36px;width:36px!important;height:36px!important;min-width:36px;min-height:36px;padding:0!important;aspect-ratio:1;border-radius:50%!important}
-.top-actions .presence-toggle svg{width:19px;height:19px}
 /* Keep uploaded photos from stretching the trip page or its grids. */
 .detail,.journey-photos{min-width:0;max-width:100%}
 
@@ -570,35 +567,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 
 
-.mtb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:14px 0}
-.mtb-head h2{display:flex;align-items:center;gap:9px;font-size:18px;margin:0}
-.mtb-tabs{display:flex;gap:6px}
-.mtb-tabs button{padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px}
-.mtb-tabs button.selected{background:var(--ink);color:var(--bg);border-color:var(--ink)}
-.mtb-layer-toggles{display:flex;gap:8px;margin-bottom:10px}
-.mtb-layer-toggles button{padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px}
-.mtb-layer-toggles button.selected{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
-.mtb-create{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
-.mtb-toolbar{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;align-items:center}
-.mtb-import{display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:12px;cursor:pointer}
-.mtb-editor-head{display:flex;align-items:center;justify-content:space-between;margin:8px 0 14px}
-.mtb-editor-head h2{font-size:19px;margin:0}
-.mtb-form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.mtb-vertex-list{list-style:none;padding:0;margin:12px 0}
-.mtb-vertex-list li{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;font-size:12px}
-.mtb-vertex-list li span{flex:1}
-.mtb-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
-.mtb-actions button{min-width:120px}
-.mtb-list{list-style:none;padding:0;margin:12px 0}
-.mtb-list li button{width:100%;text-align:left;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13px;margin-bottom:6px}
-.mtb-row{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;flex-wrap:wrap}
-.mtb-row>div{flex:1;min-width:160px}
-.mtb-row-main{flex:1;text-align:left;border:none;background:none;padding:0;cursor:pointer}
-.mtb-row-main strong{font-size:13px}
-.mtb-row-main p{margin:2px 0 0}
-.mtb-detail dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:16px 0;font-size:13px}
-.mtb-detail dt{color:var(--muted)}
-.mtb-detail dd{margin:0}
 
 
 
@@ -1151,10 +1119,27 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .trip-sharing .person-avatar{margin-left:-2px;box-shadow:0 0 0 1.5px var(--surface)}
 .trip-shared-row .trip-swipe-surface{transform:none!important}
 /* Notifications: the count on the profile bubble, "N new" labels, pokes. */
-.header-avatar{position:relative}.notification-badge{position:absolute;top:-4px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;line-height:18px;text-align:center;box-shadow:0 0 0 2px var(--bg);pointer-events:none}
+.header-avatar{position:relative}.notification-badge{position:absolute;bottom:-4px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;line-height:18px;text-align:center;box-shadow:0 0 0 2px var(--bg);pointer-events:none}
 .notification-count{margin-left:auto;padding:2px 8px;border-radius:10px;background:var(--danger);color:#fff;font-size:10px;font-weight:700}
 .poke-layer{position:fixed;z-index:1600;top:max(16px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);width:min(360px,calc(100vw - 32px));pointer-events:none}
 .poke-toast{display:flex;align-items:center;gap:11px;width:100%;padding:12px 14px;border-radius:16px;background:var(--surface);color:var(--ink);border:1px solid var(--line);box-shadow:0 12px 34px #0003;text-align:left;pointer-events:auto;animation:pokeIn .25s cubic-bezier(.2,.8,.2,1)}
 .poke-toast--failed{border-color:var(--danger)}.poke-toast-icon{font-size:22px}.poke-toast-text{flex:1;font-size:13px;font-weight:600}
 .poke-toast-action{min-height:32px;padding:6px 10px;border-radius:9px;background:var(--soft);font-size:11px;font-weight:600}
 @keyframes pokeIn{from{opacity:0;transform:translateY(-10px) scale(.97)}to{opacity:1;transform:none}}
+/* Activities | Segments and the community segment library. */
+.activities-switch{margin:0 0 16px}
+.segments-view{display:grid;gap:12px}.segment-scopes{margin-bottom:0}
+.segment-filters{display:grid;grid-template-columns:1fr auto;gap:8px}.segment-filters select{min-height:42px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:0 10px}
+.segment-search{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:12px;padding:0 10px;background:var(--surface);color:var(--muted)}.segment-search input{flex:1;min-width:0;border:0;background:transparent;min-height:40px;color:var(--ink)}
+.segment-list{list-style:none;margin:0;padding:0}.segment-list li+li{border-top:1px solid var(--line)}
+.segment-row{display:flex;align-items:center;gap:12px;width:100%;padding:13px 4px;text-align:left;color:var(--ink)}.segment-row>svg{flex-shrink:0;color:var(--muted)}
+.segment-row-info{flex:1;min-width:0;display:grid;gap:3px}.segment-row-info strong{font-size:15px;overflow-wrap:anywhere}.segment-row-info small{font-size:12px;color:var(--muted)}
+.segment-sync--pending,.segment-sync--failed{color:var(--accent)!important}.segment-sync--refused{color:var(--danger)!important}
+.segment-detail{display:grid;gap:12px}.segment-detail h2{margin:0}.segment-map{height:220px;border-radius:16px;overflow:hidden}
+.segment-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin:0}.segment-stats div{background:var(--soft);border-radius:12px;padding:10px}.segment-stats dt{font-size:11px;color:var(--muted)}.segment-stats dd{margin:3px 0 0;font-weight:700}
+.segment-actions{flex-wrap:wrap}.segment-gpx{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.segment-trim label,.segment-rename label{display:grid;gap:4px}
+/* Notifications at the top of Profile. */
+.notification-list{margin:14px 0 6px;text-align:left}.notification-list h3{display:flex;align-items:center;gap:7px;font-size:15px;margin:0 0 6px}.notification-list ul{list-style:none;margin:0;padding:0}
+.notification-row{display:flex;align-items:center;gap:10px;width:100%;padding:10px 6px;border-radius:12px;text-align:left;color:var(--ink)}.notification-row>span{flex:1;min-width:0;display:grid;gap:2px}.notification-row small{font-size:12px;color:var(--muted)}
+.notification-row--unread{background:var(--soft)}.notification-row--unread strong::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--danger);margin-right:6px;vertical-align:middle}.segment-notification-settings{border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:12px 0;display:grid;gap:10px;text-align:left}.segment-notification-settings legend{font-weight:650;padding:0 4px}.segment-notification-settings label{display:flex;gap:10px;align-items:flex-start;font-size:13px}
+.segment-notification-settings label>span{display:grid;gap:2px}.segment-notification-settings label small{font-size:12px}

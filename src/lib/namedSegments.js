@@ -5,7 +5,7 @@ import {newUUID} from './uuid.js';
 // them; this mirrors its rules for the live editor, so what the editor shows is
 // what will be saved. Nothing here changes the recording or its visible route.
 export const SEGMENT_ACTIVITIES=['MTB','Cycling','Road cycling','Hiking','Walking','Running'];
-// Every segment is submitted for community review, whatever the activity.
+// Every segment is published to the community library when it syncs (no review).
 export const COMMUNITY_SEGMENT_ACTIVITIES=SEGMENT_ACTIVITIES;
 export const isCommunitySegmentActivity=activity=>COMMUNITY_SEGMENT_ACTIVITIES.includes(activity);
 export const SEGMENT_MIN_POINTS=5;

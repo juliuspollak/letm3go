@@ -63,15 +63,15 @@ it('keeps active filters readable with the panel closed',()=>{
  expect(current()).toEqual(DEFAULT_MAP_VIEW);
  expect(screen.getByRole('button',{name:'Filters, 1 active: Today',expanded:true})).toBeInTheDocument();
 });
-it('applies recorded activities, map style and Community trails from their own panels',()=>{
+it('applies recorded activities, map style and the Segments layer from their own panels',()=>{
  render(<Preview/>);click('Filters');
  expect(screen.queryByRole('group',{name:'Activity'})).toBeNull();
  click('All routes');click('Mountain biking');expect(current().activity).toBe('MTB');click('All activities');expect(current().activity).toBe('');
  click('Map layers');click('Satellite');expect(current().style).toBe('satellite');expect(screen.getByRole('button',{name:'Map layers: Satellite'})).toBeInTheDocument();
- click('Community trails');expect(current()).toMatchObject({content:'trails',routes:'all'});
- // Trails is its own map: nothing to filter, and the way back stays open.
- expect(screen.queryByRole('button',{name:/^Filters/})).toBeNull();
- click('My map');expect(screen.getByRole('button',{name:/^Filters/})).toBeInTheDocument();
+ click('Segments');expect(current()).toMatchObject({content:'routes',segments:true,routes:'all'});
+ // Segments is drawn on the same map: Filters stay.
+ expect(screen.getByRole('button',{name:/^Filters/})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Map layers: Satellite, Segments'})).toBeInTheDocument();
 });
 it('offers the archive filter only when something is archived',()=>{
  render(<Preview initial={{...START,routes:'all'}} archived={3}/>);click(/^Filters/);
