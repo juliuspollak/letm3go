@@ -31,7 +31,7 @@ function world(over = {}) {
   w.admin = {
     from: table => {
       if (table === 'account_deletion_requests') return thenable({ data: w.deleting, error: null });
-      if (table === 'shared_journeys') { const b = thenable({ data: w.shared, error: null }); const del = b.delete; b.delete = () => { w.deletes.push('shared_journeys'); return del(); }; return b; }
+      if (table === 'shared_journeys') { const b = thenable({ data: w.shared, error: w.deleteError || null }); const del = b.delete; b.delete = () => { w.deletes.push('shared_journeys'); return del(); }; return b; }
       if (table === 'media_assets') { const b = thenable({ data: w.asset || null, error: null }); b.insert = async row => { w.uploads.push(row); return { error: w.insertError || null }; }; return b; }
       return thenable({ data: null, error: null });
     },
@@ -169,28 +169,33 @@ describe('automatic household sharing', () => {
     expect(response.status).toBe(409);
     expect(published(w)).toBeUndefined();
   });
-  it('a privacy decision that lands while the request is in flight removes the copy it just made', async () => {
-    const w = world({ allowed: [true, false] });          // allowed at the start, private by the time it is published
-    const response = await publish(w, { auto: true });
-    expect(response.status).toBe(409);
-    expect(published(w)).toBeTruthy();                    // it had been published ...
-    expect(w.deletes).toEqual(['shared_journeys']);       // ... and is taken straight back down
-  });
-  it('treats a failed re-check as private, never as allowed', async () => {
-    const w = world({ allowed: [true, undefined] });
+  it('passes automatic intent into the atomic publication RPC and reports a consent conflict', async () => {
+    const w = world({ rpcErrors: { publish_social_journey: { message: 'Activity is not eligible for automatic sharing' } } });
     expect((await publish(w, { auto: true })).status).toBe(409);
-    expect(w.deletes).toEqual(['shared_journeys']);
+    expect(published(w)[1].p_auto).toBe(true);
+    expect(w.deletes).toEqual([]);
   });
-  it('a manual share is not subject to the automatic check, and is remembered as the owner\'s decision', async () => {
-    const w = world({ allowed: [false] });
-    expect((await publish(w)).status).toBe(200);
-    expect(w.calls.some(c => c[0] === 'auto_share_allowed')).toBe(false);
-    expect(w.calls).toContainEqual(['remember_manual_share', { p_owner: OWNER, p_activity: ID }]);
+  it('a failed atomic publication never claims success or attempts a compensating deletion', async () => {
+    const w = world({ rpcErrors: { publish_social_journey: { message: 'Database unavailable' } }, deleteError: { message: 'Delete failed' } });
+    expect((await publish(w, { auto: true })).status).toBe(500);
+    expect(w.deletes).toEqual([]);
   });
-  it('a manual share whose decision could not be recorded is reported as failed so the client retries (publishing is idempotent)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const w = world({ rpcErrors: { remember_manual_share: new Error('x') } });
-    expect((await publish(w)).status).toBe(500);
+  it('never performs a post-commit delete that could remove a newer manual publication', async () => {
+    const w = world({ allowed: [true, false] });
+    expect((await publish(w, { auto: true })).status).toBe(200);
+    expect(w.calls.filter(c=>c[0]==='auto_share_allowed')).toHaveLength(1);
+    expect(w.deletes).toEqual([]);
+  });
+  it('rejects automatic public and friend publications', async () => {
+    for(const audience of ['public','friends']){
+     const w=world();expect((await publish(w,{auto:true,audience})).status).toBe(400);
+     expect(published(w)).toBeUndefined();
+    }
+  });
+  it('manual decisions are recorded by the same transaction rather than a later RPC', async () => {
+    const w=world();expect((await publish(w)).status).toBe(200);
+    expect(published(w)[1].p_auto).toBe(false);
+    expect(w.calls.some(c=>c[0]==='remember_manual_share')).toBe(false);
   });
   it('an automatic share is NOT recorded as a decision, so it can be shared again after the system removes it', async () => {
     const w = world({ allowed: [true, true] });

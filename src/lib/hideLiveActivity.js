@@ -6,7 +6,7 @@
 // opens, comes back or is online) before anything is auto-shared, because the server's
 // record is what keeps the finished activity out of automatic sharing.
 const read=name=>{try{return JSON.parse(localStorage.getItem(name)||'[]');}catch{return [];}};
-const write=(name,list)=>{try{localStorage.setItem(name,JSON.stringify(list));}catch{/* the phone remembers it too */}};
+const write=(name,list)=>{try{localStorage.setItem(name,JSON.stringify(list));}catch{throw new Error('Could not persist the privacy request. Please retry.');}};
 const PENDING='letm3go.liveHide.pending';
 const key=ref=>`letm3go.liveHidden.${String(ref).toLowerCase()}`;
 export const isLiveHidden=ref=>{try{return localStorage.getItem(key(ref))==='1';}catch{return false;}};
@@ -22,8 +22,9 @@ export async function hideLiveActivity(ref,{recorder,client}){
  let phoneError=null;
  try{await recorder.hideLiveTrail(ref);}catch(error){phoneError=error;}
  // "Stopped on this phone" is only claimed (and remembered) when the phone really stopped.
+ if(!client||!(await tellServer(client,ref))){const list=read(PENDING);if(!list.includes(ref))write(PENDING,[...list,ref]);}
+ // Do not record the confirmation marker until a failed server request is durably queued.
  if(!phoneError)rememberLiveHidden(ref);
- if(!client||!(await tellServer(client,ref))){const list=read(PENDING);if(!list.includes(ref))write(PENDING,[...list,ref].slice(-50));}
  if(phoneError)throw phoneError;
 }
 export async function flushPendingHides(client){

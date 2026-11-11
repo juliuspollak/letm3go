@@ -958,7 +958,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         liveTrailWasArmed = armedNow
         guard LiveTrail.due(lastFlushAt: liveTrailLastFlushAt, now: now, inFlight: liveTrailInFlight, backoffUntil: liveTrailBackoffUntil) else { return }
         guard let token = token, let base = base, let apiKey = apiKey, let endpoint = LiveTrail.endpoint(from: base) else { return }
-        let recording: RecordedActivity? = automaticActivelyRecording ? automaticTrip : (manualGPSRecording ? active : nil)
+        let recording = LiveTrail.current(automatic: automaticTrip,
+            settled: settledTripID.flatMap { id in trips.first { $0.id == id } }, manual: active)
         // A private activity publishes nothing, ever: first make sure the server has been
         // told (so a late batch from anywhere cannot restore it), then stay silent.
         if let hidden = liveTrailHiddenRef {

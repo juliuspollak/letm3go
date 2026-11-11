@@ -1,0 +1,31 @@
+import {act,renderHook,waitFor} from '@testing-library/react';
+import {beforeEach,expect,it,vi} from 'vitest';
+const mock=vi.hoisted(()=>({invoke:vi.fn(),signal:null}));
+vi.mock('./supabase.js',()=>({supabase:{functions:{invoke:mock.invoke},realtime:{setAuth:async()=>{}},channel:()=>{const ch={on:(_type,_filter,fn)=>{mock.signal=fn;return ch;},subscribe:cb=>{cb('SUBSCRIBED');return ch;}};return ch;},removeChannel:vi.fn()}}));
+import {useSharedActivityDetail} from './useSharedActivityDetail.js';
+const snapshot={title:'Shared',activity:'Driving',points:[{latitude:-34,longitude:151,t:100},{latitude:-35,longitude:151,t:110}],photos:[]};
+beforeEach(()=>{mock.signal=null;mock.invoke.mockReset();mock.invoke.mockResolvedValue({data:{snapshot},error:null});});
+it('clears an already-open shared detail on a signal, rejects a late response, and recovers online',async()=>{
+ const {result}=renderHook(()=>useSharedActivityDetail('a',null,'Friend','viewer'));
+ await waitFor(()=>expect(result.current.trip).not.toBeNull());
+ let release;mock.invoke.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(release).toBeTypeOf('function'));
+ mock.invoke.mockImplementation(()=>new Promise(()=>{}));
+ await act(async()=>{mock.signal?.({});});
+ expect(result.current.trip).toBeNull();
+ await act(async()=>{release({data:{snapshot},error:null});});
+ expect(result.current.trip).toBeNull();
+ mock.invoke.mockResolvedValue({data:null,error:{message:'revoked'}});
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(result.current.error).toMatch(/revoked|unavailable/));
+ mock.invoke.mockResolvedValue({data:{snapshot},error:null});
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(result.current.trip).not.toBeNull());
+});
+it('does not render a previous activity while a different detail is loading',async()=>{
+ const {result,rerender}=renderHook(({id})=>useSharedActivityDetail(id,null,'Friend','viewer'),{initialProps:{id:'a'}});
+ await waitFor(()=>expect(result.current.trip).not.toBeNull());
+ mock.invoke.mockImplementation(()=>new Promise(()=>{}));rerender({id:'b'});
+ expect(result.current.trip).toBeNull();
+});

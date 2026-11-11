@@ -13,9 +13,9 @@ async function as(role,user,sql){
 }
 const snap=(title,t0)=>JSON.stringify({title,activity:'Driving',points:[{latitude:-34.5,longitude:150.8,segment:0,t:t0},{latitude:-34.51,longitude:150.81,segment:0,t:t0+60}],photos:[]});
 const revision=async id=>(await as('authenticated',owner,`select revision from public.activities where id='${id}'`)).rows[0].revision;
-async function share(id,audience,mode,recipients=[],title='Trip',t0=1900000000){
+async function share(id,audience,mode,recipients=[],title='Trip',t0=1900000000,auto=false){
  const list=recipients.length?`array[${recipients.map(x=>`'${x}'`).join(',')}]::uuid[]`:`'{}'::uuid[]`;
- await as('service_role','',`select public.publish_social_journey('${owner}','${id}',${await revision(id)},'${audience}','${mode}',${list},'${snap(title,t0)}'::jsonb)`);
+ await as('service_role','',`select public.publish_social_journey('${owner}','${id}',${await revision(id)},'${audience}','${mode}',${list},'${snap(title,t0)}'::jsonb,${auto})`);
 }
 const day=(user,known='{}')=>as('authenticated',user,`select activity_id,title,etag,points,roads from public.my_shared_day('${owner}','2030-03-17 00:00+00','2030-03-18 00:00+00','${known}')`).then(r=>r.rows);
 const trail=async(user,after=0)=>{
@@ -72,7 +72,7 @@ it('a road found after a viewer cached the activity changes its etag, so it reac
  expect(after.etag).not.toBe(before.etag);expect(after.roads).toEqual({[A.toUpperCase()+':1:2']:'_p~iF~ps|U_ulLnnqC'});
 });
 it('hiding an activity removes its geometry from every viewer immediately',async()=>{
- await share(B,'household','household',[],'Afternoon');
+ await share(B,'household','household',[],'Afternoon',1900000000,true);
  expect((await day(mate)).map(r=>r.title)).toEqual(['Afternoon']);
  await as('service_role','',`delete from public.shared_journeys where activity_id='${B}'`);
  expect(await day(mate)).toEqual([]);
@@ -134,7 +134,7 @@ it('an automatically shared activity that the system un-shares (an edit) is offe
  const id='cdcdcdcd-0000-4000-8000-00000000cd01';
  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
   values('${id}','Edited','Driving','manual',now()+interval '5 minutes',now()+interval '35 minutes',1800,9000)`);
- await share(id,'household','household',[],'Edited');
+ await share(id,'household','household',[],'Edited',1900000000,true);
  await as('service_role','',`delete from public.shared_journeys where activity_id='${id}'`);     // what protect_activity does on an edit
  expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).toContain(id);
  await as('authenticated',owner,`select public.keep_activity_private('${id}')`);
@@ -249,14 +249,14 @@ it('hiding the live activity clears it and blocks later points for that activity
  expect(await append(houseToken,'run2',2,pts(110))).toBe(false);
  expect(await append(houseToken,'run3',1,pts(120))).toBe(true);
 });
-it('the phone ending an activity (seq -1) clears its trail, and a stale trail is not live',async()=>{
+it('the phone ending an activity (seq -1) clears its trail, including after an offline period',async()=>{
  await append(houseToken,'run9',1,pts(500));
  expect((await trail(mate)).points.length).toBe(1);
  expect(await append(houseToken,'run9',-1,'[]')).toBe(true);
  expect((await trail(mate)).points).toEqual([]);
  await append(houseToken,'run9',2,pts(510));
  await db.exec("reset role;update public.live_trails set updated_at=now()-interval '25 minutes'");
- expect(await trail(mate)).toBeUndefined();
+ expect((await trail(mate)).points).toEqual([]);
  await append(houseToken,'run9',3,pts(520));
 });
 it('finishing an activity clears its trail; stopping live sharing clears it too',async()=>{
@@ -702,4 +702,74 @@ it('resets an open household cursor when the viewer leaves but remains a friend'
  expect(masked.privacy_revision).not.toBe(open.privacy_revision);
  expect(masked.points.map(p=>p[0])).toEqual([-34.9]);
  await as('authenticated',owner,"select public.end_live_trail('scope1')");
+});
+
+it('rechecks automatic household consent after a publication was queued',async()=>{
+ const eligible='bbbbbbbb-0000-4000-8000-00000000f101';
+ const old='bbbbbbbb-0000-4000-8000-00000000f102';
+ const allowed=async id=>(await as('service_role','',`select public.auto_share_allowed('${owner}','${id}') as ok`)).rows[0].ok;
+ try{
+  await as('authenticated',owner,'select public.set_auto_share(true)');
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+    values('${eligible}','Consent test','Driving','manual',now()+interval '5 minutes',now()+interval '35 minutes',1800,9000)`);
+  expect(await allowed(eligible)).toBe(true);
+  // A previously fetched pending row may still be in an in-flight Edge Function.
+  await as('authenticated',owner,'select public.set_auto_share(false)');
+  expect(await allowed(eligible)).toBe(false);
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+    values('${old}','While off','Driving','manual',now()-interval '1 minute',now()+interval '29 minutes',1800,9000)`);
+  await as('authenticated',owner,'select public.set_auto_share(true)');
+  expect(await allowed(eligible)).toBe(true); // Recorded after sharing resumed.
+  expect(await allowed(old)).toBe(false);      // Never sweep in an activity from before consent.
+  await as('authenticated',owner,`select public.keep_activity_private('${eligible}')`);
+  expect(await allowed(eligible)).toBe(false);
+ }finally{
+  await as('authenticated',owner,`delete from public.activities where id in ('${eligible}','${old}')`);
+ }
+});
+
+it('keeps live append, finish and private operations under the same owner-scoped transaction lock',async()=>{
+ // PGlite runs on a single connection, so this validates the locking contract
+ // rather than claiming to have exercised two concurrent PostgreSQL sessions.
+ for(const signature of ['append_live_trail(text,text,integer,jsonb)','end_live_trail(text,boolean)','keep_activity_private(uuid)']){
+  const result=await as('service_role','',`select pg_get_functiondef('public.${signature}'::regprocedure) as definition`);
+  expect(result.rows[0].definition).toContain('pg_advisory_xact_lock(105942');
+ }
+});
+
+it('enforces automatic consent inside publication and records manual decisions atomically',async()=>{
+ const id='bbbbbbbb-0000-4000-8000-00000000f201';
+ await as('authenticated',owner,'select public.set_auto_share(true)');
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+ values('${id}','Atomic','Driving','automatic',now()+interval '1 minute',now()+interval '2 minutes',60,1000)`);
+ await as('authenticated',owner,'select public.set_auto_share(false)');
+ await expect(share(id,'household','household',[],'Atomic',1900000000,true)).rejects.toThrow(/eligible|consent/);
+ await db.exec('reset role');expect((await db.query(`select count(*)::int as n from public.shared_journeys where activity_id='${id}'`)).rows[0].n).toBe(0);
+ await as('authenticated',owner,'select public.set_auto_share(true)');
+ await share(id,'household','household',[],'Atomic',1900000000,true);
+ await db.exec('reset role');expect((await db.query(`select count(*)::int as n from public.activity_share_decisions where activity_id='${id}'`)).rows[0].n).toBe(0);
+ await share(id,'household','household',[],'Manual');
+ await db.exec('reset role');expect((await db.query(`select count(*)::int as n from public.activity_share_decisions where activity_id='${id}'`)).rows[0].n).toBe(1);
+ await expect(share(id,'household','household',[],'Atomic',1900000000,true)).rejects.toThrow(/eligible/);
+ await expect(as('authenticated',owner,`select public.publish_social_journey('${owner}','${id}',1,'household','household','{}','{}',true)`)).rejects.toThrow(/permission/);
+});
+
+it('retains a paused or offline unfinished trail until the recorder explicitly ends it',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ await append(houseToken,'paused-prefix',1,pts(40,50));
+ await db.exec(`reset role;update public.live_trails set updated_at=now()-interval '20 minutes' where owner_id='${owner}'`);
+ expect((await trail(owner)).points).toHaveLength(2);
+ await as('authenticated',owner,"select public.end_live_trail('paused-prefix')");
+ expect((await trail(owner)).points).toEqual([]);
+});
+
+it('a manual revocation atomically prevents a queued automatic re-publication',async()=>{
+ const id='bbbbbbbb-0000-4000-8000-00000000f202';
+ await as('authenticated',owner,'select public.set_auto_share(true)');
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+ values('${id}','Revoked','Driving','automatic',now()+interval '1 minute',now()+interval '2 minutes',60,1000)`);
+ await share(id,'household','household',[],'Automatic',1900000000,true);
+ await as('authenticated',owner,`select public.revoke_activity_publication('${id}')`);
+ await expect(share(id,'household','household',[],'Retried',1900000000,true)).rejects.toThrow(/eligible/);
 });

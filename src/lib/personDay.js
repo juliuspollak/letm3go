@@ -1,6 +1,7 @@
+import {liveRoad} from './liveRoads.js';
 import {dayWindow} from './dayWindow.js';
-import {decodeLine} from './gapReconstruction.js';
-import {trailLines} from './liveTrail.js';
+import {decodeLine,routeGaps,gapKey} from './gapReconstruction.js';
+import {trailLines,mergeTrail} from './liveTrail.js';
 
 // One person's day, composed from the activities shared with the viewer plus their
 // live trail. One implementation for everyone: only where the rows come from (and
@@ -83,7 +84,9 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
  // Time lookups use one flat, sorted list of recorded fixes. A road estimate has no
  // timestamps of its own, so none are invented for it.
  const samples=activities.filter(a=>!a.untimed).flatMap(a=>a.points.map(p=>({t:p.t,lat:p.latitude,lon:p.longitude,segment:p.segment,id:a.id}))).sort((a,b)=>a.t-b.t);
- const liveTrail=live&&live.points?.length?live.points.filter(p=>p[2]>=window.start&&p[2]<window.end):[];
+ // A completed row wins during the overlap between backup and the live end signal.
+ const finalised=live&&rows.some(row=>String(row.activity_id).toLowerCase()===String(live.ref).toLowerCase());
+ const liveTrail=!finalised&&live&&live.points?.length?live.points.filter(p=>p[2]>=window.start&&p[2]<window.end):[];
  for(const p of liveTrail)samples.push({t:p[2],lat:p[0],lon:p[1],segment:`live:${p[3]}`,id:'live'});
  samples.sort((a,b)=>a.t-b.t);
  // Overlapping recordings interleave in time; each sample knows the next one of its own
@@ -102,7 +105,7 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
   untimed:activities.filter(a=>a.untimed).flatMap(a=>a.routes),
   estimated:activities.flatMap(a=>a.roads.map(r=>r.line)),
   live:isToday?trailLines(liveTrail):[],
-  liveRoads:isToday?roadsInWindow(live?.roads,window,NaN,NaN).map(r=>r.line):[],
+  liveRoads:isToday&&!finalised?roadsInWindow(live?.roads,window,NaN,NaN).map(r=>r.line):[],
   isEmpty:!activities.length&&!liveTrail.length};
 }
 // Where the person was at a time: the last recorded fix at or before it. Inside a gap this
@@ -159,7 +162,7 @@ export function thinRoutePoints(points,max=ROUTE_MAX){
 const idKey=id=>String(id).toLowerCase();
 export function localDayRows(trips=[],window,deleted=[]){
  const gone=new Set(deleted.map(idKey));
- return trips.filter(t=>t&&t.id&&!gone.has(idKey(t.id))&&t.source==='device'&&Number.isFinite(t.startedAt)&&Number.isFinite(t.endedAt)
+ return trips.filter(t=>t&&t.id&&!gone.has(idKey(t.id))&&['device','watch'].includes(t.source)&&t.details?.provisional!==true&&Number.isFinite(t.startedAt)&&Number.isFinite(t.endedAt)
    &&t.startedAt<window.end&&t.endedAt>window.start&&Array.isArray(t.points))
   .map(t=>({activity_id:idKey(t.id),title:t.title||t.activity||'Activity',activity:t.activity,started_at:new Date(t.startedAt*1000).toISOString(),ended_at:new Date(t.endedAt*1000).toISOString(),
    points:thinRoutePoints(t.points.filter(p=>Number.isFinite(p?.latitude)&&Number.isFinite(p?.longitude)&&Number.isFinite(p?.timestamp))
@@ -176,4 +179,17 @@ export function mergeOwnRows(cloud=[],local=[],deleted=[]){
   byId.set(idKey(row.activity_id),held?{...held,...row,roads:{...(held.roads||{}),...(row.roads||{})},etag:held.etag}:row);
  }
  return [...byId.values()];
+}
+
+// Owners can see the recorder's own unfinished route without enabling sharing.
+// Same bounded wire geometry as the server; reuse already-computed road records.
+export function localLiveTrail(trip){
+ if(!trip||!['device','watch'].includes(trip.source)||!(trip.state==='recording'||trip.state==='paused'||trip.details?.provisional===true))return null;
+ const points=mergeTrail([],thinRoutePoints(trip.points||[],3000).map(p=>[p.latitude,p.longitude,Math.round(p.timestamp),p.segment??0]));
+ const roads={};
+ for(const gap of routeGaps(trip,{live:true})){
+  const key=gapKey(trip.id,gap),record=liveRoad(key);
+  if(record?.status==='route'&&record.line)roads[key]=record.line;
+ }
+ return {ref:trip.id,points,roads};
 }

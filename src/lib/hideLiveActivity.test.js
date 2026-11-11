@@ -61,3 +61,20 @@ it('reports none, pending and confirmed honestly',async()=>{
  client.rpc.mockResolvedValue(ok);await flushPendingHides(client);
  expect(hideStatus('S-1')).toBe('confirmed');
 });
+
+it('does not report confirmation when a pending privacy request could not be persisted',async()=>{
+ const recorder={hideLiveTrail:vi.fn().mockResolvedValue()},client={rpc:vi.fn().mockResolvedValue(bad)};
+ const original=Storage.prototype.setItem;
+ const spy=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(name,value){if(name==='letm3go.liveHide.pending')throw new Error('quota');return original.call(this,name,value);});
+ try{
+  await expect(hideLiveActivity('QUOTA',{recorder,client})).rejects.toThrow(/remember|persist|retry/i);
+  expect(hideStatus('QUOTA')).not.toBe('confirmed');
+ }finally{spy.mockRestore();}
+});
+it('keeps every pending private decision until the server confirms it',async()=>{
+ const recorder={hideLiveTrail:vi.fn().mockResolvedValue()},client={rpc:vi.fn().mockResolvedValue(bad)};
+ for(let i=0;i<51;i++)await hideLiveActivity('OFFLINE-'+i,{recorder,client});
+ expect(hideStatus('OFFLINE-0')).toBe('pending');
+ client.rpc.mockResolvedValue(ok);client.rpc.mockClear();await flushPendingHides(client);
+ expect(client.rpc).toHaveBeenCalledTimes(51);
+});

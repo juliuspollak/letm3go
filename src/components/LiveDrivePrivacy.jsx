@@ -13,7 +13,7 @@ export default function LiveDrivePrivacy({trip,deps={recorder,client:supabase}})
  const [status,setStatus]=useState(()=>hideStatus(trip.id)),[busy,setBusy]=useState(false),[error,setError]=useState('');
  useEffect(()=>{
   if(status!=='pending')return undefined;
-  const timer=setInterval(async()=>{await flushPendingHides(deps.client);setStatus(hideStatus(trip.id));},RETRY_MS);
+  const timer=setInterval(async()=>{try{await flushPendingHides(deps.client);setStatus(hideStatus(trip.id));}catch{/* keep pending and retry; never claim confirmation */}},RETRY_MS);
   return()=>clearInterval(timer);
  },[status,trip.id,deps.client]);
  if(status==='confirmed')return <p className="live-private" role="status"><EyeOff size={15}/> Private: nobody can see this activity while it is recorded, and it will not be shared automatically.</p>;

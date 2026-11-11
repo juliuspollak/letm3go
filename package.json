@@ -49,11 +49,13 @@
     "ios:device": "bash scripts/install-iphone.sh",
     "check:edge": "node scripts/check-edge.mjs",
     "test:database": "vitest run tests/database",
+    "test:postgres": "node --test tests/postgres/*.node.mjs",
     "testflight:check": "node scripts/testflight.mjs preflight",
     "testflight:package": "node scripts/testflight.mjs package",
     "release:check": "node scripts/check-release.mjs",
     "test:orchestrator": "node --test tests/orchestrator/*.node.mjs"
   },
+  "overrides": { "minimatch": "11.0.8" },
   "dependencies": {
     "@capacitor/app": "^8.1.2",
     "@capacitor/browser": "^8.0.5",

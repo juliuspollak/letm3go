@@ -168,7 +168,7 @@ test('DeepSeek profile validation rejects absent, wrong and unauthenticated prof
   writeFileSync(file,JSON.stringify({providers:{deepseek:{settings:{provider:'deepseek',model:'deepseek-v4-flash',apiKey:'test'}}}}));
   assert.deepEqual(deepseekProfile(home),{provider:'deepseek',model:'deepseek-v4-flash'});
 });
-test('exited CLI cleans a confirmed live descendant holding output pipes',async () => {
+test('exited CLI cleans a confirmed live descendant holding output pipes',async t => {
   const dir=mkdtempSync(join(tmpdir(),'orphan-regression-')),marker=join(dir,'pid');
   const childCode="process.send('ready');setInterval(()=>{},1000)";
   const parentCode=    "const c=require('node:child_process').spawn(process.execPath,['-e',"+JSON.stringify(childCode)+"],{stdio:['ignore',1,2,'ipc']});c.on('message',()=>{require('node:fs').writeFileSync("+JSON.stringify(marker)+",String(c.pid));process.exit(0)});";
@@ -176,8 +176,23 @@ test('exited CLI cleans a confirmed live descendant holding output pipes',async 
     const r=await executeProcess(process.execPath,['-e',parentCode],{cwd:dir,timeout:30000});
     assert.equal(r.code,0);
     assert.ok(existsSync(marker),'a real descendant started before parent exit');
-    const pid=Number(readFileSync(marker,'utf8'));let alive=true;try{process.kill(pid,0);}catch{alive=false;}
-    assert.equal(alive,false,'inherited output pipe owner must be terminated');
+    const pid=Number(readFileSync(marker,'utf8'));
+    const running=()=>{
+      try{
+        process.kill(pid,0);
+        if(process.platform==='linux'){
+          // A killed orphan may await PID 1's reap. kill(pid,0) still succeeds
+          // for a zombie, which cannot execute or own an inherited output pipe.
+          const stat=readFileSync(`/proc/${pid}/stat`,'utf8');
+          const state=stat.slice(stat.lastIndexOf(')')+2).split(' ')[0];
+          if(state==='Z'||state==='X'){t.diagnostic(`confirmed descendant terminated (Linux state ${state}, awaiting reap)`);return false;}
+        }
+        return true;
+      }catch(error){if(error.code==='ESRCH'||error.code==='ENOENT')return false;throw error;}
+    };
+    const deadline=Date.now()+1000;
+    while(running()&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(running(),false,'inherited output pipe owner must be terminated');
   } finally {
     // Only this fixture's own confirmed child, never process-name cleanup.
     if(existsSync(marker))killProcessTree({pid:Number(readFileSync(marker,'utf8'))});

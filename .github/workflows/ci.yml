@@ -35,6 +35,10 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run check:edge
+      - name: Install local PostgreSQL test binaries
+        run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Test concurrent person-day transactions in a disposable cluster
+        run: LETM3GO_PG_BIN="$(pg_config --bindir)" npm run test:postgres
       - run: npm audit --audit-level=moderate
 
   database:
