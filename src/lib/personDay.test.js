@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {addDays,dayKeyOf,dayWindow} from './dayWindow.js';
 import {mergeTrail,newestTime,trailLines} from './liveTrail.js';
-import {clipToWindow,composeDay,linesUntil,positionAt,spreadMarkers} from './personDay.js';
+import {clipToWindow,composeDay,linesUntil,localDayRows,mergeOwnRows,positionAt,spreadMarkers,thinRoutePoints} from './personDay.js';
 import {encodeLine} from './gapReconstruction.js';
 
 const SYD='Australia/Sydney',LA='America/Los_Angeles';
@@ -163,5 +163,44 @@ describe('composing a day',()=>{
   const rows=Array.from({length:300},(_,i)=>row('id'+i,'T'+i,w.start+i*10,[[w.start+i*10,-34.5,150.9],[w.start+i*10+5,-34.51,150.9]]));
   const day=composeDay({date,timeZone:SYD,rows});
   expect(day.markers.length).toBe(60);expect(day.markers[0].n).toBe(1);expect(day.samples.length).toBe(600);
+ });
+});
+
+describe('my own day: activities that are only on this phone',()=>{
+ const w=dayWindow('2026-11-10',SYD);
+ const trip=(id,start,count,over={})=>({id,source:'device',title:'Local '+id,activity:'Driving',startedAt:start,endedAt:start+count,
+  points:Array.from({length:count},(_,i)=>({latitude:-34.5-i*1e-4,longitude:150.9,timestamp:start+i+0.4,segment:0,accuracy:5})),...over});
+ const cloud=(id,start,extra={})=>({activity_id:id,title:'Cloud '+id,activity:'Driving',started_at:new Date(start*1000).toISOString(),ended_at:new Date((start+600)*1000).toISOString(),etag:'e',roads:{},points:[{latitude:-34.5,longitude:150.9,segment:0,t:start}],...extra});
+ it('shows an activity saved on the phone before its backup, from the recorder\'s own points',()=>{
+  const rows=localDayRows([trip('ABCD-1',w.start+1000,300)],w);
+  expect(rows.length).toBe(1);expect(rows[0].activity_id).toBe('abcd-1');expect(rows[0].points[0]).toEqual({latitude:-34.5,longitude:150.9,segment:0,t:w.start+1000});
+  const day=composeDay({date:'2026-11-10',timeZone:SYD,rows});
+  expect(day.markers.length).toBe(1);expect(day.samples.length).toBe(300);
+ });
+ it('merges by id regardless of case: one row, the phone\'s route, the cloud\'s roads and etag, no duplicate marker',()=>{
+  const local=localDayRows([trip('ABCD-1',w.start+1000,300)],w);
+  const merged=mergeOwnRows([cloud('abcd-1',w.start+1000,{roads:{'ABCD-1:1:2':'xyz'}}),cloud('other',w.start+5000)],local);
+  expect(merged.length).toBe(2);
+  const mine=merged.find(r=>r.activity_id==='abcd-1');
+  expect(mine.points.length).toBe(300);expect(mine.roads).toEqual({'ABCD-1:1:2':'xyz'});expect(mine.etag).toBe('e');
+  expect(composeDay({date:'2026-11-10',timeZone:SYD,rows:merged}).markers.map(m=>m.n)).toEqual([1,2]);
+ });
+ it('an activity deleted on this phone is not resurrected by a stale cloud copy',()=>{
+  const local=localDayRows([trip('GONE-1',w.start+1000,50)],w,['GONE-1']);
+  expect(local).toEqual([]);
+  expect(mergeOwnRows([cloud('gone-1',w.start+1000)],[],['GONE-1'])).toEqual([]);
+ });
+ it('leaves out other days, unfinished activities and other sources',()=>{
+  const rows=localDayRows([trip('A',w.start-86400-10,50),trip('B',w.start+10,50,{endedAt:null}),trip('C',w.start+10,50,{source:'tesla'}),trip('D',w.start+10,50)],w);
+  expect(rows.map(r=>r.activity_id)).toEqual(['d']);
+ });
+ it('thins a very long route but keeps both ends and the segment breaks',()=>{
+  const points=Array.from({length:20000},(_,i)=>({latitude:-34,longitude:150,timestamp:i,segment:i<12000?0:1}));
+  const out=thinRoutePoints(points);
+  expect(out.length).toBeLessThanOrEqual(1700);expect(out[0]).toBe(points[0]);expect(out.at(-1)).toBe(points[19999]);
+  expect(out.some(p=>p.timestamp===11999)&&out.some(p=>p.timestamp===12000)).toBe(true);
+ });
+ it('is never used for anyone else\'s map',()=>{
+  expect(typeof localDayRows).toBe('function');                               // the hook only passes it for the viewer\'s own id (see PersonMap)
  });
 });

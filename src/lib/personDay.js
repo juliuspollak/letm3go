@@ -123,3 +123,37 @@ export function linesUntil(day,t){
  }
  return out;
 }
+
+// ---- My own day, including what is still only on this phone -----------------------------
+// A finished activity is on the phone with its full route as soon as it is saved; the cloud
+// copy appears after the backup. The own-day map merges both into the same rows the social
+// map uses, by activity id (the recorder writes ids in upper case, the cloud in lower case).
+const ROUTE_MAX=1500;
+// At most ROUTE_MAX fixes, keeping the first, the last and both ends of every GPS segment.
+export function thinRoutePoints(points,max=ROUTE_MAX){
+ const n=points.length;
+ if(n<=max)return points;
+ const step=Math.ceil(n/max);
+ return points.filter((p,i)=>i===0||i===n-1||i%step===0||p.segment!==points[i-1].segment||p.segment!==points[i+1]?.segment);
+}
+const idKey=id=>String(id).toLowerCase();
+export function localDayRows(trips=[],window,deleted=[]){
+ const gone=new Set(deleted.map(idKey));
+ return trips.filter(t=>t&&t.id&&!gone.has(idKey(t.id))&&t.source==='device'&&Number.isFinite(t.startedAt)&&Number.isFinite(t.endedAt)
+   &&t.startedAt<window.end&&t.endedAt>window.start&&Array.isArray(t.points))
+  .map(t=>({activity_id:idKey(t.id),title:t.title||t.activity||'Activity',activity:t.activity,started_at:new Date(t.startedAt*1000).toISOString(),ended_at:new Date(t.endedAt*1000).toISOString(),
+   points:thinRoutePoints(t.points.filter(p=>Number.isFinite(p?.latitude)&&Number.isFinite(p?.longitude)&&Number.isFinite(p?.timestamp))
+     .map(p=>({latitude:p.latitude,longitude:p.longitude,segment:p.segment??0,t:Math.round(p.timestamp)}))),roads:{},local:true}));
+}
+// One row per activity. The phone's copy supplies the route (it is the finished one, and it
+// is there before the backup); the cloud copy supplies the road estimates the phone does not
+// hold; a row deleted on this phone never comes back from a stale cloud copy.
+export function mergeOwnRows(cloud=[],local=[],deleted=[]){
+ const gone=new Set(deleted.map(idKey)),byId=new Map();
+ for(const row of cloud)if(!gone.has(idKey(row.activity_id)))byId.set(idKey(row.activity_id),row);
+ for(const row of local){
+  const held=byId.get(idKey(row.activity_id));
+  byId.set(idKey(row.activity_id),held?{...held,...row,roads:{...(held.roads||{}),...(row.roads||{})},etag:held.etag}:row);
+ }
+ return [...byId.values()];
+}

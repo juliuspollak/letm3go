@@ -1,6 +1,6 @@
 import {PGlite} from '@electric-sql/pglite';
 import {readFile,readdir} from 'node:fs/promises';
-import {beforeAll,afterAll,expect,it} from 'vitest';
+import {beforeAll,afterAll,describe,expect,it} from 'vitest';
 // Person day map (20261202000000): completed days compose from shared snapshots,
 // live trails follow live-location permission, household auto-share is bounded.
 const db=new PGlite();
@@ -33,6 +33,10 @@ beforeAll(async()=>{
  grant execute on function auth.uid(),auth.jwt() to anon,authenticated,service_role;
  alter default privileges in schema public grant all on tables to anon,authenticated,service_role;
  alter default privileges in schema public grant execute on functions to anon,authenticated,service_role;`);
+ // Realtime is not part of PGlite: a stand-in that records what would be broadcast.
+ await db.exec(`create schema realtime;create table realtime.sent(topic text,event text,payload jsonb);create table realtime.fail(on_ boolean);
+  create function realtime.send(payload jsonb,event text,topic text,private boolean) returns void language plpgsql as $$
+  begin if exists(select 1 from realtime.fail where on_) then raise exception 'realtime down'; end if; insert into realtime.sent values(topic,event,payload); end $$;`);
  for(const f of (await readdir('supabase/migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec(await readFile('supabase/migrations/'+f,'utf8'));
  // An activity from before anyone joined the household.
  for(const [id,start] of [[OLD,'2030-03-16 08:00+00'],[A,'2030-03-17 08:00+00'],[B,'2030-03-17 12:00+00']])
@@ -126,6 +130,18 @@ it('pending activities are newest first and the client can exclude ones it canno
  const skipped=(await as('authenticated',owner,"select * from public.my_auto_share_pending(10,array['c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2']::uuid[])")).rows.map(r=>r.activity_id);
  expect(skipped).not.toContain('c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2');expect(skipped[0]).toBe('c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1');
  expect(all.length).toBeLessThanOrEqual(now.length);
+});
+it('an activity recorded before sharing began is never offered, however old or new its row is',async()=>{
+ const id='abababab-0000-4000-8000-00000000ab01';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('${id}','Before joining','Driving','manual','2020-05-01 08:00+00','2020-05-01 08:30+00',1800,9000)`);
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain(id);
+ // Turning it off and on again starts from that moment: what was recorded while it was off stays private.
+ await as('authenticated',owner,'select public.set_auto_share(false)');
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('abababab-0000-4000-8000-00000000ab02','While off','Driving','manual',now()-interval '40 minutes',now()-interval '20 minutes',1200,9000)`);
+ await as('authenticated',owner,'select public.set_auto_share(true)');
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain('abababab-0000-4000-8000-00000000ab02');
 });
 it('turning auto-share off stops new activities; turning it on starts again from now',async()=>{
  await as('authenticated',owner,'select public.set_auto_share(false)');
@@ -291,6 +307,16 @@ it('a friend\'s live line is cut where Home is hidden, so nothing is drawn acros
  const cleared=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
  expect(cleared.point_count).toBe(0);expect(cleared.points).toEqual([]);
 });
+it('a poll with nothing new returns no points but still reports the trail, and roads respect the viewer',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ await append(houseToken,'quiet1',1,JSON.stringify([[-34.9,151.0,BASE+3300,0],[-34.91,151.0,BASE+3310,0]]));
+ const none=(await as('authenticated',mate,`select * from public.my_live_trail('${owner}',${BASE+3310})`)).rows[0];
+ expect(none.points).toEqual([]);expect(none.point_count).toBe(2);expect(none.newest_t).toBe(BASE+3310);
+ const some=(await as('authenticated',mate,`select * from public.my_live_trail('${owner}',${BASE+3300})`)).rows[0];
+ expect(some.points.map(p=>p[2])).toEqual([BASE+3310]);
+ await as('authenticated',owner,"select public.end_live_trail('quiet1')");
+});
 it('a long drive keeps its whole timeline: older points are thinned, never cut off, and the bound holds',async()=>{
  await as('authenticated',owner,'select public.set_my_live_location(true)'); // re-enabling is a status-only call
  houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
@@ -436,6 +462,85 @@ it('the cut a friend sees around Home is the same after a long drive has been th
  await as('authenticated',owner,"select public.end_live_trail('mask1')");
  await as('authenticated',owner,'select public.set_friend_location(false)');
 },180000);
+const sent=async()=>{await db.exec('reset role');const rows=(await db.query("select topic,event,payload from realtime.sent where event='share' order by topic")).rows;await db.exec('delete from realtime.sent');return rows;};
+describe('road privacy is decided once and stays correct',()=>{
+ const id='f3f3f3f3-0000-4000-8000-00000000f003',enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
+ const lineNearHome=enc(-34.5)+enc(150.79)+enc(0)+enc(0.02);          // runs straight past Home (-34.5,150.8)
+ const lineFar=enc(-34.9)+enc(151.2)+enc(-0.01)+enc(0.01);
+ const flags=async()=>{await db.exec('reset role');return Object.fromEntries((await db.query(`select ref,privacy_clear from public.journey_road_metadata where owner_id='${owner}' and ref like 'F3F3F3F3%'`)).rows.map(r=>[r.ref,r.privacy_clear]));};
+ const seenBy=async()=>Object.keys(((await as('authenticated',stranger,`select roads from public.my_shared_day('${owner}','2035-01-01 00:00+00','2035-01-02 00:00+00','{}')`)).rows[0]||{}).roads||{});
+ it('is set when a road is written, not computed again on read',async()=>{
+  const code=(await as('authenticated',owner,'select public.create_friend_invite() as code')).rows[0].code;
+  await as('authenticated',stranger,`select public.accept_friend_invite('${code}')`);
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+   values('${id}','Roads','Driving','manual','2035-01-01 08:00+00','2035-01-01 08:30+00',1800,9000)`);
+  await as('service_role','',`insert into public.journey_road_metadata(owner_id,ref,record) values
+   ('${owner}','${id.toUpperCase()}:1:2',jsonb_build_object('status','route','line','${lineNearHome.replace(/\\/g,'\\\\')}')),
+   ('${owner}','${id.toUpperCase()}:3:4',jsonb_build_object('status','route','line','${lineFar.replace(/\\/g,'\\\\')}')),
+   ('${owner}','${id.toUpperCase()}:5:6',jsonb_build_object('status','none'))`);
+  expect(await flags()).toEqual({[id.toUpperCase()+':1:2']:false,[id.toUpperCase()+':3:4']:true,[id.toUpperCase()+':5:6']:null});
+  await share(id,'friends','selected',[stranger],'Roads');
+  expect(await seenBy()).toEqual([id.toUpperCase()+':3:4']);                       // the road past Home is withheld
+  expect(Object.keys((await as('authenticated',owner,`select roads from public.my_shared_day('${owner}','2035-01-01 00:00+00','2035-01-02 00:00+00','{}')`)).rows[0].roads).length).toBe(2);   // the owner sees both
+ });
+ it('follows Home when it moves: the existing rule withdraws shares, every flag becomes unknown, and sharing again decides them afresh',async()=>{
+  await as('authenticated',owner,"update public.saved_places set latitude=-33.0,longitude=148.0 where kind='home' and owner_id=auth.uid()");
+  expect(await seenBy()).toEqual([]);                                                              // shares were withdrawn when Home changed
+  expect(Object.values(await flags()).every(v=>v===null)).toBe(true);                               // nothing is trusted any more
+  await share(id,'friends','selected',[stranger],'Roads');
+  expect((await seenBy()).sort()).toEqual([id.toUpperCase()+':1:2',id.toUpperCase()+':3:4']);   // Home is elsewhere now: both are clear
+  await as('authenticated',owner,"update public.saved_places set latitude=-34.5,longitude=150.8 where kind='home' and owner_id=auth.uid()");
+  await share(id,'friends','selected',[stranger],'Roads');
+  expect(await seenBy()).toEqual([id.toUpperCase()+':3:4']);                                       // back: the road past Home is withheld again
+ });
+ it('a road not yet decided is decoded on read, so a missed refresh can only be slow, never a leak',async()=>{
+  await db.exec(`reset role;update public.journey_road_metadata set privacy_clear=null where owner_id='${owner}'`);
+  expect(await seenBy()).toEqual([id.toUpperCase()+':3:4']);
+ });
+ it('a road written before Home existed is checked when the activity is shared',async()=>{
+  const id2='f4f4f4f4-0000-4000-8000-00000000f004';
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+   values('${id2}','Late share','Driving','manual','2035-01-01 09:00+00','2035-01-01 09:30+00',1800,9000)`);
+  await db.exec(`reset role;alter table public.journey_road_metadata disable trigger road_privacy_on_write;insert into public.journey_road_metadata(owner_id,ref,record,privacy_clear) values('${owner}','${id2.toUpperCase()}:1:2',jsonb_build_object('status','route','line','${lineNearHome.replace(/\\/g,'\\\\')}'),null);alter table public.journey_road_metadata enable trigger road_privacy_on_write;`);
+  await share(id2,'friends','selected',[stranger],'Late share');
+  await db.exec('reset role');
+  expect((await db.query(`select privacy_clear from public.journey_road_metadata where ref='${id2.toUpperCase()}:1:2'`)).rows[0].privacy_clear).toBe(false);
+ });
+});
+describe('telling open maps that access changed',()=>{
+ it('unsharing signals the owner and everyone it was shared with, with an empty payload',async()=>{
+  const id='f1f1f1f1-0000-4000-8000-00000000f001';
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+   values('${id}','Signal','Driving','manual','2034-01-01 08:00+00','2034-01-01 08:30+00',1800,9000)`);
+  await share(id,'household','household',[],'Signal');
+  await sent();
+  await as('authenticated',owner,`select public.revoke_activity_publication('${id}')`);
+  const rows=await sent();
+  const topics=[...new Set(rows.map(r=>r.topic))].sort();
+  expect(topics).toEqual([`user:${mate}`,`user:${owner}`].sort());
+  expect(rows.every(r=>JSON.stringify(r.payload)==='{}')).toBe(true);
+ });
+ it('removing a friend signals both people',async()=>{
+  await sent();
+  await as('authenticated',owner,`select public.remove_friend('${mate}')`);
+  expect([...new Set((await sent()).map(r=>r.topic))].sort()).toEqual([`user:${mate}`,`user:${owner}`].sort());
+ });
+ it('leaving the household signals the leaver and the members who remain',async()=>{
+  await sent();
+  await as('authenticated',mate,'select public.leave_household()');
+  expect([...new Set((await sent()).map(r=>r.topic))].sort()).toEqual([`user:${mate}`,`user:${owner}`].sort());
+ });
+ it('a broadcast failure never fails the change that caused it',async()=>{
+  const id='f2f2f2f2-0000-4000-8000-00000000f002';
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+   values('${id}','Down','Driving','manual','2034-02-01 08:00+00','2034-02-01 08:30+00',1800,9000)`);
+  await share(id,'friends','selected',[friend],'Down').catch(()=>null);
+  await db.exec('reset role;insert into realtime.fail values(true)');
+  await as('authenticated',owner,`select public.revoke_activity_publication('${id}')`);
+  await db.exec('reset role;delete from realtime.fail');
+  expect((await db.query(`select count(*)::int as n from public.shared_journeys where activity_id='${id}'`)).rows[0].n).toBe(0);
+ });
+});
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();

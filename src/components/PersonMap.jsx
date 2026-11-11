@@ -31,7 +31,7 @@ function useToday(timeZone){
  return today;
 }
 
-export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke,onOpenOwn}){
+export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke,onOpenOwn,localTrips=null,deletedIDs}){
  const isSelf=person.userId===viewer;
  const today=useToday(timeZone);
  // The day shown follows the clock until the person picks another: left open past midnight
@@ -40,7 +40,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
  const date=picked??today;
  const [scrub,setScrub]=useState(null);
  const [opened,setOpened]=useState(null);
- const {day,loading,error}=usePersonDay({viewer,owner:person.userId,date,timeZone});
+ const {day,loading,error}=usePersonDay({viewer,owner:person.userId,date,timeZone,localTrips:person.userId===viewer?localTrips:null,deletedIDs});
  const isToday=date===today;
  const deferred=useDeferredValue(scrub);
  const position=person.position;

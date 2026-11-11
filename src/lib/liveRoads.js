@@ -18,6 +18,8 @@ export const forgetLiveRoads=()=>{records.clear();forgetPublished();};
 // Which roads viewers have been given, and when a failed publication may be tried again.
 const published=new Set(),publishRetryAt=new Map();
 export const forgetPublished=()=>{published.clear();publishRetryAt.clear();};
+// Bounded like the rest: the oldest entries go first.
+const trim=(map,limit=500)=>{while(map.size>limit)map.delete(map.keys().next().value);};
 const accepted=result=>Boolean(result)&&!result.error&&result.data!==false;
 
 // One pass over the drive's closed gaps: ask Apple Maps for the ones not yet answered
@@ -39,8 +41,8 @@ export async function liveRoadWork({trip,lookup,publish,held=()=>null,perPass=3,
   if(record.status==='route'&&record.line&&!published.has(key)&&(publishRetryAt.get(key)||0)<=now){
    let ok;
    try{ok=accepted(await publish(trip.id,key,record.line));}catch{ok=false;}
-   if(ok){published.add(key);publishRetryAt.delete(key);}
-   else publishRetryAt.set(key,now+30000);
+   if(ok){published.add(key);publishRetryAt.delete(key);while(published.size>500)published.delete(published.values().next().value);}
+   else{publishRetryAt.set(key,now+30000);trim(publishRetryAt);}
    worked=true;
   }
   if(worked)done.push(key);

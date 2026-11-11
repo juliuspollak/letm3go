@@ -254,7 +254,7 @@ begin
    select j.activity_id,a.started_at,a.ended_at,j.snapshot,
     coalesce((select jsonb_object_agg(r.ref,r.record->>'line') from public.journey_road_metadata r
      where r.owner_id=p_owner and r.record->>'status'='route' and upper(split_part(r.ref,':',1))=upper(j.activity_id::text)
-      and public.road_clear_of_private_places(p_owner,r.record->>'line')),'{}'::jsonb) as road_lines
+      and coalesce(r.privacy_clear,public.road_clear_of_private_places(p_owner,r.record->>'line'))),'{}'::jsonb) as road_lines
    from public.shared_journeys j join public.activities a on a.id=j.activity_id
    where j.owner_id=p_owner and a.started_at<p_to and coalesce(a.ended_at,a.started_at)>p_from
     and public.can_view_social_journey(j.activity_id)
@@ -509,6 +509,13 @@ begin
  v_open:=v_self or v_household;
  select * into v_t from public.live_trails t where t.owner_id=p_owner and t.updated_at>now()-interval '10 minutes';
  if not found then return; end if;
+ -- The common poll finds nothing new: answer without evaluating the mask for every point.
+ if jsonb_array_length(v_t.points)>0 and coalesce(p_after,0)>=(v_t.points->-1->>2)::float8 then
+  return query select v_t.activity_ref,v_t.started_at,v_t.updated_at,'[]'::jsonb,
+   coalesce((select jsonb_object_agg(e.k,e.val->>'l') from jsonb_each(v_t.roads) e(k,val) where v_open or coalesce((e.val->>'c')::boolean,false)),'{}'::jsonb),
+   jsonb_array_length(v_t.points),(v_t.points->-1->>2)::float8;
+  return;
+ end if;
  return query
   with pts as (
    select x,(x->>2)::float8 as t,(x->>3)::numeric as seg,
@@ -532,5 +539,148 @@ begin
 end $$;
 revoke all on function public.my_live_trail(uuid,double precision) from public,anon,authenticated;
 grant execute on function public.my_live_trail(uuid,double precision) to authenticated;
+
+
+-- ------------------------------------------------- indexes for the new reads
+-- Roads are looked up by the activity they belong to (the first part of the reference,
+-- compared without regard to case); shared activities by owner.
+create index if not exists journey_road_metadata_activity_idx on public.journey_road_metadata(owner_id,(upper(split_part(ref,':',1))));
+create index if not exists shared_journeys_owner_idx on public.shared_journeys(owner_id);
+create index if not exists private_activity_refs_upper_idx on public.private_activity_refs(owner_id,(upper(ref)));
+
+-- ------------------------------------------- telling open maps that access changed
+-- Same mechanism as the household map (20261108000000): an EMPTY broadcast on a private
+-- Realtime channel says "something about who may see what changed", and the app then
+-- re-reads through the access-checked functions. No geometry ever travels over Realtime.
+-- Each person has their own channel, 'user:<id>', which only they may join. Sent when a
+-- share is removed, when someone is dropped from a share, and when a friendship or
+-- household membership ends. Best effort by design: a failed or missed broadcast never
+-- fails the change that caused it, and the app's periodic revalidation recovers it.
+create or replace function public.signal_user_shares(p_user uuid) returns void
+language plpgsql security definer set search_path='' as $$
+begin
+ if p_user is null or to_regprocedure('realtime.send(jsonb,text,text,boolean)') is null then return; end if;
+ begin
+  perform realtime.send('{}'::jsonb,'share','user:'||p_user,true);
+ exception when others then null;
+ end;
+end $$;
+revoke all on function public.signal_user_shares(uuid) from public,anon,authenticated;
+
+create or replace function public.signal_share_removed() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ -- Runs before the delete, while the recipients still exist.
+ perform public.signal_user_shares(old.owner_id);
+ perform public.signal_user_shares(r.user_id) from public.social_journey_recipients r where r.activity_id=old.activity_id;
+ return old;
+end $$;
+revoke all on function public.signal_share_removed() from public,anon,authenticated;
+drop trigger if exists signal_share_removed on public.shared_journeys;
+create trigger signal_share_removed before delete on public.shared_journeys
+for each row execute function public.signal_share_removed();
+
+create or replace function public.signal_recipient_changed() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ perform public.signal_user_shares(coalesce(old.user_id,new.user_id));
+ return null;
+end $$;
+revoke all on function public.signal_recipient_changed() from public,anon,authenticated;
+drop trigger if exists signal_recipient_changed on public.social_journey_recipients;
+create trigger signal_recipient_changed after insert or delete on public.social_journey_recipients
+for each row execute function public.signal_recipient_changed();
+
+create or replace function public.signal_friendship_ended() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ perform public.signal_user_shares(old.user_low);
+ perform public.signal_user_shares(old.user_high);
+ return null;
+end $$;
+revoke all on function public.signal_friendship_ended() from public,anon,authenticated;
+drop trigger if exists signal_friendship_ended on public.friend_connections;
+create trigger signal_friendship_ended after delete on public.friend_connections
+for each row execute function public.signal_friendship_ended();
+
+create or replace function public.signal_membership_ended() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ perform public.signal_user_shares(old.user_id);
+ perform public.signal_user_shares(m.user_id) from public.household_memberships m where m.household_id=old.household_id;
+ return null;
+end $$;
+revoke all on function public.signal_membership_ended() from public,anon,authenticated;
+drop trigger if exists signal_membership_ended on public.household_memberships;
+create trigger signal_membership_ended after delete on public.household_memberships
+for each row execute function public.signal_membership_ended();
+
+-- A person may join only their own channel. Skipped where Realtime is absent.
+do $$
+begin
+ if to_regclass('realtime.messages') is not null then
+  drop policy if exists user_share_signals on realtime.messages;
+  create policy user_share_signals on realtime.messages for select to authenticated
+   using (extension='broadcast' and (select realtime.topic())='user:'||(select auth.uid())::text);
+ end if;
+end $$;
+
+
+-- ------------------------------------- road privacy decided once, not on every read
+-- Whether a stored road passes the masked distance of Home/Work used to be decoded on
+-- every request by a non-owner (measured: ~2.9 s for a day of 30 activities x 3 roads,
+-- even when nothing had changed). It is now decided when the road is written, and again
+-- when the owner's Home/Work change or the activity is shared; readers just use the flag.
+-- A road whose flag is unknown (null) is still decoded on read, so a missed refresh can
+-- only make a read slower, never reveal a road.
+alter table public.journey_road_metadata add column if not exists privacy_clear boolean;
+
+create or replace function public.road_privacy_on_write() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ new.privacy_clear:=case when new.record->>'status'='route' then public.road_clear_of_private_places(new.owner_id,new.record->>'line') end;
+ return new;
+end $$;
+revoke all on function public.road_privacy_on_write() from public,anon,authenticated;
+drop trigger if exists road_privacy_on_write on public.journey_road_metadata;
+create trigger road_privacy_on_write before insert or update of record on public.journey_road_metadata
+for each row execute function public.road_privacy_on_write();
+
+-- Recomputes unknown flags for an owner's roads (all, or those of one activity).
+create or replace function public.refresh_road_privacy(p_owner uuid,p_activity uuid default null) returns void
+language sql security definer set search_path='' as $$
+ update public.journey_road_metadata r
+  set privacy_clear=case when r.record->>'status'='route' then public.road_clear_of_private_places(r.owner_id,r.record->>'line') end
+  where r.owner_id=p_owner and r.privacy_clear is null and r.record->>'status'='route'
+   and (p_activity is null or upper(split_part(r.ref,':',1))=upper(p_activity::text))
+$$;
+revoke all on function public.refresh_road_privacy(uuid,uuid) from public,anon,authenticated;
+
+-- Home or Work moved: every flag of that owner is now unknown, and the roads of
+-- activities that are actually shared (the ones others can read) are decided again at once.
+create or replace function public.road_privacy_places_changed() returns trigger
+language plpgsql security definer set search_path='' as $$
+declare v_owner uuid:=coalesce(new.owner_id,old.owner_id);
+begin
+ if coalesce(new.kind,old.kind) not in ('home','work') then return null; end if;
+ update public.journey_road_metadata set privacy_clear=null where owner_id=v_owner and privacy_clear is not null;
+ perform public.refresh_road_privacy(v_owner,j.activity_id) from public.shared_journeys j where j.owner_id=v_owner;
+ return null;
+end $$;
+revoke all on function public.road_privacy_places_changed() from public,anon,authenticated;
+drop trigger if exists road_privacy_places_changed on public.saved_places;
+create trigger road_privacy_places_changed after insert or update or delete on public.saved_places
+for each row execute function public.road_privacy_places_changed();
+
+create or replace function public.road_privacy_on_share() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ perform public.refresh_road_privacy(new.owner_id,new.activity_id);
+ return null;
+end $$;
+revoke all on function public.road_privacy_on_share() from public,anon,authenticated;
+drop trigger if exists road_privacy_on_share on public.shared_journeys;
+create trigger road_privacy_on_share after insert on public.shared_journeys
+for each row execute function public.road_privacy_on_share();
 
 commit;

@@ -11,6 +11,12 @@ const slot=(viewer,owner)=>{
  while(store.size>MAX_OWNERS)store.delete(store.keys().next().value);
  return days;
 };
+// Every person's data has an epoch that moves whenever access to it may have changed (a
+// signal, the person being dropped, the viewer signing out). A response that started before
+// the epoch moved may have been computed before the change, so it is never stored or shown.
+const epochs=new Map();
+export const epochOf=(viewer,owner)=>epochs.get(`${viewer}|${owner}`)||0;
+const bump=key=>epochs.set(key,(epochs.get(key)||0)+1);
 export function cachedDay(viewer,owner,date){
  const days=slot(viewer,owner),entry=days.get(date);
  if(entry){days.delete(date);days.set(date,entry);}
@@ -28,7 +34,14 @@ export function peekFreshDay(viewer,owner,date,maxAge=SHOW_CACHED_MS){
  return entry&&Date.now()-entry.at<=maxAge?entry:null;
 }
 // The person is no longer someone I may see: forget everything held about them.
-export function dropOwner(viewer,owner){store.delete(`${viewer}|${owner}`);}
+export function dropOwner(viewer,owner){store.delete(`${viewer}|${owner}`);bump(`${viewer}|${owner}`);}
+// Access may have changed for anyone: nothing held counts as verified any more (it is not
+// shown from memory until the server has confirmed it again), and responses already on
+// their way are discarded.
+export function invalidateViewer(viewer){
+ for(const [key,days] of store)if(key.startsWith(viewer+'|')){for(const entry of days.values())entry.at=0;}
+ for(const key of new Set([...store.keys(),...epochs.keys()]))if(key.startsWith(viewer+'|'))bump(key);
+}
 export function storeDay(viewer,owner,date,entry){
  const days=slot(viewer,owner);
  days.delete(date);days.set(date,entry);
@@ -36,7 +49,7 @@ export function storeDay(viewer,owner,date,entry){
 }
 export function dropDay(viewer,owner,date){slot(viewer,owner).delete(date);}
 export function clearPersonDays(viewer=null){
- for(const key of [...store.keys()])if(viewer==null||key.startsWith(viewer+'|'))store.delete(key);
+ for(const key of new Set([...store.keys(),...epochs.keys()]))if(viewer==null||key.startsWith(viewer+'|')){store.delete(key);bump(key);}
 }
 // Rows the server sent as "unchanged" (points null) take their geometry from what we
 // already hold, so a revalidation moves only what changed.

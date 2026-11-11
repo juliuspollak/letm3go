@@ -1,8 +1,11 @@
 import {act,renderHook,waitFor} from '@testing-library/react';
 import {beforeEach,describe,expect,it,vi} from 'vitest';
-const mock=vi.hoisted(()=>({rpc:vi.fn()}));
-vi.mock('./supabase.js',()=>({supabase:{rpc:mock.rpc}}));
+const mock=vi.hoisted(()=>({rpc:vi.fn(),handlers:[],removed:[]}));
+// A Realtime client that records channels, so a signal can be sent by the test.
+const fakeChannel=topic=>{const ch={topic,on:(type,filter,fn)=>{ch.filter=filter;ch.fn=fn;return ch;},subscribe:cb=>{mock.handlers.push(ch);cb?.('SUBSCRIBED');return ch;}};return ch;};
+vi.mock('./supabase.js',()=>({supabase:{rpc:mock.rpc,realtime:{setAuth:async()=>{}},channel:topic=>fakeChannel(topic),removeChannel:ch=>{mock.removed.push(ch.topic);}}}));
 import {usePersonDay} from './usePersonDay.js';
+const signal=async()=>{await act(async()=>{mock.handlers.filter(h=>h.topic==='user:me').forEach(h=>h.fn({}));await new Promise(r=>setTimeout(r,20));});};
 import {clearPersonDays,dropOwner,mergeRows,cachedDay,storeDay,SHOW_CACHED_MS} from './personDayCache.js';
 import {dayWindow} from './dayWindow.js';
 
@@ -12,7 +15,7 @@ const row=(id,etag,points)=>({activity_id:id,started_at:new Date((W.start+3600)*
  points:points===undefined?[{latitude:-34.5,longitude:150.9,segment:0,t:W.start+3600},{latitude:-34.6,longitude:150.9,segment:0,t:W.start+3700}]:points});
 let dayRows,trail,calls;
 beforeEach(()=>{
- clearPersonDays();calls=[];dayRows=[row('a','e1')];trail=null;
+ clearPersonDays();mock.handlers.length=0;mock.removed.length=0;calls=[];dayRows=[row('a','e1')];trail=null;
  mock.rpc.mockReset();
  mock.rpc.mockImplementation(async(name,params)=>{
   calls.push([name,params]);
@@ -123,6 +126,55 @@ it('merges unchanged rows from the held copy, and bounds the cache',()=>{
  expect(cachedDay('me','her','2026-01-01')).toBeNull();expect(cachedDay('me','her','2026-01-40')).not.toBeNull();
 });
 
+describe('revocation signals',()=>{
+ it('listens on the viewer\'s own private channel for the share event, and stops on unmount',async()=>{
+  const {unmount}=render();
+  await waitFor(()=>expect(mock.handlers.length).toBe(1));
+  expect(mock.handlers[0].topic).toBe('user:me');expect(mock.handlers[0].filter).toEqual({event:'share'});
+  unmount();expect(mock.removed).toContain('user:me');
+ });
+ it('an unshared activity disappears from an open map at once, without waiting for the schedule',async()=>{
+  const {result}=render();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+  const before=calls.filter(c=>c[0]==='my_shared_day').length;
+  dayRows=[];                                   // the owner made it private
+  await signal();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(0));
+  expect(calls.filter(c=>c[0]==='my_shared_day').length).toBeGreaterThan(before);
+ });
+ it('after a signal nothing held counts as verified, so an unreachable server shows nothing instead of the old rows',async()=>{
+  const {result}=render();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+  mock.rpc.mockImplementation(async()=>({data:null,error:{message:'offline'}}));
+  await signal();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(0));
+  expect(result.current.error).toMatch(/offline/);
+ });
+ it('a response that was already on its way when access changed cannot bring the activity back',async()=>{
+  const {result}=render();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+  let releaseOld;
+  mock.rpc.mockImplementationOnce(async name=>{ if(name==='my_shared_day'){ await new Promise(r=>{releaseOld=r;}); return {data:[row('a','e1')],error:null}; } return {data:[],error:null}; });
+  const slow=act(async()=>{window.dispatchEvent(new Event('online'));await new Promise(r=>setTimeout(r,10));});  // starts a revalidation that will answer late
+  await slow;
+  dayRows=[];
+  await signal();                                // revocation: a newer request returns nothing
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(0));
+  await act(async()=>{releaseOld?.();await new Promise(r=>setTimeout(r,20));});   // the stale answer finally arrives
+  expect(result.current.day.activities.length).toBe(0);
+  expect(cachedDay('me','her',`${DATE}@${Z}`)?.rows||[]).toEqual([]);
+ });
+ it('dropping a person discards a request still in flight for them',async()=>{
+  let release;
+  mock.rpc.mockImplementation(async name=>{ if(name==='my_shared_day'){ await new Promise(r=>{release=r;}); return {data:[row('a','e1')],error:null}; } return {data:[],error:null}; });
+  const {result}=render();
+  await waitFor(()=>expect(release).toBeTypeOf('function'));
+  dropOwner('me','her');                         // they stopped being a friend while it was loading
+  await act(async()=>{release();await new Promise(r=>setTimeout(r,20));});
+  expect(result.current.day.activities.length).toBe(0);
+  expect(cachedDay('me','her',`${DATE}@${Z}`)).toBeNull();
+ });
+});
 describe('access changes and the cache',()=>{
  it('does not show an old cached day from memory: it waits for the server, so withdrawn access is not displayed',async()=>{
   const first=render();

@@ -12,7 +12,25 @@ A "day" is the **viewer's** local calendar day in the time zone of the viewer's 
 - Cached days are keyed by `date@time zone`, so a traveller never gets a window computed for another zone.
 - Consequence: someone in Sydney and a friend in Los Angeles see the same drive on different "days" around their midnights. This is intended.
 
-## Cache and revocation
+## Cache and revocation (updated)
+Two mechanisms, both best effort, one guaranteed bound:
+1. **Signal (prompt, not guaranteed).** The database sends an EMPTY broadcast on the viewer's own private Realtime channel `user:<id>` (event `share`) when a share is removed, someone is dropped from a share, a friendship ends or a household membership ends. The open map then treats everything held as unverified, discards requests already in flight, and re-reads through the access-checked functions. It reuses the household map's mechanism (no coordinates ever travel over Realtime). Limits: it needs Realtime to be reachable and the viewer's token to have been accepted by Realtime (Realtime checks a channel's policy when joining and on token refresh); a message sent while the phone is offline or the app suspended is not replayed.
+2. **Schedule (guaranteed bound).** Every open map revalidates on open, every 60 s, on returning to the foreground and when the network returns. So a withdrawn permission reaches an open map within about a minute even if the signal was missed, and a reopened map immediately (cached days older than 5 minutes are not shown until the server answers).
+Ordering: only the newest request may change what is shown, and any request that started before an invalidation (signal, person dropped, sign-out) is discarded, so a late answer cannot restore revoked geometry. Remaining honest limit: revocation is not instantaneous; the worst case is the 60 s schedule, plus up to the length of one in-flight request.
+
+## Live "keep private" states
+The screen distinguishes: *not asked*; *stopped on this phone, waiting to confirm with the server* (anyone watching may still see the route already sent; it is retried every 15 s and whenever the app opens or returns); *confirmed* (nobody can see it). The phone stops publishing at once and remembers the choice across relaunches; the server refuses every later batch for that activity and keeps the saved activity out of automatic sharing.
+
+## My own day
+Merges the cloud copy with activities saved on the phone (full route, available before the backup) by activity id, case-insensitively, without duplicates; the phone's route wins, the cloud supplies road estimates; activities deleted on the phone never come back from a stale cloud copy. Same `composeDay`, map and markers as the social map. An activity still being recorded is not on the own-day map (others see it through the live trail).
+
+## Database cost
+Whether a stored road passes the masked distance of Home/Work is decided when the road is written, when the activity is shared and when Home/Work change (column `journey_road_metadata.privacy_clear`), not on every read. Measured locally (PGlite, not a hosted database): a friend's revalidation of a heavy day dropped from ~2.9 s to ~33 ms. Unknown flags fall back to decoding on read, so a missed refresh can only be slower, never reveal a road. Re-run `node scripts/person-day-db-benchmark.mjs` against staging for real numbers.
+
+## Automatic sharing and iOS suspension
+Runs only while the app is running (open, an activity finishing, returning to the foreground, the network returning, plus follow-ups at 2.5 and ~7 minutes after a drive finishes for the backup upload). While iOS keeps the app suspended nothing is published; the next time it runs, the server's own list of what is still unshared is worked through, so nothing is permanently missed. Expected delay: until the next time the app runs (could be hours if it stays closed). Publishing is idempotent; an explicit private decision always wins; activities that started before sharing began (or while it was off) are never offered.
+
+## Cache and revocation (original notes)
 - In-memory only (gone on restart), keyed by signed-in viewer, at most 6 people x 16 days, dropped on sign-out/account switch and for anyone who leaves my household/friends.
 - A cached day is shown at once only when it is less than 5 minutes old; an older one waits for the server's answer. Every open map revalidates on open, every 60 s, on returning to the foreground and when the network returns, using etags, so another device's change (made private, unshared, friend removed) reaches an open map within about a minute and a reopened one immediately.
 - Offline: a recent cached day keeps showing; an older one is not shown.

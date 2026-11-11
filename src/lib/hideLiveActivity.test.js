@@ -1,5 +1,5 @@
 import {beforeEach,expect,it,vi} from 'vitest';
-import {flushPendingHides,hideLiveActivity,isLiveHidden} from './hideLiveActivity.js';
+import {flushPendingHides,hideLiveActivity,hideStatus,isLiveHidden} from './hideLiveActivity.js';
 
 beforeEach(()=>localStorage.clear());
 const ok={data:null,error:null},bad={data:null,error:{message:'offline'}};
@@ -47,4 +47,12 @@ it('a hide added while a flush is waiting on the network is not lost',async()=>{
  await flushPendingHides(client);
  expect(client.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'NEW-2',p_hide:true});
  expect(client.rpc).not.toHaveBeenCalledWith('end_live_trail',{p_ref:'OLD-1',p_hide:true});
+});
+it('reports none, pending and confirmed honestly',async()=>{
+ const recorder={hideLiveTrail:vi.fn().mockResolvedValue()},client={rpc:vi.fn().mockResolvedValue(bad)};
+ expect(hideStatus('S-1')).toBe('none');
+ await hideLiveActivity('S-1',{recorder,client});
+ expect(hideStatus('S-1')).toBe('pending');
+ client.rpc.mockResolvedValue(ok);await flushPendingHides(client);
+ expect(hideStatus('S-1')).toBe('confirmed');
 });

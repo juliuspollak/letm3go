@@ -109,6 +109,14 @@ describe('person map',()=>{
   setup();
   expect(last().estimated.every(line=>line.length<=2000)).toBe(true);
  });
+ it('gives the phone\'s own activities to my map only, never to someone else\'s',()=>{
+  const local=[{id:'x'}];
+  render(<PersonMap person={{...person,userId:'me'}} viewer="me" timeZone={Z} localTrips={local} deletedIDs={['d']} onClose={vi.fn()} onPoke={vi.fn()}/>);
+  expect(mock.dayArgs.at(-1).localTrips).toBe(local);expect(mock.dayArgs.at(-1).deletedIDs).toEqual(['d']);
+  cleanup();
+  setup({localTrips:local});
+  expect(mock.dayArgs.at(-1).localTrips).toBeNull();
+ });
  it('keeps poking available and closes on request',()=>{
   const {onClose,onPoke}=setup();
   fireEvent.click(screen.getByText(/Poke/));fireEvent.click(screen.getByLabelText('Close map'));

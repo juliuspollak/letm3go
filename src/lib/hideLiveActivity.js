@@ -28,3 +28,10 @@ export async function flushPendingHides(client){
  // Re-read: a hide added while this was waiting on the network must not be lost.
  write(PENDING,read(PENDING).filter(ref=>!told.has(ref)));
 }
+
+// What is known about a hide, for the screen: nothing asked, stopped on this phone but the
+// server has not confirmed (others may still see what was already sent), or confirmed.
+export function hideStatus(ref){
+ if(!isLiveHidden(ref))return 'none';
+ return read(PENDING).includes(ref)?'pending':'confirmed';
+}
