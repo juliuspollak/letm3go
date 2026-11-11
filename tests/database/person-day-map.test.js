@@ -593,6 +593,46 @@ describe('telling open maps that access changed',()=>{
   expect((await db.query(`select count(*)::int as n from public.shared_journeys where activity_id='${id}'`)).rows[0].n).toBe(0);
  });
 });
+it('a friend is not told when a fix inside the masked area was taken; the owner and household are',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const now=Math.floor(Date.now()/1000);
+ await append(houseToken,'nt1',1,JSON.stringify([[-34.9,151,now-60,0],[-34.5,150.8,now-30,0]]));   // the last fix is at Home
+ for(const after of [0,now]){
+  const q=`select * from public.my_live_trail('${owner}',${after})`;
+  const friendView=(await as('authenticated',stranger,q)).rows[0];
+  expect(friendView.newest_t).toBeNull();
+  expect(JSON.stringify(friendView.points)).not.toContain(String(now-30));
+ }
+ expect((await as('authenticated',owner,`select * from public.my_live_trail('${owner}',0)`)).rows[0].newest_t).toBe(now-30);
+ await as('authenticated',owner,"select public.end_live_trail('nt1')");
+ await as('authenticated',owner,'select public.set_friend_location(false)');
+});
+it('a Home or Work change re-checks the roads of a live trail in progress',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const now=Math.floor(Date.now()/1000);
+ await append(houseToken,'lr1',1,JSON.stringify([[-34.9,151,now-20,0]]));
+ const enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
+ const line=enc(-35.2)+enc(151.3)+enc(0)+enc(0.02);                 // far from Home today
+ await as('authenticated',owner,`select public.put_my_live_road('lr1','Z:1:2','${line.replace(/\\/g,'\\\\')}')`);
+ expect(Object.keys((await as('authenticated',stranger,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('Z:1:2');
+ // Work is saved right on that road: it must now be withheld from a friend, without waiting for a new road.
+ await as('authenticated',owner,"insert into public.saved_places(id,name,kind,latitude,longitude,radius) values('77777777-7777-4777-8777-777777777777','Work','work',-35.2,151.31,100)");
+ expect(Object.keys((await as('authenticated',stranger,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).not.toContain('Z:1:2');
+ await as('authenticated',owner,"select public.end_live_trail('lr1')");
+ await as('authenticated',owner,'select public.set_friend_location(false)');
+});
+it('keeping an activity private is recorded in both places the readers look, so neither can miss it',async()=>{
+ const id='efefefef-0000-4000-8000-00000000ef01';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('${id}','Both','Driving','manual',now()-interval '1 hour',now()-interval '30 minutes',1800,9000)`);
+ await as('authenticated',owner,`select public.keep_activity_private('${id}')`);
+ expect((await as('service_role','',`select public.activity_ref_is_private('${owner}','${id.toUpperCase()}') as p`)).rows[0].p).toBe(true);
+ expect((await as('service_role','',`select public.auto_share_allowed('${owner}','${id}') as ok`)).rows[0].ok).toBe(false);
+});
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();

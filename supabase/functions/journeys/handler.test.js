@@ -39,6 +39,7 @@ function world(over = {}) {
       w.calls.push([name, args]);
       if (name === 'consume_operation') return { data: w.budget, error: null };
       if (name === 'auto_share_allowed') return { data: w.allowed.length > 1 ? w.allowed.shift() : w.allowed[0], error: w.rpcErrors[name] || null };
+      if (name === 'remember_manual_share') return { data: null, error: w.rpcErrors[name] || null };
       if (name === 'publish_social_journey' || name === 'commit_shared_journey') return { data: 'token-1', error: w.rpcErrors[name] || null };
       return { data: null, error: null };
     },
@@ -185,6 +186,11 @@ describe('automatic household sharing', () => {
     expect((await publish(w)).status).toBe(200);
     expect(w.calls.some(c => c[0] === 'auto_share_allowed')).toBe(false);
     expect(w.calls).toContainEqual(['remember_manual_share', { p_owner: OWNER, p_activity: ID }]);
+  });
+  it('a manual share whose decision could not be recorded is reported as failed so the client retries (publishing is idempotent)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const w = world({ rpcErrors: { remember_manual_share: new Error('x') } });
+    expect((await publish(w)).status).toBe(500);
   });
   it('an automatic share is NOT recorded as a decision, so it can be shared again after the system removes it', async () => {
     const w = world({ allowed: [true, true] });

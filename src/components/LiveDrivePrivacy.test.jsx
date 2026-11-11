@@ -40,7 +40,7 @@ it('does not claim privacy when the phone could not be told, and shows the right
  render(<LiveDrivePrivacy trip={trip} deps={deps}/>);
  fireEvent.click(screen.getByText(/Keep this activity private/));
  await screen.findByRole('alert');
- expect(screen.queryByText(/Private: nobody/)).toBeNull();expect(screen.queryByText(/Stopped sharing/)).toBeNull();
+ expect(screen.queryByText(/Private: nobody/)).toBeNull();
  cleanup();
  const offline={recorder:{hideLiveTrail:vi.fn().mockResolvedValue()},client:{rpc:vi.fn().mockResolvedValue(bad)}};
  render(<LiveDrivePrivacy trip={trip} deps={offline}/>);

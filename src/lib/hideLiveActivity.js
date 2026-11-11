@@ -16,9 +16,15 @@ async function tellServer(client,ref){
 }
 export async function hideLiveActivity(ref,{recorder,client}){
  if(!ref)throw new Error('No activity is being recorded.');
- await recorder.hideLiveTrail(ref);
- rememberLiveHidden(ref);
+ // The server's record is the stronger guarantee (it also keeps the saved activity out of
+ // automatic sharing), so it is never skipped because the phone call failed: both are tried,
+ // the choice is remembered locally either way, and a phone failure is still reported.
+ let phoneError=null;
+ try{await recorder.hideLiveTrail(ref);}catch(error){phoneError=error;}
+ // "Stopped on this phone" is only claimed (and remembered) when the phone really stopped.
+ if(!phoneError)rememberLiveHidden(ref);
  if(!client||!(await tellServer(client,ref))){const list=read(PENDING);if(!list.includes(ref))write(PENDING,[...list,ref].slice(-50));}
+ if(phoneError)throw phoneError;
 }
 export async function flushPendingHides(client){
  const list=read(PENDING);

@@ -47,7 +47,6 @@ export function storeDay(viewer,owner,date,entry){
  days.delete(date);days.set(date,entry);
  while(days.size>MAX_DAYS)days.delete(days.keys().next().value);
 }
-export function dropDay(viewer,owner,date){slot(viewer,owner).delete(date);}
 export function clearPersonDays(viewer=null){
  for(const key of new Set([...store.keys(),...epochs.keys()]))if(viewer==null||key.startsWith(viewer+'|')){store.delete(key);bump(key);}
 }

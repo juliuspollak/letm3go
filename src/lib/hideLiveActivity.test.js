@@ -28,10 +28,15 @@ it('an exception from the server is treated the same way',async()=>{
  client.rpc.mockResolvedValue(ok);await flushPendingHides(client);
  expect(client.rpc).toHaveBeenLastCalledWith('end_live_trail',{p_ref:'A-3',p_hide:true});
 });
-it('fails (and remembers nothing) when the phone cannot be told',async()=>{
- const recorder={hideLiveTrail:vi.fn().mockRejectedValue(new Error('x'))};
- await expect(hideLiveActivity('A-4',{recorder,client:null})).rejects.toThrow();
- expect(isLiveHidden('A-4')).toBe(false);
+it('a phone failure is reported and not claimed as stopped, but the server is still told (or queued) so the activity stays private',async()=>{
+ const recorder={hideLiveTrail:vi.fn().mockRejectedValue(new Error('plugin missing'))},client={rpc:vi.fn().mockResolvedValue(ok)};
+ await expect(hideLiveActivity('A-4',{recorder,client})).rejects.toThrow('plugin missing');
+ expect(client.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'A-4',p_hide:true});
+ expect(isLiveHidden('A-4')).toBe(false);                          // the phone did not stop, so that is not claimed
+ const offline={rpc:vi.fn().mockResolvedValue(bad)};
+ await expect(hideLiveActivity('A-5',{recorder,client:offline})).rejects.toThrow();
+ client.rpc.mockClear();await flushPendingHides(client);           // queued, and delivered when the server is reachable
+ expect(client.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'A-5',p_hide:true});
 });
 it('a hide added while a flush is waiting on the network is not lost',async()=>{
  const recorder={hideLiveTrail:vi.fn().mockResolvedValue()};

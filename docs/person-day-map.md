@@ -45,3 +45,6 @@ The native recorder records and publishes live-trail batches with the app closed
 - Joining a household turns automatic sharing on from that moment, including for someone who turned it off for a previous household: the setting belongs to the membership, and the brief asks for on-by-default at joining. The switch in Household turns it off again.
 - A share removed by the system (an edit, Home or Work moving) is not a decision; an automatically shared activity is shared again afterwards. Sharing by hand and "keep private" are decisions and are never overridden.
 - A journey that stops and resumes keeps its live trail: the stop clears the points and remembers when it ended, points older than that are ignored (accepted, nothing kept), newer ones are accepted, and road estimates are kept.
+- `newest_t` of a live trail is only returned to the owner and the household (it would reveal when a fix inside a masked area was taken); `point_count` is returned to everyone.
+- A live drive only publishes points recorded after live sharing was switched on; what was recorded before consent is never sent.
+- Saved-place changes (even a Favourite) already withdraw all of an owner's shares through the existing `places_changed` rule; automatic sharing then re-publishes them, ten per pass, so a large history takes several app opens to recover.

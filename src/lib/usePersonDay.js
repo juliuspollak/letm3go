@@ -90,6 +90,8 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock,
  const liveKey=`${owner}|${isToday}|${date}|${timeZone}`;
  const [liveState,setLiveState]=useState({key:null,value:null});
  const live=liveState.key===liveKey?liveState.value:null;
+ const shownLive=useRef(null);
+ useEffect(()=>{shownLive.current=live;});
  useEffect(()=>{
   if(!enabled||!supabase||!owner||!isToday)return;
   let cancelled=false,timer=null,trail=null;
@@ -106,7 +108,9 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock,
      // No row, or a row whose trail the server has emptied (finished, hidden, sharing off):
      // drop what we hold, and fetch the day again so a finished drive arrives as the saved
      // activity instead of being drawn twice or not at all.
-     if(!row||row.point_count===0){if(trail){trail=null;setLiveState({key:liveKey,value:null});refreshDay();}}
+     // `shownLive.current` also covers a trail shown before this effect started (the viewer left Today
+     // and came back after the drive ended).
+     if(!row||row.point_count===0){if(trail||shownLive.current){trail=null;setLiveState({key:liveKey,value:null});refreshDay();}}
      else{
       // A new activity restarts the trail; the same one only appends.
       const fresh=!trail||trail.ref!==row.activity_ref;

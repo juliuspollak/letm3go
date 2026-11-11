@@ -34,7 +34,7 @@ describe('household auto-share',()=>{
   mock.publish.mockReset().mockRejectedValue(new Error('Set your Home place before sharing'));
   pending=[{activity_id:'aaaa'},{activity_id:'bbbb'},{activity_id:'aaaa'},{activity_id:'bbbb'}];
   const stuck=await shareNewHouseholdActivities({client,recorder});
-  expect(stuck.published).toEqual([]);expect(mock.publish.mock.calls.length).toBeLessThanOrEqual(8);
+  expect(stuck.published).toEqual([]);expect(mock.publish.mock.calls.length).toBeLessThanOrEqual(12);
  });
  it('three newest activities that always fail do not starve the older ones that would succeed',async()=>{
   recorder.getState.mockResolvedValueOnce({trips:['A1','A2','A3','OK1','OK2'].map(id=>trip(id))});

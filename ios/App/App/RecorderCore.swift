@@ -3024,14 +3024,16 @@ enum LiveTrail {
     // in the server's [latitude, longitude, time, segment] form. The newest is always kept.
     static func batch(points: [GPSPoint], after: Double, now: Double) -> [[Double]] {
         var kept: [GPSPoint] = []
-        for point in points where point.timestamp > after && point.timestamp <= now + 60
+        // Times are sent rounded to the second, so the cursor (`after`) is a rounded time too; compare like with like
+        // or a fix at 100.3 s would be sent again after t=100 was acknowledged.
+        for point in points where point.timestamp.rounded() > after && point.timestamp <= now + 60
             && point.accuracy >= 0 && point.accuracy <= maximumAccuracy
             && abs(point.latitude) <= 90 && abs(point.longitude) <= 180 && !(point.latitude == 0 && point.longitude == 0) {
             if let last = kept.last, last.segment == point.segment,
                last.distance(to: point) < minimumSpacing, point.timestamp - last.timestamp < maximumSilence { continue }
             kept.append(point)
         }
-        if let newest = points.last(where: { $0.timestamp > after && $0.timestamp <= now + 60 && $0.accuracy >= 0 && $0.accuracy <= maximumAccuracy }),
+        if let newest = points.last(where: { $0.timestamp.rounded() > after && $0.timestamp <= now + 60 && $0.accuracy >= 0 && $0.accuracy <= maximumAccuracy }),
            let last = kept.last, last.timestamp != newest.timestamp { kept.append(newest) }
         // The OLDEST points after `after` go first: the caller advances `after` to the last
         // point of the batch, so a backlog (offline, throttled) drains in order and nothing

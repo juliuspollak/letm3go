@@ -42,6 +42,14 @@ it('does not ask Apple Maps while the app is in the background, and catches up o
  await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
  await waitFor(()=>expect(mock.road).toHaveBeenCalledTimes(1));
 });
+it('publishes the roads again after live sharing was switched off and on, because the server dropped them',async()=>{
+ const {rerender}=renderHook(props=>useLiveRoads(props),{initialProps:{trip:trip(),owner:'me',enabled:true}});
+ await waitFor(()=>expect(mock.rpc).toHaveBeenCalledTimes(1));
+ rerender({trip:trip(),owner:'me',enabled:false});
+ rerender({trip:trip(),owner:'me',enabled:true});
+ await waitFor(()=>expect(mock.rpc).toHaveBeenCalledTimes(2));
+ expect(mock.road).toHaveBeenCalledTimes(1);                       // Apple Maps is not asked again
+});
 it('does nothing off the phone or when signed out',async()=>{
  mock.available=false;
  renderHook(()=>useLiveRoads({trip:trip(),owner:'me',enabled:true}));

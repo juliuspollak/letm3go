@@ -197,6 +197,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         set { UserDefaults.standard.set(newValue, forKey: Self.hiddenTrailKey) }
     }
     var liveTrailHideConfirmed = false
+    var liveTrailWasArmed = false
+    var liveTrailConsentAt: Double = 0
     // After a stop the same journey may resume (same id): it carries on from where it was, not from its start.
     var liveTrailResumeRef: String?
     var liveTrailResumeThrough: Double = 0
@@ -945,10 +947,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func flushLiveTrail() {
         guard storeOpened, ownerID != nil, !accountSuspended, !accountDeleting else { return }
         let now = Date().timeIntervalSince1970
-        guard LiveTrail.due(lastFlushAt: liveTrailLastFlushAt, now: now, inFlight: liveTrailInFlight, backoffUntil: liveTrailBackoffUntil) else { return }
         var token: String?, base: URL?, apiKey: String?
         if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
         else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        // Consent: nothing recorded before sharing was switched on is ever published, however long
+        // the activity has been running. (After a relaunch the moment is the relaunch, which can
+        // only withhold more, never less.)
+        let armedNow = token != nil && base != nil && apiKey != nil
+        if armedNow && !liveTrailWasArmed { liveTrailConsentAt = now }
+        liveTrailWasArmed = armedNow
+        guard LiveTrail.due(lastFlushAt: liveTrailLastFlushAt, now: now, inFlight: liveTrailInFlight, backoffUntil: liveTrailBackoffUntil) else { return }
         guard let token = token, let base = base, let apiKey = apiKey, let endpoint = LiveTrail.endpoint(from: base) else { return }
         let recording: RecordedActivity? = automaticActivelyRecording ? automaticTrip : (manualGPSRecording ? active : nil)
         // A private activity publishes nothing, ever: first make sure the server has been
@@ -971,7 +979,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         if let recording = recording {
             if ref != recording.id {
                 // The same journey resuming after a stop continues from where it was sent; a new one starts afresh.
-                liveTrailSentThrough = liveTrailResumeRef?.caseInsensitiveCompare(recording.id) == .orderedSame ? liveTrailResumeThrough : 0
+                liveTrailSentThrough = max(liveTrailConsentAt, liveTrailResumeRef?.caseInsensitiveCompare(recording.id) == .orderedSame ? liveTrailResumeThrough : 0)
                 ref = recording.id; liveTrailSeq = 0
             }
             points = LiveTrail.batch(points: recording.points, after: liveTrailSentThrough, now: now)

@@ -386,7 +386,7 @@ function PrivateApp(){
  // the live-location lists. Completed days do not depend on live sharing, so the map does not
  // close (or lose its cache) because someone stopped sharing their location; what a viewer may
  // still see is decided by the server (signals and revalidation in usePersonDay).
- const shownPerson=personMap?(personMap.userId===session.user.id?personMap:{...personMap,...(homeFriends.find(p=>p.userId===personMap.userId)||everyone.find(p=>p.userId===personMap.userId)||{})}):null;
+ const shownPerson=personMap?(personMap.userId===session.user.id?personMap:(homeFriends.find(p=>p.userId===personMap.userId)||everyone.find(p=>p.userId===personMap.userId)||{...personMap,position:null,status:{text:'Not sharing live location',tone:'stale'}})):null;
  useEffect(()=>()=>{clearPersonDays(session.user.id);forgetLiveRoads();forgetAutoShareFailures();},[session.user.id]);
  const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);

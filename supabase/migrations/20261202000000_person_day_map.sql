@@ -94,7 +94,10 @@ begin
  -- Any copy already published (for example by automatic sharing a moment earlier) goes
  -- first, which also clears who it was shared with; the decision is recorded after, so
  -- the removal cannot overwrite it.
+ -- Serialise with a publication of the same activity (commit_shared_journey locks this row too).
+ perform 1 from public.activities a where a.id=p_activity and a.owner_id=auth.uid() for update;
  delete from public.shared_journeys where activity_id=p_activity and owner_id=auth.uid();
+ insert into public.private_activity_refs(owner_id,ref) select a.owner_id,a.id::text from public.activities a where a.id=p_activity and a.owner_id=auth.uid() on conflict do nothing;
  insert into public.activity_share_decisions(activity_id,owner_id,private)
   select a.id,a.owner_id,true from public.activities a where a.id=p_activity and a.owner_id=auth.uid()
  on conflict(activity_id) do update set private=true;
@@ -484,7 +487,7 @@ begin
  if jsonb_array_length(v_t.points)>0 and coalesce(p_after,0)>=(v_t.points->-1->>2)::float8 then
   return query select v_t.activity_ref,v_t.started_at,v_t.updated_at,'[]'::jsonb,
    coalesce((select jsonb_object_agg(e.k,e.val->>'l') from jsonb_each(v_t.roads) e(k,val) where v_open or coalesce((e.val->>'c')::boolean,false)),'{}'::jsonb),
-   jsonb_array_length(v_t.points),(v_t.points->-1->>2)::float8;
+   jsonb_array_length(v_t.points),case when v_open then (v_t.points->-1->>2)::float8 end;
   return;
  end if;
  return query
@@ -506,7 +509,7 @@ begin
    coalesce((select jsonb_object_agg(e.k,e.val->>'l') from jsonb_each(v_t.roads) e(k,val)
     where v_open or coalesce((e.val->>'c')::boolean,false)),'{}'::jsonb),
    jsonb_array_length(v_t.points),
-   (select max(t) from pts);
+   case when v_open then (select max(t) from pts) end;
 end $$;
 revoke all on function public.my_live_trail(uuid,double precision) from public,anon,authenticated;
 grant execute on function public.my_live_trail(uuid,double precision) to authenticated;
@@ -646,16 +649,18 @@ language sql security definer set search_path='' as $$
 $$;
 revoke all on function public.refresh_road_privacy(uuid,uuid) from public,anon,authenticated;
 
--- Home or Work moved: every flag of that owner becomes unknown (a cheap update that is not
--- journalled), and the roads of activities that are shared are decided again at once.
+-- Home or Work changed.
 create or replace function public.road_privacy_places_changed() returns trigger
 language plpgsql security definer set search_path='' as $$
 declare v_owner uuid:=coalesce(new.owner_id,old.owner_id);
 begin
  if coalesce(new.kind,old.kind) not in ('home','work') then return null; end if;
  if tg_op='UPDATE' and new.kind=old.kind and new.latitude=old.latitude and new.longitude=old.longitude and new.radius=old.radius then return null; end if;
+ -- Every flag becomes unknown (a cheap update that is not journalled). They are decided again when an
+ -- activity is shared (road_privacy_on_share); until then a read decodes the road itself.
  update public.road_privacy set clear=null where owner_id=v_owner and clear is not null;
- perform public.refresh_road_privacy(v_owner,j.activity_id) from public.shared_journeys j where j.owner_id=v_owner;
+ -- Roads on a live trail in progress are checked against the new places straight away.
+ update public.live_trails t set roads=(select coalesce(jsonb_object_agg(e.key,jsonb_build_object('l',e.value->>'l','c',public.road_clear_of_private_places(v_owner,e.value->>'l'))),'{}'::jsonb) from jsonb_each(t.roads) e) where t.owner_id=v_owner and t.roads<>'{}'::jsonb;
  return null;
 end $$;
 revoke all on function public.road_privacy_places_changed() from public,anon,authenticated;

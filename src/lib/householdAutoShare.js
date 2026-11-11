@@ -10,11 +10,11 @@ import {flushPendingHides,isLiveHidden} from './hideLiveActivity.js';
 // phone that is offline must not hammer the server: at most MAX_ATTEMPTS publications are
 // tried per pass, and an activity that has failed three times is left alone for half an hour
 // (this session only; a new session tries it again).
-const MAX_ATTEMPTS=8,GIVE_UP_AFTER=3,PAUSE_MS=30*60*1000;
+const MAX_ATTEMPTS=12,GIVE_UP_AFTER=3,PAUSE_MS=30*60*1000;
 const failures=new Map();
 export const forgetAutoShareFailures=()=>failures.clear();
 const paused=id=>{const f=failures.get(id);return Boolean(f&&f.n>=GIVE_UP_AFTER&&Date.now()-f.at<PAUSE_MS);};
-export async function shareNewHouseholdActivities({client,recorder,receipts,checkpoint,limit=5}){
+export async function shareNewHouseholdActivities({client,recorder,receipts,checkpoint,limit=10}){
  // Tell the server about any "keep private" it has not heard yet before anything is published.
  await flushPendingHides(client);
  const published=[],failed=[],skip=new Set();

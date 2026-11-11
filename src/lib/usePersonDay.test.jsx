@@ -110,6 +110,20 @@ it('a quiet poll (nothing new) does not rebuild the day',async()=>{
  expect(result.current.day).toBe(first);
  unmount();vi.useRealTimers();
 });
+it('a drive that finished while the viewer was on another day is not shown as live when they come back',async()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true});
+ const t=W.start+39000;
+ trail={activity_ref:'live1',started_at:'x',updated_at:'x',points:[[-34.7,150.9,t,0],[-34.71,150.9,t+10,0]],roads:{},point_count:2};
+ const {result,rerender,unmount}=render();
+ await waitFor(()=>expect(result.current.day.live.length).toBe(1));
+ rerender({date:'2026-11-09'});                        // look at yesterday
+ trail=null;                                           // the drive ends meanwhile
+ rerender({date:DATE});                                // back to today
+ await act(async()=>{await vi.advanceTimersByTimeAsync(500);});
+ await waitFor(()=>expect(result.current.live).toBeNull());
+ expect(result.current.day.live).toEqual([]);
+ unmount();vi.useRealTimers();
+});
 it('does not poll a past day or run when disabled',async()=>{
  const past=render({date:'2026-11-08'});
  await waitFor(()=>expect(past.result.current.loading).toBe(false));

@@ -5239,6 +5239,14 @@ do {
     check(!DayFit.shouldFit(key: "a|d1", applied: "a|d1", appliedWithRoutes: false, hasRoutes: false, hasPins: true), "a marker alone does not refit again")
     check(!DayFit.shouldFit(key: nil, applied: nil, appliedWithRoutes: false, hasRoutes: true, hasPins: true) && !DayFit.shouldFit(key: "", applied: nil, appliedWithRoutes: false, hasRoutes: true, hasPins: true), "no key means no fitting")
 }
+do {
+    // A fix at 100.3 s is sent as t=100; once that is acknowledged it is never sent again.
+    let fractional = [GPSPoint(latitude: -34, longitude: 151, timestamp: 100.3, accuracy: 5, altitude: 0, speed: 10, segment: 0),
+                      GPSPoint(latitude: -34.001, longitude: 151, timestamp: 110.4, accuracy: 5, altitude: 0, speed: 10, segment: 0)]
+    let sent = LiveTrail.batch(points: fractional, after: 0, now: 200)
+    check(sent.map { $0[2] } == [100, 110], "fractional times are sent rounded")
+    check(LiveTrail.batch(points: fractional, after: 110, now: 200).isEmpty, "an acknowledged fix is not sent again because of rounding")
+}
 print("Final native assertion count: \(assertions)")
 
 // Real native encrypted SQLite storage, not a JavaScript stand-in.

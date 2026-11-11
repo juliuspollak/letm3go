@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {recorder,recorderAvailable} from './recorder.js';
-import {liveRoadWork} from './liveRoads.js';
+import {forgetPublished,liveRoadWork} from './liveRoads.js';
 import {routeGaps,gapKey} from './gapReconstruction.js';
 
 // While my own drive is being recorded, rebuild its closed GPS gaps as roads (once
@@ -28,6 +28,9 @@ export function useLiveRoads({trip,owner,enabled}){
   document.addEventListener('visibilitychange',changed);
   return()=>document.removeEventListener('visibilitychange',changed);
  },[]);
+ // The server drops a trail's roads when live sharing is turned off; after it is turned on again they
+ // must be published again.
+ useEffect(()=>{if(!enabled)forgetPublished();},[enabled]);
  const recording=isRoadDrive(trip)?trip:null;
  useEffect(()=>{latest.current=recording;});
  // Re-run when a gap closes, not on every GPS point.
