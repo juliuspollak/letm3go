@@ -917,9 +917,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         // The live trail changes with every GPS point: replace only this overlay, and only
         // when it really changed, so the recorded day above is never rebuilt.
-        var liveHasher=Hasher();liveHasher.combine(next.live.count)
-        if let last=next.live.last {liveHasher.combine(last.latitude);liveHasher.combine(last.longitude)}
-        let liveKey=liveHasher.finalize()
+        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) }
         if liveKey != liveSignature {
             liveUpdates+=1
             if let old=liveOverlay {map.removeOverlay(old);liveOverlay=nil}

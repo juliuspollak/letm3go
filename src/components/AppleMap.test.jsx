@@ -332,3 +332,26 @@ describe('a person\'s day map (dynamic)',()=>{
   await waitFor(()=>expect(mocks.embed.mock.calls.length).toBeGreaterThan(1));
  });
 });
+
+it('removes a dynamic map freeze immediately when its geometry is invalidated, including a late hide reply',async()=>{
+ const {container,rerender}=render(<AppleMap payload={payload} dynamic/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ let release;
+ mocks.hide.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ const dialog=document.createElement('dialog');dialog.setAttribute('open','');document.body.appendChild(dialog);
+ try{
+  await waitFor(()=>expect(release).toBeTypeOf('function'));
+  rerender(<AppleMap payload={{routes:[],pins:[]}} dynamic/>);
+  await act(async()=>{release({image:'data:image/jpeg;base64,revoked'});});
+  expect(container.querySelector('.apple-map-freeze')).toBeNull();
+ }finally{dialog.remove();}
+});
+
+it('withholds an outdated snapshot while a replacement for revoked geometry is pending',async()=>{
+ mocks.embed.mockImplementationOnce(()=>new Promise(()=>{}));
+ const {container,rerender}=render(<AppleMap payload={payload} dynamic/>);
+ await waitFor(()=>expect(container.querySelector('.apple-map-preview img')).not.toBeNull());
+ mocks.snapshot.mockImplementationOnce(()=>new Promise(()=>{}));
+ rerender(<AppleMap payload={{routes:[],pins:[]}} dynamic/>);
+ expect(container.querySelector('.apple-map-preview img')).toBeNull();
+});
