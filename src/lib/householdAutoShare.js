@@ -10,6 +10,8 @@ export async function shareNewHouseholdActivities({client,recorder,receipts,chec
  // Tell the server about any "keep private" it has not heard yet before anything is published.
  await flushPendingHides(client);
  const published=[],failed=[],skip=new Set();
+ // Each publication returns the receipts as they are afterwards; the next one starts from those.
+ let current=receipts||{};
  let state=null;
  // The server lists newest first. Ones this phone cannot publish (recorded on another
  // device, unfinished, not GPS) are excluded from the next page so they never crowd out
@@ -25,7 +27,8 @@ export async function shareNewHouseholdActivities({client,recorder,receipts,chec
    if(!trip||!trip.endedAt||!['device','watch'].includes(trip.source)||!(trip.points||[]).length||isLiveHidden(trip.id)){skip.add(id);continue;}
    usable++;
    try{
-    await publishActivity({client,state,id:trip.id,reviewedTrip:trip,audience:'household',mode:'household',auto:true,receipts:receipts||{},checkpoint});
+    const result=await publishActivity({client,state,id:trip.id,reviewedTrip:trip,audience:'household',mode:'household',auto:true,receipts:current,checkpoint});
+    current=result?.receipts||current;
     published.push(id);
     if(published.length>=limit)break;
    }catch(error){

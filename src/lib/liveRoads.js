@@ -23,13 +23,15 @@ const accepted=result=>Boolean(result)&&!result.error&&result.data!==false;
 // One pass over the drive's closed gaps: ask Apple Maps for the ones not yet answered
 // (once each), and give viewers every road found, retrying a publication that failed or
 // was refused (no trail row yet, sharing off) instead of treating the road as delivered.
-export async function liveRoadWork({trip,lookup,publish,held=()=>null,perPass=3,now=Date.now()}){
- const done=[];
+// `pace`: milliseconds between two Apple Maps requests (the same care useJourneyGrouping takes).
+export async function liveRoadWork({trip,lookup,publish,held=()=>null,perPass=3,now=Date.now(),pace=3000}){
+ const done=[];let lookups=0;
  for(const gap of routeGaps(trip,{live:true})){
   if(done.length>=perPass)break;
   const key=gapKey(trip.id,gap);
   let record=records.get(key)||held(key),worked=false;
   if(!record||(record.retryAfter&&record.retryAfter<=now)){
+   if(lookups++>0&&pace>0)await new Promise(r=>setTimeout(r,pace));
    try{const found=await lookup(gap.from,gap.to);record=roadRecord(found?.routes||[],gap,now);}
    catch{record=failedRecord(record,now);}
    rememberLiveRoad(key,record);worked=true;

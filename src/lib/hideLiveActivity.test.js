@@ -33,3 +33,18 @@ it('fails (and remembers nothing) when the phone cannot be told',async()=>{
  await expect(hideLiveActivity('A-4',{recorder,client:null})).rejects.toThrow();
  expect(isLiveHidden('A-4')).toBe(false);
 });
+it('a hide added while a flush is waiting on the network is not lost',async()=>{
+ const recorder={hideLiveTrail:vi.fn().mockResolvedValue()};
+ const client={rpc:vi.fn().mockResolvedValue(bad)};
+ await hideLiveActivity('OLD-1',{recorder,client});
+ let release;
+ client.rpc.mockImplementationOnce(()=>new Promise(r=>{release=()=>r(ok);}));   // the flush of OLD-1 is slow
+ const flushing=flushPendingHides(client);
+ client.rpc.mockResolvedValue(bad);
+ await hideLiveActivity('NEW-2',{recorder,client});                            // fails: pending
+ release();await flushing;
+ client.rpc.mockClear();client.rpc.mockResolvedValue(ok);
+ await flushPendingHides(client);
+ expect(client.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'NEW-2',p_hide:true});
+ expect(client.rpc).not.toHaveBeenCalledWith('end_live_trail',{p_ref:'OLD-1',p_hide:true});
+});

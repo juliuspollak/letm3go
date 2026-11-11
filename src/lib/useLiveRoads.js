@@ -20,6 +20,8 @@ import {routeGaps,gapKey} from './gapReconstruction.js';
 const isRoadDrive=trip=>trip&&trip.state==='recording'&&trip.source==='device'&&trip.recordingMode==='automatic'&&trip.activity==='Driving';
 export function useLiveRoads({trip,owner,enabled}){
  const busy=useRef(false),latest=useRef(null);
+// A refused publication is retried after its back-off; this wakes the hook for that.
+ const [retry,setRetry]=useState(0);
  const [foreground,setForeground]=useState(()=>typeof document==='undefined'||document.visibilityState!=='hidden');
  useEffect(()=>{
   const changed=()=>setForeground(document.visibilityState!=='hidden');
@@ -44,5 +46,10 @@ export function useLiveRoads({trip,owner,enabled}){
     if(!done.length)break;
    }
   })().catch(()=>{}).finally(()=>{busy.current=false;});
- },[gapIds,enabled,foreground,owner]);
+ },[gapIds,enabled,foreground,owner,retry]);
+ useEffect(()=>{
+  if(!enabled||!foreground||!gapIds)return undefined;
+  const timer=setInterval(()=>setRetry(n=>n+1),35000);
+  return()=>clearInterval(timer);
+ },[gapIds,enabled,foreground]);
 }

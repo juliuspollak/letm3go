@@ -81,7 +81,7 @@ declare v_activity uuid:=coalesce(new.activity_id,old.activity_id); v_owner uuid
 begin
  insert into public.activity_share_decisions(activity_id,owner_id)
   select v_activity,v_owner where exists(select 1 from public.activities a where a.id=v_activity)
- on conflict(activity_id) do update set private=case when tg_op='INSERT' then false else public.activity_share_decisions.private end;
+ on conflict(activity_id) do nothing;
  return null;
 end $$;
 drop trigger if exists remember_share_decision on public.shared_journeys;
@@ -178,14 +178,47 @@ language sql immutable set search_path='' as $$
  select p_line is not null and length(p_line) between 4 and 20000 and p_line ~ '^[?-~]+$' and p_line ~ '[?-^]$'
 $$;
 
+-- Does the straight stretch between two points pass within the masked distance
+-- (radius + 300 m) of the owner's Home or Work, even with no point inside it?
+create or replace function public.segment_near_private_place(p_owner uuid,p_alat double precision,p_alon double precision,p_blat double precision,p_blon double precision)
+returns boolean language sql stable security definer set search_path='' as $$
+ select exists(
+  select 1 from public.saved_places sp,
+   lateral (select cos(radians(sp.latitude)) as c) k,
+   lateral (select (p_alon-sp.longitude)*111320*k.c as ax,(p_alat-sp.latitude)*111320 as ay,
+                   (p_blon-sp.longitude)*111320*k.c as bx,(p_blat-sp.latitude)*111320 as by) q,
+   lateral (select least(1,greatest(0,case when (q.bx-q.ax)^2+(q.by-q.ay)^2=0 then 0
+              else -(q.ax*(q.bx-q.ax)+q.ay*(q.by-q.ay))/((q.bx-q.ax)^2+(q.by-q.ay)^2) end)) as t) u
+  where sp.owner_id=p_owner and sp.kind in ('home','work')
+   and sqrt((q.ax+u.t*(q.bx-q.ax))^2+(q.ay+u.t*(q.by-q.ay))^2)<=sp.radius+300)
+$$;
+revoke all on function public.segment_near_private_place(uuid,double precision,double precision,double precision,double precision) from public,anon,authenticated;
+
+-- A stored road is clear only if no stretch of it (not just no vertex) passes the masked
+-- distance of Home/Work: roads are simplified, so long straight stretches have few vertices.
 create or replace function public.road_clear_of_private_places(p_owner uuid,p_line text) returns boolean
 language sql stable security definer set search_path='' as $$
  -- No Home/Work saved: nothing to mask, nothing to decode.
  select public.valid_polyline(p_line) and (not exists(select 1 from public.saved_places sp0 where sp0.owner_id=p_owner and sp0.kind in ('home','work')) or not exists(
-  select 1 from public.decode_polyline(p_line) d join public.saved_places sp on sp.owner_id=p_owner and sp.kind in ('home','work')
-  where sqrt(power((d.latitude-sp.latitude)*111320,2)+power((d.longitude-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300))
+  select 1 from (select d.latitude,d.longitude,lag(d.latitude) over (order by d.n) as plat,lag(d.longitude) over (order by d.n) as plon
+                 from public.decode_polyline(p_line) with ordinality as d(latitude,longitude,n)) v
+  where public.segment_near_private_place(p_owner,coalesce(v.plat,v.latitude),coalesce(v.plon,v.longitude),v.latitude,v.longitude)))
 $$;
 revoke all on function public.decode_polyline(text),public.valid_polyline(text),public.road_clear_of_private_places(uuid,text) from public,anon,authenticated;
+
+-- Route points for the owner's own day: at most about 1500 per activity, with the first and
+-- last fix and both ends of every GPS segment kept, in {latitude, longitude, segment, t} form.
+create or replace function public.thin_route_points(p jsonb) returns jsonb
+language sql immutable set search_path='' as $$
+ select coalesce(jsonb_agg(jsonb_build_object('latitude',z.x->'latitude','longitude',z.x->'longitude','segment',coalesce(z.x->'segment','0'::jsonb),
+   't',round((z.x->>'timestamp')::float8)) order by z.ord),'[]'::jsonb)
+ from (select e.x,e.ord,jsonb_array_length(p) as n,
+        lag(e.x->>'segment') over (order by e.ord) as ps,lead(e.x->>'segment') over (order by e.ord) as ns
+       from jsonb_array_elements(p) with ordinality e(x,ord) where jsonb_typeof(e.x->'timestamp')='number') z
+ where z.ord=1 or z.ord=z.n or z.ord % greatest(1,ceil(z.n/1500.0)::int)=0
+  or z.ps is distinct from (z.x->>'segment') or z.ns is distinct from (z.x->>'segment')
+$$;
+revoke all on function public.thin_route_points(jsonb) from public,anon,authenticated;
 
 -- ------------------------------------------------------------- completed day
 -- Who may open this person's map: themselves, a household member, or a friend.
@@ -202,11 +235,7 @@ begin
   return query
    with mine as (
     select a.id,a.started_at,a.ended_at,a.activity,a.title,a.revision,
-     (select coalesce(jsonb_agg(jsonb_build_object('latitude',e.p->'latitude','longitude',e.p->'longitude','segment',coalesce(e.p->'segment','0'::jsonb),
-        't',round((e.p->>'timestamp')::float8)) order by e.ord),'[]'::jsonb)
-      from jsonb_array_elements(a.route_points) with ordinality e(p,ord)
-      where jsonb_typeof(e.p->'timestamp')='number'
-       and (e.ord=1 or e.ord=jsonb_array_length(a.route_points) or e.ord % greatest(1,jsonb_array_length(a.route_points)/1500)=0)) as pts,
+     a.route_points as raw,
      coalesce((select jsonb_object_agg(r.ref,r.record->>'line') from public.journey_road_metadata r
       where r.owner_id=a.owner_id and r.record->>'status'='route' and upper(split_part(r.ref,':',1))=upper(a.id::text)),'{}'::jsonb) as road_lines
     from public.activities a
@@ -214,7 +243,8 @@ begin
     order by a.started_at limit 100),
    tagged as (select m.*,md5(m.revision::text||m.road_lines::text) as tag from mine m)
    select t.id,t.started_at,t.ended_at,t.activity,t.title,t.tag,
-    case when t.tag=any(coalesce(p_known,'{}')) then null else t.pts end,
+    -- thinned only when the viewer does not already hold this version
+    case when t.tag=any(coalesce(p_known,'{}')) then null else public.thin_route_points(t.raw) end,
     case when t.tag=any(coalesce(p_known,'{}')) then null else t.road_lines end
    from tagged t order by t.started_at;
   return;
@@ -248,10 +278,10 @@ create table if not exists public.live_trails (
  last_seq integer not null default 0,
  points jsonb not null default '[]'::jsonb,
  roads jsonb not null default '{}'::jsonb,
- ended_refs text[] not null default '{}',
+ ended_at jsonb not null default '{}'::jsonb,
  updated_at timestamptz not null default now()
 );
-alter table public.live_trails add column if not exists ended_refs text[] not null default '{}';
+alter table public.live_trails add column if not exists ended_at jsonb not null default '{}'::jsonb;
 alter table public.live_trails add column if not exists roads jsonb not null default '{}'::jsonb;
 alter table public.live_trails enable row level security;
 revoke all on public.live_trails from anon,authenticated;
@@ -292,7 +322,7 @@ revoke all on function public.compact_trail(uuid,jsonb,integer) from public,anon
 -- late batch merges by time `t`, and only the newest 3000 points are kept.
 create or replace function public.append_live_trail(p_token text,p_ref text,p_seq integer,p_points jsonb)
 returns boolean language plpgsql security definer set search_path='' as $$
-declare v_user uuid; v_hash bytea; v_old public.live_trails; v_merged jsonb; v_el jsonb; v_had boolean;
+declare v_user uuid; v_hash bytea; v_old public.live_trails; v_merged jsonb; v_el jsonb; v_had boolean; v_endt float8;
 begin
  if p_token is null or length(p_token)<>64 or p_ref is null or length(p_ref) not between 1 and 64 then return false; end if;
  if p_points is null or jsonb_typeof(p_points)<>'array' or jsonb_array_length(p_points)>200 then raise exception 'Invalid trail'; end if;
@@ -312,9 +342,6 @@ begin
    where s.publish_token_hash=v_hash and s.publish_token_expires_at>now() and s.enabled;
  end if;
  if v_user is null then return false; end if;
- select * into v_old from public.live_trails where owner_id=v_user for update;
- v_had:=found;
- if v_had and upper(p_ref)=any(select upper(x) from unnest(v_old.ended_refs) x) then return false; end if;
  -- p_seq = -2: the owner made this activity private. Recorded for good (it also keeps
  -- the finished activity out of automatic sharing), the trail is cleared, and no later
  -- batch for it is accepted, however late it arrives.
@@ -323,16 +350,32 @@ begin
   update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=v_user and upper(activity_ref)=upper(p_ref);
   return true;
  end if;
- -- p_seq < 0: the phone finished this activity. Its trail is cleared at once.
+ -- p_seq = -1: the phone says this activity is over (finished, or momentarily stopped: it
+ -- may resume). The trail is cleared now, and the time it ended is remembered (the last few
+ -- activities), so a late or retried batch of points from before that moment cannot bring it
+ -- back as a ghost, while a resumed activity's newer points are accepted as normal.
  if p_seq is not null and p_seq<0 then
-  -- Remember it finished (the last few), so a late or retried batch for it cannot bring
-  -- the trail back as a ghost "live" line.
-  update public.live_trails set points=case when activity_ref=p_ref then '[]'::jsonb else points end,roads=case when activity_ref=p_ref then '{}'::jsonb else roads end,
-   ended_refs=(select coalesce(array_agg(x),'{}') from (select x from unnest(array_append(ended_refs,p_ref)) with ordinality t(x,o) order by o desc limit 8) q),updated_at=now()
-   where owner_id=v_user;
+  insert into public.live_trails(owner_id,activity_ref,points,ended_at,updated_at)
+   values(v_user,p_ref,'[]'::jsonb,jsonb_build_object(p_ref,extract(epoch from now())),now())
+  on conflict(owner_id) do update set
+   points=case when public.live_trails.activity_ref=excluded.activity_ref then '[]'::jsonb else public.live_trails.points end,
+   roads=case when public.live_trails.activity_ref=excluded.activity_ref then '{}'::jsonb else public.live_trails.roads end,
+   ended_at=(select coalesce(jsonb_object_agg(k,v),'{}'::jsonb) from (
+     select e.key as k,e.value as v from jsonb_each(public.live_trails.ended_at||jsonb_build_object(p_ref,extract(epoch from now()))) e
+     order by (e.value#>>'{}')::float8 desc limit 8) z),
+   updated_at=now();
   return true;
  end if;
  if public.activity_ref_is_private(v_user,p_ref) then return false; end if;
+ select * into v_old from public.live_trails where owner_id=v_user for update;
+ v_had:=found;
+ if v_had then
+  select (e.value#>>'{}')::float8 into v_endt from jsonb_each(v_old.ended_at) e where upper(e.key)=upper(p_ref);
+  if v_endt is not null then
+   select coalesce(jsonb_agg(x),'[]'::jsonb) into p_points from jsonb_array_elements(p_points) x where (x->>2)::float8>v_endt;
+   if jsonb_array_length(p_points)=0 then return false; end if;
+  end if;
+ end if;
  if not v_had or v_old.activity_ref<>p_ref then
   v_merged:='[]'::jsonb;
  else v_merged:=v_old.points; end if;
@@ -409,7 +452,9 @@ begin
   update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=auth.uid() and upper(activity_ref)=upper(p_ref);
  elsif p_ref is null or exists(select 1 from public.live_trails t where t.owner_id=auth.uid() and t.activity_ref=p_ref) then
   update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,
-   ended_refs=case when p_ref is null then ended_refs else (select coalesce(array_agg(x),'{}') from (select x from unnest(array_append(ended_refs,p_ref)) with ordinality t(x,o) order by o desc limit 8) q) end,updated_at=now()
+   ended_at=case when p_ref is null then ended_at else (select coalesce(jsonb_object_agg(k,v),'{}'::jsonb) from (
+     select e.key as k,e.value as v from jsonb_each(ended_at||jsonb_build_object(p_ref,extract(epoch from now()))) e order by (e.value#>>'{}')::float8 desc limit 8) z) end,
+   updated_at=now()
    where owner_id=auth.uid() and (p_ref is null or activity_ref=p_ref);
  end if;
 end $$;
@@ -462,7 +507,7 @@ begin
   and exists(select 1 from public.friend_presence_shares s where s.user_id=p_owner and s.enabled);
  if not (v_self or v_household or v_friend) then return; end if;
  v_open:=v_self or v_household;
- select * into v_t from public.live_trails t where t.owner_id=p_owner and t.updated_at>now()-interval '20 minutes';
+ select * into v_t from public.live_trails t where t.owner_id=p_owner and t.updated_at>now()-interval '10 minutes';
  if not found then return; end if;
  return query
   with pts as (
@@ -471,7 +516,12 @@ begin
      where sp.owner_id=p_owner and sp.kind in ('home','work')
       and sqrt(power(((x->>0)::float8-sp.latitude)*111320,2)+power(((x->>1)::float8-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300) as hidden
    from jsonb_array_elements(v_t.points) x),
-  counted as (select pts.*,count(*) filter (where hidden) over (order by t rows between unbounded preceding and current row) as hid from pts)
+  -- A visible point whose stretch from the previous fix passes the masked distance also
+  -- starts a new run, even though no point lies inside it (sparse fixes at speed).
+  linked as (select pts.*,lag(x) over (order by t) as px,lag(hidden) over (order by t) as ph from pts),
+  marked as (select l.*,(not l.hidden) and l.px is not null and not coalesce(l.ph,false) and (not v_open)
+     and public.segment_near_private_place(p_owner,(l.px->>0)::float8,(l.px->>1)::float8,(l.x->>0)::float8,(l.x->>1)::float8) as crossing from linked l),
+  counted as (select m.*,count(*) filter (where m.hidden or m.crossing) over (order by m.t rows between unbounded preceding and current row) as hid from marked m)
   select v_t.activity_ref,v_t.started_at,v_t.updated_at,
    coalesce((select jsonb_agg(jsonb_build_array(c.x->0,c.x->1,c.x->2,c.seg*100000+c.hid) order by c.t) from counted c
     where not c.hidden and c.t>coalesce(p_after,0)),'[]'::jsonb),

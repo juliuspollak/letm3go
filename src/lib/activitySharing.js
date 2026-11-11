@@ -32,13 +32,17 @@ export async function makeActivityPrivate(client,id){
  const {data:auth,error}=await client.auth.getUser();if(error||!auth.user)throw new Error('Reconnect and sign in to revoke sharing.');
  const {data:trip,error:readError}=await client.from('activities').select('id').eq('id',id).eq('owner_id',auth.user.id).maybeSingle();
  if(readError)throw new Error('Privacy could not be verified.');
- if(trip){const {error}=await client.rpc('revoke_activity_publication',{p_id:id});if(error)throw new Error('Sharing could not be revoked. Please retry.');
-  // The owner's decision for this activity, so automatic sharing never publishes it later
-  // (best effort: an older server without it simply has no automatic sharing).
-  // supabase-js reports a failure as {error}, not an exception. A server that does not have
-  // the function yet is fine; any other failure must not look like success, because without
-  // the decision automatic sharing could publish this activity later. Retrying is safe.
-  const decision=await client.rpc('keep_activity_private',{p_activity:id});
-  if(decision?.error&&!/PGRST202|42883|could not find|does not exist/i.test(`${decision.error.code||''} ${decision.error.message||''}`))throw new Error('The activity is private, but that choice could not be saved. Please retry.');}
+ if(trip){const {error}=await client.rpc('revoke_activity_publication',{p_id:id});if(error)throw new Error('Sharing could not be revoked. Please retry.');}
+ // The owner's decision for this activity, recorded whether or not it has been uploaded
+ // yet, so automatic sharing never publishes it later. Two records: by activity (once it
+ // exists in the cloud) and by the recorder's own id (works before it is uploaded).
+ // supabase-js reports a failure as {error}, not an exception. A server that does not have
+ // the functions yet is fine; any other failure must not look like success. Retrying is safe.
+ const missing=e=>/PGRST202|42883|could not find|does not exist/i.test(`${e.code||''} ${e.message||''}`);
+ const calls=[client.rpc('end_live_trail',{p_ref:String(id),p_hide:true})];
+ if(trip)calls.push(client.rpc('keep_activity_private',{p_activity:id}));
+ for(const result of await Promise.all(calls)){
+  if(result?.error&&!missing(result.error))throw new Error('The activity is private, but that choice could not be saved. Please retry.');
+ }
  return {audience:'private'};
 }

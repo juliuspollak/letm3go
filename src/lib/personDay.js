@@ -71,6 +71,10 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
  const liveTrail=live&&live.points?.length?live.points.filter(p=>p[2]>=window.start&&p[2]<window.end):[];
  for(const p of liveTrail)samples.push({t:p[2],lat:p[0],lon:p[1],segment:`live:${p[3]}`,id:'live'});
  samples.sort((a,b)=>a.t-b.t);
+ // Overlapping recordings interleave in time; each sample knows the next one of its own
+ // recording, so gaps and lines are judged within one recording, never across two.
+ const lastOf=new Map();
+ for(let i=samples.length-1;i>=0;i--){samples[i].nextSame=lastOf.has(samples[i].id)?lastOf.get(samples[i].id):-1;lastOf.set(samples[i].id,i);}
  const isToday=now>=window.start&&now<window.end;
  return {date,window,activities,markers,samples,
   recorded:activities.flatMap(a=>a.routes),
@@ -81,23 +85,28 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
   liveRoads:isToday?Object.values(live?.roads||{}).map(decodeLine).filter(l=>l.length>1):[],
   isEmpty:!activities.length&&!liveTrail.length};
 }
-// Where the person was at a time: the last recorded fix at or before it. Inside a
-// gap this is the fix before the gap, flagged, never a guessed point on a road.
+// Where the person was at a time: the last recorded fix at or before it. Inside a gap this
+// is the fix before the gap, flagged, never a guessed point on a road.
 export function positionAt(day,t){
  const s=day.samples;if(!s.length||t<s[0].t)return null;
  let lo=0,hi=s.length-1;
  while(lo<hi){const mid=(lo+hi+1)>>1;if(s[mid].t<=t)lo=mid;else hi=mid-1;}
- const p=s[lo],next=s[lo+1];
- return {point:[p.lat,p.lon],t:p.t,id:p.id,inGap:Boolean(next&&(next.segment!==p.segment||next.id!==p.id)&&t<next.t),ageSeconds:t-p.t};
+ const p=s[lo],next=p.nextSame>=0?s[p.nextSame]:null;
+ // In a gap: this recording's next fix starts a new segment, or the recording is over and
+ // the day has later fixes (nothing was being recorded in between).
+ const over=!next&&lo<s.length-1;
+ return {point:[p.lat,p.lon],t:p.t,id:p.id,inGap:Boolean(over||(next&&next.segment!==p.segment&&t<next.t)),ageSeconds:t-p.t};
 }
-// The day's lines drawn only up to a time, for scrubbing (all in memory). The runs
-// are built once per composed day; a scrub step is a binary search and a few slices.
+// The day's lines drawn only up to a time, for scrubbing (all in memory). Runs are built once
+// per composed day, one stream per recording and segment; a scrub step is a binary search
+// over the shared time order and a few slices.
 function runsOf(day){
  if(day.runs)return day.runs;
- const runs=[];let segment=null,id=null;
- day.samples.forEach((s,index)=>{
-  if(!runs.length||s.segment!==segment||s.id!==id){runs.push({start:index,points:[]});segment=s.segment;id=s.id;}
-  runs.at(-1).points.push([s.lat,s.lon]);
+ const runs=[],open=new Map();
+ day.samples.forEach((sample,index)=>{
+  let run=open.get(sample.id);
+  if(!run||run.segment!==sample.segment){run={segment:sample.segment,indexes:[],points:[]};open.set(sample.id,run);runs.push(run);}
+  run.indexes.push(index);run.points.push([sample.lat,sample.lon]);
  });
  day.runs=runs;
  return runs;
@@ -107,9 +116,10 @@ export function linesUntil(day,t){
  while(lo<hi){const mid=(lo+hi)>>1;if(s[mid].t<=t)lo=mid+1;else hi=mid;}
  const out=[];
  for(const run of runsOf(day)){
-  if(run.start>=lo)break;
-  const points=run.start+run.points.length<=lo?run.points:run.points.slice(0,lo-run.start);
-  if(points.length>1)out.push(points);
+  if(run.indexes[0]>=lo)continue;
+  let a=0,b=run.indexes.length;
+  while(a<b){const mid=(a+b)>>1;if(run.indexes[mid]<lo)a=mid+1;else b=mid;}
+  if(a>1)out.push(a===run.points.length?run.points:run.points.slice(0,a));
  }
  return out;
 }

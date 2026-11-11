@@ -23,7 +23,8 @@ export async function hideLiveActivity(ref,{recorder,client}){
 export async function flushPendingHides(client){
  const list=read(PENDING);
  if(!client||!list.length)return;
- const left=[];
- for(const ref of list)if(!(await tellServer(client,ref)))left.push(ref);
- write(PENDING,left);
+ const told=new Set();
+ for(const ref of list)if(await tellServer(client,ref))told.add(ref);
+ // Re-read: a hide added while this was waiting on the network must not be lost.
+ write(PENDING,read(PENDING).filter(ref=>!told.has(ref)));
 }

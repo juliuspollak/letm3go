@@ -154,6 +154,19 @@ describe('access changes and the cache',()=>{
   expect(again.result.current.day.activities.length).toBe(0);
   expect(again.result.current.error).toMatch(/offline/);
  });
+ it('an open map whose revalidation keeps failing stops showing rows once they are no longer recently verified',async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  const {result,unmount}=render();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+  mock.rpc.mockImplementation(async()=>({data:null,error:{message:'offline'}}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(61000);});
+  expect(result.current.day.activities.length).toBe(1);        // verified a minute ago: still shown
+  cachedDay('me','her',`${DATE}@${Z}`).at=Date.now()-SHOW_CACHED_MS-1000;
+  await act(async()=>{await vi.advanceTimersByTimeAsync(61000);});
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(0));
+  expect(result.current.error).toMatch(/offline/);
+  unmount();vi.useRealTimers();
+ });
  it('revalidates an open map on a schedule, so a friend removed meanwhile disappears from it',async()=>{
   vi.useFakeTimers({shouldAdvanceTime:true});
   const {result,unmount}=render();

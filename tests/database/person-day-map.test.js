@@ -185,8 +185,10 @@ it('automatic sharing is refused for an activity made private meanwhile, and a m
  expect(await allowed()).toBe(true);
  await as('authenticated',owner,`select public.keep_activity_private('${id}')`);   // while an automatic publication is on its way
  expect(await allowed()).toBe(false);
- await share(id,'household','household',[],'Chosen by hand');                       // an explicit share by the owner
- expect(await allowed()).toBe(true);
+ await share(id,'household','household',[],'Chosen by hand');                       // an explicit share by the owner goes through
+ await db.exec('reset role');
+ expect((await db.query(`select count(*)::int as n from public.shared_journeys where activity_id='${id}'`)).rows[0].n).toBe(1);
+ expect(await allowed()).toBe(false);                                               // but an AUTOMATIC one is still refused
 });
 it('publishing the same activity twice leaves one publication and one recipient set',async()=>{
  const id='dddddddd-0000-4000-8000-00000000d002';
@@ -345,6 +347,58 @@ it('a finished activity cannot be brought back as a live ghost by a late or retr
  expect(await append(houseToken,'ghost2',1,pts(900))).toBe(true);           // the next activity is unaffected
  expect(await append(houseToken,'ghost2',-1,'[]')).toBe(true);
  expect(await append(houseToken,'ghost1',4,pts(840))).toBe(false);          // still refused after another activity came and went
+});
+it('a resumed activity can publish again, a late batch from before the stop cannot, and private still works after a stop',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const now=Math.floor(Date.now()/1000);
+ expect(await append(houseToken,'resume1',1,pts(1000))).toBe(true);
+ expect(await append(houseToken,'resume1',-1,'[]')).toBe(true);                     // stopped at a long red light
+ expect(await append(houseToken,'resume1',2,pts(1001))).toBe(false);                // late batch from before the stop
+ expect(await append(houseToken,'resume1',3,JSON.stringify([[-34.9,151,now+20,0]]))).toBe(true);   // it moves again
+ expect((await trail(mate)).points.map(p=>p[2])).toEqual([now+20]);
+ // Private after a stop is honoured (and confirmed), not refused.
+ expect(await append(houseToken,'resume1',-1,'[]')).toBe(true);
+ expect(await append(houseToken,'resume1',-2,'[]')).toBe(true);
+ expect(await append(houseToken,'resume1',4,JSON.stringify([[-34.9,151,now+40,0]]))).toBe(false);
+ // The record of what ended stays bounded and never forgets the newest.
+ for(let i=0;i<12;i++){await append(houseToken,'bulk'+i,1,JSON.stringify([[-34.9,151,now+100+i,0]]));await append(houseToken,'bulk'+i,-1,'[]');}
+ await db.exec('reset role');
+ const kept=Object.keys((await db.query(`select ended_at from public.live_trails where owner_id='${owner}'`)).rows[0].ended_at);
+ expect(kept.length).toBeLessThanOrEqual(8);expect(kept).toContain('bulk11');expect(kept).not.toContain('bulk0');
+});
+it('a friend never gets a line drawn through the masked area between two sparse fixes',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(false)');
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ friendToken=(await as('authenticated',owner,'select * from public.issue_my_friend_location_token()')).rows[0].publish_token;
+ // Home is at -34.5,150.8 (masked to 400 m). These fixes are ~1 km either side of it: none is inside.
+ const batch=JSON.stringify([[-34.5,150.79,BASE+3000,0],[-34.5,150.81,BASE+3030,0],[-34.5,150.82,BASE+3045,0]]);
+ expect(await append(friendToken,'cross1',1,batch)).toBe(true);
+ const seen=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ expect(seen.points.length).toBe(3);
+ expect(seen.points[0][3]).not.toBe(seen.points[1][3]);      // cut across the masked stretch
+ expect(seen.points[1][3]).toBe(seen.points[2][3]);          // an ordinary stretch stays joined
+ const mine=(await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ expect(new Set(mine.points.map(p=>p[3])).size).toBe(1);
+ // A stored road that runs past Home with no vertex near it is withheld too.
+ const enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
+ const line=enc(-34.5)+enc(150.79)+enc(0)+enc(0.02);
+ await as('anon','',`select public.put_live_road('${friendToken}','cross1','X:1:2','${line.replace(/\\/g,'\\\\')}')`);
+ expect(Object.keys((await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).not.toContain('X:1:2');
+ expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('X:1:2');
+ await as('authenticated',owner,"select public.end_live_trail('cross1')");
+ await as('authenticated',owner,'select public.set_friend_location(false)');
+});
+it('the owner day is thinned to about 1500 points per activity but keeps both ends and the segment breaks',async()=>{
+ const id='77777777-0000-4000-8000-000000007777';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+  select '${id}','Long','Driving','manual','2033-01-01 08:00+00','2033-01-01 12:00+00',14400,90000,
+   (select jsonb_agg(jsonb_build_object('latitude',-34.5-g*1e-5,'longitude',150.8,'timestamp',1990000000+g*4,'segment',case when g<1500 then 0 else 1 end) order by g) from generate_series(0,2899) g)`);
+ const row=(await as('authenticated',owner,`select * from public.my_shared_day('${owner}','2033-01-01 00:00+00','2033-01-02 00:00+00','{}')`)).rows.find(r=>r.activity_id===id);
+ expect(row.points.length).toBeLessThanOrEqual(1800);expect(row.points.length).toBeGreaterThan(1000);
+ expect(row.points[0].t).toBe(1990000000);expect(row.points.at(-1).t).toBe(1990000000+2899*4);
+ const last0=row.points.filter(p=>p.segment===0).at(-1),first1=row.points.find(p=>p.segment===1);
+ expect(last0.t).toBe(1990000000+1499*4);expect(first1.t).toBe(1990000000+1500*4);
 });
 it('rejects a road that is not a well-formed polyline, and stores whether it touches a masked area once',async()=>{
  await as('authenticated',owner,'select public.set_my_live_location(true)');

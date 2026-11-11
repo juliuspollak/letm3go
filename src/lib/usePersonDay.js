@@ -40,10 +40,14 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
   if(!enabled||!supabase||!viewer||!owner)return undefined;
   let cancelled=false;
   const run=()=>{
-   // What may still be shown if the server cannot be reached: only a recently verified day.
-   const before=peekFreshDay(viewer,owner,slot(date,timeZone));
    fetchDay({viewer,owner,date,timeZone}).then(next=>{if(!cancelled)setLoaded({key,rows:next,error:''});})
-    .catch(error=>{if(!cancelled)setLoaded(previous=>previous.key===key&&previous.rows.length?{...previous,error:''}:{key,rows:before?.rows||[],error:before?'':error.message});});
+    .catch(error=>{if(cancelled)return;
+     // Could not reach the server. What was loaded stays only while it was verified recently;
+     // after that it is dropped and the failure is reported, so a withdrawn permission is not
+     // displayed from memory and the person is told the data cannot be confirmed.
+     const recent=peekFreshDay(viewer,owner,slot(date,timeZone));
+     setLoaded(previous=>recent?{key,rows:previous.key===key?previous.rows:recent.rows,error:''}:{key,rows:[],error:error.message||'Unable to confirm this day.'});
+    });
   };
   run();
   // Ahead of the person asking: the days either side, quietly.
@@ -55,7 +59,7 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
   return()=>{cancelled=true;clearInterval(timer);document.removeEventListener('visibilitychange',visible);window.removeEventListener('online',run);};
  },[key,timeZone,enabled]); // eslint-disable-line react-hooks/exhaustive-deps
  const isToday=useMemo(()=>{const w=dayWindow(date,timeZone),t=now();return t>=w.start&&t<w.end;},[date,timeZone,now]);
- const liveKey=`${owner}|${isToday}`;
+ const liveKey=`${owner}|${isToday}|${date}|${timeZone}`;
  const [liveState,setLiveState]=useState({key:null,value:null});
  const live=liveState.key===liveKey?liveState.value:null;
  useEffect(()=>{
@@ -91,7 +95,7 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
   }
   void tick();
   return()=>{cancelled=true;clearTimeout(timer);};
- },[owner,isToday,enabled,liveKey]); // eslint-disable-line react-hooks/exhaustive-deps
+ },[owner,isToday,enabled,liveKey,date,timeZone]); // eslint-disable-line react-hooks/exhaustive-deps
  const day=useMemo(()=>composeDay({rows,live,timeZone,date,now:now()}),[rows,live,timeZone,date,now]);
  return {day,live,loading:enabled&&!current&&!held,error:current?loaded.error:''};
 }

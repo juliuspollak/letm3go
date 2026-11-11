@@ -40,6 +40,15 @@ it('records the owner\'s decision when an activity is made private, so automatic
  const c=client();c.rpc.mockResolvedValue({error:null});
  await makeActivityPrivate(c,'trip');
  expect(c.rpc).toHaveBeenCalledWith('keep_activity_private',{p_activity:'trip'});
+ expect(c.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'trip',p_hide:true});
+});
+it('an activity not uploaded yet is still recorded as private, by its recorder id',async()=>{
+ const c=client();
+ c.from=()=>({select:()=>({eq:()=>({eq:()=>({maybeSingle:async()=>({data:null})})})})});
+ c.rpc.mockResolvedValue({error:null});
+ await makeActivityPrivate(c,'LOCAL-1');
+ expect(c.rpc).not.toHaveBeenCalledWith('revoke_activity_publication',expect.anything());
+ expect(c.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'LOCAL-1',p_hide:true});
 });
 it('a failed decision is reported, never shown as success; a server without the function is fine',async()=>{
  const bad=client();

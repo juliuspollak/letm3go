@@ -36,7 +36,7 @@ describe('live road work',()=>{
  it('retries a publication the server refused (for example before the trail exists) without asking Apple Maps again',async()=>{
   const lookup=vi.fn().mockResolvedValue({routes:[road]});
   const publish=vi.fn().mockResolvedValueOnce({data:false,error:null}).mockResolvedValueOnce({data:null,error:{message:'x'}}).mockResolvedValue({data:true,error:null});
-  await liveRoadWork({trip,lookup,publish,now:1000});
+  await liveRoadWork({trip,lookup,publish,now:1000,pace:0});
   expect(await liveRoadWork({trip,lookup,publish,now:1000+10000})).toHaveLength(0);       // backed off
   await liveRoadWork({trip,lookup,publish,now:1000+31000});                                // refused again
   await liveRoadWork({trip,lookup,publish,now:1000+70000});                                // accepted
@@ -55,7 +55,7 @@ describe('live road work',()=>{
  });
  it('retries a failed lookup only after its back-off, and never publishes it',async()=>{
   const lookup=vi.fn().mockRejectedValue(new Error('network')),publish=vi.fn();
-  await liveRoadWork({trip,lookup,publish,now:1000});
+  await liveRoadWork({trip,lookup,publish,now:1000,pace:0});
   await liveRoadWork({trip,lookup,publish,now:1100});
   expect(lookup).toHaveBeenCalledTimes(1);
   await liveRoadWork({trip,lookup,publish,now:1000+11*60000});
@@ -64,7 +64,17 @@ describe('live road work',()=>{
  it('never asks for more than a few roads in one pass',async()=>{
   const points=[];for(let i=0;i<10;i++)points.push(p(-34.5-i*0.05,150.8,1000+i*400,i),p(-34.52-i*0.05,150.8,1010+i*400,i));
   const lookup=vi.fn().mockResolvedValue({routes:[]});
-  expect((await liveRoadWork({trip:{...trip,points},lookup,publish:vi.fn()})).length).toBeLessThanOrEqual(3);
+  expect((await liveRoadWork({trip:{...trip,points},lookup,publish:vi.fn(),pace:0})).length).toBeLessThanOrEqual(3);
+ });
+ it('spaces Apple Maps requests apart',async()=>{
+  vi.useFakeTimers();
+  const points=[];for(let i=0;i<4;i++)points.push(p(-34.5-i*0.05,150.8,1000+i*400,i),p(-34.52-i*0.05,150.8,1010+i*400,i));
+  const lookup=vi.fn().mockResolvedValue({routes:[]});
+  const work=liveRoadWork({trip:{...trip,points},lookup,publish:vi.fn(),pace:3000});
+  await vi.advanceTimersByTimeAsync(10);expect(lookup).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(3000);expect(lookup).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(3000);await work;expect(lookup).toHaveBeenCalledTimes(3);
+  vi.useRealTimers();
  });
  it('treats a road already held by the saved metadata as answered',async()=>{
   const lookup=vi.fn();

@@ -79,6 +79,7 @@ import {homePeople} from './lib/homePeople.js';
 import ActivityEditor from './components/ActivityEditor.jsx';
 import SharedActivityDetail from './components/SharedActivityDetail.jsx';
 import PersonMap from './components/PersonMap.jsx';
+import { saveSyncReceipts } from './lib/syncReceipts.js';
 import {clearPersonDays,dropOwner} from './lib/personDayCache.js';
 import {useLiveRoads} from './lib/useLiveRoads.js';
 import {useHouseholdAutoShare} from './lib/useHouseholdAutoShare.js';
@@ -297,7 +298,7 @@ function PrivateApp(){
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
  useLiveRoads({trip:recording.state.automaticTrip,owner:session.user.id,enabled:auth.status==='authenticated'});
- useHouseholdAutoShare({client:supabase,recorder,enabled:auth.status==='authenticated'&&recorderAvailable(),finishedCount:realJourneys.filter(t=>t.endedAt).length,receipts:auth.preferences.syncReceipts,checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});
+ useHouseholdAutoShare({client:supabase,recorder,enabled:auth.status==='authenticated'&&recorderAvailable(),finishedCount:realJourneys.filter(t=>t.endedAt).length,receipts:auth.preferences.syncReceipts,checkpoint:syncReceipts=>saveSyncReceipts(auth.savePreferences,syncReceipts)});
  const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,sync:journeySync});
  const sharedFeed=useSharedActivityFeed(tab==='Trips'&&includeSharedActivities,session.user.id);
  // Who can see my shared activities: reloaded when an activity's details close.

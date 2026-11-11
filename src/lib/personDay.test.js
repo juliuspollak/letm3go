@@ -145,6 +145,15 @@ describe('composing a day',()=>{
   const old={activity_id:'o',title:'Old',activity:'Driving',started_at:new Date((w.start+100)*1000).toISOString(),ended_at:new Date((w.start+400)*1000).toISOString(),roads:{},points:[{latitude:-34.5,longitude:150.9,segment:0},{latitude:-34.6,longitude:150.9,segment:0}]};
   expect(composeDay({date,timeZone:SYD,rows:[old]}).untimed.length).toBe(1);
  });
+ it('overlapping recordings keep their own lines and gaps while scrubbing',()=>{
+  const day=composeDay({date,timeZone:SYD,rows:[
+   row('manual','Walk',w.start+100,[[w.start+100,-34.5,150.9,0],[w.start+300,-34.51,150.9,0],[w.start+500,-34.52,150.9,0]]),
+   row('auto','Drive',w.start+150,[[w.start+150,-34.6,151,0],[w.start+350,-34.61,151,0],[w.start+550,-34.62,151,0]])]});
+  const lines=linesUntil(day,w.start+600);
+  expect(lines.length).toBe(2);expect(lines.every(l=>l.length===3)).toBe(true);
+  expect(linesUntil(day,w.start+360).map(l=>l.length).sort()).toEqual([2,2]);
+  expect(positionAt(day,w.start+360)).toMatchObject({id:'auto',inGap:false});
+ });
  it('fans out markers that share a spot',()=>{
   const out=spreadMarkers([1,2,3].map(n=>({n,point:[-34.5,150.9]})));
   expect(out[0].point).toEqual([-34.5,150.9]);
