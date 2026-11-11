@@ -79,6 +79,12 @@ describe('composing a day',()=>{
   expect(composeDay({date,timeZone:SYD,now:w.end+10,live,rows:[]}).live).toEqual([]);
   expect(composeDay({date,timeZone:SYD,rows:[]}).isEmpty).toBe(true);
  });
+ it('draws an activity shared without capture times but never offers it to the time slider',()=>{
+  const old={activity_id:'o',title:'Old share',activity:'Driving',started_at:new Date((w.start+100)*1000).toISOString(),ended_at:new Date((w.start+400)*1000).toISOString(),roads:{},
+   points:[{latitude:-34.5,longitude:150.9,segment:0},{latitude:-34.6,longitude:150.9,segment:0},{latitude:-34.7,longitude:150.9,segment:0}]};
+  const day=composeDay({date,timeZone:SYD,rows:[old]});
+  expect(day.recorded.length).toBe(1);expect(day.markers.length).toBe(1);expect(day.samples).toEqual([]);expect(positionAt(day,w.start+200)).toBeNull();
+ });
  it('fans out markers that share a spot',()=>{
   const out=spreadMarkers([1,2,3].map(n=>({n,point:[-34.5,150.9]})));
   expect(out[0].point).toEqual([-34.5,150.9]);

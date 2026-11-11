@@ -115,8 +115,9 @@ Deno.serve(async request=>{
    const {data:assets,error:mediaError}=await userClient.from('media_assets').select('id,caption,latitude,longitude').eq('activity_id',trip.id);if(mediaError)throw mediaError;
    const selected=Array.isArray(body.photoIDs)?body.photoIDs.slice(0,50):[];
    const safePhotos=(assets||[]).filter(p=>selected.includes(p.id)&&!places?.some(place=>['home','work'].includes(place.kind)&&p.latitude!=null&&p.longitude!=null&&metersBetween(p,place)<=place.radius+300)).map(p=>({id:p.id,caption:p.caption,latitude:p.latitude,longitude:p.longitude}));
-   const snapshot={title:trip.title,activity:trip.activity,description:trip.description,startedAt:trip.started_at,endedAt:trip.ended_at,distanceMeters:trip.distance_meters,durationSeconds:trip.duration_seconds,points:redactRoute(trip.route_points,places||[]),photos:safePhotos};
    const privateAudience=body.audience==='friends'||body.audience==='household';
+   // Private audiences also get each point's capture time (for the person's day timeline); a public link never does.
+   const snapshot={title:trip.title,activity:trip.activity,description:trip.description,startedAt:trip.started_at,endedAt:trip.ended_at,distanceMeters:trip.distance_meters,durationSeconds:trip.duration_seconds,points:redactRoute(trip.route_points,places||[],300,{times:privateAudience}),photos:safePhotos};
    if(privateAudience&&(!['friends','household','selected','mixed','all'].includes(body.mode)||!Array.isArray(body.recipients)||body.recipients.length>100))return reply({error:'Select valid social recipients'},400);
    const publication=privateAudience
     ?await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot})

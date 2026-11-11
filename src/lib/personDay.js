@@ -49,17 +49,25 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
  const window=dayWindow(date,timeZone);
  const activities=[];
  for(const row of [...rows].sort((a,b)=>Date.parse(a.started_at)-Date.parse(b.started_at))){
-  const points=clipToWindow(Array.isArray(row.points)?row.points:[],window);
+  // Activities shared before capture times were included have geometry but no per-point
+  // time. They are placed on the day by their start and end, drawn, and left out of
+  // time lookups: nothing is guessed about where the person was at a given minute.
+  const raw=Array.isArray(row.points)?row.points:[];
+  const untimed=raw.length>1&&!raw.some(p=>num(p.t));
+  const begun=Date.parse(row.started_at)/1000,ended=Date.parse(row.ended_at)/1000;
+  const spread=untimed&&num(begun)&&num(ended)&&ended>begun
+   ?raw.map((p,i)=>({...p,t:begun+(ended-begun)*i/(raw.length-1)})):raw;
+  const points=clipToWindow(spread,window);
   const timed=points.filter(p=>!p.bridge);
   if(!timed.length)continue;
   const roads=Object.entries(row.roads||{}).map(([ref,line])=>({ref,line:decodeLine(line)})).filter(r=>r.line.length>1);
-  activities.push({id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:Date.parse(row.started_at)/1000,
+  activities.push({untimed,id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:Date.parse(row.started_at)/1000,
    routes:lines(points),roads,points:timed,start:[timed[0].latitude,timed[0].longitude]});
  }
  const markers=spreadMarkers(activities.slice(0,MAX_MARKERS).map((a,i)=>({n:i+1,activityID:a.id,point:a.start,title:`${i+1}. ${a.title}`})));
  // Time lookups use one flat, sorted list of recorded fixes. A road estimate has no
  // timestamps of its own, so none are invented for it.
- const samples=activities.flatMap(a=>a.points.map(p=>({t:p.t,lat:p.latitude,lon:p.longitude,segment:p.segment,id:a.id}))).sort((a,b)=>a.t-b.t);
+ const samples=activities.filter(a=>!a.untimed).flatMap(a=>a.points.map(p=>({t:p.t,lat:p.latitude,lon:p.longitude,segment:p.segment,id:a.id}))).sort((a,b)=>a.t-b.t);
  const liveTrail=live&&live.points?.length?live.points.filter(p=>p[2]>=window.start&&p[2]<window.end):[];
  for(const p of liveTrail)samples.push({t:p[2],lat:p[0],lon:p[1],segment:`live:${p[3]}`,id:'live'});
  samples.sort((a,b)=>a.t-b.t);
