@@ -467,7 +467,7 @@ describe('road privacy is decided once and stays correct',()=>{
  const id='f3f3f3f3-0000-4000-8000-00000000f003',enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
  const lineNearHome=enc(-34.5)+enc(150.79)+enc(0)+enc(0.02);          // runs straight past Home (-34.5,150.8)
  const lineFar=enc(-34.9)+enc(151.2)+enc(-0.01)+enc(0.01);
- const flags=async()=>{await db.exec('reset role');return Object.fromEntries((await db.query(`select ref,privacy_clear from public.journey_road_metadata where owner_id='${owner}' and ref like 'F3F3F3F3%'`)).rows.map(r=>[r.ref,r.privacy_clear]));};
+ const flags=async()=>{await db.exec('reset role');return Object.fromEntries((await db.query(`select r.ref,p.clear as privacy_clear from public.journey_road_metadata r left join public.road_privacy p on p.owner_id=r.owner_id and p.ref=r.ref where r.owner_id='${owner}' and r.ref like 'F3F3F3F3%'`)).rows.map(r=>[r.ref,r.privacy_clear]));};
  const seenBy=async()=>Object.keys(((await as('authenticated',stranger,`select roads from public.my_shared_day('${owner}','2035-01-01 00:00+00','2035-01-02 00:00+00','{}')`)).rows[0]||{}).roads||{});
  it('is set when a road is written, not computed again on read',async()=>{
   const code=(await as('authenticated',owner,'select public.create_friend_invite() as code')).rows[0].code;
@@ -493,18 +493,27 @@ describe('road privacy is decided once and stays correct',()=>{
   await share(id,'friends','selected',[stranger],'Roads');
   expect(await seenBy()).toEqual([id.toUpperCase()+':3:4']);                                       // back: the road past Home is withheld again
  });
+ it('re-deciding flags never journals the owner\'s roads as changed',async()=>{
+  await db.exec('reset role');
+  const before=(await db.query(`select count(*)::int as n,coalesce(max(revision),0)::int as r from public.journey_metadata_changes where owner_id='${owner}' and domain='roads'`)).rows[0];
+  await as('authenticated',owner,"update public.saved_places set radius=120 where kind='home' and owner_id=auth.uid()");
+  await db.exec('reset role');
+  const after=(await db.query(`select count(*)::int as n,coalesce(max(revision),0)::int as r from public.journey_metadata_changes where owner_id='${owner}' and domain='roads'`)).rows[0];
+  expect(after).toEqual(before);
+ });
  it('a road not yet decided is decoded on read, so a missed refresh can only be slow, never a leak',async()=>{
-  await db.exec(`reset role;update public.journey_road_metadata set privacy_clear=null where owner_id='${owner}'`);
+  await share(id,'friends','selected',[stranger],'Roads');                        // moving Home withdrew the share (existing rule)
+  await db.exec(`reset role;update public.road_privacy set clear=null where owner_id='${owner}'`);
   expect(await seenBy()).toEqual([id.toUpperCase()+':3:4']);
  });
  it('a road written before Home existed is checked when the activity is shared',async()=>{
   const id2='f4f4f4f4-0000-4000-8000-00000000f004';
   await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
    values('${id2}','Late share','Driving','manual','2035-01-01 09:00+00','2035-01-01 09:30+00',1800,9000)`);
-  await db.exec(`reset role;alter table public.journey_road_metadata disable trigger road_privacy_on_write;insert into public.journey_road_metadata(owner_id,ref,record,privacy_clear) values('${owner}','${id2.toUpperCase()}:1:2',jsonb_build_object('status','route','line','${lineNearHome.replace(/\\/g,'\\\\')}'),null);alter table public.journey_road_metadata enable trigger road_privacy_on_write;`);
+  await db.exec(`reset role;alter table public.journey_road_metadata disable trigger road_privacy_on_write;insert into public.journey_road_metadata(owner_id,ref,record) values('${owner}','${id2.toUpperCase()}:1:2',jsonb_build_object('status','route','line','${lineNearHome.replace(/\\/g,'\\\\')}'));alter table public.journey_road_metadata enable trigger road_privacy_on_write;`);
   await share(id2,'friends','selected',[stranger],'Late share');
   await db.exec('reset role');
-  expect((await db.query(`select privacy_clear from public.journey_road_metadata where ref='${id2.toUpperCase()}:1:2'`)).rows[0].privacy_clear).toBe(false);
+  expect((await db.query(`select clear as privacy_clear from public.road_privacy where ref='${id2.toUpperCase()}:1:2'`)).rows[0].privacy_clear).toBe(false);
  });
 });
 describe('telling open maps that access changed',()=>{

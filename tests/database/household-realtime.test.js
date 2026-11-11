@@ -84,7 +84,9 @@ it('cannot be written to by a client, and a member who leaves loses access and t
   expect((await as('authenticated', outsider, `select public.can_join_household_topic('household:${house}') as ok`)).rows[0].ok).toBe(false);
   await db.exec('delete from realtime.messages');
   await db.exec(`delete from public.household_memberships where user_id='${b}'`);
-  expect((await db.query('select topic,payload from realtime.messages')).rows).toEqual([{ topic: `household:${house}`, payload: {} }]);
+  expect((await db.query('select topic,payload from realtime.messages where topic like \'household:%\'')).rows).toEqual([{ topic: `household:${house}`, payload: {} }]);
+  // Leaving also tells each person\'s own channel that what they may see changed (20261202000000).
+  expect((await db.query("select count(*)::int as n from realtime.messages where event='share' and topic like 'user:%'")).rows[0].n).toBeGreaterThan(0);
   expect((await as('authenticated', b, `select public.can_join_household_topic('household:${house}') as ok`)).rows[0].ok).toBe(false);
   expect((await as('authenticated', b, 'select * from public.my_household_location_status()')).rows).toEqual([]);
   await db.exec(`insert into public.household_memberships(user_id,household_id,role) values('${b}','${house}','member')`);

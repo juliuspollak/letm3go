@@ -253,8 +253,9 @@ begin
   with visible as (
    select j.activity_id,a.started_at,a.ended_at,j.snapshot,
     coalesce((select jsonb_object_agg(r.ref,r.record->>'line') from public.journey_road_metadata r
+     left join public.road_privacy rp on rp.owner_id=r.owner_id and rp.ref=r.ref
      where r.owner_id=p_owner and r.record->>'status'='route' and upper(split_part(r.ref,':',1))=upper(j.activity_id::text)
-      and coalesce(r.privacy_clear,public.road_clear_of_private_places(p_owner,r.record->>'line'))),'{}'::jsonb) as road_lines
+      and coalesce(rp.clear,public.road_clear_of_private_places(p_owner,r.record->>'line'))),'{}'::jsonb) as road_lines
    from public.shared_journeys j join public.activities a on a.id=j.activity_id
    where j.owner_id=p_owner and a.started_at<p_to and coalesce(a.ended_at,a.started_at)>p_from
     and public.can_view_social_journey(j.activity_id)
@@ -628,42 +629,61 @@ end $$;
 
 -- ------------------------------------- road privacy decided once, not on every read
 -- Whether a stored road passes the masked distance of Home/Work used to be decoded on
--- every request by a non-owner (measured: ~2.9 s for a day of 30 activities x 3 roads,
--- even when nothing had changed). It is now decided when the road is written, and again
--- when the owner's Home/Work change or the activity is shared; readers just use the flag.
--- A road whose flag is unknown (null) is still decoded on read, so a missed refresh can
--- only make a read slower, never reveal a road.
-alter table public.journey_road_metadata add column if not exists privacy_clear boolean;
+-- every request by a non-owner (measured locally: ~2.9 s for a day of 30 activities x 3
+-- roads, even when nothing had changed). It is now decided when the road is written, when
+-- the activity is shared and when the owner's Home/Work change, and readers use the flag.
+-- The flag lives in its own table, NOT on journey_road_metadata: that table's changes are
+-- journalled for the owner's sync (20261121000000), and re-deciding flags must never make
+-- the app think the owner's roads changed. A road with no flag (or an unknown one) is
+-- decoded on read, so a missed refresh can only make a read slower, never reveal a road.
+create table if not exists public.road_privacy (
+ owner_id uuid not null references auth.users(id) on delete cascade,
+ ref text not null,
+ clear boolean,
+ primary key(owner_id,ref)
+);
+alter table public.road_privacy enable row level security;
+revoke all on public.road_privacy from anon,authenticated;
+grant all on public.road_privacy to service_role;
 
 create or replace function public.road_privacy_on_write() returns trigger
 language plpgsql security definer set search_path='' as $$
 begin
- new.privacy_clear:=case when new.record->>'status'='route' then public.road_clear_of_private_places(new.owner_id,new.record->>'line') end;
- return new;
+ if tg_op='DELETE' then
+  delete from public.road_privacy where owner_id=old.owner_id and ref=old.ref;
+  return null;
+ end if;
+ insert into public.road_privacy(owner_id,ref,clear)
+  values(new.owner_id,new.ref,case when new.record->>'status'='route' then public.road_clear_of_private_places(new.owner_id,new.record->>'line') end)
+ on conflict(owner_id,ref) do update set clear=excluded.clear;
+ return null;
 end $$;
 revoke all on function public.road_privacy_on_write() from public,anon,authenticated;
 drop trigger if exists road_privacy_on_write on public.journey_road_metadata;
-create trigger road_privacy_on_write before insert or update of record on public.journey_road_metadata
+create trigger road_privacy_on_write after insert or update of record or delete on public.journey_road_metadata
 for each row execute function public.road_privacy_on_write();
 
--- Recomputes unknown flags for an owner's roads (all, or those of one activity).
+-- Decides the unknown or missing flags of an owner's roads (all, or those of one activity).
 create or replace function public.refresh_road_privacy(p_owner uuid,p_activity uuid default null) returns void
 language sql security definer set search_path='' as $$
- update public.journey_road_metadata r
-  set privacy_clear=case when r.record->>'status'='route' then public.road_clear_of_private_places(r.owner_id,r.record->>'line') end
-  where r.owner_id=p_owner and r.privacy_clear is null and r.record->>'status'='route'
+ insert into public.road_privacy(owner_id,ref,clear)
+  select r.owner_id,r.ref,public.road_clear_of_private_places(r.owner_id,r.record->>'line')
+  from public.journey_road_metadata r
+  left join public.road_privacy p on p.owner_id=r.owner_id and p.ref=r.ref
+  where r.owner_id=p_owner and r.record->>'status'='route' and p.clear is null
    and (p_activity is null or upper(split_part(r.ref,':',1))=upper(p_activity::text))
+ on conflict(owner_id,ref) do update set clear=excluded.clear
 $$;
 revoke all on function public.refresh_road_privacy(uuid,uuid) from public,anon,authenticated;
 
--- Home or Work moved: every flag of that owner is now unknown, and the roads of
--- activities that are actually shared (the ones others can read) are decided again at once.
+-- Home or Work moved: every flag of that owner becomes unknown (a cheap update that is not
+-- journalled), and the roads of activities that are shared are decided again at once.
 create or replace function public.road_privacy_places_changed() returns trigger
 language plpgsql security definer set search_path='' as $$
 declare v_owner uuid:=coalesce(new.owner_id,old.owner_id);
 begin
  if coalesce(new.kind,old.kind) not in ('home','work') then return null; end if;
- update public.journey_road_metadata set privacy_clear=null where owner_id=v_owner and privacy_clear is not null;
+ update public.road_privacy set clear=null where owner_id=v_owner and clear is not null;
  perform public.refresh_road_privacy(v_owner,j.activity_id) from public.shared_journeys j where j.owner_id=v_owner;
  return null;
 end $$;
