@@ -24,6 +24,8 @@ Base reviewed: `origin/main d65bc7a89dc31ace760a147f7a487b1f561ac2d1` (#53), inc
 - The required audit gate identified six moderate affected development-tool packages from two advisories: [glob cancellation traversal](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) and [minimatch pattern amplification](https://github.com/advisories/GHSA-g3hv-75wg-m249). Update the compatible rimraf patch (6.1.4 / glob 14.0.5) and pin patched minimatch 11.0.8 with an npm override, retaining ESLint 10.13 and validating lint plus Capacitor sync/build. The dependency tree has zero reported vulnerabilities after correction. The explicit minimatch override is needed until ESLint/config-array permit a patched major; it also meets glob's minimum range.
 - The CI database job successfully started the complete Supabase stack, applied migrations, passed database lint and real Storage/Realtime checks, then failed parsing the existing CRLF feedback-concurrency shell script. Normalise that script to LF and enforce its line ending with a narrow `.gitattributes` rule; rerun the actual database job rather than waiving it.
 
+- A subsequent Linux CI run exposed an orchestrator assertion that treated `kill(pid,0)` success as proof an orphan was still running. The kernel also reports success for a killed zombie awaiting its parent's reap. The fixture now waits boundedly for termination and checks Linux process state, explicitly rejecting a live descendant; diagnostics record a defunct child's state. Production process cleanup is unchanged.
+
 ## What was verified or not accepted as a finding
 
 - #54's owner-scoped transaction advisory lock **does** prevent private hide/upload races before a row exists and while a row exists. The suspected stale private read *after* that advisory wait was not reproduced: subsequent statements in the volatile PL/pgSQL function see committed changes under Read Committed. Two real sessions verify both cases. The missing paths/orderings above, rather than a second privacy system, needed correction.
@@ -46,7 +48,7 @@ Sixteen scenarios plus the parent test cover hide/upload ordering and missing ro
 - Edge runtime: 54 passed in 4 files; included in the full suite.
 - Edge type-check: all 7 entrypoints passed.
 - Native Swift: 2,164 assertions passed; native details: 124 passed.
-- Orchestrator: 52 passed, 11 opt-in skips, zero failures.
+- Orchestrator: 52 passed, 11 Windows-only skips on macOS/Linux, zero failures.
 - Web build / final synced Debug iOS Simulator build: passed.
 - Migration compatibility: complete chain applied successfully in PGlite and PostgreSQL 17; #54 migration remains unchanged and the correction is `20261205000000`, after `20261204000000` and #53's `20261203000000`.
 - Diff check: passed. GitHub CI run/results are recorded on PR #54 before merge.

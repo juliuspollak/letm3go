@@ -34,7 +34,7 @@ Final command results are recorded below after the final code changes. Database 
 - `npm run check:edge`: passed all 7 Edge Function entrypoints.
 - `npm run test:native`: 2,160 assertions passed.
 - `npm run test:native:details`: 124 assertions passed.
-- `npm run test:orchestrator`: 52 passed, 11 skipped, zero failures (the suite's opt-in skips).
+- `npm run test:orchestrator`: 52 passed, 11 Windows-only skips, zero failures.
 - `npm run build`: passed. Existing bundle-size and ineffective-dynamic-import warnings remain.
 - `npm run ios:sync` then `npm run ios:build`: passed with the final web bundle, Debug / iOS Simulator, ad-hoc signing.
 - `git diff --check`: passed.
