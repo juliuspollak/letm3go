@@ -302,11 +302,14 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  // account switch even if the SDK has already switched its Authorization header.
  // Never infer cloud deletions from a missing local place on a new device.
  for(const place of state.places||[]){
-  const key=`place:${place.id}`,row={id:place.id,owner_id:owner,name:place.name,kind:place.kind,latitude:place.latitude,longitude:place.longitude,radius:place.radius};
+  const key=`place:${place.id}`,row={id:place.id,owner_id:owner,name:place.name,kind:place.kind,latitude:place.latitude,longitude:place.longitude,radius:place.radius,share_with_friends:place.shareWithFriends===true};
   const fingerprint=await hash(row),receipt=updated[key];
   if(receipt&&receipt.owner!==owner)throw new Error('Place backup belongs to another account.');
   if(receipt?.fingerprint===fingerprint)continue;
-  const {error}=await client.from('saved_places').upsert(row);if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
+  let {error}=await client.from('saved_places').upsert(row);
+  // A server without the share_with_friends column yet still backs the place up.
+  if(error&&/share_with_friends/i.test(error.message||'')){const legacy={...row};delete legacy.share_with_friends;({error}=await client.from('saved_places').upsert(legacy));}
+  if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
  }
  const finished=finishedTrip(state);
  for(const trip of state.trips){

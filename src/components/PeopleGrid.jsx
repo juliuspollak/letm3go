@@ -16,17 +16,23 @@ function StatusDot({tone}){
  return <span className={`person-dot person-dot--${tone}`} aria-hidden="true"/>;
 }
 
+// A speech bubble beside the avatar: the avatar itself wiggles (styles.css).
+const POKE_TEXT={sent:'Poked 👋',received:'Poked you 👋',failed:'Couldn’t poke'};
+function PokeBubble({poke}){
+ return <span className={`poke-bubble poke-bubble--${poke.state}`} role="status">{POKE_TEXT[poke.state]}{poke.state==='failed'&&poke.message&&<small>{poke.message}</small>}</span>;
+}
+
 export function PersonTile({person,photos,selfId,selfAvatar}){
  const name=person.name||'Person';
  const shown=person.self?'You':name;
  const body=<>
-  <span className="person-tile-avatar"><PersonAvatar name={name} userId={person.userId} selfId={selfId} photos={photos} selfAvatar={selfAvatar} size="lg"/>{person.status&&<StatusDot tone={person.status.tone}/>}</span>
+  <span className="person-tile-avatar"><PersonAvatar name={name} userId={person.userId} selfId={selfId} photos={photos} selfAvatar={selfAvatar} size="lg"/>{person.status&&<StatusDot tone={person.status.tone}/>}{person.poke&&<PokeBubble poke={person.poke}/>}</span>
   <span className="person-tile-name">{shown}</span>
   {person.status&&<span className={`person-tile-status person-tile-status--${person.status.tone}`}>{person.status.text}</span>}
   {person.role&&<span className="person-tile-role">{person.role}</span>}
  </>;
  const description=[shown,person.status?.text,person.role].filter(Boolean).join(', ');
  return person.onSelect
-  ?<button type="button" className="person-tile is-button" aria-label={`${person.actionLabel||`Show ${shown} on the map.`} ${person.status?.text||''}`.trim()} onClick={person.onSelect}>{body}</button>
-  :<div className="person-tile" role="group" aria-label={description}>{body}</div>;
+  ?<button type="button" className={`person-tile is-button${person.poke?` person-tile--poked person-tile--poke-${person.poke.state}`:''}`} aria-label={`${person.actionLabel||`Show ${shown} on the map.`} ${person.status?.text||''}`.trim()} onClick={person.onSelect}>{body}</button>
+  :<div className={`person-tile${person.poke?` person-tile--poked person-tile--poke-${person.poke.state}`:''}`} role="group" aria-label={description}>{body}</div>;
 }

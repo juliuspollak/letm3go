@@ -1171,3 +1171,18 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 @keyframes activity-icon-lift{0%,100%{transform:translateY(0) rotate(0)}40%{transform:translateY(-6px) rotate(-12deg)}70%{transform:translateY(-2px) rotate(5deg)}}
 @keyframes activity-icon-explore{0%{transform:rotate(-35deg) scale(.85)}60%{transform:rotate(12deg) scale(1.08)}100%{transform:rotate(0) scale(1)}}
 @media(prefers-reduced-motion:reduce){.manual-activity-picker .activity-selection,.manual-activity-picker .activity-tile,.activity-tile-icon,.activity-tile-check{transition:none!important}.manual-activity-picker .activity-tile:active{transform:none}.activity-tile.selected::after{display:none}.activity-tile.selected .activity-tile-icon svg{animation:none!important}}
+
+/* Pokes: the avatar wiggles and a speech bubble sits beside it. */
+.poke-bubble{position:absolute;left:50%;bottom:calc(100% - 4px);z-index:3;transform:translateX(-50%);white-space:nowrap;padding:6px 11px;border-radius:14px;background:var(--accent);color:var(--on-accent);font-size:12px;font-weight:700;box-shadow:0 8px 20px #0003;pointer-events:none;transform-origin:50% 100%;animation:pokePop .45s cubic-bezier(.2,1.4,.4,1) both}
+.poke-bubble::after{content:"";position:absolute;left:50%;top:100%;width:10px;height:10px;margin-left:-5px;margin-top:-5px;background:inherit;transform:rotate(45deg);border-radius:2px}
+.poke-bubble--failed{background:var(--danger)}
+.person-tile--poked .person-tile-avatar>:first-child{animation:pokeWiggle .9s ease-in-out both;transform-origin:50% 80%}
+@keyframes pokeWiggle{0%,100%{transform:rotate(0)}12%{transform:rotate(-14deg) scale(1.06)}28%{transform:rotate(12deg) scale(1.06)}44%{transform:rotate(-9deg)}60%{transform:rotate(7deg)}76%{transform:rotate(-3deg)}}
+@keyframes pokePop{0%{opacity:0;transform:translateX(-50%) translateY(8px) scale(.6)}100%{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
+.poke-float{position:fixed;z-index:1600;top:calc(env(safe-area-inset-top) + 62px);right:14px;max-width:min(280px,calc(100vw - 28px))}
+.poke-float-bubble{position:relative;display:flex;align-items:center;gap:8px;padding:9px 14px;border-radius:16px;background:var(--accent);color:var(--on-accent);font-size:13px;font-weight:700;text-align:left;box-shadow:0 10px 26px #0003;transform-origin:90% 0;animation:pokeFloatIn .5s cubic-bezier(.2,1.4,.4,1) both}
+.poke-float-bubble::before{content:"";position:absolute;right:20px;top:-5px;width:12px;height:12px;background:inherit;transform:rotate(45deg);border-radius:3px}
+.poke-float-wave{display:inline-block;font-size:20px;transform-origin:70% 80%;animation:pokeWave 1.1s ease-in-out .3s 2}
+@keyframes pokeWave{0%,100%{transform:rotate(0)}20%{transform:rotate(18deg)}40%{transform:rotate(-12deg)}60%{transform:rotate(16deg)}80%{transform:rotate(-6deg)}}
+@keyframes pokeFloatIn{0%{opacity:0;transform:translateY(-8px) scale(.7)}100%{opacity:1;transform:none}}
+.poke-bubble--failed{white-space:normal;width:max-content;max-width:190px;text-align:center}.poke-bubble small{display:block;font-size:10px;font-weight:600;opacity:.9;margin-top:2px}

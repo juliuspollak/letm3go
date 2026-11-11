@@ -95,6 +95,14 @@ it('does not reissue a credential the phone already holds for more than a week',
  await new Promise(resolve=>setTimeout(resolve,20));
  expect(mock.rpc).not.toHaveBeenCalledWith('issue_my_live_location_token');
 });
+it('never disarms the native uploader before the sharing setting has loaded',async()=>{
+ // A relaunch iOS performs for a drive mounts the web view with sharing "off"
+ // by default. Disarming then would delete the Keychain credential.
+ mock.rpc.mockImplementation(()=>new Promise(()=>{}));
+ renderHook(()=>useHouseholdPresence('julius',true));
+ await new Promise(resolve=>setTimeout(resolve,50));
+ expect(mock.configure).not.toHaveBeenCalled();
+});
 it('disarms the native uploader when sharing is off',async()=>{
  respond('my_live_location_settings',{data:[{enabled:false}]});
  const {result}=renderHook(()=>useHouseholdPresence('julius',true));

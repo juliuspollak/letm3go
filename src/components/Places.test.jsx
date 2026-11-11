@@ -14,3 +14,19 @@ it('selects the current position directly and allows saving a private place',asy
  fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
  await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({name:'Home',latitude:1,longitude:2,radius:150})));
 });
+it('keeps a place private unless the owner switches on showing its name to friends',async()=>{
+ const run=vi.fn().mockResolvedValue({});render(<Places places={[]} run={run}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Add a private place'}));
+ fireEvent.change(screen.getByLabelText('Place name'),{target:{value:'School'}});
+ fireEvent.click(screen.getByRole('button',{name:'Choose map point'}));
+ const toggle=screen.getByLabelText(/Show friends when I'm here/);
+ expect(toggle).not.toBeChecked();
+ fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
+ await waitFor(()=>expect(run).toHaveBeenLastCalledWith('savePlace',expect.objectContaining({name:'School',shareWithFriends:false})));
+ fireEvent.click(screen.getByRole('button',{name:'Add a private place'}));
+ fireEvent.change(screen.getByLabelText('Place name'),{target:{value:'School'}});
+ fireEvent.click(screen.getByRole('button',{name:'Choose map point'}));
+ fireEvent.click(screen.getByLabelText(/Show friends when I'm here/));
+ fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
+ await waitFor(()=>expect(run).toHaveBeenLastCalledWith('savePlace',expect.objectContaining({shareWithFriends:true})));
+});

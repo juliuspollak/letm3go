@@ -5,6 +5,7 @@ import { apnsPayload, classifyApns, providerRejected } from './apns.js';
 
 export const BUNDLE_ID = 'au.jpollak.journey';
 export const PROVIDER_TOKEN_MS = 40 * 60 * 1000; // Apple accepts one for up to an hour.
+export const CHECKIN_CONCURRENCY = 10;
 export const BATCH = 10, MAX_ROUNDS = 10, APNS_TIMEOUT_MS = 8000, DRAIN_MS = 60000;
 const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization,apikey,content-type,x-client-info', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers });
@@ -53,6 +54,45 @@ export function createPushHandler(deps) {
       } catch (caught) { return reply({ ok: false, mode: 'apns-check', reason: caught instanceof Error ? caught.name : 'NetworkError' }); }
     }
     const admin = deps.admin();
+
+    // Silent location check-ins (20261130000000): wake each stale sharer so its
+    // phone publishes one fresh position. A background push carries no text and
+    // is delivered at low priority; iOS may coalesce or drop it, which is why
+    // the server asks again every interval.
+    if (body?.mode === 'checkin') {
+      const { data: devices, error } = await admin.rpc('claim_location_checkins');
+      if (error) { log({ event: 'checkin_claim_error', code: error.code || 'unknown' }); return reply({ error: 'Check-in queue unavailable' }, 500); }
+      const result = { ok: true, mode: 'checkin', claimed: devices?.length || 0, sent: 0, failed: 0, invalid: 0 };
+      if (!result.claimed) return reply(result);
+      let token;
+      try { token = await providerToken(); } catch (caught) { log({ event: 'apns_provider_error', reason: caught instanceof Error && caught.message === 'ApnsNotConfigured' ? 'ApnsNotConfigured' : 'ApnsKeyUnusable' }); return reply({ ...result, error: 'APNs is not configured' }, 500); }
+      // Bounded concurrency keeps a large batch inside the dispatcher's timeout. A
+      // device whose push did not go out is released so the next run retries it.
+      const released = new Set();
+      let rejected = false;
+      const send = async device => {
+        if (rejected) { released.add(device.owner_id); return; }
+        try {
+          const response = await deps.fetch(`${apnsHost(device.environment)}/3/device/${encodeURIComponent(device.apns_token)}`, {
+            method: 'POST', signal: AbortSignal.timeout(APNS_TIMEOUT_MS),
+            headers: { authorization: `bearer ${token}`, 'apns-topic': BUNDLE_ID, 'apns-push-type': 'background', 'apns-priority': '5', 'apns-collapse-id': 'location-checkin', 'apns-expiration': String(Math.floor(now() / 1000) + 600), 'content-type': 'application/json' },
+            body: JSON.stringify({ aps: { 'content-available': 1 }, kind: 'location_checkin' }),
+          });
+          const answer = await response.json().catch(() => ({}));
+          const reason = typeof answer.reason === 'string' ? answer.reason : response.ok ? 'Success' : 'Unknown';
+          const status = classifyApns(response.status, reason);
+          if (providerRejected(response.status, reason)) { provider = null; rejected = true; log({ event: 'apns_credentials_rejected', reason }); result.failed++; released.add(device.owner_id); return; }
+          if (status === 'sent') result.sent++;
+          else if (status === 'invalid_token') { result.invalid++; await admin.from('push_devices').delete().eq('apns_token', device.apns_token); }
+          else { result.failed++; released.add(device.owner_id); }
+        } catch { result.failed++; released.add(device.owner_id); }
+      };
+      for (let at = 0; at < devices.length; at += CHECKIN_CONCURRENCY) await Promise.all(devices.slice(at, at + CHECKIN_CONCURRENCY).map(send));
+      if (released.size) await admin.rpc('release_location_checkins', { p_owners: [...released] });
+      // Counts only: never tokens or people.
+      log({ event: 'checkin_batch', ...result });
+      return reply(result);
+    }
 
     const summary = { ok: true, claimed: 0, sent: 0, retried: 0, failed: 0 };
     const finish = async (item, status, http, reason) => {

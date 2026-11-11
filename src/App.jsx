@@ -1,10 +1,10 @@
 import {localJourneyRefs} from './lib/journeyGrouping.js';
 import {useCloudJourneyPage} from './lib/useCloudJourneyPage.js';
 import {useJourneyScope} from './lib/useJourneyScope.js';
-import {activityFromCloudRow} from './lib/cloudActivity.js';
 import {useSyncExternalStore} from 'react';
 import {forgetActivityPhotos} from './lib/privateMedia.js';
 import {localRecorderJourneys} from './lib/recorder.js';
+import {mergeGroupingActivities} from './lib/mergeGroupingActivities.js';
 import {deletionIDs} from './lib/tripsList.js';
 import {householdActivity} from './lib/peopleMap.js';
 import {activityLabel,activityCode,sameActivity} from './lib/activityNames.js';
@@ -277,7 +277,7 @@ function PrivateApp(){
  const rows=journeySync.read().activityRows;
  const visibleScopes=Object.values(journeySync.read().cache?.scopes||{}).filter(scope=>scope.ids.some(id=>contextIDs.includes(id)));
  const knownIDs=[...new Set([...contextIDs,...localContext.ids,...visibleScopes.flatMap(scope=>scope.ids)])];
- const mapDetailIDs=tab==='Map'&&mapView.routes?knownIDs.filter(id=>rows?.[id]&&!realJourneys.some(trip=>trip.id===id)).slice(0,10):[];
+ const mapDetailIDs=tab==='Map'&&mapView.routes?knownIDs.filter(id=>rows?.[id]&&!realJourneys.some(trip=>trip.id.toLowerCase()===id.toLowerCase())).slice(0,10):[];
  const sourceDetailIDs=selected?knownIDs.filter(id=>{
   const row=rows?.[id];return row&&((row.recording_mode==='tesla')!==(selected.source==='tesla'))&&Date.parse(row.started_at)/1000<=selected.endedAt&&Date.parse(row.ended_at)/1000>=selected.startedAt;
  }):[];
@@ -285,13 +285,7 @@ function PrivateApp(){
  const scopeState=useJourneyScope({owner:session.user.id,sync:journeySync,refs:contextIDs,details:requestedDetails,localDetailIDs:knownIDs.filter(id=>localGroupingActivities.some(trip=>trip.id===id))});
  const contextKey=JSON.stringify(knownIDs),detailKey=JSON.stringify(requestedDetails);
  const groupingActivities=useMemo(()=>{
-  const local=new Map(localGroupingActivities.map(trip=>[trip.id,trip]));
-  const detailed=new Set(JSON.parse(detailKey));
-  return JSON.parse(contextKey).flatMap(id=>{
-   if(local.has(id))return [local.get(id)];
-   if(!rows?.[id])return [];
-   return [activityFromCloudRow(rows[id],{detail:detailed.has(id)&&Array.isArray(rows[id].route_points)})];
-  });
+  return mergeGroupingActivities({localActivities:localGroupingActivities,rows,ids:JSON.parse(contextKey),detailed:new Set(JSON.parse(detailKey))});
  },[localGroupingActivities,rows,contextKey,detailKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
@@ -358,18 +352,20 @@ function PrivateApp(){
  // no recent position, which is not the same as sharing turned off.
  const friendLocations=useMemo(()=>Object.fromEntries(friendsLocation.people.map(p=>{
   const state=memberLocationState({...p,sharing_enabled:true,location_at:p.updated_at,server_now:new Date(motionClock).toISOString()});
-  return [p.user_id,{state:state.state,ageSeconds:state.ageSeconds,position:state.position}];
+  return [p.user_id,{state:state.state,ageSeconds:state.ageSeconds,position:state.position,placeName:p.place_name||null,placeSince:p.place_since||null}];
  })),[friendsLocation.people,motionClock]);
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
  // Tapping a friend on Home pokes them; the confirmation still offers the map.
  const pokePerson=useCallback(async person=>{
   const name=person.name||'them';
-  try{await sendPoke(person.userId);setPokeNotice({text:`Poked ${name} 👋`,person});}
-  catch(error){setPokeNotice({text:error.message||`Could not poke ${name}.`,person,failed:true});}
+  try{await sendPoke(person.userId);setPokeNotice({userId:person.userId,state:'sent',stamp:Date.now()});}
+  catch(error){setPokeNotice({userId:person.userId,state:'failed',message:error.message||`Could not poke ${name}.`,stamp:Date.now()});}
  },[]);
- useEffect(()=>{if(!pokeNotice)return undefined;const timer=setTimeout(()=>setPokeNotice(null),4000);return()=>clearTimeout(timer);},[pokeNotice]);
- const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,onSelect:()=>void pokePerson(person),actionLabel:`Poke ${person.name||'them'}.`})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit,pokePerson]);
+ useEffect(()=>{if(!pokeNotice)return undefined;const timer=setTimeout(()=>setPokeNotice(null),3500);return()=>clearTimeout(timer);},[pokeNotice]);
+ const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeNotice?.userId===person.userId?{state:pokeNotice.state,message:pokeNotice.message}:tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null,onSelect:()=>void pokePerson(person),actionLabel:`Poke ${person.name||'them'}.`})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit,pokePerson,pokeNotice,incomingPoke,tab]);
+ // A poke from someone whose avatar is on screen shows there; otherwise as a bubble by the profile.
+ const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
  const onMapCamera=useCallback(event=>dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command}),[]);
  useEffect(()=>{
@@ -482,7 +478,7 @@ function PrivateApp(){
   setTripSearchOpen(false);setTripFiltersOpen(false);setTripFilterCategory(null);
   setSelected(null);setTab('Trips');
  };
-  return <><AutoCloudSync state={recording.state} journeySync={journeySync}/><PokeOverlay poke={incomingPoke} onDismiss={dismissPoke}/>{pokeNotice&&<div className="poke-layer" role="status" aria-live="polite"><div className={`poke-toast ${pokeNotice.failed?'poke-toast--failed':''}`}><span className="poke-toast-text">{pokeNotice.text}</span>{pokeNotice.person.position&&<button type="button" className="poke-toast-action" onClick={()=>{const {position,userId}=pokeNotice.person;setPokeNotice(null);showOnMap(position,userId);}}>Show on map</button>}</div></div>}<div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
+  return <><AutoCloudSync state={recording.state} journeySync={journeySync}/><PokeOverlay poke={incomingPoke} quiet={pokeShownOnAvatar} onDismiss={dismissPoke}/><div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
   <main>{error&&<p role="alert" className="error">{error}</p>}{recording.error&&<p role="alert" className="error">{recording.error}</p>}{auth.status==='offline'&&<p className="notice">Offline · Private recordings stay on this device. Cloud actions require reconnection.</p>}<header className="topbar"><span className="mobile-brand"><AnimatedWordmark/></span><div className="breadcrumb">Your world, a little closer.</div><div className="top-actions"><button className="icon-button" aria-label="Toggle dark theme" onClick={()=>setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={20}/>:<Moon size={20}/>}</button><HeaderAvatar count={inbox.count} onOpen={()=>setSheet('profile')}><PersonAvatar name={auth.preferences.displayName||'You'} userId={session.user.id} selfId={session.user.id} selfAvatar={auth.preferences.avatar} photos={peopleAvatars.photos} size="sm"/></HeaderAvatar></div></header>
  <RecordingWarning health={recording.state.recordingHealth} run={recording.run} warning={recordingWarning} tab={tab} recording={recording.state.active?.state==='recording'}/>
  {recording.state.active&&<button type="button" className="active-recording-banner" onClick={()=>{setSelected(null);setSheet(null);setTab("Record");}} aria-label="Return to active recording"><span className="live-dot"/><strong>{activityLabel(recording.state.active.activity)} · {recording.state.active.state==="recording"?"Recording": "Paused"}</strong><span>Continue exploring · tap to view recording</span><ArrowRight size={17}/></button>}

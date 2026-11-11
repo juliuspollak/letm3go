@@ -247,6 +247,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var friendShareLastSentAt: Double = 0
     var friendShareInFlight = false
     var friendShareStatus = ""
+    // "device": a friend publish credential kept in the Keychain, so a closed or
+    // relaunched phone keeps sharing; "session": the one-hour access token.
+    var friendShareMode = "session"
+    var friendShareSentLabel: String?
+    var lastLocationCheckinAt: Double = 0
     var ownerID: String?
     var uiUnlocked = false
     var accountDeleting = false
@@ -745,12 +750,52 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         liveShareTokenExpiresAt = expiresAt; liveShareMode = "device"
         recordDiagnostic("sharing", "Household location sharing restored after launch")
     }
-    func disableFriendLiveSharing() {
+    static func friendPublisherKey(_ owner: String) -> String { "friend-live-publisher-\(owner)" }
+    // Like the household credential: it publishes only this account's own friend
+    // position, and survives relaunch without the web view's one-hour session.
+    func storeFriendPublisher() {
+        guard let owner = ownerID, friendShareMode == "device", let token = friendShareToken,
+              let endpoint = friendShareEndpoint, let apiKey = friendShareApiKey else { return }
+        let record: [String: Any] = ["token": token, "endpoint": endpoint.absoluteString, "apiKey": apiKey, "expiresAt": friendShareTokenExpiresAt]
+        if let data = try? JSONSerialization.data(withJSONObject: record) { try? AccountKeychain.set(Self.friendPublisherKey(owner), data: data) }
+    }
+    func restoreFriendPublisher() {
+        guard let owner = ownerID, let data = try? AccountKeychain.get(Self.friendPublisherKey(owner)),
+              let record = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let token = record["token"] as? String, HouseholdPublisher.validToken(token),
+              let raw = record["endpoint"] as? String, let endpoint = URL(string: raw), HouseholdPublisher.validFriendEndpoint(endpoint),
+              let apiKey = record["apiKey"] as? String, !apiKey.isEmpty,
+              let expiresAt = record["expiresAt"] as? Double, expiresAt > Date().timeIntervalSince1970 + 60 else { return }
+        friendShareToken = token; friendShareEndpoint = endpoint; friendShareApiKey = apiKey
+        friendShareTokenExpiresAt = expiresAt; friendShareMode = "device"
+        recordDiagnostic("sharing", "Friend location sharing restored after launch")
+    }
+    // `forget` also deletes the stored credential: sharing turned off, revoked by
+    // the server, sign-out or account deletion.
+    func disableFriendLiveSharing(forget: Bool = false) {
+        if forget, let owner = ownerID { try? AccountKeychain.set(Self.friendPublisherKey(owner), data: nil) }
+        friendShareMode="session";friendShareSentPoint=nil;friendShareSentLabel=nil
         friendShareToken=nil;friendShareEndpoint=nil;friendShareApiKey=nil
         friendShareTokenExpiresAt=0;friendShareLastSentAt=0;friendShareInFlight=false;friendShareStatus="";friendShareSentPoint=nil
         if liveShareToken == nil, !manualGPSRecording { stopContinuousLocation(reason:"Friend location sharing turned off") }
         refreshAutomaticMonitoring()
         releaseBackgroundSessionIfUnneeded("friend location sharing turned off")
+    }
+    // The saved place, switched on for friends, that the phone has settled at.
+    // Only a dwell (an arrival, visit or saved place the phone settled at) counts,
+    // so driving past a school is never "at school".
+    func friendPlaceLabel(for location:CLLocation) -> (name:String,since:Double)? {
+        guard let area=dwell, location.horizontalAccuracy >= 0 else {return nil}
+        let centre=GPSPoint(latitude:area.latitude,longitude:area.longitude,timestamp:0,accuracy:0,altitude:0,speed:0)
+        let fix=sharePoint(location)
+        let candidates=places.filter { $0.shareWithFriends == true }.filter { place in
+            let spot=GPSPoint(latitude:place.latitude,longitude:place.longitude,timestamp:0,accuracy:0,altitude:0,speed:0)
+            return centre.distance(to:spot) <= place.radius && fix.distance(to:spot) <= place.radius + max(0,location.horizontalAccuracy)
+        }
+        guard let place=candidates.min(by:{ a,b in
+            centre.distance(to:GPSPoint(latitude:a.latitude,longitude:a.longitude,timestamp:0,accuracy:0,altitude:0,speed:0)) <
+            centre.distance(to:GPSPoint(latitude:b.latitude,longitude:b.longitude,timestamp:0,accuracy:0,altitude:0,speed:0)) }) else {return nil}
+        return (String(place.name.trimmingCharacters(in:.whitespacesAndNewlines).prefix(100)),area.since)
     }
     func publishFriendPosition(_ location:CLLocation) {
         let now=Date().timeIntervalSince1970
@@ -760,32 +805,51 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // captured-at or activity fields: the server stamps the row on arrival and
         // friends stop seeing it 30 minutes later. That is why friend sharing never
         // rests with the phone (SharingRest), while household sharing may.
+        // A device credential publishes with the fix's real capture time, so a
+        // fix that waited for signal or a relaunch keeps its true age.
+        let device=friendShareMode=="device"
+        // The name of a shared place the phone is resting at, sent with the position
+        // it belongs to. A change of label goes out at once, not at the next interval.
+        let label=device ? friendPlaceLabel(for:location) : nil
+        let labelChanged=device && label?.name != friendShareSentLabel
         guard !accountSuspended,!accountDeleting,
               let token=friendShareToken,let endpoint=friendShareEndpoint,let apiKey=friendShareApiKey,
               now<friendShareTokenExpiresAt-60,!friendShareInFlight,
-              now-friendShareLastSentAt>=HouseholdPublisher.interval(speed:location.speed,
+              (labelChanged && now-friendShareLastSentAt>=30) || now-friendShareLastSentAt>=HouseholdPublisher.interval(speed:location.speed,
                 foreground:UIApplication.shared.applicationState == .active,confirmation:false,
                 lowPower:ProcessInfo.processInfo.isLowPowerModeEnabled,accuracy:location.horizontalAccuracy),
               location.horizontalAccuracy>=0,location.horizontalAccuracy<=100,
               // This older RPC stamps the row at receipt, so an offline fix would
               // be presented as current. Only a fresh friend fix may be sent.
-              age <= 25, age >= -5 else {return}
-        let payload:[String:Any]=["p_enabled":true,"p_latitude":location.coordinate.latitude,
+              age <= (device ? HouseholdPublisher.maximumFixAge : 25), age >= -5 else {return}
+        var payload:[String:Any]=["p_latitude":location.coordinate.latitude,
             "p_longitude":location.coordinate.longitude,"p_accuracy":location.horizontalAccuracy]
+        if device {
+            payload["p_token"]=token;payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp)
+            if let label { payload["p_place_name"]=label.name;payload["p_place_since"]=Self.shareTimeFormat.string(from:Date(timeIntervalSince1970:label.since)) }
+        } else { payload["p_enabled"]=true }
         guard let data=try? JSONSerialization.data(withJSONObject:payload) else {return}
         var request=URLRequest(url:endpoint)
         request.httpMethod="POST";request.httpBody=data;request.timeoutInterval=12
         request.setValue("application/json",forHTTPHeaderField:"Content-Type")
-        request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
+        if !device {request.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")}
         request.setValue(apiKey,forHTTPHeaderField:"apikey")
         friendShareInFlight=true;friendShareLastSentAt=now;diagnosticSharingAttempts+=1
         let sentPoint=sharePoint(location)
         let requestOwner=ownerID
-        URLSession.shared.dataTask(with:request){[weak self] _,response,error in
+        URLSession.shared.dataTask(with:request){[weak self] body,response,error in
             DispatchQueue.main.async {
                 guard let self=self,self.ownerID==requestOwner,self.friendShareToken==token else{return}
                 self.friendShareInFlight=false
-                if error != nil || !((response as? HTTPURLResponse).map{(200...299).contains($0.statusCode)} ?? false) {
+                let status=(response as? HTTPURLResponse)?.statusCode ?? 0
+                if device, error == nil, (200...299).contains(status),
+                   String(decoding:body ?? Data(),as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines) != "true" {
+                    // Sharing was turned off, the credential expired or a newer one replaced it.
+                    self.recordDiagnostic("sharing","Friend location credential no longer accepted")
+                    self.disableFriendLiveSharing(forget:true)
+                    return
+                }
+                if error != nil || !(200...299).contains(status) {
                     self.friendShareLastSentAt=Date().timeIntervalSince1970-15
                     self.diagnosticSharingFailures+=1
                     // Retries run every few seconds while offline; log only a change
@@ -794,7 +858,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                     let failure=error != nil ? "network" : "http \((response as? HTTPURLResponse)?.statusCode ?? 0)"
                     if self.friendShareStatus != failure {self.recordDiagnostic("sharing","Friend location publication failed",details:["reason":failure])}
                     self.friendShareStatus=failure
-                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.friendShareStatus="ok";self.diagnosticSharingSuccesses+=1;self.friendShareSentPoint=sentPoint}
+                } else {self.friendShareLastOkAt=Date().timeIntervalSince1970;self.friendShareStatus="ok";self.diagnosticSharingSuccesses+=1;self.friendShareSentPoint=sentPoint;self.friendShareSentLabel=label?.name}
             }
         }.resume()
     }
@@ -1310,7 +1374,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"automaticPauseEnabled":manager.pausesLocationUpdatesAutomatically,"lastExecutionGapSeconds":lastExecutionGapSeconds,"backgroundSession":backgroundSessionState,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
                 "recordingElsewhere":CrossDeviceRecording.active(WatchSessionManager.shared.watchRecording,ownerID:ownerID,now:Date().timeIntervalSince1970).map{["label":$0.label,"activity":$0.activity,"state":$0.state,"startedAt":$0.startedAt,"sessionID":$0.sessionID] as [String:Any]} as Any? ?? NSNull(),
-                "nativeFamilySharing":["armed":liveSharingArmed,"householdArmed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"friendArmed":friendShareToken != nil && Date().timeIntervalSince1970 < friendShareTokenExpiresAt-60,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight,"trackingActive":continuousLocationRequested,"sendActivity":liveShareSendsActivity,"sendCaptureTime":liveShareSendsCaptureTime],
+                "nativeFamilySharing":["armed":liveSharingArmed,"householdArmed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"friendArmed":friendShareToken != nil && Date().timeIntervalSince1970 < friendShareTokenExpiresAt-60,"friendMode":friendShareMode,"friendTokenExpiresAt":friendShareTokenExpiresAt,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight,"trackingActive":continuousLocationRequested,"sendActivity":liveShareSendsActivity,"sendCaptureTime":liveShareSendsCaptureTime],
                 "locationManagerID":"LocationRecorder.shared.manager","commit":Self.commit,"backgroundSession":backgroundSessionState,
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
                 "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
@@ -1326,7 +1390,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "motionTypes": motion.types, "motionConfidence": motion.confidence, "motionTimestamp": motion.timestamp,
                 "passiveRest":passiveSnapshot,
                 "recordingHealth":recordingHealthSnapshot,
-                "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius] as [String:Any] },
+                "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius,"shareWithFriends":p.shareWithFriends ?? false] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
                 "active": active.map(dictionary) as Any? ?? NSNull(), "trips": unchanged ? [] : trips.map(dictionary),
                 "historyToken": token, "historyUnchanged": unchanged,
@@ -1473,11 +1537,27 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         let recorder=LocationRecorder.shared
         let friends=call.getString("channel")=="friends"
         if call.getBool("enabled") != true {
-            if friends {recorder.disableFriendLiveSharing()} else {recorder.disableHouseholdLiveSharing(forget:true)}
+            if friends {recorder.disableFriendLiveSharing(forget:true)} else {recorder.disableHouseholdLiveSharing(forget:true)}
             call.resolve();return
         }
         // Household device credential: publishes only this account's position,
         // survives relaunch, and outlives the one-hour session token.
+        if friends, let publishToken=call.getString("publishToken") {
+            guard HouseholdPublisher.validToken(publishToken),
+                  let rawURL=call.getString("endpoint"),let url=URL(string:rawURL),HouseholdPublisher.validFriendEndpoint(url),
+                  let apiKey=call.getString("apiKey"),!apiKey.isEmpty,
+                  let expiry=call.getDouble("expiresAt"),expiry>Date().timeIntervalSince1970+90 else {
+                call.reject("Valid friend sharing credential required.");return
+            }
+            if recorder.friendShareToken != publishToken {recorder.friendShareInFlight=false;recorder.friendShareLastSentAt=0}
+            recorder.friendShareToken=publishToken;recorder.friendShareEndpoint=url
+            recorder.friendShareApiKey=apiKey;recorder.friendShareTokenExpiresAt=expiry
+            recorder.friendShareMode="device";recorder.friendShareStatus=""
+            recorder.storeFriendPublisher()
+            recorder.recordDiagnostic("sharing","Friend location sharing armed with a device credential")
+            recorder.refreshAutomaticMonitoring()
+            call.resolve();return
+        }
         if !friends, let publishToken=call.getString("publishToken") {
             guard HouseholdPublisher.validToken(publishToken),
                   let rawURL=call.getString("endpoint"),let url=URL(string:rawURL),HouseholdPublisher.validEndpoint(url),
@@ -1510,6 +1590,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("Valid signed-in session required for background sharing.");return
         }
         if friends {
+            // A session token never replaces a stored device credential.
+            if recorder.friendShareMode == "device", recorder.friendShareToken != nil { call.resolve();return }
             if recorder.friendShareToken != token {recorder.friendShareInFlight=false;recorder.friendShareLastSentAt=0}
             recorder.friendShareToken=token;recorder.friendShareEndpoint=url
             recorder.friendShareApiKey=apiKey;recorder.friendShareTokenExpiresAt=expiry

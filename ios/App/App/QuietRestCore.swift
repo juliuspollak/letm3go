@@ -190,12 +190,12 @@ enum PassiveRestPolicy {
 // Sharing with Automatic Tracking off has no place verification or departure
 // wake-ups, so it keeps the established continuous stream.
 //
-// Friend sharing never rests. Its current server function (set_friend_location)
+// Friend sharing on the one-hour session token never rests. Its session function (set_friend_location)
 // stamps a position with the time it arrives, not when it was taken, and
 // my_friend_locations hides it 30 minutes later. A resting phone sends nothing,
-// so friends would lose the position within half an hour. Resting with friends
-// waits for a server that keeps the capture time and a reviewed visibility
-// window.
+// so friends would lose the position within half an hour. A friend device
+// credential (publish_friend_location) keeps the capture time and the position
+// stays visible for a day, so friends on it rest like the household does.
 // The position the household last accepted.
 struct SharedPosition: Equatable {
     var at: Double

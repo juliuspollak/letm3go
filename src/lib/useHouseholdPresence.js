@@ -226,6 +226,10 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   if(!recorderAvailable()||!online||!owner)return;
   let alive=true;
   const arm=async()=>{
+   // Until the server setting has loaded, "off" is only the hook's default.
+   // Sending it would delete the Keychain credential on every relaunch, and a
+   // relaunch iOS performs for a drive may be suspended before it re-arms.
+   if(!liveReady)return;
    if(!liveEnabled){
     await recorder.configureLiveSharing({enabled:false}).catch(()=>{});
     return;
@@ -259,7 +263,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   const foreground=()=>{if(document.visibilityState==='visible')void arm();};
   document.addEventListener('visibilitychange',foreground);
   return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',foreground);};
- },[owner,online,liveEnabled]);
+ },[owner,online,liveEnabled,liveReady]);
  const setLiveSharing=async enabled=>{
   if(!enabled){
    // Privacy first: stop the native publisher before any network round trip.
