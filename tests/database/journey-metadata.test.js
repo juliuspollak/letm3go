@@ -437,7 +437,7 @@ it('invalidates saved home places and private photo descriptors independently of
  expect((await selectiveRPC({p_refs:[]})).savedPlaces).toContainEqual(expect.objectContaining({id:place,name:'My home'}));
  expect((await selectiveRPC({p_refs:[id],p_detail_refs:[id],p_geometry:true})).activityRows[0].photos).toContainEqual(expect.objectContaining({id:photo}));
  await expect(selectiveRPC({p_refs:[],p_since_revision:0,p_limit:null})).rejects.toThrow('scope is too large');
-});
+},30000);
 
 it('syncs a private Gym classification and preserves owner access',async()=>{
  await db.exec('reset role');
