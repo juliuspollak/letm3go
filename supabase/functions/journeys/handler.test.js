@@ -31,7 +31,7 @@ function world(over = {}) {
   w.admin = {
     from: table => {
       if (table === 'account_deletion_requests') return thenable({ data: w.deleting, error: null });
-      if (table === 'shared_journeys') { const b = thenable({ data: w.shared, error: null }); const del = b.delete; b.delete = () => { w.deletes.push('shared_journeys'); return del(); }; return b; }
+      if (table === 'shared_journeys') { const b = thenable({ data: w.shared, error: w.deleteError || null }); const del = b.delete; b.delete = () => { w.deletes.push('shared_journeys'); return del(); }; return b; }
       if (table === 'media_assets') { const b = thenable({ data: w.asset || null, error: null }); b.insert = async row => { w.uploads.push(row); return { error: w.insertError || null }; }; return b; }
       return thenable({ data: null, error: null });
     },
@@ -175,6 +175,13 @@ describe('automatic household sharing', () => {
     expect(response.status).toBe(409);
     expect(published(w)).toBeTruthy();                    // it had been published ...
     expect(w.deletes).toEqual(['shared_journeys']);       // ... and is taken straight back down
+  });
+  it('does not silently report withdrawal when deleting an automatic share fails', async () => {
+    const w = world({ allowed: [true, false], deleteError: { message: 'Database unavailable' } });
+    const response = await publish(w, { auto: true });
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(w.deletes).toEqual(['shared_journeys']);
+    expect(published(w)).toBeTruthy();
   });
   it('treats a failed re-check as private, never as allowed', async () => {
     const w = world({ allowed: [true, undefined] });
