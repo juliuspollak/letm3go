@@ -138,6 +138,26 @@ describe('send-push-notifications', () => {
     expect((await setup().call('wrong', { mode: 'apns-check' })).status).toBe(401);
   });
 
+  it('sends silent background check-ins to stale sharers and drops dead device tokens', async () => {
+    const t = setup({ responses: [apple(200), apple(410, 'Unregistered'), apple(503)] });
+    const deleted = [];
+    const devices = [TOKEN_A, TOKEN_B, 'c'.repeat(64)].map(apns_token => ({ owner_id: 'o', apns_token, environment: 'production' }));
+    t.rpc.mockImplementation(async name => name === 'claim_location_checkins' ? { data: devices } : { data: null });
+    const handler = createPushHandler({
+      env: key => secrets[key], fetch: t.fetch, sign: t.sign, now: () => 1000000, log: event => t.logs.push(event),
+      admin: () => ({ rpc: t.rpc, from: table => ({ delete: () => ({ eq: async (column, value) => { deleted.push([table, column, value]); } }) }) }),
+    });
+    const response = await handler(new Request('https://x/f', { method: 'POST', headers: { Authorization: `Bearer ${secrets.PUSH_WORKER_SECRET}` }, body: JSON.stringify({ mode: 'checkin' }) }));
+    expect(await response.json()).toMatchObject({ mode: 'checkin', claimed: 3, sent: 1, invalid: 1, failed: 1 });
+    const [, init] = t.fetch.mock.calls[0];
+    expect(init.headers).toMatchObject({ 'apns-push-type': 'background', 'apns-priority': '5', 'apns-topic': BUNDLE_ID, 'apns-collapse-id': 'location-checkin', 'apns-expiration': '1600' });
+    expect(JSON.parse(init.body)).toEqual({ aps: { 'content-available': 1 }, kind: 'location_checkin' });
+    expect(deleted).toEqual([['push_devices', 'apns_token', TOKEN_B]]);
+    // The device whose push failed is released so the next run retries it.
+    expect(t.rpc).toHaveBeenCalledWith('release_location_checkins', { p_owners: ['o'] });
+    expect(JSON.stringify(t.logs)).not.toContain(TOKEN_A);
+  });
+
   it('logs delivery metadata but never device tokens, message text or key material', async () => {
     const t = setup({ claimed: [delivery(1, TOKEN_A)] });
     await t.wake();
@@ -164,3 +184,15 @@ describe('send-push-notifications', () => {
   });
 });
 
+
+describe('location check-ins when Apple rejects the key', () => {
+  it('stops sending and releases every device that was not woken', async () => {
+    const t = setup({ responses: [apple(403, 'InvalidProviderToken'), apple(403, 'InvalidProviderToken'), apple(403, 'InvalidProviderToken')] });
+    const devices = ['o1', 'o2', 'o3'].map((owner_id, i) => ({ owner_id, apns_token: String(i).repeat(64), environment: 'production' }));
+    t.rpc.mockImplementation(async name => name === 'claim_location_checkins' ? { data: devices } : { data: null });
+    const handler = createPushHandler({ env: key => secrets[key], fetch: t.fetch, sign: t.sign, now: () => 0, log: event => t.logs.push(event), admin: () => ({ rpc: t.rpc, from: () => ({ delete: () => ({ eq: async () => {} }) }) }) });
+    const response = await handler(new Request('https://x/f', { method: 'POST', headers: { Authorization: `Bearer ${secrets.PUSH_WORKER_SECRET}` }, body: JSON.stringify({ mode: 'checkin' }) }));
+    expect((await response.json()).sent).toBe(0);
+    expect(t.rpc).toHaveBeenCalledWith('release_location_checkins', { p_owners: expect.arrayContaining(['o1', 'o2', 'o3']) });
+  });
+});

@@ -151,13 +151,19 @@ extension LocationRecorder {
     func sharingRestInputs(passiveOtherwiseAllowed: Bool) -> SharingRestInputs {
         let now = Date().timeIntervalSince1970
         let household = liveShareToken != nil && now < liveShareTokenExpiresAt - 60
-        let shared: [SharedPosition?] = household ? [liveShareSentPoint.map {
+        // A friend device credential keeps the capture time on the server and its
+        // visibility window is a day, so friends may rest on their last position too.
+        let friendDevice = friendShareToken != nil && friendShareMode == "device" && now < friendShareTokenExpiresAt - 60
+        var shared: [SharedPosition?] = household ? [liveShareSentPoint.map {
             SharedPosition(at: $0.timestamp, accuracy: $0.accuracy, insidePlace: dwell?.contains($0) ?? false)
         }] : []
+        if friendDevice { shared.append(friendShareSentPoint.map {
+            SharedPosition(at: $0.timestamp, accuracy: $0.accuracy, insidePlace: dwell?.contains($0) ?? false)
+        }) }
         // Only a movement status blocks: "stationary" is what a resting phone shares.
         return SharingRestInputs(
             enabled: sharingRestEnabled, liveSharing: liveSharingArmed,
-            friendSharing: friendShareToken != nil && now < friendShareTokenExpiresAt - 60, automaticAvailable: automaticAvailable,
+            friendSharing: friendShareToken != nil && friendShareMode != "device" && now < friendShareTokenExpiresAt - 60, automaticAvailable: automaticAvailable,
             passiveOtherwiseAllowed: passiveOtherwiseAllowed, shared: shared, placeSince: dwell?.since,
             activityShared: household && HouseholdPublisher.moving(liveShareSentActivity),
             statusChangePending: household && shareActivityChanged && (HouseholdPublisher.moving(liveShareSentActivity) || HouseholdPublisher.moving(sharedActivity)))
@@ -196,6 +202,27 @@ extension LocationRecorder {
     func passiveFixCause(now: Double) -> String {
         guard let request = passiveFixRequest, now - request.at <= 60 else { return "significant location change" }
         return request.cause
+    }
+    // A silent server push (see 20261130000000_location_checkins.sql). While sharing
+    // is armed it takes one location and publishes it through the normal path, so
+    // a phone resting at a place shows a fresh position instead of an ageing one.
+    // The completion is called after the publish window, never later than iOS allows.
+    func handleLocationCheckin(completion: @escaping (UIBackgroundFetchResult) -> Void) {
+        noteExecution("locationCheckin")
+        let now = Date().timeIntervalSince1970
+        guard liveSharingArmed, !reconcileManualExclusion(), now - lastLocationCheckinAt >= 60 else {
+            recordDiagnostic("sharing", "Location check-in ignored", details: ["reason": liveSharingArmed ? "too soon or recording" : "sharing is not armed"])
+            completion(.noData); return
+        }
+        lastLocationCheckinAt = now
+        recordDiagnostic("sharing", "Location check-in requested by the server", details: ["locationMode": locationMode.rawValue])
+        if continuousLocationRequested {
+            // Fixes are already arriving; re-confirm the last one if it is still current.
+            confirmHouseholdLocation()
+        } else {
+            requestPassiveLocationCheck(cause: "server check-in", now: now)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { completion(.newData) }
     }
     func requestPassiveLocationCheck(cause: String, now: Double) {
         passiveFixRequest = (cause, now)

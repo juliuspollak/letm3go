@@ -88,6 +88,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
+		<string>remote-notification</string>
 	</array>
 	<key>NSMotionUsageDescription</key>
 	<string>Letm3go uses motion activity to distinguish walking, cycling and driving when you enable automatic tracking.</string>

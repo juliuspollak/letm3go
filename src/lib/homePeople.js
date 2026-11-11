@@ -24,7 +24,7 @@ export function homePeople({household=[],friends=[],selfID,selfPosition=null,hom
   const home=homeFlags[member.user_id]===true;
   // Home is shared by the household only; a friend's old position is never placed there.
   const verifiedHome=member.source==='household'&&member.state==='stale'&&atHome(false,member.position,homePlace);
-  const status=personStatus({state:member.state,ageSeconds:member.ageSeconds,home,activity:activities[member.user_id],verifiedHome});
+  const status=personStatus({state:member.state,ageSeconds:member.ageSeconds,home,activity:activities[member.user_id],verifiedHome,placeName:member.place_name,placeSince:member.place_since});
   const away=member.state==='live'||member.state==='stale'?distanceAway(selfPosition,member.position,unit):null;
   people.push({id:member.user_id,userId:member.user_id,name:member.display_name||'Member',position:usable(member.position)?member.position:null,state:member.state,
    status:{text:away&&!home&&!verifiedHome?`${status.text} · ${away}`:status.text,tone:home?'home':status.tone}});

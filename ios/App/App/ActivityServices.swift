@@ -433,7 +433,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     } }
     @objc func savePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
-        do { try LocationRecorder.shared.savePlace(SavedPlace(id:call.getString("id") ?? UUID().uuidString,name:call.getString("name") ?? "",kind:call.getString("kind") ?? "favourite",latitude:call.getDouble("latitude") ?? 999,longitude:call.getDouble("longitude") ?? 999,radius:call.getDouble("radius") ?? 150)); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+        do { try LocationRecorder.shared.savePlace(SavedPlace(id:call.getString("id") ?? UUID().uuidString,name:call.getString("name") ?? "",kind:call.getString("kind") ?? "favourite",latitude:call.getDouble("latitude") ?? 999,longitude:call.getDouble("longitude") ?? 999,radius:call.getDouble("radius") ?? 150,shareWithFriends:call.getBool("shareWithFriends") ?? LocationRecorder.shared.places.first(where:{ $0.id == call.getString("id") })?.shareWithFriends)); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
     @objc func removePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

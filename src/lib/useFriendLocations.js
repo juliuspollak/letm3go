@@ -42,11 +42,32 @@ export function useFriendLocations(owner,online){
   if(!owner||!recorderAvailable())return;
   let alive=true;
   const arm=async()=>{
+   // "Off" before the server setting has loaded is only the default; do not
+   // tear down native sharing a relaunched phone is still publishing.
+   if(!ready)return;
    if(!enabled||!online||!supabase){
     await recorder.configureLiveSharing({enabled:false,channel:'friends'}).catch(()=>{});
     return;
    }
    try{
+    // Preferred: a device credential that keeps a closed or relaunched phone
+    // publishing. Reissued only when the phone lacks one or it expires within a week.
+    const native=(await recorder.getState().catch(()=>null))?.nativeFamilySharing;
+    if(!alive)return;
+    if(native?.friendArmed&&native.friendMode==='device'&&native.friendTokenExpiresAt>Date.now()/1000+7*86400)return;
+    const issued=await supabase.rpc('issue_my_friend_location_token');
+    if(!alive)return;
+    const credential=issued.data?.[0];
+    if(!issued.error&&credential?.publish_token){
+     await recorder.configureLiveSharing({
+      enabled:true,channel:'friends',publishToken:credential.publish_token,
+      expiresAt:Date.parse(credential.valid_until)/1000,
+      endpoint:config.url+'/rest/v1/rpc/publish_friend_location',apiKey:config.key
+     });
+     return;
+    }
+    // The database is not migrated yet: fall back to the one-hour session token.
+    if(issued.error&&!(issued.error.code==='PGRST202'||/could not find the function|does not exist/i.test(issued.error.message||'')))return;
     const {data:{session},error:e}=await supabase.auth.getSession();
     if(!alive||e||session?.user?.id!==owner||!session?.expires_at)return;
     await recorder.configureLiveSharing({
@@ -61,7 +82,7 @@ export function useFriendLocations(owner,online){
   const visible=()=>{if(document.visibilityState==='visible')void arm();};
   document.addEventListener('visibilitychange',visible);
   return()=>{alive=false;clearInterval(interval);document.removeEventListener('visibilitychange',visible);};
- },[owner,online,enabled]);
+ },[owner,online,enabled,ready]);
  const setSharing=async next=>{
   if(!next){
    // Privacy first, exactly as household sharing: stop native friend

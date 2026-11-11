@@ -589,6 +589,9 @@ struct SavedPlace: Codable {
     var latitude: Double
     var longitude: Double
     var radius: Double
+    // Friends may be shown this place's name while the phone rests here. Absent
+    // (older saved places) means off.
+    var shareWithFriends: Bool?
     var sensitive: Bool { kind == "home" || kind == "work" }
     func contains(_ point: GPSPoint) -> Bool {
         point.accuracy >= 0 && point.accuracy <= radius &&
@@ -1815,6 +1818,9 @@ enum HouseholdPublisher {
     }
     static func validEndpoint(_ url: URL) -> Bool {
         url.scheme == "https" && url.path.hasSuffix("/rest/v1/rpc/publish_live_location")
+    }
+    static func validFriendEndpoint(_ url: URL) -> Bool {
+        url.scheme == "https" && url.path.hasSuffix("/rest/v1/rpc/publish_friend_location")
     }
     // A change of status goes out with the next fix, or on its own after a stop, where
     // no fix will come. A nil status is a real change when evidence expires: the

@@ -28,6 +28,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications, object: deviceToken)
     }
 
+    // The server's silent check-in: a resting phone cannot wake itself on a timer,
+    // so it is woken every 15 minutes to publish one fresh position while sharing.
+    // Anything else is left to the notification plugin.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard (userInfo["kind"] as? String) == "location_checkin" else { completionHandler(.noData); return }
+        LocationRecorder.shared.handleLocationCheckin(completion: completionHandler)
+    }
+
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications, object: error)
     }
