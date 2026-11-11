@@ -98,11 +98,39 @@ $$;
 revoke all on function public.my_auto_share(),public.set_auto_share(boolean),public.my_auto_share_pending(integer) from public,anon,authenticated;
 grant execute on function public.my_auto_share(),public.set_auto_share(boolean),public.my_auto_share_pending(integer) to authenticated;
 
+
+-- ----------------------------------------------------- road estimates (shared)
+-- Estimated roads are computed once, on the owner's phone, and read from there:
+-- viewers never reconstruct. A road is shown to someone else only when no point
+-- of it lies within the masked area around the owner's Home or Work.
+create or replace function public.decode_polyline(p_line text)
+returns table(latitude double precision,longitude double precision)
+language plpgsql immutable set search_path='' as $$
+declare i integer:=1; n integer:=coalesce(length(p_line),0); lat integer:=0; lon integer:=0; shift integer; result integer; b integer;
+begin
+ while i<=n loop
+  shift:=0;result:=0;
+  loop b:=ascii(substr(p_line,i,1))-63;i:=i+1;result:=result|((b&31)<<shift);shift:=shift+5;exit when b<32 or i>n;end loop;
+  lat:=lat+case when (result&1)=1 then ~(result>>1) else (result>>1) end;
+  shift:=0;result:=0;
+  loop b:=ascii(substr(p_line,i,1))-63;i:=i+1;result:=result|((b&31)<<shift);shift:=shift+5;exit when b<32 or i>n;end loop;
+  lon:=lon+case when (result&1)=1 then ~(result>>1) else (result>>1) end;
+  latitude:=lat/1e5;longitude:=lon/1e5;return next;
+ end loop;
+end $$;
+create or replace function public.road_clear_of_private_places(p_owner uuid,p_line text) returns boolean
+language sql stable security definer set search_path='' as $$
+ select p_line is not null and length(p_line)<=200000 and not exists(
+  select 1 from public.decode_polyline(p_line) d join public.saved_places sp on sp.owner_id=p_owner and sp.kind in ('home','work')
+  where sqrt(power((d.latitude-sp.latitude)*111320,2)+power((d.longitude-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300)
+$$;
+revoke all on function public.decode_polyline(text),public.road_clear_of_private_places(uuid,text) from public,anon,authenticated;
+
 -- ------------------------------------------------------------- completed day
 -- Who may open this person's map: themselves, a household member, or a friend.
 -- Access to each activity is still decided by can_view_social_journey.
 create or replace function public.my_shared_day(p_owner uuid,p_from timestamptz,p_to timestamptz,p_known text[] default '{}')
-returns table(activity_id uuid,started_at timestamptz,ended_at timestamptz,activity text,title text,etag text,points jsonb)
+returns table(activity_id uuid,started_at timestamptz,ended_at timestamptz,activity text,title text,etag text,points jsonb,roads jsonb)
 language plpgsql stable security definer set search_path='' as $$
 begin
  if auth.uid() is null or p_owner is null or p_from is null or p_to is null or p_to<=p_from
@@ -115,7 +143,11 @@ begin
     and public.can_view_social_journey(j.activity_id)
    order by a.started_at limit 100)
   select v.activity_id,v.started_at,v.ended_at,v.snapshot->>'activity',v.snapshot->>'title',v.tag,
-   case when v.tag=any(coalesce(p_known,'{}')) then null else coalesce(v.snapshot->'points','[]'::jsonb) end
+   case when v.tag=any(coalesce(p_known,'{}')) then null else coalesce(v.snapshot->'points','[]'::jsonb) end,
+   case when v.tag=any(coalesce(p_known,'{}')) then null else coalesce((
+    select jsonb_object_agg(r.ref,r.record->>'line') from public.journey_road_metadata r
+    where r.owner_id=p_owner and r.record->>'status'='route' and upper(split_part(r.ref,':',1))=upper(v.activity_id::text)
+     and (auth.uid()=p_owner or public.road_clear_of_private_places(p_owner,r.record->>'line'))),'{}'::jsonb) end
   from visible v order by v.started_at;
 end $$;
 revoke all on function public.my_shared_day(uuid,timestamptz,timestamptz,text[]) from public,anon,authenticated;
@@ -129,8 +161,10 @@ create table if not exists public.live_trails (
  last_seq integer not null default 0,
  points jsonb not null default '[]'::jsonb,
  hidden_ref text,
+ roads jsonb not null default '{}'::jsonb,
  updated_at timestamptz not null default now()
 );
+alter table public.live_trails add column if not exists roads jsonb not null default '{}'::jsonb;
 alter table public.live_trails enable row level security;
 revoke all on public.live_trails from anon,authenticated;
 grant all on public.live_trails to service_role;
@@ -175,11 +209,37 @@ begin
  on conflict(owner_id) do update set activity_ref=excluded.activity_ref,
   started_at=case when public.live_trails.activity_ref=excluded.activity_ref then public.live_trails.started_at else now() end,
   last_seq=greatest(case when public.live_trails.activity_ref=excluded.activity_ref then public.live_trails.last_seq else 0 end,excluded.last_seq),
-  points=excluded.points,updated_at=now();
+  points=excluded.points,roads=case when public.live_trails.activity_ref=excluded.activity_ref then public.live_trails.roads else '{}'::jsonb end,updated_at=now();
  return true;
 end $$;
 revoke all on function public.append_live_trail(text,text,integer,jsonb) from public,anon,authenticated;
 grant execute on function public.append_live_trail(text,text,integer,jsonb) to anon,authenticated;
+
+
+-- The owner's phone rebuilt a GPS gap as a road. Stored once so no viewer repeats
+-- it; at most 40 per trail, each line bounded.
+create or replace function public.put_live_road(p_token text,p_ref text,p_gap text,p_line text)
+returns boolean language plpgsql security definer set search_path='' as $$
+declare v_user uuid; v_hash bytea;
+begin
+ if p_token is null or length(p_token)<>64 or p_ref is null or p_gap is null or length(p_gap) not between 1 and 120
+  or p_line is null or length(p_line) not between 4 and 20000 then return false; end if;
+ v_hash:=sha256(convert_to(p_token,'UTF8'));
+ select l.user_id into v_user from public.household_live_locations l
+  where l.publish_token_hash=v_hash and l.publish_token_expires_at>now() and l.enabled
+   and exists(select 1 from public.household_memberships m where m.user_id=l.user_id);
+ if v_user is null then
+  select s.user_id into v_user from public.friend_presence_shares s
+   where s.publish_token_hash=v_hash and s.publish_token_expires_at>now() and s.enabled;
+ end if;
+ if v_user is null then return false; end if;
+ update public.live_trails set roads=roads||jsonb_build_object(p_gap,p_line),updated_at=now()
+  where owner_id=v_user and activity_ref=p_ref and hidden_ref is distinct from p_ref
+   and (roads ? p_gap or (select count(*) from jsonb_object_keys(roads))<40);
+ return found;
+end $$;
+revoke all on function public.put_live_road(text,text,text,text) from public,anon,authenticated;
+grant execute on function public.put_live_road(text,text,text,text) to anon,authenticated;
 
 -- The owner finished, discarded or hid the activity: its live trail is gone.
 create or replace function public.end_live_trail(p_ref text default null,p_hide boolean default false) returns void
@@ -189,9 +249,10 @@ begin
  if p_hide and p_ref is not null then
   insert into public.live_trails(owner_id,activity_ref,points,hidden_ref) values(auth.uid(),p_ref,'[]'::jsonb,p_ref)
   on conflict(owner_id) do update set hidden_ref=p_ref,
-   points=case when public.live_trails.activity_ref=p_ref then '[]'::jsonb else public.live_trails.points end;
+   points=case when public.live_trails.activity_ref=p_ref then '[]'::jsonb else public.live_trails.points end,
+   roads=case when public.live_trails.activity_ref=p_ref then '{}'::jsonb else public.live_trails.roads end;
  elsif p_ref is null or exists(select 1 from public.live_trails t where t.owner_id=auth.uid() and t.activity_ref=p_ref) then
-  update public.live_trails set points='[]'::jsonb,updated_at=now() where owner_id=auth.uid() and (p_ref is null or activity_ref=p_ref);
+  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=auth.uid() and (p_ref is null or activity_ref=p_ref);
  end if;
 end $$;
 revoke all on function public.end_live_trail(text,boolean) from public,anon,authenticated;
@@ -202,7 +263,7 @@ create or replace function public.clear_live_trail_on_stop() returns trigger
 language plpgsql security definer set search_path='' as $$
 begin
  if not new.enabled then
-  update public.live_trails set points='[]'::jsonb,updated_at=now() where owner_id=new.user_id;
+  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=new.user_id;
  end if;
  return new;
 end $$;
@@ -215,7 +276,7 @@ for each row execute function public.clear_live_trail_on_stop();
 
 -- What a viewer may see of someone's live trail. p_after returns only newer points.
 create or replace function public.my_live_trail(p_owner uuid,p_after double precision default 0)
-returns table(activity_ref text,started_at timestamptz,updated_at timestamptz,points jsonb)
+returns table(activity_ref text,started_at timestamptz,updated_at timestamptz,points jsonb,roads jsonb)
 language plpgsql stable security definer set search_path='' as $$
 declare v_household boolean; v_friend boolean; v_self boolean; v_t public.live_trails;
 begin
@@ -234,7 +295,9 @@ begin
    where (x->>2)::float8>coalesce(p_after,0)
     and (v_self or v_household or not exists(select 1 from public.saved_places sp
      where sp.owner_id=p_owner and sp.kind in ('home','work')
-      and sqrt(power(((x->>0)::float8-sp.latitude)*111320,2)+power(((x->>1)::float8-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300))),'[]'::jsonb);
+      and sqrt(power(((x->>0)::float8-sp.latitude)*111320,2)+power(((x->>1)::float8-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300))),'[]'::jsonb),
+  coalesce((select jsonb_object_agg(k,val) from jsonb_each_text(v_t.roads) e(k,val)
+   where v_self or v_household or public.road_clear_of_private_places(p_owner,val)),'{}'::jsonb);
 end $$;
 revoke all on function public.my_live_trail(uuid,double precision) from public,anon,authenticated;
 grant execute on function public.my_live_trail(uuid,double precision) to authenticated;

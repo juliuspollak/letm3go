@@ -148,6 +148,23 @@ it('friends see a live trail only while friend sharing is on, and never near Hom
  await as('authenticated',owner,'select public.set_friend_location(false)');
  expect(await trail(friend)).toBeUndefined();
 });
+it('road estimates: stored once by the owner, hidden from friends when they touch Home',async()=>{
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ friendToken=(await as('authenticated',owner,'select * from public.issue_my_friend_location_token()')).rows[0].publish_token;
+ await append(friendToken,'r1',1,pts(300));
+ const away='_p~iF~ps|U_ulLnnqC'; // a short line in the northern hemisphere, far from Home
+ expect(await as('anon','',`select public.put_live_road('${friendToken}','r1','R1:1:2','${away}') as ok`).then(r=>r.rows[0].ok)).toBe(true);
+ expect(await as('anon','',`select public.put_live_road('${'z'.repeat(64)}','r1','R1:1:2','${away}') as ok`).then(r=>r.rows[0].ok)).toBe(false);
+ const owned=await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`);
+ expect(owned.rows[0].roads).toEqual({'R1:1:2':away});
+ // The same road drawn through Home is withheld from a friend but not from the owner.
+ const lat=-34.5,lon=150.8,enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
+ const throughHome=enc(lat)+enc(lon)+enc(0.0001)+enc(0.0001);
+ await as('anon','',`select public.put_live_road('${friendToken}','r1','R1:3:4','${throughHome.replace(/\\/g,'\\\\')}')`);
+ const seen=await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`);
+ expect(Object.keys(seen.rows[0].roads)).not.toContain('R1:3:4');
+ expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('R1:3:4');
+});
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();
