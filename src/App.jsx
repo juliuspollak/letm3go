@@ -1,10 +1,10 @@
 import {localJourneyRefs} from './lib/journeyGrouping.js';
 import {useCloudJourneyPage} from './lib/useCloudJourneyPage.js';
 import {useJourneyScope} from './lib/useJourneyScope.js';
-import {activityFromCloudRow} from './lib/cloudActivity.js';
 import {useSyncExternalStore} from 'react';
 import {forgetActivityPhotos} from './lib/privateMedia.js';
 import {localRecorderJourneys} from './lib/recorder.js';
+import {mergeGroupingActivities} from './lib/mergeGroupingActivities.js';
 import {deletionIDs} from './lib/tripsList.js';
 import {householdActivity} from './lib/peopleMap.js';
 import {activityLabel,activityCode,sameActivity} from './lib/activityNames.js';
@@ -277,7 +277,7 @@ function PrivateApp(){
  const rows=journeySync.read().activityRows;
  const visibleScopes=Object.values(journeySync.read().cache?.scopes||{}).filter(scope=>scope.ids.some(id=>contextIDs.includes(id)));
  const knownIDs=[...new Set([...contextIDs,...localContext.ids,...visibleScopes.flatMap(scope=>scope.ids)])];
- const mapDetailIDs=tab==='Map'&&mapView.routes?knownIDs.filter(id=>rows?.[id]&&!realJourneys.some(trip=>trip.id===id)).slice(0,10):[];
+ const mapDetailIDs=tab==='Map'&&mapView.routes?knownIDs.filter(id=>rows?.[id]&&!realJourneys.some(trip=>trip.id.toLowerCase()===id.toLowerCase())).slice(0,10):[];
  const sourceDetailIDs=selected?knownIDs.filter(id=>{
   const row=rows?.[id];return row&&((row.recording_mode==='tesla')!==(selected.source==='tesla'))&&Date.parse(row.started_at)/1000<=selected.endedAt&&Date.parse(row.ended_at)/1000>=selected.startedAt;
  }):[];
@@ -285,13 +285,7 @@ function PrivateApp(){
  const scopeState=useJourneyScope({owner:session.user.id,sync:journeySync,refs:contextIDs,details:requestedDetails,localDetailIDs:knownIDs.filter(id=>localGroupingActivities.some(trip=>trip.id===id))});
  const contextKey=JSON.stringify(knownIDs),detailKey=JSON.stringify(requestedDetails);
  const groupingActivities=useMemo(()=>{
-  const local=new Map(localGroupingActivities.map(trip=>[trip.id,trip]));
-  const detailed=new Set(JSON.parse(detailKey));
-  return JSON.parse(contextKey).flatMap(id=>{
-   if(local.has(id))return [local.get(id)];
-   if(!rows?.[id])return [];
-   return [activityFromCloudRow(rows[id],{detail:detailed.has(id)&&Array.isArray(rows[id].route_points)})];
-  });
+  return mergeGroupingActivities({localActivities:localGroupingActivities,rows,ids:JSON.parse(contextKey),detailed:new Set(JSON.parse(detailKey))});
  },[localGroupingActivities,rows,contextKey,detailKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
