@@ -55,6 +55,7 @@
     "release:check": "node scripts/check-release.mjs",
     "test:orchestrator": "node --test tests/orchestrator/*.node.mjs"
   },
+  "overrides": { "minimatch": "11.0.8" },
   "dependencies": {
     "@capacitor/app": "^8.1.2",
     "@capacitor/browser": "^8.0.5",

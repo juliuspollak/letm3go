@@ -19,6 +19,11 @@ Base reviewed: `origin/main d65bc7a89dc31ace760a147f7a487b1f561ac2d1` (#53), inc
 | Medium | The native newest-point fallback could reinsert an out-of-range final fix after the main filter rejected it, poisoning an otherwise valid batch. | Apply the same coordinate constraints to the fallback; a native assertion retains the valid prefix and rejects the invalid tail. |
 | Medium | A manual pause/provisional stop sent an end packet, removing an unfinished route; a quiet trail expired after ten minutes. | Pure native selection retains paused/provisional activity identity. Explicit finish/hide still clears. Quiet unfinished prefixes remain available; old capture timestamps are retained and are never presented as new fixes. |
 
+## CI findings corrected
+
+- The required audit gate identified six moderate affected development-tool packages from two advisories: [glob cancellation traversal](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) and [minimatch pattern amplification](https://github.com/advisories/GHSA-g3hv-75wg-m249). Update the compatible rimraf patch (6.1.4 / glob 14.0.5) and pin patched minimatch 11.0.8 with an npm override, retaining ESLint 10.13 and validating lint plus Capacitor sync/build. The dependency tree has zero reported vulnerabilities after correction. The explicit minimatch override is needed until ESLint/config-array permit a patched major; it also meets glob's minimum range.
+- The CI database job successfully started the complete Supabase stack, applied migrations, passed database lint and real Storage/Realtime checks, then failed parsing the existing CRLF feedback-concurrency shell script. Normalise that script to LF and enforce its line ending with a narrow `.gitattributes` rule; rerun the actual database job rather than waiving it.
+
 ## What was verified or not accepted as a finding
 
 - #54's owner-scoped transaction advisory lock **does** prevent private hide/upload races before a row exists and while a row exists. The suspected stale private read *after* that advisory wait was not reproduced: subsequent statements in the volatile PL/pgSQL function see committed changes under Read Committed. Two real sessions verify both cases. The missing paths/orderings above, rather than a second privacy system, needed correction.
@@ -37,6 +42,7 @@ Sixteen scenarios plus the parent test cover hide/upload ordering and missing ro
 - ESLint: passed, zero warnings.
 - Full JavaScript/React/PGlite suite: 1,788 passed across 200 files.
 - Real PostgreSQL: 17 passed (16 scenarios plus parent), zero skipped/failed.
+- `npm audit --audit-level=moderate`: passed, zero vulnerabilities.
 - Edge runtime: 54 passed in 4 files; included in the full suite.
 - Edge type-check: all 7 entrypoints passed.
 - Native Swift: 2,164 assertions passed; native details: 124 passed.
