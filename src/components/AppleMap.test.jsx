@@ -306,3 +306,29 @@ it('updates and expires a speed bubble in place without rebuilding the map',asyn
  expect(mocks.embed).not.toHaveBeenCalled();
  expect(mocks.snapshot).not.toHaveBeenCalled();
 });
+
+describe('a person\'s day map (dynamic)',()=>{
+ const day=(over={})=>({routes:[[[1,2],[3,4]]],pins:[],gaps:[],estimated:[],live:[],fitKey:'her|2026-11-10',...over});
+ it('updates in place for new points, a live trail, the slider and a new day; it never re-embeds or recreates the map',async()=>{
+  const {rerender}=render(<AppleMap payload={day()} dynamic large viewportKey="her"/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+  await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+  const mapID=mocks.embed.mock.calls[0][0].mapID;
+  mocks.update.mockClear();
+  // A live point, a scrub marker, then the next day (different lines, same viewportKey).
+  rerender(<AppleMap payload={day({live:[[5,6],[5.1,6.1]]})} dynamic large viewportKey="her"/>);
+  rerender(<AppleMap payload={day({pins:[{id:'playback',kind:'playback',point:[1,2]}]})} dynamic large viewportKey="her"/>);
+  rerender(<AppleMap payload={day({routes:[[[7,8],[9,10]]],fitKey:'her|2026-11-09'})} dynamic large viewportKey="her"/>);
+  await waitFor(()=>expect(mocks.update.mock.calls.length).toBeGreaterThanOrEqual(3));
+  expect(mocks.embed).toHaveBeenCalledTimes(1);
+  expect(mocks.unembed).not.toHaveBeenCalled();
+  expect(mocks.update.mock.calls.every(call=>call[0].mapID===mapID)).toBe(true);
+  expect(mocks.update.mock.calls.at(-1)[0].fitKey).toBe('her|2026-11-09');
+ });
+ it('without dynamic, changed routes still re-embed (other maps are unchanged)',async()=>{
+  const {rerender}=render(<AppleMap payload={day()} large viewportKey="a"/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+  rerender(<AppleMap payload={day({routes:[[[7,8],[9,10]]]})} large viewportKey="a"/>);
+  await waitFor(()=>expect(mocks.embed.mock.calls.length).toBeGreaterThan(1));
+ });
+});

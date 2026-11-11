@@ -36,3 +36,37 @@ it('does not publish an unmasked activity before Home is configured',async()=>{
  expect(syncPrivateActivities).not.toHaveBeenCalled();
  expect(c.functions.invoke).not.toHaveBeenCalled();
 });
+it('records the owner\'s decision when an activity is made private, so automatic sharing never publishes it later',async()=>{
+ const c=client();c.rpc.mockResolvedValue({error:null});
+ await makeActivityPrivate(c,'trip');
+ expect(c.rpc).toHaveBeenCalledWith('keep_activity_private',{p_activity:'trip'});
+ expect(c.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'trip',p_hide:true});
+});
+it('an activity not uploaded yet is still recorded as private, by its recorder id',async()=>{
+ const c=client();
+ c.from=()=>({select:()=>({eq:()=>({eq:()=>({maybeSingle:async()=>({data:null})})})})});
+ c.rpc.mockResolvedValue({error:null});
+ await makeActivityPrivate(c,'LOCAL-1');
+ expect(c.rpc).not.toHaveBeenCalledWith('revoke_activity_publication',expect.anything());
+ expect(c.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'LOCAL-1',p_hide:true});
+});
+it('a half-applied migration (a missing table or column) is NOT treated as an undeployed function',async()=>{
+ const c=client();
+ c.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{code:'42P01',message:'relation "activity_share_decisions" does not exist'}}:{error:null});
+ await expect(makeActivityPrivate(c,'trip')).rejects.toThrow(/could not be saved/);
+});
+it('a failed decision is reported, never shown as success; a server without the function is fine',async()=>{
+ const bad=client();
+ bad.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{message:'permission denied'}}:{error:null});
+ await expect(makeActivityPrivate(bad,'trip')).rejects.toThrow(/could not be saved/);
+ const c=client();
+ c.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{code:'PGRST202',message:'Could not find the function'}}:{error:null});
+ expect(await makeActivityPrivate(c,'trip')).toEqual({audience:'private'});
+});
+it('marks an automatic publication so the server can refuse it if the activity became private',async()=>{
+ const c=client();c.functions={invoke:vi.fn().mockResolvedValue({data:{token:'t'},error:null})};
+ syncPrivateActivities.mockResolvedValue({receipts:{}});
+ const trip={id:'trip',source:'device',endedAt:9,points:[{latitude:1,longitude:1}],activity:'Driving',details:{}};
+ await publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[{kind:'home',latitude:1,longitude:1}]},id:'trip',reviewedTrip:trip,audience:'household',mode:'household',auto:true,receipts:{}});
+ expect(c.functions.invoke.mock.calls.at(-1)[1].body.auto).toBe(true);
+});

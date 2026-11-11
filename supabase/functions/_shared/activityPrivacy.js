@@ -8,15 +8,18 @@ export function segmentNearPlace(a,b,place,buffer=300){
  const dx=bx-ax,dy=by-ay,t=Math.max(0,Math.min(1,-(ax*dx+ay*dy)/(dx*dx+dy*dy||1)));
  return Math.hypot(ax+t*dx,ay+t*dy)<=place.radius+buffer;
 }
-export function redactRoute(points,places,buffer=300){
+// `times` adds each kept point's capture time (epoch seconds, `t`). Only private
+// audiences (household, chosen friends) ever get it, for the day timeline; a public
+// link never does.
+export function redactRoute(points,places,buffer=300,{times=false}={}){
  const sensitive=places.filter(p=>['home','work'].includes(p.kind)),result=[];let segment=0,previous=null;
  for(const p of points){
   const hidden=sensitive.some(place=>metersBetween(p,place)<=place.radius+buffer);
   if(hidden){previous=null;segment++;continue;}
   const cut=previous&&(previous.segment!==p.segment||sensitive.some(place=>segmentNearPlace(previous,p,place,buffer)));
   if(cut)segment++;
-  // Only geography survives; no timestamps, accuracy, raw speed or private identifiers.
-  result.push({latitude:p.latitude,longitude:p.longitude,segment});previous=p;
+  // Only geography survives (plus the capture time for private audiences when asked); no accuracy, raw speed or private identifiers.
+  result.push(times&&Number.isFinite(p.timestamp)?{latitude:p.latitude,longitude:p.longitude,segment,t:Math.round(p.timestamp)}:{latitude:p.latitude,longitude:p.longitude,segment});previous=p;
  }
  return result;
 }

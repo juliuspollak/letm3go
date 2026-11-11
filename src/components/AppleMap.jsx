@@ -10,7 +10,7 @@ import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
 // sent to the native map once per key and the payload names only the key.
 // `controls` (lib/mapToolbar.mapControls) adds the Map page's controls, drawn
 // natively once the map is embedded; their actions come back to `onControl`.
-export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null,onRegion=null,onSegment=null}){
+export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null,onRegion=null,onSegment=null,onStep=null,dynamic=false}){
  // The payload is derived from props on every render; memoising it keeps the
  // derived serialisation below stable so a re-render that did not change the map
  // content (for example a photo pin selection or an unrelated parent update)
@@ -81,9 +81,10 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // Listened to only when asked for, so other maps pay nothing.
  const regionHandler=useRef(onRegion);useEffect(()=>{regionHandler.current=onRegion;},[onRegion]);
  const segmentHandler=useRef(onSegment);useEffect(()=>{segmentHandler.current=onSegment;},[onSegment]);
- const wantsRegion=Boolean(onRegion),wantsSegments=Boolean(onSegment);
+ const stepHandler=useRef(onStep);useEffect(()=>{stepHandler.current=onStep;},[onStep]);
+ const wantsRegion=Boolean(onRegion),wantsSegments=Boolean(onSegment),wantsSteps=Boolean(onStep);
  useEffect(()=>{
-  if(!appleMapsAvailable()||(!wantsRegion&&!wantsSegments))return;
+  if(!appleMapsAvailable()||(!wantsRegion&&!wantsSegments&&!wantsSteps))return;
   let disposed=false;const listeners=[];
   const keep=promise=>promise.then(handle=>{if(disposed)void handle.remove();else listeners.push(handle);}).catch(()=>{});
   if(wantsRegion)keep(appleMaps.addListener('regionChanged',event=>{
@@ -92,8 +93,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    if(Object.values(box).every(Number.isFinite))regionHandler.current?.(box);
   }));
   if(wantsSegments)keep(appleMaps.addListener('segmentSelected',event=>{if(!disposed&&event?.mapID===mapID&&event.segmentID)segmentHandler.current?.(String(event.segmentID));}));
+  if(wantsSteps)keep(appleMaps.addListener('stepSelected',event=>{if(!disposed&&event?.mapID===mapID&&event.activityID)stepHandler.current?.(String(event.activityID));}));
   return()=>{disposed=true;for(const listener of listeners)void listener.remove();};
- },[mapID,wantsRegion,wantsSegments]);
+ },[mapID,wantsRegion,wantsSegments,wantsSteps]);
  const photoPins=JSON.stringify(payload.pins);
  // React render and overlay counts, so the claims about re-render cost and overlay
  // drawing can be checked from the same counters as the native lifecycle.
@@ -123,9 +125,12 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const latestContent=useMemo(()=>JSON.parse(interactiveData),[interactiveData]);
  const contentRef=useRef(latestContent);
  useEffect(()=>{contentRef.current=latestContent;},[latestContent]);
+ // `dynamic`: a person's day. Its lines, live trail and markers change constantly (GPS
+ // points, the time slider, a new day) and always go through update(), never a
+ // re-embed; only `fitKey` asks the native map to bring a new day into view.
  // Community segment lines and pins (the Map's Segments layer) change as the map
  // moves; they go through update(), never a re-embed.
- const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'&&pin.kind!=='people'&&!pin.segmentID):key==='styled'&&Array.isArray(value)?value.filter(line=>!line.community):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
+ const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>dynamic&&['routes','gaps','estimated','live','pins','fitKey'].includes(key)?undefined:key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'&&pin.kind!=='people'&&!pin.segmentID):key==='styled'&&Array.isArray(value)?value.filter(line=>!line.community):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent,dynamic]);
  const snapshotKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
  useEffect(()=>{
   if(!appleMapsAvailable()||picker||!embeddedOnce.current)return;

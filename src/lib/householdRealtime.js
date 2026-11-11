@@ -59,10 +59,12 @@ export async function joinHouseholdSignals(client,topics,handlers){
  await client.realtime?.setAuth?.();
  return subscribeHouseholdSignals(client,topics,handlers);
 }
-export function subscribeHouseholdSignals(client,topics,{onSignal,onState}){
+// `event` names the broadcast: 'location' for the household map, 'share' for the per-person
+// channel that says access to someone's shared activities changed (still an empty message).
+export function subscribeHouseholdSignals(client,topics,{onSignal,onState,event='location'}){
  const joined=new Set();
  const channels=topics.map(topic=>client.channel(topic,{config:{private:true}})
-  .on('broadcast',{event:'location'},()=>onSignal())
+  .on('broadcast',{event},()=>onSignal())
   .subscribe(status=>{
    if(status==='SUBSCRIBED')joined.add(topic);else joined.delete(topic);
    onState(joined.size===topics.length&&topics.length>0);

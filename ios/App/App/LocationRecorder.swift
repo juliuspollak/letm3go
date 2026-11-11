@@ -188,6 +188,25 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticEnabled = false
     // Native background sharing. Friends use the short-lived session token (off
     // after restart); household sharing keeps a device credential in the Keychain.
+    var liveTrailRef: String?
+    // The owner made the activity being recorded private. Persisted, so a relaunch cannot
+    // start publishing it again; the server is told until it confirms (idempotent).
+    static let hiddenTrailKey = "liveTrailHiddenRef"
+    var liveTrailHiddenRef: String? {
+        get { UserDefaults.standard.string(forKey: Self.hiddenTrailKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.hiddenTrailKey) }
+    }
+    var liveTrailHideConfirmed = false
+    var liveTrailWasArmed = false
+    var liveTrailConsentAt: Double = 0
+    // After a stop the same journey may resume (same id): it carries on from where it was, not from its start.
+    var liveTrailResumeRef: String?
+    var liveTrailResumeThrough: Double = 0
+    var liveTrailSentThrough: Double = 0
+    var liveTrailSeq = 0
+    var liveTrailLastFlushAt: Double = 0
+    var liveTrailInFlight = false
+    var liveTrailBackoffUntil: Double = 0
     var liveShareToken: String? { didSet { if liveShareToken != oldValue { sharingRestInputChanged("household credential changed") } } }
     var liveShareEndpoint: URL?
     var liveShareApiKey: String?
@@ -918,6 +937,102 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
            HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
         lastShareFix=location
         sendHouseholdLocation(location,confirmation:false)
+        flushLiveTrail()
+    }
+    // MARK: Live trail
+    // While an activity is being recorded and location is shared, its route so far is
+    // published in small batches (see LiveTrail) so the people it is shared with can
+    // watch the drive. Everything is re-derived from the recorder's own points, so a
+    // lost or delayed batch is sent again and the server merges by time.
+    func flushLiveTrail() {
+        guard storeOpened, ownerID != nil, !accountSuspended, !accountDeleting else { return }
+        let now = Date().timeIntervalSince1970
+        var token: String?, base: URL?, apiKey: String?
+        if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        // Consent: nothing recorded before sharing was switched on is ever published, however long
+        // the activity has been running. (After a relaunch the moment is the relaunch, which can
+        // only withhold more, never less.)
+        let armedNow = token != nil && base != nil && apiKey != nil
+        if armedNow && !liveTrailWasArmed { liveTrailConsentAt = now }
+        liveTrailWasArmed = armedNow
+        guard LiveTrail.due(lastFlushAt: liveTrailLastFlushAt, now: now, inFlight: liveTrailInFlight, backoffUntil: liveTrailBackoffUntil) else { return }
+        guard let token = token, let base = base, let apiKey = apiKey, let endpoint = LiveTrail.endpoint(from: base) else { return }
+        let recording: RecordedActivity? = automaticActivelyRecording ? automaticTrip : (manualGPSRecording ? active : nil)
+        // A private activity publishes nothing, ever: first make sure the server has been
+        // told (so a late batch from anywhere cannot restore it), then stay silent.
+        if let hidden = liveTrailHiddenRef {
+            if !liveTrailHideConfirmed {
+                postLiveTrail(endpoint: endpoint, apiKey: apiKey, token: token, ref: hidden, seq: -2, points: []) { [weak self] accepted in
+                    if accepted { self?.liveTrailHideConfirmed = true }
+                }
+                return
+            }
+            if recording?.id.caseInsensitiveCompare(hidden) == .orderedSame { return }
+            // Only a DIFFERENT activity ends the hiding. A journey that has merely settled (no
+            // recording right now) may resume with the same id, and must still be private.
+            if recording != nil { liveTrailHiddenRef = nil; liveTrailHideConfirmed = false }
+        }
+        var ref = liveTrailRef
+        var points: [[Double]] = []
+        var ending = false
+        if let recording = recording {
+            if ref != recording.id {
+                // The same journey resuming after a stop continues from where it was sent; a new one starts afresh.
+                liveTrailSentThrough = max(liveTrailConsentAt, liveTrailResumeRef?.caseInsensitiveCompare(recording.id) == .orderedSame ? liveTrailResumeThrough : 0)
+                ref = recording.id; liveTrailSeq = 0
+            }
+            points = LiveTrail.batch(points: recording.points, after: liveTrailSentThrough, now: now)
+            guard !points.isEmpty else { return }
+        } else if ref != nil {
+            ending = true
+        } else { return }
+        guard let activityRef = ref else { return }
+        let newest = points.last?[2] ?? liveTrailSentThrough
+        postLiveTrail(endpoint: endpoint, apiKey: apiKey, token: token, ref: activityRef, seq: ending ? -1 : liveTrailSeq + 1, points: points) { [weak self] accepted in
+            guard let self = self else { return }
+            if accepted {
+                if ending { self.liveTrailResumeRef = self.liveTrailRef; self.liveTrailResumeThrough = self.liveTrailSentThrough; self.liveTrailRef = nil; self.liveTrailSentThrough = 0; self.liveTrailSeq = 0 }
+                else { self.liveTrailRef = activityRef; self.liveTrailSentThrough = max(self.liveTrailSentThrough, newest); self.liveTrailSeq += 1 }
+            }
+        }
+    }
+    // One request to the trail endpoint. `completion` runs on the main thread with whether
+    // the server accepted it; back-off for the failure kinds is handled here.
+    func postLiveTrail(endpoint: URL, apiKey: String, token: String, ref: String, seq: Int, points: [[Double]], completion: @escaping (Bool) -> Void) {
+        let payload: [String: Any] = ["p_token": token, "p_ref": ref, "p_seq": seq, "p_points": points]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"; request.httpBody = data; request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        liveTrailInFlight = true; liveTrailLastFlushAt = Date().timeIntervalSince1970
+        let requestOwner = ownerID
+        URLSession.shared.dataTask(with: request) { [weak self] body, response, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // Always release the request, even if the account changed meanwhile, or this
+                // singleton would never publish a trail (or send a pending "private") again.
+                self.liveTrailInFlight = false
+                guard self.ownerID == requestOwner else { return }
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let ok = error == nil && (200...299).contains(status)
+                let accepted = ok && String(decoding: body ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+                if accepted { self.liveTrailBackoffUntil = 0 }
+                else if status == 404 { self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 3600 } // migration not applied yet
+                else if ok { self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 300 }            // credential not accepted for this trail
+                else { self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 30 }
+                completion(accepted)
+            }
+        }.resume()
+    }
+    // The owner marked the activity being recorded private: stop at once, remember it
+    // across relaunches, and tell the server (retried until it confirms).
+    func hideLiveTrail(ref: String) {
+        liveTrailHiddenRef = ref; liveTrailHideConfirmed = false
+        if liveTrailRef?.caseInsensitiveCompare(ref) == .orderedSame { liveTrailRef = nil; liveTrailSentThrough = 0; liveTrailSeq = 0 }
+        liveTrailLastFlushAt = 0; liveTrailBackoffUntil = 0
+        flushLiveTrail()
     }
     func sharePoint(_ location: CLLocation) -> GPSPoint {
         GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,
@@ -935,6 +1050,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // phone has not moved since it was taken (and the app is running). Otherwise
     // the household sees the honest last-updated time.
     func confirmHouseholdLocation() {
+        flushLiveTrail()
         // Passive rest runs no location service, so nothing vouches for the last fix
         // being current: viewers keep its real time, never a re-stamped one.
         guard let fix=lastShareFix, locationMode != .passive else {return}
@@ -1418,6 +1534,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "ManualRecorder"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "configureLiveSharing", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "hideLiveTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPassiveRest", returnType: CAPPluginReturnPromise),
@@ -1532,6 +1649,10 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["restored":true])
         } catch { call.reject("Could not restore photo safely.") }
     } }
+    @objc func hideLiveTrail(_ call: CAPPluginCall) {
+        guard let ref = call.getString("ref"), !ref.isEmpty, ref.count <= 64 else { call.reject("Missing activity"); return }
+        DispatchQueue.main.async { LocationRecorder.shared.hideLiveTrail(ref: ref); call.resolve() }
+    }
     @objc func configureLiveSharing(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
         let recorder=LocationRecorder.shared

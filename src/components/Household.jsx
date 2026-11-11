@@ -2,6 +2,7 @@ import {App as NativeApp} from '@capacitor/app';
 import {recorderAvailable} from '../lib/recorder.js';
 import DismissibleSheet from './DismissibleSheet.jsx';
 import LocationSharingRow from './LocationSharingRow.jsx';
+import ActivitySharingRow from './ActivitySharingRow.jsx';
 import PeopleGrid from './PeopleGrid.jsx';
 import {invitableFriends} from '../lib/people.js';
 import InviteComposer from './InviteComposer.jsx';
@@ -75,6 +76,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
    <div className="social-heading household-title"><h2>{household.name}</h2>{!membersLoading&&members.length>0&&<span className="social-count">{members.length}</span>}</div>
    {inviteAccepted&&<p role="status" className="notice">You joined {household.name}. Turn on My location to appear on the family map.</p>}
    <LocationSharingRow audience="household" enabled={liveEnabled} ready={liveReady} error={liveError} permission={permission} precise={precise} onChange={async enabled=>{if(enabled){if(!onShareLive)throw new Error('Update Letm3go to enable household location sharing.');await onShareLive();}else{if(!onStopLive)throw new Error('Location sharing is unavailable.');await onStopLive();}}}/>
+   <ActivitySharingRow/>
    {!liveReady&&onRetrySharing&&<button type="button" className="text-button" onClick={onRetrySharing}>Retry location status</button>}
    <h3 className="social-subheading">Members</h3>
    {membersLoading&&!members.length?<p role="status" className="social-hint">Loading members…</p>:<PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Members"/>}

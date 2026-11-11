@@ -17,6 +17,9 @@ private let gapColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UI
 // It is never rendered like an observed route, so a solid line never implies GPS
 // was recorded where it was not.
 private final class GapPolyline: MKPolyline {}
+// A person's trail while the activity is still being recorded. Kept apart from the
+// recorded and estimated lines so a new GPS point replaces only this overlay.
+private final class LivePolyline: MKPolyline {}
 // A road route estimated for a GPS gap (never recorded): a solid line drawn on the
 // road in orange, so its colour alone tells it apart from the blue recorded route.
 private let estimatedColor = UIColor.systemOrange
@@ -652,6 +655,34 @@ private func edgeAvatarImage(_ members:[[String:Any]])->UIImage {
 // instead of replacing every annotation. People pins carry their own id (the
 // user ids at that place); other pins are identified by what they show.
 // A named segment's label, in the segment's colour, with its name always shown.
+// A numbered badge for the n-th activity of a person's day.
+private func stepMarker(_ pin:JourneyPin)->MKAnnotationView {
+    let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
+    marker.markerTintColor=brandAccent
+    marker.glyphText=String((pin.metadata["label"] as? String ?? "").prefix(3))
+    marker.glyphImage=nil
+    marker.titleVisibility = .hidden
+    marker.displayPriority = .required
+    marker.canShowCallout=false
+    marker.isAccessibilityElement=true
+    marker.accessibilityLabel=pin.title
+    marker.accessibilityTraits = .button
+    return marker
+}
+// Where the time slider says the person was: a ringed dot, nothing like the live avatar.
+private func playbackMarker(_ pin:JourneyPin)->MKAnnotationView {
+    let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
+    let size=CGSize(width:26,height:26)
+    view.image=UIGraphicsImageRenderer(size:size).image { _ in
+        UIColor.white.setFill();UIBezierPath(ovalIn:CGRect(origin:.zero,size:size)).fill()
+        UIColor.systemOrange.setFill();UIBezierPath(ovalIn:CGRect(x:4,y:4,width:18,height:18)).fill()
+    }
+    view.displayPriority = .required
+    view.canShowCallout=false
+    view.isAccessibilityElement=true
+    view.accessibilityLabel=pin.title ?? "Position at selected time"
+    return view
+}
 private func segmentMarker(_ pin:JourneyPin)->MKAnnotationView {
     let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
     marker.markerTintColor=hexColor(pin.metadata["color"])
@@ -687,6 +718,7 @@ private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let gaps: [[CLLocationCoordinate2D]]
     let estimated: [[CLLocationCoordinate2D]]
+    let live: [CLLocationCoordinate2D]
     let pins: [[String:Any]]
     let styled: [StyledRoute]
     let muted: Bool
@@ -698,6 +730,7 @@ private struct MapContent {
     let layersActive:Int?
     let controls:[String:Any]?
     let mapStyle:String?
+    let fitKey:String?
     let showsLocate:Bool
     let locating:Bool
     init(_ options:[AnyHashable:Any]) {
@@ -707,6 +740,7 @@ private struct MapContent {
         routes=(options["routes"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(5000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         gaps=(options["gaps"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2)).compactMap { coordinate($0) } }.filter { $0.count == 2 }
         estimated=(options["estimated"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
+        live=Array((options["live"] as? [[Double]] ?? []).prefix(3000)).compactMap { coordinate($0) }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
         styled=(options["styled"] as? [[String:Any]] ?? []).prefix(60).compactMap { item -> StyledRoute? in
             let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
@@ -719,10 +753,11 @@ private struct MapContent {
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
         controls=(options["layers"] as? [String:Any])?["controls"] as? [String:Any]
         mapStyle=options["mapStyle"] as? String
+        fitKey=(options["fitKey"] as? String).map{String($0.prefix(160))}
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
-    var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+estimated.flatMap{$0}+styled.flatMap{$0.coordinates}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? []) }
+    var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+estimated.flatMap{$0}+live+styled.flatMap{$0.coordinates}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? []) }
     var peoplePins:[[String:Any]] { pins.filter { ($0["kind"] as? String)=="people" } }
     // Everyone on the map, marked with whether the camera should keep them in view
     // (the web layer leaves out a stale position far from everyone else).
@@ -804,6 +839,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var pinData:[String:Data]=[:]
     private var routeKey:Int?
     private(set) var overlayRebuilds=0
+    private var liveOverlay:LivePolyline?
+    private var fittedDayKey:String?
+    private var fittedDayHadRoutes=false
+    private var liveSignature:Int?
+    private(set) var liveUpdates=0
     private var circles:[String:MKCircle]=[:]
     private var indicators:[String:EdgeAvatarButton]=[:]
     private var indicatorData:[String:Data]=[:]
@@ -869,11 +909,22 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let key=hasher.finalize()
         if key != routeKey {
             overlayRebuilds+=1
-            map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine)})
+            map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine || $0 is LivePolyline)})
             for gap in next.gaps {map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))}
             for line in next.estimated {map.addOverlay(EstimatedPolyline(coordinates:line,count:line.count))}
             for line in routeOverlays(next) {map.addOverlay(line)}
             routeKey=key
+        }
+        // The live trail changes with every GPS point: replace only this overlay, and only
+        // when it really changed, so the recorded day above is never rebuilt.
+        var liveHasher=Hasher();liveHasher.combine(next.live.count)
+        if let last=next.live.last {liveHasher.combine(last.latitude);liveHasher.combine(last.longitude)}
+        let liveKey=liveHasher.finalize()
+        if liveKey != liveSignature {
+            liveUpdates+=1
+            if let old=liveOverlay {map.removeOverlay(old);liveOverlay=nil}
+            if next.live.count>1 {let line=LivePolyline(coordinates:next.live,count:next.live.count);map.addOverlay(line);liveOverlay=line}
+            liveSignature=liveKey
         }
         var wantedCircles:[String:(CLLocationCoordinate2D,Double)]=[:]
         for pin in next.pins {
@@ -912,6 +963,12 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             map.addAnnotation(pin)
         }
         for (id,pin) in pins where !seen.contains(id) {map.removeAnnotation(pin);pins.removeValue(forKey:id);pinData.removeValue(forKey:id)}
+        // A person's day changed: bring it into view once (see DayFit). Not for the people map.
+        let dayHasRoutes = !(next.routes.isEmpty && next.estimated.isEmpty && next.live.isEmpty)
+        if !isPeopleMap, DayFit.shouldFit(key:next.fitKey,applied:fittedDayKey,appliedWithRoutes:fittedDayHadRoutes,hasRoutes:dayHasRoutes,hasPins:!next.pins.isEmpty) {
+            map.setVisibleMapRect(next.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:fittedDayKey != nil)
+            fittedDayKey=next.fitKey;fittedDayHadRoutes=dayHasRoutes
+        }
         applyOverview(next.overview)
         updateLocationButton(next.showsLocate && showsLayers)
         if let style=next.mapStyle,style != appliedStyle {applyMapStyle(map,style);appliedStyle=style}
@@ -2068,6 +2125,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if let line=overlay as? HighlightLine {return highlightRenderer(line)}
         if let line=overlay as? EstimatedPolyline {return estimatedRenderer(line)}
         if let gap=overlay as? GapPolyline {let renderer=MKPolylineRenderer(polyline:gap);renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6];return renderer}
+        if let live=overlay as? LivePolyline {let renderer=MKPolylineRenderer(polyline:live);renderer.strokeColor=brandAccent;renderer.lineWidth=6;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=5;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let circle=overlay as? MKCircle {let renderer=MKCircleRenderer(circle:circle);renderer.strokeColor = .systemBlue;renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.12);renderer.lineWidth=1;return renderer}
@@ -2157,6 +2215,12 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             notifyListeners("segmentSelected",data:["mapID":id,"segmentID":segmentID])
             return
         }
+        // A numbered activity marker on a person's day opens that activity.
+        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="step",let activityID=pin.metadata["activityID"] as? String,!activityID.isEmpty,let id=mapID(for:mapView) {
+            mapView.deselectAnnotation(pin,animated:false)
+            notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])
+            return
+        }
         reportPhotoSelection(mapView,view.annotation)
     }
     public func mapView(_ mapView:MKMapView,didDeselect view:MKAnnotationView) {
@@ -2187,6 +2251,8 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         let kind=pin.metadata["kind"] as? String ?? ""
         if kind=="people" {return peopleAnnotationView(mapView,pin)}
         if kind=="segment" {return segmentMarker(pin)}
+        if kind=="step" {return stepMarker(pin)}
+        if kind=="playback" {return playbackMarker(pin)}
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
         marker.canShowCallout=true
         if kind=="friend-live" {
@@ -2239,6 +2305,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]
             return renderer
         }
+        if let live=overlay as? LivePolyline {let renderer=MKPolylineRenderer(polyline:live);renderer.strokeColor=brandAccent;renderer.lineWidth=6;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let route=overlay as? MKPolyline {
             let renderer=MKPolylineRenderer(polyline:route)
@@ -2337,6 +2404,7 @@ final class ActivityMapEngine:NSObject,MKMapViewDelegate {
             renderer.strokeColor=gapColor;renderer.lineWidth=4;renderer.lineCap = .round;renderer.lineDashPattern=[6,6]
             return renderer
         }
+        if let live=overlay as? LivePolyline {let renderer=MKPolylineRenderer(polyline:live);renderer.strokeColor=brandAccent;renderer.lineWidth=6;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let route=overlay as? MKPolyline {
             let renderer=MKPolylineRenderer(polyline:route)

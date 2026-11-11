@@ -1,3 +1,4 @@
+import {liveRoad} from './liveRoads.js';
 import {recognitionSampleIndexes,lookupDue,cachedLookup,failedLookup} from './journeyRecognition.js';
 import {reconcileSources} from './fleetJourneys.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
@@ -120,7 +121,9 @@ export function useJourneyGrouping({owner,activities,processingActivities=activi
     // the cache budget; past it the straight line stands, clearly marked.
     for(const gap of routeGaps(t)){
      if(!alive)return;
-     const key=gapKey(t.id,gap),record=road(key);
+     const key=gapKey(t.id,gap);let record=road(key);
+     // A road already found while the drive was being recorded is kept, not asked for again.
+     if(!record){const found=liveRoad(key);if(found&&!found.retryAfter){await hold('roads',key,found);record=found;}}
      if(record&&!roadLookupDue(record)){if(record.retryAfter){waiting=true;next=Math.min(next,record.retryAfter);}continue;}
      // Store full: an explicit final answer (straight line, reported as such), not a silent skip.
      // At most 20 directions requests a minute; the rest wait for the next run.

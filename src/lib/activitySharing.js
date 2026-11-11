@@ -6,7 +6,7 @@ export async function sharingRequest(client,action,id,params={}){
  if(error||data?.error||!data)throw new Error('Sharing could not be confirmed. The journeys backend may need deployment. Your last confirmed permission has not been changed in this screen.');
  return data;
 }
-export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal,audience='public',mode=null,recipients=[],photoIDs=[]}){
+export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal,audience='public',mode=null,recipients=[],photoIDs=[],auto=false}){
  if(!['public','friends','household'].includes(audience))throw new Error('Choose a supported audience.');
  if(audience!=='public' && !((audience==='friends'&&['friends','selected','mixed','all'].includes(mode))||(audience==='household'&&mode==='household')))throw new Error('The sharing audience needs review.');
  if(!Array.isArray(photoIDs)||photoIDs.length>50||photoIDs.some(p=>typeof p!=='string'))throw new Error('Invalid photo selection.');
@@ -22,7 +22,7 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  // Last point at which leaving can still stop the activity going public.
  if(signal?.aborted)throw new Error('Publication cancelled.');
  const result=await sharingRequest(client,'publish',id,{
-  audience,revision:current.revision,placesConfirmed:true,photoIDs,
+  audience,revision:current.revision,placesConfirmed:true,photoIDs,...(auto?{auto:true}:{}),
   ...(audience==='public'?{}:{mode,recipients:['selected','mixed'].includes(mode)?recipients:[]})
  });
  if(!result.token)throw new Error('Publication was not confirmed.');
@@ -33,5 +33,18 @@ export async function makeActivityPrivate(client,id){
  const {data:trip,error:readError}=await client.from('activities').select('id').eq('id',id).eq('owner_id',auth.user.id).maybeSingle();
  if(readError)throw new Error('Privacy could not be verified.');
  if(trip){const {error}=await client.rpc('revoke_activity_publication',{p_id:id});if(error)throw new Error('Sharing could not be revoked. Please retry.');}
+ // The owner's decision for this activity, recorded whether or not it has been uploaded
+ // yet, so automatic sharing never publishes it later. Two records: by activity (once it
+ // exists in the cloud) and by the recorder's own id (works before it is uploaded).
+ // supabase-js reports a failure as {error}, not an exception. A server that does not have
+ // the functions yet is fine; any other failure must not look like success. Retrying is safe.
+ // Only "this function is not deployed" counts as missing; any other error (including a table or
+ // column that does not exist because a migration is half applied) must not be waved through.
+ const missing=e=>/^(PGRST202|42883)$/.test(String(e.code||''))||/could not find the function/i.test(e.message||'');
+ const calls=[client.rpc('end_live_trail',{p_ref:String(id),p_hide:true})];
+ if(trip)calls.push(client.rpc('keep_activity_private',{p_activity:id}));
+ for(const result of await Promise.all(calls)){
+  if(result?.error&&!missing(result.error))throw new Error('The activity is private, but that choice could not be saved. Please retry.');
+ }
  return {audience:'private'};
 }

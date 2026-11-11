@@ -1186,3 +1186,24 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 @keyframes pokeWave{0%,100%{transform:rotate(0)}20%{transform:rotate(18deg)}40%{transform:rotate(-12deg)}60%{transform:rotate(16deg)}80%{transform:rotate(-6deg)}}
 @keyframes pokeFloatIn{0%{opacity:0;transform:translateY(-8px) scale(.7)}100%{opacity:1;transform:none}}
 .poke-bubble--failed{white-space:normal;width:max-content;max-width:190px;text-align:center}.poke-bubble small{display:block;font-size:10px;font-weight:600;opacity:.9;margin-top:2px}
+
+/* Tapping a person on Home: their map, and a separate poke control. */
+.person-tile-wrap{position:relative}
+.person-poke{position:absolute;top:0;right:2px;width:30px;height:30px;border-radius:50%;border:1px solid var(--line,rgba(127,127,127,.3));background:var(--card,var(--soft));font-size:15px;line-height:1;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.person-poke:active{transform:scale(.92)}
+.person-map{position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;background:var(--bg,Canvas);padding-top:env(safe-area-inset-top)}
+.person-map-head{display:flex;align-items:center;gap:10px;padding:10px 16px}
+.person-map-who{flex:1;min-width:0;display:flex;flex-direction:column}
+.person-map-who span{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.person-map-days{display:flex;align-items:center;justify-content:center;gap:16px;padding:2px 16px 8px}
+.person-map-days button{background:none;border:0;color:inherit;padding:6px;border-radius:50%}
+.person-map-days button:disabled{opacity:.3}
+.person-map-canvas{position:relative;flex:1;min-height:240px}
+.person-map-note{position:absolute;left:16px;right:16px;bottom:12px;margin:0;padding:8px 12px;border-radius:12px;background:var(--card,Canvas);box-shadow:0 1px 6px rgba(0,0,0,.18);font-size:13px;text-align:center}
+.person-map-timeline{padding:10px 16px 0}
+.person-map-timeline input[type=range]{width:100%}
+.person-map-time{display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:13px;color:var(--muted)}
+.person-map-legend{margin:6px 16px calc(10px + env(safe-area-inset-bottom));font-size:11.5px;color:var(--muted)}
+
+.live-private,.live-private-row{margin:6px 0;font-size:12.5px;color:var(--muted)}
+.live-private{display:flex;align-items:center;gap:6px}
