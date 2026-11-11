@@ -31,7 +31,7 @@ function useToday(timeZone){
  return today;
 }
 
-export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke,onOpenOwn,localTrips=null,deletedIDs}){
+export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke,onOpenOwn,localTrips=null,localLiveTrip=null,deletedIDs}){
  const isSelf=person.userId===viewer;
  const today=useToday(timeZone);
  // The day shown follows the clock until the person picks another: left open past midnight
@@ -40,7 +40,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
  const date=picked??today;
  const [scrub,setScrub]=useState(null);
  const [opened,setOpened]=useState(null);
- const {day,loading,error}=usePersonDay({viewer,owner:person.userId,date,timeZone,localTrips:person.userId===viewer?localTrips:null,deletedIDs});
+ const {day,loading,error}=usePersonDay({viewer,owner:person.userId,date,timeZone,localTrips:person.userId===viewer?localTrips:null,localLiveTrip:person.userId===viewer?localLiveTrip:null,deletedIDs});
  const isToday=date===today;
  const deferred=useDeferredValue(scrub);
  const position=person.position;
@@ -73,7 +73,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
   }
   setOpened(id);
  };
- if(opened)return <SharedActivityDetail activityID={opened} ownerName={person.name} ownerID={person.userId} unit={unit} onBack={()=>setOpened(null)}/>;
+ if(opened)return <SharedActivityDetail viewer={viewer} activityID={opened} ownerName={person.name} ownerID={person.userId} unit={unit} onBack={()=>setOpened(null)}/>;
  return <section className="person-map" aria-label={`${person.name||'Member'}’s map`}>
   <header className="person-map-head">
    <PersonAvatar name={person.name} userId={person.userId} selfId={viewer} photos={photos} selfAvatar={selfAvatar} size="md"/>

@@ -240,3 +240,11 @@ it('keeps normal samples, stops and resumed segments distinct with overlapping a
  expect(positionAt(day,t+1000)).toMatchObject({id:'drive',inGap:false});
  expect(linesUntil(day,t+1020).map(l=>l.length)).toEqual([2,3,2]);
 });
+
+it('does not draw the same finalised activity as both recorded and live while completion reaches viewers',()=>{
+ const date='2026-11-10',w=dayWindow(date,SYD),t=w.start+10;
+ const r=row('a','Finished',t,[[t,-34,150],[t+10,-34.001,150]],{ended_at:new Date((t+10)*1000).toISOString()});
+ const live={ref:'A',points:[[-34,150,t,0],[-34.001,150,t+10,0]],roads:{}};
+ const day=composeDay({date,timeZone:SYD,now:t+20,rows:[r],live});
+ expect(day.recorded).toHaveLength(1);expect(day.live).toEqual([]);expect(day.samples).toHaveLength(2);
+});

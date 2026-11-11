@@ -106,6 +106,7 @@ export function createJourneysHandler({ env, createClient, storage }) {
   const {data:trip,error}=await userClient.from('activities').select('*').eq('id',body.id).maybeSingle();
   if(error||!trip||trip.owner_id!==owner)return reply({error:'Activity unavailable'},404);
   if(body.action==='publish'){
+   if(body.auto===true&&(body.audience!=='household'||body.mode!=='household'||!Array.isArray(body.recipients)||body.recipients.length))return reply({error:'Automatic sharing is household only'},400);
    // Automatic household sharing never publishes an activity the owner has made private,
    // including one that was made private while this request was already on its way.
    if(body.auto===true){const {data:allowed,error:allowedError}=await admin.rpc('auto_share_allowed',{p_owner:owner,p_activity:trip.id});if(allowedError)throw allowedError;if(allowed!==true)return reply({error:'This activity is private'},409);}
@@ -124,24 +125,15 @@ export function createJourneysHandler({ env, createClient, storage }) {
    const snapshot={title:trip.title,activity:trip.activity,description:trip.description,startedAt:trip.started_at,endedAt:trip.ended_at,distanceMeters:trip.distance_meters,durationSeconds:trip.duration_seconds,points:redactRoute(trip.route_points,places||[],300,{times:privateAudience}),photos:safePhotos};
    if(privateAudience&&(!['friends','household','selected','mixed','all'].includes(body.mode)||!Array.isArray(body.recipients)||body.recipients.length>100))return reply({error:'Select valid social recipients'},400);
    const publication=privateAudience
-    ?await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot})
+    ?await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot,p_auto:body.auto===true})
     :await admin.rpc('commit_shared_journey',{p_id:trip.id,p_owner:owner,p_revision:trip.revision,p_audience:body.audience,p_snapshot:snapshot});
    const {data:result,error:commitError}=publication;
-   if(commitError)throw commitError;
-   // The owner may have made this activity private while this request was in flight (the
-   // check above ran before the places and photos were read). Look again now that it is
-   // published: if so, take the copy back down rather than leave it shared.
-   if(body.auto===true){
-    const {data:still,error:stillError}=await admin.rpc('auto_share_allowed',{p_owner:owner,p_activity:trip.id});
-    if(stillError||still!==true){
-     const {error:rollbackError}=await admin.from('shared_journeys').delete().eq('activity_id',trip.id).eq('owner_id',owner);
-     if(rollbackError)throw rollbackError; // A failed removal must never be reported as successfully withdrawn.
-     return reply({error:'This activity is private'},409);
-    }
+   if(commitError){
+    if(body.auto===true&&/consent|eligible|household only/i.test(commitError.message||''))return reply({error:'Automatic sharing is no longer allowed'},409);
+    throw commitError;
    }
-   // Sharing by hand is the owner's own decision about this activity (automatic sharing
-   // must not override it later, e.g. after the system removes the share on an edit).
-   if(body.auto!==true){const {error:decisionError}=await admin.rpc('remember_manual_share',{p_owner:owner,p_activity:trip.id});if(decisionError)throw decisionError;}
+   // Consent and manual decisions commit with the snapshot inside the RPC.
+   // No compensating DELETE: it could fail, or remove a newer manual share.
    return reply({token:result,snapshot});
   }
   if(body.action==='revoke'){const {error}=await userClient.rpc('revoke_activity_publication',{p_id:trip.id});if(error)throw error;return reply({revoked:true});}

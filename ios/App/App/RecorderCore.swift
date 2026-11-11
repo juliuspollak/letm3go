@@ -3015,6 +3015,14 @@ final class JourneyRecordDatabase {
 // recorder's own points, so a batch that failed or was lost offline is simply
 // included again next time, and the server merges by time.
 enum LiveTrail {
+    // Pauses and provisional stops are still the same unfinished activity. They
+    // retain their sent prefix until finalisation, rather than emitting an end.
+    static func current(automatic: RecordedActivity?, settled: RecordedActivity?, manual: RecordedActivity?) -> RecordedActivity? {
+        if let automatic = automatic { return automatic }
+        if let manual = manual, manual.state == "recording" || manual.state == "paused" { return manual }
+        if let settled = settled, settled.details?.provisional == true { return settled }
+        return nil
+    }
     static let minimumInterval: Double = 15
     static let maximumBatch = 200
     static let maximumAccuracy: Double = 100
@@ -3033,7 +3041,7 @@ enum LiveTrail {
                last.distance(to: point) < minimumSpacing, point.timestamp - last.timestamp < maximumSilence { continue }
             kept.append(point)
         }
-        if let newest = points.last(where: { $0.timestamp.rounded() > after && $0.timestamp <= now + 60 && $0.accuracy >= 0 && $0.accuracy <= maximumAccuracy }),
+        if let newest = points.last(where: { $0.timestamp.rounded() > after && $0.timestamp <= now + 60 && $0.accuracy >= 0 && $0.accuracy <= maximumAccuracy && abs($0.latitude) <= 90 && abs($0.longitude) <= 180 && !($0.latitude == 0 && $0.longitude == 0) }),
            let last = kept.last, last.timestamp != newest.timestamp { kept.append(newest) }
         // The OLDEST points after `after` go first: the caller advances `after` to the last
         // point of the batch, so a backlog (offline, throttled) drains in order and nothing

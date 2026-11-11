@@ -1,6 +1,6 @@
 # Person-day map review and verification
 
-Reviewed `origin/main` at `fe97ffe` (merged PR #52). Changes are on `fix/person-day-privacy-review`.
+Historical PR #53 review: reviewed `origin/main` at `fe97ffe` (merged PR #52). Subsequently merged as `d65bc7a`. The statements below describe verification before that merge. See `person-day-comprehensive-review.md` for the later review of #52–#54.
 
 ## Findings and changes
 

@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {addDays,dayWindow} from './dayWindow.js';
-import {composeDay,localDayRows,mergeOwnRows} from './personDay.js';
+import {composeDay,localDayRows,localLiveTrail,mergeOwnRows} from './personDay.js';
 import {mergeTrail,newestTime} from './liveTrail.js';
 import {cachedDay,epochOf,invalidateViewer,mergeRows,peekFreshDay,storeDay} from './personDayCache.js';
 import {subscribeHouseholdSignals,throttled} from './householdRealtime.js';
@@ -40,7 +40,7 @@ async function fetchDay({viewer,owner,date,timeZone}){
 const clock=()=>Date.now()/1000;
 const NONE=[];
 // `localTrips` (my own map only): activities saved on this phone, merged with the cloud ones.
-export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock,localTrips=null,deletedIDs=NONE}){
+export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock,localTrips=null,localLiveTrip=null,deletedIDs=NONE}){
  const key=`${viewer}|${owner}|${slot(date,timeZone)}`;
  const [loaded,setLoaded]=useState({key:null,rows:[],error:''});
  const held=peekFreshDay(viewer,owner,slot(date,timeZone));
@@ -147,7 +147,12 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock,
   void tick();document.addEventListener('visibilitychange',visible);window.addEventListener('online',online);
   return()=>{cancelled=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible);window.removeEventListener('online',online);};
  },[viewer,owner,isToday,enabled,liveKey,date,timeZone,accessVersion]);
- const shownRows=useMemo(()=>localTrips?mergeOwnRows(rows,localDayRows(localTrips,dayWindow(date,timeZone),deletedIDs),deletedIDs):rows,[rows,localTrips,deletedIDs,date,timeZone]);
- const day=useMemo(()=>composeDay({rows:shownRows,live,timeZone,date,now:now()}),[shownRows,live,timeZone,date,now]);
- return {day,live,loading:enabled&&!current&&!held,error:current?loaded.error:''};
+ const shownRows=useMemo(()=>viewer===owner&&localTrips?mergeOwnRows(rows,localDayRows(localTrips,dayWindow(date,timeZone),deletedIDs),deletedIDs):rows,[viewer,owner,rows,localTrips,deletedIDs,date,timeZone]);
+ const ownLive=useMemo(()=>viewer===owner&&!deletedIDs.some(id=>String(id).toLowerCase()===String(localLiveTrip?.id).toLowerCase())?localLiveTrail(localLiveTrip):null,[viewer,owner,localLiveTrip,deletedIDs]);
+ const composedLive=useMemo(()=>{
+  const remote=viewer===owner&&deletedIDs.some(id=>String(id).toLowerCase()===String(live?.ref).toLowerCase())?null:live;
+  return ownLive?{...ownLive,roads:{...(String(remote?.ref).toLowerCase()===String(ownLive.ref).toLowerCase()?remote?.roads:{}),...ownLive.roads}}:remote;
+ },[ownLive,live,viewer,owner,deletedIDs]);
+ const day=useMemo(()=>composeDay({rows:shownRows,live:composedLive,timeZone,date,now:now()}),[shownRows,composedLive,timeZone,date,now]);
+ return {day,live:composedLive,loading:enabled&&!current&&!held,error:current?loaded.error:''};
 }

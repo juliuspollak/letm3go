@@ -21,8 +21,8 @@ function BrowserSharedPhoto({token,photo}){
 
 // One detail presentation: on iOS it is the same native ActivityDetailScreen
 // used for your recordings. Browser-only links use the existing map component.
-export default function SharedActivityDetail({activityID=null,token=null,ownerName='Friend',ownerID,unit='km',onBack}){
- const {trip,loading,error}=useSharedActivityDetail(activityID,token,ownerName);
+export default function SharedActivityDetail({activityID=null,token=null,ownerName='Friend',ownerID,viewer=null,unit='km',onBack}){
+ const {trip,loading,error}=useSharedActivityDetail(activityID,token,ownerName,viewer);
  if(error)return <div className="notice" role="alert"><h2>{error}</h2><button type="button" className="secondary" onClick={onBack}>Back</button></div>;
  if(loading||!trip)return <p role="status">Loading shared activity…</p>;
  if(Capacitor.getPlatform()==='ios'&&ownerID){

@@ -5306,3 +5306,19 @@ check(liveBeforeSignature != LiveOverlaySignature.value(liveRedacted) { ($0.x, $
 check(liveBeforeSignature != LiveOverlaySignature.value([MapXY]()) { ($0.x, $0.y) }, "revocation clears a nonempty live overlay")
 
 print("Final native assertion count including live privacy: \(assertions)")
+
+// Live maps retain the same route through pauses and provisional stops.
+var livePaused = RecordedActivity(activity: "Driving", startedAt: 100, resumedAt: 100, title: "Live pause")
+livePaused.pause(at: 110)
+check(LiveTrail.current(automatic: nil, settled: nil, manual: livePaused)?.id == livePaused.id, "a manual pause retains its live trail")
+var liveStopped = livePaused
+liveStopped.publishStop(at: 110, continuationEndsAt: 500)
+check(LiveTrail.current(automatic: nil, settled: liveStopped, manual: nil)?.id == liveStopped.id, "a provisional stop retains its live prefix")
+liveStopped.completeProvisional()
+check(LiveTrail.current(automatic: nil, settled: liveStopped, manual: nil) == nil, "finalisation ends the live representation")
+print("Final native assertion count including unfinished live retention: \(assertions)")
+
+let liveValid = GPSPoint(latitude: -34, longitude: 151, timestamp: 100, accuracy: 5, altitude: 0, speed: 0)
+let liveInvalidTail = GPSPoint(latitude: 95, longitude: 151, timestamp: 110, accuracy: 5, altitude: 0, speed: 0)
+check(LiveTrail.batch(points: [liveValid, liveInvalidTail], after: 0, now: 200).count == 1, "the newest-point fallback cannot reinsert an invalid fix and poison the upload")
+print("Final native assertion count including live batch validation: \(assertions)")

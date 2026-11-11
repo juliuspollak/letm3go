@@ -370,3 +370,20 @@ it('an older successful day response cannot overwrite a newer denial in the cach
  expect(result.current.day.activities).toEqual([]);
  expect(cachedDay('me','her',`${DATE}@${Z}`).rows).toEqual([]);
 });
+
+it('shows the owner local recording even when live sharing is off, without exposing it on another person map',async()=>{
+ const t=W.start+39000,localLiveTrip={id:'LOCAL-LIVE',source:'device',state:'recording',recordingMode:'manual',activity:'Walking',points:[{latitude:-34,longitude:151,timestamp:t,segment:0},{latitude:-34.001,longitude:151,timestamp:t+10,segment:0}]};
+ const self=render({viewer:'me',owner:'me',localLiveTrip});
+ expect(self.result.current.day.live).toHaveLength(1);
+ const other=render({viewer:'me',owner:'her',localLiveTrip});
+ expect(other.result.current.day.live).toEqual([]);
+ await act(async()=>{});
+});
+
+it('does not restore an owner-deleted recording from a delayed server live prefix',async()=>{
+ const t=W.start+39000;
+ trail={activity_ref:'DELETED',points:[[-34,151,t,0],[-34.001,151,t+10,0]],roads:{},point_count:2};
+ const {result}=render({viewer:'me',owner:'me',deletedIDs:['deleted']});
+ await waitFor(()=>expect(result.current.loading).toBe(false));
+ expect(result.current.live).toBeNull();expect(result.current.day.live).toEqual([]);
+});
