@@ -6,29 +6,44 @@ import {trailLines} from './liveTrail.js';
 // live trail. One implementation for everyone: only where the rows come from (and
 // what the server lets through) differs between myself, household and friends.
 const SPREAD_METRES=25,MAX_MARKERS=60;
+// The recorder treats a silence over three minutes as unobserved even when
+// stationary. Shared/thinned fixes lack accuracy and mode: use that conservative
+// ceiling, rather than interpreting sparse display samples as precise coverage.
+const unobserved=(a,b)=>a.segment!==b.segment||b.t-a.t>180;
+// Gap references already contain the two real endpoint times. An estimate belongs
+// whole to the viewer-local day of its FIRST fix, even across midnight: we cannot
+// split a guessed road into accurately timed portions. Unknown legacy keys are
+// shown only if the entire activity fits this day.
+function roadsInWindow(roads,window,begun,ended){
+ return Object.entries(roads||{}).filter(([ref])=>{
+  const match=/:([0-9]+):([0-9]+)$/.exec(ref);
+  if(!match)return begun>=window.start&&ended<window.end;
+  const t=Number(match[1]);return t>=window.start&&t<window.end;
+ }).map(([ref,line])=>({ref,line:decodeLine(line)})).filter(r=>r.line.length>1);
+}
 const num=n=>Number.isFinite(n);
 const usable=p=>p&&num(p.latitude)&&num(p.longitude)&&Math.abs(p.latitude)<=90&&Math.abs(p.longitude)<=180;
 
 // Points of one activity inside the day window. The neighbouring point just
 // outside stays when it continues the same segment, so a drive across midnight is
 // one unbroken line on each day with no vertex duplicated within a day.
-export function clipToWindow(points,window){
+export function clipToWindow(points,window,untimed=false){
  const out=[];
  for(let i=0;i<points.length;i++){
   const p=points[i];
   if(!usable(p)||!num(p.t))continue;
   if(p.t>=window.start&&p.t<window.end){out.push(p);continue;}
-  const before=p.t<window.start&&points[i+1]&&points[i+1].t>=window.start&&points[i+1].segment===p.segment;
-  const after=p.t>=window.end&&points[i-1]&&points[i-1].t<window.end&&points[i-1].segment===p.segment;
+  const before=p.t<window.start&&points[i+1]&&points[i+1].t>=window.start&&(untimed?p.segment===points[i+1].segment:!unobserved(p,points[i+1]));
+  const after=p.t>=window.end&&points[i-1]&&points[i-1].t<window.end&&(untimed?p.segment===points[i-1].segment:!unobserved(points[i-1],p));
   if(before||after)out.push({...p,bridge:true});
  }
  return out;
 }
-function lines(points){
- const result=[];let segment=null;
+function lines(points,untimed=false){
+ const result=[];let previous=null;
  for(const p of points){
-  if(!result.length||p.segment!==segment){result.push([]);segment=p.segment;}
-  result.at(-1).push([p.latitude,p.longitude]);
+  if(!previous||(untimed?previous.segment!==p.segment:unobserved(previous,p))){result.push([]);}
+  result.at(-1).push([p.latitude,p.longitude]);previous=p;
  }
  return result.filter(line=>line.length>1);
 }
@@ -57,12 +72,12 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
   const begun=Date.parse(row.started_at)/1000,ended=Date.parse(row.ended_at)/1000;
   const spread=untimed&&num(begun)&&num(ended)&&ended>begun
    ?raw.map((p,i)=>({...p,t:begun+(ended-begun)*i/(raw.length-1)})):raw;
-  const points=clipToWindow(spread,window);
+  const points=clipToWindow(spread,window,untimed);
   const timed=points.filter(p=>!p.bridge);
   if(!timed.length)continue;
-  const roads=Object.entries(row.roads||{}).map(([ref,line])=>({ref,line:decodeLine(line)})).filter(r=>r.line.length>1);
+  const roads=roadsInWindow(row.roads,window,begun,ended);
   activities.push({untimed,id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:Date.parse(row.started_at)/1000,
-   routes:lines(points),roads,points:timed,start:[timed[0].latitude,timed[0].longitude]});
+   routes:lines(points,untimed),roads,points:timed,start:[timed[0].latitude,timed[0].longitude]});
  }
  const markers=spreadMarkers(activities.slice(0,MAX_MARKERS).map((a,i)=>({n:i+1,activityID:a.id,point:a.start,title:`${i+1}. ${a.title}`})));
  // Time lookups use one flat, sorted list of recorded fixes. A road estimate has no
@@ -74,7 +89,12 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
  // Overlapping recordings interleave in time; each sample knows the next one of its own
  // recording, so gaps and lines are judged within one recording, never across two.
  const lastOf=new Map();
- for(let i=samples.length-1;i>=0;i--){samples[i].nextSame=lastOf.has(samples[i].id)?lastOf.get(samples[i].id):-1;lastOf.set(samples[i].id,i);}
+ for(let i=samples.length-1;i>=0;i--){
+  const next=lastOf.get(samples[i].id)??-1;
+  samples[i].nextSame=next;
+  samples[i].gapAfter=next>=0&&unobserved(samples[i],samples[next]);
+  lastOf.set(samples[i].id,i);
+ }
  const isToday=now>=window.start&&now<window.end;
  return {date,window,activities,markers,samples,
   recorded:activities.flatMap(a=>a.routes),
@@ -82,7 +102,7 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
   untimed:activities.filter(a=>a.untimed).flatMap(a=>a.routes),
   estimated:activities.flatMap(a=>a.roads.map(r=>r.line)),
   live:isToday?trailLines(liveTrail):[],
-  liveRoads:isToday?Object.values(live?.roads||{}).map(decodeLine).filter(l=>l.length>1):[],
+  liveRoads:isToday?roadsInWindow(live?.roads,window,NaN,NaN).map(r=>r.line):[],
   isEmpty:!activities.length&&!liveTrail.length};
 }
 // Where the person was at a time: the last recorded fix at or before it. Inside a gap this
@@ -95,7 +115,7 @@ export function positionAt(day,t){
  // In a gap: this recording's next fix starts a new segment, or the recording is over and
  // the day has later fixes (nothing was being recorded in between).
  const over=!next&&lo<s.length-1;
- return {point:[p.lat,p.lon],t:p.t,id:p.id,inGap:Boolean(over||(next&&next.segment!==p.segment&&t<next.t)),ageSeconds:t-p.t};
+ return {point:[p.lat,p.lon],t:p.t,id:p.id,inGap:Boolean(over||(next&&p.gapAfter&&t>p.t&&t<next.t)),ageSeconds:t-p.t};
 }
 // The day's lines drawn only up to a time, for scrubbing (all in memory). Runs are built once
 // per composed day, one stream per recording and segment; a scrub step is a binary search
@@ -105,8 +125,8 @@ function runsOf(day){
  const runs=[],open=new Map();
  day.samples.forEach((sample,index)=>{
   let run=open.get(sample.id);
-  if(!run||run.segment!==sample.segment){run={segment:sample.segment,indexes:[],points:[]};open.set(sample.id,run);runs.push(run);}
-  run.indexes.push(index);run.points.push([sample.lat,sample.lon]);
+  if(!run||run.gapAfter){run={segment:sample.segment,indexes:[],points:[]};open.set(sample.id,run);runs.push(run);}
+  run.indexes.push(index);run.points.push([sample.lat,sample.lon]);run.gapAfter=sample.gapAfter;
  });
  day.runs=runs;
  return runs;

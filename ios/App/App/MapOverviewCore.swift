@@ -39,3 +39,17 @@ enum HighlightCamera {
         return MapBox.centred(route.centre, width: visible.width * scale, height: visible.height * scale)
     }
 }
+
+// Privacy revalidation can replace any vertex while leaving the count and last
+// fix unchanged. Hash the complete bounded display line before reusing an overlay.
+enum LiveOverlaySignature {
+    static func value<Points: Collection>(_ points: Points, coordinate: (Points.Element) -> (Double, Double)) -> Int {
+        var hasher = Hasher()
+        hasher.combine(points.count)
+        for point in points {
+            let (latitude, longitude) = coordinate(point)
+            hasher.combine(latitude); hasher.combine(longitude)
+        }
+        return hasher.finalize()
+    }
+}

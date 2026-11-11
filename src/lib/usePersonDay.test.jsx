@@ -2,7 +2,7 @@ import {act,renderHook,waitFor} from '@testing-library/react';
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({rpc:vi.fn(),handlers:[],removed:[]}));
 // A Realtime client that records channels, so a signal can be sent by the test.
-const fakeChannel=topic=>{const ch={topic,on:(type,filter,fn)=>{ch.filter=filter;ch.fn=fn;return ch;},subscribe:cb=>{mock.handlers.push(ch);cb?.('SUBSCRIBED');return ch;}};return ch;};
+const fakeChannel=topic=>{const ch={topic,on:(type,filter,fn)=>{ch.filter=filter;ch.fn=fn;return ch;},subscribe:cb=>{ch.state=cb;mock.handlers.push(ch);cb?.('SUBSCRIBED');return ch;}};return ch;};
 vi.mock('./supabase.js',()=>({supabase:{rpc:mock.rpc,realtime:{setAuth:async()=>{}},channel:topic=>fakeChannel(topic),removeChannel:ch=>{mock.removed.push(ch.topic);}}}));
 import {usePersonDay} from './usePersonDay.js';
 const signal=async()=>{await act(async()=>{mock.handlers.filter(h=>h.topic==='user:me').forEach(h=>h.fn({}));await new Promise(r=>setTimeout(r,20));});};
@@ -267,4 +267,106 @@ describe('access changes and the cache',()=>{
   dropOwner('me','her');
   expect(cachedDay('me','her',`${DATE}@${Z}`)).toBeNull();
  });
+});
+
+it('clears rendered and live geometry before a slow revocation read, rejects old replies, and recovers online',async()=>{
+ const t=W.start+39000;
+ trail={activity_ref:'live1',points:[[-34.7,150.9,t,0],[-34.71,150.9,t+10,0]],roads:{},point_count:2,privacy_revision:'0:open'};
+ const {result}=render();
+ await waitFor(()=>expect(result.current.day.live.length).toBe(1));
+ await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+ const pending=[];
+ mock.rpc.mockImplementation(()=>new Promise(resolve=>pending.push(resolve)));
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await signal();
+ expect(result.current.day.activities).toEqual([]);
+ expect(result.current.live).toBeNull();
+ await act(async()=>{pending.forEach(resolve=>resolve({data:null,error:{message:'offline'}}));});
+ expect(result.current.day.activities).toEqual([]);
+ dayRows=[];trail=null;
+ mock.rpc.mockImplementation(async()=>({data:[],error:null}));
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(result.current.error).toBe(''));
+ expect(result.current.day.activities).toEqual([]);
+});
+
+it('replaces authorised live geometry on a revision change with no new fix, then keeps polling incrementally',async()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true});
+ const t=W.start+39000,road='_p~iF~ps|U_ulLnnqC';
+ trail={activity_ref:'live1',points:[[-34.7,150.9,t,0],[-34.71,150.9,t+10,0]],roads:{r:road},point_count:2,privacy_revision:'0:masked'};
+ const {result,unmount}=render();
+ await waitFor(()=>expect(result.current.live?.points).toHaveLength(2));
+ trail={...trail,points:[[-34.71,150.9,t+10,100001]],roads:{},privacy_revision:'1:masked'};
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10500);});
+ expect(result.current.live.points).toEqual(trail.points);
+ expect(result.current.live.roads).toEqual({});
+ const changed=calls.filter(c=>c[0]==='my_live_trail').at(-1)[1];
+ expect(changed).toMatchObject({p_after:t+10,p_revision:'0:masked'});
+ trail={...trail,points:[]};
+ const day=result.current.day;
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10500);});
+ expect(calls.filter(c=>c[0]==='my_live_trail').at(-1)[1]).toMatchObject({p_after:t+10,p_revision:'1:masked'});
+ expect(result.current.day).toBe(day);
+ unmount();vi.useRealTimers();
+});
+
+it('rejects a live response predating a signal even while its replacement is pending',async()=>{
+ const t=W.start+39000;
+ trail={activity_ref:'live1',points:[[-34.7,150.9,t,0],[-34.71,150.9,t+10,0]],roads:{},point_count:2,privacy_revision:'0:masked'};
+ const {result}=render();
+ await waitFor(()=>expect(result.current.live?.points).toHaveLength(2));
+ let releaseOld;
+ mock.rpc.mockImplementation(name=>name==='my_live_trail'?new Promise(resolve=>{releaseOld??=resolve;}):Promise.resolve({data:[],error:null}));
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(releaseOld).toBeTypeOf('function'));
+ await signal();
+ expect(result.current.live).toBeNull();
+ await act(async()=>{releaseOld({data:[trail],error:null});});
+ expect(result.current.live).toBeNull();
+});
+
+it('a newer live read after reconnect wins over a delayed older response',async()=>{
+ const t=W.start+39000;
+ const old={activity_ref:'live1',points:[[-34.7,150.9,t,0],[-34.71,150.9,t+10,0]],roads:{},point_count:2,privacy_revision:'0:masked'};
+ trail=old;
+ const {result}=render();
+ await waitFor(()=>expect(result.current.live?.points).toHaveLength(2));
+ let release;
+ mock.rpc.mockImplementationOnce(()=>Promise.resolve({data:[],error:null})); // completed day on online
+ mock.rpc.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(release).toBeTypeOf('function'));
+ trail={...old,privacy_revision:'1:masked',points:[]};
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(result.current.live?.points).toEqual([]));
+ await act(async()=>{release({data:[old],error:null});});
+ expect(result.current.live.points).toEqual([]);
+});
+
+it('revalidates on channel reconnection and clears immediately on every signal in a burst',async()=>{
+ const {result}=render();
+ await waitFor(()=>expect(result.current.day.activities).toHaveLength(1));
+ await waitFor(()=>expect(mock.handlers).toHaveLength(1));
+ await signal();
+ await waitFor(()=>expect(result.current.day.activities).toHaveLength(1));
+ mock.rpc.mockImplementation(()=>new Promise(()=>{}));
+ await act(async()=>{mock.handlers[0].fn({});});
+ expect(result.current.day.activities).toEqual([]);
+ await act(async()=>{mock.handlers[0].state('CHANNEL_ERROR');mock.handlers[0].state('SUBSCRIBED');});
+ expect(result.current.day.activities).toEqual([]);
+});
+
+it('an older successful day response cannot overwrite a newer denial in the cache without a signal',async()=>{
+ const {result}=render();
+ await waitFor(()=>expect(result.current.day.activities).toHaveLength(1));
+ let release;
+ mock.rpc.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(release).toBeTypeOf('function'));
+ dayRows=[];
+ await act(async()=>{window.dispatchEvent(new Event('online'));});
+ await waitFor(()=>expect(result.current.day.activities).toEqual([]));
+ await act(async()=>{release({data:[row('a','e1')],error:null});});
+ expect(result.current.day.activities).toEqual([]);
+ expect(cachedDay('me','her',`${DATE}@${Z}`).rows).toEqual([]);
 });

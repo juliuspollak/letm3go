@@ -39,7 +39,7 @@ export function dropOwner(viewer,owner){store.delete(`${viewer}|${owner}`);bump(
 // shown from memory until the server has confirmed it again), and responses already on
 // their way are discarded.
 export function invalidateViewer(viewer){
- for(const [key,days] of store)if(key.startsWith(viewer+'|')){for(const entry of days.values())entry.at=0;}
+ for(const [key,days] of store)if(key.startsWith(viewer+'|'))days.clear();
  for(const key of new Set([...store.keys(),...epochs.keys()]))if(key.startsWith(viewer+'|'))bump(key);
 }
 export function storeDay(viewer,owner,date,entry){

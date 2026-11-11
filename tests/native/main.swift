@@ -5295,3 +5295,14 @@ do {
 }
 
 print("Final native assertion count including Gym: \(assertions)")
+
+// A newly redacted trail with the same point count and final fix must replace
+// the MapKit overlay; an unchanged poll should keep it.
+let liveBefore = [MapXY(x: 1, y: 2), MapXY(x: 3, y: 4), MapXY(x: 5, y: 6)]
+let liveRedacted = [MapXY(x: 1, y: 2), MapXY(x: 7, y: 8), MapXY(x: 5, y: 6)]
+let liveBeforeSignature = LiveOverlaySignature.value(liveBefore) { ($0.x, $0.y) }
+check(liveBeforeSignature == LiveOverlaySignature.value(liveBefore) { ($0.x, $0.y) }, "unchanged live geometry reuses its overlay")
+check(liveBeforeSignature != LiveOverlaySignature.value(liveRedacted) { ($0.x, $0.y) }, "privacy changes to interior live vertices replace the overlay")
+check(liveBeforeSignature != LiveOverlaySignature.value([MapXY]()) { ($0.x, $0.y) }, "revocation clears a nonempty live overlay")
+
+print("Final native assertion count including live privacy: \(assertions)")

@@ -1,3 +1,4 @@
+import {encodeLine} from '../../src/lib/gapReconstruction.js';
 import {PGlite} from '@electric-sql/pglite';
 import {readFile,readdir} from 'node:fs/promises';
 import {beforeAll,afterAll,describe,expect,it} from 'vitest';
@@ -17,7 +18,10 @@ async function share(id,audience,mode,recipients=[],title='Trip',t0=1900000000){
  await as('service_role','',`select public.publish_social_journey('${owner}','${id}',${await revision(id)},'${audience}','${mode}',${list},'${snap(title,t0)}'::jsonb)`);
 }
 const day=(user,known='{}')=>as('authenticated',user,`select activity_id,title,etag,points,roads from public.my_shared_day('${owner}','2030-03-17 00:00+00','2030-03-18 00:00+00','${known}')`).then(r=>r.rows);
-const trail=(user,after=0)=>as('authenticated',user,`select * from public.my_live_trail('${owner}',${after})`).then(r=>r.rows[0]);
+const trail=async(user,after=0)=>{
+ const first=(await as('authenticated',user,`select * from public.my_live_trail('${owner}',0)`)).rows[0];
+ return !after||!first?first:(await as('authenticated',user,`select * from public.my_live_trail('${owner}',${after},'${first.privacy_revision}')`)).rows[0];
+};
 const pts=(...ts)=>JSON.stringify(ts.map(t=>[-34.5+t/1e7,150.8,BASE+t,0]));
 const append=(token,ref,seq,points)=>as('anon','',`select public.append_live_trail('${token}','${ref}',${seq},'${points}'::jsonb) as ok`).then(r=>r.rows[0].ok);
 const BASE=Math.floor(Date.now()/1000)-3600;
@@ -316,7 +320,7 @@ it('a friend\'s live line is cut where Home is hidden, so nothing is drawn acros
  const mine=(await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0];
  expect(mine.points.length).toBe(5);expect(new Set(mine.points.map(p=>p[3])).size).toBe(1);
  // An incremental read keeps segment numbers consistent with the full one.
- const later=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}',${BASE+625})`)).rows[0];
+ const later=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}',${BASE+625},'${seen.privacy_revision}')`)).rows[0];
  expect(later.points.map(p=>p[3])).toEqual(segs.slice(2));
  await as('authenticated',owner,"select public.end_live_trail('cut1')");
  const cleared=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
@@ -326,9 +330,10 @@ it('a poll with nothing new returns no points but still reports the trail, and r
  await as('authenticated',owner,'select public.set_my_live_location(true)');
  houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
  await append(houseToken,'quiet1',1,JSON.stringify([[-34.9,151.0,BASE+3300,0],[-34.91,151.0,BASE+3310,0]]));
- const none=(await as('authenticated',mate,`select * from public.my_live_trail('${owner}',${BASE+3310})`)).rows[0];
+ const initial=await trail(mate);
+ const none=(await as('authenticated',mate,`select * from public.my_live_trail('${owner}',${BASE+3310},'${initial.privacy_revision}')`)).rows[0];
  expect(none.points).toEqual([]);expect(none.point_count).toBe(2);expect(none.newest_t).toBe(BASE+3310);
- const some=(await as('authenticated',mate,`select * from public.my_live_trail('${owner}',${BASE+3300})`)).rows[0];
+ const some=(await as('authenticated',mate,`select * from public.my_live_trail('${owner}',${BASE+3300},'${initial.privacy_revision}')`)).rows[0];
  expect(some.points.map(p=>p[2])).toEqual([BASE+3310]);
  await as('authenticated',owner,"select public.end_live_trail('quiet1')");
 });
@@ -636,4 +641,65 @@ it('keeping an activity private is recorded in both places the readers look, so 
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();
+});
+
+it('invalidates an incremental live read after Home moves, with no new fixes, and reauthorises roads and GPS together',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const now=Math.floor(Date.now()/1000);
+ await append(houseToken,'revision1',1,JSON.stringify([[-34.9,151,now-60,0],[-34.91,151,now-30,0]]));
+ const road=encodeLine([[-34.9,151],[-34.91,151]]).replace(/\\/g,'\\\\');
+ await as('authenticated',owner,`select public.put_my_live_road('revision1','revision1:${now-60}:${now-30}','${road}')`);
+ const first=await trail(stranger);
+ expect(Object.keys(first.roads)).toHaveLength(1);
+ expect(first.points).toHaveLength(2);
+ expect(first.privacy_revision).toBeTypeOf('string');
+ await sent();
+ await as('authenticated',owner,"update public.saved_places set latitude=-34.9,longitude=151 where kind='home' and owner_id=auth.uid()");
+ expect((await sent()).some(r=>r.topic===`user:${stranger}`)).toBe(true);
+ const next=(await as('authenticated',stranger,`select * from public.my_live_trail('${owner}',${now-30},'${first.privacy_revision}')`)).rows[0];
+ expect(next.privacy_revision).not.toBe(first.privacy_revision);
+ expect(next.points.map(p=>p[0])).toEqual([-34.91]);
+ expect(next.roads).toEqual({});
+ expect(Object.keys((await trail(owner)).roads)).toHaveLength(1);
+ const quiet=(await as('authenticated',stranger,`select * from public.my_live_trail('${owner}',${now-30},'${next.privacy_revision}')`)).rows[0];
+ expect(quiet.points).toEqual([]);
+ expect((await trail(owner)).points).toHaveLength(2);
+ await as('authenticated',owner,"update public.saved_places set latitude=-34.5,longitude=150.8 where kind='home' and owner_id=auth.uid()");
+ await as('authenticated',owner,"select public.end_live_trail('revision1')");
+});
+
+it('changes the live revision for privacy-place insert, kind change and delete, but not a name-only edit',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ await append(houseToken,'revision2',1,pts(60,70));
+ const rev=async()=>(await trail(owner)).privacy_revision;
+ await as('authenticated',owner,"delete from public.saved_places where kind='work' and owner_id=auth.uid()");
+ const before=await rev(),id='99999999-8888-4777-8666-555555555555';
+ await as('authenticated',owner,`insert into public.saved_places(id,name,kind,latitude,longitude,radius) values('${id}','Work2','work',-36,152,100)`);
+ const inserted=await rev();expect(inserted).not.toBe(before);
+ await as('authenticated',owner,`update public.saved_places set name='Renamed' where id='${id}'`);
+ expect(await rev()).toBe(inserted);
+ await as('authenticated',owner,`update public.saved_places set kind='favourite' where id='${id}'`);
+ const retyped=await rev();expect(retyped).not.toBe(inserted);
+ await as('authenticated',owner,`update public.saved_places set kind='work' where id='${id}'`);
+ const restored=await rev();expect(restored).not.toBe(retyped);
+ await as('authenticated',owner,`delete from public.saved_places where id='${id}'`);
+ expect(await rev()).not.toBe(restored);
+ await as('authenticated',owner,"select public.end_live_trail('revision2')");
+});
+
+it('resets an open household cursor when the viewer leaves but remains a friend',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ const invite=(await as('authenticated',owner,'select public.invite_to_household() as token')).rows[0].token;
+ await as('authenticated',stranger,`select * from public.accept_household_invitation('${invite}')`);
+ const now=Math.floor(Date.now()/1000);
+ await append(houseToken,'scope1',1,JSON.stringify([[-34.9,151,now-60,0],[-34.5,150.8,now-30,0]]));
+ const open=await trail(stranger);expect(open.points).toHaveLength(2);
+ await as('authenticated',stranger,'select public.leave_household()');
+ const masked=(await as('authenticated',stranger,`select * from public.my_live_trail('${owner}',${now-30},'${open.privacy_revision}')`)).rows[0];
+ expect(masked.privacy_revision).not.toBe(open.privacy_revision);
+ expect(masked.points.map(p=>p[0])).toEqual([-34.9]);
+ await as('authenticated',owner,"select public.end_live_trail('scope1')");
 });

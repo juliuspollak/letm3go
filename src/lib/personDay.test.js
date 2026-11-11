@@ -123,8 +123,8 @@ describe('composing a day',()=>{
  });
  it('shows estimated roads separately and the live trail only on today',()=>{
   const road=encodeLine([[-34.6,150.9],[-34.8,150.95],[-34.9,151]]);
-  const live={points:[[-34.9,151,w.start+900,0],[-34.91,151.01,w.start+960,0]],roads:{k:road}};
-  const day=composeDay({date,timeZone:SYD,now:w.start+1000,live,rows:[row('a','Drive',w.start+100,[[w.start+100,-34.5,150.9],[w.start+200,-34.6,150.9]],{roads:{'A:1:2':road}})]});
+  const live={points:[[-34.9,151,w.start+900,0],[-34.91,151.01,w.start+960,0]],roads:{[`live:${w.start+900}:${w.start+960}`]:road}};
+  const day=composeDay({date,timeZone:SYD,now:w.start+1000,live,rows:[row('a','Drive',w.start+100,[[w.start+100,-34.5,150.9],[w.start+200,-34.6,150.9]],{roads:{[`A:${w.start+100}:${w.start+200}`]:road}})]});
   expect(day.estimated.length).toBe(1);expect(day.live.length).toBe(1);expect(day.liveRoads.length).toBe(1);
   expect(composeDay({date,timeZone:SYD,now:w.end+10,live,rows:[]}).live).toEqual([]);
   expect(composeDay({date,timeZone:SYD,rows:[]}).isEmpty).toBe(true);
@@ -147,12 +147,12 @@ describe('composing a day',()=>{
  });
  it('overlapping recordings keep their own lines and gaps while scrubbing',()=>{
   const day=composeDay({date,timeZone:SYD,rows:[
-   row('manual','Walk',w.start+100,[[w.start+100,-34.5,150.9,0],[w.start+300,-34.51,150.9,0],[w.start+500,-34.52,150.9,0]]),
-   row('auto','Drive',w.start+150,[[w.start+150,-34.6,151,0],[w.start+350,-34.61,151,0],[w.start+550,-34.62,151,0]])]});
+   row('manual','Walk',w.start+100,[[w.start+100,-34.5,150.9,0],[w.start+200,-34.51,150.9,0],[w.start+300,-34.52,150.9,0]]),
+   row('auto','Drive',w.start+150,[[w.start+150,-34.6,151,0],[w.start+250,-34.61,151,0],[w.start+350,-34.62,151,0]])]});
   const lines=linesUntil(day,w.start+600);
   expect(lines.length).toBe(2);expect(lines.every(l=>l.length===3)).toBe(true);
-  expect(linesUntil(day,w.start+360).map(l=>l.length).sort()).toEqual([2,2]);
-  expect(positionAt(day,w.start+360)).toMatchObject({id:'auto',inGap:false});
+  expect(linesUntil(day,w.start+260).map(l=>l.length).sort()).toEqual([2,2]);
+  expect(positionAt(day,w.start+260)).toMatchObject({id:'auto',inGap:false});
  });
  it('fans out markers that share a spot',()=>{
   const out=spreadMarkers([1,2,3].map(n=>({n,point:[-34.5,150.9]})));
@@ -203,4 +203,40 @@ describe('my own day: activities that are only on this phone',()=>{
  it('is never used for anyone else\'s map',()=>{
   expect(typeof localDayRows).toBe('function');                               // the hook only passes it for the viewer\'s own id (see PersonMap)
  });
+});
+
+it('assigns each estimated gap to the viewer day of its first fix, including gaps across midnight',()=>{
+ const date='2026-10-04',w=dayWindow(date,SYD),road=encodeLine([[-34,150],[-35,151]]);
+ const r=row('x','Overnight',w.start+10,[[w.start+10,-34,150],[w.end-20,-34,150],[w.end+20,-35,151],[w.end+100,-35,151]],
+  {roads:{[`x:${w.start+10}:${w.start+20}`]:road,[`x:${w.end-20}:${w.end+20}`]:road,[`x:${w.end+20}:${w.end+100}`]:road}});
+ expect(composeDay({date,timeZone:SYD,rows:[r]}).estimated).toHaveLength(2);
+ expect(composeDay({date:addDays(date,1),timeZone:SYD,rows:[r]}).estimated).toHaveLength(1);
+});
+it('recognises a long silence in a reused segment and never draws across it while scrubbing',()=>{
+ const date='2026-11-10',w=dayWindow(date,SYD);
+ const r=row('legacy','GPS',w.start+10,[[w.start+10,-34,150],[w.start+20,-34.001,150],[w.start+900,-35,151],[w.start+910,-35.001,151]]);
+ const day=composeDay({date,timeZone:SYD,rows:[r]});
+ expect(positionAt(day,w.start+500)).toMatchObject({inGap:true,point:[-34.001,150]});
+ expect(linesUntil(day,w.start+1000).map(l=>l.length)).toEqual([2,2]);
+});
+
+it.each([['2026-10-04',SYD],['2027-04-04',SYD],['2026-11-01',LA],['2027-03-14',LA]])('keeps road estimates on one viewer-local day on DST transition %s', (date,timeZone)=>{
+ const w=dayWindow(date,timeZone),road=encodeLine([[-34,150],[-35,151]]);
+ const r=row('x','Overnight',w.end-60,[[w.end-60,-34,150],[w.end+60,-35,151]],{roads:{[`x:${w.end-60}:${w.end+60}`]:road}});
+ expect(composeDay({date,timeZone,rows:[r]}).estimated).toHaveLength(1);
+ expect(composeDay({date:addDays(date,1),timeZone,rows:[r]}).estimated).toEqual([]);
+ const other=timeZone===SYD?LA:SYD,otherDate=dayKeyOf(w.end-60,other);
+ expect(composeDay({date:otherDate,timeZone:other,rows:[r]}).estimated).toHaveLength(1);
+});
+
+it('keeps normal samples, stops and resumed segments distinct with overlapping activities',()=>{
+ const date='2026-11-10',w=dayWindow(date,SYD),t=w.start;
+ const day=composeDay({date,timeZone:SYD,rows:[
+  row('drive','Resumed',t+10,[[t+10,-34,150,0],[t+20,-34,150,0],[t+1000,-34,150,1],[t+1010,-34,150,1]]),
+  row('walk','Overlapping',t+100,[[t+100,-35,151,0],[t+110,-35.001,151,0],[t+120,-35.002,151,0]])]});
+ expect(positionAt(day,t+15)).toMatchObject({id:'drive',inGap:false});
+ expect(positionAt(day,t+115)).toMatchObject({id:'walk',inGap:false});
+ expect(positionAt(day,t+500)).toMatchObject({id:'walk',inGap:true});
+ expect(positionAt(day,t+1000)).toMatchObject({id:'drive',inGap:false});
+ expect(linesUntil(day,t+1020).map(l=>l.length)).toEqual([2,3,2]);
 });
