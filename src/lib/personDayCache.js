@@ -18,6 +18,17 @@ export function cachedDay(viewer,owner,date){
 }
 // Reading without touching the order, for use while rendering.
 export const peekDay=(viewer,owner,date)=>store.get(`${viewer}|${owner}`)?.get(date)||null;
+// A cached day may be SHOWN straight away only while it is recent. An older one waits
+// for the server's answer first, so a permission that was withdrawn meanwhile (a friend
+// removed, someone who left the household, an activity made private) is not displayed
+// from memory. Revalidation always follows either way.
+export const SHOW_CACHED_MS=5*60*1000;
+export function peekFreshDay(viewer,owner,date,maxAge=SHOW_CACHED_MS){
+ const entry=peekDay(viewer,owner,date);
+ return entry&&Date.now()-entry.at<=maxAge?entry:null;
+}
+// The person is no longer someone I may see: forget everything held about them.
+export function dropOwner(viewer,owner){store.delete(`${viewer}|${owner}`);}
 export function storeDay(viewer,owner,date,entry){
  const days=slot(viewer,owner);
  days.delete(date);days.set(date,entry);

@@ -5223,6 +5223,13 @@ do {
     check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_friend_location")!)?.lastPathComponent == "append_live_trail", "trail endpoint follows the friend endpoint")
     check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/anything_else")!) == nil, "no trail endpoint for an unknown endpoint")
 }
+do {
+    check(DayFit.shouldFit(key: "a|2026-11-10", applied: nil, hasContent: true), "the first day with content is fitted")
+    check(!DayFit.shouldFit(key: "a|2026-11-10", applied: "a|2026-11-10", hasContent: true), "live points, scrubbing and updates never refit the camera")
+    check(DayFit.shouldFit(key: "a|2026-11-09", applied: "a|2026-11-10", hasContent: true), "a new day is fitted once")
+    check(!DayFit.shouldFit(key: "a|2026-11-09", applied: "a|2026-11-10", hasContent: false), "an empty day leaves the camera alone and waits for content")
+    check(!DayFit.shouldFit(key: nil, applied: nil, hasContent: true) && !DayFit.shouldFit(key: "", applied: nil, hasContent: true), "no key means no fitting")
+}
 print("Final native assertion count: \(assertions)")
 
 // Real native encrypted SQLite storage, not a JavaScript stand-in.

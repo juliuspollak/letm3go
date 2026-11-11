@@ -6,7 +6,7 @@ export async function sharingRequest(client,action,id,params={}){
  if(error||data?.error||!data)throw new Error('Sharing could not be confirmed. The journeys backend may need deployment. Your last confirmed permission has not been changed in this screen.');
  return data;
 }
-export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal,audience='public',mode=null,recipients=[],photoIDs=[]}){
+export async function publishActivity({client,state,id,receipts,checkpoint,reviewedTrip,signal,audience='public',mode=null,recipients=[],photoIDs=[],auto=false}){
  if(!['public','friends','household'].includes(audience))throw new Error('Choose a supported audience.');
  if(audience!=='public' && !((audience==='friends'&&['friends','selected','mixed','all'].includes(mode))||(audience==='household'&&mode==='household')))throw new Error('The sharing audience needs review.');
  if(!Array.isArray(photoIDs)||photoIDs.length>50||photoIDs.some(p=>typeof p!=='string'))throw new Error('Invalid photo selection.');
@@ -22,7 +22,7 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  // Last point at which leaving can still stop the activity going public.
  if(signal?.aborted)throw new Error('Publication cancelled.');
  const result=await sharingRequest(client,'publish',id,{
-  audience,revision:current.revision,placesConfirmed:true,photoIDs,
+  audience,revision:current.revision,placesConfirmed:true,photoIDs,...(auto?{auto:true}:{}),
   ...(audience==='public'?{}:{mode,recipients:['selected','mixed'].includes(mode)?recipients:[]})
  });
  if(!result.token)throw new Error('Publication was not confirmed.');
@@ -32,6 +32,9 @@ export async function makeActivityPrivate(client,id){
  const {data:auth,error}=await client.auth.getUser();if(error||!auth.user)throw new Error('Reconnect and sign in to revoke sharing.');
  const {data:trip,error:readError}=await client.from('activities').select('id').eq('id',id).eq('owner_id',auth.user.id).maybeSingle();
  if(readError)throw new Error('Privacy could not be verified.');
- if(trip){const {error}=await client.rpc('revoke_activity_publication',{p_id:id});if(error)throw new Error('Sharing could not be revoked. Please retry.');}
+ if(trip){const {error}=await client.rpc('revoke_activity_publication',{p_id:id});if(error)throw new Error('Sharing could not be revoked. Please retry.');
+  // The owner's decision for this activity, so automatic sharing never publishes it later
+  // (best effort: an older server without it simply has no automatic sharing).
+  try{await client.rpc('keep_activity_private',{p_activity:id});}catch{/* older server */}}
  return {audience:'private'};
 }

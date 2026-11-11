@@ -36,3 +36,20 @@ it('does not publish an unmasked activity before Home is configured',async()=>{
  expect(syncPrivateActivities).not.toHaveBeenCalled();
  expect(c.functions.invoke).not.toHaveBeenCalled();
 });
+it('records the owner\'s decision when an activity is made private, so automatic sharing never publishes it later',async()=>{
+ const c=client();c.rpc.mockResolvedValue({error:null});
+ await makeActivityPrivate(c,'trip');
+ expect(c.rpc).toHaveBeenCalledWith('keep_activity_private',{p_activity:'trip'});
+});
+it('a server without the decision function still revokes',async()=>{
+ const c=client();
+ c.rpc.mockImplementation(async name=>{if(name==='keep_activity_private')throw new Error('missing');return {error:null};});
+ expect(await makeActivityPrivate(c,'trip')).toEqual({audience:'private'});
+});
+it('marks an automatic publication so the server can refuse it if the activity became private',async()=>{
+ const c=client();c.functions={invoke:vi.fn().mockResolvedValue({data:{token:'t'},error:null})};
+ syncPrivateActivities.mockResolvedValue({receipts:{}});
+ const trip={id:'trip',source:'device',endedAt:9,points:[{latitude:1,longitude:1}],activity:'Driving',details:{}};
+ await publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[{kind:'home',latitude:1,longitude:1}]},id:'trip',reviewedTrip:trip,audience:'household',mode:'household',auto:true,receipts:{}});
+ expect(c.functions.invoke.mock.calls.at(-1)[1].body.auto).toBe(true);
+});

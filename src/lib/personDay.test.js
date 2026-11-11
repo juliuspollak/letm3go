@@ -18,6 +18,43 @@ describe('day windows',()=>{
   expect(addDays('2026-12-31',1)).toBe('2027-01-01');expect(addDays('2027-03-01',-1)).toBe('2027-02-28');
  });
 });
+describe('time zones, travel and daylight saving',()=>{
+ const LAX='America/Los_Angeles';
+ const trip=(id,start,count)=>({activity_id:id,title:id,activity:'Driving',started_at:new Date(start*1000).toISOString(),ended_at:new Date((start+count*60)*1000).toISOString(),roads:{},
+  points:Array.from({length:count},(_,i)=>({latitude:-34.5-i*1e-4,longitude:150.9,segment:0,t:start+i*60}))});
+ it('puts every fix of a 25-hour day on that day once, including the repeated hour',()=>{
+  const w=dayWindow('2026-11-01',LAX);                      // clocks go back: 25 hours
+  const rows=[trip('repeat',w.start+3600,200)];            // spans the repeated 1-2 am hour
+  const day=composeDay({date:'2026-11-01',timeZone:LAX,rows});
+  expect(day.samples.length).toBe(200);
+  expect(new Set(day.samples.map(s=>s.t)).size).toBe(200);  // nothing doubled
+  expect(day.samples.every(s=>s.t>=w.start&&s.t<w.end)).toBe(true);
+ });
+ it('a 23-hour day (clocks forward) still ends exactly where the next begins, with no fix in both',()=>{
+  const a=dayWindow('2027-03-14',LAX),b=dayWindow('2027-03-15',LAX);
+  expect(a.end).toBe(b.start);
+  const row=trip('over',a.end-30*60,60);                    // an hour across midnight
+  const first=composeDay({date:'2027-03-14',timeZone:LAX,rows:[row]}),second=composeDay({date:'2027-03-15',timeZone:LAX,rows:[row]});
+  expect(first.samples.length+second.samples.length).toBe(60);
+  expect(first.samples.at(-1).t).toBeLessThan(second.samples[0].t);
+ });
+ it('the same instant is a different day for a viewer in another zone, and each is self-consistent',()=>{
+  const instant=Date.parse('2026-11-10T20:30:00Z')/1000;    // 07:30 next morning in Sydney, 12:30 in Los Angeles
+  expect(dayKeyOf(instant,SYD)).toBe('2026-11-11');expect(dayKeyOf(instant,LAX)).toBe('2026-11-10');
+  const row=trip('x',instant,10);
+  expect(composeDay({date:'2026-11-11',timeZone:SYD,rows:[row]}).samples.length).toBe(10);
+  expect(composeDay({date:'2026-11-10',timeZone:SYD,rows:[row]}).samples.length).toBe(0);
+  expect(composeDay({date:'2026-11-10',timeZone:LAX,rows:[row]}).samples.length).toBe(10);
+ });
+ it('a traveller changing zone mid-trip keeps whole days: windows from different zones overlap but never split a fix',()=>{
+  const row=trip('flight',Date.parse('2026-11-10T10:00:00Z')/1000,120);
+  for(const zone of [SYD,LAX,'Pacific/Auckland','UTC']){
+   const days=new Set(row.points.map(p=>dayKeyOf(p.t,zone)));
+   const total=[...days].reduce((n,d)=>n+composeDay({date:d,timeZone:zone,rows:[row]}).samples.length,0);
+   expect(total).toBe(120);
+  }
+ });
+});
 describe('live trail merge',()=>{
  const p=(t,seg=0)=>[-34+t/1e6,150,t,seg];
  it('is order-free and idempotent, and ignores invalid points',()=>{
@@ -28,8 +65,21 @@ describe('live trail merge',()=>{
   expect(mergeTrail(once,[[95,0,9,0],[NaN,1,9,0],null]).length).toBe(3);
   expect(newestTime(once)).toBe(3);expect(newestTime([])).toBe(0);
  });
- it('keeps only the newest points when bounded',()=>{
-  expect(mergeTrail([],Array.from({length:50},(_,i)=>p(i+1)),10).map(x=>x[2])).toEqual(Array.from({length:10},(_,i)=>i+41));
+ it('stays bounded without losing the start of a long drive',()=>{
+  const hours=Array.from({length:14400},(_,i)=>p(i*2+1)); // four hours at one fix per 2 s
+  const out=mergeTrail([],hours,3000);
+  expect(out.length).toBeLessThanOrEqual(3000);
+  expect(out[0][2]).toBe(1);expect(out.at(-1)[2]).toBe(14399*2+1);
+  expect(out.map(x=>x[2])).toEqual([...out.map(x=>x[2])].sort((a,b)=>a-b));
+  expect(out.at(-1)[2]-out.at(-2)[2]).toBe(2);                // recent: full resolution
+  const gaps=out.slice(1).map((x,i)=>x[2]-out[i][2]);
+  expect(Math.max(...gaps)).toBeLessThan(200);                // no hole in the timeline
+ });
+ it('keeps both ends of a GPS segment when thinning',()=>{
+  const pts=[...Array.from({length:3000},(_,i)=>p(i+1,0)),...Array.from({length:3000},(_,i)=>p(4000+i,1))];
+  const out=mergeTrail([],pts,3000);
+  const seg0=out.filter(x=>x[3]===0);
+  expect(seg0[0][2]).toBe(1);expect(seg0.at(-1)[2]).toBe(3000);
  });
  it('breaks lines at a GPS gap and drops single points',()=>{
   expect(trailLines([p(1,0),p(2,0),p(3,1),p(4,1),p(5,2)]).map(l=>l.length)).toEqual([2,2]);

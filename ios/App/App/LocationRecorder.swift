@@ -189,6 +189,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Native background sharing. Friends use the short-lived session token (off
     // after restart); household sharing keeps a device credential in the Keychain.
     var liveTrailRef: String?
+    // The owner made the activity being recorded private. Persisted, so a relaunch cannot
+    // start publishing it again; the server is told until it confirms (idempotent).
+    static let hiddenTrailKey = "liveTrailHiddenRef"
+    var liveTrailHiddenRef: String? {
+        get { UserDefaults.standard.string(forKey: Self.hiddenTrailKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.hiddenTrailKey) }
+    }
+    var liveTrailHideConfirmed = false
     var liveTrailSentThrough: Double = 0
     var liveTrailSeq = 0
     var liveTrailLastFlushAt: Double = 0
@@ -940,6 +948,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
         guard let token = token, let base = base, let apiKey = apiKey, let endpoint = LiveTrail.endpoint(from: base) else { return }
         let recording: RecordedActivity? = automaticActivelyRecording ? automaticTrip : (manualGPSRecording ? active : nil)
+        // A private activity publishes nothing, ever: first make sure the server has been
+        // told (so a late batch from anywhere cannot restore it), then stay silent.
+        if let hidden = liveTrailHiddenRef {
+            if !liveTrailHideConfirmed {
+                postLiveTrail(endpoint: endpoint, apiKey: apiKey, token: token, ref: hidden, seq: -2, points: []) { [weak self] accepted in
+                    if accepted { self?.liveTrailHideConfirmed = true }
+                }
+                return
+            }
+            if recording?.id.caseInsensitiveCompare(hidden) == .orderedSame { return }
+            // A different activity (or none): the hidden one is over.
+            liveTrailHiddenRef = nil; liveTrailHideConfirmed = false
+        }
         var ref = liveTrailRef
         var points: [[Double]] = []
         var ending = false
@@ -951,38 +972,48 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             ending = true
         } else { return }
         guard let activityRef = ref else { return }
-        let payload: [String: Any] = ["p_token": token, "p_ref": activityRef, "p_seq": ending ? -1 : liveTrailSeq + 1, "p_points": points]
+        let newest = points.last?[2] ?? liveTrailSentThrough
+        postLiveTrail(endpoint: endpoint, apiKey: apiKey, token: token, ref: activityRef, seq: ending ? -1 : liveTrailSeq + 1, points: points) { [weak self] accepted in
+            guard let self = self else { return }
+            if accepted {
+                if ending { self.liveTrailRef = nil; self.liveTrailSentThrough = 0; self.liveTrailSeq = 0 }
+                else { self.liveTrailRef = activityRef; self.liveTrailSentThrough = max(self.liveTrailSentThrough, newest); self.liveTrailSeq += 1 }
+            }
+        }
+    }
+    // One request to the trail endpoint. `completion` runs on the main thread with whether
+    // the server accepted it; back-off for the failure kinds is handled here.
+    func postLiveTrail(endpoint: URL, apiKey: String, token: String, ref: String, seq: Int, points: [[Double]], completion: @escaping (Bool) -> Void) {
+        let payload: [String: Any] = ["p_token": token, "p_ref": ref, "p_seq": seq, "p_points": points]
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"; request.httpBody = data; request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "apikey")
-        liveTrailInFlight = true; liveTrailLastFlushAt = now
-        let newest = points.last?[2] ?? liveTrailSentThrough, requestOwner = ownerID
+        liveTrailInFlight = true; liveTrailLastFlushAt = Date().timeIntervalSince1970
+        let requestOwner = ownerID
         URLSession.shared.dataTask(with: request) { [weak self] body, response, error in
             DispatchQueue.main.async {
                 guard let self = self, self.ownerID == requestOwner else { return }
                 self.liveTrailInFlight = false
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                let accepted = error == nil && (200...299).contains(status) && String(decoding: body ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
-                if accepted {
-                    self.liveTrailBackoffUntil = 0
-                    if ending { self.liveTrailRef = nil; self.liveTrailSentThrough = 0; self.liveTrailSeq = 0 }
-                    else { self.liveTrailRef = activityRef; self.liveTrailSentThrough = max(self.liveTrailSentThrough, newest); self.liveTrailSeq += 1 }
-                } else if ending && error == nil && (200...299).contains(status) {
-                    self.liveTrailRef = nil
-                } else if status == 404 {
-                    // The server migration is not applied yet: ask again much later.
-                    self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 3600
-                } else if error == nil && (200...299).contains(status) {
-                    // The credential is not accepted for this trail (sharing off, or the
-                    // owner made this activity private): do not keep asking.
-                    self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 300
-                } else {
-                    self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 30
-                }
+                let ok = error == nil && (200...299).contains(status)
+                let accepted = ok && String(decoding: body ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+                if accepted { self.liveTrailBackoffUntil = 0 }
+                else if status == 404 { self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 3600 } // migration not applied yet
+                else if ok { self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 300 }            // credential not accepted for this trail
+                else { self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 30 }
+                completion(accepted)
             }
         }.resume()
+    }
+    // The owner marked the activity being recorded private: stop at once, remember it
+    // across relaunches, and tell the server (retried until it confirms).
+    func hideLiveTrail(ref: String) {
+        liveTrailHiddenRef = ref; liveTrailHideConfirmed = false
+        if liveTrailRef?.caseInsensitiveCompare(ref) == .orderedSame { liveTrailRef = nil; liveTrailSentThrough = 0; liveTrailSeq = 0 }
+        liveTrailLastFlushAt = 0; liveTrailBackoffUntil = 0
+        flushLiveTrail()
     }
     func sharePoint(_ location: CLLocation) -> GPSPoint {
         GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,
@@ -1484,6 +1515,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "ManualRecorder"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "configureLiveSharing", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "hideLiveTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPassiveRest", returnType: CAPPluginReturnPromise),
@@ -1598,6 +1630,10 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["restored":true])
         } catch { call.reject("Could not restore photo safely.") }
     } }
+    @objc func hideLiveTrail(_ call: CAPPluginCall) {
+        guard let ref = call.getString("ref"), !ref.isEmpty, ref.count <= 64 else { call.reject("Missing activity"); return }
+        DispatchQueue.main.async { LocationRecorder.shared.hideLiveTrail(ref: ref); call.resolve() }
+    }
     @objc func configureLiveSharing(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
         let recorder=LocationRecorder.shared

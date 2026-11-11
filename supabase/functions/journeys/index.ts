@@ -105,6 +105,9 @@ Deno.serve(async request=>{
   const {data:trip,error}=await userClient.from('activities').select('*').eq('id',body.id).maybeSingle();
   if(error||!trip||trip.owner_id!==owner)return reply({error:'Activity unavailable'},404);
   if(body.action==='publish'){
+   // Automatic household sharing never publishes an activity the owner has made private,
+   // including one that was made private while this request was already on its way.
+   if(body.auto===true){const {data:allowed,error:allowedError}=await admin.rpc('auto_share_allowed',{p_owner:owner,p_activity:trip.id});if(allowedError)throw allowedError;if(allowed!==true)return reply({error:'This activity is private'},409);}
    if(!['public','household','friends'].includes(body.audience)||body.revision!==trip.revision)return reply({error:'Review the current activity and audience before publishing'},409);
    // Query the at-most-two sensitive places explicitly; favourites must not crowd
    // Home/Work out of PostgREST's default row limit and weaken route masking.

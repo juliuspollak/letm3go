@@ -2,7 +2,7 @@ import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import ActivitySharingRow from './ActivitySharingRow.jsx';
 afterEach(cleanup);
-const client=(state,set=vi.fn(async()=>({error:null})))=>({rpc:vi.fn(async name=>name==='my_auto_share'?{data:state,error:null}:set())});
+const client=(state,set=vi.fn(async()=>({error:null})),waiting=[])=>({rpc:vi.fn(async name=>name==='my_auto_share'?{data:state,error:null}:name==='my_auto_share_pending'?{data:waiting,error:null}:set())});
 
 it('is hidden for someone who is not in a household',async()=>{
  const {container}=render(<ActivitySharingRow client={client(null)}/>);
@@ -25,4 +25,9 @@ it('keeps the old setting and says so when the change fails',async()=>{
  fireEvent.click(await screen.findByRole('switch'));
  await screen.findByRole('alert');
  expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true');
+});
+
+it('says how many activities are waiting to be sent, instead of failing silently',async()=>{
+ render(<ActivitySharingRow client={client({enabled:true},undefined,[{activity_id:'a'},{activity_id:'b'}])}/>);
+ await screen.findByText(/2 waiting to send/);
 });

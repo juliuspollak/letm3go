@@ -79,6 +79,25 @@ it('a friend who stops being a friend loses the day',async()=>{
  await as('authenticated',friend,`select public.remove_friend('${owner}')`);
  expect(await day(friend)).toEqual([]);
 });
+it('the owner sees every one of their own activities, shared or private, in the same shape',async()=>{
+ const rows=(await as('authenticated',owner,`select activity_id,title,etag,points,roads from public.my_shared_day('${owner}','2030-03-16 00:00+00','2030-03-18 00:00+00','{}')`)).rows;
+ expect(rows.map(r=>r.activity_id)).toEqual(expect.arrayContaining([OLD,A]));   // OLD was never shared
+ const old=rows.find(r=>r.activity_id===OLD);
+ expect(Array.isArray(old.points)).toBe(true);
+ // The same activity is not visible to a household member who was never given it.
+ expect((await day(mate)).map(r=>r.activity_id)).not.toContain(OLD);
+ expect((await day(stranger)).length).toBe(0);
+});
+it('the owner day carries real route points as {latitude, longitude, segment, t}, and revalidates by etag',async()=>{
+ const id='99999999-0000-4000-8000-000000009999';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+  values('${id}','Own route','Driving','manual','2030-03-17 20:00+00','2030-03-17 20:30+00',1800,9000,
+  '[{"latitude":-34.5,"longitude":150.8,"timestamp":1900000100.4,"segment":0},{"latitude":-34.6,"longitude":150.9,"timestamp":1900000200,"segment":1}]'::jsonb)`);
+ const mine=(await as('authenticated',owner,`select * from public.my_shared_day('${owner}','2030-03-17 00:00+00','2030-03-18 00:00+00','{}')`)).rows.find(r=>r.activity_id===id);
+ expect(mine.points).toEqual([{latitude:-34.5,longitude:150.8,segment:0,t:1900000100},{latitude:-34.6,longitude:150.9,segment:1,t:1900000200}]);
+ const again=(await as('authenticated',owner,`select * from public.my_shared_day('${owner}','2030-03-17 00:00+00','2030-03-18 00:00+00','{${mine.etag}}')`)).rows.find(r=>r.activity_id===id);
+ expect(again.points).toBeNull();
+});
 it('rejects a window over three days and anonymous reads',async()=>{
  expect((await as('authenticated',owner,`select * from public.my_shared_day('${owner}','2030-03-01','2030-03-20')`)).rows).toEqual([]);
  await expect(as('anon','',`select * from public.my_shared_day('${owner}','2030-03-17','2030-03-18')`)).rejects.toThrow();
@@ -138,6 +157,54 @@ it('a new activity replaces the trail, and an invalid point is refused whole',as
  expect(await append(houseToken,'run2',1,pts(100))).toBe(true);
  expect((await trail(mate)).activity_ref).toBe('run2');
  expect((await trail(mate)).points.length).toBe(1);
+});
+it('a private live activity: the phone\'s own request clears it, late batches cannot restore it, and the saved activity stays private',async()=>{
+ await append(houseToken,'AAAAAAAA-0000-4000-8000-00000000A001',1,pts(900,910));
+ expect((await trail(mate)).points.length).toBe(2);
+ expect(await append(houseToken,'AAAAAAAA-0000-4000-8000-00000000A001',-2,'[]')).toBe(true);
+ expect((await trail(mate)).points).toEqual([]);
+ // A delayed batch (even in another letter case) and a late road are refused.
+ expect(await append(houseToken,'aaaaaaaa-0000-4000-8000-00000000a001',2,pts(920))).toBe(false);
+ expect(await append(houseToken,'AAAAAAAA-0000-4000-8000-00000000A001',3,pts(930))).toBe(false);
+ expect((await trail(mate)).points).toEqual([]);
+ // Even after another activity has come and gone.
+ expect(await append(houseToken,'OTHER-1',1,pts(940))).toBe(true);
+ expect(await append(houseToken,'AAAAAAAA-0000-4000-8000-00000000A001',4,pts(950))).toBe(false);
+ // The activity once saved is never offered to automatic sharing.
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('aaaaaaaa-0000-4000-8000-00000000a001','Private drive','Driving','manual','2032-01-01 08:00+00','2032-01-01 08:30+00',1800,9000)`);
+ const pending=(await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id);
+ expect(pending).not.toContain('aaaaaaaa-0000-4000-8000-00000000a001');
+ await as('authenticated',owner,"select public.end_live_trail('OTHER-1')");
+});
+it('automatic sharing is refused for an activity made private meanwhile, and a manual share later is allowed',async()=>{
+ const id='dddddddd-0000-4000-8000-00000000d001';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('${id}','Race','Driving','manual','2032-03-01 08:00+00','2032-03-01 08:30+00',1800,9000)`);
+ const allowed=async()=>(await as('service_role','',`select public.auto_share_allowed('${owner}','${id}') as ok`)).rows[0].ok;
+ expect(await allowed()).toBe(true);
+ await as('authenticated',owner,`select public.keep_activity_private('${id}')`);   // while an automatic publication is on its way
+ expect(await allowed()).toBe(false);
+ await share(id,'household','household',[],'Chosen by hand');                       // an explicit share by the owner
+ expect(await allowed()).toBe(true);
+});
+it('publishing the same activity twice leaves one publication and one recipient set',async()=>{
+ const id='dddddddd-0000-4000-8000-00000000d002';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('${id}','Twice','Driving','manual','2032-03-02 08:00+00','2032-03-02 08:30+00',1800,9000)`);
+ await share(id,'household','household',[],'Twice');await share(id,'household','household',[],'Twice');
+ const n=await db.query(`select (select count(*)::int from public.shared_journeys where activity_id='${id}') as j,(select count(*)::int from public.social_journey_recipients where activity_id='${id}') as r`);
+ expect(n.rows[0]).toEqual({j:1,r:1});
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain(id);
+});
+it('marking a never-shared activity private by hand is remembered',async()=>{
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('bbbbbbbb-0000-4000-8000-00000000b001','Hand private','Driving','manual','2032-02-01 08:00+00','2032-02-01 08:30+00',1800,9000)`);
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).toContain('bbbbbbbb-0000-4000-8000-00000000b001');
+ await as('authenticated',owner,"select public.keep_activity_private('bbbbbbbb-0000-4000-8000-00000000b001')");
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain('bbbbbbbb-0000-4000-8000-00000000b001');
+ // Someone else's activity cannot be marked.
+ await as('authenticated',stranger,"select public.keep_activity_private('bbbbbbbb-0000-4000-8000-00000000b001')");
 });
 it('hiding the live activity clears it and blocks later points for that activity',async()=>{
  await as('authenticated',owner,"select public.end_live_trail('run2',true)");
@@ -222,6 +289,28 @@ it('a friend\'s live line is cut where Home is hidden, so nothing is drawn acros
  const cleared=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
  expect(cleared.point_count).toBe(0);expect(cleared.points).toEqual([]);
 });
+it('a long drive keeps its whole timeline: older points are thinned, never cut off, and the bound holds',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)'); // re-enabling is a status-only call
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ // Two hours of driving at one fix per 2 s = 3600 points, sent in batches of 200 ending now.
+ const start=Math.floor(Date.now()/1000)-7200;
+ for(let b=0;b<18;b++){
+  const batch=Array.from({length:200},(_,i)=>{const n=b*200+i;return [-34+n*1e-5,150+n*1e-5,start+n*2,0];});
+  expect(await append(houseToken,'LONG-1',b+1,JSON.stringify(batch))).toBe(true);
+ }
+ const t=(await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ expect(t.point_count).toBeLessThanOrEqual(3000);
+ const times=t.points.map(p=>p[2]);
+ expect(times[0]).toBeLessThan(start+60);                 // the start of the drive is still there
+ expect(times.at(-1)).toBe(start+3599*2);                  // and so is the newest point
+ expect(times).toEqual([...times].sort((a,b)=>a-b));
+ // The newest quarter is at full resolution (2 s apart); the oldest is thinned.
+ const recent=times.slice(-500);expect(recent[1]-recent[0]).toBe(2);
+ expect(times[1]-times[0]).toBeGreaterThan(2);
+ // A scrub anywhere in the two hours finds a fix within a few minutes.
+ const gaps=times.slice(1).map((x,i)=>x-times[i]);expect(Math.max(...gaps)).toBeLessThan(300);
+ await as('authenticated',owner,"select public.end_live_trail('LONG-1')");
+},120000);
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();

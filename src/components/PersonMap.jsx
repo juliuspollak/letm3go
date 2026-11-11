@@ -31,7 +31,8 @@ function useToday(timeZone){
  return today;
 }
 
-export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke}){
+export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke,onOpenOwn}){
+ const isSelf=person.userId===viewer;
  const today=useToday(timeZone);
  const [date,setDate]=useState(today);
  const [scrub,setScrub]=useState(null);
@@ -48,20 +49,24 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
   const live=scrubbing?[]:day.live;
   const routes=[...recorded,...live.slice(0,-1)].map(line=>thinLine(line));
   const pins=day.markers.map(m=>({id:'step:'+m.activityID,kind:'step',point:m.point,title:m.title,label:String(m.n),activityID:m.activityID}));
-  if(isToday&&position&&Number.isFinite(position.latitude))pins.push({id:'latest:'+person.userId,kind:'friend-live',point:[position.latitude,position.longitude],title:`${person.name||'Member'} · ${person.status?.text||'Latest location'}`});
+  if(!isSelf&&isToday&&position&&Number.isFinite(position.latitude))pins.push({id:'latest:'+person.userId,kind:'friend-live',point:[position.latitude,position.longitude],title:`${person.name||'Member'} · ${person.status?.text||'Latest location'}`});
   const at=scrubbing?positionAt(day,deferred):null;
   if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))} earlier`:`Recorded at ${clock(at.t,timeZone)}`});
-  return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads],live:live.length?thinLine(live.at(-1)):[],pins};
- },[day,deferred,isToday,position,person.userId,person.name,person.status?.text,timeZone]);
+  // fitKey: the camera is brought to a new day once; points, the live trail and the slider never refit it.
+  return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads],live:live.length?thinLine(live.at(-1)):[],pins,fitKey:`${person.userId}|${date}`};
+ },[day,deferred,isToday,isSelf,position,person.userId,person.name,person.status?.text,timeZone,date]);
  const first=day.samples[0]?.t,last=day.samples.at(-1)?.t;
  const canScrub=day.samples.length>1;
  const at=scrub!=null?positionAt(day,scrub):null;
+ // My own map lists everything I recorded, shared or not, so a marker opens my own
+ // activity; anyone else's opens the shared copy I am allowed to see.
+ const openMarker=id=>{if(isSelf&&onOpenOwn&&onOpenOwn(id))return;setOpened(id);};
  if(opened)return <SharedActivityDetail activityID={opened} ownerName={person.name} ownerID={person.userId} unit={unit} onBack={()=>setOpened(null)}/>;
  return <section className="person-map" aria-label={`${person.name||'Member'}’s map`}>
   <header className="person-map-head">
    <PersonAvatar name={person.name} userId={person.userId} selfId={viewer} photos={photos} selfAvatar={selfAvatar} size="md"/>
    <div className="person-map-who"><strong>{person.name||'Member'}</strong><span>{person.status?.text||'No location shared'}</span></div>
-   <button type="button" className="secondary person-map-poke" onClick={onPoke}>👋 Poke</button>
+   {!isSelf&&<button type="button" className="secondary person-map-poke" onClick={onPoke}>👋 Poke</button>}
    <button type="button" className="icon-button" aria-label="Close map" onClick={onClose}><X size={20}/></button>
   </header>
   <div className="person-map-days" role="group" aria-label="Day">
@@ -70,7 +75,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
    <button type="button" aria-label="Next day" disabled={isToday} onClick={()=>{setDate(addDays(date,1));setScrub(null);}}><ChevronRight size={20}/></button>
   </div>
   <div className="person-map-canvas">
-   <AppleMap payload={payload} large viewportKey={`${person.userId}|${date}`} onStep={setOpened}/>
+   <AppleMap payload={payload} large dynamic viewportKey={person.userId} onStep={openMarker}/>
    {loading&&<p className="person-map-note" role="status">Loading…</p>}
    {!loading&&day.isEmpty&&!error&&<p className="person-map-note" role="status">{isToday?'No movement shared yet today.':'Nothing shared for this day.'}</p>}
    {error&&<p className="person-map-note" role="alert">{error}</p>}

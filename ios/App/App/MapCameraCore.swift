@@ -279,3 +279,14 @@ enum EdgeIndicatorLayout {
         }
     }
 }
+
+// A map showing one person's day is told which day it is (`fitKey`). The camera is
+// refitted once when that changes and content arrives, and never for the GPS points,
+// the live trail or the time slider that follow, so the map is neither recreated nor
+// jerked back while it is being used.
+enum DayFit {
+    static func shouldFit(key: String?, applied: String?, hasContent: Bool) -> Bool {
+        guard let key = key, !key.isEmpty, hasContent else { return false }
+        return key != applied
+    }
+}

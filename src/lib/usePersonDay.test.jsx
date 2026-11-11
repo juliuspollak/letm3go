@@ -1,9 +1,9 @@
 import {act,renderHook,waitFor} from '@testing-library/react';
-import {beforeEach,expect,it,vi} from 'vitest';
+import {beforeEach,describe,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({rpc:vi.fn()}));
 vi.mock('./supabase.js',()=>({supabase:{rpc:mock.rpc}}));
 import {usePersonDay} from './usePersonDay.js';
-import {clearPersonDays,mergeRows,cachedDay,storeDay} from './personDayCache.js';
+import {clearPersonDays,dropOwner,mergeRows,cachedDay,storeDay,SHOW_CACHED_MS} from './personDayCache.js';
 import {dayWindow} from './dayWindow.js';
 
 const Z='Australia/Sydney',DATE='2026-11-10',W=dayWindow(DATE,Z);
@@ -109,4 +109,60 @@ it('merges unchanged rows from the held copy, and bounds the cache',()=>{
  expect(mergeRows(held,[{...row('a','e2'),points:null}])).toEqual([]); // changed etag with no geometry: never trust it
  for(let i=0;i<40;i++)storeDay('me','her','2026-01-'+String(i+1).padStart(2,'0'),{rows:[]});
  expect(cachedDay('me','her','2026-01-01')).toBeNull();expect(cachedDay('me','her','2026-01-40')).not.toBeNull();
+});
+
+describe('access changes and the cache',()=>{
+ it('does not show an old cached day from memory: it waits for the server, so withdrawn access is not displayed',async()=>{
+  const first=render();
+  await waitFor(()=>expect(first.result.current.day.activities.length).toBe(1));
+  first.unmount();
+  cachedDay('me','her',`${DATE}@${Z}`).at=Date.now()-SHOW_CACHED_MS-1000; // older than the display window
+  dayRows=[]; // meanwhile the owner made it private
+  let release;mock.rpc.mockImplementation(async(name,params)=>{
+   calls.push([name,params]);
+   if(name==='my_shared_day'){await new Promise(r=>{release=r;});return {data:dayRows,error:null};}
+   return {data:[],error:null};
+  });
+  const again=render();
+  expect(again.result.current.day.activities.length).toBe(0);   // not shown while unverified
+  expect(again.result.current.loading).toBe(true);
+  await waitFor(()=>expect(release).toBeTypeOf('function'));
+  release();
+  await waitFor(()=>expect(again.result.current.loading).toBe(false));
+  expect(again.result.current.day.activities.length).toBe(0);
+ });
+ it('revalidates an open map on a schedule, so a friend removed meanwhile disappears from it',async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});
+  const {result,unmount}=render();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+  dayRows=[]; // the server no longer returns anything for this viewer
+  await act(async()=>{await vi.advanceTimersByTimeAsync(61000);});
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(0));
+  unmount();vi.useRealTimers();
+ });
+ it('revalidates when the app returns to the foreground and when the network returns',async()=>{
+  const {result}=render();
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(1));
+  const before=calls.filter(c=>c[0]==='my_shared_day').length;
+  dayRows=[];
+  await act(async()=>{window.dispatchEvent(new Event('online'));});
+  await waitFor(()=>expect(result.current.day.activities.length).toBe(0));
+  expect(calls.filter(c=>c[0]==='my_shared_day').length).toBeGreaterThan(before);
+ });
+ it('keys a day by its time zone, so a traveller never gets the wrong 24 hours',async()=>{
+  const sydney=render();
+  await waitFor(()=>expect(sydney.result.current.day.activities.length).toBe(1));
+  sydney.unmount();
+  const la=renderHook(()=>usePersonDay({viewer:'me',owner:'her',date:DATE,timeZone:'America/Los_Angeles',now:NOW}));
+  expect(la.result.current.day.activities.length).toBe(0);   // nothing reused from the Sydney window
+  const sent=calls.filter(c=>c[0]==='my_shared_day').map(c=>c[1].p_from);
+  await waitFor(()=>expect(new Set(sent.concat(calls.filter(c=>c[0]==='my_shared_day').map(c=>c[1].p_from))).size).toBeGreaterThan(3));
+ });
+ it('forgets a person entirely when they are no longer someone I may see',async()=>{
+  const first=render();
+  await waitFor(()=>expect(first.result.current.day.activities.length).toBe(1));
+  first.unmount();
+  dropOwner('me','her');
+  expect(cachedDay('me','her',`${DATE}@${Z}`)).toBeNull();
+ });
 });

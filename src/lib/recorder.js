@@ -39,6 +39,7 @@ export const recorder = {
 
  getState:options=>recorderAvailable()?(options?native.getState(options):native.getState()):Promise.resolve(emptyRecorder),
  configureLiveSharing:params=>recorderAvailable()?native.configureLiveSharing(params):Promise.resolve(),
+ hideLiveTrail:ref=>recorderAvailable()?native.hideLiveTrail({ref}):Promise.resolve(),
  restoreActivity:activity=>native.restoreActivity({activity}),
  restorePhoto:params=>native.restorePhoto(params),
  requestPermission:always=>native.requestPermission({always}),

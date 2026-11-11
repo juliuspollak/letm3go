@@ -730,6 +730,7 @@ private struct MapContent {
     let layersActive:Int?
     let controls:[String:Any]?
     let mapStyle:String?
+    let fitKey:String?
     let showsLocate:Bool
     let locating:Bool
     init(_ options:[AnyHashable:Any]) {
@@ -752,6 +753,7 @@ private struct MapContent {
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
         controls=(options["layers"] as? [String:Any])?["controls"] as? [String:Any]
         mapStyle=options["mapStyle"] as? String
+        fitKey=(options["fitKey"] as? String).map{String($0.prefix(160))}
         layersActive=((options["layers"] as? [String:Any])?["active"] as? NSNumber).map{max(0,min(9,$0.intValue))}
     }
     // The overview is framed by where the density mostly is, not by every photo.
@@ -838,6 +840,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var routeKey:Int?
     private(set) var overlayRebuilds=0
     private var liveOverlay:LivePolyline?
+    private var fittedDayKey:String?
     private var liveSignature:Int?
     private(set) var liveUpdates=0
     private var circles:[String:MKCircle]=[:]
@@ -959,6 +962,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             map.addAnnotation(pin)
         }
         for (id,pin) in pins where !seen.contains(id) {map.removeAnnotation(pin);pins.removeValue(forKey:id);pinData.removeValue(forKey:id)}
+        // A person's day changed: bring it into view once (see DayFit). Not for the people map.
+        if !isPeopleMap, DayFit.shouldFit(key:next.fitKey,applied:fittedDayKey,hasContent:!next.coordinates.isEmpty) {
+            map.setVisibleMapRect(next.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:fittedDayKey != nil)
+            fittedDayKey=next.fitKey
+        }
         applyOverview(next.overview)
         updateLocationButton(next.showsLocate && showsLayers)
         if let style=next.mapStyle,style != appliedStyle {applyMapStyle(map,style);appliedStyle=style}

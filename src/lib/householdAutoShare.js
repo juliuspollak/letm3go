@@ -21,7 +21,7 @@ export async function shareNewHouseholdActivities({client,recorder,receipts,chec
    if(!trip||!trip.endedAt||!['device','watch'].includes(trip.source)||!(trip.points||[]).length){skip.add(id);continue;}
    usable++;
    try{
-    await publishActivity({client,state,id:trip.id,reviewedTrip:trip,audience:'household',mode:'household',receipts:receipts||{},checkpoint});
+    await publishActivity({client,state,id:trip.id,reviewedTrip:trip,audience:'household',mode:'household',auto:true,receipts:receipts||{},checkpoint});
     published.push(id);
     if(published.length>=limit)break;
    }catch(error){

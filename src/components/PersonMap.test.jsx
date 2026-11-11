@@ -41,6 +41,13 @@ describe('person map',()=>{
   expect(last().live.length).toBe(2);
   expect(screen.getByText('Today')).toBeTruthy();
  });
+ it('hands the map a stable identity and a fit key per day, so day changes update in place',()=>{
+  setup();
+  const today=dayKeyOf(Date.now()/1000,Z);
+  expect(last().fitKey).toBe('her|'+today);
+  fireEvent.click(screen.getByLabelText('Previous day'));
+  expect(last().fitKey).toBe('her|'+addDays(today,-1));
+ });
  it('opens the existing activity details from a marker, and comes back',()=>{
   setup();
   act(()=>mock.onStep('b'));
