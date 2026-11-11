@@ -80,7 +80,9 @@ import ActivityEditor from './components/ActivityEditor.jsx';
 import SharedActivityDetail from './components/SharedActivityDetail.jsx';
 import PersonMap from './components/PersonMap.jsx';
 import { saveSyncReceipts } from './lib/syncReceipts.js';
-import {clearPersonDays,dropOwner} from './lib/personDayCache.js';
+import {clearPersonDays} from './lib/personDayCache.js';
+import {forgetLiveRoads} from './lib/liveRoads.js';
+import {forgetAutoShareFailures} from './lib/householdAutoShare.js';
 import {useLiveRoads} from './lib/useLiveRoads.js';
 import {useHouseholdAutoShare} from './lib/useHouseholdAutoShare.js';
 import { AuthProvider, useAuth } from './lib/AuthContext.jsx';
@@ -297,7 +299,8 @@ function PrivateApp(){
  },[localGroupingActivities,rows,contextKey,detailKey,deletedKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
- useLiveRoads({trip:recording.state.automaticTrip,owner:session.user.id,enabled:auth.status==='authenticated'});
+ // Roads are published to the live trail only while someone could be watching it.
+ useLiveRoads({trip:recording.state.automaticTrip,owner:session.user.id,enabled:auth.status==='authenticated'&&Boolean(presence.liveEnabled||friendsLocation.enabled)});
  useHouseholdAutoShare({client:supabase,recorder,enabled:auth.status==='authenticated'&&recorderAvailable(),finishedCount:realJourneys.filter(t=>t.endedAt).length,receipts:auth.preferences.syncReceipts,checkpoint:syncReceipts=>saveSyncReceipts(auth.savePreferences,syncReceipts)});
  const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,sync:journeySync});
  const sharedFeed=useSharedActivityFeed(tab==='Trips'&&includeSharedActivities,session.user.id);
@@ -368,7 +371,6 @@ function PrivateApp(){
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
  // Tapping a person on Home opens their map; poking is a separate control on the tile and on that map.
  const [personMap,setPersonMap]=useState(null);
- const openOwnActivity=useCallback(id=>{const trip=realJourneys.find(t=>String(t.id).toLowerCase()===String(id).toLowerCase());if(!trip)return false;setSelected(trip);setTab('Trips');setPersonMap(null);return true;},[realJourneys]);
  const pokePerson=useCallback(async person=>{
   const name=person.name||'them';
   try{await sendPoke(person.userId);setPokeNotice({userId:person.userId,state:'sent',stamp:Date.now()});}
@@ -380,12 +382,12 @@ function PrivateApp(){
  const everyone=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit]);
  const homeFriends=useMemo(()=>everyone.slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeNotice?.userId===person.userId?{state:pokeNotice.state,message:pokeNotice.message}:tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null,onSelect:()=>setPersonMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Open ${person.name||'their'} map.`})),[everyone,pokePerson,pokeNotice,incomingPoke,tab]);
  // A poke from someone whose avatar is on screen shows there; otherwise as a bubble by the profile.
- // The map shows the live version of the person, and only while they are still someone
- // I may see (a removed friend or a member who left closes it and drops what was cached).
- const shownPerson=personMap?(personMap.userId===session.user.id?personMap:homeFriends.find(p=>p.userId===personMap.userId)||everyone.find(p=>p.userId===personMap.userId)||null):null;
- const knownPeople=useRef(new Set());
- useEffect(()=>{const now=new Set(everyone.map(p=>p.userId));for(const id of knownPeople.current)if(!now.has(id))dropOwner(session.user.id,id);knownPeople.current=now;},[everyone,session.user.id]);
- useEffect(()=>()=>clearPersonDays(session.user.id),[session.user.id]);
+ // The map keeps the person it was opened for and shows their live details when they are in
+ // the live-location lists. Completed days do not depend on live sharing, so the map does not
+ // close (or lose its cache) because someone stopped sharing their location; what a viewer may
+ // still see is decided by the server (signals and revalidation in usePersonDay).
+ const shownPerson=personMap?(personMap.userId===session.user.id?personMap:{...personMap,...(homeFriends.find(p=>p.userId===personMap.userId)||everyone.find(p=>p.userId===personMap.userId)||{})}):null;
+ useEffect(()=>()=>{clearPersonDays(session.user.id);forgetLiveRoads();forgetAutoShareFailures();},[session.user.id]);
  const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
  const onMapCamera=useCallback(event=>dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command}),[]);
@@ -424,6 +426,7 @@ function PrivateApp(){
  useEffect(()=>{latestActions.current={bookmark,archiveTrip,restoreTrip};});
  const sort=metricView==="Today's distance"?'distance':metricView==='Recorded time'?'duration':metricView==='Activities today'?'newest':sortPreference;
  const visibleJourneys=useMemo(()=>visibleRecorderJourneys(grouping.journeys,recording.state,session.user.id),[grouping.journeys,recording.state,session.user.id]);
+ const openOwnActivity=useCallback(id=>{const same=t=>String(t.id).toLowerCase()===String(id).toLowerCase();const trip=realJourneys.find(same)||visibleJourneys.find(same);if(!trip)return false;setSelected(trip);setTab('Trips');setPersonMap(null);return true;},[realJourneys,visibleJourneys]);
  // Equipment counts and filters come from the journeys already in memory, so a
  // Collection item and the Trips list can never disagree.
  const equipmentOptions=useMemo(()=>equipmentUsage(visibleJourneys,vehicles),[visibleJourneys,vehicles]);

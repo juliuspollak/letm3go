@@ -197,6 +197,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         set { UserDefaults.standard.set(newValue, forKey: Self.hiddenTrailKey) }
     }
     var liveTrailHideConfirmed = false
+    // After a stop the same journey may resume (same id): it carries on from where it was, not from its start.
+    var liveTrailResumeRef: String?
+    var liveTrailResumeThrough: Double = 0
     var liveTrailSentThrough: Double = 0
     var liveTrailSeq = 0
     var liveTrailLastFlushAt: Double = 0
@@ -958,14 +961,19 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 return
             }
             if recording?.id.caseInsensitiveCompare(hidden) == .orderedSame { return }
-            // A different activity (or none): the hidden one is over.
-            liveTrailHiddenRef = nil; liveTrailHideConfirmed = false
+            // Only a DIFFERENT activity ends the hiding. A journey that has merely settled (no
+            // recording right now) may resume with the same id, and must still be private.
+            if recording != nil { liveTrailHiddenRef = nil; liveTrailHideConfirmed = false }
         }
         var ref = liveTrailRef
         var points: [[Double]] = []
         var ending = false
         if let recording = recording {
-            if ref != recording.id { ref = recording.id; liveTrailSentThrough = 0; liveTrailSeq = 0 }
+            if ref != recording.id {
+                // The same journey resuming after a stop continues from where it was sent; a new one starts afresh.
+                liveTrailSentThrough = liveTrailResumeRef?.caseInsensitiveCompare(recording.id) == .orderedSame ? liveTrailResumeThrough : 0
+                ref = recording.id; liveTrailSeq = 0
+            }
             points = LiveTrail.batch(points: recording.points, after: liveTrailSentThrough, now: now)
             guard !points.isEmpty else { return }
         } else if ref != nil {
@@ -976,7 +984,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         postLiveTrail(endpoint: endpoint, apiKey: apiKey, token: token, ref: activityRef, seq: ending ? -1 : liveTrailSeq + 1, points: points) { [weak self] accepted in
             guard let self = self else { return }
             if accepted {
-                if ending { self.liveTrailRef = nil; self.liveTrailSentThrough = 0; self.liveTrailSeq = 0 }
+                if ending { self.liveTrailResumeRef = self.liveTrailRef; self.liveTrailResumeThrough = self.liveTrailSentThrough; self.liveTrailRef = nil; self.liveTrailSentThrough = 0; self.liveTrailSeq = 0 }
                 else { self.liveTrailRef = activityRef; self.liveTrailSentThrough = max(self.liveTrailSentThrough, newest); self.liveTrailSeq += 1 }
             }
         }

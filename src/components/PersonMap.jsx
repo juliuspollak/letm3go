@@ -54,7 +54,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
   const pins=day.markers.map(m=>({id:'step:'+m.activityID,kind:'step',point:m.point,title:m.title,label:String(m.n),activityID:m.activityID}));
   if(!isSelf&&isToday&&position&&Number.isFinite(position.latitude))pins.push({id:'latest:'+person.userId,kind:'friend-live',point:[position.latitude,position.longitude],title:`${person.name||'Member'} · ${person.status?.text||'Latest location'}`});
   const at=scrubbing?positionAt(day,deferred):null;
-  if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))} earlier`:`Recorded at ${clock(at.t,timeZone)}`});
+  if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))}`:`Recorded at ${clock(at.t,timeZone)}`});
   // fitKey: the camera is brought to a new day once; points, the live trail and the slider never refit it.
   return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads].map(line=>thinLine(line,2000)),live:live.length?thinLine(live.at(-1)):[],pins,fitKey:`${person.userId}|${date}`};
  },[day,deferred,isToday,isSelf,position,person.userId,person.name,person.status?.text,timeZone,date]);
@@ -63,7 +63,16 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
  const at=scrub!=null?positionAt(day,scrub):null;
  // My own map lists everything I recorded, shared or not, so a marker opens my own
  // activity; anyone else's opens the shared copy I am allowed to see.
- const openMarker=id=>{if(isSelf&&onOpenOwn&&onOpenOwn(id))return;setOpened(id);};
+ const [notice,setNotice]=useState('');
+ const openMarker=id=>{
+  if(isSelf){
+   // My own activity: opened from this phone's copy. One that is only in the cloud (another
+   // phone, a watch) is not a shared copy, so the shared viewer would fail; say so instead.
+   if(onOpenOwn&&onOpenOwn(id))return;
+   setNotice('That activity is not on this phone. Open it from Activities once it has synced.');return;
+  }
+  setOpened(id);
+ };
  if(opened)return <SharedActivityDetail activityID={opened} ownerName={person.name} ownerID={person.userId} unit={unit} onBack={()=>setOpened(null)}/>;
  return <section className="person-map" aria-label={`${person.name||'Member'}’s map`}>
   <header className="person-map-head">
@@ -82,9 +91,10 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
    {loading&&<p className="person-map-note" role="status">Loading…</p>}
    {!loading&&day.isEmpty&&!error&&<p className="person-map-note" role="status">{isToday?'No movement shared yet today.':'Nothing shared for this day.'}</p>}
    {error&&<p className="person-map-note" role="alert">{error}</p>}
+   {notice&&<p className="person-map-note" role="status" onClick={()=>setNotice('')}>{notice}</p>}
   </div>
   {canScrub&&<div className="person-map-timeline">
-   <input type="range" aria-label="Time of day" min={first} max={last} step={30} value={scrub??last} onChange={event=>setScrub(Number(event.target.value))}/>
+   <input type="range" aria-label="Time of day" min={Math.ceil(first)} max={Math.floor(last)} step={1} value={scrub??Math.floor(last)} onChange={event=>setScrub(Number(event.target.value))}/>
    <div className="person-map-time"><span>{scrub==null?(isToday?'Now':'End of day'):clock(scrub,timeZone)}</span>
     {at&&<span>{at.inGap?'No GPS signal · last recorded fix shown':'Recorded position'}</span>}
     {scrub!=null&&<button type="button" className="text-button" onClick={()=>setScrub(null)}>{isToday?'Back to now':'Show whole day'}</button>}</div>

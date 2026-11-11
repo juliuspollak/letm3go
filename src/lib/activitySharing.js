@@ -38,7 +38,9 @@ export async function makeActivityPrivate(client,id){
  // exists in the cloud) and by the recorder's own id (works before it is uploaded).
  // supabase-js reports a failure as {error}, not an exception. A server that does not have
  // the functions yet is fine; any other failure must not look like success. Retrying is safe.
- const missing=e=>/PGRST202|42883|could not find|does not exist/i.test(`${e.code||''} ${e.message||''}`);
+ // Only "this function is not deployed" counts as missing; any other error (including a table or
+ // column that does not exist because a migration is half applied) must not be waved through.
+ const missing=e=>/^(PGRST202|42883)$/.test(String(e.code||''))||/could not find the function/i.test(e.message||'');
  const calls=[client.rpc('end_live_trail',{p_ref:String(id),p_hide:true})];
  if(trip)calls.push(client.rpc('keep_activity_private',{p_activity:id}));
  for(const result of await Promise.all(calls)){

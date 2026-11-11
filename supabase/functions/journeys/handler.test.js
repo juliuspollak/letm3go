@@ -180,10 +180,16 @@ describe('automatic household sharing', () => {
     expect((await publish(w, { auto: true })).status).toBe(409);
     expect(w.deletes).toEqual(['shared_journeys']);
   });
-  it('a manual share is not subject to the automatic check', async () => {
+  it('a manual share is not subject to the automatic check, and is remembered as the owner\'s decision', async () => {
     const w = world({ allowed: [false] });
     expect((await publish(w)).status).toBe(200);
     expect(w.calls.some(c => c[0] === 'auto_share_allowed')).toBe(false);
+    expect(w.calls).toContainEqual(['remember_manual_share', { p_owner: OWNER, p_activity: ID }]);
+  });
+  it('an automatic share is NOT recorded as a decision, so it can be shared again after the system removes it', async () => {
+    const w = world({ allowed: [true, true] });
+    await publish(w, { auto: true });
+    expect(w.calls.some(c => c[0] === 'remember_manual_share')).toBe(false);
   });
 });
 

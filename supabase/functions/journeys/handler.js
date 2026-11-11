@@ -138,6 +138,9 @@ export function createJourneysHandler({ env, createClient, storage }) {
      return reply({error:'This activity is private'},409);
     }
    }
+   // Sharing by hand is the owner's own decision about this activity (automatic sharing
+   // must not override it later, e.g. after the system removes the share on an edit).
+   if(body.auto!==true){await admin.rpc('remember_manual_share',{p_owner:owner,p_activity:trip.id});}
    return reply({token:result,snapshot});
   }
   if(body.action==='revoke'){const {error}=await userClient.rpc('revoke_activity_publication',{p_id:trip.id});if(error)throw error;return reply({revoked:true});}

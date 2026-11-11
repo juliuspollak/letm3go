@@ -116,10 +116,25 @@ it('household auto-share starts when they join and never sweeps in earlier activ
  const mine=(await as('authenticated',owner,'select * from public.my_auto_share_pending()')).rows.map(r=>r.activity_id);
  expect(mine).not.toContain(OLD===A?'':'x');
 });
-it('a manual decision is remembered, so auto-share never overrides it',async()=>{
- // B was shared then unshared by hand above: it must not come back as pending.
- const pending=(await as('authenticated',owner,'select * from public.my_auto_share_pending()')).rows.map(r=>r.activity_id);
- expect(pending).not.toContain(B);expect(pending).not.toContain(A);
+it('only the owner\'s own choices are decisions: sharing by hand and keeping private count, a share the system removes does not',async()=>{
+ const pending=async()=>(await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id);
+ // B was shared and then removed (not by the owner choosing): it is offered again.
+ expect(await pending()).toContain(B);
+ // Sharing by hand (what the journeys function records for a non-automatic publication) is a decision.
+ await as('service_role','',`select public.remember_manual_share('${owner}','${B}')`);
+ expect(await pending()).not.toContain(B);
+ // A is shared right now, so it is not offered either.
+ expect(await pending()).not.toContain(A);
+});
+it('an automatically shared activity that the system un-shares (an edit) is offered again; one the owner made private is not',async()=>{
+ const id='cdcdcdcd-0000-4000-8000-00000000cd01';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('${id}','Edited','Driving','manual',now()+interval '5 minutes',now()+interval '35 minutes',1800,9000)`);
+ await share(id,'household','household',[],'Edited');
+ await as('service_role','',`delete from public.shared_journeys where activity_id='${id}'`);     // what protect_activity does on an edit
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).toContain(id);
+ await as('authenticated',owner,`select public.keep_activity_private('${id}')`);
+ expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain(id);
 });
 it('pending activities are newest first and the client can exclude ones it cannot publish',async()=>{
  const all=(await as('authenticated',owner,'select * from public.my_auto_share_pending(10)')).rows.map(r=>r.activity_id);
@@ -267,14 +282,14 @@ it('road estimates: stored once by the owner, hidden from friends when they touc
  friendToken=(await as('authenticated',owner,'select * from public.issue_my_friend_location_token()')).rows[0].publish_token;
  await append(friendToken,'r1',1,pts(300));
  const away='_p~iF~ps|U_ulLnnqC'; // a short line in the northern hemisphere, far from Home
- expect(await as('anon','',`select public.put_live_road('${friendToken}','r1','R1:1:2','${away}') as ok`).then(r=>r.rows[0].ok)).toBe(true);
- expect(await as('anon','',`select public.put_live_road('${'z'.repeat(64)}','r1','R1:1:2','${away}') as ok`).then(r=>r.rows[0].ok)).toBe(false);
+ expect(await as('authenticated',owner,`select public.put_my_live_road('r1','R1:1:2','${away}') as ok`).then(r=>r.rows[0].ok)).toBe(true);
+ expect(await as('authenticated',stranger,`select public.put_my_live_road('r1','R1:1:2','${away}') as ok`).then(r=>r.rows[0].ok)).toBe(false);   // not their trail
  const owned=await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`);
  expect(owned.rows[0].roads).toEqual({'R1:1:2':away});
  // The same road drawn through Home is withheld from a friend but not from the owner.
  const lat=-34.5,lon=150.8,enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
  const throughHome=enc(lat)+enc(lon)+enc(0.0001)+enc(0.0001);
- await as('anon','',`select public.put_live_road('${friendToken}','r1','R1:3:4','${throughHome.replace(/\\/g,'\\\\')}')`);
+ await as('authenticated',owner,`select public.put_my_live_road('r1','R1:3:4','${throughHome.replace(/\\/g,'\\\\')}')`);
  const seen=await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`);
  expect(Object.keys(seen.rows[0].roads)).not.toContain('R1:3:4');
  expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('R1:3:4');
@@ -368,11 +383,13 @@ it('a finished activity cannot be brought back as a live ghost by a late or retr
  houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
  expect(await append(houseToken,'ghost1',1,pts(800,810))).toBe(true);
  expect(await append(houseToken,'ghost1',-1,'[]')).toBe(true);
- expect(await append(houseToken,'ghost1',2,pts(820))).toBe(false);          // the request that timed out and arrives late
- expect(await append(houseToken,'GHOST1',3,pts(830))).toBe(false);
+ expect(await append(houseToken,'ghost1',2,pts(820))).toBe(true);           // the request that timed out and arrives late: accepted, but nothing is kept
+ expect(await append(houseToken,'GHOST1',3,pts(830))).toBe(true);
+ expect((await trail(mate)).points).toEqual([]);
  expect(await append(houseToken,'ghost2',1,pts(900))).toBe(true);           // the next activity is unaffected
  expect(await append(houseToken,'ghost2',-1,'[]')).toBe(true);
- expect(await append(houseToken,'ghost1',4,pts(840))).toBe(false);          // still refused after another activity came and went
+ expect(await append(houseToken,'ghost1',4,pts(840))).toBe(true);           // still ignored after another activity came and went
+ expect((await trail(mate))?.points||[]).toEqual([]);
 });
 it('a resumed activity can publish again, a late batch from before the stop cannot, and private still works after a stop',async()=>{
  await as('authenticated',owner,'select public.set_my_live_location(true)');
@@ -380,7 +397,7 @@ it('a resumed activity can publish again, a late batch from before the stop cann
  const now=Math.floor(Date.now()/1000);
  expect(await append(houseToken,'resume1',1,pts(1000))).toBe(true);
  expect(await append(houseToken,'resume1',-1,'[]')).toBe(true);                     // stopped at a long red light
- expect(await append(houseToken,'resume1',2,pts(1001))).toBe(false);                // late batch from before the stop
+ expect(await append(houseToken,'resume1',2,pts(1001))).toBe(true);                // late batch from before the stop: nothing kept
  expect(await append(houseToken,'resume1',3,JSON.stringify([[-34.9,151,now+20,0]]))).toBe(true);   // it moves again
  expect((await trail(mate)).points.map(p=>p[2])).toEqual([now+20]);
  // Private after a stop is honoured (and confirmed), not refused.
@@ -392,6 +409,32 @@ it('a resumed activity can publish again, a late batch from before the stop cann
  await db.exec('reset role');
  const kept=Object.keys((await db.query(`select ended_at from public.live_trails where owner_id='${owner}'`)).rows[0].ended_at);
  expect(kept.length).toBeLessThanOrEqual(8);expect(kept).toContain('bulk11');expect(kept).not.toContain('bulk0');
+});
+it('a resumed journey that drains an old backlog in order catches up instead of stalling',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const now=Math.floor(Date.now()/1000);
+ const old=Array.from({length:200},(_,i)=>[-34.9-i*1e-5,151,now-900+i,0]);
+ expect(await append(houseToken,'drain1',1,JSON.stringify(old))).toBe(true);
+ expect(await append(houseToken,'drain1',-1,'[]')).toBe(true);                       // stopped at a light
+ // The phone starts again from the beginning of the journey: the old points are accepted and ignored ...
+ expect(await append(houseToken,'drain1',2,JSON.stringify(old))).toBe(true);
+ // ... and it carries on to the newer ones, which are kept.
+ const fresh=Array.from({length:50},(_,i)=>[-35.0-i*1e-5,151,now+10+i,0]);
+ expect(await append(houseToken,'drain1',3,JSON.stringify(fresh))).toBe(true);
+ expect((await trail(mate)).points.length).toBe(50);
+ await as('authenticated',owner,"select public.end_live_trail('drain1')");
+});
+it('a stop keeps the road estimates, so a journey that resumes does not lose them',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const now=Math.floor(Date.now()/1000);
+ await append(houseToken,'keep1',1,JSON.stringify([[-34.9,151,now-30,0]]));
+ await as('authenticated',owner,`select public.put_my_live_road('keep1','K:1:2','_p~iF~ps|U_ulLnnqC')`);
+ await append(houseToken,'keep1',-1,'[]');
+ await append(houseToken,'keep1',2,JSON.stringify([[-34.91,151,now+20,0]]));
+ expect(Object.keys((await trail(mate)).roads)).toEqual(['K:1:2']);
+ await as('authenticated',owner,"select public.end_live_trail('keep1',true)");
 });
 it('a friend never gets a line drawn through the masked area between two sparse fixes',async()=>{
  await as('authenticated',owner,'select public.set_my_live_location(false)');
@@ -409,7 +452,7 @@ it('a friend never gets a line drawn through the masked area between two sparse 
  // A stored road that runs past Home with no vertex near it is withheld too.
  const enc=n=>{n=Math.round(n*1e5);n=n<0?~(n<<1):n<<1;let o='';while(n>=32){o+=String.fromCharCode((32|(n&31))+63);n>>=5;}return o+String.fromCharCode(n+63);};
  const line=enc(-34.5)+enc(150.79)+enc(0)+enc(0.02);
- await as('anon','',`select public.put_live_road('${friendToken}','cross1','X:1:2','${line.replace(/\\/g,'\\\\')}')`);
+ await as('authenticated',owner,`select public.put_my_live_road('cross1','X:1:2','${line.replace(/\\/g,'\\\\')}')`);
  expect(Object.keys((await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).not.toContain('X:1:2');
  expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('X:1:2');
  await as('authenticated',owner,"select public.end_live_trail('cross1')");
@@ -430,7 +473,7 @@ it('rejects a road that is not a well-formed polyline, and stores whether it tou
  await as('authenticated',owner,'select public.set_my_live_location(true)');
  houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
  await append(houseToken,'rd1',1,pts(950));
- const put=line=>as('anon','',`select public.put_live_road('${houseToken}','rd1','R:1:2','${line}') as ok`).then(r=>r.rows[0].ok);
+ const put=line=>as('authenticated',owner,`select public.put_my_live_road('rd1','R:1:2','${line}') as ok`).then(r=>r.rows[0].ok);
  expect(await put('~~~~~~~~~~~~~~~~')).toBe(false);          // would overflow a decoder
  expect(await put('abc')).toBe(false);                       // too short
  expect(await put('_p~iF~ps|U_ulLnnqC')).toBe(true);

@@ -117,6 +117,24 @@ describe('person map',()=>{
   setup({localTrips:local});
   expect(mock.dayArgs.at(-1).localTrips).toBeNull();
  });
+ it('on my own map, an activity that is not on this phone says so instead of opening a shared copy that does not exist',()=>{
+  render(<PersonMap person={{...person,userId:'me'}} viewer="me" timeZone={Z} onOpenOwn={()=>false} onClose={vi.fn()} onPoke={vi.fn()}/>);
+  act(()=>mock.onStep('b'));
+  expect(screen.getByText(/not on this phone/)).toBeTruthy();
+  expect(screen.queryByText('Detail b')).toBeNull();
+ });
+ it('on my own map, an activity on this phone opens locally',()=>{
+  const open=vi.fn(()=>true);
+  render(<PersonMap person={{...person,userId:'me'}} viewer="me" timeZone={Z} onOpenOwn={open} onClose={vi.fn()} onPoke={vi.fn()}/>);
+  act(()=>mock.onStep('a'));
+  expect(open).toHaveBeenCalledWith('a');expect(screen.queryByText('Detail a')).toBeNull();
+ });
+ it('words a position inside a GPS gap without repeating itself',()=>{
+  setup();
+  const slider=screen.getByLabelText('Time of day');
+  fireEvent.change(slider,{target:{value:String(Number(slider.min)+450)}});
+  expect(last().pins.find(p=>p.kind==='playback').title).not.toMatch(/ago earlier|just now earlier/);
+ });
  it('keeps poking available and closes on request',()=>{
   const {onClose,onPoke}=setup();
   fireEvent.click(screen.getByText(/Poke/));fireEvent.click(screen.getByLabelText('Close map'));

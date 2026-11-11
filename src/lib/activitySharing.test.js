@@ -50,6 +50,11 @@ it('an activity not uploaded yet is still recorded as private, by its recorder i
  expect(c.rpc).not.toHaveBeenCalledWith('revoke_activity_publication',expect.anything());
  expect(c.rpc).toHaveBeenCalledWith('end_live_trail',{p_ref:'LOCAL-1',p_hide:true});
 });
+it('a half-applied migration (a missing table or column) is NOT treated as an undeployed function',async()=>{
+ const c=client();
+ c.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{code:'42P01',message:'relation "activity_share_decisions" does not exist'}}:{error:null});
+ await expect(makeActivityPrivate(c,'trip')).rejects.toThrow(/could not be saved/);
+});
 it('a failed decision is reported, never shown as success; a server without the function is fine',async()=>{
  const bad=client();
  bad.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{message:'permission denied'}}:{error:null});

@@ -74,23 +74,19 @@ drop trigger if exists start_auto_share_on_join on public.household_memberships;
 create trigger start_auto_share_on_join after insert on public.household_memberships
 for each row execute function public.start_auto_share_on_join();
 
--- A manual share or unshare is the owner's decision for that activity.
-create or replace function public.remember_share_decision() returns trigger
-language plpgsql security definer set search_path='' as $$
-declare v_activity uuid:=coalesce(new.activity_id,old.activity_id); v_owner uuid:=coalesce(new.owner_id,old.owner_id);
-begin
+-- What counts as the owner's decision about an activity: choosing to keep it private
+-- (keep_activity_private), or sharing it by hand (remember_manual_share, called by the journeys
+-- function for a non-automatic publication). A share that the SYSTEM removes (an edit, Home or
+-- Work moving) is not a decision, so an automatically shared activity is shared again after it.
+create or replace function public.remember_manual_share(p_owner uuid,p_activity uuid) returns void
+language sql security definer set search_path='' as $$
  insert into public.activity_share_decisions(activity_id,owner_id)
-  select v_activity,v_owner where exists(select 1 from public.activities a where a.id=v_activity)
- on conflict(activity_id) do nothing;
- return null;
-end $$;
-drop trigger if exists remember_share_decision on public.shared_journeys;
-create trigger remember_share_decision after insert or delete on public.shared_journeys
-for each row execute function public.remember_share_decision();
+  select a.id,a.owner_id from public.activities a where a.id=p_activity and a.owner_id=p_owner
+ on conflict(activity_id) do nothing
+$$;
+revoke all on function public.remember_manual_share(uuid,uuid) from public,anon,authenticated;
+grant execute on function public.remember_manual_share(uuid,uuid) to service_role;
 
-
--- Making an activity private by hand is the owner's decision for it, whether or not
--- it was ever shared, so automatic sharing never publishes it later.
 create or replace function public.keep_activity_private(p_activity uuid) returns void
 language plpgsql security definer set search_path='' as $$
 begin
@@ -360,7 +356,6 @@ begin
    values(v_user,p_ref,'[]'::jsonb,jsonb_build_object(p_ref,extract(epoch from now())),now())
   on conflict(owner_id) do update set
    points=case when public.live_trails.activity_ref=excluded.activity_ref then '[]'::jsonb else public.live_trails.points end,
-   roads=case when public.live_trails.activity_ref=excluded.activity_ref then '{}'::jsonb else public.live_trails.roads end,
    ended_at=(select coalesce(jsonb_object_agg(k,v),'{}'::jsonb) from (
      select e.key as k,e.value as v from jsonb_each(public.live_trails.ended_at||jsonb_build_object(p_ref,extract(epoch from now()))) e
      order by (e.value#>>'{}')::float8 desc limit 8) z),
@@ -374,7 +369,7 @@ begin
   select (e.value#>>'{}')::float8 into v_endt from jsonb_each(v_old.ended_at) e where upper(e.key)=upper(p_ref);
   if v_endt is not null then
    select coalesce(jsonb_agg(x),'[]'::jsonb) into p_points from jsonb_array_elements(p_points) x where (x->>2)::float8>v_endt;
-   if jsonb_array_length(p_points)=0 then return false; end if;
+   if jsonb_array_length(p_points)=0 then return true; end if;   -- all older than the stop: accepted, nothing kept
   end if;
  end if;
  if not v_had or v_old.activity_ref<>p_ref then
@@ -401,34 +396,9 @@ revoke all on function public.append_live_trail(text,text,integer,jsonb) from pu
 grant execute on function public.append_live_trail(text,text,integer,jsonb) to anon,authenticated;
 
 
--- The owner's phone rebuilt a GPS gap as a road. Stored once so no viewer repeats
--- it; at most 40 per trail, each line bounded.
-create or replace function public.put_live_road(p_token text,p_ref text,p_gap text,p_line text)
-returns boolean language plpgsql security definer set search_path='' as $$
-declare v_user uuid; v_hash bytea;
-begin
- if p_token is null or length(p_token)<>64 or p_ref is null or p_gap is null or length(p_gap) not between 1 and 120
-  or not public.valid_polyline(p_line) then return false; end if;
- v_hash:=sha256(convert_to(p_token,'UTF8'));
- select l.user_id into v_user from public.household_live_locations l
-  where l.publish_token_hash=v_hash and l.publish_token_expires_at>now() and l.enabled
-   and exists(select 1 from public.household_memberships m where m.user_id=l.user_id);
- if v_user is null then
-  select s.user_id into v_user from public.friend_presence_shares s
-   where s.publish_token_hash=v_hash and s.publish_token_expires_at>now() and s.enabled;
- end if;
- if v_user is null then return false; end if;
- -- Whether the road touches a masked area is decided once, here, not on every viewer's poll.
- update public.live_trails set roads=roads||jsonb_build_object(p_gap,jsonb_build_object('l',p_line,'c',public.road_clear_of_private_places(v_user,p_line))),updated_at=now()
-  where owner_id=v_user and activity_ref=p_ref and not public.activity_ref_is_private(owner_id,p_ref)
-   and (roads ? p_gap or (select count(*) from jsonb_object_keys(roads))<40);
- return found;
-end $$;
-revoke all on function public.put_live_road(text,text,text,text) from public,anon,authenticated;
-grant execute on function public.put_live_road(text,text,text,text) to anon,authenticated;
-
--- The same, from the app while it is open (it holds a session, not the device
--- credential). Only the owner's own current trail can receive a road.
+-- The owner's app rebuilt a GPS gap as a road (JavaScript asking Apple Maps, so only while the
+-- app is open). Stored once so no viewer repeats it; at most 40 per trail, each bounded and
+-- validated. Only the owner's own current trail can receive a road.
 create or replace function public.put_my_live_road(p_ref text,p_gap text,p_line text)
 returns boolean language plpgsql security definer set search_path='' as $$
 begin
@@ -683,6 +653,7 @@ language plpgsql security definer set search_path='' as $$
 declare v_owner uuid:=coalesce(new.owner_id,old.owner_id);
 begin
  if coalesce(new.kind,old.kind) not in ('home','work') then return null; end if;
+ if tg_op='UPDATE' and new.kind=old.kind and new.latitude=old.latitude and new.longitude=old.longitude and new.radius=old.radius then return null; end if;
  update public.road_privacy set clear=null where owner_id=v_owner and clear is not null;
  perform public.refresh_road_privacy(v_owner,j.activity_id) from public.shared_journeys j where j.owner_id=v_owner;
  return null;

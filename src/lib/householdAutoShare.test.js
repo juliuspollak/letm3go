@@ -2,13 +2,13 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({publish:vi.fn()}));
 vi.mock('./activitySharing.js',()=>({publishActivity:mock.publish}));
 vi.mock('./hideLiveActivity.js',()=>({flushPendingHides:vi.fn(async()=>{}),isLiveHidden:id=>id==='HIDDEN'}));
-import {shareNewHouseholdActivities} from './householdAutoShare.js';
+import {forgetAutoShareFailures,shareNewHouseholdActivities} from './householdAutoShare.js';
 
 const trip=(id,over={})=>({id,source:'device',endedAt:10,points:[{latitude:1,longitude:1}],...over});
 let pending;
 const client={rpc:vi.fn(async(name,args)=>({data:typeof pending==='function'?pending(args):pending,error:null}))};
 const recorder={getState:vi.fn(async()=>({trips:[trip('AAAA'),trip('BBBB'),trip('CCCC',{endedAt:null}),trip('DDDD',{source:'tesla'}),trip('EEEE',{points:[]})]}))};
-beforeEach(()=>{mock.publish.mockReset().mockResolvedValue({token:'t'});pending=[];client.rpc.mockClear();});
+beforeEach(()=>{forgetAutoShareFailures();mock.publish.mockReset().mockResolvedValue({token:'t'});pending=[];client.rpc.mockClear();});
 
 describe('household auto-share',()=>{
  it('does nothing when the server lists nothing pending (older, private, decided or off)',async()=>{
@@ -26,7 +26,7 @@ describe('household auto-share',()=>{
   expect((await shareNewHouseholdActivities({client,recorder})).published).toEqual([]);
   expect(mock.publish).not.toHaveBeenCalled();
  });
- it('one activity that cannot be published does not hold up the others; repeated failures stop the pass',async()=>{
+ it('one activity that cannot be published does not hold up the others; an offline phone is bounded',async()=>{
   pending=[{activity_id:'aaaa'},{activity_id:'bbbb'}];
   mock.publish.mockRejectedValueOnce(new Error('Activity changed')).mockResolvedValue({token:'t'});
   const result=await shareNewHouseholdActivities({client,recorder});
@@ -34,7 +34,22 @@ describe('household auto-share',()=>{
   mock.publish.mockReset().mockRejectedValue(new Error('Set your Home place before sharing'));
   pending=[{activity_id:'aaaa'},{activity_id:'bbbb'},{activity_id:'aaaa'},{activity_id:'bbbb'}];
   const stuck=await shareNewHouseholdActivities({client,recorder});
-  expect(stuck.published).toEqual([]);expect(mock.publish.mock.calls.length).toBeLessThanOrEqual(3);
+  expect(stuck.published).toEqual([]);expect(mock.publish.mock.calls.length).toBeLessThanOrEqual(8);
+ });
+ it('three newest activities that always fail do not starve the older ones that would succeed',async()=>{
+  recorder.getState.mockResolvedValueOnce({trips:['A1','A2','A3','OK1','OK2'].map(id=>trip(id))});
+  pending=args=>['a1','a2','a3','ok1','ok2'].filter(id=>!args.p_exclude.includes(id)).map(activity_id=>({activity_id}));
+  mock.publish.mockImplementation(async o=>{if(/^A\d$/.test(o.id))throw new Error('Cloud activity conflict');return {token:'t'};});
+  const result=await shareNewHouseholdActivities({client,recorder});
+  expect(result.published).toEqual(['ok1','ok2']);
+ });
+ it('an activity that has failed three times is left alone for a while, so it cannot keep taking the pass',async()=>{
+  pending=[{activity_id:'aaaa'}];
+  mock.publish.mockReset().mockRejectedValue(new Error('Cloud activity conflict'));
+  for(let i=0;i<3;i++)await shareNewHouseholdActivities({client,recorder});
+  mock.publish.mockClear();
+  await shareNewHouseholdActivities({client,recorder});
+  expect(mock.publish).not.toHaveBeenCalled();
  });
  it('never publishes an activity that was marked private while it was being recorded, even if the server has not heard',async()=>{
   recorder.getState.mockResolvedValueOnce({trips:[trip('HIDDEN'),trip('BBBB')]});
