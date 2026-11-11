@@ -5,6 +5,7 @@ import {useSyncExternalStore} from 'react';
 import {forgetActivityPhotos} from './lib/privateMedia.js';
 import {localRecorderJourneys} from './lib/recorder.js';
 import {mergeGroupingActivities} from './lib/mergeGroupingActivities.js';
+import {requestSync} from './lib/syncNow.js';
 import {deletionIDs} from './lib/tripsList.js';
 import {householdActivity} from './lib/peopleMap.js';
 import {activityLabel,activityCode,sameActivity} from './lib/activityNames.js';
@@ -197,7 +198,7 @@ function PrivateApp(){
   if(!deleteTrip||recording.busy)return;
   const ids=deletionIDs(deleteTrip);if(!ids.length)return;setDeleteError('');
   const result=await recording.run(ids.length===1?'deleteActivity':'deleteActivities',ids.length===1?ids[0]:ids);
-  if(result){clearDeletedPreferences([...ids,deleteTrip.id]);setDeleteTrip(null);setSelected(null);}else setDeleteError('Could not delete every selected activity. Retry safely or cancel.');
+  if(result){clearDeletedPreferences([...ids,deleteTrip.id]);setDeleteTrip(null);setSelected(null);requestSync();}else setDeleteError('Could not delete every selected activity. Retry safely or cancel.');
  }
  const [metricView,setMetricView]=useState(null);
  const [socialSection,setSocialSection]=useState('friends');
@@ -284,9 +285,10 @@ function PrivateApp(){
  const requestedDetails=[...new Set([...detailIDs,...sourceDetailIDs,...mapDetailIDs])];
  const scopeState=useJourneyScope({owner:session.user.id,sync:journeySync,refs:contextIDs,details:requestedDetails,localDetailIDs:knownIDs.filter(id=>localGroupingActivities.some(trip=>trip.id===id))});
  const contextKey=JSON.stringify(knownIDs),detailKey=JSON.stringify(requestedDetails);
+ const deletedKey=JSON.stringify(recording.state.deletedIDs||[]);
  const groupingActivities=useMemo(()=>{
-  return mergeGroupingActivities({localActivities:localGroupingActivities,rows,ids:JSON.parse(contextKey),detailed:new Set(JSON.parse(detailKey))});
- },[localGroupingActivities,rows,contextKey,detailKey]);
+  return mergeGroupingActivities({localActivities:localGroupingActivities,rows,ids:JSON.parse(contextKey),detailed:new Set(JSON.parse(detailKey)),deleted:new Set((deletedKey?JSON.parse(deletedKey):[]).map(id=>id.toLowerCase()))});
+ },[localGroupingActivities,rows,contextKey,detailKey,deletedKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
  const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,receipts:auth.preferences.syncReceipts,sync:journeySync});

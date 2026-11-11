@@ -19,3 +19,8 @@ it('still lists cloud-only activities and keeps each phone activity once',()=>{
 it('skips ids it knows nothing about',()=>{
  expect(mergeGroupingActivities({localActivities:[],rows:{},ids:['missing'],detailed:new Set()})).toEqual([]);
 });
+it('never lists a deleted activity, from the phone or the cloud, in either case',()=>{
+ const id='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+ const merged=mergeGroupingActivities({localActivities:[local(id.toUpperCase())],rows:{[id]:row(id)},ids:[id,id.toUpperCase()],detailed:new Set(),deleted:new Set([id])});
+ expect(merged).toEqual([]);
+});
