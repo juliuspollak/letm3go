@@ -81,6 +81,20 @@ it('polls the live trail for today, asks only for newer points and merges late b
  await waitFor(()=>expect(result.current.live).toBeNull());
  unmount();vi.useRealTimers();
 });
+it('drops a trail the server emptied and fetches the day again, so a finished drive is not drawn twice',async()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true});
+ const t=W.start+39000;
+ trail={activity_ref:'live1',started_at:'x',updated_at:'x',points:[[-34.7,150.9,t,0],[-34.71,150.9,t+10,0]],roads:{},point_count:2};
+ const {result,unmount}=render();
+ await waitFor(()=>expect(result.current.day.live.length).toBe(1));
+ const dayCalls=calls.filter(c=>c[0]==='my_shared_day').length;
+ trail={...trail,points:[],point_count:0}; // finished or hidden: the row remains, emptied
+ await act(async()=>{await vi.advanceTimersByTimeAsync(10500);});
+ await waitFor(()=>expect(result.current.live).toBeNull());
+ expect(result.current.day.live).toEqual([]);
+ await waitFor(()=>expect(calls.filter(c=>c[0]==='my_shared_day').length).toBeGreaterThan(dayCalls));
+ unmount();vi.useRealTimers();
+});
 it('does not poll a past day or run when disabled',async()=>{
  const past=render({date:'2026-11-08'});
  await waitFor(()=>expect(past.result.current.loading).toBe(false));

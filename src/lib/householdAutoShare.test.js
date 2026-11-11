@@ -5,7 +5,7 @@ import {shareNewHouseholdActivities} from './householdAutoShare.js';
 
 const trip=(id,over={})=>({id,source:'device',endedAt:10,points:[{latitude:1,longitude:1}],...over});
 let pending;
-const client={rpc:vi.fn(async()=>({data:pending,error:null}))};
+const client={rpc:vi.fn(async(name,args)=>({data:typeof pending==='function'?pending(args):pending,error:null}))};
 const recorder={getState:vi.fn(async()=>({trips:[trip('AAAA'),trip('BBBB'),trip('CCCC',{endedAt:null}),trip('DDDD',{source:'tesla'}),trip('EEEE',{points:[]})]}))};
 beforeEach(()=>{mock.publish.mockReset().mockResolvedValue({token:'t'});pending=[];client.rpc.mockClear();});
 
@@ -31,6 +31,13 @@ describe('household auto-share',()=>{
   const result=await shareNewHouseholdActivities({client,recorder});
   expect(result.published).toEqual([]);expect(result.failed[0].message).toMatch(/Home place/);
   expect(mock.publish).toHaveBeenCalledTimes(1);
+ });
+ it('pages past activities this phone cannot publish, so newer ones are still shared',async()=>{
+  const elsewhere=Array.from({length:25},(_,i)=>({activity_id:'zzzz'+i}));
+  pending=args=>args.p_exclude.length?[{activity_id:'aaaa'}]:elsewhere;
+  const result=await shareNewHouseholdActivities({client,recorder});
+  expect(result.published).toEqual(['aaaa']);
+  expect(client.rpc.mock.calls[1][1].p_exclude.length).toBe(25);
  });
  it('survives the server migration not being applied',async()=>{
   client.rpc.mockResolvedValueOnce({data:null,error:{message:'function does not exist'}});

@@ -1,4 +1,4 @@
-import {useDeferredValue,useMemo,useState} from 'react';
+import {useDeferredValue,useEffect,useMemo,useState} from 'react';
 import {ChevronLeft,ChevronRight,X} from 'lucide-react';
 import AppleMap from './AppleMap.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
@@ -21,8 +21,18 @@ const dateLabel=(key,today)=>{
 };
 const clock=(seconds,timeZone)=>new Date(seconds*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',timeZone});
 
+// 'Today' follows the clock: a map left open past midnight moves on to the new day.
+function useToday(timeZone){
+ const [today,setToday]=useState(()=>dayKeyOf(Date.now()/1000,timeZone));
+ useEffect(()=>{
+  const timer=setInterval(()=>setToday(dayKeyOf(Date.now()/1000,timeZone)),60000);
+  return()=>clearInterval(timer);
+ },[timeZone]);
+ return today;
+}
+
 export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke}){
- const [today]=useState(()=>dayKeyOf(Date.now()/1000,timeZone));
+ const today=useToday(timeZone);
  const [date,setDate]=useState(today);
  const [scrub,setScrub]=useState(null);
  const [opened,setOpened]=useState(null);
@@ -32,7 +42,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
  const position=person.position;
  const payload=useMemo(()=>{
   const scrubbing=deferred!=null;
-  const recorded=scrubbing?linesUntil(day,deferred):day.recorded;
+  const recorded=scrubbing?[...day.untimed,...linesUntil(day,deferred)]:day.recorded;
   // The newest live stretch is its own overlay (replaced as points arrive); earlier
   // stretches of the same drive, separated by GPS gaps, are ordinary lines.
   const live=scrubbing?[]:day.live;

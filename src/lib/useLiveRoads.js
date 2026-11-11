@@ -9,15 +9,24 @@ import {routeGaps,gapKey} from './gapReconstruction.js';
 // as an estimate rather than a hole. Runs only with the app open: a closed app
 // shows the gap, and the finished drive gets its road from the normal pass.
 export function useLiveRoads({trips,owner,enabled}){
- const busy=useRef(false);
- const recording=(trips||[]).find(t=>t.state==='recording'&&t.recordingMode==='automatic'&&t.activity==='Driving');
+ const busy=useRef(false),latest=useRef(null);
+ const recording=(trips||[]).find(t=>t.state==='recording'&&t.recordingMode==='automatic'&&t.activity==='Driving')||null;
+ useEffect(()=>{latest.current=recording;});
  // Re-run when a gap closes, not on every GPS point.
  const gapIds=recording?routeGaps(recording,{live:true}).map(g=>gapKey(recording.id,g)).join('|'):'';
  useEffect(()=>{
-  if(!enabled||!owner||!recording||!gapIds||busy.current||!supabase||!recorderAvailable())return;
+  if(!enabled||!owner||!gapIds||busy.current||!supabase||!recorderAvailable())return;
   busy.current=true;
-  liveRoadWork({trip:recording,lookup:(from,to)=>recorder.roadRoute(from,to),
-   publish:(ref,gap,line)=>supabase.rpc('put_my_live_road',{p_ref:ref,p_gap:gap,p_line:line})})
-   .catch(()=>{}).finally(()=>{busy.current=false;});
- },[gapIds,enabled,owner]); // eslint-disable-line react-hooks/exhaustive-deps
+  (async()=>{
+   // Keep going while there is work: a gap that closed during a pass, or more gaps than
+   // one pass handles, is picked up from the latest points, not left for a later change.
+   for(let pass=0;pass<20;pass++){
+    const trip=latest.current;
+    if(!trip)break;
+    const done=await liveRoadWork({trip,lookup:(from,to)=>recorder.roadRoute(from,to),
+     publish:(ref,gap,line)=>supabase.rpc('put_my_live_road',{p_ref:ref,p_gap:gap,p_line:line})});
+    if(!done.length)break;
+   }
+  })().catch(()=>{}).finally(()=>{busy.current=false;});
+ },[gapIds,enabled,owner]);
 }

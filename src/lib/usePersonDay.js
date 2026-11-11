@@ -46,6 +46,7 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
  useEffect(()=>{
   if(!enabled||!supabase||!owner||!isToday)return;
   let cancelled=false,timer=null,trail=null;
+  const refreshDay=()=>{void fetchDay({viewer,owner,date,timeZone}).then(next=>{if(!cancelled)setLoaded({key:`${viewer}|${owner}|${date}`,rows:next,error:''});}).catch(()=>{});};
   async function tick(){
    if(cancelled)return;
    if(typeof document!=='undefined'&&document.visibilityState==='hidden'){timer=setTimeout(tick,LIVE_POLL_MS);return;}
@@ -55,7 +56,10 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
     if(cancelled)return;
     const row=Array.isArray(data)?data[0]:data;
     if(!error){
-     if(!row){if(trail){trail=null;setLiveState({key:liveKey,value:null});}}
+     // No row, or a row whose trail the server has emptied (finished, hidden, sharing off):
+     // drop what we hold, and fetch the day again so a finished drive arrives as the saved
+     // activity instead of being drawn twice or not at all.
+     if(!row||row.point_count===0){if(trail){trail=null;setLiveState({key:liveKey,value:null});refreshDay();}}
      else{
       // A new activity restarts the trail; the same one only appends.
       const fresh=!trail||trail.ref!==row.activity_ref;
@@ -68,7 +72,7 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
   }
   void tick();
   return()=>{cancelled=true;clearTimeout(timer);};
- },[owner,isToday,enabled,liveKey]);
+ },[owner,isToday,enabled,liveKey]); // eslint-disable-line react-hooks/exhaustive-deps
  const day=useMemo(()=>composeDay({rows,live,timeZone,date,now:now()}),[rows,live,timeZone,date,now]);
  return {day,live,loading:enabled&&!current&&!held,error:current?loaded.error:''};
 }

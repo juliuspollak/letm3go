@@ -85,6 +85,16 @@ describe('composing a day',()=>{
   const day=composeDay({date,timeZone:SYD,rows:[old]});
   expect(day.recorded.length).toBe(1);expect(day.markers.length).toBe(1);expect(day.samples).toEqual([]);expect(positionAt(day,w.start+200)).toBeNull();
  });
+ it('does not call the time between two different activities a recorded position',()=>{
+  const day=composeDay({date,timeZone:SYD,rows:[
+   row('a','Morning',w.start+100,[[w.start+100,-34.5,150.9,0],[w.start+200,-34.6,150.9,0]]),
+   row('b','Afternoon',w.start+50000,[[w.start+50000,-34.8,151,0],[w.start+50100,-34.9,151,0]])]});
+  expect(positionAt(day,w.start+25000)).toMatchObject({point:[-34.6,150.9],inGap:true});
+ });
+ it('keeps untimed activities on the map while scrubbing',()=>{
+  const old={activity_id:'o',title:'Old',activity:'Driving',started_at:new Date((w.start+100)*1000).toISOString(),ended_at:new Date((w.start+400)*1000).toISOString(),roads:{},points:[{latitude:-34.5,longitude:150.9,segment:0},{latitude:-34.6,longitude:150.9,segment:0}]};
+  expect(composeDay({date,timeZone:SYD,rows:[old]}).untimed.length).toBe(1);
+ });
  it('fans out markers that share a spot',()=>{
   const out=spreadMarkers([1,2,3].map(n=>({n,point:[-34.5,150.9]})));
   expect(out[0].point).toEqual([-34.5,150.9]);

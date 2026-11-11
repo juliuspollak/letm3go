@@ -16,7 +16,7 @@ async function share(id,audience,mode,recipients=[],title='Trip',t0=1900000000){
  const list=recipients.length?`array[${recipients.map(x=>`'${x}'`).join(',')}]::uuid[]`:`'{}'::uuid[]`;
  await as('service_role','',`select public.publish_social_journey('${owner}','${id}',${await revision(id)},'${audience}','${mode}',${list},'${snap(title,t0)}'::jsonb)`);
 }
-const day=(user,known='{}')=>as('authenticated',user,`select activity_id,title,etag,points from public.my_shared_day('${owner}','2030-03-17 00:00+00','2030-03-18 00:00+00','${known}')`).then(r=>r.rows);
+const day=(user,known='{}')=>as('authenticated',user,`select activity_id,title,etag,points,roads from public.my_shared_day('${owner}','2030-03-17 00:00+00','2030-03-18 00:00+00','${known}')`).then(r=>r.rows);
 const trail=(user,after=0)=>as('authenticated',user,`select * from public.my_live_trail('${owner}',${after})`).then(r=>r.rows[0]);
 const pts=(...ts)=>JSON.stringify(ts.map(t=>[-34.5+t/1e7,150.8,BASE+t,0]));
 const append=(token,ref,seq,points)=>as('anon','',`select public.append_live_trail('${token}','${ref}',${seq},'${points}'::jsonb) as ok`).then(r=>r.rows[0].ok);
@@ -54,6 +54,15 @@ it('an unshared activity gives a viewer nothing, then only what was shared with 
  expect((await day(friend)).map(r=>r.title)).toEqual(['To the shops']);
  expect(await day(mate)).toEqual([]);expect(await day(stranger)).toEqual([]);
 });
+it('a road found after a viewer cached the activity changes its etag, so it reaches them',async()=>{
+ await share(A,'friends','selected',[friend],'To the shops');
+ const code=(await as('authenticated',owner,'select public.create_friend_invite() as code')).rows[0].code;
+ await as('authenticated',friend,`select public.accept_friend_invite('${code}')`).catch(()=>{});
+ const before=(await day(friend))[0];
+ await as('service_role','',`insert into public.journey_road_metadata(owner_id,ref,record) values('${owner}','${A.toUpperCase()}:1:2','{"status":"route","line":"_p~iF~ps|U_ulLnnqC"}'::jsonb)`);
+ const after=(await day(friend,`{${before.etag}}`))[0];
+ expect(after.etag).not.toBe(before.etag);expect(after.roads).toEqual({[A.toUpperCase()+':1:2']:'_p~iF~ps|U_ulLnnqC'});
+});
 it('hiding an activity removes its geometry from every viewer immediately',async()=>{
  await share(B,'household','household',[],'Afternoon');
  expect((await day(mate)).map(r=>r.title)).toEqual(['Afternoon']);
@@ -88,6 +97,16 @@ it('a manual decision is remembered, so auto-share never overrides it',async()=>
  // B was shared then unshared by hand above: it must not come back as pending.
  const pending=(await as('authenticated',owner,'select * from public.my_auto_share_pending()')).rows.map(r=>r.activity_id);
  expect(pending).not.toContain(B);expect(pending).not.toContain(A);
+});
+it('pending activities are newest first and the client can exclude ones it cannot publish',async()=>{
+ const all=(await as('authenticated',owner,'select * from public.my_auto_share_pending(10)')).rows.map(r=>r.activity_id);
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1','New','Driving','manual','2031-01-01 08:00+00','2031-01-01 08:30+00',1800,9000),('c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2','Newer','Driving','manual','2031-01-02 08:00+00','2031-01-02 08:30+00',1800,9000)`);
+ const now=(await as('authenticated',owner,'select * from public.my_auto_share_pending(10)')).rows.map(r=>r.activity_id);
+ expect(now.slice(0,2)).toEqual(['c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2','c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1']);
+ const skipped=(await as('authenticated',owner,"select * from public.my_auto_share_pending(10,array['c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2']::uuid[])")).rows.map(r=>r.activity_id);
+ expect(skipped).not.toContain('c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2');expect(skipped[0]).toBe('c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1');
+ expect(all.length).toBeLessThanOrEqual(now.length);
 });
 it('turning auto-share off stops new activities; turning it on starts again from now',async()=>{
  await as('authenticated',owner,'select public.set_auto_share(false)');
@@ -182,6 +201,26 @@ it('the app can store a road on its own live trail only',async()=>{
  expect(await put(owner,'other')).toBe(false);
  expect(await put(stranger,'r2')).toBe(false);
  expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('R2:1:2');
+});
+it('a friend\'s live line is cut where Home is hidden, so nothing is drawn across it; the owner gets the full line',async()=>{
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ friendToken=(await as('authenticated',owner,'select * from public.issue_my_friend_location_token()')).rows[0].publish_token;
+ // away, away, AT HOME, away, away: all the same segment as recorded.
+ const batch=JSON.stringify([[-34.70,150.90,BASE+600,0],[-34.69,150.90,BASE+610,0],[-34.5,150.8,BASE+620,0],[-34.69,150.91,BASE+630,0],[-34.68,150.91,BASE+640,0]]);
+ expect(await append(friendToken,'cut1',1,batch)).toBe(true);
+ const seen=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ expect(seen.points.length).toBe(4);
+ const segs=seen.points.map(p=>p[3]);
+ expect(segs[0]).toBe(segs[1]);expect(segs[2]).toBe(segs[3]);expect(segs[1]).not.toBe(segs[2]);
+ expect(seen.point_count).toBe(5);
+ const mine=(await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ expect(mine.points.length).toBe(5);expect(new Set(mine.points.map(p=>p[3])).size).toBe(1);
+ // An incremental read keeps segment numbers consistent with the full one.
+ const later=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}',${BASE+625})`)).rows[0];
+ expect(later.points.map(p=>p[3])).toEqual(segs.slice(2));
+ await as('authenticated',owner,"select public.end_live_trail('cut1')");
+ const cleared=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ expect(cleared.point_count).toBe(0);expect(cleared.points).toEqual([]);
 });
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();

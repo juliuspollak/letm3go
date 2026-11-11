@@ -74,6 +74,8 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
  const isToday=now>=window.start&&now<window.end;
  return {date,window,activities,markers,samples,
   recorded:activities.flatMap(a=>a.routes),
+  // Activities with no per-point times are always drawn whole; the slider cannot place them.
+  untimed:activities.filter(a=>a.untimed).flatMap(a=>a.routes),
   estimated:activities.flatMap(a=>a.roads.map(r=>r.line)),
   live:isToday?trailLines(liveTrail):[],
   liveRoads:isToday?Object.values(live?.roads||{}).map(decodeLine).filter(l=>l.length>1):[],
@@ -86,15 +88,28 @@ export function positionAt(day,t){
  let lo=0,hi=s.length-1;
  while(lo<hi){const mid=(lo+hi+1)>>1;if(s[mid].t<=t)lo=mid;else hi=mid-1;}
  const p=s[lo],next=s[lo+1];
- return {point:[p.lat,p.lon],t:p.t,id:p.id,inGap:Boolean(next&&next.segment!==p.segment&&t<next.t),ageSeconds:t-p.t};
+ return {point:[p.lat,p.lon],t:p.t,id:p.id,inGap:Boolean(next&&(next.segment!==p.segment||next.id!==p.id)&&t<next.t),ageSeconds:t-p.t};
 }
-// The day's lines drawn only up to a time, for scrubbing (all in memory).
+// The day's lines drawn only up to a time, for scrubbing (all in memory). The runs
+// are built once per composed day; a scrub step is a binary search and a few slices.
+function runsOf(day){
+ if(day.runs)return day.runs;
+ const runs=[];let segment=null,id=null;
+ day.samples.forEach((s,index)=>{
+  if(!runs.length||s.segment!==segment||s.id!==id){runs.push({start:index,points:[]});segment=s.segment;id=s.id;}
+  runs.at(-1).points.push([s.lat,s.lon]);
+ });
+ day.runs=runs;
+ return runs;
+}
 export function linesUntil(day,t){
- const out=[];let segment=null,id=null;
- for(const s of day.samples){
-  if(s.t>t)break;
-  if(!out.length||s.segment!==segment||s.id!==id){out.push([]);segment=s.segment;id=s.id;}
-  out.at(-1).push([s.lat,s.lon]);
+ const s=day.samples;let lo=0,hi=s.length;
+ while(lo<hi){const mid=(lo+hi)>>1;if(s[mid].t<=t)lo=mid+1;else hi=mid;}
+ const out=[];
+ for(const run of runsOf(day)){
+  if(run.start>=lo)break;
+  const points=run.start+run.points.length<=lo?run.points:run.points.slice(0,lo-run.start);
+  if(points.length>1)out.push(points);
  }
- return out.filter(line=>line.length>1);
+ return out;
 }

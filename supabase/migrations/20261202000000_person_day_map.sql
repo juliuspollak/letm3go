@@ -83,7 +83,7 @@ begin
 end $$;
 -- Finished activities waiting to be shared with the household: recorded since
 -- sharing began, never decided by the owner, not yet shared.
-create or replace function public.my_auto_share_pending(p_limit integer default 10)
+create or replace function public.my_auto_share_pending(p_limit integer default 10,p_exclude uuid[] default '{}')
 returns table(activity_id uuid,revision integer)
 language sql stable security definer set search_path='' as $$
  select a.id,a.revision from public.activities a
@@ -91,12 +91,13 @@ language sql stable security definer set search_path='' as $$
  where auth.uid() is not null and a.owner_id=auth.uid()
   and exists(select 1 from public.household_memberships m where m.user_id=a.owner_id)
   and a.ended_at is not null and a.started_at>=s.since
+  and not (a.id=any(coalesce(p_exclude,'{}')))
   and not exists(select 1 from public.activity_share_decisions d where d.activity_id=a.id)
   and not exists(select 1 from public.shared_journeys j where j.activity_id=a.id)
- order by a.started_at limit least(greatest(coalesce(p_limit,10),1),25)
+ order by a.started_at desc limit least(greatest(coalesce(p_limit,10),1),25)
 $$;
-revoke all on function public.my_auto_share(),public.set_auto_share(boolean),public.my_auto_share_pending(integer) from public,anon,authenticated;
-grant execute on function public.my_auto_share(),public.set_auto_share(boolean),public.my_auto_share_pending(integer) to authenticated;
+revoke all on function public.my_auto_share(),public.set_auto_share(boolean),public.my_auto_share_pending(integer,uuid[]) from public,anon,authenticated;
+grant execute on function public.my_auto_share(),public.set_auto_share(boolean),public.my_auto_share_pending(integer,uuid[]) to authenticated;
 
 
 -- ----------------------------------------------------- road estimates (shared)
@@ -137,18 +138,21 @@ begin
   or p_to-p_from>interval '3 days' then return; end if;
  return query
   with visible as (
-   select j.activity_id,a.started_at,a.ended_at,j.snapshot,md5(j.snapshot::text) as tag
+   select j.activity_id,a.started_at,a.ended_at,j.snapshot,
+    coalesce((select jsonb_object_agg(r.ref,r.record->>'line') from public.journey_road_metadata r
+     where r.owner_id=p_owner and r.record->>'status'='route' and upper(split_part(r.ref,':',1))=upper(j.activity_id::text)
+      and (auth.uid()=p_owner or public.road_clear_of_private_places(p_owner,r.record->>'line'))),'{}'::jsonb) as road_lines
    from public.shared_journeys j join public.activities a on a.id=j.activity_id
    where j.owner_id=p_owner and a.started_at<p_to and coalesce(a.ended_at,a.started_at)>p_from
     and public.can_view_social_journey(j.activity_id)
-   order by a.started_at limit 100)
-  select v.activity_id,v.started_at,v.ended_at,v.snapshot->>'activity',v.snapshot->>'title',v.tag,
-   case when v.tag=any(coalesce(p_known,'{}')) then null else coalesce(v.snapshot->'points','[]'::jsonb) end,
-   case when v.tag=any(coalesce(p_known,'{}')) then null else coalesce((
-    select jsonb_object_agg(r.ref,r.record->>'line') from public.journey_road_metadata r
-    where r.owner_id=p_owner and r.record->>'status'='route' and upper(split_part(r.ref,':',1))=upper(v.activity_id::text)
-     and (auth.uid()=p_owner or public.road_clear_of_private_places(p_owner,r.record->>'line'))),'{}'::jsonb) end
-  from visible v order by v.started_at;
+   order by a.started_at limit 100),
+  tagged as (select v.*,md5(v.snapshot::text||v.road_lines::text) as tag from visible v)
+  -- The tag covers the roads as well as the route, so a road found or withdrawn
+  -- later changes it and reaches viewers who already hold the activity.
+  select t.activity_id,t.started_at,t.ended_at,t.snapshot->>'activity',t.snapshot->>'title',t.tag,
+   case when t.tag=any(coalesce(p_known,'{}')) then null else coalesce(t.snapshot->'points','[]'::jsonb) end,
+   case when t.tag=any(coalesce(p_known,'{}')) then null else t.road_lines end
+  from tagged t order by t.started_at;
 end $$;
 revoke all on function public.my_shared_day(uuid,timestamptz,timestamptz,text[]) from public,anon,authenticated;
 grant execute on function public.my_shared_day(uuid,timestamptz,timestamptz,text[]) to authenticated;
@@ -295,10 +299,14 @@ create trigger clear_live_trail_on_stop after update of enabled on public.friend
 for each row execute function public.clear_live_trail_on_stop();
 
 -- What a viewer may see of someone's live trail. p_after returns only newer points.
+-- point_count and newest_t describe the whole trail, so a viewer can tell when it was
+-- cleared. For anyone but the owner and the household, points near Home/Work are left
+-- out AND the line is cut there (the segment changes), so no line is drawn across the
+-- hidden area.
 create or replace function public.my_live_trail(p_owner uuid,p_after double precision default 0)
-returns table(activity_ref text,started_at timestamptz,updated_at timestamptz,points jsonb,roads jsonb)
+returns table(activity_ref text,started_at timestamptz,updated_at timestamptz,points jsonb,roads jsonb,point_count integer,newest_t double precision)
 language plpgsql stable security definer set search_path='' as $$
-declare v_household boolean; v_friend boolean; v_self boolean; v_t public.live_trails;
+declare v_household boolean; v_friend boolean; v_self boolean; v_t public.live_trails; v_open boolean;
 begin
  if auth.uid() is null or p_owner is null then return; end if;
  v_self:=auth.uid()=p_owner;
@@ -308,16 +316,24 @@ begin
  v_friend:=exists(select 1 from public.my_friends() f where f.user_id=p_owner)
   and exists(select 1 from public.friend_presence_shares s where s.user_id=p_owner and s.enabled);
  if not (v_self or v_household or v_friend) then return; end if;
+ v_open:=v_self or v_household;
  select * into v_t from public.live_trails t where t.owner_id=p_owner and t.updated_at>now()-interval '20 minutes';
  if not found then return; end if;
- return query select v_t.activity_ref,v_t.started_at,v_t.updated_at,
-  coalesce((select jsonb_agg(x order by (x->>2)::float8) from jsonb_array_elements(v_t.points) x
-   where (x->>2)::float8>coalesce(p_after,0)
-    and (v_self or v_household or not exists(select 1 from public.saved_places sp
+ return query
+  with pts as (
+   select x,(x->>2)::float8 as t,(x->>3)::numeric as seg,
+    (not v_open) and exists(select 1 from public.saved_places sp
      where sp.owner_id=p_owner and sp.kind in ('home','work')
-      and sqrt(power(((x->>0)::float8-sp.latitude)*111320,2)+power(((x->>1)::float8-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300))),'[]'::jsonb),
-  coalesce((select jsonb_object_agg(k,val) from jsonb_each_text(v_t.roads) e(k,val)
-   where v_self or v_household or public.road_clear_of_private_places(p_owner,val)),'{}'::jsonb);
+      and sqrt(power(((x->>0)::float8-sp.latitude)*111320,2)+power(((x->>1)::float8-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300) as hidden
+   from jsonb_array_elements(v_t.points) x),
+  counted as (select pts.*,count(*) filter (where hidden) over (order by t rows between unbounded preceding and current row) as hid from pts)
+  select v_t.activity_ref,v_t.started_at,v_t.updated_at,
+   coalesce((select jsonb_agg(jsonb_build_array(c.x->0,c.x->1,c.x->2,c.seg*100000+c.hid) order by c.t) from counted c
+    where not c.hidden and c.t>coalesce(p_after,0)),'[]'::jsonb),
+   coalesce((select jsonb_object_agg(k,val) from jsonb_each_text(v_t.roads) e(k,val)
+    where v_open or public.road_clear_of_private_places(p_owner,val)),'{}'::jsonb),
+   jsonb_array_length(v_t.points),
+   (select max(t) from pts);
 end $$;
 revoke all on function public.my_live_trail(uuid,double precision) from public,anon,authenticated;
 grant execute on function public.my_live_trail(uuid,double precision) to authenticated;
