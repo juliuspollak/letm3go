@@ -175,6 +175,14 @@ it('road estimates: stored once by the owner, hidden from friends when they touc
  expect(Object.keys(seen.rows[0].roads)).not.toContain('R1:3:4');
  expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('R1:3:4');
 });
+it('the app can store a road on its own live trail only',async()=>{
+ await append(friendToken,'r2',1,pts(400));
+ const put=(user,ref)=>as('authenticated',user,`select public.put_my_live_road('${ref}','R2:1:2','_p~iF~ps|U_ulLnnqC') as ok`).then(r=>r.rows[0].ok);
+ expect(await put(owner,'r2')).toBe(true);
+ expect(await put(owner,'other')).toBe(false);
+ expect(await put(stranger,'r2')).toBe(false);
+ expect(Object.keys((await as('authenticated',owner,`select * from public.my_live_trail('${owner}')`)).rows[0].roads)).toContain('R2:1:2');
+});
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();

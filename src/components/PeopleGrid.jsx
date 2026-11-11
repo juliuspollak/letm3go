@@ -32,7 +32,10 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
   {person.role&&<span className="person-tile-role">{person.role}</span>}
  </>;
  const description=[shown,person.status?.text,person.role].filter(Boolean).join(', ');
- return person.onSelect
+ const tile=person.onSelect
   ?<button type="button" className={`person-tile is-button${person.poke?` person-tile--poked person-tile--poke-${person.poke.state}`:''}`} aria-label={`${person.actionLabel||`Show ${shown} on the map.`} ${person.status?.text||''}`.trim()} onClick={person.onSelect}>{body}</button>
-  :<div className={`person-tile${person.poke?` person-tile--poked person-tile--poke-${person.poke.state}`:''}`} role="group" aria-label={description}>{body}</div>;
+  :null;
+ // Tapping the person opens their map; poking is its own, visible control.
+ if(tile&&person.onPoke)return <div className="person-tile-wrap">{tile}<button type="button" className="person-poke" aria-label={`Poke ${shown}.`} onClick={person.onPoke}><span aria-hidden="true">👋</span></button></div>;
+ return tile||<div className={`person-tile${person.poke?` person-tile--poked person-tile--poke-${person.poke.state}`:''}`} role="group" aria-label={description}>{body}</div>;
 }

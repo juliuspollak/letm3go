@@ -30,10 +30,14 @@ const point = p => p && Number.isFinite(p.latitude) && Number.isFinite(p.longitu
 // Rounded so an unchanged recording always has the same key.
 export const gapKey = (tripID, gap) => `${tripID}:${Math.round(gap.from.timestamp)}:${Math.round(gap.to.timestamp)}`;
 
-export function routeGaps(trip) {
+// `live` is the same detection for an activity still being recorded: a gap is only
+// ever a CLOSED one (the fix after it has arrived), so the same checks apply and the
+// same stable key is used, and a road found while driving is the one kept at the end.
+export function routeGaps(trip, {live = false} = {}) {
  // Automatic recordings only: a manual recording also breaks segments where the
  // person paused it on purpose, and that stretch must not be added back.
- if (trip?.recordingMode !== 'automatic' || !ROAD_ACTIVITIES.has(trip.activity) || trip.endedAt == null || trip.state === 'recording') return [];
+ if (trip?.recordingMode !== 'automatic' || !ROAD_ACTIVITIES.has(trip.activity)) return [];
+ if (!live && (trip.endedAt == null || trip.state === 'recording')) return [];
  const all = trip.points || [], stops = trip.details?.stops || [];
  const first = trip.visibleRouteStart ?? 0, last = trip.visibleRouteEnd ?? all.length - 1;
  const gaps = [];

@@ -78,13 +78,17 @@ import {homeJourneysForDay} from './lib/homeDailyStats.js';
 import {homePeople} from './lib/homePeople.js';
 import ActivityEditor from './components/ActivityEditor.jsx';
 import SharedActivityDetail from './components/SharedActivityDetail.jsx';
+import PersonMap from './components/PersonMap.jsx';
+import {useLiveRoads} from './lib/useLiveRoads.js';
+import {useHouseholdAutoShare} from './lib/useHouseholdAutoShare.js';
 import { AuthProvider, useAuth } from './lib/AuthContext.jsx';
 import AuthScreen from './components/AuthScreen.jsx';
 import Onboarding from './components/Onboarding.jsx';
 import AccountSettings from './components/AccountSettings.jsx';
 import Household from './components/Household.jsx';
 import { useRecorder } from './lib/useRecorder.js';
-import { recorderAvailable, recordedJourney, visibleRecorderJourneys } from './lib/recorder.js';
+import { recorder, recorderAvailable, recordedJourney, visibleRecorderJourneys } from './lib/recorder.js';
+import { supabase } from './lib/supabase.js';
 const HOME_PEOPLE=6;
 // One empty list, so a missing places value does not look like a change on every render.
 const NO_PLACES=[];
@@ -291,6 +295,8 @@ function PrivateApp(){
  },[localGroupingActivities,rows,contextKey,detailKey,deletedKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
+ useLiveRoads({trips:realJourneys,owner:session.user.id,enabled:auth.status==='authenticated'});
+ useHouseholdAutoShare({client:supabase,recorder,enabled:auth.status==='authenticated'&&recorderAvailable(),finishedCount:realJourneys.filter(t=>t.endedAt).length,receipts:auth.preferences.syncReceipts,checkpoint:syncReceipts=>auth.savePreferences({syncReceipts})});
  const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,sync:journeySync});
  const sharedFeed=useSharedActivityFeed(tab==='Trips'&&includeSharedActivities,session.user.id);
  // Who can see my shared activities: reloaded when an activity's details close.
@@ -358,14 +364,15 @@ function PrivateApp(){
  })),[friendsLocation.people,motionClock]);
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
- // Tapping a friend on Home pokes them; the confirmation still offers the map.
+ // Tapping a person on Home opens their map; poking is a separate control on the tile and on that map.
+ const [personMap,setPersonMap]=useState(null);
  const pokePerson=useCallback(async person=>{
   const name=person.name||'them';
   try{await sendPoke(person.userId);setPokeNotice({userId:person.userId,state:'sent',stamp:Date.now()});}
   catch(error){setPokeNotice({userId:person.userId,state:'failed',message:error.message||`Could not poke ${name}.`,stamp:Date.now()});}
  },[]);
  useEffect(()=>{if(!pokeNotice)return undefined;const timer=setTimeout(()=>setPokeNotice(null),3500);return()=>clearTimeout(timer);},[pokeNotice]);
- const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeNotice?.userId===person.userId?{state:pokeNotice.state,message:pokeNotice.message}:tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null,onSelect:()=>void pokePerson(person),actionLabel:`Poke ${person.name||'them'}.`})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit,pokePerson,pokeNotice,incomingPoke,tab]);
+ const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeNotice?.userId===person.userId?{state:pokeNotice.state,message:pokeNotice.message}:tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null,onSelect:()=>setPersonMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Open ${person.name||'their'} map.`})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit,pokePerson,pokeNotice,incomingPoke,tab]);
  // A poke from someone whose avatar is on screen shows there; otherwise as a bubble by the profile.
  const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
@@ -480,7 +487,7 @@ function PrivateApp(){
   setTripSearchOpen(false);setTripFiltersOpen(false);setTripFilterCategory(null);
   setSelected(null);setTab('Trips');
  };
-  return <><AutoCloudSync state={recording.state} journeySync={journeySync}/><PokeOverlay poke={incomingPoke} quiet={pokeShownOnAvatar} onDismiss={dismissPoke}/><div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
+  return <><AutoCloudSync state={recording.state} journeySync={journeySync}/><PokeOverlay poke={incomingPoke} quiet={pokeShownOnAvatar} onDismiss={dismissPoke}/>{personMap&&<PersonMap person={personMap} viewer={session.user.id} photos={peopleAvatars.photos} selfAvatar={auth.preferences.avatar} unit={unit} onClose={()=>setPersonMap(null)} onPoke={()=>void pokePerson(personMap)}/>}<div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
   <main>{error&&<p role="alert" className="error">{error}</p>}{recording.error&&<p role="alert" className="error">{recording.error}</p>}{auth.status==='offline'&&<p className="notice">Offline · Private recordings stay on this device. Cloud actions require reconnection.</p>}<header className="topbar"><span className="mobile-brand"><AnimatedWordmark/></span><div className="breadcrumb">Your world, a little closer.</div><div className="top-actions"><button className="icon-button" aria-label="Toggle dark theme" onClick={()=>setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={20}/>:<Moon size={20}/>}</button><HeaderAvatar count={inbox.count} onOpen={()=>setSheet('profile')}><PersonAvatar name={auth.preferences.displayName||'You'} userId={session.user.id} selfId={session.user.id} selfAvatar={auth.preferences.avatar} photos={peopleAvatars.photos} size="sm"/></HeaderAvatar></div></header>
  <RecordingWarning health={recording.state.recordingHealth} run={recording.run} warning={recordingWarning} tab={tab} recording={recording.state.active?.state==='recording'}/>
  {recording.state.active&&<button type="button" className="active-recording-banner" onClick={()=>{setSelected(null);setSheet(null);setTab("Record");}} aria-label="Return to active recording"><span className="live-dot"/><strong>{activityLabel(recording.state.active.activity)} · {recording.state.active.state==="recording"?"Recording": "Paused"}</strong><span>Continue exploring · tap to view recording</span><ArrowRight size={17}/></button>}

@@ -246,6 +246,21 @@ end $$;
 revoke all on function public.put_live_road(text,text,text,text) from public,anon,authenticated;
 grant execute on function public.put_live_road(text,text,text,text) to anon,authenticated;
 
+-- The same, from the app while it is open (it holds a session, not the device
+-- credential). Only the owner's own current trail can receive a road.
+create or replace function public.put_my_live_road(p_ref text,p_gap text,p_line text)
+returns boolean language plpgsql security definer set search_path='' as $$
+begin
+ if auth.uid() is null or p_ref is null or p_gap is null or length(p_gap) not between 1 and 120
+  or p_line is null or length(p_line) not between 4 and 20000 then return false; end if;
+ update public.live_trails set roads=roads||jsonb_build_object(p_gap,p_line),updated_at=now()
+  where owner_id=auth.uid() and activity_ref=p_ref and hidden_ref is distinct from p_ref
+   and (roads ? p_gap or (select count(*) from jsonb_object_keys(roads))<40);
+ return found;
+end $$;
+revoke all on function public.put_my_live_road(text,text,text) from public,anon,authenticated;
+grant execute on function public.put_my_live_road(text,text,text) to authenticated;
+
 -- The owner finished, discarded or hid the activity: its live trail is gone.
 create or replace function public.end_live_trail(p_ref text default null,p_hide boolean default false) returns void
 language plpgsql security definer set search_path='' as $$
