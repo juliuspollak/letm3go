@@ -40,7 +40,8 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
   if(!enabled||!supabase||!viewer||!owner)return undefined;
   let cancelled=false;
   const run=()=>{
-   const before=cachedDay(viewer,owner,slot(date,timeZone));
+   // What may still be shown if the server cannot be reached: only a recently verified day.
+   const before=peekFreshDay(viewer,owner,slot(date,timeZone));
    fetchDay({viewer,owner,date,timeZone}).then(next=>{if(!cancelled)setLoaded({key,rows:next,error:''});})
     .catch(error=>{if(!cancelled)setLoaded(previous=>previous.key===key&&previous.rows.length?{...previous,error:''}:{key,rows:before?.rows||[],error:before?'':error.message});});
   };

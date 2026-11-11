@@ -33,6 +33,21 @@ describe('live road work',()=>{
   expect(publish.mock.calls[0][0]).toBe('TRIP-1');
   expect(liveRoad(gapKey(trip.id,routeGaps(trip,{live:true})[0])).status).toBe('route');
  });
+ it('retries a publication the server refused (for example before the trail exists) without asking Apple Maps again',async()=>{
+  const lookup=vi.fn().mockResolvedValue({routes:[road]});
+  const publish=vi.fn().mockResolvedValueOnce({data:false,error:null}).mockResolvedValueOnce({data:null,error:{message:'x'}}).mockResolvedValue({data:true,error:null});
+  await liveRoadWork({trip,lookup,publish,now:1000});
+  expect(await liveRoadWork({trip,lookup,publish,now:1000+10000})).toHaveLength(0);       // backed off
+  await liveRoadWork({trip,lookup,publish,now:1000+31000});                                // refused again
+  await liveRoadWork({trip,lookup,publish,now:1000+70000});                                // accepted
+  expect(publish).toHaveBeenCalledTimes(3);expect(lookup).toHaveBeenCalledTimes(1);
+  expect(await liveRoadWork({trip,lookup,publish,now:1000+200000})).toHaveLength(0);       // delivered: finished
+ });
+ it('works with the thenable a supabase rpc() returns (no .catch on it)',async()=>{
+  const thenable={then:(resolve)=>resolve({data:true,error:null})};
+  const lookup=vi.fn().mockResolvedValue({routes:[road]});
+  expect(await liveRoadWork({trip,lookup,publish:()=>thenable})).toHaveLength(1);
+ });
  it('rejects an implausible route: nothing is published, and it is not asked again',async()=>{
   const lookup=vi.fn().mockResolvedValue({routes:[{...road,distanceMeters:60000}]}),publish=vi.fn();
   await liveRoadWork({trip,lookup,publish});await liveRoadWork({trip,lookup,publish});

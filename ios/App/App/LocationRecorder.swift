@@ -994,8 +994,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let requestOwner = ownerID
         URLSession.shared.dataTask(with: request) { [weak self] body, response, error in
             DispatchQueue.main.async {
-                guard let self = self, self.ownerID == requestOwner else { return }
+                guard let self = self else { return }
+                // Always release the request, even if the account changed meanwhile, or this
+                // singleton would never publish a trail (or send a pending "private") again.
                 self.liveTrailInFlight = false
+                guard self.ownerID == requestOwner else { return }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let ok = error == nil && (200...299).contains(status)
                 let accepted = ok && String(decoding: body ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"

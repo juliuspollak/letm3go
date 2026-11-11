@@ -35,6 +35,10 @@ export async function makeActivityPrivate(client,id){
  if(trip){const {error}=await client.rpc('revoke_activity_publication',{p_id:id});if(error)throw new Error('Sharing could not be revoked. Please retry.');
   // The owner's decision for this activity, so automatic sharing never publishes it later
   // (best effort: an older server without it simply has no automatic sharing).
-  try{await client.rpc('keep_activity_private',{p_activity:id});}catch{/* older server */}}
+  // supabase-js reports a failure as {error}, not an exception. A server that does not have
+  // the function yet is fine; any other failure must not look like success, because without
+  // the decision automatic sharing could publish this activity later. Retrying is safe.
+  const decision=await client.rpc('keep_activity_private',{p_activity:id});
+  if(decision?.error&&!/PGRST202|42883|could not find|does not exist/i.test(`${decision.error.code||''} ${decision.error.message||''}`))throw new Error('The activity is private, but that choice could not be saved. Please retry.');}
  return {audience:'private'};
 }

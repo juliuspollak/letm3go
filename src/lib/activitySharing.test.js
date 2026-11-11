@@ -41,9 +41,12 @@ it('records the owner\'s decision when an activity is made private, so automatic
  await makeActivityPrivate(c,'trip');
  expect(c.rpc).toHaveBeenCalledWith('keep_activity_private',{p_activity:'trip'});
 });
-it('a server without the decision function still revokes',async()=>{
+it('a failed decision is reported, never shown as success; a server without the function is fine',async()=>{
+ const bad=client();
+ bad.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{message:'permission denied'}}:{error:null});
+ await expect(makeActivityPrivate(bad,'trip')).rejects.toThrow(/could not be saved/);
  const c=client();
- c.rpc.mockImplementation(async name=>{if(name==='keep_activity_private')throw new Error('missing');return {error:null};});
+ c.rpc.mockImplementation(async name=>name==='keep_activity_private'?{error:{code:'PGRST202',message:'Could not find the function'}}:{error:null});
  expect(await makeActivityPrivate(c,'trip')).toEqual({audience:'private'});
 });
 it('marks an automatic publication so the server can refuse it if the activity became private',async()=>{

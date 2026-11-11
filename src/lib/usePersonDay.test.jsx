@@ -131,6 +131,17 @@ describe('access changes and the cache',()=>{
   await waitFor(()=>expect(again.result.current.loading).toBe(false));
   expect(again.result.current.day.activities.length).toBe(0);
  });
+ it('offline, an old cached day is not shown from memory either, and the failure is reported',async()=>{
+  const first=render();
+  await waitFor(()=>expect(first.result.current.day.activities.length).toBe(1));
+  first.unmount();
+  cachedDay('me','her',`${DATE}@${Z}`).at=Date.now()-SHOW_CACHED_MS-1000;
+  mock.rpc.mockImplementation(async()=>({data:null,error:{message:'offline'}}));
+  const again=render();
+  await waitFor(()=>expect(again.result.current.loading).toBe(false));
+  expect(again.result.current.day.activities.length).toBe(0);
+  expect(again.result.current.error).toMatch(/offline/);
+ });
  it('revalidates an open map on a schedule, so a friend removed meanwhile disappears from it',async()=>{
   vi.useFakeTimers({shouldAdvanceTime:true});
   const {result,unmount}=render();

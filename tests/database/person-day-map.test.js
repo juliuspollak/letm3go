@@ -311,6 +311,30 @@ it('a long drive keeps its whole timeline: older points are thinned, never cut o
  const gaps=times.slice(1).map((x,i)=>x-times[i]);expect(Math.max(...gaps)).toBeLessThan(300);
  await as('authenticated',owner,"select public.end_live_trail('LONG-1')");
 },120000);
+it('turning off one audience keeps the trail the other still watches; leaving the household turns the household off',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ expect(await append(houseToken,'both1',1,JSON.stringify([[-34.9,151.0,BASE+700,0],[-34.91,151.0,BASE+710,0]]))).toBe(true);   // far from Home
+ await as('authenticated',owner,'select public.set_friend_location(false)');
+ expect((await trail(mate)).points.length).toBe(2);                         // the household still sees it
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ await as('authenticated',owner,'select public.set_my_live_location(false)');
+ expect((await trail(mate)).points.length).toBe(2);                         // friend sharing is still on, and mate is also a friend
+ await as('authenticated',owner,'select public.set_friend_location(false)');
+ await db.exec('reset role');
+ expect((await db.query(`select jsonb_array_length(points) as n from public.live_trails where owner_id='${owner}'`)).rows[0].n).toBe(0);
+});
+it('keeping an activity private removes a copy automatic sharing published a moment earlier',async()=>{
+ const id='eeeeeeee-0000-4000-8000-00000000e001';
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+  values('${id}','Just shared','Driving','manual','2030-03-17 21:00+00','2030-03-17 21:30+00',1800,9000)`);
+ await share(id,'household','household',[],'Just shared');
+ expect((await day(mate)).map(r=>r.activity_id)).toContain(id);
+ await as('authenticated',owner,`select public.keep_activity_private('${id}')`);
+ expect((await day(mate)).map(r=>r.activity_id)).not.toContain(id);
+ expect((await as('service_role','',`select public.auto_share_allowed('${owner}','${id}') as ok`)).rows[0].ok).toBe(false);
+});
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();

@@ -95,12 +95,13 @@ create or replace function public.keep_activity_private(p_activity uuid) returns
 language plpgsql security definer set search_path='' as $$
 begin
  if auth.uid() is null then raise exception 'Sign in required'; end if;
- insert into public.activity_share_decisions(activity_id,owner_id)
-  select a.id,a.owner_id from public.activities a where a.id=p_activity and a.owner_id=auth.uid()
+ -- Any copy already published (for example by automatic sharing a moment earlier) goes
+ -- first, which also clears who it was shared with; the decision is recorded after, so
+ -- the removal cannot overwrite it.
+ delete from public.shared_journeys where activity_id=p_activity and owner_id=auth.uid();
+ insert into public.activity_share_decisions(activity_id,owner_id,private)
+  select a.id,a.owner_id,true from public.activities a where a.id=p_activity and a.owner_id=auth.uid()
  on conflict(activity_id) do update set private=true;
- -- Marking it private after the fact also removes any copy that automatic sharing
- -- published in the meantime.
- update public.activity_share_decisions set private=true where activity_id=p_activity and owner_id=auth.uid();
 end $$;
 
 -- The journeys function asks this before an AUTOMATIC publication, so one that was
@@ -392,12 +393,23 @@ end $$;
 revoke all on function public.end_live_trail(text,boolean) from public,anon,authenticated;
 grant execute on function public.end_live_trail(text,boolean) to authenticated;
 
--- Turning live sharing off, or leaving the household, clears the trail.
+-- Turning live sharing off (or leaving the household, which turns it off) clears the
+-- trail only when no way of seeing it remains: someone sharing with both the household and
+-- friends who turns one off keeps the other audience's trail.
 create or replace function public.clear_live_trail_on_stop() returns trigger
 language plpgsql security definer set search_path='' as $$
+declare v_other boolean;
 begin
  if not new.enabled then
-  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=new.user_id;
+  if tg_table_name='household_live_locations' then
+   v_other:=exists(select 1 from public.friend_presence_shares f where f.user_id=new.user_id and f.enabled);
+  else
+   v_other:=exists(select 1 from public.household_live_locations h where h.user_id=new.user_id and h.enabled
+    and exists(select 1 from public.household_memberships m where m.user_id=new.user_id));
+  end if;
+  if not v_other then
+   update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=new.user_id;
+  end if;
  end if;
  return new;
 end $$;

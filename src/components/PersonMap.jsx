@@ -34,7 +34,10 @@ function useToday(timeZone){
 export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',timeZone=browserZone(),onClose,onPoke,onOpenOwn}){
  const isSelf=person.userId===viewer;
  const today=useToday(timeZone);
- const [date,setDate]=useState(today);
+ // The day shown follows the clock until the person picks another: left open past midnight
+ // on "Today", it moves on to the new today (live trail and latest location included).
+ const [picked,setPicked]=useState(null);
+ const date=picked??today;
  const [scrub,setScrub]=useState(null);
  const [opened,setOpened]=useState(null);
  const {day,loading,error}=usePersonDay({viewer,owner:person.userId,date,timeZone});
@@ -70,9 +73,9 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
    <button type="button" className="icon-button" aria-label="Close map" onClick={onClose}><X size={20}/></button>
   </header>
   <div className="person-map-days" role="group" aria-label="Day">
-   <button type="button" aria-label="Previous day" onClick={()=>{setDate(addDays(date,-1));setScrub(null);}}><ChevronLeft size={20}/></button>
+   <button type="button" aria-label="Previous day" onClick={()=>{setPicked(addDays(date,-1));setScrub(null);}}><ChevronLeft size={20}/></button>
    <strong>{dateLabel(date,today)}</strong>
-   <button type="button" aria-label="Next day" disabled={isToday} onClick={()=>{setDate(addDays(date,1));setScrub(null);}}><ChevronRight size={20}/></button>
+   <button type="button" aria-label="Next day" disabled={isToday} onClick={()=>{const next=addDays(date,1);setPicked(next>=today?null:next);setScrub(null);}}><ChevronRight size={20}/></button>
   </div>
   <div className="person-map-canvas">
    <AppleMap payload={payload} large dynamic viewportKey={person.userId} onStep={openMarker}/>

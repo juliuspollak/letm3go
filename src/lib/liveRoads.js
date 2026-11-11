@@ -13,20 +13,35 @@ export function rememberLiveRoad(key,record){
 // useJourneyGrouping asks here before Apple Maps, so a drive that finishes reuses
 // what it found while driving.
 export const liveRoad=key=>records.get(key);
-export const forgetLiveRoads=()=>records.clear();
+export const forgetLiveRoads=()=>{records.clear();forgetPublished();};
 
+// Which roads viewers have been given, and when a failed publication may be tried again.
+const published=new Set(),publishRetryAt=new Map();
+export const forgetPublished=()=>{published.clear();publishRetryAt.clear();};
+const accepted=result=>Boolean(result)&&!result.error&&result.data!==false;
+
+// One pass over the drive's closed gaps: ask Apple Maps for the ones not yet answered
+// (once each), and give viewers every road found, retrying a publication that failed or
+// was refused (no trail row yet, sharing off) instead of treating the road as delivered.
 export async function liveRoadWork({trip,lookup,publish,held=()=>null,perPass=3,now=Date.now()}){
  const done=[];
  for(const gap of routeGaps(trip,{live:true})){
   if(done.length>=perPass)break;
-  const key=gapKey(trip.id,gap),known=records.get(key)||held(key);
-  if(known&&!(known.retryAfter&&known.retryAfter<=now))continue;
-  let record;
-  try{const found=await lookup(gap.from,gap.to);record=roadRecord(found?.routes||[],gap,now);}
-  catch{record=failedRecord(known,now);}
-  rememberLiveRoad(key,record);
-  if(record.status==='route'&&record.line)await publish(trip.id,key,record.line).catch(()=>{});
-  done.push(key);
+  const key=gapKey(trip.id,gap);
+  let record=records.get(key)||held(key),worked=false;
+  if(!record||(record.retryAfter&&record.retryAfter<=now)){
+   try{const found=await lookup(gap.from,gap.to);record=roadRecord(found?.routes||[],gap,now);}
+   catch{record=failedRecord(record,now);}
+   rememberLiveRoad(key,record);worked=true;
+  }
+  if(record.status==='route'&&record.line&&!published.has(key)&&(publishRetryAt.get(key)||0)<=now){
+   let ok;
+   try{ok=accepted(await publish(trip.id,key,record.line));}catch{ok=false;}
+   if(ok){published.add(key);publishRetryAt.delete(key);}
+   else publishRetryAt.set(key,now+30000);
+   worked=true;
+  }
+  if(worked)done.push(key);
  }
  return done;
 }

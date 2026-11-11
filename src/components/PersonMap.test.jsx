@@ -89,6 +89,22 @@ describe('person map',()=>{
   expect(last().pins.find(p=>p.kind==='playback').title).toMatch(/No GPS signal/);
   expect(screen.getByText(/No GPS signal · last recorded fix shown/)).toBeTruthy();
  });
+ it('left open on Today past midnight, moves on to the new day; a day the person picked stays put',()=>{
+  vi.useFakeTimers();
+  try{
+   vi.setSystemTime(new Date('2026-11-10T12:59:30Z')); // 23:59:30 in Sydney
+   setup();
+   expect(mock.dayArgs.at(-1).date).toBe('2026-11-10');
+   act(()=>{vi.advanceTimersByTime(61000);});
+   expect(mock.dayArgs.at(-1).date).toBe('2026-11-11');
+   expect(screen.getByText('Today')).toBeTruthy();
+   expect(last().pins.some(p=>p.kind==='friend-live')).toBe(true);
+   fireEvent.click(screen.getByLabelText('Previous day'));
+   expect(mock.dayArgs.at(-1).date).toBe('2026-11-10');
+   act(()=>{vi.advanceTimersByTime(24*3600*1000);});
+   expect(mock.dayArgs.at(-1).date).toBe('2026-11-10');   // picked day does not move
+  }finally{vi.useRealTimers();}
+ });
  it('keeps poking available and closes on request',()=>{
   const {onClose,onPoke}=setup();
   fireEvent.click(screen.getByText(/Poke/));fireEvent.click(screen.getByLabelText('Close map'));

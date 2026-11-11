@@ -374,13 +374,16 @@ function PrivateApp(){
   catch(error){setPokeNotice({userId:person.userId,state:'failed',message:error.message||`Could not poke ${name}.`,stamp:Date.now()});}
  },[]);
  useEffect(()=>{if(!pokeNotice)return undefined;const timer=setTimeout(()=>setPokeNotice(null),3500);return()=>clearTimeout(timer);},[pokeNotice]);
- const homeFriends=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}).slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeNotice?.userId===person.userId?{state:pokeNotice.state,message:pokeNotice.message}:tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null,onSelect:()=>setPersonMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Open ${person.name||'their'} map.`})),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit,pokePerson,pokeNotice,incomingPoke,tab]);
+ // Everyone I may see, untruncated: the Home row shows the first few, but whether the map
+ // stays open and whether cached days are kept depends on this whole list.
+ const everyone=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit]);
+ const homeFriends=useMemo(()=>everyone.slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeNotice?.userId===person.userId?{state:pokeNotice.state,message:pokeNotice.message}:tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null,onSelect:()=>setPersonMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Open ${person.name||'their'} map.`})),[everyone,pokePerson,pokeNotice,incomingPoke,tab]);
  // A poke from someone whose avatar is on screen shows there; otherwise as a bubble by the profile.
  // The map shows the live version of the person, and only while they are still someone
  // I may see (a removed friend or a member who left closes it and drops what was cached).
- const shownPerson=personMap?(personMap.userId===session.user.id?personMap:homeFriends.find(p=>p.userId===personMap.userId)||null):null;
+ const shownPerson=personMap?(personMap.userId===session.user.id?personMap:homeFriends.find(p=>p.userId===personMap.userId)||everyone.find(p=>p.userId===personMap.userId)||null):null;
  const knownPeople=useRef(new Set());
- useEffect(()=>{const now=new Set(homeFriends.map(p=>p.userId));for(const id of knownPeople.current)if(!now.has(id))dropOwner(session.user.id,id);knownPeople.current=now;},[homeFriends,session.user.id]);
+ useEffect(()=>{const now=new Set(everyone.map(p=>p.userId));for(const id of knownPeople.current)if(!now.has(id))dropOwner(session.user.id,id);knownPeople.current=now;},[everyone,session.user.id]);
  useEffect(()=>()=>clearPersonDays(session.user.id),[session.user.id]);
  const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);

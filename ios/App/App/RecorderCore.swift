@@ -3033,7 +3033,10 @@ enum LiveTrail {
         }
         if let newest = points.last(where: { $0.timestamp > after && $0.timestamp <= now + 60 && $0.accuracy >= 0 && $0.accuracy <= maximumAccuracy }),
            let last = kept.last, last.timestamp != newest.timestamp { kept.append(newest) }
-        return kept.suffix(maximumBatch).map { [$0.latitude, $0.longitude, $0.timestamp.rounded(), Double($0.segment)] }
+        // The OLDEST points after `after` go first: the caller advances `after` to the last
+        // point of the batch, so a backlog (offline, throttled) drains in order and nothing
+        // in the middle is ever skipped.
+        return kept.prefix(maximumBatch).map { [$0.latitude, $0.longitude, $0.timestamp.rounded(), Double($0.segment)] }
     }
     static func due(lastFlushAt: Double, now: Double, inFlight: Bool, backoffUntil: Double) -> Bool {
         !inFlight && now >= backoffUntil && now - lastFlushAt >= minimumInterval

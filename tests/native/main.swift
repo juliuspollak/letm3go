@@ -5215,7 +5215,13 @@ do {
     check(LiveTrail.batch(points: [fix(1, accuracy: 500), fix(2, lat: 95), GPSPoint(latitude: 0, longitude: 0, timestamp: 3, accuracy: 5, altitude: 0, speed: 0)], after: 0, now: 100).isEmpty, "inaccurate and invalid points are never sent")
     check(LiveTrail.batch(points: [fix(1), fix(1000)], after: 0, now: 100).count == 1, "a point from the future is not sent")
     let many = (1...500).map { fix(Double($0) * 10, lat: -34 + Double($0) * 0.001) }
-    check(LiveTrail.batch(points: many, after: 0, now: 6000).count == 200 && LiveTrail.batch(points: many, after: 0, now: 6000).last?[2] == 5000, "a batch is bounded and keeps the newest")
+    let firstBatch = LiveTrail.batch(points: many, after: 0, now: 6000)
+    check(firstBatch.count == 200 && firstBatch.first?[2] == 10 && firstBatch.last?[2] == 2000, "a batch is bounded and starts with the oldest unsent point")
+    let secondBatch = LiveTrail.batch(points: many, after: firstBatch.last?[2] ?? 0, now: 6000)
+    check(secondBatch.first?[2] == 2010 && secondBatch.count == 200, "the next batch continues exactly where the last ended")
+    var delivered: [Double] = [], cursor = 0.0
+    while true { let b = LiveTrail.batch(points: many, after: cursor, now: 6000); if b.isEmpty { break }; delivered += b.map { $0[2] }; cursor = b.last![2] }
+    check(delivered.count == 500 && delivered.last == 5000 && delivered == delivered.sorted(), "a backlog drains in order with nothing skipped")
     check(LiveTrail.batch(points: [fix(10, segment: 0), fix(20, lat: -34.001, segment: 1)], after: 0, now: 100).map { $0[3] } == [0, 1], "segment breaks are preserved as gaps")
     check(LiveTrail.due(lastFlushAt: 0, now: 20, inFlight: false, backoffUntil: 0), "flush is due after the interval")
     check(!LiveTrail.due(lastFlushAt: 10, now: 20, inFlight: false, backoffUntil: 0) && !LiveTrail.due(lastFlushAt: 0, now: 20, inFlight: true, backoffUntil: 0) && !LiveTrail.due(lastFlushAt: 0, now: 20, inFlight: false, backoffUntil: 30), "flush waits for the interval, an upload in flight and a backoff")
