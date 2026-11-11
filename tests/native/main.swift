@@ -5203,6 +5203,26 @@ print("\(assertions) native assertions including automatic policy and scenario r
 
 let unsupportedSpeed=SmartClassifier.classifyAutomatic(motion:MotionEvidence(types:["Walking"],confidence:"high",timestamp:1000),speed:20,displacement:100,seconds:30,accuracy:8,now:1022)
 check(unsupportedSpeed.predicted == "Unknown" && unsupportedSpeed.evidence.contains("Motion and GPS speed disagree"),"automatic filtering preserves the actual reason for uncertain sensor evidence")
+do {
+    func fix(_ n: Double, lat: Double = -34, segment: Int = 0, accuracy: Double = 5) -> GPSPoint { GPSPoint(latitude: lat, longitude: 151, timestamp: n, accuracy: accuracy, altitude: 0, speed: 10, segment: segment) }
+    let moving = (1...10).map { fix(Double($0) * 10, lat: -34 + Double($0) * 0.0005) }
+    let sent = LiveTrail.batch(points: moving, after: 0, now: 200)
+    check(sent.count == 10 && sent[0].count == 4, "live trail sends [lat, lon, t, segment]")
+    check(LiveTrail.batch(points: moving, after: 50, now: 200).map { $0[2] } == [60, 70, 80, 90, 100], "only points newer than the last delivered are sent")
+    check(LiveTrail.batch(points: moving, after: 100, now: 200).isEmpty, "nothing new sends nothing")
+    let crawl = (1...20).map { fix(Double($0), lat: -34 + Double($0) * 0.000001) }
+    check(LiveTrail.batch(points: crawl, after: 0, now: 100).count <= 2, "a metre-level crawl is thinned, keeping the newest")
+    check(LiveTrail.batch(points: [fix(1, accuracy: 500), fix(2, lat: 95), GPSPoint(latitude: 0, longitude: 0, timestamp: 3, accuracy: 5, altitude: 0, speed: 0)], after: 0, now: 100).isEmpty, "inaccurate and invalid points are never sent")
+    check(LiveTrail.batch(points: [fix(1), fix(1000)], after: 0, now: 100).count == 1, "a point from the future is not sent")
+    let many = (1...500).map { fix(Double($0) * 10, lat: -34 + Double($0) * 0.001) }
+    check(LiveTrail.batch(points: many, after: 0, now: 6000).count == 200 && LiveTrail.batch(points: many, after: 0, now: 6000).last?[2] == 5000, "a batch is bounded and keeps the newest")
+    check(LiveTrail.batch(points: [fix(10, segment: 0), fix(20, lat: -34.001, segment: 1)], after: 0, now: 100).map { $0[3] } == [0, 1], "segment breaks are preserved as gaps")
+    check(LiveTrail.due(lastFlushAt: 0, now: 20, inFlight: false, backoffUntil: 0), "flush is due after the interval")
+    check(!LiveTrail.due(lastFlushAt: 10, now: 20, inFlight: false, backoffUntil: 0) && !LiveTrail.due(lastFlushAt: 0, now: 20, inFlight: true, backoffUntil: 0) && !LiveTrail.due(lastFlushAt: 0, now: 20, inFlight: false, backoffUntil: 30), "flush waits for the interval, an upload in flight and a backoff")
+    check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_live_location")!)?.absoluteString == "https://x.supabase.co/rest/v1/rpc/append_live_trail", "trail endpoint follows the household endpoint")
+    check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_friend_location")!)?.lastPathComponent == "append_live_trail", "trail endpoint follows the friend endpoint")
+    check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/anything_else")!) == nil, "no trail endpoint for an unknown endpoint")
+}
 print("Final native assertion count: \(assertions)")
 
 // Real native encrypted SQLite storage, not a JavaScript stand-in.

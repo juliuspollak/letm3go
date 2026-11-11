@@ -126,8 +126,18 @@ it('hiding the live activity clears it and blocks later points for that activity
  expect(await append(houseToken,'run2',2,pts(110))).toBe(false);
  expect(await append(houseToken,'run3',1,pts(120))).toBe(true);
 });
+it('the phone ending an activity (seq -1) clears its trail, and a stale trail is not live',async()=>{
+ await append(houseToken,'run9',1,pts(500));
+ expect((await trail(mate)).points.length).toBe(1);
+ expect(await append(houseToken,'run9',-1,'[]')).toBe(true);
+ expect((await trail(mate)).points).toEqual([]);
+ await append(houseToken,'run9',2,pts(510));
+ await db.exec("reset role;update public.live_trails set updated_at=now()-interval '25 minutes'");
+ expect(await trail(mate)).toBeUndefined();
+ await append(houseToken,'run9',3,pts(520));
+});
 it('finishing an activity clears its trail; stopping live sharing clears it too',async()=>{
- await as('authenticated',owner,"select public.end_live_trail('run3')");
+ await as('authenticated',owner,"select public.end_live_trail('run9')");
  expect((await trail(mate)).points).toEqual([]);
  await append(houseToken,'run4',1,pts(130));
  await as('authenticated',owner,'select public.set_my_live_location(false)');

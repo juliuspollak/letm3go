@@ -188,6 +188,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticEnabled = false
     // Native background sharing. Friends use the short-lived session token (off
     // after restart); household sharing keeps a device credential in the Keychain.
+    var liveTrailRef: String?
+    var liveTrailSentThrough: Double = 0
+    var liveTrailSeq = 0
+    var liveTrailLastFlushAt: Double = 0
+    var liveTrailInFlight = false
+    var liveTrailBackoffUntil: Double = 0
     var liveShareToken: String? { didSet { if liveShareToken != oldValue { sharingRestInputChanged("household credential changed") } } }
     var liveShareEndpoint: URL?
     var liveShareApiKey: String?
@@ -918,6 +924,65 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
            HouseholdPublisher.keepsPrevious(lastShareFix.map(sharePoint),candidate:sharePoint(location),executingSince:executingSince) {return}
         lastShareFix=location
         sendHouseholdLocation(location,confirmation:false)
+        flushLiveTrail()
+    }
+    // MARK: Live trail
+    // While an activity is being recorded and location is shared, its route so far is
+    // published in small batches (see LiveTrail) so the people it is shared with can
+    // watch the drive. Everything is re-derived from the recorder's own points, so a
+    // lost or delayed batch is sent again and the server merges by time.
+    func flushLiveTrail() {
+        guard storeOpened, ownerID != nil, !accountSuspended, !accountDeleting else { return }
+        let now = Date().timeIntervalSince1970
+        guard LiveTrail.due(lastFlushAt: liveTrailLastFlushAt, now: now, inFlight: liveTrailInFlight, backoffUntil: liveTrailBackoffUntil) else { return }
+        var token: String?, base: URL?, apiKey: String?
+        if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        guard let token = token, let base = base, let apiKey = apiKey, let endpoint = LiveTrail.endpoint(from: base) else { return }
+        let recording: RecordedActivity? = automaticActivelyRecording ? automaticTrip : (manualGPSRecording ? active : nil)
+        var ref = liveTrailRef
+        var points: [[Double]] = []
+        var ending = false
+        if let recording = recording {
+            if ref != recording.id { ref = recording.id; liveTrailSentThrough = 0; liveTrailSeq = 0 }
+            points = LiveTrail.batch(points: recording.points, after: liveTrailSentThrough, now: now)
+            guard !points.isEmpty else { return }
+        } else if ref != nil {
+            ending = true
+        } else { return }
+        guard let activityRef = ref else { return }
+        let payload: [String: Any] = ["p_token": token, "p_ref": activityRef, "p_seq": ending ? -1 : liveTrailSeq + 1, "p_points": points]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"; request.httpBody = data; request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        liveTrailInFlight = true; liveTrailLastFlushAt = now
+        let newest = points.last?[2] ?? liveTrailSentThrough, requestOwner = ownerID
+        URLSession.shared.dataTask(with: request) { [weak self] body, response, error in
+            DispatchQueue.main.async {
+                guard let self = self, self.ownerID == requestOwner else { return }
+                self.liveTrailInFlight = false
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let accepted = error == nil && (200...299).contains(status) && String(decoding: body ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+                if accepted {
+                    self.liveTrailBackoffUntil = 0
+                    if ending { self.liveTrailRef = nil; self.liveTrailSentThrough = 0; self.liveTrailSeq = 0 }
+                    else { self.liveTrailRef = activityRef; self.liveTrailSentThrough = max(self.liveTrailSentThrough, newest); self.liveTrailSeq += 1 }
+                } else if ending && error == nil && (200...299).contains(status) {
+                    self.liveTrailRef = nil
+                } else if status == 404 {
+                    // The server migration is not applied yet: ask again much later.
+                    self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 3600
+                } else if error == nil && (200...299).contains(status) {
+                    // The credential is not accepted for this trail (sharing off, or the
+                    // owner made this activity private): do not keep asking.
+                    self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 300
+                } else {
+                    self.liveTrailBackoffUntil = Date().timeIntervalSince1970 + 30
+                }
+            }
+        }.resume()
     }
     func sharePoint(_ location: CLLocation) -> GPSPoint {
         GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,
@@ -935,6 +1000,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // phone has not moved since it was taken (and the app is running). Otherwise
     // the household sees the honest last-updated time.
     func confirmHouseholdLocation() {
+        flushLiveTrail()
         // Passive rest runs no location service, so nothing vouches for the last fix
         // being current: viewers keep its real time, never a re-stamped one.
         guard let fix=lastShareFix, locationMode != .passive else {return}

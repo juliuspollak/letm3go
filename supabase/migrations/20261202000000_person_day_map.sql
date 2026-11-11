@@ -195,6 +195,11 @@ begin
  if v_user is null then return false; end if;
  select * into v_old from public.live_trails where owner_id=v_user for update;
  v_had:=found;
+ -- p_seq < 0: the phone finished this activity. Its trail is cleared at once.
+ if p_seq is not null and p_seq<0 then
+  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=v_user and activity_ref=p_ref;
+  return true;
+ end if;
  if v_had and v_old.hidden_ref=p_ref then return false; end if;
  if not v_had or v_old.activity_ref<>p_ref then
   v_merged:='[]'::jsonb;
@@ -288,7 +293,7 @@ begin
  v_friend:=exists(select 1 from public.my_friends() f where f.user_id=p_owner)
   and exists(select 1 from public.friend_presence_shares s where s.user_id=p_owner and s.enabled);
  if not (v_self or v_household or v_friend) then return; end if;
- select * into v_t from public.live_trails t where t.owner_id=p_owner and t.updated_at>now()-interval '12 hours';
+ select * into v_t from public.live_trails t where t.owner_id=p_owner and t.updated_at>now()-interval '20 minutes';
  if not found then return; end if;
  return query select v_t.activity_ref,v_t.started_at,v_t.updated_at,
   coalesce((select jsonb_agg(x order by (x->>2)::float8) from jsonb_array_elements(v_t.points) x

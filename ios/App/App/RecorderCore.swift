@@ -3009,3 +3009,39 @@ final class JourneyRecordDatabase {
         } catch {try? execute("ROLLBACK");throw error}
     }
 }
+
+// The live trail of an activity that is still being recorded, sent so other people
+// can see the drive before it ends. Pure: what to send is decided from the
+// recorder's own points, so a batch that failed or was lost offline is simply
+// included again next time, and the server merges by time.
+enum LiveTrail {
+    static let minimumInterval: Double = 15
+    static let maximumBatch = 200
+    static let maximumAccuracy: Double = 100
+    static let minimumSpacing: Double = 10
+    static let maximumSilence: Double = 30
+    // Points newer than `after`, thinned (a metre-level crawl is not worth sending),
+    // in the server's [latitude, longitude, time, segment] form. The newest is always kept.
+    static func batch(points: [GPSPoint], after: Double, now: Double) -> [[Double]] {
+        var kept: [GPSPoint] = []
+        for point in points where point.timestamp > after && point.timestamp <= now + 60
+            && point.accuracy >= 0 && point.accuracy <= maximumAccuracy
+            && abs(point.latitude) <= 90 && abs(point.longitude) <= 180 && !(point.latitude == 0 && point.longitude == 0) {
+            if let last = kept.last, last.segment == point.segment,
+               last.distance(to: point) < minimumSpacing, point.timestamp - last.timestamp < maximumSilence { continue }
+            kept.append(point)
+        }
+        if let newest = points.last(where: { $0.timestamp > after && $0.timestamp <= now + 60 && $0.accuracy >= 0 && $0.accuracy <= maximumAccuracy }),
+           let last = kept.last, last.timestamp != newest.timestamp { kept.append(newest) }
+        return kept.suffix(maximumBatch).map { [$0.latitude, $0.longitude, $0.timestamp.rounded(), Double($0.segment)] }
+    }
+    static func due(lastFlushAt: Double, now: Double, inFlight: Bool, backoffUntil: Double) -> Bool {
+        !inFlight && now >= backoffUntil && now - lastFlushAt >= minimumInterval
+    }
+    // The trail endpoint sits beside the position endpoint it is published with.
+    static func endpoint(from position: URL) -> URL? {
+        let last = position.lastPathComponent
+        guard last == "publish_live_location" || last == "publish_friend_location" else { return nil }
+        return position.deletingLastPathComponent().appendingPathComponent("append_live_trail")
+    }
+}
