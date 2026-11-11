@@ -289,7 +289,7 @@ function PrivateApp(){
  },[localGroupingActivities,rows,contextKey,detailKey]);
  const cloudPlaces=journeySync.read().savedPlaces;
  const projectionPlaces=useMemo(()=>[...new Map([...(cloudPlaces||[]),...(recording.state.places||NO_PLACES)].map(place=>[place.id,place])).values()],[cloudPlaces,recording.state.places]);
- const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,receipts:auth.preferences.syncReceipts,sync:journeySync});
+ const grouping=useJourneyGrouping({owner:session.user.id,activities:groupingActivities,processingActivities:realJourneys,telemetry:fleet.charges,places:projectionPlaces,vehicles,metadataValue:journeySync.read().metadata,sync:journeySync});
  const sharedFeed=useSharedActivityFeed(tab==='Trips'&&includeSharedActivities,session.user.id);
  // Who can see my shared activities: reloaded when an activity's details close.
  const mySharing=useMySharing(tab==='Trips',session.user.id,selected?.id??'list');
