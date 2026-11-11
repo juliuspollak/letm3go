@@ -703,3 +703,36 @@ it('resets an open household cursor when the viewer leaves but remains a friend'
  expect(masked.points.map(p=>p[0])).toEqual([-34.9]);
  await as('authenticated',owner,"select public.end_live_trail('scope1')");
 });
+
+it('rechecks automatic household consent after a publication was queued',async()=>{
+ const eligible='bbbbbbbb-0000-4000-8000-00000000f101';
+ const old='bbbbbbbb-0000-4000-8000-00000000f102';
+ const allowed=async id=>(await as('service_role','',`select public.auto_share_allowed('${owner}','${id}') as ok`)).rows[0].ok;
+ try{
+  await as('authenticated',owner,'select public.set_auto_share(true)');
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+    values('${eligible}','Consent test','Driving','manual',now()+interval '5 minutes',now()+interval '35 minutes',1800,9000)`);
+  expect(await allowed(eligible)).toBe(true);
+  // A previously fetched pending row may still be in an in-flight Edge Function.
+  await as('authenticated',owner,'select public.set_auto_share(false)');
+  expect(await allowed(eligible)).toBe(false);
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
+    values('${old}','While off','Driving','manual',now()-interval '1 minute',now()+interval '29 minutes',1800,9000)`);
+  await as('authenticated',owner,'select public.set_auto_share(true)');
+  expect(await allowed(eligible)).toBe(true); // Recorded after sharing resumed.
+  expect(await allowed(old)).toBe(false);      // Never sweep in an activity from before consent.
+  await as('authenticated',owner,`select public.keep_activity_private('${eligible}')`);
+  expect(await allowed(eligible)).toBe(false);
+ }finally{
+  await as('authenticated',owner,`delete from public.activities where id in ('${eligible}','${old}')`);
+ }
+});
+
+it('keeps live append, finish and private operations under the same owner-scoped transaction lock',async()=>{
+ // PGlite runs on a single connection, so this validates the locking contract
+ // rather than claiming to have exercised two concurrent PostgreSQL sessions.
+ for(const signature of ['append_live_trail(text,text,integer,jsonb)','end_live_trail(text,boolean)','keep_activity_private(uuid)']){
+  const result=await as('service_role','',`select pg_get_functiondef('public.${signature}'::regprocedure) as definition`);
+  expect(result.rows[0].definition).toContain('pg_advisory_xact_lock(105942');
+ }
+});
