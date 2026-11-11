@@ -11,7 +11,7 @@ import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,estimatedDistance
 // Journey metadata is read from the cache of Supabase (`metadataValue`) and every change is
 // written to Supabase first (commitJourneyChanges); there is no local copy to edit and no
 // queue. Offline, a change is refused with a connection message.
-export function useJourneyGrouping({owner,activities,processingActivities=activities,places,vehicles,metadataValue,receipts={},telemetry=[],sync}){
+export function useJourneyGrouping({owner,activities,processingActivities=activities,places,vehicles,metadataValue,telemetry=[],sync}){
  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>metadataValue??emptyGrouping(owner),[metadataValue,owner]);
  // Retain unsaved provider answers across effect restarts, but never accounts.
@@ -85,7 +85,10 @@ export function useJourneyGrouping({owner,activities,processingActivities=activi
    // Retry retained writes before doing any more provider work or done markers.
    await flush();if(!alive)return;
    requested=false;
-   const todo=processingActivities.filter(t=>settled(t)&&!current.current.enriched?.[t.id]&&!pending.enriched[t.id]&&(sync.read().cache?.work?.[t.id]?.state==='pending'||(!sync.read().cache?.work?.[t.id]&&!receipts[t.id]?.fingerprint))).sort((a,b)=>b.startedAt-a.startedAt);
+   // Eligible: finished after the account's cutoff and not yet marked done. A cloud
+   // backup receipt says nothing about enrichment: the backup often finishes first,
+   // and treating it as "already processed" left every such activity untagged.
+   const todo=processingActivities.filter(t=>settled(t)&&!current.current.enriched?.[t.id]&&!pending.enriched[t.id]&&sync.read().cache?.work?.[t.id]?.state!=='done').sort((a,b)=>b.startedAt-a.startedAt);
    let roadLookups=0,next=Infinity;
    for(const t of todo){
     if(!alive)return;

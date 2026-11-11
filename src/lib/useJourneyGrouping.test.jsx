@@ -243,3 +243,11 @@ it('saves one activity’s answers together, not one request per lookup',async()
  // The places, the summary and the marker went in at most a few requests, not one per place.
  expect(applies(server).length).toBeLessThanOrEqual(3);
 },20000);
+it('still enriches a recording the cloud backup reached first: a backup receipt is not "already processed"',async()=>{
+ // The backup can finish before enrichment starts; that must never skip the lookups,
+ // or the destination is never recognised, tagged or named.
+ mock.lookup.mockResolvedValue({candidates:[{name:'Warilla Grove',placeID:'apple:warilla'}],source:'apple-geocoder-mapkit'});
+ const {server}=await setup({receipts:{a:{owner:'owner',fingerprint:'backed-up',revision:1}}});
+ await waitFor(()=>expect(server.metadata.enriched).toEqual({a:expect.any(Number)}));
+ expect(mock.lookup).toHaveBeenCalledTimes(1);
+});

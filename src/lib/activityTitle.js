@@ -18,7 +18,16 @@ function placeName(place){
  return name&&!genericPlaces.has(name.toLowerCase())?name:null;
 }
 export function contextualJourneyTitle(activity,from,to,isLoop=false){
- const place=placeName(to)||placeName(from);
+ const destination=placeName(to);
+ // Only the start is known: say so. "Driving to Home" for a drive that began at
+ // Home, with its destination not yet recognised, is false.
+ if(!destination&&!isLoop){
+  const origin=placeName(from);
+  if(origin&&activity==='Driving')return `Driving from ${origin}`;
+  if(origin&&activity==='Walking')return `Walk from ${origin}`;
+  if(origin&&(activity==='Cycling'||activity==='Road cycling'))return `Ride from ${origin}`;
+ }
+ const place=destination||placeName(from);
  if(!place)return activity==='Unknown'?'Journey':activityLabel(activity);
  if(activity==='Driving'){
   if(to?.kind==='home')return 'Driving home';
