@@ -5230,11 +5230,14 @@ do {
     check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/anything_else")!) == nil, "no trail endpoint for an unknown endpoint")
 }
 do {
-    check(DayFit.shouldFit(key: "a|2026-11-10", applied: nil, hasContent: true), "the first day with content is fitted")
-    check(!DayFit.shouldFit(key: "a|2026-11-10", applied: "a|2026-11-10", hasContent: true), "live points, scrubbing and updates never refit the camera")
-    check(DayFit.shouldFit(key: "a|2026-11-09", applied: "a|2026-11-10", hasContent: true), "a new day is fitted once")
-    check(!DayFit.shouldFit(key: "a|2026-11-09", applied: "a|2026-11-10", hasContent: false), "an empty day leaves the camera alone and waits for content")
-    check(!DayFit.shouldFit(key: nil, applied: nil, hasContent: true) && !DayFit.shouldFit(key: "", applied: nil, hasContent: true), "no key means no fitting")
+    check(DayFit.shouldFit(key: "a|d1", applied: nil, appliedWithRoutes: false, hasRoutes: true, hasPins: true), "the first day with lines is fitted")
+    check(!DayFit.shouldFit(key: "a|d1", applied: "a|d1", appliedWithRoutes: true, hasRoutes: true, hasPins: true), "live points, scrubbing and updates never refit the camera")
+    check(DayFit.shouldFit(key: "a|d0", applied: "a|d1", appliedWithRoutes: true, hasRoutes: true, hasPins: true), "a new day is fitted once")
+    check(!DayFit.shouldFit(key: "a|d0", applied: "a|d1", appliedWithRoutes: true, hasRoutes: false, hasPins: false), "an empty day leaves the camera alone and waits for content")
+    check(DayFit.shouldFit(key: "a|d1", applied: nil, appliedWithRoutes: false, hasRoutes: false, hasPins: true), "a lone marker frames the map before the day has loaded")
+    check(DayFit.shouldFit(key: "a|d1", applied: "a|d1", appliedWithRoutes: false, hasRoutes: true, hasPins: true), "the day's lines refit once when they arrive after a lone marker")
+    check(!DayFit.shouldFit(key: "a|d1", applied: "a|d1", appliedWithRoutes: false, hasRoutes: false, hasPins: true), "a marker alone does not refit again")
+    check(!DayFit.shouldFit(key: nil, applied: nil, appliedWithRoutes: false, hasRoutes: true, hasPins: true) && !DayFit.shouldFit(key: "", applied: nil, appliedWithRoutes: false, hasRoutes: true, hasPins: true), "no key means no fitting")
 }
 print("Final native assertion count: \(assertions)")
 

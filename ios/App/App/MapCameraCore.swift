@@ -285,8 +285,13 @@ enum EdgeIndicatorLayout {
 // the live trail or the time slider that follow, so the map is neither recreated nor
 // jerked back while it is being used.
 enum DayFit {
-    static func shouldFit(key: String?, applied: String?, hasContent: Bool) -> Bool {
-        guard let key = key, !key.isEmpty, hasContent else { return false }
-        return key != applied
+    // `hasRoutes`: the day has drawn lines. A lone marker (the person's latest location,
+    // shown before their day has loaded) frames the map once, but the day's lines still
+    // fit it when they arrive, once. Nothing at all leaves the camera alone.
+    static func shouldFit(key: String?, applied: String?, appliedWithRoutes: Bool, hasRoutes: Bool, hasPins: Bool) -> Bool {
+        guard let key = key, !key.isEmpty else { return false }
+        if hasRoutes { return key != applied || !appliedWithRoutes }
+        if hasPins { return key != applied }
+        return false
     }
 }

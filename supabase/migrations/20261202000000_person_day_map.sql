@@ -163,21 +163,29 @@ declare i integer:=1; n integer:=coalesce(length(p_line),0); lat integer:=0; lon
 begin
  while i<=n loop
   shift:=0;result:=0;
-  loop b:=ascii(substr(p_line,i,1))-63;i:=i+1;result:=result|((b&31)<<shift);shift:=shift+5;exit when b<32 or i>n;end loop;
+  loop b:=ascii(substr(p_line,i,1))-63;i:=i+1;result:=result|((b&31)<<shift);shift:=shift+5;exit when b<32 or i>n or shift>30;end loop;
   lat:=lat+case when (result&1)=1 then ~(result>>1) else (result>>1) end;
   shift:=0;result:=0;
-  loop b:=ascii(substr(p_line,i,1))-63;i:=i+1;result:=result|((b&31)<<shift);shift:=shift+5;exit when b<32 or i>n;end loop;
+  loop b:=ascii(substr(p_line,i,1))-63;i:=i+1;result:=result|((b&31)<<shift);shift:=shift+5;exit when b<32 or i>n or shift>30;end loop;
   lon:=lon+case when (result&1)=1 then ~(result>>1) else (result>>1) end;
   latitude:=lat/1e5;longitude:=lon/1e5;return next;
  end loop;
 end $$;
+-- A well-formed encoded polyline: only the polyline alphabet, and it ends on a character
+-- that closes a value (not in the middle of one).
+create or replace function public.valid_polyline(p_line text) returns boolean
+language sql immutable set search_path='' as $$
+ select p_line is not null and length(p_line) between 4 and 20000 and p_line ~ '^[?-~]+$' and p_line ~ '[?-^]$'
+$$;
+
 create or replace function public.road_clear_of_private_places(p_owner uuid,p_line text) returns boolean
 language sql stable security definer set search_path='' as $$
- select p_line is not null and length(p_line)<=200000 and not exists(
+ -- No Home/Work saved: nothing to mask, nothing to decode.
+ select public.valid_polyline(p_line) and (not exists(select 1 from public.saved_places sp0 where sp0.owner_id=p_owner and sp0.kind in ('home','work')) or not exists(
   select 1 from public.decode_polyline(p_line) d join public.saved_places sp on sp.owner_id=p_owner and sp.kind in ('home','work')
-  where sqrt(power((d.latitude-sp.latitude)*111320,2)+power((d.longitude-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300)
+  where sqrt(power((d.latitude-sp.latitude)*111320,2)+power((d.longitude-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300))
 $$;
-revoke all on function public.decode_polyline(text),public.road_clear_of_private_places(uuid,text) from public,anon,authenticated;
+revoke all on function public.decode_polyline(text),public.valid_polyline(text),public.road_clear_of_private_places(uuid,text) from public,anon,authenticated;
 
 -- ------------------------------------------------------------- completed day
 -- Who may open this person's map: themselves, a household member, or a friend.
@@ -240,28 +248,35 @@ create table if not exists public.live_trails (
  last_seq integer not null default 0,
  points jsonb not null default '[]'::jsonb,
  roads jsonb not null default '{}'::jsonb,
+ ended_refs text[] not null default '{}',
  updated_at timestamptz not null default now()
 );
+alter table public.live_trails add column if not exists ended_refs text[] not null default '{}';
 alter table public.live_trails add column if not exists roads jsonb not null default '{}'::jsonb;
 alter table public.live_trails enable row level security;
 revoke all on public.live_trails from anon,authenticated;
 grant all on public.live_trails to service_role;
 
 
--- Thins the older half of a trail until it fits. Times are kept as recorded.
-create or replace function public.compact_trail(p_points jsonb,p_limit integer) returns jsonb
-language plpgsql immutable set search_path='' as $$
+-- Thins the older half of a trail until it fits. Times are kept as recorded. Points on
+-- either side of a Home/Work-masked stretch, and the masked points themselves, are never
+-- dropped, so the cut a friend sees there is the same before and after thinning.
+create or replace function public.compact_trail(p_owner uuid,p_points jsonb,p_limit integer) returns jsonb
+language plpgsql stable set search_path='' as $$
 declare v_pts jsonb:=p_points; v_n integer; v_old jsonb; v_new jsonb; v_guard integer:=0;
 begin
  loop
   v_n:=jsonb_array_length(v_pts);
   exit when v_n<=p_limit or v_guard>=6;
   v_guard:=v_guard+1;
-  -- the older half, thinned
   select coalesce(jsonb_agg(e.x order by e.ord),'[]'::jsonb) into v_old from (
-   select x,ord,lag(x->>3) over (order by ord) as prev_seg,lead(x->>3) over (order by ord) as next_seg
-   from jsonb_array_elements(v_pts) with ordinality t(x,ord) where ord<=v_n/2) e
-   where e.ord % 2=1 or e.prev_seg is distinct from (e.x->>3) or e.next_seg is distinct from (e.x->>3);
+   select x,ord,
+    lag(x->>3) over (order by ord) as prev_seg,lead(x->>3) over (order by ord) as next_seg,
+    h,coalesce(lag(h) over (order by ord),false) as prev_h,coalesce(lead(h) over (order by ord),false) as next_h
+   from (select t.x,t.ord,exists(select 1 from public.saved_places sp where sp.owner_id=p_owner and sp.kind in ('home','work')
+      and sqrt(power(((t.x->>0)::float8-sp.latitude)*111320,2)+power(((t.x->>1)::float8-sp.longitude)*111320*cos(radians(sp.latitude)),2))<=sp.radius+300) as h
+     from jsonb_array_elements(v_pts) with ordinality t(x,ord) where t.ord<=v_n/2) z) e
+   where e.ord % 2=1 or e.prev_seg is distinct from (e.x->>3) or e.next_seg is distinct from (e.x->>3) or e.h or e.prev_h or e.next_h;
   select coalesce(jsonb_agg(x order by ord),'[]'::jsonb) into v_new from jsonb_array_elements(v_pts) with ordinality t(x,ord) where ord>v_n/2;
   v_pts:=v_old||v_new;
  end loop;
@@ -271,7 +286,7 @@ begin
  end if;
  return v_pts;
 end $$;
-revoke all on function public.compact_trail(jsonb,integer) from public,anon,authenticated;
+revoke all on function public.compact_trail(uuid,jsonb,integer) from public,anon,authenticated;
 
 -- Appends [lat, lon, t, segment] points. Idempotent and order-free: a repeated or
 -- late batch merges by time `t`, and only the newest 3000 points are kept.
@@ -299,6 +314,7 @@ begin
  if v_user is null then return false; end if;
  select * into v_old from public.live_trails where owner_id=v_user for update;
  v_had:=found;
+ if v_had and upper(p_ref)=any(select upper(x) from unnest(v_old.ended_refs) x) then return false; end if;
  -- p_seq = -2: the owner made this activity private. Recorded for good (it also keeps
  -- the finished activity out of automatic sharing), the trail is cleared, and no later
  -- batch for it is accepted, however late it arrives.
@@ -309,7 +325,11 @@ begin
  end if;
  -- p_seq < 0: the phone finished this activity. Its trail is cleared at once.
  if p_seq is not null and p_seq<0 then
-  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=v_user and activity_ref=p_ref;
+  -- Remember it finished (the last few), so a late or retried batch for it cannot bring
+  -- the trail back as a ghost "live" line.
+  update public.live_trails set points=case when activity_ref=p_ref then '[]'::jsonb else points end,roads=case when activity_ref=p_ref then '{}'::jsonb else roads end,
+   ended_refs=(select coalesce(array_agg(x),'{}') from (select x from unnest(array_append(ended_refs,p_ref)) with ordinality t(x,o) order by o desc limit 8) q),updated_at=now()
+   where owner_id=v_user;
   return true;
  end if;
  if public.activity_ref_is_private(v_user,p_ref) then return false; end if;
@@ -324,7 +344,7 @@ begin
  -- Bounded, not truncated: past 3000 points the OLDER half is thinned (every second
  -- point, keeping both ends of each GPS segment), so a long drive keeps its whole
  -- timeline at lower resolution at the start and full resolution for what is recent.
- v_merged:=public.compact_trail(v_merged,3000);
+ v_merged:=public.compact_trail(v_user,v_merged,3000);
  insert into public.live_trails(owner_id,activity_ref,started_at,last_seq,points,updated_at)
  values(v_user,p_ref,now(),coalesce(p_seq,0),v_merged,now())
  on conflict(owner_id) do update set activity_ref=excluded.activity_ref,
@@ -344,7 +364,7 @@ returns boolean language plpgsql security definer set search_path='' as $$
 declare v_user uuid; v_hash bytea;
 begin
  if p_token is null or length(p_token)<>64 or p_ref is null or p_gap is null or length(p_gap) not between 1 and 120
-  or p_line is null or length(p_line) not between 4 and 20000 then return false; end if;
+  or not public.valid_polyline(p_line) then return false; end if;
  v_hash:=sha256(convert_to(p_token,'UTF8'));
  select l.user_id into v_user from public.household_live_locations l
   where l.publish_token_hash=v_hash and l.publish_token_expires_at>now() and l.enabled
@@ -354,7 +374,8 @@ begin
    where s.publish_token_hash=v_hash and s.publish_token_expires_at>now() and s.enabled;
  end if;
  if v_user is null then return false; end if;
- update public.live_trails set roads=roads||jsonb_build_object(p_gap,p_line),updated_at=now()
+ -- Whether the road touches a masked area is decided once, here, not on every viewer's poll.
+ update public.live_trails set roads=roads||jsonb_build_object(p_gap,jsonb_build_object('l',p_line,'c',public.road_clear_of_private_places(v_user,p_line))),updated_at=now()
   where owner_id=v_user and activity_ref=p_ref and not public.activity_ref_is_private(owner_id,p_ref)
    and (roads ? p_gap or (select count(*) from jsonb_object_keys(roads))<40);
  return found;
@@ -368,8 +389,8 @@ create or replace function public.put_my_live_road(p_ref text,p_gap text,p_line 
 returns boolean language plpgsql security definer set search_path='' as $$
 begin
  if auth.uid() is null or p_ref is null or p_gap is null or length(p_gap) not between 1 and 120
-  or p_line is null or length(p_line) not between 4 and 20000 then return false; end if;
- update public.live_trails set roads=roads||jsonb_build_object(p_gap,p_line),updated_at=now()
+  or not public.valid_polyline(p_line) then return false; end if;
+ update public.live_trails set roads=roads||jsonb_build_object(p_gap,jsonb_build_object('l',p_line,'c',public.road_clear_of_private_places(auth.uid(),p_line))),updated_at=now()
   where owner_id=auth.uid() and activity_ref=p_ref and not public.activity_ref_is_private(owner_id,p_ref)
    and (roads ? p_gap or (select count(*) from jsonb_object_keys(roads))<40);
  return found;
@@ -387,7 +408,9 @@ begin
   insert into public.private_activity_refs(owner_id,ref) values(auth.uid(),p_ref) on conflict do nothing;
   update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=auth.uid() and upper(activity_ref)=upper(p_ref);
  elsif p_ref is null or exists(select 1 from public.live_trails t where t.owner_id=auth.uid() and t.activity_ref=p_ref) then
-  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,updated_at=now() where owner_id=auth.uid() and (p_ref is null or activity_ref=p_ref);
+  update public.live_trails set points='[]'::jsonb,roads='{}'::jsonb,
+   ended_refs=case when p_ref is null then ended_refs else (select coalesce(array_agg(x),'{}') from (select x from unnest(array_append(ended_refs,p_ref)) with ordinality t(x,o) order by o desc limit 8) q) end,updated_at=now()
+   where owner_id=auth.uid() and (p_ref is null or activity_ref=p_ref);
  end if;
 end $$;
 revoke all on function public.end_live_trail(text,boolean) from public,anon,authenticated;
@@ -452,8 +475,8 @@ begin
   select v_t.activity_ref,v_t.started_at,v_t.updated_at,
    coalesce((select jsonb_agg(jsonb_build_array(c.x->0,c.x->1,c.x->2,c.seg*100000+c.hid) order by c.t) from counted c
     where not c.hidden and c.t>coalesce(p_after,0)),'[]'::jsonb),
-   coalesce((select jsonb_object_agg(k,val) from jsonb_each_text(v_t.roads) e(k,val)
-    where v_open or public.road_clear_of_private_places(p_owner,val)),'{}'::jsonb),
+   coalesce((select jsonb_object_agg(e.k,e.val->>'l') from jsonb_each(v_t.roads) e(k,val)
+    where v_open or coalesce((e.val->>'c')::boolean,false)),'{}'::jsonb),
    jsonb_array_length(v_t.points),
    (select max(t) from pts);
 end $$;

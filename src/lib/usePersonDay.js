@@ -78,8 +78,12 @@ export function usePersonDay({viewer,owner,date,timeZone,enabled=true,now=clock}
      else{
       // A new activity restarts the trail; the same one only appends.
       const fresh=!trail||trail.ref!==row.activity_ref;
-      trail={ref:row.activity_ref,points:mergeTrail(fresh?[]:trail.points,row.points||[]),roads:row.roads||{}};
-      setLiveState({key:liveKey,value:{...trail}});
+      const next={ref:row.activity_ref,points:mergeTrail(fresh?[]:trail.points,row.points||[]),roads:row.roads||{}};
+      // A quiet poll changes nothing: do not rebuild the day for it.
+      const same=!fresh&&next.points.length===trail.points.length&&newestTime(next.points)===newestTime(trail.points)
+       &&JSON.stringify(next.roads)===JSON.stringify(trail.roads);
+      trail=next;
+      if(!same)setLiveState({key:liveKey,value:{...trail}});
      }
     }
    }catch{/* the next poll tries again */}

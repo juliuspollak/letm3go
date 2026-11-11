@@ -1,6 +1,7 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({publish:vi.fn()}));
 vi.mock('./activitySharing.js',()=>({publishActivity:mock.publish}));
+vi.mock('./hideLiveActivity.js',()=>({flushPendingHides:vi.fn(async()=>{}),isLiveHidden:id=>id==='HIDDEN'}));
 import {shareNewHouseholdActivities} from './householdAutoShare.js';
 
 const trip=(id,over={})=>({id,source:'device',endedAt:10,points:[{latitude:1,longitude:1}],...over});
@@ -25,12 +26,20 @@ describe('household auto-share',()=>{
   expect((await shareNewHouseholdActivities({client,recorder})).published).toEqual([]);
   expect(mock.publish).not.toHaveBeenCalled();
  });
- it('stops at the first failure instead of repeating it for every activity',async()=>{
+ it('one activity that cannot be published does not hold up the others; repeated failures stop the pass',async()=>{
   pending=[{activity_id:'aaaa'},{activity_id:'bbbb'}];
-  mock.publish.mockRejectedValueOnce(new Error('Set your Home place before sharing'));
+  mock.publish.mockRejectedValueOnce(new Error('Activity changed')).mockResolvedValue({token:'t'});
   const result=await shareNewHouseholdActivities({client,recorder});
-  expect(result.published).toEqual([]);expect(result.failed[0].message).toMatch(/Home place/);
-  expect(mock.publish).toHaveBeenCalledTimes(1);
+  expect(result.published).toEqual(['bbbb']);expect(result.failed[0].message).toMatch(/changed/);
+  mock.publish.mockReset().mockRejectedValue(new Error('Set your Home place before sharing'));
+  pending=[{activity_id:'aaaa'},{activity_id:'bbbb'},{activity_id:'aaaa'},{activity_id:'bbbb'}];
+  const stuck=await shareNewHouseholdActivities({client,recorder});
+  expect(stuck.published).toEqual([]);expect(mock.publish.mock.calls.length).toBeLessThanOrEqual(3);
+ });
+ it('never publishes an activity that was marked private while it was being recorded, even if the server has not heard',async()=>{
+  recorder.getState.mockResolvedValueOnce({trips:[trip('HIDDEN'),trip('BBBB')]});
+  pending=[{activity_id:'hidden'},{activity_id:'bbbb'}];
+  expect((await shareNewHouseholdActivities({client,recorder})).published).toEqual(['bbbb']);
  });
  it('pages past activities this phone cannot publish, so newer ones are still shared',async()=>{
   const elsewhere=Array.from({length:25},(_,i)=>({activity_id:'zzzz'+i}));

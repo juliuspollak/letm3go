@@ -335,6 +335,53 @@ it('keeping an activity private removes a copy automatic sharing published a mom
  expect((await day(mate)).map(r=>r.activity_id)).not.toContain(id);
  expect((await as('service_role','',`select public.auto_share_allowed('${owner}','${id}') as ok`)).rows[0].ok).toBe(false);
 });
+it('a finished activity cannot be brought back as a live ghost by a late or retried batch',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ expect(await append(houseToken,'ghost1',1,pts(800,810))).toBe(true);
+ expect(await append(houseToken,'ghost1',-1,'[]')).toBe(true);
+ expect(await append(houseToken,'ghost1',2,pts(820))).toBe(false);          // the request that timed out and arrives late
+ expect(await append(houseToken,'GHOST1',3,pts(830))).toBe(false);
+ expect(await append(houseToken,'ghost2',1,pts(900))).toBe(true);           // the next activity is unaffected
+ expect(await append(houseToken,'ghost2',-1,'[]')).toBe(true);
+ expect(await append(houseToken,'ghost1',4,pts(840))).toBe(false);          // still refused after another activity came and went
+});
+it('rejects a road that is not a well-formed polyline, and stores whether it touches a masked area once',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ await append(houseToken,'rd1',1,pts(950));
+ const put=line=>as('anon','',`select public.put_live_road('${houseToken}','rd1','R:1:2','${line}') as ok`).then(r=>r.rows[0].ok);
+ expect(await put('~~~~~~~~~~~~~~~~')).toBe(false);          // would overflow a decoder
+ expect(await put('abc')).toBe(false);                       // too short
+ expect(await put('_p~iF~ps|U_ulLnnqC')).toBe(true);
+ await db.exec('reset role');
+ const stored=(await db.query(`select roads from public.live_trails where owner_id='${owner}'`)).rows[0].roads;
+ expect(stored['R:1:2']).toEqual({l:'_p~iF~ps|U_ulLnnqC',c:true});
+ await as('authenticated',owner,"select public.end_live_trail('rd1')");
+});
+it('the cut a friend sees around Home is the same after a long drive has been thinned',async()=>{
+ await as('authenticated',owner,'select public.set_my_live_location(true)');
+ await as('authenticated',owner,'select public.set_friend_location(true,-34.7,150.9,5)');
+ houseToken=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
+ const start=Math.floor(Date.now()/1000)-9000;
+ const away=n=>[-34.9-n*1e-5,151.0,start+n*2,0],home=n=>[-34.5,150.8,start+n*2,0];
+ // 1500 away, 6 at Home, then 3000 away again: forces thinning of the older half.
+ const all=[...Array.from({length:1500},(_,i)=>away(i)),...Array.from({length:6},(_,i)=>home(1500+i)),...Array.from({length:3000},(_,i)=>away(1506+i))];
+ const before=[];
+ for(let b=0;b<all.length;b+=200){
+  expect(await append(houseToken,'mask1',b/200+1,JSON.stringify(all.slice(b,b+200)))).toBe(true);
+  const row=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
+  if(b===1400)before.push(row);
+ }
+ const seen=(await as('authenticated',friend,`select * from public.my_live_trail('${owner}')`)).rows[0];
+ const segs=[...new Set(seen.points.map(p=>p[3]))];
+ expect(segs.length).toBe(2);                                 // exactly two runs: before Home and after Home
+ const first=seen.points.filter(p=>p[3]===segs[0]).at(-1),second=seen.points.filter(p=>p[3]===segs[1])[0];
+ expect(second[2]-first[2]).toBeLessThanOrEqual(8*2);         // the ends beside Home survived thinning
+ expect(seen.points.some(p=>Math.abs(p[0]+34.5)<0.01)).toBe(false);
+ await as('authenticated',owner,"select public.end_live_trail('mask1')");
+ await as('authenticated',owner,'select public.set_friend_location(false)');
+},180000);
 it('the owner always sees their own trail, and tables are not directly readable',async()=>{
  await expect(as('authenticated',mate,'select * from public.live_trails')).rejects.toThrow();
  await expect(as('authenticated',mate,'select * from public.activity_auto_share')).rejects.toThrow();

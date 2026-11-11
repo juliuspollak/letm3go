@@ -105,6 +105,10 @@ describe('person map',()=>{
    expect(mock.dayArgs.at(-1).date).toBe('2026-11-10');   // picked day does not move
   }finally{vi.useRealTimers();}
  });
+ it('keeps estimated roads within what the native map draws',()=>{
+  setup();
+  expect(last().estimated.every(line=>line.length<=2000)).toBe(true);
+ });
  it('keeps poking available and closes on request',()=>{
   const {onClose,onPoke}=setup();
   fireEvent.click(screen.getByText(/Poke/));fireEvent.click(screen.getByLabelText('Close map'));

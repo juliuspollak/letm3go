@@ -841,6 +841,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private(set) var overlayRebuilds=0
     private var liveOverlay:LivePolyline?
     private var fittedDayKey:String?
+    private var fittedDayHadRoutes=false
     private var liveSignature:Int?
     private(set) var liveUpdates=0
     private var circles:[String:MKCircle]=[:]
@@ -963,9 +964,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         for (id,pin) in pins where !seen.contains(id) {map.removeAnnotation(pin);pins.removeValue(forKey:id);pinData.removeValue(forKey:id)}
         // A person's day changed: bring it into view once (see DayFit). Not for the people map.
-        if !isPeopleMap, DayFit.shouldFit(key:next.fitKey,applied:fittedDayKey,hasContent:!next.coordinates.isEmpty) {
+        let dayHasRoutes = !(next.routes.isEmpty && next.estimated.isEmpty && next.live.isEmpty)
+        if !isPeopleMap, DayFit.shouldFit(key:next.fitKey,applied:fittedDayKey,appliedWithRoutes:fittedDayHadRoutes,hasRoutes:dayHasRoutes,hasPins:!next.pins.isEmpty) {
             map.setVisibleMapRect(next.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:fittedDayKey != nil)
-            fittedDayKey=next.fitKey
+            fittedDayKey=next.fitKey;fittedDayHadRoutes=dayHasRoutes
         }
         applyOverview(next.overview)
         updateLocationButton(next.showsLocate && showsLayers)

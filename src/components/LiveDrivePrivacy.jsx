@@ -2,7 +2,7 @@ import {useState} from 'react';
 import {EyeOff} from 'lucide-react';
 import {recorder} from '../lib/recorder.js';
 import {supabase} from '../lib/supabase.js';
-import {hideLiveActivity,isLiveHidden,rememberLiveHidden} from '../lib/hideLiveActivity.js';
+import {hideLiveActivity,isLiveHidden} from '../lib/hideLiveActivity.js';
 
 // One tap, while recording, to keep this activity private from live viewers.
 export default function LiveDrivePrivacy({trip,deps={recorder,client:supabase}}){
@@ -10,7 +10,7 @@ export default function LiveDrivePrivacy({trip,deps={recorder,client:supabase}})
  if(hidden)return <p className="live-private" role="status"><EyeOff size={15}/> Private: nobody can see this activity while it is recorded, and it will not be shared automatically.</p>;
  async function hide(){
   setBusy(true);setError('');
-  try{await hideLiveActivity(trip.id,deps);rememberLiveHidden(trip.id);setHidden(true);}
+  try{await hideLiveActivity(trip.id,deps);setHidden(true);}
   catch{setError('Could not make it private. Try again.');}
   finally{setBusy(false);}
  }

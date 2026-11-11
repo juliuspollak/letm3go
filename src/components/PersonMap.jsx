@@ -56,7 +56,7 @@ export default function PersonMap({person,viewer,photos,selfAvatar,unit='km',tim
   const at=scrubbing?positionAt(day,deferred):null;
   if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))} earlier`:`Recorded at ${clock(at.t,timeZone)}`});
   // fitKey: the camera is brought to a new day once; points, the live trail and the slider never refit it.
-  return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads],live:live.length?thinLine(live.at(-1)):[],pins,fitKey:`${person.userId}|${date}`};
+  return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads].map(line=>thinLine(line,2000)),live:live.length?thinLine(live.at(-1)):[],pins,fitKey:`${person.userId}|${date}`};
  },[day,deferred,isToday,isSelf,position,person.userId,person.name,person.status?.text,timeZone,date]);
  const first=day.samples[0]?.t,last=day.samples.at(-1)?.t;
  const canScrub=day.samples.length>1;
