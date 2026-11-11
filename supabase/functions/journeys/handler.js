@@ -134,7 +134,8 @@ export function createJourneysHandler({ env, createClient, storage }) {
    if(body.auto===true){
     const {data:still,error:stillError}=await admin.rpc('auto_share_allowed',{p_owner:owner,p_activity:trip.id});
     if(stillError||still!==true){
-     await admin.from('shared_journeys').delete().eq('activity_id',trip.id).eq('owner_id',owner);
+     const {error:rollbackError}=await admin.from('shared_journeys').delete().eq('activity_id',trip.id).eq('owner_id',owner);
+     if(rollbackError)throw rollbackError; // A failed removal must never be reported as successfully withdrawn.
      return reply({error:'This activity is private'},409);
     }
    }
