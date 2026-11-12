@@ -909,7 +909,7 @@ private func compassWord(_ angle:CGFloat)->String {
 // Owns one MKMapView's content: annotations keyed by stable id (moved and
 // redrawn in place, never all replaced), overlays rebuilt only when routes
 // change, and for the people map the follow camera, off-screen edge avatars, the
-// Show everyone control and the "Following" chip. Main thread only.
+// camera controls. Main thread only.
 private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private(set) weak var map:MKMapView?
     private(set) var content:MapContent
@@ -944,7 +944,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var indicatorVersion:[String:Int]=[:]
     private var contentVersion=0
     private var recognizers:[UIGestureRecognizer]=[]
-    private var chip:UIButton?
     private var compass:MKCompassButton?
     private let controlTop:CGFloat
     var exclusions:()->[CGRect]={[]}
@@ -973,7 +972,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var panelScroll:UIScrollView?
     private var panelID:String?
     private var panelTap:UITapGestureRecognizer?
-    private var leftColumnBottom:CGFloat=0
     private var compassTop:CGFloat?
     private var appliedStyle:String?
     var onToolbarAction:((String)->Void)?
@@ -1318,12 +1316,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         map.addSubview(layers);controlViews.append(layers)
         if let expand=map.viewWithTag(mapExpandTag) {expand.frame=frames.expand;map.bringSubviewToFront(expand)}
         compassTop=frames.compassTop
-        leftColumnBottom=frames.leftColumn
         if let date=controls["date"] as? [String:Any] {
             let bar=dateBar(date,maxWidth:frames.dateMaxWidth)
             bar.frame.origin=CGPoint(x:12,y:frames.dateTop)
             map.addSubview(bar);controlViews.append(bar)
-            leftColumnBottom=bar.frame.maxY+8
         }
         if let panel=controls["panel"] as? [String:Any] {
             installPanelTap()
@@ -1336,7 +1332,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             if id != previousPanel {UIAccessibility.post(notification:.layoutChanged,argument:card)}
         }
         layoutControls()
-        if let chip=chip {map.bringSubviewToFront(chip)}
         controlViews.forEach{map.bringSubviewToFront($0)}
     }
     private func chipFont()->UIFont {UIFontMetrics(forTextStyle:.subheadline).scaledFont(for:.systemFont(ofSize:14,weight:.semibold))}
@@ -1527,11 +1522,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
                 start(content.personDay && intent.mode == .all ? .free : intent.mode)
             }
             appliedCommand=intent.command
-            updateControls()
+            layoutControls()
         } else if intent.command != appliedCommand {
             start(intent.mode)
             appliedCommand=intent.command
-            updateControls()
+            layoutControls()
         }
     }
     private func start(_ mode:FollowMode) {
@@ -1542,7 +1537,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let intent=content.camera,let memory=cameraMemory[intent.key],memory.command==appliedCommand else {return}
         planner.resume(memory.mode);lastFollowed=memory.mode.personID ?? lastFollowed
         if let camera=memory.camera {map?.setCamera(camera,animated:false);hasCamera=true}
-        updateControls();layoutIndicators()
+        layoutControls();layoutIndicators()
     }
     func remember() {
         guard let intent=content.camera,let map=map,let command=appliedCommand else {return}
@@ -1589,7 +1584,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
     private func modeChanged() {
         updateLocationButton(content.showsLocate && showsLayers)
-        updateControls();remember()
+        layoutControls();remember()
         onModeChange?(planner.mode,appliedCommand ?? 0)
     }
     func showEveryone() {lastFollowed=nil;planner.showAll();modeChanged();plan()}
@@ -1675,34 +1670,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         activityTap.delegate=self;activityTap.cancelsTouchesInView=false;activityTap.require(toFail:doubleTap)
         map.addGestureRecognizer(activityTap);recognizers.append(activityTap)
         installCompass()
-        var style=UIButton.Configuration.filled()
-        style.baseBackgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
-        style.baseForegroundColor = .label
-        style.cornerStyle = .capsule
-        style.image=UIImage(systemName:"xmark.circle.fill",withConfiguration:UIImage.SymbolConfiguration(pointSize:13))
-        style.imagePlacement = .trailing
-        style.imagePadding=6
-        style.contentInsets=NSDirectionalEdgeInsets(top:0,leading:12,bottom:0,trailing:10)
-        style.titleTextAttributesTransformer=UIConfigurationTextAttributesTransformer { attributes in
-            var updated=attributes;updated.font=UIFont.systemFont(ofSize:13,weight:.semibold);return updated
-        }
-        let chip=UIButton(configuration:style)
-        chip.isHidden=true
-        chip.addAction(UIAction{[weak self] _ in
-            guard let self=self else {return}
-            if self.planner.mode.personID != nil {self.lastFollowed=nil;self.planner.resume(.free);self.modeChanged()}
-            else if let id=self.lastFollowed {self.follow(id)}
-        },for:.touchUpInside)
-        map.addSubview(chip);self.chip=chip
-        updateControls()
-    }
-    private func name(of personID:String)->String {
-        for pin in content.peoplePins {
-            for member in pin["members"] as? [[String:Any]] ?? [] where member["id"] as? String==personID {
-                return (member["name"] as? String).flatMap{$0.isEmpty ? nil : $0} ?? "this person"
-            }
-        }
-        return "this person"
     }
     // Frames follow the current bounds (the full-screen map is created before it
     // has a size), so the column always sits at the right edge.
@@ -1710,25 +1677,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let map=map else {return}
         let right=map.bounds.width-16
         compass?.frame=CGRect(x:right-38,y:compassTop ?? controlTop+44,width:40,height:40)
-        if let chip=chip,!chip.isHidden {
-            chip.frame.origin=CGPoint(x:12,y:showsLayers ? leftColumnBottom : controlTop)
-            if showsLayers {chip.frame.size.width=min(chip.frame.width,max(44,map.bounds.width-80))}
-        }
-    }
-    private func updateControls() {
-        guard let map=map else {return}
-        defer {layoutControls()}
-        if let chip=chip {
-            if let id=planner.mode.personID ?? lastFollowed {
-                let active=planner.mode.personID != nil
-                chip.configuration?.title=active ? name(of:id) : "Resume \(name(of:id))"
-                chip.configuration?.image=UIImage(systemName:active ? "xmark.circle.fill" : "location.fill")
-                chip.accessibilityLabel=active ? "Following \(name(of:id)). Stop following" : "Resume following \(name(of:id))"
-                let fitted=chip.sizeThatFits(CGSize(width:map.bounds.width-90,height:32))
-                chip.frame=CGRect(x:12,y:controlTop,width:min(fitted.width,map.bounds.width-90),height:32)
-                chip.isHidden=false
-            } else {chip.isHidden=true}
-        }
     }
 
     // MARK: Edge avatars
@@ -1853,7 +1801,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         let size:CGFloat=40
         var blocked=controlViews.map{$0.frame.insetBy(dx:-4,dy:-4)}
-        blocked += [chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
         if let compass=compass,compass.alpha>0.01,!compass.isHidden {blocked.append(compass.frame.insetBy(dx:-4,dy:-4))}
         for view in map.subviews where view is UIButton && !(view is EdgeAvatarButton) && !view.isHidden {blocked.append(view.frame.insetBy(dx:-4,dy:-4))}
         // MapKit's Apple Maps logo and Legal link sit at the bottom left (above the
@@ -1913,8 +1860,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         recognizers.removeAll()
         for button in indicators.values {button.removeFromSuperview()}
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
-        ([chip,compass,card,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
-        chip=nil;compass=nil;card=nil;locationButton=nil
+        ([compass,card,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
+        compass=nil;card=nil;locationButton=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
         controlViews.forEach{$0.removeFromSuperview()};controlViews=[];controlsKey=nil;panelScroll=nil;panelID=nil
         panelTap?.view?.removeGestureRecognizer(panelTap!);panelTap=nil

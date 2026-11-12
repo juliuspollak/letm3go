@@ -38,7 +38,7 @@ The top-left native Back action already emits the existing detail-closed event; 
 
 ## Camera, controls and performance
 
-Avatar taps centre and follow through the existing camera planner. Gestures pause following; a compact control resumes/exits it. Missing targets clear follow state. Person/date filters preserve the viewport. Locate always requests the viewer's own freshness-checked location and ignores replies for a person/day that has changed. Filters, Layers and dates use the existing toolbar, including full screen.
+Avatar taps centre and follow through the existing camera planner. Gestures pause following; tapping an avatar resumes it. The person-name following/resume chip and its X button have been removed. Missing targets clear follow state. Person/date filters preserve the viewport. Locate always requests the viewer's own freshness-checked location and ignores replies for a person/day that has changed. Filters, Layers and dates use the existing toolbar, including full screen.
 
 Saved display geometry remains bounded at 500 overlays / 120,000 vertices. Every displayed activity is represented before remaining capacity prioritises selected segments and then cycles across other activities. Up to 480 activity flags leave room under the native 500-pin bound. Larger days sample across chronology while retaining the selection; other activities remain available through the existing Activities screen. Prior live segments and live road estimates each reserve 125 lines / 62,500 vertices.
 
