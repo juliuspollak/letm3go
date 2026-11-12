@@ -8,6 +8,15 @@ const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':
 const reply=(body,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const uuid=(value)=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
+// The recipient snapshot of one activity: the route is masked around Home and Work (see redactRoute) and,
+// for a private audience, carries each point's capture time (a public link never does). Used by every path
+// that publishes, so a manual share, automatic sharing and the historical backfill cannot differ.
+const snapshotFor=(trip,places,safePhotos,privateAudience)=>({title:trip.title,activity:trip.activity,description:trip.description,startedAt:trip.started_at,endedAt:trip.ended_at,distanceMeters:trip.distance_meters,durationSeconds:trip.duration_seconds,points:redactRoute(trip.route_points,places||[],300,{times:privateAudience}),photos:safePhotos});
+const hasHome=places=>(places||[]).some(p=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude));
+// Earlier completed activities are published a few at a time (each is masked from the route already stored in Supabase;
+// nothing is copied raw and no road is looked up again).
+const HISTORY_PER_CALL=5,HISTORY_MAX_PER_CALL=10;
+
 // env(name) -> string; createClient(url,key,options) -> Supabase client;
 // storage: { signedGet(key) -> url, put(key,bytes), remove(key) }.
 export function createJourneysHandler({ env, createClient, storage }) {
@@ -97,6 +106,41 @@ export function createJourneysHandler({ env, createClient, storage }) {
    if(!item?.photo_object_key)return reply({error:'Photo unavailable'},404);
    return reply({url:await storage.signedGet(item.photo_object_key)});
   }
+  // Share my earlier completed activities with the household: only for an owner who has said so (the consent is
+  // read from the database under the owner's own JWT), only with a saved Home place to mask the route, and only
+  // activities the same rules allow automatically (finished, not private, not already shared). Each publication is
+  // the existing atomic one, so retrying, or running it twice, cannot create a duplicate.
+  if(body.action==='backfillHistory'){
+   stage='history_backfill';
+   const limit=Math.min(Math.max(Number.isInteger(body.limit)?body.limit:HISTORY_PER_CALL,1),HISTORY_MAX_PER_CALL);
+   const {data:before,error:beforeError}=await userClient.rpc('my_history_sharing');
+   if(beforeError)throw beforeError;
+   if(!before?.enabled)return reply({error:'Sharing earlier activities has not been switched on'},403);
+   const {data:places,error:placesError}=await userClient.from('saved_places').select('*').in('kind',['home','work']);if(placesError)throw placesError;
+   if(!hasHome(places))return reply({published:0,failed:0,remaining:Number(before.waiting)||0,needsHome:true});
+   let published=0,failed=0;const skip=[];
+   for(let round=0;round<4&&published<limit;round++){
+    const {data:pending,error:pendingError}=await userClient.rpc('my_auto_share_pending',{p_limit:limit,p_exclude:skip});
+    if(pendingError)throw pendingError;
+    if(!Array.isArray(pending)||!pending.length)break;
+    for(const item of pending){
+     if(published>=limit)break;
+     try{
+      const {data:trip,error:tripError}=await userClient.from('activities').select('*').eq('id',item.activity_id).maybeSingle();
+      if(tripError||!trip||trip.owner_id!==owner)throw new Error('unavailable');
+      // A recording without a route (nothing to show on a map) is not published; it is set aside, not an error.
+      if(!Array.isArray(trip.route_points)||trip.route_points.length<2){skip.push(item.activity_id);continue;}
+      const {data:allowed,error:allowedError}=await admin.rpc('auto_share_allowed',{p_owner:owner,p_activity:trip.id});
+      if(allowedError||allowed!==true)throw new Error('not eligible');
+      const {error:publishError}=await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:'household',p_mode:'household',p_recipients:[],p_snapshot:snapshotFor(trip,places,[],true),p_auto:true});
+      if(publishError)throw publishError;
+      published++;
+     }catch(error){failed++;skip.push(item.activity_id);console.error('History backfill: one activity was not published',error?.message||'unknown');}
+    }
+   }
+   const {data:after}=await userClient.rpc('my_history_sharing');
+   return reply({published,failed,remaining:Number(after?.waiting)||0,needsHome:false});
+  }
   if(!uuid(body.id))return reply({error:'Activity identifier required'},400);
   if(body.action==='status'){
    const {data:shared,error}=await admin.from('shared_journeys').select('audience,token').eq('activity_id',body.id).eq('owner_id',owner).maybeSingle();if(error)throw error;
@@ -114,7 +158,7 @@ export function createJourneysHandler({ env, createClient, storage }) {
    // Query the at-most-two sensitive places explicitly; favourites must not crowd
    // Home/Work out of PostgREST's default row limit and weaken route masking.
    const {data:places,error:placesError}=await userClient.from('saved_places').select('*').in('kind',['home','work']);if(placesError)throw placesError;
-   if(!(places||[]).some((p)=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)))return reply({error:'Save a Home place before publishing GPS routes'},409);
+   if(!hasHome(places))return reply({error:'Save a Home place before publishing GPS routes'},409);
    // Fail closed: a client must confirm its saved places were synchronised before preview.
    if(body.placesConfirmed!==true)return reply({error:'Sync saved Home/Work places and review masking first'},400);
    const {data:assets,error:mediaError}=await userClient.from('media_assets').select('id,caption,latitude,longitude').eq('activity_id',trip.id);if(mediaError)throw mediaError;
@@ -122,7 +166,7 @@ export function createJourneysHandler({ env, createClient, storage }) {
    const safePhotos=(assets||[]).filter(p=>selected.includes(p.id)&&!places?.some(place=>['home','work'].includes(place.kind)&&p.latitude!=null&&p.longitude!=null&&metersBetween(p,place)<=place.radius+300)).map(p=>({id:p.id,caption:p.caption,latitude:p.latitude,longitude:p.longitude}));
    const privateAudience=body.audience==='friends'||body.audience==='household';
    // Private audiences also get each point's capture time (for the person's day timeline); a public link never does.
-   const snapshot={title:trip.title,activity:trip.activity,description:trip.description,startedAt:trip.started_at,endedAt:trip.ended_at,distanceMeters:trip.distance_meters,durationSeconds:trip.duration_seconds,points:redactRoute(trip.route_points,places||[],300,{times:privateAudience}),photos:safePhotos};
+   const snapshot=snapshotFor(trip,places,safePhotos,privateAudience);
    if(privateAudience&&(!['friends','household','selected','mixed','all'].includes(body.mode)||!Array.isArray(body.recipients)||body.recipients.length>100))return reply({error:'Select valid social recipients'},400);
    const publication=privateAudience
     ?await admin.rpc('publish_social_journey',{p_owner:owner,p_activity:trip.id,p_revision:trip.revision,p_audience:body.audience,p_mode:body.mode,p_recipients:body.recipients,p_snapshot:snapshot,p_auto:body.auto===true})
