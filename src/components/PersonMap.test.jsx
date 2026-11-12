@@ -32,7 +32,7 @@ const renderMap=day=><AppleMap payload={day?.payload??{all:true}} onStep={day?.o
 const setup=(over={})=>{
  const onOpenShared=vi.fn();
  const selected=over.person===undefined?person:over.person;
- const personPin=over.personPin===undefined&&(selected?.userId==='her'&&selected.position&&['live','stale'].includes(selected.state))?{...selectedPin,...(selected.state==='stale'?{label:'Last seen 25 min ago',labelKind:'stale',members:[{...selectedPin.members[0],state:'stale',activity:null}]}:{})}:over.personPin;
+ const personPin=over.personPin!==undefined?over.personPin:selected?.userId==='her'&&selected.position&&['live','stale'].includes(selected.state)?(selected.state==='stale'?{...selectedPin,label:'Last seen 25 min ago',labelKind:'stale',members:[{...selectedPin.members[0],state:'stale',activity:null}]}:selectedPin):null;
  const view=render(<PersonMap person={person} personPin={personPin} viewer="me" timeZone={Z} renderMap={renderMap} onOpenShared={onOpenShared} {...over}/>);
  return {onOpenShared,view};
 };
