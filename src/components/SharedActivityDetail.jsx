@@ -26,7 +26,9 @@ export default function SharedActivityDetail({activityID=null,token=null,ownerNa
  if(error)return <div className="notice" role="alert"><h2>{error}</h2><button type="button" className="secondary" onClick={onBack}>Back</button></div>;
  if(loading||!trip)return <p role="status">Loading shared activity…</p>;
  if(Capacitor.getPlatform()==='ios'&&ownerID){
-  return <ActivityDetailScreen key={trip.id} ownerID={ownerID} trip={trip} journeys={[]} places={[]} vehicles={[]} onBack={onBack} sharedReadOnly/>;
+  // The native screen belongs to the signed-in account (it rejects any other id as "Account changed"), so it is given the
+  // viewer's id; whose activity this is travels in the trip itself and the screen is read-only.
+  return <ActivityDetailScreen key={trip.id} ownerID={viewer||ownerID} trip={trip} journeys={[]} places={[]} vehicles={[]} onBack={onBack} sharedReadOnly/>;
  }
  // Public browser links reuse the same stored route and map renderer.
  const detail=activityPresentation(trip,{ownerID:ownerID||'',unit});
