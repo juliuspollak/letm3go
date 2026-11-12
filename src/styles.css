@@ -1235,3 +1235,6 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .home-friends-head h2{margin:0;font-size:16px}
 .home-friends-links{display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:flex-end}
 .home-friends-links .text-button{min-height:44px;font-size:13px}
+.home-intro{margin:0 0 12px}
+.home-intro h1{margin:0;font-size:clamp(26px,7.5vw,34px);line-height:1.1}
+.home-intro p{margin:6px 0 0;font-size:13px;line-height:1.4}
