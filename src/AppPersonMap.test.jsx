@@ -67,10 +67,15 @@ it('switches person, changes back to All people and keeps one mounted map, witho
  expect(mapProps.mounts).toBe(mounts);
  expect(within(selector()).getByRole('button',{name:'All people'}).getAttribute('aria-pressed')).toBe('true');
 });
-it('Poke from the Home ••• menu does not navigate, and a tap on the person does not poke', async()=>{
+it('holding a person on Home pokes without navigating, and a tap on the person does not poke', async()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true});
  render(<App/>);
- fireEvent.click(screen.getByLabelText('More actions for Ann'));
- await act(async()=>{fireEvent.click(screen.getByRole('menuitem',{name:'Poke Ann'}));});
+ const tile=screen.getByLabelText(/Show Ann on the Map/);
+ fireEvent.pointerDown(tile,{button:0,clientX:5,clientY:5});
+ await act(async()=>{vi.advanceTimersByTime(800);});
+ fireEvent.pointerUp(tile);fireEvent.click(tile);
+ await act(async()=>{await Promise.resolve();});
+ vi.useRealTimers();
  expect(pokes.send).toHaveBeenCalledWith('ann');
  expect(screen.queryByRole('group',{name:'Show on map'})).toBeNull();
  expect(screen.getByText('Poked ✓')).toBeInTheDocument();

@@ -1,10 +1,11 @@
 import {useEffect,useRef,useState} from 'react';
 import PersonAvatar from './PersonAvatar.jsx';
-import {Clock3,House,MoreHorizontal,TriangleAlert} from 'lucide-react';
+import {Clock3,House,TriangleAlert} from 'lucide-react';
 
 // Everyone in Friends and Household: the same avatar, size, status dot and words.
 // A tile with an action (on Home: show them on the Map) is a button; anyone else is not.
-// Poking is a secondary action in the tile's own ••• menu, never part of the tap on the person.
+// A tap on the person opens them on the Map. Poking is a press and hold: the tile shakes while held and
+// pokes when the hold completes; letting go early, or scrolling, does nothing.
 //
 // person: {id, userId, name, self, status:{text,tone}, role, onSelect}
 export default function PeopleGrid({people,photos=null,selfId=null,selfAvatar=null,label}){
@@ -24,25 +25,31 @@ function PokeLine({poke}){
  return <span className={`person-tile-poke person-tile-poke--${poke.state}`} role="status">{POKE_TEXT[poke.state]}{poke.state==='failed'&&poke.message?` · ${poke.message}`:''}</span>;
 }
 
-// The ••• button and its one-item menu. A separate control from the tile, with its own touch target.
-function MoreMenu({name,onPoke}){
- const [open,setOpen]=useState(false);
- const box=useRef(null);
- useEffect(()=>{
-  if(!open)return undefined;
-  const outside=event=>{if(box.current&&!box.current.contains(event.target))setOpen(false);};
-  const escape=event=>{if(event.key==='Escape')setOpen(false);};
-  document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
-  return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
- },[open]);
- // Tabbing out of the control closes the menu too.
- return <div className="person-more" ref={box} onBlur={event=>{if(open&&!event.currentTarget.contains(event.relatedTarget))setOpen(false);}}>
-  <button type="button" className="person-more-button" aria-label={`More actions for ${name}`} aria-haspopup="menu" aria-expanded={open} onClick={()=>setOpen(value=>!value)}><MoreHorizontal size={18} aria-hidden="true"/></button>
-  {open&&<div className="person-more-menu" role="menu"><button type="button" role="menuitem" onClick={()=>{setOpen(false);onPoke();}}>Poke {name}</button></div>}
- </div>;
+// Press and hold. The shake starts a moment into the hold so a normal tap never flickers; the poke is
+// sent when the hold completes. The click that follows the release is swallowed, so a poke never also navigates.
+export const SHAKE_AFTER_MS=250,HOLD_MS=700,MOVE_LIMIT=12;
+function useHoldToPoke(onPoke){
+ const timers=useRef([]),start=useRef(null),fired=useRef(false);
+ const [holding,setHolding]=useState(false);
+ const clear=()=>{timers.current.forEach(clearTimeout);timers.current=[];setHolding(false);};
+ useEffect(()=>()=>timers.current.forEach(clearTimeout),[]);
+ if(!onPoke)return {holding:false,handlers:{}};
+ return {holding,handlers:{
+  onPointerDown:event=>{
+   if(event.button>0)return;
+   fired.current=false;start.current={x:event.clientX,y:event.clientY};
+   timers.current=[setTimeout(()=>setHolding(true),SHAKE_AFTER_MS),setTimeout(()=>{fired.current=true;clear();onPoke();},HOLD_MS)];
+  },
+  onPointerMove:event=>{if(start.current&&timers.current.length&&Math.hypot(event.clientX-start.current.x,event.clientY-start.current.y)>MOVE_LIMIT)clear();},
+  onPointerUp:clear,onPointerCancel:clear,onPointerLeave:clear,
+  onContextMenu:event=>event.preventDefault(),
+  // The tap that ends a completed hold must not open the Map.
+  onClickCapture:event=>{if(fired.current){fired.current=false;event.stopPropagation();event.preventDefault();}}
+ }};
 }
 
 export function PersonTile({person,photos,selfId,selfAvatar}){
+ const hold=useHoldToPoke(person.onSelect?person.onPoke:null);
  const name=person.name||'Person';
  const shown=person.self?'You':name;
  const body=<>
@@ -54,8 +61,9 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  </>;
  const description=[shown,person.status?.text,person.role].filter(Boolean).join(', ');
  const tile=person.onSelect
-  ?<button type="button" className="person-tile is-button" aria-label={`${person.actionLabel||`Show ${shown} on the map.`} ${person.status?.text||''}`.trim()} onClick={person.onSelect}>{body}</button>
+  ?<button type="button" className={`person-tile is-button${person.onPoke?' person-tile--holdable':''}${hold.holding?' is-holding':''}`} aria-label={`${person.actionLabel||`Show ${shown} on the map.`} ${person.status?.text||''}`.trim()} aria-description={person.onPoke?`Press and hold to poke ${shown}.`:undefined} onClick={person.onSelect} {...hold.handlers}>{body}</button>
   :null;
- if(tile&&person.onPoke)return <div className="person-tile-wrap">{tile}<MoreMenu name={shown} onPoke={person.onPoke}/></div>;
+ // Screen readers and keyboards cannot hold: they get a hidden, focusable Poke button.
+ if(tile&&person.onPoke)return <div className="person-tile-wrap">{tile}<button type="button" className="sr-only" onClick={person.onPoke}>Poke {shown}</button></div>;
  return tile||<div className="person-tile" role="group" aria-label={description}>{body}</div>;
 }
