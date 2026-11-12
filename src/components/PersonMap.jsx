@@ -31,6 +31,14 @@ function useToday(timeZone){
 
 const fresh=forOwner=>({owner:forOwner,picked:null,scrub:null,notice:'',locate:null});
 
+// What an empty day means. A drive reaches other people's maps once the phone that recorded it has backed it up (the
+// live position is sent on its own, in the background), so for someone else's day the note says so instead of implying
+// they chose not to share.
+function emptyNote({isSelf,isToday,name}){
+ if(isSelf)return isToday?'No movement recorded yet today.':'Nothing recorded for this day.';
+ const who=name||'This person';
+ return isToday?`No recorded drives from ${who} yet today. Drives appear here once ${who}'s phone has backed them up.`:`Nothing shared by ${who} for this day.`;
+}
 export default function PersonMap({person,personPin=null,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs}){
  const owner=person?.userId||'';
  const isSelf=owner===viewer;
@@ -127,7 +135,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const personDay=useMemo(()=>payload?{payload,onStep,date:date_,onControl,onLocate,locating}:null,[payload,onStep,date_,onControl,onLocate,locating]);
  // Slots are fixed so the map keeps its place in the tree (and is never re-created) whether
  // a person is selected or not. Everything but the map is one line, below it, only when it has something to say.
- const status=!person?'':error?error:notice?notice:loading?'Loading…':day.isEmpty?(isToday?'No movement shared yet today.':'Nothing shared for this day.'):'';
+ const status=!person?'':error?error:notice?notice:loading?'Loading…':day.isEmpty?emptyNote({isSelf,isToday,name}):'';
  return <>
   <div className={person?'person-map-canvas':'map-canvas'}>
    {renderMap(personDay)}

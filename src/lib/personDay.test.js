@@ -248,3 +248,27 @@ it('does not draw the same finalised activity as both recorded and live while co
  const day=composeDay({date,timeZone:SYD,now:t+20,rows:[r],live});
  expect(day.recorded).toHaveLength(1);expect(day.live).toEqual([]);expect(day.samples).toHaveLength(2);
 });
+
+describe('a household member\'s earlier recordings, as the database publishes them',()=>{
+ // Exactly the row my_shared_day returns for a snapshot made by household_snapshot: latitude, longitude, segment and an
+ // epoch-second capture time `t`; a stretch hidden near Home leaves a jump in `segment`; an activity masked entirely has no points.
+ const date='2026-11-09',w=dayWindow(date,SYD);
+ const row=(id,offset,points)=>({activity_id:id,title:'Trip',activity:'Driving',started_at:new Date((w.start+offset)*1000).toISOString(),ended_at:new Date((w.start+offset+1200)*1000).toISOString(),roads:{},points});
+ const pts=offset=>[0,60,120,600,660].map((d,i)=>({latitude:-34.5-i*0.01,longitude:150.8+i*0.01,segment:i<3?0:1,t:w.start+offset+d}));
+ const rows=[row('a1',3600,pts(3600)),row('a2',20000,pts(20000)),row('a3',40000,[])];
+ it('draws every recorded route on its day, one marker each, with the capture times kept for the slider',()=>{
+  const day=composeDay({rows,timeZone:SYD,date,now:w.end+86400});
+  expect(day.activities.map(a=>a.id)).toEqual(['a1','a2']);                  // the fully masked one adds nothing, and breaks nothing
+  expect(day.recorded).toHaveLength(4);                                       // two segments each, cut where the hidden stretch was
+  expect(day.markers.map(m=>m.activityID)).toEqual(['a1','a2']);
+  expect(day.samples.length).toBe(10);
+  expect(day.isEmpty).toBe(false);
+ });
+ it('shows nothing, and says it is empty, for a day the person has no recordings on',()=>{
+  expect(composeDay({rows:[],timeZone:SYD,date:addDays(date,1),now:w.end+86400}).isEmpty).toBe(true);
+ });
+ it('does not draw the same recording twice when it is also a live trail that finished',()=>{
+  const day=composeDay({rows,live:{ref:'A1',points:[[-34.5,150.8,w.start+3600,0],[-34.6,150.9,w.start+3700,0]],roads:{}},timeZone:SYD,date,now:w.start+4000});
+  expect(day.live).toEqual([]);
+ });
+});

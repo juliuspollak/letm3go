@@ -196,6 +196,20 @@ describe('person map',()=>{
   act(()=>mock.onStep('a'));
   expect(open).toHaveBeenCalledWith('a');
  });
+ it('on my own map an empty day just says nothing is recorded',()=>{
+  mock.empty=true;
+  setup({person:{...person,userId:'me',name:'Me'}});
+  expect(document.querySelector('.person-map-note').textContent).toBe('No movement recorded yet today.');
+  control('pday:prev');
+  expect(document.querySelector('.person-map-note').textContent).toBe('Nothing recorded for this day.');
+ });
+ it('explains an empty day for someone else: their drives appear once their phone has backed them up',()=>{
+  mock.empty=true;
+  setup();
+  expect(document.querySelector('.person-map-note').textContent).toBe("No recorded drives from Julia yet today. Drives appear here once Julia's phone has backed them up.");
+  control('pday:prev');
+  expect(document.querySelector('.person-map-note').textContent).toBe('Nothing shared by Julia for this day.');
+ });
  it('says something only when it has something to say, in one line below the map',()=>{
   setup();
   expect(document.querySelector('.person-map-note')).toBeNull();
