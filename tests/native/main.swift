@@ -5361,3 +5361,14 @@ check(ActivityClusterPolicy.shouldZoom(spreadMetres:100,cameraDistance:2000), "s
 check(!ActivityClusterPolicy.shouldZoom(spreadMetres:0,cameraDistance:2000), "coincident starts offer an activity chooser instead of false offsets")
 check(!ActivityClusterPolicy.shouldZoom(spreadMetres:30,cameraDistance:100), "close-zoom clusters expose every activity through the chooser")
 print("Final native assertion count including visible trails and activity clusters: \(assertions)")
+
+let safePreferences=try AccountPreferencesJSON.data(["onboardingStep":2,"syncReceipts":["a":["updatedAt":NSNull(),"revision":3]]])
+let safePreferencesObject=try JSONSerialization.jsonObject(with:safePreferences)
+check(JSONSerialization.isValidJSONObject(safePreferencesObject), "normalised optional settings serialize successfully")
+for invalid in [Double.nan,Double.infinity,-Double.infinity] {
+    do {
+        _ = try AccountPreferencesJSON.data(["syncReceipts":["a":["updatedAt":invalid]]])
+        check(false,"invalid preference numbers must be rejected before the JSON writer")
+    } catch {check(true,"non-finite nested preferences are rejected without an Objective-C abort")}
+}
+print("Final native assertion count including preference JSON validation: \(assertions)")

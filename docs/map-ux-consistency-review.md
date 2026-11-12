@@ -38,3 +38,11 @@ A physical iPhone is still needed to verify touch tolerance on dense overlapping
 Day RPC rows provide saved display geometry and start/end times, not authoritative total distance/active duration. The preview therefore labels approximate observed distance as “recorded” (excluding gaps and estimates); elapsed duration can include pauses and span midnight. The existing detail screen remains the source for full activity totals. A type filter withholds untyped live trails rather than guessing their activity. Geometry stays bounded; the selected saved activity is prioritised within that bound. Selecting a route in full screen returns to the embedded map for its preview.
 
 The user's pre-existing line-ending-only `ios/App/CapApp-SPM/Package.swift` change is excluded from the PR. No TestFlight upload or merge is part of this request.
+
+## Startup crash found on the iPhone
+
+Device crash reports and a console reproduction identified `SIGABRT` from `SecureSessionPlugin.savePreferences`: Foundation raised `NSInvalidArgumentException: Invalid number value (NaN) in JSON write`. Swift `do/catch` cannot catch that Objective-C exception. This was a preferences-write failure on the main thread, not an inferred rendering failure. The exact upstream producer/field of the non-finite value was not identified from the crash report.
+
+Preferences now pass through standard JSON normalisation before the native bridge (non-finite optional numbers become null, undefined keys are omitted, unsupported/cyclic objects reject before persistence). The native boundary separately calls `JSONSerialization.isValidJSONObject` before writing, returning a rejected call while retaining saved settings if an invalid bridge object arrives. No account settings or recordings were cleared.
+
+Validation: 19 auth/preferences JavaScript tests passed; 2,194 native assertions passed, including nested NaN and both infinities rejected without invoking the JSON writer. Lint and the signed physical-device build/install passed. The repaired build was launched on Julius's iPhone under console observation to check startup survival; this does not establish all map interactions or long-term background stability.

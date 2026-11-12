@@ -20,3 +20,14 @@ struct AppleAuthChallenge {
         return try AppleAuthChallenge(nonce:random(),state:random())
     }
 }
+
+// Foundation may raise an Objective-C exception for non-finite bridge numbers;
+// Swift do/catch cannot catch that. Validate before entering the JSON writer.
+enum AccountPreferencesJSON {
+    static func data(_ object:[String:Any]) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw NSError(domain:"AccountPreferences",code:1,userInfo:[NSLocalizedDescriptionKey:"Settings contain an invalid JSON value. Existing settings were kept."])
+        }
+        return try JSONSerialization.data(withJSONObject:object)
+    }
+}
