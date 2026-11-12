@@ -48,7 +48,7 @@ describe('person map',()=>{
   const pins=last().pins;
   expect(pins.filter(p=>p.kind==='step').map(p=>[p.label,p.title])).toEqual([['1','1. Home to work'],['2','2. Work to shops']]);
   expect(pins.find(p=>p.kind==='people')).toEqual(selectedPin);
-  expect(pins.some(p=>p.kind==='people')).toBe(false);
+  expect(pins.some(p=>p.kind==='friend-live')).toBe(false);
   expect(last().live.length).toBe(2);
   expect(mock.day.date.label).toBe('Today');
  });
