@@ -123,3 +123,16 @@ it('an activity that ends on another day shows only when it began', ()=>{
  expect(row.textContent).toMatch(/11:30 pm · /);
  expect(row.textContent).not.toMatch(/–/);
 });
+it('a swipe that starts on an arrow or the Today button moves one day only, not two', ()=>{
+ setup([trip('t','Today walk',at(0,9)),trip('y','Yesterday run',at(1,7)),trip('d','Older ride',at(2,7))]);
+ const previous=within(card()).getByRole('button',{name:'Previous day'});
+ fireEvent.touchStart(previous,{touches:[{clientX:300,clientY:100}]});
+ fireEvent.touchEnd(previous,{changedTouches:[{clientX:100,clientY:102}]});
+ fireEvent.click(previous); // the click that ends the swipe
+ expect(within(card()).getByRole('button',{name:/Yesterday run/})).toBeTruthy();
+});
+it('names an untitled activity by its type, and marks the Home page for its compact header', ()=>{
+ setup([trip('a','',at(0,9))]);
+ expect(within(card()).getByRole('button',{name:/Walking/})).toBeTruthy();
+ expect(document.querySelector('main .home-day')).toBeTruthy();
+});

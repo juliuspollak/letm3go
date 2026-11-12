@@ -1061,11 +1061,9 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 
 
 /* Compact, one-tap Home day summary. Date arrows remain separate tap targets. */
-.home-day-title strong{font-size:15px}.home-day-title span{font-size:11px;color:var(--muted)}
-.home-daily-stat>svg{color:var(--accent)}
+
 .home-daily-stat strong{font-family:Manrope,sans-serif;font-size:20px;color:var(--ink);white-space:nowrap}
 .home-daily-stat strong small{font-size:11px;font-weight:500}
-.home-daily-stat>span{font-size:11px}
 
 /* Let WebKit scroll vertically without waiting for JavaScript gesture arbitration. */
 .trips-activity-list,.trips-activity-list .trip-list-row{touch-action:pan-y pinch-zoom}
@@ -1204,12 +1202,13 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .recording-health-chip.is-compact{min-height:32px;margin-left:10px;padding:4px 10px;font-size:12px;white-space:nowrap}
 .recording-health-chip.is-compact.is-limited,.recording-health-chip.is-compact.is-unavailable{border-color:var(--health);background:color-mix(in srgb,var(--health) 16%,var(--surface));font-weight:700}
 .topbar>.mobile-brand{flex:0 0 auto}
-.topbar>.recording-health-chip{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.topbar>.recording-health-chip{flex:0 1 auto;min-width:0;overflow:hidden}
+.recording-health-label{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:inherit}
 .topbar>.top-actions{flex:0 0 auto}
 .topbar>.top-actions{margin-left:auto}
-main:has(.home-page) .topbar{margin-bottom:10px}
-@media(max-width:760px){main:has(.home-page) .topbar{height:calc(56px + env(safe-area-inset-top))}}
-.home-day{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:8px 10px 10px;margin-bottom:14px}
+main:has(.home-day) .topbar{margin-bottom:10px}
+@media(max-width:760px){main:has(.home-day) .topbar{height:calc(56px + env(safe-area-inset-top))}}
+.home-day{touch-action:pan-y;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:8px 10px 10px;margin-bottom:14px}
 .home-day-head{display:flex;align-items:center;gap:2px}
 .home-day-arrow{display:grid;place-items:center;width:44px;height:44px;flex:0 0 auto;border-radius:12px;color:var(--ink)}
 .home-day-arrow:disabled{opacity:.25}
