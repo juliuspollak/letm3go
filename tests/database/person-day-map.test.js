@@ -44,8 +44,9 @@ beforeAll(async()=>{
  for(const f of (await readdir('supabase/migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec(await readFile('supabase/migrations/'+f,'utf8'));
  // An activity from before anyone joined the household.
  for(const [id,start] of [[OLD,'2030-03-16 08:00+00'],[A,'2030-03-17 08:00+00'],[B,'2030-03-17 12:00+00']])
-  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
-   values('${id}','Trip','Driving','manual','${start}'::timestamptz,'${start}'::timestamptz+interval '30 minutes',1800,9000)`);
+  // With a route (automatic sharing only lists recordings that have one to show).
+  await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+   values('${id}','Trip','Driving','manual','${start}'::timestamptz,'${start}'::timestamptz+interval '30 minutes',1800,9000,'[{"latitude":-34.5,"longitude":150.8,"timestamp":1000,"segment":0},{"latitude":-34.6,"longitude":150.9,"timestamp":1100,"segment":0}]'::jsonb)`);
  await as('authenticated',owner,"select * from public.create_household('Family')");
  const code=(await as('authenticated',owner,'select public.create_friend_invite() as code')).rows[0].code;
  await as('authenticated',friend,`select public.accept_friend_invite('${code}')`);
@@ -132,8 +133,8 @@ it('only the owner\'s own choices are decisions: sharing by hand and keeping pri
 });
 it('an automatically shared activity that the system un-shares (an edit) is offered again; one the owner made private is not',async()=>{
  const id='cdcdcdcd-0000-4000-8000-00000000cd01';
- await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
-  values('${id}','Edited','Driving','manual',now()+interval '5 minutes',now()+interval '35 minutes',1800,9000)`);
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+  values('${id}','Edited','Driving','manual',now()+interval '5 minutes',now()+interval '35 minutes',1800,9000,'[{"latitude":-34.5,"longitude":150.8,"timestamp":1000,"segment":0},{"latitude":-34.6,"longitude":150.9,"timestamp":1100,"segment":0}]'::jsonb)`);
  await share(id,'household','household',[],'Edited',1900000000,true);
  await as('service_role','',`delete from public.shared_journeys where activity_id='${id}'`);     // what protect_activity does on an edit
  expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).toContain(id);
@@ -142,8 +143,8 @@ it('an automatically shared activity that the system un-shares (an edit) is offe
 });
 it('pending activities are newest first and the client can exclude ones it cannot publish',async()=>{
  const all=(await as('authenticated',owner,'select * from public.my_auto_share_pending(10)')).rows.map(r=>r.activity_id);
- await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
-  values('c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1','New','Driving','manual','2031-01-01 08:00+00','2031-01-01 08:30+00',1800,9000),('c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2','Newer','Driving','manual','2031-01-02 08:00+00','2031-01-02 08:30+00',1800,9000)`);
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+  values('c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1','New','Driving','manual','2031-01-01 08:00+00','2031-01-01 08:30+00',1800,9000,'[{"latitude":-34.5,"longitude":150.8,"timestamp":1000,"segment":0},{"latitude":-34.6,"longitude":150.9,"timestamp":1100,"segment":0}]'::jsonb),('c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2','Newer','Driving','manual','2031-01-02 08:00+00','2031-01-02 08:30+00',1800,9000,'[{"latitude":-34.5,"longitude":150.8,"timestamp":1000,"segment":0},{"latitude":-34.6,"longitude":150.9,"timestamp":1100,"segment":0}]'::jsonb)`);
  const now=(await as('authenticated',owner,'select * from public.my_auto_share_pending(10)')).rows.map(r=>r.activity_id);
  expect(now.slice(0,2)).toEqual(['c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2','c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1']);
  const skipped=(await as('authenticated',owner,"select * from public.my_auto_share_pending(10,array['c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2']::uuid[])")).rows.map(r=>r.activity_id);
@@ -235,8 +236,8 @@ it('publishing the same activity twice leaves one publication and one recipient 
  expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain(id);
 });
 it('marking a never-shared activity private by hand is remembered',async()=>{
- await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters)
-  values('bbbbbbbb-0000-4000-8000-00000000b001','Hand private','Driving','manual','2032-02-01 08:00+00','2032-02-01 08:30+00',1800,9000)`);
+ await as('authenticated',owner,`insert into public.activities(id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+  values('bbbbbbbb-0000-4000-8000-00000000b001','Hand private','Driving','manual','2032-02-01 08:00+00','2032-02-01 08:30+00',1800,9000,'[{"latitude":-34.5,"longitude":150.8,"timestamp":1000,"segment":0},{"latitude":-34.6,"longitude":150.9,"timestamp":1100,"segment":0}]'::jsonb)`);
  expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).toContain('bbbbbbbb-0000-4000-8000-00000000b001');
  await as('authenticated',owner,"select public.keep_activity_private('bbbbbbbb-0000-4000-8000-00000000b001')");
  expect((await as('authenticated',owner,'select * from public.my_auto_share_pending(25)')).rows.map(r=>r.activity_id)).not.toContain('bbbbbbbb-0000-4000-8000-00000000b001');

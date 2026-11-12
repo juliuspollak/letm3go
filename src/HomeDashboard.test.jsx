@@ -1,4 +1,4 @@
-import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import App from './App.jsx';
 import {emptyRecorder} from './lib/recorder.js';
