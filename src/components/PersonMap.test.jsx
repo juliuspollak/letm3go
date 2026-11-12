@@ -1,6 +1,6 @@
 import {act,cleanup,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const mock=vi.hoisted(()=>({empty:false,payloads:[],onStep:null,day:null,dayArgs:[],rpc:vi.fn(),mounts:0}));
+const mock=vi.hoisted(()=>({empty:false,error:'',loading:false,payloads:[],onStep:null,day:null,dayArgs:[],rpc:vi.fn(),mounts:0}));
 vi.mock('./AppleMap.jsx',async()=>{
  const {useEffect}=await import('react');
  function MockMap({payload,onStep,day}){mock.payloads.push(payload);mock.onStep=onStep;mock.day=day;useEffect(()=>{mock.mounts++;},[]);return <div data-testid="map"/>;}
@@ -17,7 +17,7 @@ vi.mock('../lib/usePersonDay.js',async()=>{
    points:[{latitude:-34.5,longitude:150.9,segment:0,t:w.start+t},{latitude:-34.6,longitude:150.9,segment:0,t:w.start+t+30},{latitude:-34.7,longitude:150.95,segment:1,t:w.start+t+600}]});
   const day=mock.empty?composeDay({date:args.date,timeZone:args.timeZone,now:Date.now()/1000,rows:[],live:null}):composeDay({date:args.date,timeZone:args.timeZone,now:Date.now()/1000,rows:[row('a',1000,'Home to work'),row('b',5000,'Work to shops')],
    live:{points:[[-34.8,151,w.start+8000,0],[-34.81,151,w.start+8060,0]],roads:{}}});
-  return {day,loading:false,error:''};
+  return {day,loading:mock.loading,error:mock.error};
  }};
 });
 import PersonMap from './PersonMap.jsx';
@@ -40,9 +40,15 @@ const last=()=>mock.payloads.at(-1);
 const control=id=>act(()=>mock.day.onControl(id));
 const locate=async()=>{await act(async()=>{await mock.day.onLocate();});};
 afterEach(cleanup);
-beforeEach(()=>{mock.empty=false;mock.mounts=0;mock.payloads.length=0;mock.dayArgs.length=0;mock.day=null;mock.rpc.mockReset();});
+beforeEach(()=>{mock.empty=false;mock.error='';mock.loading=false;mock.mounts=0;mock.payloads.length=0;mock.dayArgs.length=0;mock.day=null;mock.rpc.mockReset();});
 
 describe('person map activity bubble',()=>{
+ it('passes pending and failed day reads to the native map surface',()=>{
+  mock.loading=true;const {view}=setup();expect(last().status).toBe('Loading…');
+  mock.loading=false;mock.error='Could not load this day.';
+  view.rerender(<PersonMap person={person} viewer="me" timeZone={Z} renderMap={renderMap}/>);
+  expect(last().status).toBe('Could not load this day.');
+ });
  it('shows chronological flags and visible routes without a list, slider or preview below the map',()=>{
   setup();expect(last().pins.filter(p=>p.kind==='step').map(p=>p.label)).toEqual(['1','2']);
   expect(last().styled.every(r=>r.width===3.75)).toBe(true);
@@ -74,6 +80,8 @@ describe('person map activity bubble',()=>{
  it('reports an own activity not available on this phone instead of opening someone else’s detail',()=>{
   setup({person:{...person,userId:'me'},onOpenOwn:()=>false});act(()=>mock.onStep('a'));control('pday:open:a');
   expect(screen.getByText(/not on this phone/)).toBeTruthy();
+  expect(last().activityPreview.detail).toMatch(/not on this phone/);
+  act(()=>mock.onStep('b'));expect(last().activityPreview.detail).not.toMatch(/not on this phone/);
  });
  it('clears the bubble when authorised geometry is withdrawn',()=>{
   const {view}=setup();act(()=>mock.onStep('b'));mock.empty=true;

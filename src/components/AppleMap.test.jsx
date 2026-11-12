@@ -560,6 +560,8 @@ it('updates a native activity bubble incrementally without re-embedding',async()
  const {rerender}=render(<AppleMap payload={base} dynamic/>);await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
  rerender(<AppleMap payload={{...base,activityPreview:{activityID:'a',title:'Walk',detail:'Walking'}}} dynamic/>);
  await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({activityPreview:expect.objectContaining({activityID:'a'})})));
+ rerender(<AppleMap payload={{...base,status:'Could not load this day.'}} dynamic/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({status:'Could not load this day.'})));
  expect(mocks.embed).toHaveBeenCalledTimes(1);
 });
 it('reopens fullscreen once when returning to its saved map origin',async()=>{

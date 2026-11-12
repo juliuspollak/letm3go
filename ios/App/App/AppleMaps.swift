@@ -782,9 +782,11 @@ private struct MapContent {
     let scope:String?
     let selectedActivity:String?
     let activityPreview:[String:Any]?
+    let status:String
     init(_ options:[AnyHashable:Any]) {
         let isPersonDay=options["personDay"] as? Bool == true
         personDay=isPersonDay
+        status=isPersonDay ? String((options["status"] as? String ?? "").prefix(500)) : ""
         scope=options["scope"] as? String
         selectedActivity=options["selectedActivity"] as? String
         showsLocate=options["locate"] as? Bool == true
@@ -935,6 +937,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var selectedMarker:MKAnnotation?
     private(set) var densityDimmed=false
     private var activityPreviewKey:Data?
+    private var statusLabel:UILabel?
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
     private var locationButton:UIButton?
@@ -985,7 +988,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         hasher.combine(-2)
         for line in next.estimated {hasher.combine(line.count);for c in line {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         hasher.combine(next.muted)
-        for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.description);for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
+        for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.resolvedColor(with:map.traitCollection));for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         let key=hasher.finalize()
         if key != routeKey {
             overlayRebuilds+=1
@@ -1071,6 +1074,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         if let style=next.mapStyle,style != appliedStyle {applyMapStyle(map,style);appliedStyle=style}
         updateMapControls(next.controls)
         if isPeopleMap {installControls();applyIntent();plan();layoutIndicators();updateLocationButton(next.showsLocate && showsLayers)}
+        layoutStatus()
         layoutActivityFlags()
     }
     // MARK: Overview
@@ -1645,8 +1649,30 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let map=map else {return}
         let right=map.bounds.width-16
         compass?.frame=CGRect(x:right-38,y:compassTop ?? controlTop+44,width:40,height:40)
+        layoutStatus()
     }
 
+    // WKWebView content sits behind the embedded map; draw day notices in its native layer.
+    private func layoutStatus() {
+        guard let map=map else {return}
+        let text=content.activityPreview == nil ? content.status : ""
+        guard !text.isEmpty else {statusLabel?.isHidden=true;return}
+        let label:UILabel
+        if let existing=statusLabel {label=existing}
+        else {
+            label=UILabel();label.font=UIFont.preferredFont(forTextStyle:.footnote)
+            label.adjustsFontForContentSizeCategory=true;label.numberOfLines=0
+            label.textColor = .label;label.backgroundColor = .secondarySystemBackground
+            label.layer.cornerRadius=12;label.clipsToBounds=true;label.textAlignment = .center
+            map.addSubview(label);statusLabel=label
+        }
+        label.text=text;label.accessibilityLabel=text;label.isHidden=false
+        let width=max(1,min(400,map.bounds.width-88))
+        let height=label.sizeThatFits(CGSize(width:max(1,width-20),height:CGFloat.greatestFiniteMagnitude)).height+20
+        let visibleHeight=min(height,max(40,map.bounds.height-map.safeAreaInsets.bottom-64))
+        label.frame=CGRect(x:12,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-visibleHeight-44),width:width,height:visibleHeight)
+        map.bringSubviewToFront(label)
+    }
     // MARK: Edge avatars
     func trackActivityFlag(_ view:MKAnnotationView) {
         guard let flag=view as? ActivityFlagView else {return}
@@ -1706,6 +1732,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let attribution=bounds.height-map.layoutMargins.bottom
         blocked.append(CGRect(x:0,y:attribution-34,width:130,height:34))
         if let card=cardFrame {blocked.append(card.insetBy(dx:-6,dy:-6))}
+        if let label=statusLabel,!label.isHidden {blocked.append(label.frame.insetBy(dx:-6,dy:-6))}
         blocked.append(contentsOf:exclusions())
         let placements=EdgeIndicatorLayout.place(items,bounds:bounds.insetBy(dx:6,dy:6),rail:bounds.insetBy(dx:8+size/2,dy:8+size/2),exclusions:blocked,size:size,spacing:size+6)
         var shown=Set<String>()
@@ -1756,8 +1783,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         recognizers.removeAll()
         for button in indicators.values {button.removeFromSuperview()}
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
-        ([compass,card,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
-        compass=nil;card=nil;locationButton=nil
+        ([compass,card,locationButton,statusLabel] as [UIView?]).forEach{$0?.removeFromSuperview()}
+        compass=nil;card=nil;locationButton=nil;statusLabel=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
         controlViews.forEach{$0.removeFromSuperview()};controlViews=[];controlsKey=nil;panelScroll=nil;panelID=nil
         panelTap?.view?.removeGestureRecognizer(panelTap!);panelTap=nil

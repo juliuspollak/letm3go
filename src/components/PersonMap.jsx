@@ -63,10 +63,12 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const day=useMemo(()=>filterPersonDay(loadedDay,mine.activity),[loadedDay,mine.activity]);
  const selected=day.activities.find(a=>a.id===mine.selected);
  const isToday=date===today;
+ const name=person?.name;
+ const status=!person?'':error?error:notice?notice:loading?'Loading…':mine.activity&&day.isEmpty?'No activities match this filter.':day.isEmpty?emptyNote({isSelf,isToday,name}):'';
  const activityPreview=useMemo(()=>selected?{
   activityID:selected.id,title:selected.title,symbol:activitySymbol(selected.activity||''),
-  detail:`${activityLabel(selected.activity)||'Activity'} · ${clock(selected.startedAt,timeZone)} · ${formatDuration(selected.durationSeconds)} · ~${distanceText(recordedDistance(selected)/1000,unit)} recorded`,
- }:null,[selected,timeZone,unit]);
+  detail:notice||`${activityLabel(selected.activity)||'Activity'} · ${clock(selected.startedAt,timeZone)} · ${formatDuration(selected.durationSeconds)} · ~${distanceText(recordedDistance(selected)/1000,unit)} recorded`,
+ }:null,[selected,timeZone,unit,notice]);
  const savedRoutes=useMemo(()=>personRoutes(day,selected?.id),[day,selected]);
  const payload=useMemo(()=>{
   if(!owner)return null;
@@ -80,9 +82,8 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   // Never show a current position on a historical day or when its owner is hidden.
   if(isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self')))pins.push(personPin);
   // scope changes pause following without reframing; only an explicit Locate focus moves the camera.
-  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,isToday,isSelf,personPin,owner,date,locate,selected,savedRoutes,activityPreview]);
- const name=person?.name;
+  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,status,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
+ },[day,isToday,isSelf,personPin,owner,date,locate,selected,savedRoutes,activityPreview,status]);
  const openActivity=useCallback((id,options={})=>{
   if(isSelf){
    // My own activity: opened from this phone's copy. One that is only in the cloud (another
@@ -93,7 +94,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   update({picked:date});
   onOpenShared?.(id,{userId:owner,name},options);
  },[isSelf,owner,name,onOpenOwn,onOpenShared,update,date]);
- const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id});},[day.activities,update]);
+ const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id,notice:''});},[day.activities,update]);
  // Days from the map's own date bar (native, over the map): same actions as before, no extra toolbar row.
  const date_=useMemo(()=>({
   label:dateLabel(date,today),
@@ -106,9 +107,9 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const onControl=useCallback(id=>{
   const [,action,...parts]=id.split(':');
   if(action==='open'||action==='open-fullscreen'){if(selected&&(!parts.length||parts.join(':')===selected.id))openActivity(selected.id,{fullscreen:action==='open-fullscreen'});}
-  else if(action==='clear'){if(!parts.length||parts.join(':')===selected?.id)update({selected:null});}
-  else if(id.startsWith('pday:activity:'))update({activity:id.slice('pday:activity:'.length),selected:null});
-  else if(id==='pday:reset')update({activity:'',selected:null});
+  else if(action==='clear'){if(!parts.length||parts.join(':')===selected?.id)update({selected:null,notice:''});}
+  else if(id.startsWith('pday:activity:'))update({activity:id.slice('pday:activity:'.length),selected:null,notice:''});
+  else if(id==='pday:reset')update({activity:'',selected:null,notice:''});
   else if(id==='pday:prev')update({picked:addDays(date,-1),locate:null,notice:'',selected:null});
   else if(id==='pday:next'){const next=addDays(date,1);update({picked:next>=today?null:next,locate:null,notice:'',selected:null});}
   else if(id==='pday:today')update({picked:null,locate:null,notice:'',selected:null});
@@ -136,8 +137,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  }),[mine.activity,loadedDay.activities]);
  const personDay=useMemo(()=>payload?{payload,onStep,date:date_,onControl,onLocate,locating,filters}:null,[payload,onStep,date_,onControl,onLocate,locating,filters]);
  // Slots are fixed so the map keeps its place in the tree (and is never re-created) whether
- // a person is selected or not. Everything but the map is one line, below it, only when it has something to say.
- const status=!person?'':error?error:notice?notice:loading?'Loading…':mine.activity&&day.isEmpty?'No activities match this filter.':day.isEmpty?emptyNote({isSelf,isToday,name}):'';
+ // a person is selected or not. Day notices stay within the map surface.
  return <div className={person?'person-map-canvas':'map-canvas'}>
   {/* The render slot forwards event callbacks, never invokes them during render. */}
   {/* eslint-disable-next-line react-hooks/refs */}

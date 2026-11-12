@@ -1,6 +1,6 @@
 # Map UX consistency review
 
-Base: `origin/main` at `e6e0578` (#69). Branch: `improve/map-ux-consistency`, PR #70. This is review work: no merge or TestFlight release is authorised.
+Base: `origin/main` at `e6e0578` (#69). Branch: `improve/map-ux-consistency`, PR #70. The subsequent user request authorises full-branch review, merge to main after successful checks, and TestFlight upload.
 
 ## Existing problems and resulting behaviour
 
@@ -56,7 +56,7 @@ Physical-device crash reports and a console reproduction identified `SIGABRT` in
 - iOS Simulator build and final signed physical-device build/install: passed. The final build was installed and launched on Julius's iPhone.
 - `git diff --check`: passed. The pre-existing line-ending-only `ios/App/CapApp-SPM/Package.swift` change is excluded.
 
-Review checked annotation reuse and ownership, native versus fallback bubbles, source versus expanded flag hit handling, duplicate callbacks, full-screen action routing, stale selection/permission handling, Back-state lifetime and display bounds. Findings fixed include source/cluster visibility handling, off-screen preview design, stale Open actions, map scope loss during own-detail navigation, filtered fan members and restoration of MapKit-owned alpha values. Tests for the removed list/slider were replaced with tests of the bubble and navigation contract. No remaining blocking code finding was identified.
+Review checked annotation reuse and ownership, native versus fallback bubbles, source and cluster flag hit handling, duplicate callbacks, full-screen action routing, stale selection/permission handling, Back-state lifetime and display bounds. Findings fixed include source/cluster visibility handling, off-screen preview design, stale Open actions, map scope loss during own-detail navigation, filtered fan members and restoration of MapKit-owned alpha values. Tests for the removed list/slider were replaced with tests of the bubble and navigation contract. No remaining blocking code finding was identified.
 
 ## Physical validation still required
 
@@ -66,3 +66,18 @@ Day data contains saved display geometry and start/end times rather than authori
 
 
 The latest change was verified with 89 focused JavaScript tests (person map, map bridge, toolbar and Back navigation), lint, native Swift tests and a signed device build/install. Tests specific to the deleted fan-out were removed and replaced with zoom-only bounds tests. The prior full-suite results above refer to the bubble/navigation implementation before this removal.
+
+
+## Final full-branch review
+
+Reviewed the final branch against `e6e0578`, including startup preference persistence, annotation reuse and collision placement, route and cluster tap routing, incremental bridge updates, bounded geometry, selection invalidation, fullscreen routing and map-origin Back restoration.
+
+Two additional findings were corrected before merge:
+
+- Static overlay reuse hashed `UIColor.description`, whose debug representation can contain instance identity for equivalent dynamic colours. It now hashes the colour resolved for the map's traits, avoiding unnecessary route replacement on unchanged payloads.
+- React loading/error notices inside the canvas could be covered by the embedded UIKit map. Person-day status is now forwarded incrementally and shown in the native map layer. Failed Open/Locate messages appear inside an existing activity bubble when selected; changing or clearing selection clears the old notice. Status labels are included in edge-avatar exclusions and removed on detach. Regression tests cover loading/error payloads, failed Open visibility and clearing, and status updates without re-embedding.
+
+Physical MapKit interaction and performance validation remains a separate requirement described above; no remaining blocking code-review finding was identified. No migration or Edge Function deployment is required by this branch.
+
+
+Final review verification: `npm run check` passed with 1,944 tests across 209 files, zero-warning lint, web build and 52 orchestrator passes / 11 Windows-only skips. Native tests passed 2,208 assertions; native activity-detail tests passed 124 assertions. All seven Edge Function type checks passed. Release configuration and App Store Connect preflight passed. The final iOS simulator build and `git diff --check` passed. Existing web bundle warnings and native test fixture warnings remain. The unrelated `Package.swift` line-ending change remains excluded.
