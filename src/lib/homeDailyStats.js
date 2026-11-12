@@ -44,3 +44,7 @@ export function dailyJourneyTotals(journeys,selection,today){
  }
  return {count:journeys.length,distanceMeters,durationSeconds,estimated};
 }
+
+// The latest of the activities already chosen for the selected day (the same list the totals use): the Home
+// card's latest-activity row always belongs to the day it is showing.
+export const latestJourneyOfDay=journeys=>journeys.reduce((latest,journey)=>!latest||(journey.startedAt||0)>(latest.startedAt||0)?journey:latest,null);
