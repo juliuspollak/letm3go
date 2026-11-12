@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { appleMaps, appleMapsAvailable, forgetOverview, sendOverview } from '../lib/appleMaps.js';
 import MapControls from './MapLayers.jsx';
 import {newUUID} from '../lib/uuid.js';
-import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
-import {geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
+import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,recordMapLayout,snapshot as mapDiagnosticsSnapshot} from '../lib/mapDiagnostics.js';
+import {frameMatches,geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
 
 // `overview` is the Map overview's density/photo data (lib/mapOverview.js); it is
 // sent to the native map once per key and the payload names only the key.
@@ -23,6 +23,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  const frozenHeight=useRef(0);
  const embeddedOnce=useRef(false);
  const embedSent=useRef(false);
+ // Every frame request carries the next number, taken when the page MEASURES (not when the call is made),
+ // so the native side can ignore one that was measured before a request it has already applied.
+ const layoutSeq=useRef(0);
  const fittedViewport=useRef(null);
  const fittedContent=useRef({positions:false,focus:false});
  const openingFullscreen=useRef(false);
@@ -141,7 +144,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  useEffect(()=>{
   if(!appleMapsAvailable()||picker)return;
   if(!embeddedEnabled){const wasEmbedded=embeddedOnce.current;embeddedOnce.current=false;if(wasEmbedded)recordMapEvent('unembed',{reason:'disabled'});void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>setEmbedded(false));return;}
-  let active=true;let previous='';
+  let active=true;let previous='';let heals=0;let lastReported='';
   // The overview data must reach the native side before a payload names it.
   // false: the overview did not arrive, so it is left out of this embed rather
   // than named and drawn empty.
@@ -149,6 +152,33 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   const content=contentRef.current;
   const positions=content.routes.some(route=>route.length)||content.pins.length>0;
   const focus=Boolean(content.focus);
+  // Moves the existing native map to a measured frame, then checks where it really is.
+  const sendResize=geometry=>{
+   const layoutNumber=++layoutSeq.current;
+   recordMapEvent('resize',{width:geometry.width,height:geometry.height});
+   void appleMaps.resize({mapID,x:geometry.x,y:geometry.y,pageX:geometry.pageX,pageY:geometry.pageY,layoutSeq:layoutNumber,width:geometry.width,height:geometry.height})
+    .then(result=>{if(result?.missing){previous='';if(active)mount();return;}verify(result?.frame,layoutNumber);})
+    .catch(()=>{previous='';if(active)mount();});
+  };
+  // The native side reports the frame it applied, in the page's own coordinates. If the page has moved on
+  // (layout changed while the request was in flight) or the two ever disagree, the map is moved to what the
+  // page measures now. Bounded, so it can never loop; a real layout change starts the count again.
+  const verify=(frame,answered)=>{
+   // An answer to a request that a newer one has replaced says nothing about where the map is going to be:
+   // the newer request is checked when it answers.
+   if(!active||!frame||!mapSurface.current||answered!==layoutSeq.current)return;
+   const now=surfaceGeometry(mapSurface.current,window);
+   if(now)recordMapLayout({html:{x:now.pageX,y:now.pageY,width:now.width,height:now.height},native:frame,scrollY:now.scrollY,navTop:now.navTop,viewportHeight:now.viewportHeight,seq:layoutSeq.current,matches:frameMatches(frame,now)});
+   if(!now?.visible||frameMatches(frame,now))return;
+   // Moving the map did not change where the native side says it is: the two measure from different
+   // origins by a constant, which more moves cannot fix. Stop, and leave the evidence in the diagnostics.
+   const reported=[frame.x,frame.y,frame.width,frame.height].join(':');
+   if(heals>=3||reported===lastReported){recordMapEvent('heal-gave-up');return;}
+   lastReported=reported;
+   heals++;recordMapEvent('heal',{attempt:heals});
+   previous=geometryKey(now);frozenHeight.current=now.height;
+   sendResize(now);
+  };
   const mount=(origin)=>{
    if(!active||openingFullscreen.current||!mapSurface.current)return;
    const surface=mapSurface.current;
@@ -171,25 +201,24 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const key=geometryKey(geometry);
    if(key===previous){if(origin==='scroll')recordMapEvent('scroll-ignored');return;}
+   heals=0;lastReported='';
    // A sheet detent, rotation or keyboard changes only the frame. Moving the map
    // the person is already looking at keeps its camera, overlays, selection and
    // gestures and costs one frame-sized bridge call instead of a full content
    // re-apply — this is what makes dragging the details sheet smooth.
    if(embeddedOnce.current&&previous&&typeof appleMaps.resize==='function'){
-    previous=key;frozenHeight.current=geometry.height;
-    recordMapEvent('resize',{width:geometry.width,height:geometry.height});
-    void appleMaps.resize({mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height})
-     .then(result=>{if(result?.missing){previous='';if(active)mount();}})
-     .catch(()=>{previous='';if(active)mount();});
+    previous=key;heals=0;frozenHeight.current=geometry.height;
+    sendResize(geometry);
     return;
    }
+   const layoutNumber=++layoutSeq.current;
    const preserveViewport=embeddedOnce.current&&fittedViewport.current===viewportKey&&(hasLayers||((!positions||fittedContent.current.positions)&&(!focus||fittedContent.current.focus)));previous=key;
    frozenHeight.current=geometry.height;
    recordMapEvent('embed',{preserveViewport});
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,width:geometry.width,height:geometry.height,preserveViewport};
+    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,pageX:geometry.pageX,pageY:geometry.pageY,layoutSeq:layoutNumber,width:geometry.width,height:geometry.height,preserveViewport};
     if(!arrived)delete request.overview;
     embedSent.current=true;
     return appleMaps.embed(request).then(result=>({arrived,result}));
@@ -197,6 +226,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
     if(!outcome||!active)return;
     embeddedOnce.current=true;fittedViewport.current=viewportKey;fittedContent.current={positions,focus};
     setEmbedded(true);setFrozen(null);
+    verify(outcome.result?.frame,layoutNumber);
     // The native side no longer has this overview (it keeps a few): send it
     // again once, then report it.
     if(outcome.result?.missingOverview&&overviewKey){
@@ -224,9 +254,18 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   frame=requestAnimationFrame(settle);
   const mutations=new MutationObserver(()=>{sampleFor(300);mount();});
   mutations.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','aria-modal','role']});
-  const observer=new ResizeObserver(()=>{sampleFor(300);mount();});if(mapSurface.current)observer.observe(mapSurface.current);
+  const observer=new ResizeObserver(()=>{sampleFor(300);mount();});
+  // The map can move without changing size: anything above it growing or shrinking changes its
+  // ancestors' sizes, and the tab bar's size sets where the map must stop, so all of them are watched.
+  for(let element=mapSurface.current;element&&element!==document.documentElement;element=element.parentElement)observer.observe(element);
+  const tabBar=document.querySelector('.mobile-nav');if(tabBar)observer.observe(tabBar);
   const resized=()=>mount();
-  window.addEventListener('resize',resized);
+  window.addEventListener('resize',resized);window.addEventListener('orientationchange',resized);window.addEventListener('pageshow',resized);
+  const viewport=window.visualViewport;viewport?.addEventListener?.('resize',resized);
+  // A CSS transition or animation moves things without any size event until it ends. Many end at once and
+  // most are nowhere near the map, so they are folded into one check per frame.
+  let queuedFrame=0;const queued=()=>{if(queuedFrame)return;queuedFrame=requestAnimationFrame(()=>{queuedFrame=0;mount();});};
+  document.addEventListener('transitionend',queued,true);document.addEventListener('animationend',queued,true);
   // A page scroll moves the native map with the WebView's own scroll view, so the
   // listener only has to handle maps inside an inner scroll container. mount()
   // compares document-space geometry, so an ordinary page scroll costs nothing -
@@ -234,7 +273,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   const scrolled=()=>{sampleFor(600);mount('scroll');};
   window.addEventListener('scroll',scrolled,{passive:true,capture:true});
   document.addEventListener('visibilitychange',resized);
-  return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
+  return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('orientationchange',resized);window.removeEventListener('pageshow',resized);viewport?.removeEventListener?.('resize',resized);document.removeEventListener('transitionend',queued,true);document.removeEventListener('animationend',queued,true);cancelAnimationFrame(queuedFrame);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
  },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
  useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...contentRef.current,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{recordMapEvent('snapshot');if(alive){setPreview({key:snapshotKey,image:result.image});setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[snapshotKey,large,themeVersion,overviewKey,overviewAttempt,embedded]);
  async function open(){

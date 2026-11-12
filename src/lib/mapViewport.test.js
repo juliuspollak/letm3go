@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {geometryKey,resizedOnly,sameGeometry,surfaceGeometry} from './mapViewport.js';
+import {frameMatches,geometryKey,resizedOnly,sameGeometry,surfaceGeometry} from './mapViewport.js';
 
 function surface(box){
  return {getBoundingClientRect:()=>box};
@@ -47,5 +47,28 @@ describe('native map placeholder geometry',()=>{
   expect(geometryKey(null)).toBe('');
   expect(sameGeometry(null,null)).toBe(false);
   expect(resizedOnly(null,null)).toBe(false);
+ });
+});
+
+describe('document coordinates and the frame check',()=>{
+ const box={x:16,y:96,top:96,bottom:616,left:16,right:359,width:343,height:520};
+ it('adds the page\'s own scroll position to the viewport position, at the same moment',()=>{
+  const g=surfaceGeometry(surface(box),win({scrollY:300,innerHeight:1400}));
+  expect(g).toMatchObject({x:16,y:96,pageX:16,pageY:396,scrollY:300});
+  // The page clamped to the top and the placeholder is where it was in the document.
+  const clamped=surfaceGeometry(surface({...box,y:396,top:396,bottom:916}),win({scrollY:0,innerHeight:1400}));
+  expect(clamped.pageY).toBe(396);expect(geometryKey(g)).toBe(geometryKey(clamped));
+ });
+ it('stops the frame above the tab bar and reports where that is',()=>{
+  const g=surfaceGeometry(surface({...box,height:900,bottom:996}),win({navTop:700,scrollY:50}));
+  expect(g.height).toBe(596); // 700 - 96 - 8
+  expect(g.navTop).toBe(700);expect(g.pageY+g.height).toBeLessThanOrEqual(700+50);
+ });
+ it('compares what the native side reports with what the page measures, within a point',()=>{
+  const g=surfaceGeometry(surface(box),win({scrollY:0}));
+  expect(frameMatches({x:16,y:96,width:343,height:520},g)).toBe(true);
+  expect(frameMatches({x:16.4,y:96.6,width:343,height:520},g)).toBe(true);
+  expect(frameMatches({x:16,y:496,width:343,height:520},g)).toBe(false); // 400 pt too low
+  expect(frameMatches(undefined,g)).toBe(true);expect(frameMatches({x:1,y:1,width:1,height:1},null)).toBe(true);
  });
 });

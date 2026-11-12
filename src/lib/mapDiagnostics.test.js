@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,resetMapDiagnostics,snapshot} from './mapDiagnostics.js';
+import {installMapDiagnostics,mapDiagnosticsEnabled,recordMapEvent,recordMapFrame,recordMapLayout,resetMapDiagnostics,snapshot} from './mapDiagnostics.js';
 
 afterEach(()=>{resetMapDiagnostics();localStorage.clear();});
 describe('map lifecycle counters',()=>{
@@ -95,4 +95,16 @@ it('reset clears live registrations so a stale release cannot remove a newer rea
  live();
  expect(window.letm3goMapDiagnostics).toBeUndefined();
 });
+});
+
+describe('layout record',()=>{
+ it('keeps the last layout the page and the native map reported, numbers only, and only when enabled',()=>{
+  recordMapLayout({html:{x:1,y:2,width:3,height:4},native:{x:1,y:2,width:3,height:4},matches:true});
+  expect(snapshot().layout).toBeNull();
+  localStorage.setItem('letm3go-map-diagnostics','1');
+  recordMapLayout({html:{x:1,y:2,width:3,height:4},native:{x:1,y:402,width:3,height:4},scrollY:0,navTop:700,seq:7,matches:false});
+  const state=snapshot();
+  expect(state.layout).toMatchObject({seq:7,matches:false,navTop:700,native:{y:402}});
+  expect(state.events).toHaveProperty('heal',0);expect(state.events).toHaveProperty('heal-gave-up',0);
+ });
 });

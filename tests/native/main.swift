@@ -5228,6 +5228,19 @@ do {
     check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_live_location")!)?.absoluteString == "https://x.supabase.co/rest/v1/rpc/append_live_trail", "trail endpoint follows the household endpoint")
     check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_friend_location")!)?.lastPathComponent == "append_live_trail", "trail endpoint follows the friend endpoint")
     check(LiveTrail.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/anything_else")!) == nil, "no trail endpoint for an unknown endpoint")
+    // Native map frame: document coordinates, never a later offset read.
+    let offsetAtApply = CGPoint(x: 0, y: 400)   // UIKit still reports the old Home scroll
+    let measured = (viewportY: 96.0, scrollY: 0.0) // the page had already clamped to the top
+    let old = MapFrame.resolve(pageX: nil, pageY: nil, x: 16, y: measured.viewportY, offset: offsetAtApply, width: 343, height: 520)
+    check(old.minY == 496, "the old arithmetic put the map 400 pt too low when the offsets came from different moments")
+    let fixed = MapFrame.resolve(pageX: 16, pageY: measured.viewportY + measured.scrollY, x: 16, y: measured.viewportY, offset: offsetAtApply, width: 343, height: 520)
+    check(fixed == CGRect(x: 16, y: 96, width: 343, height: 520), "document coordinates place the map where the page measured it, whatever the offset is now")
+    check(MapFrame.resolve(pageX: 16, pageY: 396, x: 16, y: 96, offset: CGPoint(x: 0, y: 0), width: 343, height: 520).minY == 396 && MapFrame.resolve(pageX: 16, pageY: 396, x: 16, y: 96, offset: CGPoint(x: 0, y: 9999), width: 343, height: 520).minY == 396, "the offset never changes a document-coordinate frame")
+    check(MapFrame.resolve(pageX: .nan, pageY: 5, x: 1, y: 2, offset: CGPoint(x: 3, y: 4), width: 10, height: 10) == CGRect(x: 4, y: 6, width: 10, height: 10), "an unusable page position falls back to the older arithmetic")
+    check(MapFrame.resolve(pageX: nil, pageY: nil, x: 16, y: 96, offset: CGPoint(x: 0, y: 0), width: 343, height: 520).minY == 96, "a web layer that sends no document position still works")
+    check(MapFrame.accepts(sequence: 5, lastApplied: 4) && MapFrame.accepts(sequence: 5, lastApplied: 5), "a newer or equal request is applied")
+    check(!MapFrame.accepts(sequence: 3, lastApplied: 5), "an older request cannot move the map back")
+    check(MapFrame.accepts(sequence: nil, lastApplied: 5) && MapFrame.accepts(sequence: 1, lastApplied: nil), "requests without numbers, and the first one, are applied")
 }
 do {
     check(DayFit.shouldFit(key: "a|d1", applied: nil, appliedWithRoutes: false, hasRoutes: true, hasPins: true), "the first day with lines is fitted")

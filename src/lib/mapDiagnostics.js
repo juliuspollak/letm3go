@@ -5,7 +5,16 @@
 const counters=new Map();
 const frames=[];
 
-export const MAP_EVENTS=['embed','resize','update','snapshot','hide','unembed','frozen','scroll-ignored','render','overlay'];
+export const MAP_EVENTS=['embed','resize','update','snapshot','hide','unembed','frozen','scroll-ignored','render','overlay','heal','heal-gave-up'];
+
+// The last layout the page and the native map agreed (or disagreed) on: numbers only, no positions of
+// people, so it can be read from a device to see where the map really is.
+let lastLayout=null;
+export function recordMapLayout(layout){
+ if(!mapDiagnosticsEnabled())return;
+ lastLayout={...layout,at:Date.now()};
+ publish();
+}
 
 // The global reader is installed only while the opt-in flag is set, so a release
 // build does not expose map internals (or pay for them) unless diagnostics were
@@ -67,11 +76,12 @@ export function snapshot(){
    worst:frames.length?Math.max(...frames):0,
    average:frames.length?Math.round(frames.reduce((sum,n)=>sum+n,0)/frames.length*10)/10:0
   },
+  layout:lastLayout,
   at:Date.now(),
  };
 }
 export function resetMapDiagnostics(){
- counters.clear();frames.length=0;readers.clear();
+ counters.clear();frames.length=0;readers.clear();lastLayout=null;
  if(typeof window!=='undefined'){delete window.__letm3goMapEvents;delete window.letm3goMapDiagnostics;}
 }
 // The diagnostics are opt-in and read-only; the UI and the performance notes use
