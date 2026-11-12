@@ -135,3 +135,14 @@ it('names an untitled activity by its type, and marks the Home page for its comp
  expect(within(card()).getByRole('button',{name:/Walking/})).toBeTruthy();
  expect(document.querySelector('main .home-day')).toBeTruthy();
 });
+it('names the weekday for days other than Today and Yesterday, with the date', ()=>{
+ setup([trip('d','Older ride',at(3,7))]);
+ expect(within(card()).getByRole('heading').textContent).toBe('Today · '+new Date().toLocaleDateString('en-AU',{day:'numeric',month:'long'}));
+ fireEvent.click(within(card()).getByRole('button',{name:'Previous day'}));
+ expect(within(card()).getByRole('heading').textContent).toMatch(/^Yesterday · /);
+ fireEvent.click(within(card()).getByRole('button',{name:'Previous day'}));
+ const day=new Date();day.setDate(day.getDate()-2);
+ const title=within(card()).getByRole('heading').textContent;
+ expect(title).toBe(day.toLocaleDateString('en-AU',{weekday:'long'})+' · '+day.toLocaleDateString('en-AU',{day:'numeric',month:'long'}));
+});
+
