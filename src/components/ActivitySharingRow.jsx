@@ -1,7 +1,6 @@
 import {useEffect,useState} from 'react';
 import Switch from './Switch.jsx';
 import {supabase} from '../lib/supabase.js';
-import HistorySharingRow from './HistorySharingRow.jsx';
 
 // Household members' new activities are shared with the household by default, from
 // the day they joined. This is the one place to stop that (and start it again). It
@@ -29,7 +28,6 @@ export default function ActivitySharingRow({client=supabase}){
     <span className="sharing-row-caption" aria-live="polite">{state.pending?'Updating…':state.enabled?`Shared with household automatically · you can make any one private${state.waiting?` · ${state.waiting} waiting to send, retried when you open the app`:''}`:'Not shared unless you choose'}</span></div>
    <Switch checked={state.enabled} pending={state.pending} label="Share new activities with my household" onChange={change}/>
   </div>
-  <HistorySharingRow client={client} autoEnabled={state.enabled}/>
   {state.error&&<p role="alert" className="error sharing-row-error">{state.error}</p>}
  </div>;
 }

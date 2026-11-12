@@ -70,3 +70,15 @@ Locate: **All people / Me** centre on my current location; **someone else, today
 Switching between **All people** and a person re-applies the map content once (as when a layer is toggled); person to person, day to day, Locate and scrubbing never do. Opening a friend's shared activity opens it over the Map, and coming back keeps the person on Today.
 
 Poke is separate from navigation: the small **👋 Poke** button under each person on Home (disabled while sending and while "✓ Poked" shows; a failure becomes **Retry poke**).
+
+## Household history (20261208000000)
+
+Household members share their completed activities with each other by default, with nothing to switch on: new ones from
+when each person joined, and, for the people already in a household when this migration runs, their earlier ones too (it
+moves their `since` back and publishes them). The migration builds each household copy in SQL (`household_snapshot`) from
+the route already stored in Supabase: Home and Work (if saved) are hidden exactly as `redactRoute` does it (a test compares
+the two), nothing is looked up again, and stored roads are reused. **A Home place is not required for a household share**
+(the household knows where Home is); friends and public links still need one. Anyone who chose "off" before is left alone;
+private activities stay private; a later joiner starts from joining. `publish_household_history(owner?)` can be run again
+(service role) and publishes nothing twice.
+

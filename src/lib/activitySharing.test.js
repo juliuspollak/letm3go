@@ -30,7 +30,7 @@ it('never publishes an unsupported private audience',async()=>{
  expect(c.functions.invoke).not.toHaveBeenCalled();
 });
 
-it('does not publish an unmasked activity before Home is configured',async()=>{
+it('does not publish an unmasked activity to friends or the public before Home is configured',async()=>{
  const c=client(),trip={id:'trip',source:'device',endedAt:100,points:[]};
  await expect(publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[]},id:'trip',receipts:{},checkpoint:vi.fn()})).rejects.toThrow('Home place');
  expect(syncPrivateActivities).not.toHaveBeenCalled();
@@ -69,4 +69,15 @@ it('marks an automatic publication so the server can refuse it if the activity b
  const trip={id:'trip',source:'device',endedAt:9,points:[{latitude:1,longitude:1}],activity:'Driving',details:{}};
  await publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[{kind:'home',latitude:1,longitude:1}]},id:'trip',reviewedTrip:trip,audience:'household',mode:'household',auto:true,receipts:{}});
  expect(c.functions.invoke.mock.calls.at(-1)[1].body.auto).toBe(true);
+});
+
+it('a household share does not need a saved Home place; friends and the public still do',async()=>{
+ syncPrivateActivities.mockResolvedValue({receipts:{}});
+ const trip={id:'trip',source:'device',endedAt:100,points:[]};
+ const c=client();
+ await publishActivity({client:c,state:{ownerID:owner,trips:[trip],places:[]},id:'trip',audience:'household',mode:'household',receipts:{},checkpoint:vi.fn()});
+ expect(c.functions.invoke).toHaveBeenCalledWith('journeys',expect.objectContaining({body:expect.objectContaining({action:'publish',audience:'household',mode:'household'})}));
+ const f=client();
+ await expect(publishActivity({client:f,state:{ownerID:owner,trips:[trip],places:[]},id:'trip',audience:'friends',mode:'friends',receipts:{},checkpoint:vi.fn()})).rejects.toThrow('Home place');
+ expect(f.functions.invoke).not.toHaveBeenCalled();
 });
