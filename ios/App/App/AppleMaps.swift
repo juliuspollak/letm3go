@@ -391,13 +391,18 @@ private final class PhotoCard:UIView {
     }
     required init?(coder:NSCoder){fatalError("init(coder:) unavailable")}
     func show(_ metadata:[String:Any]) {
-        if let photoID=metadata["photoID"] as? String,let image=journalPhotoImage(photoID,size:112,circle:false) {thumbnail.image=image;thumbnail.contentMode = .scaleAspectFill}
+        let activity=metadata["activityID"] as? String != nil
+        photoButton.isHidden=activity
+        journeyButton.configuration?.title=activity ? "Open activity" : "View journey"
+        closeButton.accessibilityLabel=activity ? "Close activity preview" : "Close photo preview"
+        if activity {thumbnail.preferredSymbolConfiguration=UIImage.SymbolConfiguration(pointSize:24,weight:.semibold);thumbnail.image=UIImage(systemName:metadata["symbol"] as? String ?? "figure.mixed.cardio");thumbnail.contentMode = .center}
+        else if let photoID=metadata["photoID"] as? String,let image=journalPhotoImage(photoID,size:112,circle:false) {thumbnail.image=image;thumbnail.contentMode = .scaleAspectFill}
         else {thumbnail.image=UIImage(systemName:"photo");thumbnail.contentMode = .center}
         let text={(value:Any?)->String? in (value as? String).flatMap{$0.isEmpty ? nil : $0}}
         titleLabel.text=text(metadata["journeyTitle"]) ?? text(metadata["title"]) ?? "Journey photo"
         let detail=[text(metadata["journeyDate"]),text(metadata["journeyDistance"])].compactMap{$0}
-        detailLabel.text=detail.joined(separator:" · ")
-        detailLabel.isHidden=detail.isEmpty
+        detailLabel.text=activity ? metadata["detail"] as? String : detail.joined(separator:" · ")
+        detailLabel.isHidden=detailLabel.text?.isEmpty != false
     }
 }
 
@@ -681,6 +686,14 @@ private func activityFlagImage(_ text:String,selected:Bool,cluster:Bool=false)->
 }
 private final class ActivityFlagView:MKAnnotationView {
     private let connector=CAShapeLayer()
+    private var directAction:(()->Void)?
+    func enableDirectTap(_ action:@escaping ()->Void) {
+        directAction=action
+        let tap=UITapGestureRecognizer(target:self,action:#selector(tapped))
+        tap.cancelsTouchesInView=true
+        addGestureRecognizer(tap)
+    }
+    @objc private func tapped(){directAction?()}
     func place(offset:CGPoint) {
         guard centerOffset != offset || connector.superlayer == nil else {return}
         if centerOffset != offset {centerOffset=offset}
@@ -717,7 +730,7 @@ private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation)->
     view.zPriority = .max;view.selectedZPriority = .max
     view.canShowCallout=false;view.isAccessibilityElement=true
     view.accessibilityTraits=selected ? [.button,.selected] : .button
-    view.accessibilityLabel=clustered ? "\(pins.count) activities. Zoom or choose an activity" : pins[0].title
+    view.accessibilityLabel=clustered ? "\(pins.count) activities. Zoom or expand activities" : pins[0].title
     return view
 }
 // Where the time slider says the person was: a ringed dot, nothing like the live avatar.
@@ -787,11 +800,16 @@ private struct MapContent {
     let personDay:Bool
     let scope:String?
     let selectedActivity:String?
+    let activityPreview:[String:Any]?
+    let expandedActivities:[String]
+    let fanPage:Int
     init(_ options:[AnyHashable:Any]) {
         let isPersonDay=options["personDay"] as? Bool == true
         personDay=isPersonDay
         scope=options["scope"] as? String
         selectedActivity=options["selectedActivity"] as? String
+        expandedActivities=Array((options["expandedActivities"] as? [String] ?? []).prefix(480))
+        fanPage=max(0,min(480,(options["fanPage"] as? NSNumber)?.intValue ?? 0))
         showsLocate=options["locate"] as? Bool == true
         locating=options["locating"] as? Bool == true
         focus=coordinate(options["focus"])
@@ -806,6 +824,11 @@ private struct MapContent {
             let width=(item["width"] as? NSNumber)?.doubleValue ?? 5
             return StyledRoute(coordinates:Array(points),color:(isPersonDay && item["color"] as? String == "accent" ? personTrailColor : hexColor(item["color"])).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
         }
+        if let preview=options["activityPreview"] as? [String:Any],let id=preview["activityID"] as? String,id==selectedActivity,
+           pins.contains(where:{$0["activityID"] as? String == id}) {
+            activityPreview=["activityID":id,"title":String((preview["title"] as? String ?? "Activity").prefix(160)),"detail":String((preview["detail"] as? String ?? "").prefix(300)),"symbol":String((preview["symbol"] as? String ?? "figure.mixed.cardio").prefix(60))]
+        }
+        else {activityPreview=nil}
         muted=options["muted"] as? Bool == true
         camera=CameraIntent(options["camera"])
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
@@ -894,8 +917,12 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var activityTapGate=ActivityTapGate()
     private let activityViews=NSHashTable<ActivityFlagView>.weakObjects()
     private var activityFootprints:[String:(size:CGSize,offset:CGPoint)]=[:]
-    private weak var activityChooser:UIAlertController?
-    private var chooserActivityIDs=Set<String>()
+    private let fanSuppressed=NSHashTable<ActivityFlagView>.weakObjects()
+    private var fanViews:[String:ActivityFlagView]=[:]
+    private var fanBar:UIStackView?
+    private var fanLabel:UIButton?
+    private var fanClose:UIButton?
+    private var nextFanPage=0
     private var lastFollowed:String?
     private var appliedFocusKey:String?
     var onActivity:((String)->Void)?
@@ -937,6 +964,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     // preview either way.
     private var selectedMarker:MKAnnotation?
     private(set) var densityDimmed=false
+    private var activityPreviewKey:Data?
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
     private var locationButton:UIButton?
@@ -963,8 +991,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
 
     func apply(_ next:MapContent) {
         let scopeChanged=content.scope != next.scope
-        let nextActivityIDs=Set(next.pins.filter{$0["kind"] as? String == "step"}.compactMap{$0["activityID"] as? String})
-        if activityChooser != nil && (scopeChanged || !chooserActivityIDs.isSubset(of:nextActivityIDs)) {activityChooser?.dismiss(animated:false);activityChooser=nil;chooserActivityIDs=[]}
         content=next
         activityFootprints=[:]
         if next.personDay {
@@ -1066,6 +1092,12 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             lastFollowed=nil;planner.resume(.free);modeChanged()
         }
         applyOverview(next.overview)
+        let previewKey=next.activityPreview.flatMap{try? JSONSerialization.data(withJSONObject:$0,options:[.sortedKeys])}
+        if previewKey != activityPreviewKey {
+            activityPreviewKey=previewKey
+            if let preview=next.activityPreview {showCard(preview)}
+            else if selectedPhoto == nil {hideCard(animated:false)}
+        }
         updateLocationButton(next.showsLocate && showsLayers)
         if let style=next.mapStyle,style != appliedStyle {applyMapStyle(map,style);appliedStyle=style}
         updateMapControls(next.controls)
@@ -1175,23 +1207,9 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             map.setVisibleMapRect(rect,edgePadding:UIEdgeInsets(top:70,left:50,bottom:70,right:50),animated:!UIAccessibility.isReduceMotionEnabled)
             return
         }
-        // Exact same-location starts cannot separate at any zoom. Keep their real
-        // coordinates and offer every authorised activity instead of inventing offsets.
-        var host=map.window?.rootViewController
-        while let presented=host?.presentedViewController {host=presented}
-        guard let host=host,!(host is UIAlertController) else {return}
-        let chooser=UIAlertController(title:"Activities here",message:nil,preferredStyle:.actionSheet)
         let ordered=members.sorted{(Int($0.metadata["label"] as? String ?? "") ?? 0)<(Int($1.metadata["label"] as? String ?? "") ?? 0)}
-        for pin in ordered {
-            guard let id=pin.metadata["activityID"] as? String else {continue}
-            chooser.addAction(UIAlertAction(title:pin.title,style:.default){[weak self] _ in self?.onActivity?(id)})
-        }
-        chooser.addAction(UIAlertAction(title:"Cancel",style:.cancel))
-        chooser.popoverPresentationController?.sourceView=map
-        let point=map.convert(cluster.coordinate,toPointTo:map)
-        chooser.popoverPresentationController?.sourceRect=CGRect(x:point.x,y:point.y,width:1,height:1)
-        chooserActivityIDs=Set(members.compactMap{$0.metadata["activityID"] as? String});activityChooser=chooser
-        host.present(chooser,animated:true)
+        let ids=ordered.compactMap{$0.metadata["activityID"] as? String}
+        onToolbarAction?("pday:expand:"+ids.joined(separator:","))
     }
     func clearSelection(animated:Bool) {
         guard selectedPhoto != nil || card != nil || !highlight.isEmpty else {return}
@@ -1211,8 +1229,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             let width=created.widthAnchor.constraint(equalTo:map.widthAnchor,constant:-24);width.priority = .defaultHigh
             NSLayoutConstraint.activate([bottom,width,created.centerXAnchor.constraint(equalTo:map.centerXAnchor),created.widthAnchor.constraint(lessThanOrEqualToConstant:440),
                 created.leadingAnchor.constraint(greaterThanOrEqualTo:map.leadingAnchor,constant:12),created.topAnchor.constraint(greaterThanOrEqualTo:map.topAnchor,constant:56)])
-            created.closeButton.addAction(UIAction{[weak self] _ in self?.clearSelection(animated:true)},for:.touchUpInside)
-            created.journeyButton.addAction(UIAction{[weak self] _ in self?.photoAction("journey")},for:.touchUpInside)
+            created.closeButton.addAction(UIAction{[weak self] _ in if self?.content.activityPreview != nil {self?.hideCard(animated:false);self?.onToolbarAction?("pday:clear:"+(self?.content.activityPreview?["activityID"] as? String ?? ""))}else{self?.clearSelection(animated:true)}},for:.touchUpInside)
+            created.journeyButton.addAction(UIAction{[weak self] _ in if self?.content.activityPreview != nil {self?.onToolbarAction?("pday:open:"+(self?.content.activityPreview?["activityID"] as? String ?? ""))}else{self?.photoAction("journey")}},for:.touchUpInside)
             created.photoButton.addAction(UIAction{[weak self] _ in self?.photoAction("photo")},for:.touchUpInside)
             self.card=created;self.cardBottom=bottom
             created.alpha=0
@@ -1268,7 +1286,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         button.isEnabled = !content.locating
         button.accessibilityValue=content.locating ? "Locating" : active ? "Following you" : nil
         button.accessibilityTraits=active ? [.button,.selected] : [.button]
-        button.frame=CGRect(x:map.bounds.width-56,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-64),width:44,height:44)
+        button.frame=CGRect(x:map.bounds.width-56,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-64-(cardFrame.map{$0.height+12} ?? 0)),width:44,height:44)
         map.bringSubviewToFront(button)
     }
 
@@ -1587,6 +1605,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         if let cluster=annotation as? MKClusterAnnotation {
             let members=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}
             guard !members.isEmpty,members.allSatisfy({$0.metadata["kind"] as? String == "step"}) else {return false}
+            let memberIDs=members.compactMap{$0.metadata["activityID"] as? String}
+            if !content.expandedActivities.isEmpty,Set(memberIDs).isSubset(of:Set(content.expandedActivities)) {return true}
             let key="cluster:"+members.compactMap{$0.metadata["activityID"] as? String}.sorted().joined(separator:",")
             guard activityTapGate.accept(key,now:now) else {return true}
             open(cluster:cluster);return true
@@ -1600,7 +1620,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard content.personDay,let map=map,recognizer.state == .ended else {return}
         let point=recognizer.location(in:map)
         let visibleFlags=activityViews.allObjects.filter{$0.superview != nil && !$0.isHidden && $0.alpha>0.1}.sorted{$0.displayPriority.rawValue>$1.displayPriority.rawValue}
-        for flag in visibleFlags {
+        for flag in Array(fanViews.values)+visibleFlags {
             let frame=map.convert(flag.bounds,from:flag).insetBy(dx:-6,dy:-6)
             if frame.contains(point),let annotation=flag.annotation,activateActivity(annotation) {return}
         }
@@ -1622,6 +1642,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             }
         }
         if let id=RouteHitTest.activity(in:hits,selected:content.selectedActivity) {onActivity?(id)}
+        else if !content.expandedActivities.isEmpty {onToolbarAction?("pday:collapse")}
     }
     @objc private func userGesture(_ recognizer:UIGestureRecognizer) {
         let began=recognizer is UITapGestureRecognizer ? recognizer.state == .ended : recognizer.state == .began
@@ -1631,7 +1652,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldRecognizeSimultaneouslyWith other:UIGestureRecognizer)->Bool {true}
     func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldReceive touch:UITouch)->Bool {
         // Taps on our own controls are not map gestures.
-        !(touch.view is UIControl) && !controlViews.contains{touch.view?.isDescendant(of:$0)==true}
+        !(touch.view is UIControl) && !(fanBar.map{touch.view?.isDescendant(of:$0)==true} ?? false) && !controlViews.contains{touch.view?.isDescendant(of:$0)==true}
     }
     func regionDidChange() {remember();updateDensity();layoutIndicators();layoutActivityFlags()}
 
@@ -1740,7 +1761,77 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let obstacles=activityObstacles()
         // Track actual views, including MapKit-created clusters, rather than
         // enumerating only source annotations. Weak references also cover reuse.
-        for flag in activityViews.allObjects where flag.superview != nil {placeActivityFlag(flag,on:map,obstacles:obstacles)}
+        let expanded=Set(content.expandedActivities)
+        for flag in activityViews.allObjects where flag.superview != nil {
+            placeActivityFlag(flag,on:map,obstacles:obstacles)
+            let represented:[JourneyPin]
+            if let cluster=flag.annotation as? MKClusterAnnotation {represented=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}}
+            else {represented=(flag.annotation as? JourneyPin).map{[$0]} ?? []}
+            let suppressed = !expanded.isEmpty && !represented.isEmpty && represented.allSatisfy{($0.metadata["activityID"] as? String).map{expanded.contains($0)} == true}
+            if suppressed {
+                if flag.alpha != 0 {fanSuppressed.add(flag);flag.alpha=0}
+            }else if fanSuppressed.contains(flag) {fanSuppressed.remove(flag);flag.alpha=1}
+        }
+        layoutActivityFan(obstacles:obstacles)
+    }
+    private func clearActivityFan() {
+        fanViews.values.forEach{$0.removeFromSuperview()};fanViews=[:]
+        fanBar?.removeFromSuperview();fanBar=nil;fanLabel=nil;fanClose=nil
+        for flag in fanSuppressed.allObjects {flag.alpha=1}
+        fanSuppressed.removeAllObjects()
+    }
+    private func layoutActivityFan(obstacles:[CGRect]) {
+        guard let map=map else {return}
+        let ids=Set(content.expandedActivities)
+        let members=content.pins.filter{$0["kind"] as? String == "step" && ($0["activityID"] as? String).map{ids.contains($0)} == true}.sorted{(Int($0["label"] as? String ?? "") ?? 0)<(Int($1["label"] as? String ?? "") ?? 0)}
+        guard !members.isEmpty else {clearActivityFan();return}
+        guard let firstPoint=coordinate(members[0]["point"]) else {clearActivityFan();return}
+        let anchor=map.convert(firstPoint,toPointTo:map)
+        let bottom=cardFrame?.minY ?? (map.bounds.height-12)
+        let barFrame=CGRect(x:map.bounds.midX-100,y:max(76,bottom-54),width:200,height:44)
+        let blocked=obstacles+controlViews.map(\.frame)+[barFrame]+(cardFrame.map{[$0]} ?? [])
+        let slots=ActivityFanLayout.centres(anchor:anchor,bounds:map.bounds.inset(by:UIEdgeInsets(top:70,left:8,bottom:12,right:8)),obstacles:blocked)
+        guard !slots.isEmpty else {clearActivityFan();return}
+        let pageCount=(members.count+slots.count-1)/slots.count
+        let selectedIndex=members.firstIndex{$0["activityID"] as? String == content.selectedActivity}
+        let page=ActivityFanLayout.page(total:members.count,capacity:slots.count,requested:content.fanPage,selectedIndex:selectedIndex)
+        let start=page*slots.count,shown=Array(members.dropFirst(start).prefix(slots.count))
+        let shownIDs=Set(shown.compactMap{$0["activityID"] as? String})
+        for (id,view) in fanViews where !shownIDs.contains(id) {view.removeFromSuperview();fanViews.removeValue(forKey:id)}
+        for (index,metadata) in shown.enumerated() {
+            guard let id=metadata["activityID"] as? String,let pin=pins[pinID(metadata)] else {continue}
+            let view:ActivityFlagView
+            if let existing=fanViews[id] {view=existing}
+            else {
+                view=ActivityFlagView(annotation:pin,reuseIdentifier:nil)
+                view.enableDirectTap{[weak self,weak view] in if let annotation=view?.annotation {_ = self?.activateActivity(annotation)}}
+                map.addSubview(view);fanViews[id]=view
+            }
+            let old=view.annotation as? JourneyPin
+            let changed=view.image==nil || old?.metadata["selected"] as? Bool != metadata["selected"] as? Bool || old?.metadata["label"] as? String != metadata["label"] as? String
+            view.annotation=pin
+            if changed {view.image=activityFlagImage(metadata["label"] as? String ?? "",selected:metadata["selected"] as? Bool == true)}
+            view.bounds=CGRect(origin:.zero,size:view.image?.size ?? CGSize(width:36,height:38))
+            let centre=slots[index],point=map.convert(pin.coordinate,toPointTo:map)
+            view.place(offset:CGPoint(x:centre.x-point.x,y:centre.y-point.y));view.center=centre
+            view.accessibilityLabel=pin.title;view.isAccessibilityElement=true;view.accessibilityTraits = .button
+            map.bringSubviewToFront(view)
+        }
+        let bar=fanBar ?? {
+            let next=UIButton(type:.system),close=UIButton(type:.system)
+            next.titleLabel?.font = .systemFont(ofSize:12,weight:.semibold)
+            next.addAction(UIAction{[weak self] _ in self?.onToolbarAction?("pday:fanpage:"+String(self?.nextFanPage ?? 0))},for:.touchUpInside)
+            close.setImage(UIImage(systemName:"xmark.circle.fill"),for:.normal);close.accessibilityLabel="Close expanded activities"
+            close.addAction(UIAction{[weak self] _ in self?.onToolbarAction?("pday:collapse")},for:.touchUpInside)
+            let stack=UIStackView(arrangedSubviews:[next,close]);stack.spacing=10;stack.backgroundColor = .secondarySystemBackground;stack.layer.cornerRadius=18
+            stack.isLayoutMarginsRelativeArrangement=true;stack.layoutMargins=UIEdgeInsets(top:0,left:12,bottom:0,right:10)
+            close.widthAnchor.constraint(equalToConstant:44).isActive=true
+            map.addSubview(stack);self.fanBar=stack;self.fanLabel=next;self.fanClose=close;return stack
+        }()
+        nextFanPage=(page+1)%pageCount
+        fanLabel?.setTitle(pageCount>1 ? "\(start+1)–\(start+shown.count) of \(members.count)  ›" : "\(members.count) activities",for:.normal)
+        fanLabel?.isEnabled=pageCount>1;bar.frame=barFrame
+        map.bringSubviewToFront(bar);if let card=card,card.alpha>0 {map.bringSubviewToFront(card)}
     }
     func layoutIndicators() {
         guard isPeopleMap,let map=map,map.bounds.width>80,map.bounds.height>80 else {return}
@@ -1770,6 +1861,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let attribution=bounds.height-map.layoutMargins.bottom
         blocked.append(CGRect(x:0,y:attribution-34,width:130,height:34))
         if let card=cardFrame {blocked.append(card.insetBy(dx:-6,dy:-6))}
+        if let bar=fanBar {blocked.append(bar.frame.insetBy(dx:-4,dy:-4))}
         blocked.append(contentsOf:exclusions())
         let placements=EdgeIndicatorLayout.place(items,bounds:bounds.insetBy(dx:6,dy:6),rail:bounds.insetBy(dx:8+size/2,dy:8+size/2),exclusions:blocked,size:size,spacing:size+6)
         var shown=Set<String>()
@@ -1814,7 +1906,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
 
     func detach() {
-        activityChooser?.dismiss(animated:false);activityChooser=nil;chooserActivityIDs=[]
+        clearActivityFan()
         activityViews.removeAllObjects();activityFootprints=[:]
         remember()
         for recognizer in recognizers {recognizer.view?.removeGestureRecognizer(recognizer)}
@@ -2101,7 +2193,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     map.isHidden=true
                     let controller=AppleMapController(content:self.embeddedContent[id] ?? content,picker:false)
                     controller.onCamera={ [weak self] mode,command in self?.reportCamera(id,mode,command) }
-                    controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
+                    controller.onSelectActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID]) }
+                controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
                     controller.onStyle={ [weak self] style in self?.notifyListeners("layersTapped",data:["mapID":id,"action":"style:\(style)"]) }
                     // The full-screen overview continues from this map's view.
                     controller.initialCamera=map.camera.copy() as? MKMapCamera
@@ -2111,6 +2204,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         // Continue from wherever the full-screen map was left.
                         embedded?.resumeFromMemory()
                         if self?.presentedID==id {self?.presentedID=nil}
+                        if let action=result["mapAction"] as? String {self?.notifyListeners("layersTapped",data:["mapID":id,"action":action])}
                         if let activityID=result["activityID"] as? String {self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])}
                         if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
                             self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":result["action"] as? String ?? "photo"])
@@ -2240,6 +2334,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             let mapID=call.getString("mapID")
             if let mapID=mapID {
                 controller.onCamera={ [weak self] mode,command in self?.reportCamera(mapID,mode,command) }
+                controller.onSelectActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":mapID,"activityID":activityID]) }
                 controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":mapID,"action":action]) }
                 // Continue the full-screen map from the embedded map's current camera
                 // so open/close never re-fits, whatever path triggered presentation.
@@ -2283,6 +2378,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     private weak var styles:UISegmentedControl?
     var onStyle:((String)->Void)?
     var onToolbar:((String)->Void)?
+    var onSelectActivity:((String)->Void)?
     init(content:MapContent,picker:Bool){self.content=content;self.picker=picker;super.init(nibName:nil,bundle:nil)}
     // New positions while the full-screen people map is open.
     func update(_ next:MapContent) {if isViewLoaded {coordinator?.apply(next)}}
@@ -2322,8 +2418,8 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
                 return [self.view.convert(styles.frame,to:self.map).insetBy(dx:-6,dy:-6)]
             }
             coordinator.onModeChange={ [weak self] mode,command in self?.onCamera?(mode,command) }
-            coordinator.onToolbarAction={ [weak self] action in self?.onToolbar?(action) }
-            coordinator.onActivity={ [weak self] id in self?.finish(["activityID":id]) }
+            coordinator.onToolbarAction={ [weak self] action in if action.hasPrefix("pday:open:") {self?.finish(["mapAction":action.replacingOccurrences(of:"pday:open:",with:"pday:open-fullscreen:")])}else{self?.onToolbar?(action)} }
+            coordinator.onActivity={ [weak self] id in self?.onSelectActivity?(id) }
             coordinator.onPhotoAction={ [weak self] action,photoID,journeyID in self?.finish(["photoID":photoID,"journeyID":journeyID,"action":action]) }
             self.coordinator=coordinator
             if content.camera == nil {

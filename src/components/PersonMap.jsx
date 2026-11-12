@@ -1,19 +1,17 @@
-import {useCallback,useDeferredValue,useEffect,useMemo,useRef,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {usePersonDay} from '../lib/usePersonDay.js';
 import {addDays,dayKeyOf} from '../lib/dayWindow.js';
-import {linesUntil,positionAt} from '../lib/personDay.js';
 import {thinLine} from '../lib/mapContent.js';
 import {activityLabel} from '../lib/activityNames.js';
 import {activitySymbol} from '../lib/mapToolbar.js';
 import {formatDuration} from '../lib/peopleMap.js';
 import {distanceText} from '../lib/distanceUnits.js';
 import {filterPersonDay,personRoutes,personFlags,boundedPersonLines,recordedDistance} from '../lib/personMapPresentation.js';
-import {formatAge} from '../lib/householdLocation.js';
 
 // The Map tab's person view: the selected person's latest shared location, the day's
-// movement, selectable saved routes for each activity, and a time slider. There is no second
+// movement and selectable saved routes with an on-map activity bubble. There is no second
 // map: `renderMap` receives what to draw ({payload,onStep}, or null for All people) and
-// the Map tab renders its one map there, so selecting a person, changing day or scrubbing
+// the Map tab renders its one map there, so selecting a person, changing day or selecting an activity
 // updates that native map in place. Everything the slider does is computed from data
 // already on the phone.
 const browserZone=()=>{try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';}catch{return 'UTC';}};
@@ -34,7 +32,7 @@ function useToday(timeZone){
  return today;
 }
 
-const fresh=forOwner=>({owner:forOwner,picked:null,scrub:null,notice:'',locate:null,selected:null,activity:'',selectionRequest:0});
+const fresh=forOwner=>({owner:forOwner,picked:null,notice:'',locate:null,selected:null,activity:'',expanded:[],fanPage:0});
 
 // What an empty day means. A drive reaches other people's maps once the phone that recorded it has backed it up (the
 // live position is sent on its own, in the background), so for someone else's day the note says so instead of implying
@@ -44,70 +42,58 @@ function emptyNote({isSelf,isToday,name}){
  const who=name||'This person';
  return isToday?`No recorded drives from ${who} yet today. Drives appear here once ${who}'s phone has backed them up.`:`Nothing shared by ${who} for this day.`;
 }
-export default function PersonMap({person,personPin=null,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs,unit='km'}){
+export default function PersonMap({person,personPin=null,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs,unit='km',viewState=null,onViewChange=null}){
  const owner=person?.userId||'';
  const isSelf=owner===viewer;
  const today=useToday(timeZone);
  // The day shown follows the clock until the person picks another: left open past midnight
  // on "Today", it moves on to the new today (live trail and latest location included).
- // Choice of day, slider and note belong to one person: another person starts at Today with the slider released.
- const [view,setView]=useState(()=>fresh(''));
+ // Day, selection and notes belong to one person; the parent retains them during detail navigation.
+ const [localView,setLocalView]=useState(()=>fresh(''));
+ const view=viewState??localView;
+ const setView=onViewChange??setLocalView;
  const mine=view.owner===owner?view:fresh(owner);
- const update=useCallback(patch=>setView(previous=>({...(previous.owner===owner?previous:fresh(owner)),...patch})),[owner]);
- const picked=mine.picked,scrub=mine.scrub,notice=mine.notice;
+ const update=useCallback(patch=>setView(previous=>({...(previous?.owner===owner?previous:fresh(owner)),...patch})),[owner,setView]);
+ const picked=mine.picked,notice=mine.notice;
  const date=picked??today;
  // Locate asks the camera to go somewhere once (a new fit key, and a point when there is one); it belongs
  // to the day it was asked on and never re-centres later.
  const locate=mine.locate&&mine.locate.date===date?mine.locate:null;
- const setScrub=value=>update({scrub:value,selected:null});
  const {day:loadedDay,loading,error}=usePersonDay({viewer,owner,date,timeZone,enabled:Boolean(person),localTrips:isSelf?localTrips:null,localLiveTrip:isSelf?localLiveTrip:null,deletedIDs});
  const day=useMemo(()=>filterPersonDay(loadedDay,mine.activity),[loadedDay,mine.activity]);
  const selected=day.activities.find(a=>a.id===mine.selected);
- const preview=useRef(null);
- useEffect(()=>{
-  if(!selected?.id)return;
-  const frame=requestAnimationFrame(()=>preview.current?.scrollIntoView?.({block:'nearest',behavior:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'}));
-  return()=>cancelAnimationFrame(frame);
- },[selected?.id,mine.selectionRequest]);
- const activityNumbers=useMemo(()=>new Map(day.markers.map(m=>[m.activityID,m.n])),[day.markers]);
  const isToday=date===today;
- const deferred=useDeferredValue(scrub);
-
+ const activityPreview=useMemo(()=>selected?{
+  activityID:selected.id,title:selected.title,symbol:activitySymbol(selected.activity||''),
+  detail:`${activityLabel(selected.activity)||'Activity'} · ${clock(selected.startedAt,timeZone)} · ${formatDuration(selected.durationSeconds)} · ~${distanceText(recordedDistance(selected)/1000,unit)} recorded`,
+ }:null,[selected,timeZone,unit]);
  const savedRoutes=useMemo(()=>personRoutes(day,selected?.id),[day,selected]);
  const payload=useMemo(()=>{
   if(!owner)return null;
-  const scrubbing=deferred!=null;
-  // Saved geometry, timeline segments and live roads all stay independently bounded.
-  const live=scrubbing?[]:day.live;
-  const styled=scrubbing?boundedPersonLines([...day.untimed,...linesUntil(day,deferred)]).map(points=>({points,color:'accent',width:3.75,opacity:1})):savedRoutes.slice();
+  const live=day.live;
+  const styled=savedRoutes.slice();
   styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:4,opacity:selected?0.55:1})));
-  if(!scrubbing)styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3.75,opacity:selected?0.55:1})));
+  styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3.75,opacity:selected?0.55:1})));
   const pins=personFlags(day,savedRoutes,selected?.id);
   // Reuse the single-person pin from the All people map. The native renderer then
   // shows the same profile photo, live movement/speed label and activity ornament.
   // Never show a current position on a historical day or when its owner is hidden.
   if(isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self')))pins.push(personPin);
-  const at=scrubbing?positionAt(day,deferred):null;
-  if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))}`:`Recorded at ${clock(at.t,timeZone)}`});
   // scope changes pause following without reframing; only an explicit Locate focus moves the camera.
-  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,deferred,isToday,isSelf,personPin,owner,timeZone,date,locate,selected,savedRoutes]);
- const first=day.samples[0]?.t,last=day.samples.at(-1)?.t;
- const canScrub=day.samples.length>1;
- const at=scrub!=null?positionAt(day,scrub):null;
- // My own map lists everything I recorded, shared or not, so a marker opens my own
- // activity; anyone else's opens the shared copy I am allowed to see.
+  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,expandedActivities:mine.expanded??[],fanPage:mine.fanPage??0,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
+ },[day,isToday,isSelf,personPin,owner,date,locate,selected,savedRoutes,activityPreview,mine.expanded,mine.fanPage]);
  const name=person?.name;
- const openActivity=useCallback(id=>{
+ const openActivity=useCallback((id,options={})=>{
   if(isSelf){
    // My own activity: opened from this phone's copy. One that is only in the cloud (another
    // phone, a watch) is not a shared copy, so the shared viewer would fail; say so instead.
-   if(onOpenOwn&&onOpenOwn(id))return;
+   if(onOpenOwn&&onOpenOwn(id,options)){update({picked:date});return;}
    update({notice:'That activity is not on this phone. Open it from Activities once it has synced.'});return;
   }
-  onOpenShared?.(id,{userId:owner,name});
- },[isSelf,owner,name,onOpenOwn,onOpenShared,update]);
- const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id,scrub:null,selectionRequest:mine.selectionRequest+1});},[day.activities,update,mine.selectionRequest]);
+  update({picked:date});
+  onOpenShared?.(id,{userId:owner,name},options);
+ },[isSelf,owner,name,onOpenOwn,onOpenShared,update,date]);
+ const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id,...(!(mine.expanded??[]).includes(id)?{expanded:[],fanPage:0}:{})});},[day.activities,update,mine.expanded]);
  // Days from the map's own date bar (native, over the map): same actions as before, no extra toolbar row.
  const date_=useMemo(()=>({
   label:dateLabel(date,today),
@@ -118,12 +104,18 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   clear:null,
  }),[date,today,isToday]);
  const onControl=useCallback(id=>{
-  if(id.startsWith('pday:activity:'))update({activity:id.slice('pday:activity:'.length),selected:null,scrub:null});
-  else if(id==='pday:reset')update({activity:'',selected:null,scrub:null});
-  else if(id==='pday:prev')update({picked:addDays(date,-1),scrub:null,locate:null,notice:'',selected:null});
-  else if(id==='pday:next'){const next=addDays(date,1);update({picked:next>=today?null:next,scrub:null,locate:null,notice:'',selected:null});}
-  else if(id==='pday:today')update({picked:null,scrub:null,locate:null,notice:'',selected:null});
- },[date,today,update]);
+  const [,action,...parts]=id.split(':');
+  if(action==='expand'){const allowed=new Set(day.activities.map(a=>a.id));update({expanded:parts.join(':').split(',').filter(id=>allowed.has(id)),fanPage:0,selected:null});}
+  else if(action==='collapse')update({expanded:[],fanPage:0,selected:null});
+  else if(action==='fanpage'){const page=Number(parts[0]);update({fanPage:parts.length&&Number.isInteger(page)&&page>=0&&page<480?page:((mine.fanPage??0)+1)%480,selected:null});}
+  else if(action==='open'||action==='open-fullscreen'){if(selected&&(!parts.length||parts.join(':')===selected.id))openActivity(selected.id,{fullscreen:action==='open-fullscreen'});}
+  else if(action==='clear'){if(!parts.length||parts.join(':')===selected?.id)update({selected:null});}
+  else if(id.startsWith('pday:activity:'))update({activity:id.slice('pday:activity:'.length),selected:null,expanded:[],fanPage:0});
+  else if(id==='pday:reset')update({activity:'',selected:null,expanded:[],fanPage:0});
+  else if(id==='pday:prev')update({picked:addDays(date,-1),locate:null,notice:'',selected:null,expanded:[],fanPage:0});
+  else if(id==='pday:next'){const next=addDays(date,1);update({picked:next>=today?null:next,locate:null,notice:'',selected:null,expanded:[],fanPage:0});}
+  else if(id==='pday:today')update({picked:null,locate:null,notice:'',selected:null,expanded:[],fanPage:0});
+ },[date,today,update,selected,openActivity,day.activities,mine.fanPage]);
  // Locate always means my own current location, independent of the selected person/day.
  // Ignore delayed answers after either changes; never fall back to somebody else's fix.
  const requestContext=useRef('');
@@ -137,9 +129,9 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   setLocating(false);
   if(requestContext.current!==context)return;
   if(Number.isFinite(here?.latitude)&&Number.isFinite(here?.longitude)&&Math.abs(here.latitude)<=90&&Math.abs(here.longitude)<=180){
-   setView(previous=>{const base=previous.owner===owner?previous:fresh(owner);return {...base,notice:'',locate:{n:(base.locate?.n||0)+1,point:[here.latitude,here.longitude],date}};});
+   setView(previous=>{const base=previous?.owner===owner?previous:fresh(owner);return {...base,notice:'',locate:{n:(base.locate?.n||0)+1,point:[here.latitude,here.longitude],date}};});
   }else update({notice:'Your location is not available. Check Location access in iOS Settings.'});
- },[owner,date,context,locateSelf,locating,update]);
+ },[owner,date,context,locateSelf,locating,update,setView]);
  const filters=useMemo(()=>({
   active:mine.activity?1:0,
   sections:[{id:'activity',label:'Activity',options:[{id:'pday:activity:',label:'All activities',text:'All activities',selected:!mine.activity},
@@ -149,23 +141,10 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  // Slots are fixed so the map keeps its place in the tree (and is never re-created) whether
  // a person is selected or not. Everything but the map is one line, below it, only when it has something to say.
  const status=!person?'':error?error:notice?notice:loading?'Loading…':mine.activity&&day.isEmpty?'No activities match this filter.':day.isEmpty?emptyNote({isSelf,isToday,name}):'';
- return <>
-  <div className={person?'person-map-canvas':'map-canvas'}>
-   {/* The render slot forwards event handlers; it never invokes their ref-reading callbacks. */}
-   {/* eslint-disable-next-line react-hooks/refs */}
-   {renderMap(personDay)}
-  </div>
-  {status?<p className="person-map-note" role={error?'alert':'status'}>{status}{notice&&!error?<> <button type="button" className="text-button" onClick={()=>update({notice:''})}>OK</button></>:null}</p>:null}
-  {person&&selected?<section ref={preview} className="person-map-preview" aria-label="Selected activity">
-   <div><strong>{selected.title}</strong><small>{activityLabel(selected.activity)} · {clock(selected.startedAt,timeZone)} · {formatDuration(selected.durationSeconds)} · ~{distanceText(recordedDistance(selected)/1000,unit)} recorded</small></div>
-   <button type="button" className="text-button" onClick={()=>openActivity(selected.id)}>Open activity</button>
-   <button type="button" className="text-button" aria-label="Clear selected activity" onClick={()=>update({selected:null})}>×</button>
-  </section>:null}
-  {person&&day.activities.length>0?<details className="person-map-activities"><summary>Activities · {day.activities.length}</summary><div>{day.activities.map(activity=><button type="button" key={activity.id} aria-pressed={selected?.id===activity.id} onClick={()=>onStep(activity.id)}>#{activityNumbers.get(activity.id)} · {activity.title} · {clock(activity.startedAt,timeZone)}</button>)}</div></details>:null}
-  {person&&canScrub?<div className="person-map-timeline">
-   <input type="range" aria-label="Time of day" min={Math.ceil(first)} max={Math.floor(last)} step={1} value={scrub??Math.floor(last)} onChange={event=>setScrub(Number(event.target.value))}/>
-   <span className="person-map-time">{scrub==null?(isToday?'Now':'End of day'):clock(scrub,timeZone)}{at?.inGap?' · No GPS signal':''}</span>
-   {scrub!=null&&<button type="button" className="text-button" onClick={()=>setScrub(null)}>{isToday?'Now':'Whole day'}</button>}
-  </div>:null}
- </>;
+ return <div className={person?'person-map-canvas':'map-canvas'}>
+  {/* The render slot forwards event callbacks, never invokes them during render. */}
+  {/* eslint-disable-next-line react-hooks/refs */}
+  {renderMap(personDay)}
+  {status?<p className="person-map-note" role={error?'alert':'status'}>{status}{notice&&!error?<button type="button" className="text-button" onClick={()=>update({notice:''})}>OK</button>:null}</p>:null}
+ </div>;
 }

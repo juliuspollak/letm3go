@@ -546,3 +546,33 @@ it('updates numbered flags and handles their existing selection event without re
  await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[{...flag,selected:true}]})));
  expect(mocks.embed).toHaveBeenCalledTimes(1);expect(mocks.unembed).not.toHaveBeenCalled();
 });
+it('shows the activity bubble inside the map fallback, with scoped Open and Close controls',async()=>{
+ mocks.embed.mockResolvedValue({error:'not embedded'});
+ const onControl=vi.fn(),activityPreview={activityID:'a',title:'Morning walk',detail:'Walking · 8:00 am · 20m · ~2 km recorded'};
+ const {container}=render(<AppleMap payload={{routes:[],pins:[],activityPreview}} embeddedEnabled={false} onControl={onControl} dynamic/>);
+ const bubble=within(container).getByRole('region',{name:'Selected activity'});
+ expect(bubble.closest('.map-frame')).toBeTruthy();expect(bubble.textContent).toContain('Morning walk');
+ fireEvent.click(within(bubble).getByRole('button',{name:'Open activity'}));expect(onControl).toHaveBeenCalledWith('pday:open:a');
+ fireEvent.click(within(bubble).getByRole('button',{name:'Close activity preview'}));expect(onControl).toHaveBeenCalledWith('pday:clear:a');
+});
+it('updates a native activity bubble incrementally without re-embedding',async()=>{
+ const base={routes:[],pins:[],personDay:true};
+ const {rerender}=render(<AppleMap payload={base} dynamic/>);await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+ rerender(<AppleMap payload={{...base,activityPreview:{activityID:'a',title:'Walk',detail:'Walking'}}} dynamic/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({activityPreview:expect.objectContaining({activityID:'a'})})));
+ expect(mocks.embed).toHaveBeenCalledTimes(1);
+});
+it('reopens fullscreen once when returning to its saved map origin',async()=>{
+ const onResumeFullscreen=vi.fn(),payload={routes:[],pins:[],personDay:true};
+ const {rerender}=render(<AppleMap payload={payload} dynamic resumeFullscreen={7} onResumeFullscreen={onResumeFullscreen}/>);
+ await waitFor(()=>expect(mocks.open).toHaveBeenCalledTimes(1));
+ expect(onResumeFullscreen).toHaveBeenCalledTimes(1);
+ rerender(<AppleMap payload={payload} dynamic resumeFullscreen={0} onResumeFullscreen={onResumeFullscreen}/>);
+ expect(mocks.open).toHaveBeenCalledTimes(1);
+});
+it('forwards the scoped fullscreen Open action from the existing native map result',async()=>{
+ const onControl=vi.fn();mocks.open.mockResolvedValue({mapAction:'pday:open-fullscreen:a'});
+ render(<AppleMap payload={{routes:[],pins:[]}} embeddedEnabled={false} onControl={onControl}/>);
+ fireEvent.click(within(document.body).getByRole('button',{name:'Open interactive Apple journey map'}));
+ await waitFor(()=>expect(onControl).toHaveBeenCalledWith('pday:open-fullscreen:a'));
+});

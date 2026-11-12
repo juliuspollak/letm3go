@@ -162,7 +162,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         return button
     }
     private func installMapControls() {
-        let back = circleButton("chevron.left", label: "Back to activities", identifier: "activity.back") { [weak self] in self?.onClose?() }
+        let back = circleButton("chevron.left", label: "Back", identifier: "activity.back") { [weak self] in self?.onClose?() }
         let recentre = circleButton("scope", label: "Show the whole route", identifier: "activity.recentre") { [weak self] in self?.recentre() }
         let style = circleButton("map", label: "Show satellite map", identifier: "activity.mapStyle") { [weak self] in self?.toggleStyle() }
         let guide = view.safeAreaLayoutGuide

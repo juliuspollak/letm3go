@@ -102,3 +102,41 @@ struct ActivityTapGate {
     }
     func isRecent(now:Double)->Bool {at>=0 && now-at<0.5}
 }
+
+// Screen-space positions only: leader lines still end at real map coordinates.
+// A bounded page avoids trying to fit hundreds of flags around one start.
+enum ActivityFanLayout {
+    static func page(total:Int,capacity:Int,requested:Int,selectedIndex:Int?)->Int {
+        guard total>0,capacity>0 else {return 0}
+        let pages=(total+capacity-1)/capacity
+        let page=max(0,requested)%pages
+        if let selected=selectedIndex,selected>=0,selected<total,selected/capacity != page {return selected/capacity}
+        return page
+    }
+    static let pageLimit=12
+    static func centres(anchor:CGPoint,bounds:CGRect,obstacles:[CGRect])->[CGPoint] {
+        let safe=bounds.insetBy(dx:27,dy:27)
+        guard safe.width>0,safe.height>0 else {return []}
+        var placed:[CGPoint]=[]
+        func add(_ point:CGPoint) {
+            guard placed.count<pageLimit else {return}
+            let p=CGPoint(x:max(safe.minX,min(safe.maxX,point.x)),y:max(safe.minY,min(safe.maxY,point.y)))
+            let frame=CGRect(x:p.x-27,y:p.y-27,width:54,height:54)
+            guard !obstacles.contains(where:{$0.insetBy(dx:-5,dy:-5).intersects(frame)}),!placed.contains(where:{hypot($0.x-p.x,$0.y-p.y)<55}) else {return}
+            placed.append(p)
+        }
+        for radius in [76.0,126.0,176.0] {
+            for i in 0..<24 {
+                let angle = -Double.pi/2+Double(i)*Double.pi/12
+                add(CGPoint(x:anchor.x+cos(angle)*radius,y:anchor.y+sin(angle)*radius))
+            }
+        }
+        var y=safe.minY
+        while y<=safe.maxY && placed.count<pageLimit {
+            var x=safe.minX
+            while x<=safe.maxX && placed.count<pageLimit {add(CGPoint(x:x,y:y));x+=48}
+            y+=48
+        }
+        return placed
+    }
+}

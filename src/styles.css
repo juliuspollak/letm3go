@@ -1195,9 +1195,6 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .map-key-dot{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0 7px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:12px;font-weight:700}
 .person-map-canvas,.map-canvas{position:relative}
 .person-map-note{margin:6px 2px 0;font-size:13px;color:var(--muted)}
-.person-map-timeline{display:flex;align-items:center;gap:10px;padding:6px 2px 0}
-.person-map-timeline input[type=range]{flex:1;min-width:0}
-.person-map-time{flex:0 0 auto;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 /* Home: header status pill, one compact day card, Friends. */
 .recording-health-chip.is-compact{min-height:32px;margin-left:10px;padding:4px 10px;font-size:12px;white-space:nowrap}
 .recording-health-chip.is-compact.is-limited,.recording-health-chip.is-compact.is-unavailable{border-color:var(--health);background:color-mix(in srgb,var(--health) 16%,var(--surface));font-weight:700}
@@ -1241,15 +1238,11 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .sharing-row-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:flex-end}
 .sharing-row--history .text-button{min-height:44px;font-size:13px;font-weight:650;color:var(--accent)}
 
-.person-map-preview{display:flex;align-items:center;gap:12px;padding:10px 2px;color:var(--ink)}
-.person-map-preview>div{flex:1;min-width:0}
-.person-map-preview strong,.person-map-preview small{display:block}
-.person-map-preview small{margin-top:3px;font-size:12px;color:var(--muted)}
-.person-map-preview button{flex-shrink:0;min-height:44px}
-.person-map-activities{padding:6px 2px;font-size:13px;color:var(--muted)}
-.person-map-activities summary{cursor:pointer;min-height:32px}
-.person-map-activities>div{display:flex;gap:6px;overflow:auto;max-height:100px;flex-wrap:wrap}
-.person-map-activities button{border:1px solid var(--line);border-radius:14px;padding:8px 12px;background:var(--surface);color:var(--ink);min-height:44px}
-.person-map-activities button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 
-.person-map-preview{scroll-margin-top:12px;scroll-margin-bottom:calc(90px + env(safe-area-inset-bottom))}
+
+.map-activity-bubble{position:absolute;left:12px;right:12px;bottom:12px;z-index:5;display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:0 6px 24px #0002}
+.map-activity-bubble>div{flex:1;min-width:0}
+.map-activity-bubble strong,.map-activity-bubble small{display:block}
+.map-activity-bubble small{color:var(--muted);font-size:12px;margin-top:4px}
+.map-activity-bubble button{flex-shrink:0;min-height:44px;color:var(--accent);font-weight:600}
+.person-map-note{position:absolute;bottom:12px;left:12px;right:12px;z-index:4;background:var(--surface);padding:8px 12px;border-radius:12px}

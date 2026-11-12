@@ -16,7 +16,7 @@ import {withCommunitySegments} from '../lib/mapContent.js';
 // Named segments (namedSegments.segmentLayers): coloured lines above the route,
 // a label per segment, and the recording muted while a section is being chosen.
 const EMPTY=[];
-export default function JourneyMap({journeys,onPhoto,selectedPhotoID=null,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,homePresence=null,livePeople=EMPTY,peoplePins=EMPTY,embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,controls=null,onControl=null,segmentLayer=null,onRegion=null,onSegment=null,personDay=null}){
+export default function JourneyMap({journeys,onPhoto,selectedPhotoID=null,onJourney=null,large=false,currentPosition=null,onLocate,locating=false,homePresence=null,livePeople=EMPTY,peoplePins=EMPTY,embeddedEnabled=true,viewportKey=null,focusPoint=null,camera=null,onCamera=null,overview=null,controls=null,onControl=null,segmentLayer=null,onRegion=null,onSegment=null,personDay=null,resumeFullscreen=0,onResumeFullscreen=null}){
  // Rebuilding the route payload on every render re-serialises a long recording's
  // geometry and re-sends it to the native map. Memoise so a photo-pin selection,
  // a camera mode change or an unrelated re-render reuses the previous bytes.
@@ -32,7 +32,7 @@ export default function JourneyMap({journeys,onPhoto,selectedPhotoID=null,onJour
  const act=useCallback(id=>{if(personDay&&typeof id==='string'&&id.startsWith('pday:'))personDay.onControl(id);else onControl?.(id);},[personDay,onControl]);
  const payload=useMemo(()=>personDay?null:withCommunitySegments({...mapPayload(journeys,currentPosition,homePresence,livePeople,peoplePins,{overview:overviewKey,selectedPhotoID}),...(focusPoint?{focus:[focusPoint.latitude,focusPoint.longitude]}:{}),...(camera?{camera}:{})},segmentLayer),[personDay,journeys,currentPosition,homePresence,livePeople,peoplePins,overviewKey,selectedPhotoID,focusPoint,camera,segmentLayer]);
  const personPayload=useMemo(()=>personDay?{...personDay.payload,...(camera?{camera:{...camera,includeRoutes:false}}:{})}:null,[personDay,camera]);
- return <AppleMap viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={personDay?personDay.onLocate:onLocate} locating={personDay?personDay.locating:locating} onCamera={onCamera} overview={personDay?null:overview} controls={toolbar} onControl={personDay?act:onControl} onRegion={personDay?null:onRegion} onSegment={personDay?null:onSegment} dynamic={Boolean(personDay)} onStep={personDay?.onStep} payload={personPayload||payload} large={large} onResult={result=>{
+ return <AppleMap onResumeFullscreen={onResumeFullscreen} resumeFullscreen={resumeFullscreen} viewportKey={viewportKey} embeddedEnabled={embeddedEnabled} onLocate={personDay?personDay.onLocate:onLocate} locating={personDay?personDay.locating:locating} onCamera={onCamera} overview={personDay?null:overview} controls={toolbar} onControl={personDay?act:onControl} onRegion={personDay?null:onRegion} onSegment={personDay?null:onSegment} dynamic={Boolean(personDay)} onStep={personDay?.onStep} payload={personPayload||payload} large={large} onResult={result=>{
   if(!result?.photoID)return;
   // Only a journey this map was given, and only one that owns the photo.
   const journey=journeys.find(j=>String(j.id)===result.journeyID);
