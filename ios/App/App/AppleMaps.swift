@@ -39,6 +39,7 @@ private struct StyledRoute {
     let coordinates: [CLLocationCoordinate2D]
     let color: UIColor
     let width: CGFloat
+    let activityID:String?
 }
 private let mutedRouteColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(white:0.55,alpha:0.85) : UIColor(white:0.62,alpha:0.85) }
 // "#RRGGBB" only; anything else is the route colour.
@@ -86,17 +87,22 @@ private func applyMapStyle(_ map:MKMapView,_ style:String) {
     if #available(iOS 16.0, *) {map.preferredConfiguration=style=="satellite" ? MKHybridMapConfiguration(elevationStyle:.realistic) : MKStandardMapConfiguration(elevationStyle:.realistic)}
     else {map.mapType=style=="satellite" ? .hybrid : .standard}
 }
+private let personTrailColor=UIColor { trait in
+    trait.userInterfaceStyle == .dark ? UIColor(red:0.48,green:0.67,blue:1,alpha:1) : UIColor(red:0.18,green:0.27,blue:0.86,alpha:1)
+}
 private let onBrandAccent=UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.08,green:0.11,blue:0.22,alpha:1) : .white }
 // Rarely travelled paths are thin and translucent in the app's accent; the most
 // travelled warm up to a bright coral-orange, like a personal heatmap.
 private func densityStyle(_ weight:Int)->(color:UIColor,width:CGFloat) {
+    let style=DensityTrailStyle.value(weight)
+    let color:UIColor
     switch weight {
-    case ...1:return (brandAccent.withAlphaComponent(0.45),2)
-    case 2:return (brandAccent.withAlphaComponent(0.7),2.5)
-    case 3:return (UIColor(red:0.56,green:0.36,blue:0.92,alpha:0.82),3)
-    case 4:return (UIColor(red:0.93,green:0.32,blue:0.52,alpha:0.9),3.5)
-    default:return (UIColor(red:1,green:0.55,blue:0.2,alpha:1),4)
+    case ...2:color=personTrailColor
+    case 3:color=UIColor(red:0.56,green:0.36,blue:0.92,alpha:1)
+    case 4:color=UIColor(red:0.93,green:0.32,blue:0.52,alpha:1)
+    default:color=UIColor(red:1,green:0.55,blue:0.2,alpha:1)
     }
+    return (color.withAlphaComponent(style.opacity),style.width)
 }
 private func densityRenderer(_ lines:DensityLines,dimmed:Bool)->MKOverlayRenderer {
     let renderer=MKMultiPolylineRenderer(multiPolyline:lines)
@@ -385,13 +391,18 @@ private final class PhotoCard:UIView {
     }
     required init?(coder:NSCoder){fatalError("init(coder:) unavailable")}
     func show(_ metadata:[String:Any]) {
-        if let photoID=metadata["photoID"] as? String,let image=journalPhotoImage(photoID,size:112,circle:false) {thumbnail.image=image;thumbnail.contentMode = .scaleAspectFill}
+        let activity=metadata["activityID"] as? String != nil
+        photoButton.isHidden=activity
+        journeyButton.configuration?.title=activity ? "Open activity" : "View journey"
+        closeButton.accessibilityLabel=activity ? "Close activity preview" : "Close photo preview"
+        if activity {thumbnail.preferredSymbolConfiguration=UIImage.SymbolConfiguration(pointSize:24,weight:.semibold);thumbnail.image=UIImage(systemName:metadata["symbol"] as? String ?? "figure.mixed.cardio");thumbnail.contentMode = .center}
+        else if let photoID=metadata["photoID"] as? String,let image=journalPhotoImage(photoID,size:112,circle:false) {thumbnail.image=image;thumbnail.contentMode = .scaleAspectFill}
         else {thumbnail.image=UIImage(systemName:"photo");thumbnail.contentMode = .center}
         let text={(value:Any?)->String? in (value as? String).flatMap{$0.isEmpty ? nil : $0}}
         titleLabel.text=text(metadata["journeyTitle"]) ?? text(metadata["title"]) ?? "Journey photo"
         let detail=[text(metadata["journeyDate"]),text(metadata["journeyDistance"])].compactMap{$0}
-        detailLabel.text=detail.joined(separator:" · ")
-        detailLabel.isHidden=detail.isEmpty
+        detailLabel.text=activity ? metadata["detail"] as? String : detail.joined(separator:" · ")
+        detailLabel.isHidden=detailLabel.text?.isEmpty != false
     }
 }
 
@@ -655,19 +666,53 @@ private func edgeAvatarImage(_ members:[[String:Any]])->UIImage {
 // instead of replacing every annotation. People pins carry their own id (the
 // user ids at that place); other pins are identified by what they show.
 // A named segment's label, in the segment's colour, with its name always shown.
-// A numbered badge for the n-th activity of a person's day.
-private func stepMarker(_ pin:JourneyPin)->MKAnnotationView {
-    let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
-    marker.markerTintColor=brandAccent
-    marker.glyphText=String((pin.metadata["label"] as? String ?? "").prefix(3))
-    marker.glyphImage=nil
-    marker.titleVisibility = .hidden
-    marker.displayPriority = .required
-    marker.canShowCallout=false
-    marker.isAccessibilityElement=true
-    marker.accessibilityLabel=pin.title
-    marker.accessibilityTraits = .button
-    return marker
+// Small flags retain exact recorded coordinates; MapKit handles collision clustering.
+private func activityFlagImage(_ text:String,selected:Bool,cluster:Bool=false)->UIImage {
+    let width:CGFloat=cluster ? 36 : (selected ? 34 : 28),height:CGFloat=selected ? 36 : 32
+    return UIGraphicsImageRenderer(size:CGSize(width:width+8,height:height+6)).image { context in
+        let body=CGRect(x:4,y:3,width:width,height:height-9)
+        let path=UIBezierPath(roundedRect:body,cornerRadius:8)
+        path.move(to:CGPoint(x:body.midX-4,y:body.maxY-1));path.addLine(to:CGPoint(x:body.midX,y:height+2));path.addLine(to:CGPoint(x:body.midX+4,y:body.maxY-1));path.close()
+        context.cgContext.setShadow(offset:CGSize(width:0,height:1),blur:3,color:UIColor.black.withAlphaComponent(0.25).cgColor)
+        // Use the light accent's deeper tone for white-number contrast in both appearances.
+        UIColor(red:0.275,green:0.35,blue:0.85,alpha:1).setFill();path.fill()
+        context.cgContext.setShadow(offset:.zero,blur:0,color:nil)
+        (selected ? UIColor.systemOrange : UIColor.white.withAlphaComponent(0.9)).setStroke();path.lineWidth=selected ? 2.5 : 1;path.stroke()
+        let label=(cluster ? "×"+text : text) as NSString
+        let attrs:[NSAttributedString.Key:Any]=[.font:UIFont.monospacedDigitSystemFont(ofSize:12,weight:.bold),.foregroundColor:UIColor.white]
+        let size=label.size(withAttributes:attrs)
+        label.draw(at:CGPoint(x:body.midX-size.width/2,y:body.midY-size.height/2),withAttributes:attrs)
+    }
+}
+private final class ActivityFlagView:MKAnnotationView {
+    func place(offset:CGPoint) {
+        if centerOffset != offset {centerOffset=offset}
+    }
+    override func point(inside point:CGPoint,with event:UIEvent?)->Bool {bounds.insetBy(dx:-6,dy:-6).contains(point)}
+}
+private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation)->MKAnnotationView? {
+    let pins:[JourneyPin]
+    let clustered:Bool
+    if let cluster=annotation as? MKClusterAnnotation {
+        pins=cluster.memberAnnotations.compactMap{$0 as? JourneyPin};clustered=true
+        guard !pins.isEmpty,pins.allSatisfy({$0.metadata["kind"] as? String == "step"}) else {return nil}
+    }else if let pin=annotation as? JourneyPin,pin.metadata["kind"] as? String == "step" {pins=[pin];clustered=false}
+    else {return nil}
+    let reuse=clustered ? "activity-cluster" : "activity-flag"
+    let view=map.dequeueReusableAnnotationView(withIdentifier:reuse) ?? ActivityFlagView(annotation:annotation,reuseIdentifier:reuse)
+    view.annotation=annotation
+    let selected=pins.contains{$0.metadata["selected"] as? Bool == true}
+    view.image=activityFlagImage(clustered ? String(pins.count) : (pins[0].metadata["label"] as? String ?? ""),selected:selected,cluster:clustered)
+    (view as? ActivityFlagView)?.place(offset:CGPoint(x:0,y:-(view.image?.size.height ?? 0)/2+4))
+    view.clusteringIdentifier=clustered ? nil : "person-activities"
+    view.collisionMode = .rectangle
+    // Source flags must remain clusterable. The resulting cluster badge must not be culled by the avatar.
+    view.displayPriority=ActivityFlagVisibility.required(clustered:clustered) ? .required : .defaultHigh
+    view.zPriority = .max;view.selectedZPriority = .max
+    view.canShowCallout=false;view.isAccessibilityElement=true
+    view.accessibilityTraits=selected ? [.button,.selected] : .button
+    view.accessibilityLabel=clustered ? "\(pins.count) activities. Zoom in to reveal activities" : pins[0].title
+    return view
 }
 // Where the time slider says the person was: a ringed dot, nothing like the live avatar.
 private func playbackMarker(_ pin:JourneyPin)->MKAnnotationView {
@@ -733,7 +778,17 @@ private struct MapContent {
     let fitKey:String?
     let showsLocate:Bool
     let locating:Bool
+    let personDay:Bool
+    let scope:String?
+    let selectedActivity:String?
+    let activityPreview:[String:Any]?
+    let status:String
     init(_ options:[AnyHashable:Any]) {
+        let isPersonDay=options["personDay"] as? Bool == true
+        personDay=isPersonDay
+        status=isPersonDay ? String((options["status"] as? String ?? "").prefix(500)) : ""
+        scope=options["scope"] as? String
+        selectedActivity=options["selectedActivity"] as? String
         showsLocate=options["locate"] as? Bool == true
         locating=options["locating"] as? Bool == true
         focus=coordinate(options["focus"])
@@ -742,12 +797,17 @@ private struct MapContent {
         estimated=(options["estimated"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         live=Array((options["live"] as? [[Double]] ?? []).prefix(3000)).compactMap { coordinate($0) }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
-        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(60).compactMap { item -> StyledRoute? in
+        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(isPersonDay ? 750 : 60).compactMap { item -> StyledRoute? in
             let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
             guard points.count>1 else { return nil }
             let width=(item["width"] as? NSNumber)?.doubleValue ?? 5
-            return StyledRoute(coordinates:Array(points),color:hexColor(item["color"]),width:CGFloat(max(2,min(9,width))))
+            return StyledRoute(coordinates:Array(points),color:(isPersonDay && item["color"] as? String == "accent" ? personTrailColor : hexColor(item["color"])).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
         }
+        if let preview=options["activityPreview"] as? [String:Any],let id=preview["activityID"] as? String,id==selectedActivity,
+           pins.contains(where:{$0["activityID"] as? String == id}) {
+            activityPreview=["activityID":id,"title":String((preview["title"] as? String ?? "Activity").prefix(160)),"detail":String((preview["detail"] as? String ?? "").prefix(300)),"symbol":String((preview["symbol"] as? String ?? "figure.mixed.cardio").prefix(60))]
+        }
+        else {activityPreview=nil}
         muted=options["muted"] as? Bool == true
         camera=CameraIntent(options["camera"])
         overview=(options["overview"] as? String).flatMap{overviewData($0)}
@@ -828,21 +888,28 @@ private func compassWord(_ angle:CGFloat)->String {
 // Owns one MKMapView's content: annotations keyed by stable id (moved and
 // redrawn in place, never all replaced), overlays rebuilt only when routes
 // change, and for the people map the follow camera, off-screen edge avatars, the
-// Show everyone control and the "Following" chip. Main thread only.
+// camera controls. Main thread only.
 private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private(set) weak var map:MKMapView?
     private(set) var content:MapContent
     private var planner=CameraPlanner()
+    private var activityTapGate=ActivityTapGate()
+    private let activityViews=NSHashTable<ActivityFlagView>.weakObjects()
+    private var activityFootprints:[String:(size:CGSize,offset:CGPoint)]=[:]
+    private var lastFollowed:String?
+    private var appliedFocusKey:String?
+    var onActivity:((String)->Void)?
     private var appliedCommand:Int?
     private var hasCamera=false
     private var pins:[String:JourneyPin]=[:]
     private var pinData:[String:Data]=[:]
     private var routeKey:Int?
     private(set) var overlayRebuilds=0
-    private var liveOverlay:LivePolyline?
+    private var liveOverlay:MKPolyline?
     private var fittedDayKey:String?
     private var fittedDayHadRoutes=false
     private var liveSignature:Int?
+    private var liveDimmed=false
     private(set) var liveUpdates=0
     private var circles:[String:MKCircle]=[:]
     private var indicators:[String:EdgeAvatarButton]=[:]
@@ -850,7 +917,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var indicatorVersion:[String:Int]=[:]
     private var contentVersion=0
     private var recognizers:[UIGestureRecognizer]=[]
-    private var chip:UIButton?
     private var compass:MKCompassButton?
     private let controlTop:CGFloat
     var exclusions:()->[CGRect]={[]}
@@ -870,6 +936,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     // preview either way.
     private var selectedMarker:MKAnnotation?
     private(set) var densityDimmed=false
+    private var activityPreviewKey:Data?
+    private var statusLabel:UILabel?
     private var card:PhotoCard?
     private var cardBottom:NSLayoutConstraint?
     private var locationButton:UIButton?
@@ -878,7 +946,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var panelScroll:UIScrollView?
     private var panelID:String?
     private var panelTap:UITapGestureRecognizer?
-    private var leftColumnBottom:CGFloat=0
     private var compassTop:CGFloat?
     private var appliedStyle:String?
     var onToolbarAction:((String)->Void)?
@@ -895,7 +962,23 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     var mode:FollowMode {planner.mode}
 
     func apply(_ next:MapContent) {
+        let scopeChanged=content.scope != next.scope
         content=next
+        activityFootprints=[:]
+        if next.personDay {
+            for pin in next.peoplePins {
+                let marker=peopleMarker(pin)
+                activityFootprints[pinID(pin)]=(size:marker.image.size,offset:marker.offset)
+            }
+        }
+        if scopeChanged {activityTapGate=ActivityTapGate()}
+        if scopeChanged, next.camera != nil {
+            // A person/date filter changes content, never the user's viewport.
+            planner.resume(.free);lastFollowed=nil
+            appliedCommand=next.camera?.command
+            hasCamera=true
+            modeChanged()
+        }
         contentVersion+=1
         guard let map=map else {return}
         var hasher=Hasher()
@@ -905,11 +988,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         hasher.combine(-2)
         for line in next.estimated {hasher.combine(line.count);for c in line {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         hasher.combine(next.muted)
-        for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.description);for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
+        for route in next.styled {hasher.combine(Double(route.width));hasher.combine(route.color.resolvedColor(with:map.traitCollection));for c in route.coordinates {hasher.combine(c.latitude);hasher.combine(c.longitude)}}
         let key=hasher.finalize()
         if key != routeKey {
             overlayRebuilds+=1
-            map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine || $0 is LivePolyline)})
+            map.removeOverlays(map.overlays.filter{$0 !== liveOverlay && !($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine || $0 is LivePolyline)})
             for gap in next.gaps {map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))}
             for line in next.estimated {map.addOverlay(EstimatedPolyline(coordinates:line,count:line.count))}
             for line in routeOverlays(next) {map.addOverlay(line)}
@@ -917,12 +1000,17 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         // The live trail changes with every GPS point: replace only this overlay, and only
         // when it really changed, so the recorded day above is never rebuilt.
-        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) }
-        if liveKey != liveSignature {
+        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) } ^ (next.personDay ? 1 : 0)
+        if liveKey != liveSignature || liveDimmed != (next.selectedActivity != nil) {
             liveUpdates+=1
             if let old=liveOverlay {map.removeOverlay(old);liveOverlay=nil}
-            if next.live.count>1 {let line=LivePolyline(coordinates:next.live,count:next.live.count);map.addOverlay(line);liveOverlay=line}
-            liveSignature=liveKey
+            if next.live.count>1 {
+                let line:MKPolyline
+                if next.personDay {let styled=StyledLine(coordinates:next.live,count:next.live.count);styled.color=UIColor.systemTeal.withAlphaComponent(next.selectedActivity == nil ? 1 : 0.55);styled.width=4;line=styled}
+                else {line=LivePolyline(coordinates:next.live,count:next.live.count)}
+                map.addOverlay(line);liveOverlay=line
+            }
+            liveSignature=liveKey;liveDimmed=next.selectedActivity != nil
         }
         var wantedCircles:[String:(CLLocationCoordinate2D,Double)]=[:]
         for pin in next.pins {
@@ -950,7 +1038,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
                     }
                     if changed {
                         pin.metadata=metadata;pin.title=metadata["title"] as? String;pin.subtitle=metadata["subtitle"] as? String
-                        if let view=map.view(for:pin) {configurePeopleView(view,pin)}
+                        if let view=map.view(for:pin) {configurePeopleView(view,pin);if next.personDay {view.zPriority = .defaultSelected}}
                         pinData[id]=data
                     }
                     continue
@@ -967,11 +1055,27 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             map.setVisibleMapRect(next.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:fittedDayKey != nil)
             fittedDayKey=next.fitKey;fittedDayHadRoutes=dayHasRoutes
         }
+        if next.personDay, next.focus != nil, next.fitKey != appliedFocusKey {
+            planner.resume(.free);lastFollowed=nil
+            map.setVisibleMapRect(next.rect,edgePadding:fitPadding,animated:true)
+            hasCamera=true;appliedFocusKey=next.fitKey;modeChanged()
+        }
+        if let id=lastFollowed,!next.cameraTargets.contains(where:{$0.members.contains(id)}) {
+            lastFollowed=nil;planner.resume(.free);modeChanged()
+        }
         applyOverview(next.overview)
+        let previewKey=next.activityPreview.flatMap{try? JSONSerialization.data(withJSONObject:$0,options:[.sortedKeys])}
+        if previewKey != activityPreviewKey {
+            activityPreviewKey=previewKey
+            if let preview=next.activityPreview {showCard(preview)}
+            else if selectedPhoto == nil {hideCard(animated:false)}
+        }
         updateLocationButton(next.showsLocate && showsLayers)
         if let style=next.mapStyle,style != appliedStyle {applyMapStyle(map,style);appliedStyle=style}
         updateMapControls(next.controls)
         if isPeopleMap {installControls();applyIntent();plan();layoutIndicators();updateLocationButton(next.showsLocate && showsLayers)}
+        layoutStatus()
+        layoutActivityFlags()
     }
     // MARK: Overview
     // Replaced only when the overview key changes, never on a location update.
@@ -1052,6 +1156,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     func open(cluster:MKClusterAnnotation) {
         guard let map=map else {return}
         let members=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}
+        if !members.isEmpty,members.allSatisfy({$0.metadata["kind"] as? String == "step"}) {openActivities(members,cluster:cluster);return}
         guard let first=members.first else {map.deselectAnnotation(cluster,animated:false);return}
         var rect=MKMapRect.null
         for member in members {let p=MKMapPoint(member.coordinate);rect=rect.union(MKMapRect(x:p.x,y:p.y,width:1,height:1))}
@@ -1061,6 +1166,23 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         map.deselectAnnotation(cluster,animated:false)
         if isPeopleMap,planner.userMoved() {modeChanged()}
         map.setVisibleMapRect(rect,edgePadding:UIEdgeInsets(top:80,left:60,bottom:80,right:60),animated:!UIAccessibility.isReduceMotionEnabled)
+    }
+    private func openActivities(_ members:[JourneyPin],cluster:MKClusterAnnotation) {
+        let allowed=Set(content.pins.filter{$0["kind"] as? String == "step"}.compactMap{$0["activityID"] as? String})
+        let members=members.filter{($0.metadata["activityID"] as? String).map{allowed.contains($0)} == true}
+        guard let map=map,let first=members.first else {return}
+        map.deselectAnnotation(cluster,animated:false)
+        var rect=MKMapRect.null
+        for pin in members {let p=MKMapPoint(pin.coordinate);rect=rect.union(MKMapRect(x:p.x,y:p.y,width:1,height:1))}
+        // All activity clusters use the same zoom action, regardless of count.
+        // The minimum bounds repeated taps at native maximum detail; no coordinates move.
+        let ratio=Double(map.bounds.width/max(1,map.bounds.height))
+        let minimum=12*MKMapPointsPerMeterAtLatitude(first.coordinate.latitude)
+        let width=ActivityClusterZoom.span(current:map.visibleMapRect.width,spread:max(rect.width,rect.height*ratio),minimum:minimum)
+        let height=width/max(0.1,ratio)
+        let target=MKMapRect(x:rect.midX-width/2,y:rect.midY-height/2,width:width,height:height)
+        if planner.userMoved() {modeChanged()}
+        map.setVisibleMapRect(target,animated:!UIAccessibility.isReduceMotionEnabled)
     }
     func clearSelection(animated:Bool) {
         guard selectedPhoto != nil || card != nil || !highlight.isEmpty else {return}
@@ -1080,8 +1202,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             let width=created.widthAnchor.constraint(equalTo:map.widthAnchor,constant:-24);width.priority = .defaultHigh
             NSLayoutConstraint.activate([bottom,width,created.centerXAnchor.constraint(equalTo:map.centerXAnchor),created.widthAnchor.constraint(lessThanOrEqualToConstant:440),
                 created.leadingAnchor.constraint(greaterThanOrEqualTo:map.leadingAnchor,constant:12),created.topAnchor.constraint(greaterThanOrEqualTo:map.topAnchor,constant:56)])
-            created.closeButton.addAction(UIAction{[weak self] _ in self?.clearSelection(animated:true)},for:.touchUpInside)
-            created.journeyButton.addAction(UIAction{[weak self] _ in self?.photoAction("journey")},for:.touchUpInside)
+            created.closeButton.addAction(UIAction{[weak self] _ in if self?.content.activityPreview != nil {self?.hideCard(animated:false);self?.onToolbarAction?("pday:clear:"+(self?.content.activityPreview?["activityID"] as? String ?? ""))}else{self?.clearSelection(animated:true)}},for:.touchUpInside)
+            created.journeyButton.addAction(UIAction{[weak self] _ in if self?.content.activityPreview != nil {self?.onToolbarAction?("pday:open:"+(self?.content.activityPreview?["activityID"] as? String ?? ""))}else{self?.photoAction("journey")}},for:.touchUpInside)
             created.photoButton.addAction(UIAction{[weak self] _ in self?.photoAction("photo")},for:.touchUpInside)
             self.card=created;self.cardBottom=bottom
             created.alpha=0
@@ -1137,7 +1259,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         button.isEnabled = !content.locating
         button.accessibilityValue=content.locating ? "Locating" : active ? "Following you" : nil
         button.accessibilityTraits=active ? [.button,.selected] : [.button]
-        button.frame=CGRect(x:map.bounds.width-56,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-64),width:44,height:44)
+        button.frame=CGRect(x:map.bounds.width-56,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-64-(cardFrame.map{$0.height+12} ?? 0)),width:44,height:44)
         map.bringSubviewToFront(button)
     }
 
@@ -1169,12 +1291,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         map.addSubview(layers);controlViews.append(layers)
         if let expand=map.viewWithTag(mapExpandTag) {expand.frame=frames.expand;map.bringSubviewToFront(expand)}
         compassTop=frames.compassTop
-        leftColumnBottom=frames.leftColumn
         if let date=controls["date"] as? [String:Any] {
             let bar=dateBar(date,maxWidth:frames.dateMaxWidth)
             bar.frame.origin=CGPoint(x:12,y:frames.dateTop)
             map.addSubview(bar);controlViews.append(bar)
-            leftColumnBottom=bar.frame.maxY+8
         }
         if let panel=controls["panel"] as? [String:Any] {
             installPanelTap()
@@ -1187,7 +1307,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             if id != previousPanel {UIAccessibility.post(notification:.layoutChanged,argument:card)}
         }
         layoutControls()
-        if let chip=chip {map.bringSubviewToFront(chip)}
         controlViews.forEach{map.bringSubviewToFront($0)}
     }
     private func chipFont()->UIFont {UIFontMetrics(forTextStyle:.subheadline).scaledFont(for:.systemFont(ofSize:14,weight:.semibold))}
@@ -1371,29 +1490,29 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             let memory=cameraMemory[intent.key]
             if let memory=memory,memory.command==intent.command,let camera=memory.camera {
                 // Remounted (tab change, full screen closed): continue where it was.
-                planner.resume(memory.mode)
+                planner.resume(memory.mode);lastFollowed=memory.mode.personID ?? lastFollowed
                 map.setCamera(camera,animated:false)
                 hasCamera=true
             } else {
-                start(intent.mode)
+                start(content.personDay && intent.mode == .all ? .free : intent.mode)
             }
             appliedCommand=intent.command
-            updateControls()
+            layoutControls()
         } else if intent.command != appliedCommand {
             start(intent.mode)
             appliedCommand=intent.command
-            updateControls()
+            layoutControls()
         }
     }
     private func start(_ mode:FollowMode) {
-        if case .person(let id)=mode {planner.follow(id)} else {planner.showAll()}
+        switch mode {case .person(let id):lastFollowed=id;planner.follow(id);case .free:planner.resume(.free);case .all:lastFollowed=nil;planner.showAll()}
     }
     // Reload the camera another view of the same map (full screen) left behind.
     func resumeFromMemory() {
         guard let intent=content.camera,let memory=cameraMemory[intent.key],memory.command==appliedCommand else {return}
-        planner.resume(memory.mode)
+        planner.resume(memory.mode);lastFollowed=memory.mode.personID ?? lastFollowed
         if let camera=memory.camera {map?.setCamera(camera,animated:false);hasCamera=true}
-        updateControls();layoutIndicators()
+        layoutControls();layoutIndicators()
     }
     func remember() {
         guard let intent=content.camera,let map=map,let command=appliedCommand else {return}
@@ -1440,11 +1559,58 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
     private func modeChanged() {
         updateLocationButton(content.showsLocate && showsLayers)
-        updateControls();remember()
+        layoutControls();remember()
         onModeChange?(planner.mode,appliedCommand ?? 0)
     }
-    func showEveryone() {planner.showAll();modeChanged();plan()}
-    func follow(_ personID:String) {planner.follow(personID);modeChanged();plan()}
+    func showEveryone() {lastFollowed=nil;planner.showAll();modeChanged();plan()}
+    func follow(_ personID:String) {lastFollowed=personID;planner.follow(personID);modeChanged();plan()}
+    func selectPerson(_ pin:JourneyPin) {
+        guard let id=(pin.metadata["members"] as? [[String:Any]])?.first?["id"] as? String else {return}
+        map?.deselectAnnotation(pin,animated:false);follow(id)
+    }
+    // Both MapKit selection and the map-level visual hit test use one action.
+    // The latter covers offset labels whose visible frame is away from the anchor.
+    @discardableResult func activateActivity(_ annotation:MKAnnotation)->Bool {
+        let now=CACurrentMediaTime()
+        if let cluster=annotation as? MKClusterAnnotation {
+            let members=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}
+            guard !members.isEmpty,members.allSatisfy({$0.metadata["kind"] as? String == "step"}) else {return false}
+            let key="cluster:"+members.compactMap{$0.metadata["activityID"] as? String}.sorted().joined(separator:",")
+            guard activityTapGate.accept(key,now:now) else {return true}
+            open(cluster:cluster);return true
+        }
+        guard let pin=annotation as? JourneyPin,pin.metadata["kind"] as? String == "step",let id=pin.metadata["activityID"] as? String,
+              content.pins.contains(where:{$0["kind"] as? String == "step" && $0["activityID"] as? String == id}) else {return false}
+        guard activityTapGate.accept("step:"+id,now:now) else {return true}
+        map?.deselectAnnotation(pin,animated:false);onActivity?(id);return true
+    }
+    @objc private func activityTapped(_ recognizer:UITapGestureRecognizer) {
+        guard content.personDay,let map=map,recognizer.state == .ended else {return}
+        let point=recognizer.location(in:map)
+        let visibleFlags=activityViews.allObjects.filter{$0.superview != nil && !$0.isHidden && $0.alpha>0.1}.sorted{$0.displayPriority.rawValue>$1.displayPriority.rawValue}
+        for flag in visibleFlags {
+            let frame=map.convert(flag.bounds,from:flag).insetBy(dx:-6,dy:-6)
+            if frame.contains(point),let annotation=flag.annotation,activateActivity(annotation) {return}
+        }
+        guard !activityTapGate.isRecent(now:CACurrentMediaTime()) else {return}
+        // Annotation taps belong to MapKit (avatars, playback, photos), never a route below them.
+        var touched=map.hitTest(point,with:nil)
+        while let view=touched {if view is MKAnnotationView || view is UIControl {return};touched=view.superview}
+        var hits:[String:CGFloat]=[:]
+        for route in content.styled {
+            guard let id=route.activityID else {continue}
+            var previous:CGPoint?
+            for coordinate in route.coordinates {
+                let current=map.convert(coordinate,toPointTo:map)
+                if let previous=previous {
+                    let distance=RouteHitTest.distance(point,from:previous,to:current)
+                    if distance<=18 {hits[id]=min(hits[id] ?? 18,distance)}
+                }
+                previous=current
+            }
+        }
+        if let id=RouteHitTest.activity(in:hits,selected:content.selectedActivity) {onActivity?(id)}
+    }
     @objc private func userGesture(_ recognizer:UIGestureRecognizer) {
         let began=recognizer is UITapGestureRecognizer ? recognizer.state == .ended : recognizer.state == .began
         guard began,planner.userMoved() else {return}
@@ -1455,7 +1621,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         // Taps on our own controls are not map gestures.
         !(touch.view is UIControl) && !controlViews.contains{touch.view?.isDescendant(of:$0)==true}
     }
-    func regionDidChange() {remember();updateDensity();layoutIndicators()}
+    func regionDidChange() {remember();updateDensity();layoutIndicators();layoutActivityFlags()}
 
     // MARK: Controls
     private func installControls() {
@@ -1472,31 +1638,10 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             recognizer.delegate=self;recognizer.cancelsTouchesInView=false;recognizer.delaysTouchesEnded=false
             map.addGestureRecognizer(recognizer);recognizers.append(recognizer)
         }
+        let activityTap=UITapGestureRecognizer(target:self,action:#selector(activityTapped(_:)))
+        activityTap.delegate=self;activityTap.cancelsTouchesInView=false;activityTap.require(toFail:doubleTap)
+        map.addGestureRecognizer(activityTap);recognizers.append(activityTap)
         installCompass()
-        var style=UIButton.Configuration.filled()
-        style.baseBackgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
-        style.baseForegroundColor = .label
-        style.cornerStyle = .capsule
-        style.image=UIImage(systemName:"xmark.circle.fill",withConfiguration:UIImage.SymbolConfiguration(pointSize:13))
-        style.imagePlacement = .trailing
-        style.imagePadding=6
-        style.contentInsets=NSDirectionalEdgeInsets(top:0,leading:12,bottom:0,trailing:10)
-        style.titleTextAttributesTransformer=UIConfigurationTextAttributesTransformer { attributes in
-            var updated=attributes;updated.font=UIFont.systemFont(ofSize:13,weight:.semibold);return updated
-        }
-        let chip=UIButton(configuration:style)
-        chip.isHidden=true
-        chip.addAction(UIAction{[weak self] _ in self?.showEveryone()},for:.touchUpInside)
-        map.addSubview(chip);self.chip=chip
-        updateControls()
-    }
-    private func name(of personID:String)->String {
-        for pin in content.peoplePins {
-            for member in pin["members"] as? [[String:Any]] ?? [] where member["id"] as? String==personID {
-                return (member["name"] as? String).flatMap{$0.isEmpty ? nil : $0} ?? "this person"
-            }
-        }
-        return "this person"
     }
     // Frames follow the current bounds (the full-screen map is created before it
     // has a size), so the column always sits at the right edge.
@@ -1504,28 +1649,65 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let map=map else {return}
         let right=map.bounds.width-16
         compass?.frame=CGRect(x:right-38,y:compassTop ?? controlTop+44,width:40,height:40)
-        if let chip=chip,!chip.isHidden {
-            chip.frame.origin=CGPoint(x:12,y:showsLayers ? leftColumnBottom : controlTop)
-            if showsLayers {chip.frame.size.width=min(chip.frame.width,max(44,map.bounds.width-80))}
-        }
-    }
-    private func updateControls() {
-        guard let map=map else {return}
-        defer {layoutControls()}
-        if let chip=chip {
-            if let id=planner.mode.personID {
-                chip.configuration?.title="Following \(name(of:id))"
-                chip.accessibilityLabel="Following \(name(of:id)). Show everyone"
-                let fitted=chip.sizeThatFits(CGSize(width:map.bounds.width-90,height:32))
-                chip.frame=CGRect(x:12,y:controlTop,width:min(fitted.width,map.bounds.width-90),height:32)
-                chip.isHidden=false
-            } else {chip.isHidden=true}
-        }
+        layoutStatus()
     }
 
+    // WKWebView content sits behind the embedded map; draw day notices in its native layer.
+    private func layoutStatus() {
+        guard let map=map else {return}
+        let text=content.activityPreview == nil ? content.status : ""
+        guard !text.isEmpty else {statusLabel?.isHidden=true;return}
+        let label:UILabel
+        if let existing=statusLabel {label=existing}
+        else {
+            label=UILabel();label.font=UIFont.preferredFont(forTextStyle:.footnote)
+            label.adjustsFontForContentSizeCategory=true;label.numberOfLines=0
+            label.textColor = .label;label.backgroundColor = .secondarySystemBackground
+            label.layer.cornerRadius=12;label.clipsToBounds=true;label.textAlignment = .center
+            map.addSubview(label);statusLabel=label
+        }
+        label.text=text;label.accessibilityLabel=text;label.isHidden=false
+        let width=max(1,min(400,map.bounds.width-88))
+        let height=label.sizeThatFits(CGSize(width:max(1,width-20),height:CGFloat.greatestFiniteMagnitude)).height+20
+        let visibleHeight=min(height,max(40,map.bounds.height-map.safeAreaInsets.bottom-64))
+        label.frame=CGRect(x:12,y:max(12,map.bounds.height-map.safeAreaInsets.bottom-visibleHeight-44),width:width,height:visibleHeight)
+        map.bringSubviewToFront(label)
+    }
     // MARK: Edge avatars
+    func trackActivityFlag(_ view:MKAnnotationView) {
+        guard let flag=view as? ActivityFlagView else {return}
+        activityViews.add(flag)
+        if let map=map {placeActivityFlag(flag,on:map,obstacles:activityObstacles())}
+    }
+    private func activityObstacles()->[CGRect] {
+        guard let map=map else {return []}
+        return content.peoplePins.compactMap { metadata in
+            guard let c=coordinate(metadata["point"]),let footprint=activityFootprints[pinID(metadata)] else {return nil}
+            let point=map.convert(c,toPointTo:map)
+            let target=CGRect(x:point.x+footprint.offset.x-footprint.size.width/2,y:point.y+footprint.offset.y-footprint.size.height/2,width:footprint.size.width,height:footprint.size.height)
+            // Cover the animated avatar as well as its destination, so an incoming
+            // position cannot briefly paint over the flag during its animation.
+            if let pin=pins[pinID(metadata)],let avatar=map.view(for:pin),let parent=avatar.superview,let frame=avatar.layer.presentation()?.frame {
+                return target.union(map.convert(frame,from:parent))
+            }
+            return target
+        }
+    }
+    private func placeActivityFlag(_ flag:ActivityFlagView,on map:MKMapView,obstacles:[CGRect]) {
+        guard let annotation=flag.annotation,let size=flag.image?.size else {return}
+        let point=map.convert(annotation.coordinate,toPointTo:map)
+        flag.place(offset:ActivityFlagPlacement.offset(size:size,at:point,people:obstacles,bounds:map.bounds,previous:flag.centerOffset))
+    }
+    func layoutActivityFlags() {
+        guard content.personDay,let map=map else {return}
+        let obstacles=activityObstacles()
+        // Track actual views, including MapKit-created clusters, rather than
+        // enumerating only source annotations. Weak references also cover reuse.
+        for flag in activityViews.allObjects where flag.superview != nil {placeActivityFlag(flag,on:map,obstacles:obstacles)}
+    }
     func layoutIndicators() {
         guard isPeopleMap,let map=map,map.bounds.width>80,map.bounds.height>80 else {return}
+        layoutActivityFlags()
         layoutControls()
         let bounds=map.bounds
         let middle=CGPoint(x:bounds.midX,y:bounds.midY)
@@ -1543,7 +1725,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         let size:CGFloat=40
         var blocked=controlViews.map{$0.frame.insetBy(dx:-4,dy:-4)}
-        blocked += [chip].compactMap{$0}.filter{!$0.isHidden}.map{$0.frame.insetBy(dx:-4,dy:-4)}
         if let compass=compass,compass.alpha>0.01,!compass.isHidden {blocked.append(compass.frame.insetBy(dx:-4,dy:-4))}
         for view in map.subviews where view is UIButton && !(view is EdgeAvatarButton) && !view.isHidden {blocked.append(view.frame.insetBy(dx:-4,dy:-4))}
         // MapKit's Apple Maps logo and Legal link sit at the bottom left (above the
@@ -1551,6 +1732,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let attribution=bounds.height-map.layoutMargins.bottom
         blocked.append(CGRect(x:0,y:attribution-34,width:130,height:34))
         if let card=cardFrame {blocked.append(card.insetBy(dx:-6,dy:-6))}
+        if let label=statusLabel,!label.isHidden {blocked.append(label.frame.insetBy(dx:-6,dy:-6))}
         blocked.append(contentsOf:exclusions())
         let placements=EdgeIndicatorLayout.place(items,bounds:bounds.insetBy(dx:6,dy:6),rail:bounds.insetBy(dx:8+size/2,dy:8+size/2),exclusions:blocked,size:size,spacing:size+6)
         var shown=Set<String>()
@@ -1595,17 +1777,18 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
 
     func detach() {
+        activityViews.removeAllObjects();activityFootprints=[:]
         remember()
         for recognizer in recognizers {recognizer.view?.removeGestureRecognizer(recognizer)}
         recognizers.removeAll()
         for button in indicators.values {button.removeFromSuperview()}
         indicators.removeAll();indicatorData.removeAll();indicatorVersion.removeAll()
-        ([chip,compass,card,locationButton] as [UIView?]).forEach{$0?.removeFromSuperview()}
-        chip=nil;compass=nil;card=nil;locationButton=nil
+        ([compass,card,locationButton,statusLabel] as [UIView?]).forEach{$0?.removeFromSuperview()}
+        compass=nil;card=nil;locationButton=nil;statusLabel=nil
         selectedPhoto=nil;selectedMarker=nil;highlight=[]
         controlViews.forEach{$0.removeFromSuperview()};controlViews=[];controlsKey=nil;panelScroll=nil;panelID=nil
         panelTap?.view?.removeGestureRecognizer(panelTap!);panelTap=nil
-        onModeChange=nil;onPhotoAction=nil;onToolbarAction=nil
+        onModeChange=nil;onPhotoAction=nil;onToolbarAction=nil;onActivity=nil
     }
 }
 
@@ -1745,6 +1928,10 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     // Draw normal pins first; full-size photo thumbnails must sit above them.
                     for pin in content.pins where (pin["kind"] as? String) != "photo" {
                         guard let c=coordinate(pin["point"]) else {continue};let p=snapshot.point(for:c)
+                        if pin["kind"] as? String == "step" {
+                            let image=activityFlagImage(pin["label"] as? String ?? "",selected:pin["selected"] as? Bool == true)
+                            image.draw(at:CGPoint(x:p.x-image.size.width/2,y:p.y-image.size.height+4));continue
+                        }
                         if (pin["kind"] as? String)=="people" {
                             let marker=peopleMarker(pin)
                             marker.image.draw(at:CGPoint(x:p.x-marker.image.size.width/2+marker.offset.x,y:p.y-marker.image.size.height/2+marker.offset.y))
@@ -1876,6 +2063,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     map.isHidden=true
                     let controller=AppleMapController(content:self.embeddedContent[id] ?? content,picker:false)
                     controller.onCamera={ [weak self] mode,command in self?.reportCamera(id,mode,command) }
+                    controller.onSelectActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID]) }
+                controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
                     controller.onStyle={ [weak self] style in self?.notifyListeners("layersTapped",data:["mapID":id,"action":"style:\(style)"]) }
                     // The full-screen overview continues from this map's view.
                     controller.initialCamera=map.camera.copy() as? MKMapCamera
@@ -1885,6 +2074,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         // Continue from wherever the full-screen map was left.
                         embedded?.resumeFromMemory()
                         if self?.presentedID==id {self?.presentedID=nil}
+                        if let action=result["mapAction"] as? String {self?.notifyListeners("layersTapped",data:["mapID":id,"action":action])}
+                        if let activityID=result["activityID"] as? String {self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])}
                         if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
                             self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":result["action"] as? String ?? "photo"])
                         }
@@ -1903,6 +2094,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 created.onPhotoAction={ [weak self] action,photoID,journeyID in
                     self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":action])
                 }
+                created.onActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID]) }
                 created.onToolbarAction={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
                 self.coordinators[id]=created
                 return created
@@ -2012,6 +2204,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             let mapID=call.getString("mapID")
             if let mapID=mapID {
                 controller.onCamera={ [weak self] mode,command in self?.reportCamera(mapID,mode,command) }
+                controller.onSelectActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":mapID,"activityID":activityID]) }
+                controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":mapID,"action":action]) }
                 // Continue the full-screen map from the embedded map's current camera
                 // so open/close never re-fits, whatever path triggered presentation.
                 if let embedded=self.embeddedMaps[mapID], !embedded.isHidden {
@@ -2053,6 +2247,8 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     private var coordinator:MapCoordinator?
     private weak var styles:UISegmentedControl?
     var onStyle:((String)->Void)?
+    var onToolbar:((String)->Void)?
+    var onSelectActivity:((String)->Void)?
     init(content:MapContent,picker:Bool){self.content=content;self.picker=picker;super.init(nibName:nil,bundle:nil)}
     // New positions while the full-screen people map is open.
     func update(_ next:MapContent) {if isViewLoaded {coordinator?.apply(next)}}
@@ -2075,7 +2271,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if picker {navigationItem.rightBarButtonItem=UIBarButtonItem(title:"Use location",style:.done,target:self,action:#selector(confirm));navigationItem.rightBarButtonItem?.isEnabled=false}
         let styles=UISegmentedControl(items:["Map","Satellite"]);styles.selectedSegmentIndex=content.mapStyle=="satellite" ? 1 : 0;if let style=content.mapStyle {applyMapStyle(map,style)};styles.addTarget(self,action:#selector(styleChanged(_:)),for:.valueChanged);styles.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(styles)
         styles.backgroundColor = .secondarySystemBackground
-        self.styles=styles
+        self.styles=styles;styles.isHidden=content.controls != nil
         NSLayoutConstraint.activate([styles.centerXAnchor.constraint(equalTo:view.centerXAnchor),styles.topAnchor.constraint(equalTo:map.topAnchor,constant:16),styles.widthAnchor.constraint(equalToConstant:220),styles.heightAnchor.constraint(equalToConstant:36)])
         if picker {
             let tap=UITapGestureRecognizer(target:self,action:#selector(pick(_:)));tap.numberOfTapsRequired=1;map.addGestureRecognizer(tap)
@@ -2086,12 +2282,14 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             // The people map and the route overview: same annotations, density,
             // photos, camera, edge avatars and controls as the embedded map,
             // continuing from its camera and mode.
-            let coordinator=MapCoordinator(map:map,content:content,controlTop:60)
+            let coordinator=MapCoordinator(map:map,content:content,controlTop:content.controls == nil ? 60 : 12,showsLayers:content.controls != nil)
             coordinator.exclusions={ [weak self] in
-                guard let self=self,let styles=self.styles else {return []}
+                guard let self=self,let styles=self.styles,!styles.isHidden else {return []}
                 return [self.view.convert(styles.frame,to:self.map).insetBy(dx:-6,dy:-6)]
             }
             coordinator.onModeChange={ [weak self] mode,command in self?.onCamera?(mode,command) }
+            coordinator.onToolbarAction={ [weak self] action in if action.hasPrefix("pday:open:") {self?.finish(["mapAction":action.replacingOccurrences(of:"pday:open:",with:"pday:open-fullscreen:")])}else{self?.onToolbar?(action)} }
+            coordinator.onActivity={ [weak self] id in self?.onSelectActivity?(id) }
             coordinator.onPhotoAction={ [weak self] action,photoID,journeyID in self?.finish(["photoID":photoID,"journeyID":journeyID,"action":action]) }
             self.coordinator=coordinator
             if content.camera == nil {
@@ -2152,10 +2350,11 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         return MKOverlayRenderer(overlay:overlay)
     }
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
+        if let view=activityAnnotationView(mapView,annotation) {coordinator?.trackActivityFlag(view);return view}
         if let view=overviewAnnotationView(mapView,annotation) {return view}
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
-        if kind=="people" {return peopleAnnotationView(mapView,pin)}
+        if kind=="people" {let view=peopleAnnotationView(mapView,pin);if coordinator?.content.personDay == true {view.zPriority = .defaultSelected};return view}
         if kind=="friend-live" {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
             view.image=friendInitialBubble((pin.title ?? "F").components(separatedBy:" · ").first ?? "F")
@@ -2199,8 +2398,11 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if kind=="photo" {marker.rightCalloutAccessoryView=UIButton(type:.detailDisclosure)}
         return marker
     }
+    func mapView(_ mapView:MKMapView,didAdd views:[MKAnnotationView]) {coordinator?.layoutActivityFlags()}
     func mapView(_ mapView:MKMapView,didDeselect view:MKAnnotationView) {coordinator?.deselected(view.annotation)}
     func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="people" {coordinator?.selectPerson(pin);return}
+        if let annotation=view.annotation,coordinator?.activateActivity(annotation) == true {return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator?.select(photo:pin);return}
         guard !picker,let pin=view.annotation as? JourneyPin,
@@ -2225,7 +2427,10 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         if let id=mapID(for:mapView) {data["mapID"]=id}
         notifyListeners("photoSelected",data:data)
     }
+    public func mapView(_ mapView:MKMapView,didAdd views:[MKAnnotationView]) {coordinator(for:mapView)?.layoutActivityFlags()}
     public func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="people" {coordinator(for:mapView)?.selectPerson(pin);return}
+        if let annotation=view.annotation,coordinator(for:mapView)?.activateActivity(annotation) == true {return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator(for:mapView)?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator(for:mapView)?.select(photo:pin);return}
         // A community segment on the Map's Segments layer opens its details in the
@@ -2233,12 +2438,6 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         if let pin=view.annotation as? JourneyPin,let segmentID=pin.metadata["segmentID"] as? String,!segmentID.isEmpty,let id=mapID(for:mapView) {
             mapView.deselectAnnotation(pin,animated:false)
             notifyListeners("segmentSelected",data:["mapID":id,"segmentID":segmentID])
-            return
-        }
-        // A numbered activity marker on a person's day opens that activity.
-        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="step",let activityID=pin.metadata["activityID"] as? String,!activityID.isEmpty,let id=mapID(for:mapView) {
-            mapView.deselectAnnotation(pin,animated:false)
-            notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])
             return
         }
         reportPhotoSelection(mapView,view.annotation)
@@ -2266,12 +2465,13 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         reportPhotoSelection(mapView,view.annotation)
     }
     public func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
+        if let view=activityAnnotationView(mapView,annotation) {coordinator(for:mapView)?.trackActivityFlag(view);return view}
         if let view=overviewAnnotationView(mapView,annotation) {return view}
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String ?? ""
-        if kind=="people" {return peopleAnnotationView(mapView,pin)}
+        if kind=="people" {let view=peopleAnnotationView(mapView,pin);if coordinator(for:mapView)?.content.personDay == true {view.zPriority = .defaultSelected};return view}
         if kind=="segment" {return segmentMarker(pin)}
-        if kind=="step" {return stepMarker(pin)}
+        if kind=="step" {return activityAnnotationView(mapView,pin)}
         if kind=="playback" {return playbackMarker(pin)}
         let marker=MKMarkerAnnotationView(annotation:pin,reuseIdentifier:nil)
         marker.canShowCallout=true

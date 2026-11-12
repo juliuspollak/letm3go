@@ -118,6 +118,6 @@ export default function NativeActivityDetail(props){
   void nativeDetails.present(message).catch(error=>{session.open=false;setFailure(error?.message||'This activity could not be opened.');});
  },[presentation,community.error]);
 
- if(failure)return <div className="notice" role="alert"><p>{failure}</p><button type="button" className="secondary" onClick={onBack}>Back to activities</button></div>;
+ if(failure)return <div className="notice" role="alert"><p>{failure}</p><button type="button" className="secondary" onClick={onBack}>{props.backLabel||'Back to activities'}</button></div>;
  return <div className="native-activity-detail" aria-hidden="true"/>;
 }

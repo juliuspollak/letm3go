@@ -6,7 +6,6 @@ import {trailLines,mergeTrail} from './liveTrail.js';
 // One person's day, composed from the activities shared with the viewer plus their
 // live trail. One implementation for everyone: only where the rows come from (and
 // what the server lets through) differs between myself, household and friends.
-const SPREAD_METRES=25,MAX_MARKERS=60;
 // The recorder treats a silence over three minutes as unobserved even when
 // stationary. Shared/thinned fixes lack accuracy and mode: use that conservative
 // ceiling, rather than interpreting sparse display samples as precise coverage.
@@ -48,19 +47,6 @@ function lines(points,untimed=false){
  }
  return result.filter(line=>line.length>1);
 }
-const metres=(a,b)=>{const k=111320,dy=(a[0]-b[0])*k,dx=(a[1]-b[1])*k*Math.cos(a[0]*Math.PI/180);return Math.hypot(dx,dy);};
-// Markers that fall on the same spot are fanned out around it, deterministically,
-// so every one stays tappable; the badge number is unchanged.
-export function spreadMarkers(markers){
- const placed=[];
- return markers.map(marker=>{
-  const near=placed.filter(p=>metres(p.point,marker.point)<SPREAD_METRES).length;
-  placed.push(marker);
-  if(!near)return marker;
-  const angle=near*2.4,radius=0.00014*Math.ceil(near/6);
-  return {...marker,point:[marker.point[0]+Math.sin(angle)*radius,marker.point[1]+Math.cos(angle)*radius]};
- });
-}
 export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}){
  const window=dayWindow(date,timeZone);
  const activities=[];
@@ -77,10 +63,10 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
   const timed=points.filter(p=>!p.bridge);
   if(!timed.length)continue;
   const roads=roadsInWindow(row.roads,window,begun,ended);
-  activities.push({untimed,id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:Date.parse(row.started_at)/1000,
+  activities.push({untimed,id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:begun,durationSeconds:Number.isFinite(ended-begun)?Math.max(0,ended-begun):null,
    routes:lines(points,untimed),roads,points:timed,start:[timed[0].latitude,timed[0].longitude]});
  }
- const markers=spreadMarkers(activities.slice(0,MAX_MARKERS).map((a,i)=>({n:i+1,activityID:a.id,point:a.start,title:`${i+1}. ${a.title}`})));
+ const markers=activities.map((a,i)=>({n:i+1,activityID:a.id,point:a.start,title:`${i+1}. ${a.title}`}));
  // Time lookups use one flat, sorted list of recorded fixes. A road estimate has no
  // timestamps of its own, so none are invented for it.
  const samples=activities.filter(a=>!a.untimed).flatMap(a=>a.points.map(p=>({t:p.t,lat:p.latitude,lon:p.longitude,segment:p.segment,id:a.id}))).sort((a,b)=>a.t-b.t);

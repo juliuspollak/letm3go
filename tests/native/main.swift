@@ -5340,3 +5340,66 @@ let liveValid = GPSPoint(latitude: -34, longitude: 151, timestamp: 100, accuracy
 let liveInvalidTail = GPSPoint(latitude: 95, longitude: 151, timestamp: 110, accuracy: 5, altitude: 0, speed: 0)
 check(LiveTrail.batch(points: [liveValid, liveInvalidTail], after: 0, now: 200).count == 1, "the newest-point fallback cannot reinsert an invalid fix and poison the upload")
 print("Final native assertion count including live batch validation: \(assertions)")
+
+check(RouteHitTest.distance(CGPoint(x:5,y:3),from:CGPoint(x:0,y:0),to:CGPoint(x:10,y:0)) == 3, "route taps use perpendicular screen distance")
+check(RouteHitTest.distance(CGPoint(x:13,y:4),from:CGPoint(x:0,y:0),to:CGPoint(x:10,y:0)) == 5, "route hit testing clamps to the endpoint")
+check(RouteHitTest.distance(CGPoint(x:3,y:4),from:.zero,to:.zero) == 5, "duplicate saved vertices stay tappable without division by zero")
+
+print("Final native assertion count including route selection: \(assertions)")
+
+check(RouteHitTest.activity(in:["a":2,"b":2],selected:nil) == "a", "coincident routes select deterministically")
+check(RouteHitTest.activity(in:["a":2,"b":2],selected:"a") == "b", "repeated route taps expose the overlapping activity")
+check(RouteHitTest.activity(in:["a":1,"b":9],selected:"a") == "a", "a clearly nearer route wins")
+check(RouteHitTest.activity(in:["a":19],selected:nil) == nil, "bare map taps select no activity")
+print("Final native assertion count including overlapping routes: \(assertions)")
+
+for (index,expected) in [(CGFloat(3.5),CGFloat(1)),(4,1),(4.5,1),(5,1),(5.5,1)].enumerated() {
+    let style=DensityTrailStyle.value(index+1)
+    check(style.width == expected.0 && style.opacity == expected.1, "density \(index+1) uses visible bounded styling")
+}
+print("Final native assertion count including visible trails and activity clusters: \(assertions)")
+
+let safePreferences=try AccountPreferencesJSON.data(["onboardingStep":2,"syncReceipts":["a":["updatedAt":NSNull(),"revision":3]]])
+let safePreferencesObject=try JSONSerialization.jsonObject(with:safePreferences)
+check(JSONSerialization.isValidJSONObject(safePreferencesObject), "normalised optional settings serialize successfully")
+for invalid in [Double.nan,Double.infinity,-Double.infinity] {
+    do {
+        _ = try AccountPreferencesJSON.data(["syncReceipts":["a":["updatedAt":invalid]]])
+        check(false,"invalid preference numbers must be rejected before the JSON writer")
+    } catch {check(true,"non-finite nested preferences are rejected without an Objective-C abort")}
+}
+print("Final native assertion count including preference JSON validation: \(assertions)")
+
+let flagSize=CGSize(width:36,height:38),mapBounds=CGRect(x:0,y:0,width:390,height:500)
+let homePoint=CGPoint(x:195,y:240),avatarBounds=CGRect(x:160,y:195,width:70,height:80)
+let clearFlag=ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds)
+check(homePoint.y+clearFlag.y+flagSize.height/2<avatarBounds.minY, "activity flags sit visibly above a coincident avatar")
+check(ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:30,y:300),people:[avatarBounds],bounds:mapBounds) == CGPoint(x:0,y:-15), "unobstructed flags retain their normal pointer position")
+let edgeOffset=ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:195,y:35),people:[CGRect(x:160,y:0,width:70,height:80)],bounds:mapBounds)
+check(35+edgeOffset.y-flagSize.height/2>80, "near the top edge flags sit below the avatar instead of outside the map")
+print("Final native assertion count including avatar/flag collision placement: \(assertions)")
+
+check(ActivityFlagVisibility.required(clustered:true), "MapKit activity clusters cannot be culled by the avatar")
+check(!ActivityFlagVisibility.required(clustered:false), "source activity flags remain eligible for native clustering")
+let stableFlag=ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds)
+check(ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds,previous:stableFlag) == stableFlag, "unchanged camera/avatar input keeps the same label offset")
+let nearEdgePoint=CGPoint(x:130,y:240)
+let heldFlag=ActivityFlagPlacement.offset(size:flagSize,at:nearEdgePoint,people:[avatarBounds],bounds:mapBounds,previous:stableFlag)
+check(heldFlag != CGPoint(x:0,y:-15), "a placement margin avoids repeated offset resets at the avatar boundary")
+print("Final native assertion count including persistent flag visibility: \(assertions)")
+check(ActivityFlagPlacement.offset(size:flagSize,at:nearEdgePoint,people:[avatarBounds],bounds:mapBounds) == CGPoint(x:0,y:-15), "the wider retention margin does not move an unobstructed new flag")
+print("Final native assertion count including placement hysteresis: \(assertions)")
+
+var activityTapGate=ActivityTapGate()
+check(activityTapGate.accept("step:a",now:10), "the first visible flag tap activates its activity")
+check(!activityTapGate.accept("step:a",now:10.1), "duplicate MapKit and visual hit callbacks activate only once")
+check(activityTapGate.accept("step:b",now:10.2), "a quick tap on a different flag is accepted")
+check(activityTapGate.accept("step:b",now:11), "a later tap can reveal the same activity again")
+check(!activityTapGate.isRecent(now:12), "route gestures resume after the duplicate callback interval")
+print("Final native assertion count including activity tap routing: \(assertions)")
+
+check(ActivityClusterZoom.span(current:1000,spread:100,minimum:12)==150, "activity clusters zoom to their actual bounds")
+check(ActivityClusterZoom.span(current:1000,spread:0,minimum:12)==12, "coincident starts use a bounded close zoom without fan-out")
+check(ActivityClusterZoom.span(current:8,spread:0,minimum:12)==8, "a cluster tap never zooms out at maximum detail")
+check(ActivityClusterZoom.span(current:1000,spread:900,minimum:12)==450, "even a wide cluster zooms in consistently")
+print("Final native assertion count including zoom-only activity clusters: \(assertions)")

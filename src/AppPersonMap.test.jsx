@@ -1,10 +1,10 @@
-import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,within,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import App from './App.jsx';
 import {emptyRecorder} from './lib/recorder.js';
 // Person selection lives on the Map tab: Home hands over to it, the one map is updated in place,
 // and Poke is a separate button on the Home tile.
-const {identity,recorderHook,mapProps,mapLocationHook,friends,pokes,dayCalls,locateFn}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),mapProps:{value:null,mounts:0},friends:{people:[]},pokes:{send:null},dayCalls:[],locateFn:vi.fn()}))
+const {identity,recorderHook,mapProps,mapLocationHook,friends,pokes,dayCalls,locateFn}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),mapProps:{value:null,mounts:0,rowIds:[]},friends:{people:[]},pokes:{send:null},dayCalls:[],locateFn:vi.fn()}))
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
@@ -15,7 +15,8 @@ vi.mock('./lib/useRecorder.js',()=>({useRecorder:recorderHook}));
 vi.mock('./lib/useFriendLocations.js',()=>({useFriendLocations:()=>({people:friends.people,enabled:true,error:'',ready:true,lastSentAt:0,setEnabled:()=>{},refresh:()=>{}})}));
 vi.mock('./lib/usePersonDay.js',async()=>{
  const {composeDay}=await import('./lib/personDay.js');
- return {usePersonDay:args=>{dayCalls.push(args);return {day:composeDay({rows:[],live:null,timeZone:args.timeZone,date:args.date,now:Date.now()/1000}),loading:false,error:''};}};
+ const {dayWindow}=await import('./lib/dayWindow.js');
+ return {usePersonDay:args=>{dayCalls.push(args);return {day:composeDay({rows:mapProps.rowIds.map(id=>{const t=dayWindow(args.date,args.timeZone).start+1000;return {activity_id:id,title:'Map walk',activity:'Walking',started_at:new Date(t*1000).toISOString(),ended_at:new Date((t+30)*1000).toISOString(),roads:{},points:[{latitude:-34,longitude:151,t,segment:0},{latitude:-34.001,longitude:151,t:t+30,segment:0}]};}),live:null,timeZone:args.timeZone,date:args.date,now:Date.now()/1000}),loading:false,error:''};}};
 });
 vi.mock('./components/JourneyMap.jsx',async()=>{
  const {useEffect}=await import('react');
@@ -24,9 +25,11 @@ vi.mock('./components/JourneyMap.jsx',async()=>{
 });
 vi.mock('./lib/notifications.js',async original=>({...await original(),sendPoke:(...args)=>pokes.send(...args),useNotifications:()=>({items:[],count:0,refresh:()=>{},markRead:vi.fn(),markOneRead:vi.fn()})}));
 
+vi.mock('./components/ActivityDetailScreen.jsx',()=>({default:props=><section aria-label="Own activity detail"><button onClick={props.onBack}>Back to map origin</button></section>}));
+vi.mock('./components/SharedActivityDetail.jsx',()=>({default:props=><section aria-label="Shared activity detail"><button onClick={props.onBack}>Back to shared map origin</button></section>}));
 const ann={user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updated_at:new Date().toISOString(),accuracy:10};
 beforeEach(()=>{
- mapProps.value=null;mapProps.mounts=0;dayCalls.length=0;
+ mapProps.value=null;mapProps.mounts=0;mapProps.rowIds=[];dayCalls.length=0;
  friends.people=[ann];pokes.send=vi.fn(async()=>({}));
  locateFn.mockReset();locateFn.mockResolvedValue({latitude:-33.8,longitude:151.2});
  mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:locateFn});
@@ -104,7 +107,7 @@ it('switches person from the selector, restores All people, never remounts the m
  expect(trigger().getAttribute('aria-label')).toMatch(/^Showing All people/);
  expect(mapSettings()).toBe(before);
 });
-it('Locate: All people goes to me; Me goes to me; another person never asks for my location', async()=>{
+it('Locate always goes to my own location across All people, Me and another person', async()=>{
  render(<App/>);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  await act(async()=>{await mapProps.value.onLocate();});
@@ -117,8 +120,8 @@ it('Locate: All people goes to me; Me goes to me; another person never asks for 
  await choose(/Ann/);
  locateFn.mockClear();
  await act(async()=>{await mapProps.value.personDay.onLocate();});
- expect(locateFn).not.toHaveBeenCalled();
- expect(mapProps.value.personDay.payload.focus).toEqual([ann.latitude,ann.longitude]);
+ expect(locateFn).toHaveBeenCalledTimes(1);
+ expect(mapProps.value.personDay.payload.focus).toEqual([-33.8,151.2]);
 });
 it('Poke is a separate button: one request, the tile does not open the Map, and it goes back to Poke', async()=>{
  vi.useFakeTimers({shouldAdvanceTime:true});
@@ -167,4 +170,58 @@ it('a Filters panel left open is closed when a person is chosen, and stays close
  await choose(/Ann/);
  await choose(/All people/);
  expect(mapProps.value.controls.panel).toBeNull();
+});
+it('Back from my activity restores Me, the exact day, selected bubble, filters and camera intent',async()=>{
+ const startedAt=Date.now()/1000-86400;
+ const trip={id:'own',source:'device',state:'finished',activity:'Walking',title:'Map walk',startedAt,endedAt:startedAt+30,durationSeconds:30,distanceMeters:100,details:{},points:[{latitude:-34,longitude:151,timestamp:startedAt,segment:0},{latitude:-34.001,longitude:151,timestamp:startedAt+30,segment:0}]};
+ recorderHook.mockReturnValue({state:{...emptyRecorder,ownerID:'owner',trips:[trip]},run:vi.fn(),busy:false,error:''});mapProps.rowIds=['own'];
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'My day'}));
+ act(()=>mapProps.value.personDay.onControl('pday:prev'));
+ act(()=>mapProps.value.personDay.onControl('pday:activity:Walking'));
+ act(()=>mapProps.value.personDay.onStep('own'));
+ const fitKey=mapProps.value.personDay.payload.fitKey,camera=mapProps.value.camera;
+ act(()=>mapProps.value.personDay.onControl('pday:open:own'));
+ expect(screen.getByLabelText('Own activity detail')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'Back to map origin'}));
+ expect(trigger().getAttribute('aria-label')).toMatch(/^Showing Me/);
+ expect(mapProps.value.personDay.payload.fitKey).toBe(fitKey);
+ expect(mapProps.value.personDay.payload.activityPreview.activityID).toBe('own');
+ expect(mapProps.value.personDay.filters.active).toBe(1);
+ expect(mapProps.value.camera).toEqual(camera);
+ expect(screen.queryByRole('heading',{name:'Activities',exact:true})).toBeNull();
+});
+it('Back from a shared activity restores the same person/day/selection and scroll offset',async()=>{
+ mapProps.rowIds=['shared'];const originalScroll=window.scrollTo,scroll=vi.fn();window.scrollTo=scroll;
+ const scrollY=Object.getOwnPropertyDescriptor(window,'scrollY');Object.defineProperty(window,'scrollY',{configurable:true,value:245});
+ try{
+  render(<App/>);fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
+  act(()=>mapProps.value.personDay.onControl('pday:prev'));act(()=>mapProps.value.personDay.onStep('shared'));
+  const key=mapProps.value.personDay.payload.fitKey;
+  act(()=>mapProps.value.personDay.onControl('pday:open:shared'));
+  expect(screen.getByLabelText('Shared activity detail')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Back to shared map origin'}));
+  expect(trigger().getAttribute('aria-label')).toMatch(/^Showing Ann/);
+  expect(mapProps.value.personDay.payload.fitKey).toBe(key);
+  expect(mapProps.value.personDay.payload.activityPreview.activityID).toBe('shared');
+  await waitFor(()=>expect(scroll).toHaveBeenCalledWith({top:245,behavior:'instant'}));
+ }finally{window.scrollTo=originalScroll;if(scrollY)Object.defineProperty(window,'scrollY',scrollY);}
+});
+it('requests fullscreen restoration only when the activity was opened from that map mode',async()=>{
+ mapProps.rowIds=['shared'];render(<App/>);fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
+ act(()=>mapProps.value.personDay.onStep('shared'));act(()=>mapProps.value.personDay.onControl('pday:open-fullscreen:shared'));
+ fireEvent.click(screen.getByRole('button',{name:'Back to shared map origin'}));
+ expect(mapProps.value.resumeFullscreen).toBeGreaterThan(0);
+ act(()=>mapProps.value.onResumeFullscreen());expect(mapProps.value.resumeFullscreen).toBe(0);
+});
+it('returns to the same recorded day even if midnight passes while the detail is open',()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true});
+ try{
+  vi.setSystemTime(new Date('2026-11-12T12:00:00Z'));mapProps.rowIds=['shared'];
+  render(<App/>);fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
+  act(()=>mapProps.value.personDay.onStep('shared'));const origin=mapProps.value.personDay.payload.fitKey;
+  act(()=>mapProps.value.personDay.onControl('pday:open:shared'));
+  vi.setSystemTime(new Date('2026-11-13T12:00:00Z'));
+  fireEvent.click(screen.getByRole('button',{name:'Back to shared map origin'}));
+  expect(mapProps.value.personDay.payload.fitKey).toBe(origin);
+ }finally{vi.useRealTimers();}
 });

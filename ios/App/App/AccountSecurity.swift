@@ -447,7 +447,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func commitJourneyRecords(_ call: CAPPluginCall) {journeyRecords(call,write:true)}
     @objc func savePreferences(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID, let object = call.getObject("preferences") else { call.reject("Missing settings."); return }
-        do { let data = try JSONSerialization.data(withJSONObject:object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences)
+        do { let data = try AccountPreferencesJSON.data(object); let preferences = try JSONDecoder().decode(AccountPreferences.self,from:data); try LocationRecorder.shared.savePreferences(preferences)
             // Only the saved preferences: the caller reads nothing else. A full snapshot
             // here re-encoded every recorded GPS fix on the main thread (~1.3 s and 32 MB
             // for a month of history) on each save, and enrichment saves every few seconds.
