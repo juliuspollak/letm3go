@@ -45,10 +45,10 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
  const guarded=action=>()=>{if(Date.now()<ignoreClickUntil.current)return;action();};
  return <section className="home-day" aria-label="Daily activity summary" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchCancel={()=>{touchStart.current=null;}}>
   <div className="home-day-head">
-   <button type="button" className="home-day-arrow" aria-label="Previous day" onClick={()=>changeDay(-1)}><ChevronLeft size={20}/></button>
+   <button type="button" className="home-day-arrow" aria-label="Previous day" onClick={guarded(()=>changeDay(-1))}><ChevronLeft size={20}/></button>
    <h2 className="home-day-title" aria-live="polite"><strong>{label}</strong>{isRelative&&<span> · {dayText}</span>}</h2>
-   <button type="button" className="home-day-arrow" aria-label="Next day" disabled={!forward} onClick={()=>changeDay(1)}><ChevronRight size={20}/></button>
-   {date!=='today'&&<button type="button" className="home-day-reset" onClick={()=>onDateChange('today')}>Today</button>}
+   <button type="button" className="home-day-arrow" aria-label="Next day" disabled={!forward} onClick={guarded(()=>changeDay(1))}><ChevronRight size={20}/></button>
+   {date!=='today'&&<button type="button" className="home-day-reset" onClick={guarded(()=>onDateChange('today'))}>Today</button>}
   </div>
   <button type="button" className="home-daily-open" aria-label={`View activities for ${label}`} onClick={guarded(()=>onOpen(date))}>
    <span className="home-daily-stat"><strong>{totals.estimated?'~':''}{distanceValue(distance,unit)} <small>{distanceUnitLabel(unit)}</small></strong></span>
@@ -60,7 +60,7 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
   {latest
    ?<button type="button" className="home-day-latest" onClick={guarded(()=>onOpenActivity?.(latest))}>
      <span className="home-day-latest-icon"><ActivityIcon activity={activityLabel(latest.activity)} size={18}/></span>
-     <span className="home-day-latest-text"><strong>{latest.title}</strong><small>{timeRange(latest)} · {activityLabel(latest.activity)} · {tripDistanceText(latest,unit)}</small></span>
+     <span className="home-day-latest-text"><strong>{latest.title||activityLabel(latest.activity)}</strong><small>{timeRange(latest)} · {activityLabel(latest.activity)} · {tripDistanceText(latest,unit)}</small></span>
      <ChevronRight size={16} aria-hidden="true"/>
     </button>
    :<p className="home-day-empty">{label==='Today'?'No activities yet today.':'No activities on this day.'}</p>}
