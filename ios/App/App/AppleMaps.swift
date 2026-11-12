@@ -87,6 +87,9 @@ private func applyMapStyle(_ map:MKMapView,_ style:String) {
     if #available(iOS 16.0, *) {map.preferredConfiguration=style=="satellite" ? MKHybridMapConfiguration(elevationStyle:.realistic) : MKStandardMapConfiguration(elevationStyle:.realistic)}
     else {map.mapType=style=="satellite" ? .hybrid : .standard}
 }
+private let personTrailColor=UIColor { trait in
+    trait.userInterfaceStyle == .dark ? UIColor(red:0.48,green:0.67,blue:1,alpha:1) : UIColor(red:0.18,green:0.27,blue:0.86,alpha:1)
+}
 private let onBrandAccent=UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(red:0.08,green:0.11,blue:0.22,alpha:1) : .white }
 // Rarely travelled paths are thin and translucent in the app's accent; the most
 // travelled warm up to a bright coral-orange, like a personal heatmap.
@@ -94,7 +97,7 @@ private func densityStyle(_ weight:Int)->(color:UIColor,width:CGFloat) {
     let style=DensityTrailStyle.value(weight)
     let color:UIColor
     switch weight {
-    case ...2:color=brandAccent
+    case ...2:color=personTrailColor
     case 3:color=UIColor(red:0.56,green:0.36,blue:0.92,alpha:1)
     case 4:color=UIColor(red:0.93,green:0.32,blue:0.52,alpha:1)
     default:color=UIColor(red:1,green:0.55,blue:0.2,alpha:1)
@@ -679,7 +682,9 @@ private func activityFlagImage(_ text:String,selected:Bool,cluster:Bool=false)->
 private final class ActivityFlagView:MKAnnotationView {
     private let connector=CAShapeLayer()
     func place(offset:CGPoint) {
-        centerOffset=offset;clipsToBounds=false
+        guard centerOffset != offset || connector.superlayer == nil else {return}
+        if centerOffset != offset {centerOffset=offset}
+        clipsToBounds=false
         let anchor=CGPoint(x:bounds.midX-offset.x,y:bounds.midY-offset.y)
         let normalY=bounds.height-4
         guard abs(anchor.y-normalY)>1 else {connector.removeFromSuperlayer();return}
@@ -691,7 +696,7 @@ private final class ActivityFlagView:MKAnnotationView {
     }
     override func point(inside point:CGPoint,with event:UIEvent?)->Bool {bounds.insetBy(dx:-6,dy:-6).contains(point)}
 }
-private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation,people:[[String:Any]]=[])->MKAnnotationView? {
+private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation)->MKAnnotationView? {
     let pins:[JourneyPin]
     let clustered:Bool
     if let cluster=annotation as? MKClusterAnnotation {
@@ -704,30 +709,16 @@ private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation,pe
     view.annotation=annotation
     let selected=pins.contains{$0.metadata["selected"] as? Bool == true}
     view.image=activityFlagImage(clustered ? String(pins.count) : (pins[0].metadata["label"] as? String ?? ""),selected:selected,cluster:clustered)
-    placeActivityFlag(view,on:map,people:people)
+    (view as? ActivityFlagView)?.place(offset:CGPoint(x:0,y:-(view.image?.size.height ?? 0)/2+4))
     view.clusteringIdentifier=clustered ? nil : "person-activities"
-    view.collisionMode = .rectangle;view.displayPriority = .defaultHigh
-    view.zPriority=selected ? .max : .defaultUnselected
+    view.collisionMode = .rectangle
+    // Source flags must remain clusterable. The resulting cluster badge must not be culled by the avatar.
+    view.displayPriority=ActivityFlagVisibility.required(clustered:clustered) ? .required : .defaultHigh
+    view.zPriority = .max;view.selectedZPriority = .max
     view.canShowCallout=false;view.isAccessibilityElement=true
     view.accessibilityTraits=selected ? [.button,.selected] : .button
     view.accessibilityLabel=clustered ? "\(pins.count) activities. Zoom or choose an activity" : pins[0].title
     return view
-}
-// Read the existing avatar bounds, with a conservative fallback while MapKit is
-// creating its views. No geographic offsets, per-frame work or new annotations.
-private func placeActivityFlag(_ view:MKAnnotationView,on map:MKMapView,people:[[String:Any]]) {
-    guard let flag=view as? ActivityFlagView,let annotation=view.annotation,let image=view.image else {return}
-    let obstacles=people.compactMap { metadata -> CGRect? in
-        guard let c=coordinate(metadata["point"]) else {return nil}
-        let point=map.convert(c,toPointTo:map)
-        let pin=map.annotations.compactMap{$0 as? JourneyPin}.first{pinID($0.metadata)==pinID(metadata)}
-        let avatar=pin.flatMap{map.view(for:$0)}
-        let size=avatar?.image?.size ?? CGSize(width:180,height:94)
-        let offset=avatar?.centerOffset ?? CGPoint(x:0,y:-14)
-        return CGRect(x:point.x+offset.x-size.width/2,y:point.y+offset.y-size.height/2,width:size.width,height:size.height)
-    }
-    let point=map.convert(annotation.coordinate,toPointTo:map)
-    flag.place(offset:ActivityFlagPlacement.offset(size:image.size,at:point,people:obstacles,bounds:map.bounds))
 }
 // Where the time slider says the person was: a ringed dot, nothing like the live avatar.
 private func playbackMarker(_ pin:JourneyPin)->MKAnnotationView {
@@ -797,7 +788,8 @@ private struct MapContent {
     let scope:String?
     let selectedActivity:String?
     init(_ options:[AnyHashable:Any]) {
-        personDay=options["personDay"] as? Bool == true
+        let isPersonDay=options["personDay"] as? Bool == true
+        personDay=isPersonDay
         scope=options["scope"] as? String
         selectedActivity=options["selectedActivity"] as? String
         showsLocate=options["locate"] as? Bool == true
@@ -808,11 +800,11 @@ private struct MapContent {
         estimated=(options["estimated"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         live=Array((options["live"] as? [[Double]] ?? []).prefix(3000)).compactMap { coordinate($0) }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
-        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(personDay ? 750 : 60).compactMap { item -> StyledRoute? in
+        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(isPersonDay ? 750 : 60).compactMap { item -> StyledRoute? in
             let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
             guard points.count>1 else { return nil }
             let width=(item["width"] as? NSNumber)?.doubleValue ?? 5
-            return StyledRoute(coordinates:Array(points),color:hexColor(item["color"]).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
+            return StyledRoute(coordinates:Array(points),color:(isPersonDay && item["color"] as? String == "accent" ? personTrailColor : hexColor(item["color"])).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
         }
         muted=options["muted"] as? Bool == true
         camera=CameraIntent(options["camera"])
@@ -899,6 +891,9 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private(set) weak var map:MKMapView?
     private(set) var content:MapContent
     private var planner=CameraPlanner()
+    private var activityTapGate=ActivityTapGate()
+    private let activityViews=NSHashTable<ActivityFlagView>.weakObjects()
+    private var activityFootprints:[String:(size:CGSize,offset:CGPoint)]=[:]
     private weak var activityChooser:UIAlertController?
     private var chooserActivityIDs=Set<String>()
     private var lastFollowed:String?
@@ -971,6 +966,14 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let nextActivityIDs=Set(next.pins.filter{$0["kind"] as? String == "step"}.compactMap{$0["activityID"] as? String})
         if activityChooser != nil && (scopeChanged || !chooserActivityIDs.isSubset(of:nextActivityIDs)) {activityChooser?.dismiss(animated:false);activityChooser=nil;chooserActivityIDs=[]}
         content=next
+        activityFootprints=[:]
+        if next.personDay {
+            for pin in next.peoplePins {
+                let marker=peopleMarker(pin)
+                activityFootprints[pinID(pin)]=(size:marker.image.size,offset:marker.offset)
+            }
+        }
+        if scopeChanged {activityTapGate=ActivityTapGate()}
         if scopeChanged, next.camera != nil {
             // A person/date filter changes content, never the user's viewport.
             planner.resume(.free);lastFollowed=nil
@@ -1005,7 +1008,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             if let old=liveOverlay {map.removeOverlay(old);liveOverlay=nil}
             if next.live.count>1 {
                 let line:MKPolyline
-                if next.personDay {let styled=StyledLine(coordinates:next.live,count:next.live.count);styled.color=UIColor.systemTeal.withAlphaComponent(next.selectedActivity == nil ? 0.9 : 0.35);styled.width=3.5;line=styled}
+                if next.personDay {let styled=StyledLine(coordinates:next.live,count:next.live.count);styled.color=UIColor.systemTeal.withAlphaComponent(next.selectedActivity == nil ? 1 : 0.55);styled.width=4;line=styled}
                 else {line=LivePolyline(coordinates:next.live,count:next.live.count)}
                 map.addOverlay(line);liveOverlay=line
             }
@@ -1037,7 +1040,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
                     }
                     if changed {
                         pin.metadata=metadata;pin.title=metadata["title"] as? String;pin.subtitle=metadata["subtitle"] as? String
-                        if let view=map.view(for:pin) {configurePeopleView(view,pin)}
+                        if let view=map.view(for:pin) {configurePeopleView(view,pin);if next.personDay {view.zPriority = .defaultSelected}}
                         pinData[id]=data
                     }
                     continue
@@ -1160,6 +1163,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         map.setVisibleMapRect(rect,edgePadding:UIEdgeInsets(top:80,left:60,bottom:80,right:60),animated:!UIAccessibility.isReduceMotionEnabled)
     }
     private func openActivities(_ members:[JourneyPin],cluster:MKClusterAnnotation) {
+        let allowed=Set(content.pins.filter{$0["kind"] as? String == "step"}.compactMap{$0["activityID"] as? String})
+        let members=members.filter{($0.metadata["activityID"] as? String).map{allowed.contains($0)} == true}
         guard let map=map,let first=members.first else {return}
         map.deselectAnnotation(cluster,animated:false)
         var rect=MKMapRect.null
@@ -1575,9 +1580,31 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let id=(pin.metadata["members"] as? [[String:Any]])?.first?["id"] as? String else {return}
         map?.deselectAnnotation(pin,animated:false);follow(id)
     }
+    // Both MapKit selection and the map-level visual hit test use one action.
+    // The latter covers offset labels whose visible frame is away from the anchor.
+    @discardableResult func activateActivity(_ annotation:MKAnnotation)->Bool {
+        let now=CACurrentMediaTime()
+        if let cluster=annotation as? MKClusterAnnotation {
+            let members=cluster.memberAnnotations.compactMap{$0 as? JourneyPin}
+            guard !members.isEmpty,members.allSatisfy({$0.metadata["kind"] as? String == "step"}) else {return false}
+            let key="cluster:"+members.compactMap{$0.metadata["activityID"] as? String}.sorted().joined(separator:",")
+            guard activityTapGate.accept(key,now:now) else {return true}
+            open(cluster:cluster);return true
+        }
+        guard let pin=annotation as? JourneyPin,pin.metadata["kind"] as? String == "step",let id=pin.metadata["activityID"] as? String,
+              content.pins.contains(where:{$0["kind"] as? String == "step" && $0["activityID"] as? String == id}) else {return false}
+        guard activityTapGate.accept("step:"+id,now:now) else {return true}
+        map?.deselectAnnotation(pin,animated:false);onActivity?(id);return true
+    }
     @objc private func activityTapped(_ recognizer:UITapGestureRecognizer) {
         guard content.personDay,let map=map,recognizer.state == .ended else {return}
         let point=recognizer.location(in:map)
+        let visibleFlags=activityViews.allObjects.filter{$0.superview != nil && !$0.isHidden && $0.alpha>0.1}.sorted{$0.displayPriority.rawValue>$1.displayPriority.rawValue}
+        for flag in visibleFlags {
+            let frame=map.convert(flag.bounds,from:flag).insetBy(dx:-6,dy:-6)
+            if frame.contains(point),let annotation=flag.annotation,activateActivity(annotation) {return}
+        }
+        guard !activityTapGate.isRecent(now:CACurrentMediaTime()) else {return}
         // Annotation taps belong to MapKit (avatars, playback, photos), never a route below them.
         var touched=map.hitTest(point,with:nil)
         while let view=touched {if view is MKAnnotationView || view is UIControl {return};touched=view.superview}
@@ -1684,14 +1711,40 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
 
     // MARK: Edge avatars
+    func trackActivityFlag(_ view:MKAnnotationView) {
+        guard let flag=view as? ActivityFlagView else {return}
+        activityViews.add(flag)
+        if let map=map {placeActivityFlag(flag,on:map,obstacles:activityObstacles())}
+    }
+    private func activityObstacles()->[CGRect] {
+        guard let map=map else {return []}
+        return content.peoplePins.compactMap { metadata in
+            guard let c=coordinate(metadata["point"]),let footprint=activityFootprints[pinID(metadata)] else {return nil}
+            let point=map.convert(c,toPointTo:map)
+            let target=CGRect(x:point.x+footprint.offset.x-footprint.size.width/2,y:point.y+footprint.offset.y-footprint.size.height/2,width:footprint.size.width,height:footprint.size.height)
+            // Cover the animated avatar as well as its destination, so an incoming
+            // position cannot briefly paint over the flag during its animation.
+            if let pin=pins[pinID(metadata)],let avatar=map.view(for:pin),let parent=avatar.superview,let frame=avatar.layer.presentation()?.frame {
+                return target.union(map.convert(frame,from:parent))
+            }
+            return target
+        }
+    }
+    private func placeActivityFlag(_ flag:ActivityFlagView,on map:MKMapView,obstacles:[CGRect]) {
+        guard let annotation=flag.annotation,let size=flag.image?.size else {return}
+        let point=map.convert(annotation.coordinate,toPointTo:map)
+        flag.place(offset:ActivityFlagPlacement.offset(size:size,at:point,people:obstacles,bounds:map.bounds,previous:flag.centerOffset))
+    }
     func layoutActivityFlags() {
         guard content.personDay,let map=map else {return}
-        for annotation in map.annotations {
-            if let view=map.view(for:annotation),view is ActivityFlagView {placeActivityFlag(view,on:map,people:content.peoplePins)}
-        }
+        let obstacles=activityObstacles()
+        // Track actual views, including MapKit-created clusters, rather than
+        // enumerating only source annotations. Weak references also cover reuse.
+        for flag in activityViews.allObjects where flag.superview != nil {placeActivityFlag(flag,on:map,obstacles:obstacles)}
     }
     func layoutIndicators() {
         guard isPeopleMap,let map=map,map.bounds.width>80,map.bounds.height>80 else {return}
+        layoutActivityFlags()
         layoutControls()
         let bounds=map.bounds
         let middle=CGPoint(x:bounds.midX,y:bounds.midY)
@@ -1762,6 +1815,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
 
     func detach() {
         activityChooser?.dismiss(animated:false);activityChooser=nil;chooserActivityIDs=[]
+        activityViews.removeAllObjects();activityFootprints=[:]
         remember()
         for recognizer in recognizers {recognizer.view?.removeGestureRecognizer(recognizer)}
         recognizers.removeAll()
@@ -2330,11 +2384,11 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         return MKOverlayRenderer(overlay:overlay)
     }
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
-        if let view=activityAnnotationView(mapView,annotation,people:coordinator?.content.peoplePins ?? []) {return view}
+        if let view=activityAnnotationView(mapView,annotation) {coordinator?.trackActivityFlag(view);return view}
         if let view=overviewAnnotationView(mapView,annotation) {return view}
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String
-        if kind=="people" {return peopleAnnotationView(mapView,pin)}
+        if kind=="people" {let view=peopleAnnotationView(mapView,pin);if coordinator?.content.personDay == true {view.zPriority = .defaultSelected};return view}
         if kind=="friend-live" {
             let view=MKAnnotationView(annotation:pin,reuseIdentifier:nil)
             view.image=friendInitialBubble((pin.title ?? "F").components(separatedBy:" · ").first ?? "F")
@@ -2382,9 +2436,9 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,didDeselect view:MKAnnotationView) {coordinator?.deselected(view.annotation)}
     func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
         if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="people" {coordinator?.selectPerson(pin);return}
+        if let annotation=view.annotation,coordinator?.activateActivity(annotation) == true {return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator?.select(photo:pin);return}
-        if let pin=view.annotation as? JourneyPin,pin.metadata["kind"] as? String == "step",let id=pin.metadata["activityID"] as? String {mapView.deselectAnnotation(pin,animated:false);finish(["activityID":id]);return}
         guard !picker,let pin=view.annotation as? JourneyPin,
               (pin.metadata["kind"] as? String)=="photo",
               let photo=pin.metadata["photoID"] as? String,
@@ -2410,6 +2464,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
     public func mapView(_ mapView:MKMapView,didAdd views:[MKAnnotationView]) {coordinator(for:mapView)?.layoutActivityFlags()}
     public func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
         if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="people" {coordinator(for:mapView)?.selectPerson(pin);return}
+        if let annotation=view.annotation,coordinator(for:mapView)?.activateActivity(annotation) == true {return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator(for:mapView)?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator(for:mapView)?.select(photo:pin);return}
         // A community segment on the Map's Segments layer opens its details in the
@@ -2417,12 +2472,6 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         if let pin=view.annotation as? JourneyPin,let segmentID=pin.metadata["segmentID"] as? String,!segmentID.isEmpty,let id=mapID(for:mapView) {
             mapView.deselectAnnotation(pin,animated:false)
             notifyListeners("segmentSelected",data:["mapID":id,"segmentID":segmentID])
-            return
-        }
-        // A numbered activity marker on a person's day opens that activity.
-        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="step",let activityID=pin.metadata["activityID"] as? String,!activityID.isEmpty,let id=mapID(for:mapView) {
-            mapView.deselectAnnotation(pin,animated:false)
-            notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])
             return
         }
         reportPhotoSelection(mapView,view.annotation)
@@ -2450,11 +2499,11 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         reportPhotoSelection(mapView,view.annotation)
     }
     public func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
-        if let view=activityAnnotationView(mapView,annotation,people:coordinator(for:mapView)?.content.peoplePins ?? []) {return view}
+        if let view=activityAnnotationView(mapView,annotation) {coordinator(for:mapView)?.trackActivityFlag(view);return view}
         if let view=overviewAnnotationView(mapView,annotation) {return view}
         guard let pin=annotation as? JourneyPin else{return nil}
         let kind=pin.metadata["kind"] as? String ?? ""
-        if kind=="people" {return peopleAnnotationView(mapView,pin)}
+        if kind=="people" {let view=peopleAnnotationView(mapView,pin);if coordinator(for:mapView)?.content.personDay == true {view.zPriority = .defaultSelected};return view}
         if kind=="segment" {return segmentMarker(pin)}
         if kind=="step" {return activityAnnotationView(mapView,pin)}
         if kind=="playback" {return playbackMarker(pin)}

@@ -1,4 +1,4 @@
-import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({empty:false,payloads:[],onStep:null,day:null,dayArgs:[],rpc:vi.fn(),mounts:0}));
 vi.mock('./AppleMap.jsx',async()=>{
@@ -48,7 +48,7 @@ describe('person map',()=>{
   const pins=last().pins;
   expect(pins.filter(p=>p.kind==='step').map(p=>[p.label,p.activityID,p.point])).toEqual([['1','a',[-34.5,150.9]],['2','b',[-34.5,150.9]]]);
   expect(last().styled.map(r=>r.activityID)).toEqual(['a','b']);
-  expect(last().styled.every(r=>r.width===3)).toBe(true);
+  expect(last().styled.every(r=>r.width===3.75)).toBe(true);
   expect(pins.find(p=>p.kind==='people')).toEqual(selectedPin);
   expect(pins.some(p=>p.kind==='friend-live')).toBe(false);
   expect(last().live.length).toBe(2);
@@ -308,8 +308,8 @@ it('selects only a visible activity, dims other routes, and clears its preview w
  expect(screen.queryByLabelText('Selected activity')).toBeNull();
  act(()=>mock.onStep('b'));
  expect(screen.getByLabelText('Selected activity').textContent).toMatch(/Work to shops.*Driving/);
- expect(last().styled.find(r=>r.activityID==='b').width).toBe(4.5);
- expect(last().styled.find(r=>r.activityID==='a').opacity).toBe(0.35);
+ expect(last().styled.find(r=>r.activityID==='b').width).toBe(5);
+ expect(last().styled.find(r=>r.activityID==='a').opacity).toBe(0.55);
  expect(last().styled.find(r=>r.activityID==='b').points).toEqual([[-34.5,150.9],[-34.6,150.9]]);
  mock.empty=true;
  view.rerender(<PersonMap person={person} personPin={selectedPin} viewer="me" timeZone={Z} renderMap={renderMap}/>);
@@ -339,7 +339,7 @@ it('selecting an activity from the accessible list releases playback and highlig
  fireEvent.click(screen.getByRole('button',{name:/Work to shops ·/}));
  await act(async()=>{});
  expect(last().pins.some(p=>p.kind==='playback')).toBe(false);
- expect(last().styled.find(r=>r.activityID==='b').width).toBe(4.5);
+ expect(last().styled.find(r=>r.activityID==='b').width).toBe(5);
 });
 it('selects an activity flag through the existing event and highlights the matching flag and preview',()=>{
  setup();act(()=>mock.onStep('b'));
@@ -354,4 +354,15 @@ it('labels the activity list with the same chronological numbers as the map flag
  expect(screen.getByRole('button',{name:/#1 · Home to work ·/})).toBeTruthy();
  expect(screen.getByRole('button',{name:/#2 · Work to shops ·/})).toBeTruthy();
  expect(last().pins.filter(p=>p.kind==='step').map(p=>p.label)).toEqual(['1','2']);
+});
+it('reveals the selected preview, including a repeated tap after scrolling back to the map',async()=>{
+ const original=Element.prototype.scrollIntoView,scroll=vi.fn();Element.prototype.scrollIntoView=scroll;
+ try{
+  setup();act(()=>mock.onStep('a'));
+  await waitFor(()=>expect(scroll).toHaveBeenCalledTimes(1));
+  expect(scroll.mock.contexts[0]).toBe(screen.getByLabelText('Selected activity'));
+  expect(scroll).toHaveBeenLastCalledWith(expect.objectContaining({block:'nearest'}));
+  act(()=>mock.onStep('a'));
+  await waitFor(()=>expect(scroll).toHaveBeenCalledTimes(2));
+ }finally{if(original)Element.prototype.scrollIntoView=original;else delete Element.prototype.scrollIntoView;}
 });

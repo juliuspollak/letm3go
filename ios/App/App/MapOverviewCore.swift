@@ -58,11 +58,11 @@ enum LiveOverlaySignature {
 enum DensityTrailStyle {
     static func value(_ density:Int)->(width:CGFloat,opacity:CGFloat) {
         switch density {
-        case ...1:return (2.5,0.75)
-        case 2:return (3,0.85)
-        case 3:return (3.5,0.9)
-        case 4:return (4,0.95)
-        default:return (4.5,1)
+        case ...1:return (3.5,1)
+        case 2:return (4,1)
+        case 3:return (4.5,1)
+        case 4:return (5,1)
+        default:return (5.5,1)
         }
     }
 }
@@ -73,13 +73,32 @@ enum ActivityClusterPolicy {
 // Only the screen-space label moves. Its connector continues to the unchanged
 // annotation coordinate; MapKit still clusters activities at their real starts.
 enum ActivityFlagPlacement {
-    static func offset(size:CGSize,at point:CGPoint,people:[CGRect],bounds:CGRect)->CGPoint {
+    static func offset(size:CGSize,at point:CGPoint,people:[CGRect],bounds:CGRect,previous:CGPoint?=nil)->CGPoint {
         let normal=CGPoint(x:0,y:-size.height/2+4)
         let frame=CGRect(x:point.x-size.width/2,y:point.y-size.height+4,width:size.width,height:size.height)
-        let obstacles=people.map{$0.insetBy(dx:-6,dy:-6)}.filter{$0.intersects(frame)}
+        let margin:CGFloat=previous != nil && previous != normal ? 18 : 10
+        let obstacles=people.filter{$0.insetBy(dx:-margin,dy:-margin).intersects(frame)}.map{$0.insetBy(dx:-18,dy:-18)}
         guard let top=obstacles.map(\.minY).min(),let bottom=obstacles.map(\.maxY).max() else {return normal}
         let above=normal.y-(frame.maxY-top+4)
         if point.y+above-size.height/2>=bounds.minY+6 {return CGPoint(x:0,y:above)}
         return CGPoint(x:0,y:bottom+4+size.height/2-point.y)
     }
+}
+
+// Required source annotations cannot cluster. A cluster itself can be required,
+// preventing a higher-priority avatar from hiding the only activity access point.
+enum ActivityFlagVisibility {
+    static func required(clustered:Bool)->Bool {clustered}
+}
+
+// MapKit selection and visual-frame fallback may report the same physical tap.
+// Coalesce that pair without suppressing a quick tap on another activity.
+struct ActivityTapGate {
+    private var token:String?
+    private var at:Double = -1
+    mutating func accept(_ next:String,now:Double)->Bool {
+        if next==token && now-at<0.5 {return false}
+        token=next;at=now;return true
+    }
+    func isRecent(now:Double)->Bool {at>=0 && now-at<0.5}
 }

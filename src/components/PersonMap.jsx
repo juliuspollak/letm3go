@@ -34,7 +34,7 @@ function useToday(timeZone){
  return today;
 }
 
-const fresh=forOwner=>({owner:forOwner,picked:null,scrub:null,notice:'',locate:null,selected:null,activity:''});
+const fresh=forOwner=>({owner:forOwner,picked:null,scrub:null,notice:'',locate:null,selected:null,activity:'',selectionRequest:0});
 
 // What an empty day means. A drive reaches other people's maps once the phone that recorded it has backed it up (the
 // live position is sent on its own, in the background), so for someone else's day the note says so instead of implying
@@ -63,6 +63,12 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const {day:loadedDay,loading,error}=usePersonDay({viewer,owner,date,timeZone,enabled:Boolean(person),localTrips:isSelf?localTrips:null,localLiveTrip:isSelf?localLiveTrip:null,deletedIDs});
  const day=useMemo(()=>filterPersonDay(loadedDay,mine.activity),[loadedDay,mine.activity]);
  const selected=day.activities.find(a=>a.id===mine.selected);
+ const preview=useRef(null);
+ useEffect(()=>{
+  if(!selected?.id)return;
+  const frame=requestAnimationFrame(()=>preview.current?.scrollIntoView?.({block:'nearest',behavior:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'}));
+  return()=>cancelAnimationFrame(frame);
+ },[selected?.id,mine.selectionRequest]);
  const activityNumbers=useMemo(()=>new Map(day.markers.map(m=>[m.activityID,m.n])),[day.markers]);
  const isToday=date===today;
  const deferred=useDeferredValue(scrub);
@@ -73,9 +79,9 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   const scrubbing=deferred!=null;
   // Saved geometry, timeline segments and live roads all stay independently bounded.
   const live=scrubbing?[]:day.live;
-  const styled=scrubbing?boundedPersonLines([...day.untimed,...linesUntil(day,deferred)]).map(points=>({points,color:'accent',width:3,opacity:0.85})):savedRoutes.slice();
-  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:3.5,opacity:selected?0.35:0.9})));
-  if(!scrubbing)styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3,opacity:selected?0.35:0.85})));
+  const styled=scrubbing?boundedPersonLines([...day.untimed,...linesUntil(day,deferred)]).map(points=>({points,color:'accent',width:3.75,opacity:1})):savedRoutes.slice();
+  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:4,opacity:selected?0.55:1})));
+  if(!scrubbing)styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3.75,opacity:selected?0.55:1})));
   const pins=personFlags(day,savedRoutes,selected?.id);
   // Reuse the single-person pin from the All people map. The native renderer then
   // shows the same profile photo, live movement/speed label and activity ornament.
@@ -101,7 +107,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   }
   onOpenShared?.(id,{userId:owner,name});
  },[isSelf,owner,name,onOpenOwn,onOpenShared,update]);
- const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id,scrub:null});},[day.activities,update]);
+ const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id,scrub:null,selectionRequest:mine.selectionRequest+1});},[day.activities,update,mine.selectionRequest]);
  // Days from the map's own date bar (native, over the map): same actions as before, no extra toolbar row.
  const date_=useMemo(()=>({
   label:dateLabel(date,today),
@@ -150,7 +156,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
    {renderMap(personDay)}
   </div>
   {status?<p className="person-map-note" role={error?'alert':'status'}>{status}{notice&&!error?<> <button type="button" className="text-button" onClick={()=>update({notice:''})}>OK</button></>:null}</p>:null}
-  {person&&selected?<section className="person-map-preview" aria-label="Selected activity">
+  {person&&selected?<section ref={preview} className="person-map-preview" aria-label="Selected activity">
    <div><strong>{selected.title}</strong><small>{activityLabel(selected.activity)} · {clock(selected.startedAt,timeZone)} · {formatDuration(selected.durationSeconds)} · ~{distanceText(recordedDistance(selected)/1000,unit)} recorded</small></div>
    <button type="button" className="text-button" onClick={()=>openActivity(selected.id)}>Open activity</button>
    <button type="button" className="text-button" aria-label="Clear selected activity" onClick={()=>update({selected:null})}>×</button>

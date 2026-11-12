@@ -5353,7 +5353,7 @@ check(RouteHitTest.activity(in:["a":1,"b":9],selected:"a") == "a", "a clearly ne
 check(RouteHitTest.activity(in:["a":19],selected:nil) == nil, "bare map taps select no activity")
 print("Final native assertion count including overlapping routes: \(assertions)")
 
-for (index,expected) in [(CGFloat(2.5),CGFloat(0.75)),(3,0.85),(3.5,0.9),(4,0.95),(4.5,1)].enumerated() {
+for (index,expected) in [(CGFloat(3.5),CGFloat(1)),(4,1),(4.5,1),(5,1),(5.5,1)].enumerated() {
     let style=DensityTrailStyle.value(index+1)
     check(style.width == expected.0 && style.opacity == expected.1, "density \(index+1) uses visible bounded styling")
 }
@@ -5381,3 +5381,22 @@ check(ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:30,y:300),people:[
 let edgeOffset=ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:195,y:35),people:[CGRect(x:160,y:0,width:70,height:80)],bounds:mapBounds)
 check(35+edgeOffset.y-flagSize.height/2>80, "near the top edge flags sit below the avatar instead of outside the map")
 print("Final native assertion count including avatar/flag collision placement: \(assertions)")
+
+check(ActivityFlagVisibility.required(clustered:true), "MapKit activity clusters cannot be culled by the avatar")
+check(!ActivityFlagVisibility.required(clustered:false), "source activity flags remain eligible for native clustering")
+let stableFlag=ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds)
+check(ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds,previous:stableFlag) == stableFlag, "unchanged camera/avatar input keeps the same label offset")
+let nearEdgePoint=CGPoint(x:130,y:240)
+let heldFlag=ActivityFlagPlacement.offset(size:flagSize,at:nearEdgePoint,people:[avatarBounds],bounds:mapBounds,previous:stableFlag)
+check(heldFlag != CGPoint(x:0,y:-15), "a placement margin avoids repeated offset resets at the avatar boundary")
+print("Final native assertion count including persistent flag visibility: \(assertions)")
+check(ActivityFlagPlacement.offset(size:flagSize,at:nearEdgePoint,people:[avatarBounds],bounds:mapBounds) == CGPoint(x:0,y:-15), "the wider retention margin does not move an unobstructed new flag")
+print("Final native assertion count including placement hysteresis: \(assertions)")
+
+var activityTapGate=ActivityTapGate()
+check(activityTapGate.accept("step:a",now:10), "the first visible flag tap activates its activity")
+check(!activityTapGate.accept("step:a",now:10.1), "duplicate MapKit and visual hit callbacks activate only once")
+check(activityTapGate.accept("step:b",now:10.2), "a quick tap on a different flag is accepted")
+check(activityTapGate.accept("step:b",now:11), "a later tap can reveal the same activity again")
+check(!activityTapGate.isRecent(now:12), "route gestures resume after the duplicate callback interval")
+print("Final native assertion count including activity tap routing: \(assertions)")

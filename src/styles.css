@@ -1251,3 +1251,5 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .person-map-activities>div{display:flex;gap:6px;overflow:auto;max-height:100px;flex-wrap:wrap}
 .person-map-activities button{border:1px solid var(--line);border-radius:14px;padding:8px 12px;background:var(--surface);color:var(--ink);min-height:44px}
 .person-map-activities button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+
+.person-map-preview{scroll-margin-top:12px;scroll-margin-bottom:calc(90px + env(safe-area-inset-bottom))}
