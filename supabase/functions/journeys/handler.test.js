@@ -137,8 +137,9 @@ describe('publishing', () => {
     expect((await publish(world(), { audience: 'friends', mode: 'selected', recipients: 'x' })).status).toBe(400);
     expect((await publish(world(), { audience: 'friends', mode: 'selected', recipients: Array(101).fill(VIEWER) })).status).toBe(400);
   });
-  it('fails closed without a saved Home, without confirmed places, or with a changed activity', async () => {
-    expect((await publish(world({ places: [{ ...HOME, kind: 'work' }] }))).status).toBe(409);
+  it('fails closed for friends and public links without a saved Home, without confirmed places, or with a changed activity', async () => {
+    expect((await publish(world({ places: [{ ...HOME, kind: 'work' }] }), { audience: 'friends', mode: 'friends' })).status).toBe(409);
+    expect((await publish(world({ places: [] }), { audience: 'public', mode: null })).status).toBe(409);
     const unconfirmed = world();
     expect((await publish(unconfirmed, { placesConfirmed: false })).status).toBe(400);
     expect(published(unconfirmed)).toBeUndefined();
@@ -234,5 +235,30 @@ describe('status, revoking and request validation', () => {
   });
   it('a public link for something not shared publicly is unavailable', async () => {
     expect((await world({ shared: null }).get(`token=${PUBLIC}`)).status).toBe(404);
+  });
+});
+
+describe('a household does not need a saved Home', () => {
+  it('shares with the household without one, still hiding any Work place it has, and never raw', async () => {
+    const w = world({ places: [{ ...HOME, kind: 'work', latitude: -34.6, longitude: 150.9 }] });
+    const response = await publish(w);
+    expect(response.status).toBe(200);
+    const args = published(w)[1];
+    expect(args.p_audience).toBe('household');
+    // The point at Work is not in what the household receives.
+    expect(args.p_snapshot.points.every(p => !(p.latitude === -34.6 && p.longitude === 150.9))).toBe(true);
+    expect(args.p_snapshot.points.length).toBeGreaterThan(0);
+  });
+  it('with no saved places at all it still shares with the household, the whole route', async () => {
+    const w = world({ places: [] });
+    expect((await publish(w)).status).toBe(200);
+    expect(published(w)[1].p_snapshot.points).toHaveLength(3);
+  });
+});
+
+describe('the Home exemption is only for a household share', () => {
+  it('a mismatched audience and mode still needs Home', async () => {
+    expect((await publish(world({ places: [] }), { audience: 'household', mode: 'friends' })).status).toBeGreaterThanOrEqual(400);
+    expect((await publish(world({ places: [] }), { audience: 'friends', mode: 'household' })).status).toBe(409);
   });
 });
