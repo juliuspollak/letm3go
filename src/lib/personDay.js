@@ -77,7 +77,7 @@ export function composeDay({rows=[],live=null,timeZone,date,now=Date.now()/1000}
   const timed=points.filter(p=>!p.bridge);
   if(!timed.length)continue;
   const roads=roadsInWindow(row.roads,window,begun,ended);
-  activities.push({untimed,id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:Date.parse(row.started_at)/1000,
+  activities.push({untimed,id:row.activity_id,title:row.title||'Activity',activity:row.activity,startedAt:begun,durationSeconds:Number.isFinite(ended-begun)?Math.max(0,ended-begun):null,
    routes:lines(points,untimed),roads,points:timed,start:[timed[0].latitude,timed[0].longitude]});
  }
  const markers=spreadMarkers(activities.slice(0,MAX_MARKERS).map((a,i)=>({n:i+1,activityID:a.id,point:a.start,title:`${i+1}. ${a.title}`})));

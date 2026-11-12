@@ -133,7 +133,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // re-embed; only `fitKey` asks the native map to bring a new day into view.
  // Community segment lines and pins (the Map's Segments layer) change as the map
  // moves; they go through update(), never a re-embed.
- const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>dynamic&&['routes','gaps','estimated','live','pins','fitKey','focus'].includes(key)?undefined:key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'&&pin.kind!=='people'&&!pin.segmentID):key==='styled'&&Array.isArray(value)?value.filter(line=>!line.community):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent,dynamic]);
+ const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>dynamic&&['routes','gaps','estimated','live','pins','fitKey','focus','styled','selectedActivity','scope','camera'].includes(key)?undefined:key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'&&pin.kind!=='people'&&!pin.segmentID):key==='styled'&&Array.isArray(value)?value.filter(line=>!line.community):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent,dynamic]);
  const snapshotKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
  // A geometry change immediately withholds its old screenshot while the new one loads.
  const preview=previewState?.key===snapshotKey?previewState.image:'';
@@ -288,7 +288,8 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    const request={...JSON.parse(interactiveData),picker,mapID};
    if(!arrived){delete request.overview;setOverviewFailed(overviewKey);}
    const result=await appleMaps.open(request);
-   latest.current?.(result);
+   if(result?.activityID)stepHandler.current?.(String(result.activityID));
+   else latest.current?.(result);
   }catch{
    setError('The interactive map could not open. The route preview remains available; please retry.');
   }finally{

@@ -520,3 +520,14 @@ describe('Home to Map and back, repeatedly',()=>{
   expect(mocks.resize).not.toHaveBeenCalled();
  });
 });
+
+it('updates styled person routes, selection and follow commands without re-embedding',async()=>{
+ const base={routes:[],pins:[],personDay:true,scope:'her|today',camera:{key:'people:me',mode:'free',command:1},styled:[{points:[[1,2],[3,4]],activityID:'a',width:2.5}]};
+ const {rerender}=render(<AppleMap payload={base} dynamic/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+ mocks.update.mockClear();
+ rerender(<AppleMap payload={{...base,selectedActivity:'a',styled:[{...base.styled[0],width:4}],camera:{...base.camera,mode:'person',personId:'her',command:2}}} dynamic/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+ expect(mocks.embed).toHaveBeenCalledTimes(1);
+ expect(mocks.unembed).not.toHaveBeenCalled();
+});

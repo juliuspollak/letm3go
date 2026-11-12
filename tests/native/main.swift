@@ -5340,3 +5340,15 @@ let liveValid = GPSPoint(latitude: -34, longitude: 151, timestamp: 100, accuracy
 let liveInvalidTail = GPSPoint(latitude: 95, longitude: 151, timestamp: 110, accuracy: 5, altitude: 0, speed: 0)
 check(LiveTrail.batch(points: [liveValid, liveInvalidTail], after: 0, now: 200).count == 1, "the newest-point fallback cannot reinsert an invalid fix and poison the upload")
 print("Final native assertion count including live batch validation: \(assertions)")
+
+check(RouteHitTest.distance(CGPoint(x:5,y:3),from:CGPoint(x:0,y:0),to:CGPoint(x:10,y:0)) == 3, "route taps use perpendicular screen distance")
+check(RouteHitTest.distance(CGPoint(x:13,y:4),from:CGPoint(x:0,y:0),to:CGPoint(x:10,y:0)) == 5, "route hit testing clamps to the endpoint")
+check(RouteHitTest.distance(CGPoint(x:3,y:4),from:.zero,to:.zero) == 5, "duplicate saved vertices stay tappable without division by zero")
+
+print("Final native assertion count including route selection: \(assertions)")
+
+check(RouteHitTest.activity(in:["a":2,"b":2],selected:nil) == "a", "coincident routes select deterministically")
+check(RouteHitTest.activity(in:["a":2,"b":2],selected:"a") == "b", "repeated route taps expose the overlapping activity")
+check(RouteHitTest.activity(in:["a":1,"b":9],selected:"a") == "a", "a clearly nearer route wins")
+check(RouteHitTest.activity(in:["a":19],selected:nil) == nil, "bare map taps select no activity")
+print("Final native assertion count including overlapping routes: \(assertions)")

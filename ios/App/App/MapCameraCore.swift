@@ -325,3 +325,22 @@ enum MapFrame {
         return sequence >= last
     }
 }
+
+// Screen-space route hit testing, independent of zoom and rotation. Called only
+// on taps, using the already displayed saved vertices; no road reconstruction.
+enum RouteHitTest {
+    // Repeated taps cycle coincident routes; a clearly closer route wins.
+    static func activity(in distances:[String:CGFloat],selected:String?)->String? {
+        let hits=distances.filter{$0.value<=18}
+        guard let nearest=hits.values.min() else {return nil}
+        let candidates=hits.filter{$0.value<=nearest+3}.map(\.key).sorted()
+        let index=selected.flatMap{candidates.firstIndex(of:$0)}.map{($0+1)%candidates.count} ?? 0
+        return candidates[index]
+    }
+    static func distance(_ p:CGPoint,from a:CGPoint,to b:CGPoint)->CGFloat {
+        let dx=b.x-a.x,dy=b.y-a.y
+        let squared=dx*dx+dy*dy
+        let t=squared>0 ? max(0,min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/squared)) : 0
+        return hypot(p.x-a.x-t*dx,p.y-a.y-t*dy)
+    }
+}

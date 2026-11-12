@@ -104,7 +104,7 @@ it('switches person from the selector, restores All people, never remounts the m
  expect(trigger().getAttribute('aria-label')).toMatch(/^Showing All people/);
  expect(mapSettings()).toBe(before);
 });
-it('Locate: All people goes to me; Me goes to me; another person never asks for my location', async()=>{
+it('Locate always goes to my own location across All people, Me and another person', async()=>{
  render(<App/>);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  await act(async()=>{await mapProps.value.onLocate();});
@@ -117,8 +117,8 @@ it('Locate: All people goes to me; Me goes to me; another person never asks for 
  await choose(/Ann/);
  locateFn.mockClear();
  await act(async()=>{await mapProps.value.personDay.onLocate();});
- expect(locateFn).not.toHaveBeenCalled();
- expect(mapProps.value.personDay.payload.focus).toEqual([ann.latitude,ann.longitude]);
+ expect(locateFn).toHaveBeenCalledTimes(1);
+ expect(mapProps.value.personDay.payload.focus).toEqual([-33.8,151.2]);
 });
 it('Poke is a separate button: one request, the tile does not open the Map, and it goes back to Poke', async()=>{
  vi.useFakeTimers({shouldAdvanceTime:true});

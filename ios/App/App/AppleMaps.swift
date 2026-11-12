@@ -39,6 +39,7 @@ private struct StyledRoute {
     let coordinates: [CLLocationCoordinate2D]
     let color: UIColor
     let width: CGFloat
+    let activityID:String?
 }
 private let mutedRouteColor = UIColor { trait in trait.userInterfaceStyle == .dark ? UIColor(white:0.55,alpha:0.85) : UIColor(white:0.62,alpha:0.85) }
 // "#RRGGBB" only; anything else is the route colour.
@@ -733,7 +734,13 @@ private struct MapContent {
     let fitKey:String?
     let showsLocate:Bool
     let locating:Bool
+    let personDay:Bool
+    let scope:String?
+    let selectedActivity:String?
     init(_ options:[AnyHashable:Any]) {
+        personDay=options["personDay"] as? Bool == true
+        scope=options["scope"] as? String
+        selectedActivity=options["selectedActivity"] as? String
         showsLocate=options["locate"] as? Bool == true
         locating=options["locating"] as? Bool == true
         focus=coordinate(options["focus"])
@@ -742,11 +749,11 @@ private struct MapContent {
         estimated=(options["estimated"] as? [[[Double]]] ?? []).prefix(250).map { Array($0.prefix(2000)).compactMap { coordinate($0) } }.filter { $0.count > 1 }
         live=Array((options["live"] as? [[Double]] ?? []).prefix(3000)).compactMap { coordinate($0) }
         pins=Array((options["pins"] as? [[String:Any]] ?? []).prefix(500)).filter { coordinate($0["point"]) != nil }
-        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(60).compactMap { item -> StyledRoute? in
+        styled=(options["styled"] as? [[String:Any]] ?? []).prefix(personDay ? 750 : 60).compactMap { item -> StyledRoute? in
             let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
             guard points.count>1 else { return nil }
             let width=(item["width"] as? NSNumber)?.doubleValue ?? 5
-            return StyledRoute(coordinates:Array(points),color:hexColor(item["color"]),width:CGFloat(max(2,min(9,width))))
+            return StyledRoute(coordinates:Array(points),color:hexColor(item["color"]).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
         }
         muted=options["muted"] as? Bool == true
         camera=CameraIntent(options["camera"])
@@ -833,16 +840,20 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private(set) weak var map:MKMapView?
     private(set) var content:MapContent
     private var planner=CameraPlanner()
+    private var lastFollowed:String?
+    private var appliedFocusKey:String?
+    var onActivity:((String)->Void)?
     private var appliedCommand:Int?
     private var hasCamera=false
     private var pins:[String:JourneyPin]=[:]
     private var pinData:[String:Data]=[:]
     private var routeKey:Int?
     private(set) var overlayRebuilds=0
-    private var liveOverlay:LivePolyline?
+    private var liveOverlay:MKPolyline?
     private var fittedDayKey:String?
     private var fittedDayHadRoutes=false
     private var liveSignature:Int?
+    private var liveDimmed=false
     private(set) var liveUpdates=0
     private var circles:[String:MKCircle]=[:]
     private var indicators:[String:EdgeAvatarButton]=[:]
@@ -895,7 +906,15 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     var mode:FollowMode {planner.mode}
 
     func apply(_ next:MapContent) {
+        let scopeChanged=content.scope != next.scope
         content=next
+        if scopeChanged, next.camera != nil {
+            // A person/date filter changes content, never the user's viewport.
+            planner.resume(.free);lastFollowed=nil
+            appliedCommand=next.camera?.command
+            hasCamera=true
+            modeChanged()
+        }
         contentVersion+=1
         guard let map=map else {return}
         var hasher=Hasher()
@@ -909,7 +928,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let key=hasher.finalize()
         if key != routeKey {
             overlayRebuilds+=1
-            map.removeOverlays(map.overlays.filter{!($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine || $0 is LivePolyline)})
+            map.removeOverlays(map.overlays.filter{$0 !== liveOverlay && !($0 is MKCircle || $0 is DensityLines || $0 is HighlightLine || $0 is LivePolyline)})
             for gap in next.gaps {map.addOverlay(GapPolyline(coordinates:gap,count:gap.count))}
             for line in next.estimated {map.addOverlay(EstimatedPolyline(coordinates:line,count:line.count))}
             for line in routeOverlays(next) {map.addOverlay(line)}
@@ -917,12 +936,17 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         // The live trail changes with every GPS point: replace only this overlay, and only
         // when it really changed, so the recorded day above is never rebuilt.
-        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) }
-        if liveKey != liveSignature {
+        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) } ^ (next.personDay ? 1 : 0)
+        if liveKey != liveSignature || liveDimmed != (next.selectedActivity != nil) {
             liveUpdates+=1
             if let old=liveOverlay {map.removeOverlay(old);liveOverlay=nil}
-            if next.live.count>1 {let line=LivePolyline(coordinates:next.live,count:next.live.count);map.addOverlay(line);liveOverlay=line}
-            liveSignature=liveKey
+            if next.live.count>1 {
+                let line:MKPolyline
+                if next.personDay {let styled=StyledLine(coordinates:next.live,count:next.live.count);styled.color=brandAccent.withAlphaComponent(next.selectedActivity == nil ? 0.75 : 0.18);styled.width=3;line=styled}
+                else {line=LivePolyline(coordinates:next.live,count:next.live.count)}
+                map.addOverlay(line);liveOverlay=line
+            }
+            liveSignature=liveKey;liveDimmed=next.selectedActivity != nil
         }
         var wantedCircles:[String:(CLLocationCoordinate2D,Double)]=[:]
         for pin in next.pins {
@@ -966,6 +990,14 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         if !isPeopleMap, DayFit.shouldFit(key:next.fitKey,applied:fittedDayKey,appliedWithRoutes:fittedDayHadRoutes,hasRoutes:dayHasRoutes,hasPins:!next.pins.isEmpty) {
             map.setVisibleMapRect(next.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:fittedDayKey != nil)
             fittedDayKey=next.fitKey;fittedDayHadRoutes=dayHasRoutes
+        }
+        if next.personDay, next.focus != nil, next.fitKey != appliedFocusKey {
+            planner.resume(.free);lastFollowed=nil
+            map.setVisibleMapRect(next.rect,edgePadding:fitPadding,animated:true)
+            hasCamera=true;appliedFocusKey=next.fitKey;modeChanged()
+        }
+        if let id=lastFollowed,!next.cameraTargets.contains(where:{$0.members.contains(id)}) {
+            lastFollowed=nil;planner.resume(.free);modeChanged()
         }
         applyOverview(next.overview)
         updateLocationButton(next.showsLocate && showsLayers)
@@ -1371,11 +1403,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             let memory=cameraMemory[intent.key]
             if let memory=memory,memory.command==intent.command,let camera=memory.camera {
                 // Remounted (tab change, full screen closed): continue where it was.
-                planner.resume(memory.mode)
+                planner.resume(memory.mode);lastFollowed=memory.mode.personID ?? lastFollowed
                 map.setCamera(camera,animated:false)
                 hasCamera=true
             } else {
-                start(intent.mode)
+                start(content.personDay && intent.mode == .all ? .free : intent.mode)
             }
             appliedCommand=intent.command
             updateControls()
@@ -1386,12 +1418,12 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
     }
     private func start(_ mode:FollowMode) {
-        if case .person(let id)=mode {planner.follow(id)} else {planner.showAll()}
+        switch mode {case .person(let id):lastFollowed=id;planner.follow(id);case .free:planner.resume(.free);case .all:lastFollowed=nil;planner.showAll()}
     }
     // Reload the camera another view of the same map (full screen) left behind.
     func resumeFromMemory() {
         guard let intent=content.camera,let memory=cameraMemory[intent.key],memory.command==appliedCommand else {return}
-        planner.resume(memory.mode)
+        planner.resume(memory.mode);lastFollowed=memory.mode.personID ?? lastFollowed
         if let camera=memory.camera {map?.setCamera(camera,animated:false);hasCamera=true}
         updateControls();layoutIndicators()
     }
@@ -1443,8 +1475,33 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         updateControls();remember()
         onModeChange?(planner.mode,appliedCommand ?? 0)
     }
-    func showEveryone() {planner.showAll();modeChanged();plan()}
-    func follow(_ personID:String) {planner.follow(personID);modeChanged();plan()}
+    func showEveryone() {lastFollowed=nil;planner.showAll();modeChanged();plan()}
+    func follow(_ personID:String) {lastFollowed=personID;planner.follow(personID);modeChanged();plan()}
+    func selectPerson(_ pin:JourneyPin) {
+        guard let id=(pin.metadata["members"] as? [[String:Any]])?.first?["id"] as? String else {return}
+        map?.deselectAnnotation(pin,animated:false);follow(id)
+    }
+    @objc private func activityTapped(_ recognizer:UITapGestureRecognizer) {
+        guard content.personDay,let map=map,recognizer.state == .ended else {return}
+        let point=recognizer.location(in:map)
+        // Annotation taps belong to MapKit (avatars, playback, photos), never a route below them.
+        var touched=map.hitTest(point,with:nil)
+        while let view=touched {if view is MKAnnotationView || view is UIControl {return};touched=view.superview}
+        var hits:[String:CGFloat]=[:]
+        for route in content.styled {
+            guard let id=route.activityID else {continue}
+            var previous:CGPoint?
+            for coordinate in route.coordinates {
+                let current=map.convert(coordinate,toPointTo:map)
+                if let previous=previous {
+                    let distance=RouteHitTest.distance(point,from:previous,to:current)
+                    if distance<=18 {hits[id]=min(hits[id] ?? 18,distance)}
+                }
+                previous=current
+            }
+        }
+        if let id=RouteHitTest.activity(in:hits,selected:content.selectedActivity) {onActivity?(id)}
+    }
     @objc private func userGesture(_ recognizer:UIGestureRecognizer) {
         let began=recognizer is UITapGestureRecognizer ? recognizer.state == .ended : recognizer.state == .began
         guard began,planner.userMoved() else {return}
@@ -1472,6 +1529,9 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             recognizer.delegate=self;recognizer.cancelsTouchesInView=false;recognizer.delaysTouchesEnded=false
             map.addGestureRecognizer(recognizer);recognizers.append(recognizer)
         }
+        let activityTap=UITapGestureRecognizer(target:self,action:#selector(activityTapped(_:)))
+        activityTap.delegate=self;activityTap.cancelsTouchesInView=false;activityTap.require(toFail:doubleTap)
+        map.addGestureRecognizer(activityTap);recognizers.append(activityTap)
         installCompass()
         var style=UIButton.Configuration.filled()
         style.baseBackgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.94)
@@ -1486,7 +1546,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         let chip=UIButton(configuration:style)
         chip.isHidden=true
-        chip.addAction(UIAction{[weak self] _ in self?.showEveryone()},for:.touchUpInside)
+        chip.addAction(UIAction{[weak self] _ in
+            guard let self=self else {return}
+            if self.planner.mode.personID != nil {self.lastFollowed=nil;self.planner.resume(.free);self.modeChanged()}
+            else if let id=self.lastFollowed {self.follow(id)}
+        },for:.touchUpInside)
         map.addSubview(chip);self.chip=chip
         updateControls()
     }
@@ -1513,9 +1577,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         guard let map=map else {return}
         defer {layoutControls()}
         if let chip=chip {
-            if let id=planner.mode.personID {
-                chip.configuration?.title="Following \(name(of:id))"
-                chip.accessibilityLabel="Following \(name(of:id)). Show everyone"
+            if let id=planner.mode.personID ?? lastFollowed {
+                let active=planner.mode.personID != nil
+                chip.configuration?.title=active ? name(of:id) : "Resume \(name(of:id))"
+                chip.configuration?.image=UIImage(systemName:active ? "xmark.circle.fill" : "location.fill")
+                chip.accessibilityLabel=active ? "Following \(name(of:id)). Stop following" : "Resume following \(name(of:id))"
                 let fitted=chip.sizeThatFits(CGSize(width:map.bounds.width-90,height:32))
                 chip.frame=CGRect(x:12,y:controlTop,width:min(fitted.width,map.bounds.width-90),height:32)
                 chip.isHidden=false
@@ -1876,6 +1942,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     map.isHidden=true
                     let controller=AppleMapController(content:self.embeddedContent[id] ?? content,picker:false)
                     controller.onCamera={ [weak self] mode,command in self?.reportCamera(id,mode,command) }
+                    controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
                     controller.onStyle={ [weak self] style in self?.notifyListeners("layersTapped",data:["mapID":id,"action":"style:\(style)"]) }
                     // The full-screen overview continues from this map's view.
                     controller.initialCamera=map.camera.copy() as? MKMapCamera
@@ -1885,6 +1952,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         // Continue from wherever the full-screen map was left.
                         embedded?.resumeFromMemory()
                         if self?.presentedID==id {self?.presentedID=nil}
+                        if let activityID=result["activityID"] as? String {self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])}
                         if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
                             self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":result["action"] as? String ?? "photo"])
                         }
@@ -1903,6 +1971,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 created.onPhotoAction={ [weak self] action,photoID,journeyID in
                     self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":action])
                 }
+                created.onActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID]) }
                 created.onToolbarAction={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
                 self.coordinators[id]=created
                 return created
@@ -2012,6 +2081,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             let mapID=call.getString("mapID")
             if let mapID=mapID {
                 controller.onCamera={ [weak self] mode,command in self?.reportCamera(mapID,mode,command) }
+                controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":mapID,"action":action]) }
                 // Continue the full-screen map from the embedded map's current camera
                 // so open/close never re-fits, whatever path triggered presentation.
                 if let embedded=self.embeddedMaps[mapID], !embedded.isHidden {
@@ -2053,6 +2123,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     private var coordinator:MapCoordinator?
     private weak var styles:UISegmentedControl?
     var onStyle:((String)->Void)?
+    var onToolbar:((String)->Void)?
     init(content:MapContent,picker:Bool){self.content=content;self.picker=picker;super.init(nibName:nil,bundle:nil)}
     // New positions while the full-screen people map is open.
     func update(_ next:MapContent) {if isViewLoaded {coordinator?.apply(next)}}
@@ -2075,7 +2146,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if picker {navigationItem.rightBarButtonItem=UIBarButtonItem(title:"Use location",style:.done,target:self,action:#selector(confirm));navigationItem.rightBarButtonItem?.isEnabled=false}
         let styles=UISegmentedControl(items:["Map","Satellite"]);styles.selectedSegmentIndex=content.mapStyle=="satellite" ? 1 : 0;if let style=content.mapStyle {applyMapStyle(map,style)};styles.addTarget(self,action:#selector(styleChanged(_:)),for:.valueChanged);styles.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(styles)
         styles.backgroundColor = .secondarySystemBackground
-        self.styles=styles
+        self.styles=styles;styles.isHidden=content.controls != nil
         NSLayoutConstraint.activate([styles.centerXAnchor.constraint(equalTo:view.centerXAnchor),styles.topAnchor.constraint(equalTo:map.topAnchor,constant:16),styles.widthAnchor.constraint(equalToConstant:220),styles.heightAnchor.constraint(equalToConstant:36)])
         if picker {
             let tap=UITapGestureRecognizer(target:self,action:#selector(pick(_:)));tap.numberOfTapsRequired=1;map.addGestureRecognizer(tap)
@@ -2086,12 +2157,14 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
             // The people map and the route overview: same annotations, density,
             // photos, camera, edge avatars and controls as the embedded map,
             // continuing from its camera and mode.
-            let coordinator=MapCoordinator(map:map,content:content,controlTop:60)
+            let coordinator=MapCoordinator(map:map,content:content,controlTop:content.controls == nil ? 60 : 12,showsLayers:content.controls != nil)
             coordinator.exclusions={ [weak self] in
-                guard let self=self,let styles=self.styles else {return []}
+                guard let self=self,let styles=self.styles,!styles.isHidden else {return []}
                 return [self.view.convert(styles.frame,to:self.map).insetBy(dx:-6,dy:-6)]
             }
             coordinator.onModeChange={ [weak self] mode,command in self?.onCamera?(mode,command) }
+            coordinator.onToolbarAction={ [weak self] action in self?.onToolbar?(action) }
+            coordinator.onActivity={ [weak self] id in self?.finish(["activityID":id]) }
             coordinator.onPhotoAction={ [weak self] action,photoID,journeyID in self?.finish(["photoID":photoID,"journeyID":journeyID,"action":action]) }
             self.coordinator=coordinator
             if content.camera == nil {
@@ -2201,6 +2274,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     }
     func mapView(_ mapView:MKMapView,didDeselect view:MKAnnotationView) {coordinator?.deselected(view.annotation)}
     func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="people" {coordinator?.selectPerson(pin);return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator?.select(photo:pin);return}
         guard !picker,let pin=view.annotation as? JourneyPin,
@@ -2226,6 +2300,7 @@ extension AppleMapsPlugin: MKMapViewDelegate {
         notifyListeners("photoSelected",data:data)
     }
     public func mapView(_ mapView:MKMapView,didSelect view:MKAnnotationView) {
+        if let pin=view.annotation as? JourneyPin,(pin.metadata["kind"] as? String)=="people" {coordinator(for:mapView)?.selectPerson(pin);return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator(for:mapView)?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator(for:mapView)?.select(photo:pin);return}
         // A community segment on the Map's Segments layer opens its details in the

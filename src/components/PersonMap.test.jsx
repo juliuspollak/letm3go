@@ -43,10 +43,12 @@ afterEach(cleanup);
 beforeEach(()=>{mock.empty=false;mock.mounts=0;mock.payloads.length=0;mock.dayArgs.length=0;mock.day=null;mock.rpc.mockReset();});
 
 describe('person map',()=>{
- it('shows the latest location, numbered activity markers and the live trail on today',()=>{
+ it('shows thin selectable saved routes without numbered markers, plus the latest location and live trail',()=>{
   setup();
   const pins=last().pins;
-  expect(pins.filter(p=>p.kind==='step').map(p=>[p.label,p.title])).toEqual([['1','1. Home to work'],['2','2. Work to shops']]);
+  expect(pins.filter(p=>p.kind==='step')).toEqual([]);
+  expect(last().styled.map(r=>r.activityID)).toEqual(['a','b']);
+  expect(last().styled.every(r=>r.width===2.5)).toBe(true);
   expect(pins.find(p=>p.kind==='people')).toEqual(selectedPin);
   expect(pins.some(p=>p.kind==='friend-live')).toBe(false);
   expect(last().live.length).toBe(2);
@@ -80,13 +82,14 @@ describe('person map',()=>{
  it('opens the shared-activity detail of the right person and activity from a marker, leaving the map in place',()=>{
   const {onOpenShared}=setup();
   act(()=>mock.onStep('b'));
+  fireEvent.click(screen.getByRole('button',{name:'Open activity'}));
   expect(onOpenShared).toHaveBeenCalledWith('b',{userId:'her',name:'Julia'});
   expect(screen.getByTestId('map')).toBeTruthy();
  });
  it('still shows the person\'s activities when they are not sharing a live position, and invents no location', ()=>{
   setup({person:{...person,position:null,state:'off',status:{text:'Not sharing live location',tone:'stale'}}});
   expect(mock.dayArgs.at(-1).enabled).toBe(true);
-  expect(last().pins.filter(p=>p.kind==='step')).toHaveLength(2);
+  expect(last().styled.map(r=>r.activityID)).toEqual(['a','b']);
   expect(last().pins.some(p=>p.kind==='people')).toBe(false);
  });
  it('shows the same single map for All people, without day loading or a date bar',()=>{
@@ -188,12 +191,14 @@ describe('person map',()=>{
  it('on my own map, an activity that is not on this phone says so instead of opening a shared copy that does not exist',()=>{
   render(<PersonMap person={{...person,userId:'me'}} viewer="me" timeZone={Z} onOpenOwn={()=>false} renderMap={renderMap}/>);
   act(()=>mock.onStep('b'));
+  fireEvent.click(screen.getByRole('button',{name:'Open activity'}));
   expect(screen.getByText(/not on this phone/)).toBeTruthy();
  });
  it('on my own map, an activity on this phone opens locally',()=>{
   const open=vi.fn(()=>true);
   render(<PersonMap person={{...person,userId:'me'}} viewer="me" timeZone={Z} onOpenOwn={open} renderMap={renderMap}/>);
   act(()=>mock.onStep('a'));
+  fireEvent.click(screen.getByRole('button',{name:'Open activity'}));
   expect(open).toHaveBeenCalledWith('a');
  });
  it('on my own map an empty day just says nothing is recorded',()=>{
@@ -238,47 +243,29 @@ describe('the Locate button', ()=>{
   expect(screen.getByText(/location is not available/i)).toBeTruthy();
   expect(last().focus).toBeUndefined();expect(last().fitKey).toBe(key);
  });
- it('Someone else, today: centres on their latest authorised location, never on me', async()=>{
+ it('Someone else, today: centres on my own fresh location, never theirs', async()=>{
   const locateSelf=vi.fn(async()=>here);
-  setup({locateSelf});
-  await locate();
-  expect(locateSelf).not.toHaveBeenCalled();
-  expect(last().focus).toEqual([-34.9,151.1]);
-  expect(last().fitKey).toBe('her|'+today()+'|locate1');
+  setup({locateSelf});await locate();
+  expect(locateSelf).toHaveBeenCalledTimes(1);
+  expect(last().focus).toEqual([-33.8,151.2]);
  });
- it('Someone else, today, with an old location: still their last known place, labelled with how old it is', async()=>{
-  setup({person:{...person,state:'stale',status:{text:'Last seen 25 min ago',tone:'stale'}}});
-  expect(last().pins.find(p=>p.kind==='people').label).toMatch(/Last seen 25 min ago/);
-  await locate();
-  expect(last().focus).toEqual([-34.9,151.1]);
+ it('uses my own location on a historical day too, preserving that day', async()=>{
+  setup({locateSelf:async()=>here});control('pday:prev');
+  const dayKey=last().fitKey;await locate();
+  expect(last().focus).toEqual([-33.8,151.2]);expect(last().fitKey).toBe(dayKey+'|locate1');
+  expect(last().pins.some(p=>p.kind==='people')).toBe(false);
  });
- it('Someone else, a past day: fits that day\'s recorded movement instead', async()=>{
-  setup({locateSelf:vi.fn()});
-  control('pday:prev');
-  const dayKey=last().fitKey;
-  await locate();
+ it('never substitutes a selected person or a recorded route when my location is unavailable',async()=>{
+  setup({locateSelf:async()=>null});const key=last().fitKey;await locate();
+  expect(screen.getByText(/Your location is not available/)).toBeTruthy();
+  expect(last().focus).toBeUndefined();expect(last().fitKey).toBe(key);
+ });
+ it('rejects invalid coordinates even if a location provider returns them',async()=>{
+  setup({locateSelf:async()=>({latitude:99,longitude:151})});await locate();
   expect(last().focus).toBeUndefined();
-  expect(last().fitKey).toBe(dayKey+'|locate1');
-  expect(last().routes.length).toBeGreaterThan(0);
- });
- it('Someone else, today, with no location: fits their movement; with none of either, says so', async()=>{
-  setup({person:{...person,position:null}});
-  await locate();
-  expect(last().focus).toBeUndefined();expect(last().fitKey).toMatch(/locate1$/);
- });
- it('with no location and no movement, says so and does not move the camera', async()=>{
-  mock.empty=true;
-  setup({person:{...person,position:null}});
-  const key=last().fitKey;
-  await locate();
-  expect(screen.getByText(/Julia has no location or movement to show yet/)).toBeTruthy();
-  expect(last().fitKey).toBe(key);expect(last().focus).toBeUndefined();
-  control('pday:prev');
-  await locate();
-  expect(screen.getByText(/Nothing to show for this day/)).toBeTruthy();
  });
  it('asks again each time, and a new day or person forgets the request', async()=>{
-  setup();
+  setup({locateSelf:async()=>here});
   await locate();await locate();
   expect(last().fitKey).toMatch(/locate2$/);
   control('pday:prev');
@@ -313,4 +300,44 @@ describe('the Locate button', ()=>{
   control('pday:prev');
   expect(screen.queryByText(/location is not available/i)).toBeNull();
  });
+});
+
+it('selects only a visible activity, dims other routes, and clears its preview when access is withdrawn',()=>{
+ const {view}=setup();
+ act(()=>mock.onStep('not-authorised'));
+ expect(screen.queryByLabelText('Selected activity')).toBeNull();
+ act(()=>mock.onStep('b'));
+ expect(screen.getByLabelText('Selected activity').textContent).toMatch(/Work to shops.*Driving/);
+ expect(last().styled.find(r=>r.activityID==='b').width).toBe(4);
+ expect(last().styled.find(r=>r.activityID==='a').opacity).toBe(0.18);
+ expect(last().styled.find(r=>r.activityID==='b').points).toEqual([[-34.5,150.9],[-34.6,150.9]]);
+ mock.empty=true;
+ view.rerender(<PersonMap person={person} personPin={selectedPin} viewer="me" timeZone={Z} renderMap={renderMap}/>);
+ expect(last().styled).toEqual([]);
+ expect(screen.queryByLabelText('Selected activity')).toBeNull();
+});
+it('filters the person day in memory, clears selection and playback, and leaves the viewport scope alone',()=>{
+ setup();const key=last().scope;
+ act(()=>mock.onStep('b'));
+ control('pday:activity:Walking');
+ expect(last().styled).toEqual([]);
+ expect(last().scope).toBe(key);
+ expect(screen.queryByLabelText('Selected activity')).toBeNull();
+ expect(screen.getByText('No activities match this filter.')).toBeTruthy();
+ control('pday:reset');expect(last().styled).toHaveLength(2);
+});
+it('ignores a slow locate reply after changing dates',async()=>{
+ let resolve;
+ setup({locateSelf:()=>new Promise(r=>{resolve=r;})});
+ await act(async()=>{void mock.day.onLocate();});control('pday:prev');
+ await act(async()=>{resolve({latitude:-33,longitude:150});});
+ expect(last().focus).toBeUndefined();
+});
+it('selecting an activity from the accessible list releases playback and highlights its saved route',async()=>{
+ setup();
+ fireEvent.change(screen.getByLabelText('Time of day'),{target:{value:String(Number(screen.getByLabelText('Time of day').min)+40)}});
+ fireEvent.click(screen.getByRole('button',{name:/Work to shops ·/}));
+ await act(async()=>{});
+ expect(last().pins.some(p=>p.kind==='playback')).toBe(false);
+ expect(last().styled.find(r=>r.activityID==='b').width).toBe(4);
 });
