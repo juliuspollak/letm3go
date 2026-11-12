@@ -1171,8 +1171,8 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         compassTop=frames.compassTop
         leftColumnBottom=frames.leftColumn
         if let date=controls["date"] as? [String:Any] {
-            let bar=dateBar(date,maxWidth:map.bounds.width-80)
-            bar.frame.origin=CGPoint(x:12,y:frames.leftColumn)
+            let bar=dateBar(date,maxWidth:frames.dateMaxWidth)
+            bar.frame.origin=CGPoint(x:12,y:frames.dateTop)
             map.addSubview(bar);controlViews.append(bar)
             leftColumnBottom=bar.frame.maxY+8
         }

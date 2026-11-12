@@ -8,6 +8,9 @@ struct MapControlFrames:Equatable {
     // Where the next control may start in the left column: the date bar, then
     // the Following chip.
     let leftColumn:CGFloat
+    // The date bar: under Filters, or, with no Filters (a selected person's day), in the first row beside Layers.
+    let dateTop:CGFloat
+    let dateMaxWidth:CGFloat
     let compassTop:CGFloat
 }
 
@@ -18,7 +21,7 @@ func mapControlFrames(width:CGFloat,top:CGFloat,filtersWidth:CGFloat?,layersWidt
     let layers=CGRect(x:width-inset-layersWidth,y:top,width:layersWidth,height:pill)
     let filters=filtersWidth.map {CGRect(x:inset,y:top,width:min($0,max(44,layers.minX-spacing-inset)),height:pill)}
     let expand=CGRect(x:width-inset-44,y:top+pill+spacing,width:44,height:44)
-    return MapControlFrames(filters:filters,layers:layers,expand:expand,leftColumn:top+pill+spacing,compassTop:expand.maxY+spacing)
+    return MapControlFrames(filters:filters,layers:layers,expand:expand,leftColumn:top+pill+spacing,dateTop:filters==nil ? top : top+pill+spacing,dateMaxWidth:filters==nil ? max(44,layers.minX-spacing-inset) : max(44,width-80),compassTop:expand.maxY+spacing)
 }
 
 // Wraps chips into rows so every choice is visible, with no hidden horizontal scroll.
