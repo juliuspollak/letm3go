@@ -5372,3 +5372,12 @@ for invalid in [Double.nan,Double.infinity,-Double.infinity] {
     } catch {check(true,"non-finite nested preferences are rejected without an Objective-C abort")}
 }
 print("Final native assertion count including preference JSON validation: \(assertions)")
+
+let flagSize=CGSize(width:36,height:38),mapBounds=CGRect(x:0,y:0,width:390,height:500)
+let homePoint=CGPoint(x:195,y:240),avatarBounds=CGRect(x:160,y:195,width:70,height:80)
+let clearFlag=ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds)
+check(homePoint.y+clearFlag.y+flagSize.height/2<avatarBounds.minY, "activity flags sit visibly above a coincident avatar")
+check(ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:30,y:300),people:[avatarBounds],bounds:mapBounds) == CGPoint(x:0,y:-15), "unobstructed flags retain their normal pointer position")
+let edgeOffset=ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:195,y:35),people:[CGRect(x:160,y:0,width:70,height:80)],bounds:mapBounds)
+check(35+edgeOffset.y-flagSize.height/2>80, "near the top edge flags sit below the avatar instead of outside the map")
+print("Final native assertion count including avatar/flag collision placement: \(assertions)")

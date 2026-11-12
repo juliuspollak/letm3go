@@ -349,3 +349,9 @@ it('selects an activity flag through the existing event and highlights the match
  control('pday:reset');control('pday:prev');
  expect(last().pins.filter(p=>p.kind==='step').every(p=>!p.selected)).toBe(true);
 });
+it('labels the activity list with the same chronological numbers as the map flags',()=>{
+ setup();
+ expect(screen.getByRole('button',{name:/#1 · Home to work ·/})).toBeTruthy();
+ expect(screen.getByRole('button',{name:/#2 · Work to shops ·/})).toBeTruthy();
+ expect(last().pins.filter(p=>p.kind==='step').map(p=>p.label)).toEqual(['1','2']);
+});

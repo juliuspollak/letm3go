@@ -46,3 +46,11 @@ Device crash reports and a console reproduction identified `SIGABRT` from `Secur
 Preferences now pass through standard JSON normalisation before the native bridge (non-finite optional numbers become null, undefined keys are omitted, unsupported/cyclic objects reject before persistence). The native boundary separately calls `JSONSerialization.isValidJSONObject` before writing, returning a rejected call while retaining saved settings if an invalid bridge object arrives. No account settings or recordings were cleared.
 
 Validation: 19 auth/preferences JavaScript tests passed; 2,194 native assertions passed, including nested NaN and both infinities rejected without invoking the JSON writer. Lint and the signed physical-device build/install passed. The repaired build was launched on Julius's iPhone under console observation to check startup survival; this does not establish all map interactions or long-term background stability.
+
+## Flags obscured by the current-person avatar
+
+The user reported seeing only activity numbers 6, 3 and 4, then confirmed that some flags were hidden behind the avatar. People annotations have required display priority and maximum z-priority; flags near the same recorded location could be covered or suppressed. This explains an occlusion path; it does not establish that every other activity was in the current viewport.
+
+Activity flag labels now avoid the avatar's screen bounds, initially and when annotations/content or the settled camera change. A thin connector retains the original geographic anchor; no saved coordinate is changed and MapKit clustering continues to use the real starts. Labels sit above the avatar, or below it near the top map edge. Placement is not recomputed on every camera frame. The activity list now includes the corresponding chronological numbers, so users can identify a visible flag without guessing. Cluster counts remain prefixed by ×.
+
+Verification: avatar collision, unobstructed position and top-edge placement assertions passed (2,197 native assertions total), together with targeted React/map tests, lint and the signed device build. Physical iPhone validation remains necessary to confirm MapKit's collision engine and the visual layout on the user's exact day.

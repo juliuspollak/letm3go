@@ -69,3 +69,17 @@ enum DensityTrailStyle {
 enum ActivityClusterPolicy {
     static func shouldZoom(spreadMetres:Double,cameraDistance:Double)->Bool {spreadMetres>=20 && cameraDistance>=250}
 }
+
+// Only the screen-space label moves. Its connector continues to the unchanged
+// annotation coordinate; MapKit still clusters activities at their real starts.
+enum ActivityFlagPlacement {
+    static func offset(size:CGSize,at point:CGPoint,people:[CGRect],bounds:CGRect)->CGPoint {
+        let normal=CGPoint(x:0,y:-size.height/2+4)
+        let frame=CGRect(x:point.x-size.width/2,y:point.y-size.height+4,width:size.width,height:size.height)
+        let obstacles=people.map{$0.insetBy(dx:-6,dy:-6)}.filter{$0.intersects(frame)}
+        guard let top=obstacles.map(\.minY).min(),let bottom=obstacles.map(\.maxY).max() else {return normal}
+        let above=normal.y-(frame.maxY-top+4)
+        if point.y+above-size.height/2>=bounds.minY+6 {return CGPoint(x:0,y:above)}
+        return CGPoint(x:0,y:bottom+4+size.height/2-point.y)
+    }
+}

@@ -63,6 +63,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const {day:loadedDay,loading,error}=usePersonDay({viewer,owner,date,timeZone,enabled:Boolean(person),localTrips:isSelf?localTrips:null,localLiveTrip:isSelf?localLiveTrip:null,deletedIDs});
  const day=useMemo(()=>filterPersonDay(loadedDay,mine.activity),[loadedDay,mine.activity]);
  const selected=day.activities.find(a=>a.id===mine.selected);
+ const activityNumbers=useMemo(()=>new Map(day.markers.map(m=>[m.activityID,m.n])),[day.markers]);
  const isToday=date===today;
  const deferred=useDeferredValue(scrub);
 
@@ -154,7 +155,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
    <button type="button" className="text-button" onClick={()=>openActivity(selected.id)}>Open activity</button>
    <button type="button" className="text-button" aria-label="Clear selected activity" onClick={()=>update({selected:null})}>×</button>
   </section>:null}
-  {person&&day.activities.length>0?<details className="person-map-activities"><summary>Activities · {day.activities.length}</summary><div>{day.activities.map(activity=><button type="button" key={activity.id} aria-pressed={selected?.id===activity.id} onClick={()=>onStep(activity.id)}>{activity.title} · {clock(activity.startedAt,timeZone)}</button>)}</div></details>:null}
+  {person&&day.activities.length>0?<details className="person-map-activities"><summary>Activities · {day.activities.length}</summary><div>{day.activities.map(activity=><button type="button" key={activity.id} aria-pressed={selected?.id===activity.id} onClick={()=>onStep(activity.id)}>#{activityNumbers.get(activity.id)} · {activity.title} · {clock(activity.startedAt,timeZone)}</button>)}</div></details>:null}
   {person&&canScrub?<div className="person-map-timeline">
    <input type="range" aria-label="Time of day" min={Math.ceil(first)} max={Math.floor(last)} step={1} value={scrub??Math.floor(last)} onChange={event=>setScrub(Number(event.target.value))}/>
    <span className="person-map-time">{scrub==null?(isToday?'Now':'End of day'):clock(scrub,timeZone)}{at?.inGap?' · No GPS signal':''}</span>
