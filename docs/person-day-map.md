@@ -102,3 +102,19 @@ reason, never a coordinate) and raises a WARNING; a later run publishes it and c
 `select * from public.household_history_status()` (service role) gives, per member: sharing on, since, activities, with a
 route, shared with the household, waiting, failing and the newest activity, so a gap shows whether it is missing data (newest activity is
 old), waiting publication, or failing.
+
+### How the activity backup behaves (so one bad activity cannot hide the rest)
+
+The native recorder collects GPS and keeps it on the phone; the cloud backup (`syncPrivateActivities`) is a separate,
+recoverable process in the app. Each finished activity is independent:
+
+- A recording that has just finished is backed up within seconds while the app is open; household sharing is told straight
+  after each upload (`letm3go:backed-up`) and follows from the server's own list of what is unshared.
+- Each upload is checkpointed on its own; an unchanged activity is never sent again.
+- An activity the cloud refuses is stored as `backup-failure:<id>` (reason, attempts, when to try again: 1 min, doubling to
+  6 h). It is skipped until then (unless it is edited, or the person taps Sync now), does not use the pass's budget, and
+  never blocks another activity; segment efforts and photos are not sent for it.
+- Offline or signed-out stops the pass without marking any activity. Retries happen on resume, reconnection, the two-minute
+  check and at the earliest due time.
+- Settings shows "N of M recorded activities are backed up", how many are waiting and the reason for any refused; the reason
+  is also written to the diagnostic log ("Cloud backup failed") so a feedback report shows it.

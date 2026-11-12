@@ -1574,6 +1574,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "transition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSettings", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "noteRecordingWarning", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "noteBackupFailure", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "noteHouseholdDelivery", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resolveHeartRate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resolveEnergy", returnType: CAPPluginReturnPromise),
@@ -1893,6 +1894,13 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     } }
     @objc func noteRecordingWarning(_ call: CAPPluginCall) { DispatchQueue.main.async {
         LocationRecorder.shared.noteRecordingWarning(action: call.getString("action") ?? "", issue: call.getString("issue") ?? "")
+        call.resolve()
+    } }
+    // The app's cloud backup runs in JavaScript and used to fail silently; its failure reason (a server message, never a
+    // coordinate) is kept in the diagnostic log so a feedback report shows why recorded activities are not reaching the cloud.
+    @objc func noteBackupFailure(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        let detail=String((call.getString("message") ?? "").prefix(300))
+        LocationRecorder.shared.recordDiagnostic("error","Cloud backup failed",details:["detail":detail])
         call.resolve()
     } }
     @objc func openSettings(_ call: CAPPluginCall) {

@@ -1,5 +1,6 @@
 import {useEffect,useRef} from 'react';
 import {shareNewHouseholdActivities} from './householdAutoShare.js';
+import {BACKED_UP_EVENT} from './syncNow.js';
 
 // Runs when the app opens, when an activity finishes, when the app comes back to the
 // foreground and when the network returns. iOS suspends the WebView, so nothing here can
@@ -36,6 +37,8 @@ export function useHouseholdAutoShare({client,recorder,enabled,finishedCount,rec
   const visible=()=>{if(document.visibilityState!=='hidden')soon();};
   document.addEventListener('visibilitychange',visible);
   window.addEventListener('online',soon);
-  return()=>{timers.forEach(clearTimeout);clearTimeout(soonTimer);document.removeEventListener('visibilitychange',visible);window.removeEventListener('online',soon);};
+  // Household sharing follows the backup: an activity that has just reached the cloud is looked at within seconds.
+  window.addEventListener(BACKED_UP_EVENT,soon);
+  return()=>{timers.forEach(clearTimeout);clearTimeout(soonTimer);document.removeEventListener('visibilitychange',visible);window.removeEventListener('online',soon);window.removeEventListener(BACKED_UP_EVENT,soon);};
  },[enabled,client,finishedCount]);
 }

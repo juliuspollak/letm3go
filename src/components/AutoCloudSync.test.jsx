@@ -1,6 +1,6 @@
 import {render,cleanup,act} from '@testing-library/react';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mocks=vi.hoisted(()=>({publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
+const mocks=vi.hoisted(()=>({noteBackupFailure:vi.fn(),publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>mocks.native},registerPlugin:()=>({})}));
 vi.mock('@capacitor/app',()=>({App:{addListener:vi.fn(async(_event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};})}}));
 vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>mocks.auth}));
@@ -10,6 +10,7 @@ vi.mock('../lib/cloudSync.js',()=>({syncPublicSegments:mocks.publications,syncPr
 vi.mock('../lib/settingsSync.js',()=>({syncAccountSettings:mocks.settings}));
 vi.mock('../lib/collectionSync.js',()=>({syncCollections:mocks.collections}));
 vi.mock('../lib/journeyMetadataStore.js',async importOriginal=>({...await importOriginal(),refreshJourneyMetadata:mocks.journey}));
+vi.mock('../lib/recorder.js',()=>({recorder:{noteBackupFailure:mocks.noteBackupFailure}}));
 import AutoCloudSync from './AutoCloudSync.jsx';
 
 const state=(token)=>({ownerID:'owner',historyToken:token,places:[],deletedIDs:[],trips:[]});
@@ -205,4 +206,55 @@ it('preserves a publication confirmation when an older backup checkpoint finishe
  render(<AutoCloudSync state={state('old-history')}/>);await tick(5000);await act(async()=>finish());
  expect(mocks.auth.preferences.syncReceipts[key]).toMatchObject({confirmedAt:200,uploaded:true});
  expect(mocks.auth.preferences.syncReceipts.trip.revision).toBe(4);
+});
+
+it('writes why a backup failed to the diagnostic log, once per reason, never the activity data',async()=>{
+ mocks.activities.mockRejectedValue(new Error('Cloud activity conflict; reload before overwriting (activity 3f2a9c10)'));
+ const view=render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledTimes(1);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledWith('Cloud activity conflict; reload before overwriting (activity 3f2a9c10)');
+ // The same failure at the next checks is not logged again; a different one is.
+ view.rerender(<AutoCloudSync state={state('h2')}/>);
+ await tick(120000);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledTimes(1);
+ mocks.activities.mockRejectedValue(new Error('Failed to fetch'));
+ view.rerender(<AutoCloudSync state={state('h3')}/>);
+ await tick(120000);
+ expect(mocks.noteBackupFailure).toHaveBeenLastCalledWith('Failed to fetch');
+});
+
+it('backs up a recording that has just finished within seconds, not at the next two-minute check',async()=>{
+ const view=render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);
+ expect(mocks.activities).toHaveBeenCalledTimes(1);
+ view.rerender(<AutoCloudSync state={state('h2')}/>);
+ await tick(3000);
+ expect(mocks.activities).toHaveBeenCalledTimes(2);
+});
+it('tells household sharing each time an activity has been backed up, not for any other checkpoint',async()=>{
+ const heard=vi.fn();window.addEventListener('letm3go:backed-up',heard);
+ mocks.activities.mockImplementation(async(_c,_s,receipts,{checkpoint,onBackedUp})=>{await checkpoint({...receipts,place:{owner:'owner'}});onBackedUp();await checkpoint({...receipts,a:{revision:1}});return {receipts,lastSync:'now'};});
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);
+ expect(heard).toHaveBeenCalledTimes(1);
+ window.removeEventListener('letm3go:backed-up',heard);
+});
+it('keeps what went up when some activities were refused, reports the refusal once, and comes back to it when it is due',async()=>{
+ const problem=Object.assign(new Error('1 activity could not be backed up (Cloud activity conflict; activity 3f2a9c10)'),{key:'Cloud activity conflict'});
+ mocks.activities.mockResolvedValue({receipts:{a:{revision:1}},uploaded:2,problem,nextRetryAt:Date.now()+60000,pending:false,lastSync:'now'});
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledWith(problem.message);
+ expect(mocks.activities).toHaveBeenCalledTimes(1);
+ await tick(62000);
+ expect(mocks.activities.mock.calls.length).toBeGreaterThan(1);   // came back at the time the refused activity was due
+ expect(mocks.noteBackupFailure).toHaveBeenCalledTimes(1);        // the same refusal is not logged again
+});
+it('does not run an extra pass just because the history was first read',async()=>{
+ render(<AutoCloudSync state={state('h1')}/>);
+ await tick(2600);
+ expect(mocks.activities).not.toHaveBeenCalled();                // only the five-second opening pass runs
+ await tick(2500);
+ expect(mocks.activities).toHaveBeenCalledTimes(1);
 });

@@ -277,7 +277,25 @@ export async function syncPublicSegments(client,state,receipts={}, {owner,checkp
  return {receipts:updated,republish,published,pending:candidates.length>limit,failure};
 }
 
-export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity,publishSegments=true}={}){
+// A refusal remembered for this activity and this account (a cleared or another account's record is not one).
+export const heldFailure=(receipts,id,owner)=>{const held=receipts[`backup-failure:${id}`];return held&&!held.cleared&&String(held.owner).toLowerCase()===String(owner).toLowerCase()?held:null;};
+// How much of what is recorded is in the cloud: finished recordings on this phone, the ones backed up, and the ones still
+// waiting (with the reason, and when it will be tried again, for any the cloud refused). Computed from the receipts.
+export function backupHealth(state,receipts={},now=Date.now(),owner=state?.ownerID){
+ const finished=finishedTrip(state||{});
+ let total=0,backedUp=0;const failing=[];
+ for(const trip of state?.trips||[]){
+  if(!finished(trip))continue;
+  total++;
+  const receipt=receipts[trip.id];
+  if(receipt&&!receipt.deleted&&Number.isInteger(receipt.revision))backedUp++;
+  // A refusal counts whether the activity was never uploaded or an edited copy is the one refused (the cloud's copy is then stale).
+  const held=heldFailure(receipts,trip.id,owner);
+  if(held)failing.push({id:trip.id,message:held.message,attempts:held.attempts,retryInSeconds:Math.max(0,Math.round((held.nextAt-now)/1000))});
+ }
+ return {total,backedUp,waiting:total-backedUp,failing};
+}
+export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity,publishSegments=true,now=Date.now(),retryFailed=false,throwOnFailure=true,onBackedUp=()=>{}}={}){
  const {data,error}=await client.auth.getUser();if(error||!data.user)throw new Error('Sign in before backing up.');
  const owner=data.user.id;
  if(state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('Backup account does not match the native recordings.');
@@ -311,22 +329,53 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(error&&/share_with_friends/i.test(error.message||'')){const legacy={...row};delete legacy.share_with_friends;({error}=await client.from('saved_places').upsert(legacy));}
   if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
  }
- const finished=finishedTrip(state);
+ const finishedAll=finishedTrip(state);
+ // Each activity stands alone. One the cloud refuses is remembered (what, how often, when to try again) and the others
+ // carry on; it does not use up the pass's budget until its retry time, and nothing later waits for it. A network or
+ // sign-in problem is not the activity's fault: the pass stops without marking anyone.
+ const failedNow=new Set(),failures=[];
+ let stoppedByNetwork=false;
+ const failureKey=id=>`backup-failure:${id}`;
+ // A record for an activity that is no longer here (deleted) is not kept.
+ const present=new Set(state.trips.map(t=>String(t.id)));
+ for(const key of Object.keys(updated))if(key.startsWith('backup-failure:')&&!updated[key]?.cleared&&!present.has(key.slice(15))){updated[key]={owner,cleared:true};}
  for(const trip of state.trips){
-  if(!finished(trip))continue;
+  if(!finishedAll(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   // Unchanged since its last backup: not serialised or hashed again.
   if(previous&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
+  const held=heldFailure(updated,trip.id,owner);
+  if(held&&held.nextAt>now&&!retryFailed&&held.updatedAt===trip.updatedAt){failedNow.add(trip.id);failures.push({id:trip.id,message:held.message,attempts:held.attempts,held:true,nextAt:held.nextAt});continue;}
   if(processed>=maxActivities){pending=true;break;}processed++;
   const details=trip.details||{};
   const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
-  if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}continue;}
-  const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
-  if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
-  updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
+  if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}if(held)updated[failureKey(trip.id)]={owner,cleared:true};continue;}
+  let revision,error,status;
+  try{const response=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});({data:revision,error}=response);status=response.status??error?.status;}
+  catch(thrown){error={message:thrown?.message||'Request failed'};}
+  if(!error&&Number.isInteger(revision)){
+   updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;
+   if(held)updated[failureKey(trip.id)]={owner,cleared:true};
+   await acknowledge();
+   onBackedUp();
+   continue;
+  }
+  const message=String(error?.message||'No revision returned').slice(0,160);
+  // Signed out or the session expired: nothing can be uploaded until that is fixed.
+  if(status===401||/jwt expired|invalid jwt|not authenticated|backup owner mismatch/i.test(message))throw new Error(`Sign in again to back up (${message}).`);
+  // Offline or the server unreachable: not this activity's fault, so it is not marked and the pass ends.
+  const plain=message.replace(/^(type)?error:\s*/i,'').replace(/[.\s]+$/,'');
+  if(!error?.code&&(!navigator.onLine||/^(failed to fetch|load failed|network request failed|networkerror when attempting to fetch resource|the network connection was lost|the internet connection appears to be offline|the request timed out)$/i.test(plain))){
+   failures.push({id:trip.id,message,network:true});stoppedByNetwork=true;pending=true;break;
+  }
+  const attempts=(held?held.attempts:0)+1;
+  updated[failureKey(trip.id)]={owner,message,attempts,at:now,updatedAt:trip.updatedAt,nextAt:now+Math.min(6*3600e3,60e3*2**(attempts-1))};
+  failedNow.add(trip.id);failures.push({id:trip.id,message,attempts,nextAt:updated[failureKey(trip.id)].nextAt});
+  await acknowledge();
  }
+ const finished=trip=>finishedAll(trip)&&!failedNow.has(trip.id);   // nothing is pushed about an activity whose own row is not in the cloud
  {
   const efforts=await syncSegmentEfforts(client,state,updated,{owner,hash,acknowledge,finished,republish});
   if(efforts.pending)pending=true;
@@ -357,6 +406,17 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
   }
  }
- if(segmentFailure)throw segmentFailure;
- return {receipts:updated,uploaded,photosUploaded,deleted,pending,lastSync:new Date().toISOString()};
+ const fresh=failures.filter(f=>!f.held);
+ let problem=null;
+ if(fresh.length||segmentFailure){
+  // One report that names the first new reason without ids in its key, so a repeat of the same problem is recognised.
+  const first=fresh[0];
+  problem=new Error([first?`${failures.length} ${failures.length===1?'activity':'activities'} could not be backed up (${first.message}; activity ${String(first.id).slice(0,8)}). Your local data is preserved.`:null,segmentFailure?`Segments: ${segmentFailure.message}`:null].filter(Boolean).join(' · '));
+  problem.key=[first?.message,segmentFailure?.message].filter(Boolean).join('|');problem.failures=failures;problem.network=stoppedByNetwork;problem.receipts=updated;
+  // Callers that carry on after a partly successful pass (the automatic backup, Settings) read it from the result instead.
+  if(throwOnFailure)throw problem;
+ }
+ // When the earliest refused activity is due again, so a caller can come back to it at that time.
+ const due=failures.map(f=>f.nextAt).filter(Number.isFinite);
+ return {receipts:updated,uploaded,photosUploaded,deleted,pending,failed:failures.length,problem,nextRetryAt:due.length?Math.min(...due):null,lastSync:new Date().toISOString()};
 }

@@ -63,3 +63,11 @@ it('does nothing when disabled or signed out, and stops its listeners on unmount
  await act(async()=>{window.dispatchEvent(new Event('online'));await vi.advanceTimersByTimeAsync(10000);});
  expect(mock.share).not.toHaveBeenCalled();
 });
+
+it('follows the backup: an activity that has just reached the cloud is looked at within seconds',async()=>{
+ renderHook(()=>useHouseholdAutoShare(args()));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(5100);});
+ mock.share.mockClear();
+ await act(async()=>{window.dispatchEvent(new Event('letm3go:backed-up'));await vi.advanceTimersByTimeAsync(3100);});
+ expect(mock.share).toHaveBeenCalledTimes(1);
+});
