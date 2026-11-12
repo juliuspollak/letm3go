@@ -32,9 +32,9 @@ function filterSections(view,activities,today,archivedCount){
  }
  return sections;
 }
-const layerSections=view=>[
+const layerSections=(view,social=false)=>[
  {id:'style',label:'Map style',options:[option('style:standard','Standard','map',view.style==='standard'),option('style:satellite','Satellite','globe.americas',view.style==='satellite')]},
- {id:'community',label:'Community',options:[option('segments','Segments','flag',view.segments===true)]},
+ {id:'community',label:'Community',options:[option('segments','Segments','flag',view.segments===true),option('social','Friends’ journeys','person.2',social===true)]},
 ];
 // Shown only while routes are limited to one day, so stepping through days never
 // needs the panel. The Today layer is one day too, and stepping leaves it.
@@ -51,7 +51,7 @@ function dateBar(view,today){
   clear:view.day?{id:'day:clear',label:'Show all dates',symbol:'xmark'}:null,
  };
 }
-export function mapControls(view,panel,activities=[],today=localDay(),archivedCount=0){
+export function mapControls(view,panel,activities=[],today=localDay(),archivedCount=0,social=false){
  const active=activeMapFilters(view,archivedCount);
  const summary=active.join(', ');
  const open=view.content==='routes'||panel==='layers'?panel:null;
@@ -62,7 +62,7 @@ export function mapControls(view,panel,activities=[],today=localDay(),archivedCo
   layers:{id:'panel:layers',text:'Layers',label:mapLayersChanged(view)?`Map layers: ${[view.style==='satellite'?'Satellite':null,view.segments?'Segments':null].filter(Boolean).join(', ')}`:'Map layers',symbol:'square.3.layers.3d',changed:mapLayersChanged(view),expanded:open==='layers'},
   date:open?null:dateBar(view,today),
   panel:open==='filters'?{id:'filters',title:'Filters',reset:active.length?{id:'reset',label:'Reset filters',text:'Reset'}:null,sections:filterSections(view,activities,today,archivedCount)}
-   :open==='layers'?{id:'layers',title:'Map layers',reset:null,sections:layerSections(view)}:null,
+   :open==='layers'?{id:'layers',title:'Map layers',reset:null,sections:layerSections(view,social)}:null,
  };
 }
 export function panelChange(panel,id){

@@ -55,13 +55,33 @@ it('highlights only the selected photo while retaining the route and rejecting u
  expect(captured.props.payload.routes).toEqual(ride.routeSegments);
 });
 
-it('draws a person\'s day on the same map: their payload, updated in place, with the Map layers, layer controls and camera left out', ()=>{
- const onStep=vi.fn(),controls={active:2},day={payload:{routes:[[[1,2],[3,4]]],pins:[],fitKey:'her|2026-11-11'},onStep};
- const {rerender}=render(<JourneyMap journeys={[ride]} overview={{key:'d1'}} camera={{mode:'all'}} onCamera={vi.fn()} onRegion={vi.fn()} onSegment={vi.fn()} controls={controls} personDay={day}/>);
+it('draws a person\'s day on the same map: their payload, updated in place, with the Map layers, filters and camera left out', ()=>{
+ const onStep=vi.fn(),onControl=vi.fn(),onLocate=vi.fn(),onPersonControl=vi.fn(),personLocate=vi.fn();
+ const date={label:'Today',previous:{id:'pday:prev'},next:{id:'pday:next'}};
+ const controls={active:2,filters:{id:'panel:filters'},layers:{id:'panel:layers'},date:{label:'Map date'},panel:null};
+ const day={payload:{routes:[[[1,2],[3,4]]],pins:[],fitKey:'her|2026-11-11'},onStep,date,onControl:onPersonControl,onLocate:personLocate,locating:true};
+ const {rerender}=render(<JourneyMap journeys={[ride]} overview={{key:'d1'}} camera={{mode:'all'}} onCamera={vi.fn()} onRegion={vi.fn()} onSegment={vi.fn()} controls={controls} onControl={onControl} onLocate={onLocate} personDay={day}/>);
  expect(captured.props.payload).toBe(day.payload);
- expect(captured.props).toMatchObject({dynamic:true,onStep,controls:null,onControl:null,overview:null,onCamera:null,onRegion:null,onSegment:null});
+ expect(captured.props).toMatchObject({dynamic:true,onStep,overview:null,onCamera:null,onRegion:null,onSegment:null,locating:true});
+ // Layers stay, Filters go, the date bar is the person's own, and Locate belongs to the person.
+ expect(captured.props.controls.filters).toBeUndefined();
+ expect(captured.props.controls.layers).toBe(controls.layers);
+ expect(captured.props.controls.date).toBe(date);
+ expect(captured.props.onLocate).toBe(personLocate);
+ // The person's date buttons go to the person; everything else goes to the Map.
+ captured.props.onControl('pday:prev');captured.props.onControl('segments');
+ expect(onPersonControl).toHaveBeenCalledWith('pday:prev');expect(onControl).toHaveBeenCalledWith('segments');expect(onControl).not.toHaveBeenCalledWith('pday:prev');
  // Back to All people: the layers return exactly as they were.
- rerender(<JourneyMap journeys={[ride]} overview={{key:'d1'}} camera={{mode:'all'}} controls={controls}/>);
+ rerender(<JourneyMap journeys={[ride]} overview={{key:'d1'}} camera={{mode:'all'}} controls={controls} onControl={onControl} onLocate={onLocate}/>);
  expect(captured.props.payload).toMatchObject({overview:'d1'});
- expect(captured.props).toMatchObject({dynamic:false,overview:{key:'d1'}});
+ expect(captured.props).toMatchObject({dynamic:false,overview:{key:'d1'},controls,onLocate});
+});
+it('keeps the open Layers panel in a person\'s day, and drops a Filters panel that does not apply', ()=>{
+ const day={payload:{routes:[],pins:[],fitKey:'x'},date:{label:'Today'},onControl:vi.fn(),onLocate:vi.fn()};
+ const layersPanel={id:'layers',sections:[{id:'style'},{id:'community'}]};
+ const {rerender}=render(<JourneyMap journeys={[]} controls={{active:0,layers:{},panel:layersPanel,date:null}} personDay={day}/>);
+ expect(captured.props.controls.panel.id).toBe('layers');expect(captured.props.controls.date).toBeNull();
+ expect(captured.props.controls.panel.sections.map(s=>s.id)).toEqual(['style']); // Segments and Friends' journeys are not offered where they would draw nothing
+ rerender(<JourneyMap journeys={[]} controls={{active:0,layers:{},panel:{id:'filters'},date:null}} personDay={day}/>);
+ expect(captured.props.controls.panel).toBeNull();expect(captured.props.controls.date).toBe(day.date);
 });

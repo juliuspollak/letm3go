@@ -1101,8 +1101,6 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .social-share-review fieldset legend{font-weight:700;padding:0 .4rem}
 .social-share-review fieldset label{display:flex;align-items:center;gap:.65rem;min-height:2rem}
 .social-share-review fieldset input[type=checkbox]{flex:0 0 auto;width:1.15rem;height:1.15rem}
-.map-social-layer{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;padding:.35rem .6rem}
-.map-social-layer button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .shared-journey-facts{display:flex;flex-wrap:wrap;gap:.4rem 1.4rem}
 .shared-journey-facts p{margin:.25rem 0}
 .shared-photo-gallery .selected-photo{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
@@ -1180,36 +1178,41 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 
 .live-private,.live-private-row{margin:6px 0;font-size:12.5px;color:var(--muted)}
 .live-private{display:flex;align-items:center;gap:6px}
-
-/* Poking is quiet: a ••• menu on the tile, a line of text for the result, a small Poke action on the Map. */
-.person-tile-wrap{position:relative}
-.person-more{position:absolute;top:-6px;right:-6px;z-index:2}
-.person-more-button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;background:none;border:0;color:var(--muted)}
-.person-more-button:active{background:var(--soft)}
-.person-more-menu{position:absolute;top:40px;right:0;min-width:140px;padding:4px;border-radius:12px;background:var(--surface);border:1px solid var(--line,rgba(127,127,127,.3));box-shadow:0 8px 24px #0002}
-.person-more-menu button{display:block;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;background:none;color:inherit;font-size:14px;text-align:left;white-space:nowrap}
-.person-more-menu button:active{background:var(--soft)}
-.person-tile-poke{font-size:11.5px;color:var(--muted)}
-.person-tile-poke--received{color:var(--accent);font-weight:700}
-.person-tile-poke--failed{color:var(--danger)}
-/* The Map tab's person selector and person bar. */
-.map-people-selector{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 8px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
-.map-people-selector::-webkit-scrollbar{display:none}
-.map-person-chip{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 12px 0 6px;border-radius:22px;background:var(--soft);border:1px solid transparent;color:inherit;font-size:13px;font-weight:650}
-.map-person-chip:first-child{padding-left:14px}
-.map-person-chip[aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:var(--surface)}
-.map-person-chip .person-avatar--sm{width:30px;height:30px;font-size:13px}
-.person-map-head{display:flex;align-items:center;gap:10px;padding:4px 2px 6px}
-.person-map-who{flex:1;min-width:0;display:flex;flex-direction:column}
-.person-map-who span{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.person-map-poke{min-height:44px;padding:0 12px;color:var(--muted)}
-.person-map-days{display:flex;align-items:center;justify-content:center;gap:16px;padding:0 0 6px}
-.person-map-days button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;background:none;border:0;color:inherit;border-radius:50%}
-.person-map-days button:disabled{opacity:.3}
-.person-map-canvas{position:relative}
-.map-page-people .person-map-canvas .journey-map.large{height:max(280px,calc(100dvh - 300px - env(safe-area-inset-top) - env(safe-area-inset-bottom)))}
-.person-map-note{position:absolute;left:12px;right:12px;bottom:12px;margin:0;padding:8px 12px;border-radius:12px;background:var(--surface);font-size:13px;box-shadow:0 4px 14px #0002}
-.person-map-timeline{padding:10px 2px 0}
-.person-map-timeline input[type=range]{width:100%}
-.person-map-time{display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:12.5px}
-.person-map-legend{margin:6px 2px 4px;font-size:11.5px;color:var(--muted)}
+/* Home: Poke is a small button under the status, a separate target from the tile. */
+.person-tile,.person-poke-button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+.person-tile-wrap{display:flex;flex-direction:column;align-items:center;gap:2px}
+.person-tile-wrap>.person-tile{padding-bottom:0}
+.person-tile-status{font-variant-numeric:tabular-nums}
+.person-tile-status--received{color:var(--accent);font-weight:700}
+.person-poke-button{position:relative;min-height:28px;padding:3px 10px;border:1px solid var(--line,rgba(127,127,127,.3));border-radius:14px;background:var(--soft);color:var(--ink);font-size:12px;font-weight:650;line-height:1.2;white-space:nowrap}
+.person-poke-button::after{content:"";position:absolute;inset:-8px -6px}
+.person-poke-button:active:not(:disabled){background:var(--surface)}
+.person-poke-button:disabled{opacity:.7}
+.person-poke-button--sent{color:var(--success);border-color:transparent;background:none}
+.person-poke-button--failed{color:var(--danger)}
+/* The Map: a slim bar with one selector, then the map. */
+.map-bar{display:flex;align-items:center;gap:8px;padding:2px 0 6px}
+.map-person-trigger{flex:1;min-width:0;display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px 0 8px;border-radius:22px;background:var(--soft);border:1px solid transparent;color:inherit;font-size:14px;font-weight:650;text-align:left}
+.map-person-trigger .person-avatar--sm,.map-person-item .person-avatar--sm{width:28px;height:28px;font-size:12px;flex:0 0 28px}
+.map-person-all{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex:0 0 28px;border-radius:50%;background:var(--surface)}
+.map-person-name{white-space:nowrap}
+.map-person-sub{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:500;color:var(--muted)}
+.map-person-trigger>svg:last-child{margin-left:auto;flex:0 0 auto}
+.map-key-button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:50%;background:none;border:0;color:var(--muted)}
+.map-person-heading{margin:0 0 8px;font-size:18px}
+.map-person-group{margin:14px 0 4px;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.map-person-list,.map-key-list{list-style:none;margin:0;padding:0}
+.map-person-item{display:flex;align-items:center;gap:12px;width:100%;min-height:48px;padding:6px 8px;border:0;border-radius:12px;background:none;color:inherit;text-align:left}
+.map-person-item[aria-pressed=true]{background:var(--soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
+.map-person-item-text{display:flex;flex-direction:column;min-width:0}
+.map-person-item-text small{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.map-key-list li{display:flex;align-items:center;gap:12px;min-height:40px}
+.map-key-line{width:36px;height:0;border-top:4px solid var(--accent);border-radius:2px}
+.map-key-line--road{border-top:4px dashed #e8833a}
+.map-key-dot{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0 7px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:12px;font-weight:700}
+.person-map-canvas,.map-canvas{position:relative}
+.person-map-note{margin:6px 2px 0;font-size:13px;color:var(--muted)}
+.person-map-timeline{display:flex;align-items:center;gap:10px;padding:6px 2px 0}
+.person-map-timeline input[type=range]{flex:1;min-width:0}
+.person-map-time{flex:0 0 auto;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+@media(max-width:760px){.map-page.map-page-people .journey-map.large{height:max(300px,calc(100dvh - 210px - env(safe-area-inset-top) - env(safe-area-inset-bottom)))}}
