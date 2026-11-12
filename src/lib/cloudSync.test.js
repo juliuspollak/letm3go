@@ -19,7 +19,8 @@ const run=(api,s=state,receipts={},opts={})=>syncPrivateActivities(api,s,receipt
 it('retries deletion without uploading deleted or simulator records',async()=>{const api=client();const result=await run(api,{...state,trips:[trip,{...trip,id:'sim',source:'simulator'}],deletedIDs:['trip']});expect(api.chain.delete).toHaveBeenCalled();expect(api.rpc).not.toHaveBeenCalled();expect(result.receipts.trip.deleted).toBe(true);});
 it('rejects an account switch before uploading any GPS',async()=>{const api=client();await expect(run(api,{...state,ownerID:'different'})).rejects.toThrow('account');expect(api.from).not.toHaveBeenCalled();expect(api.rpc).not.toHaveBeenCalled();});
 it('passes the expected owner to atomic backup and only checkpoints acknowledged operations',async()=>{const api=client(),checkpoint=vi.fn();const first=await run(api,state,{}, {checkpoint});expect(api.rpc).toHaveBeenCalledWith('backup_private_activity',expect.objectContaining({p_owner:'owner',p_expected_revision:null,p_fingerprint:expect.stringMatching(/^[a-f0-9]{64}$/)}));expect(checkpoint).toHaveBeenCalledOnce();api.rpc.mockClear();await run(api,state,first.receipts);expect(api.rpc).not.toHaveBeenCalled();});
-it('preserves local retry state on failure without issuing unsafe upserts',async()=>{const api=client(),checkpoint=vi.fn();api.rpc.mockResolvedValue({error:{code:'PGRST202'}});await expect(run(api,state,{}, {checkpoint})).rejects.toThrow('local data is preserved');expect(checkpoint).not.toHaveBeenCalled();expect(api.from).not.toHaveBeenCalled();});
+it('preserves local retry state on failure without issuing unsafe upserts',async()=>{const api=client(),checkpoint=vi.fn();api.rpc.mockResolvedValue({error:{code:'PGRST202'}});await expect(run(api,state,{}, {checkpoint})).rejects.toThrow('local data is preserved');// Only the failure itself is kept (so it is retried later with its reason); no upload receipt is invented.
+expect(Object.keys(checkpoint.mock.calls.at(-1)[0])).toEqual(['backup-failure:trip']);expect(api.from).not.toHaveBeenCalled();});
 it('writes places with an explicit owner and ignores unfinished recordings',async()=>{const api=client();await run(api,{...state,trips:[{...trip,endedAt:null}],places:[{id:'home',name:'Home',kind:'home',latitude:1,longitude:2,radius:150}]});expect(api.chain.upsert).toHaveBeenCalledWith(expect.objectContaining({owner_id:'owner'}));expect(api.rpc).not.toHaveBeenCalled();});
 it('backs up a published stop only after the recorder finalises it',async()=>{
  const api=client();
@@ -322,26 +323,130 @@ describe('existing segments recover independently of private activity backup',()
  });
 });
 
-// One activity the cloud refuses (a conflict, a rejected row) used to end the whole pass at that activity, every time, so
-// nothing recorded after it was ever backed up. The others now go up, and the failure is still reported.
+// One activity the cloud refuses used to end the whole pass at that activity, every time, so nothing recorded after it was
+// ever backed up. Each activity now stands alone: it is remembered, retried later with a growing delay, and never blocks or
+// uses the budget of the others.
 describe('an activity that cannot be backed up',()=>{
  const trips=['a','b','c','d'].map((id,i)=>({...trip,id,startedAt:100+i*1000,endedAt:200+i*1000}));
- it('does not hold back the activities after it, and is still reported with the cloud\'s reason',async()=>{
-  const api=client();
-  api.rpc.mockImplementation(async(_name,args)=>args.p_payload.id==='b'?{data:null,error:{message:'Cloud activity conflict; reload before overwriting'}}:{data:1,error:null});
+ const refuse=(...ids)=>async(_name,args)=>ids.includes(args.p_payload.id)?{data:null,error:{code:'P0001',message:'Cloud activity conflict; reload before overwriting'}}:{data:1,error:null};
+ it('does not hold back the activities around it, and is reported with the cloud\'s reason',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
   const checkpoint=vi.fn();
-  const error=await run(api,{...state,trips},{}, {checkpoint}).catch(e=>e);
-  expect(error.message).toContain('Cloud activity conflict');
-  expect(error.message).toContain('(activity b)');
-  const uploaded=api.rpc.mock.calls.map(([,args])=>args.p_payload.id);
-  expect(uploaded).toEqual(['a','b','c','d']);          // c and d were still attempted
-  expect(checkpoint.mock.calls.at(-1)[0]).toMatchObject({a:expect.anything(),c:expect.anything(),d:expect.anything()});
-  expect(checkpoint.mock.calls.at(-1)[0].b).toBeUndefined();
+  const error=await run(api,{...state,trips},{}, {checkpoint,now:1000}).catch(e=>e);
+  expect(error.message).toContain('1 activity could not be backed up');
+  expect(error.message).toContain('Cloud activity conflict');expect(error.message).toContain('activity b');
+  expect(api.rpc.mock.calls.map(([,args])=>args.p_payload.id)).toEqual(['a','b','c','d']);
+  const saved=checkpoint.mock.calls.at(-1)[0];
+  expect(saved.a.revision).toBe(1);expect(saved.c.revision).toBe(1);expect(saved.d.revision).toBe(1);expect(saved.b).toBeUndefined();
+  expect(saved['backup-failure:b']).toMatchObject({attempts:1,message:expect.stringContaining('conflict'),nextAt:1000+60000});
  });
- it('stops after three failures in a row instead of hammering an unreachable server',async()=>{
-  const api=client();
-  api.rpc.mockResolvedValue({data:null,error:{message:'Failed to fetch'}});
-  await expect(run(api,{...state,trips})).rejects.toThrow('Failed to fetch');
-  expect(api.rpc).toHaveBeenCalledTimes(3);
+ it('stays pending with its error: not retried before its time, then retried with a longer delay, and cleared when it succeeds',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const first=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e.receipts);
+  const calls=()=>api.rpc.mock.calls.filter(([,args])=>args.p_payload.id==='b').length;
+  expect(calls()).toBe(1);
+  // Too early: b is not tried, and the failure is not reported again as new.
+  await run(api,{...state,trips},first,{now:30000});
+  expect(calls()).toBe(1);
+  // Due: tried, fails again, the delay doubles.
+  const second=await run(api,{...state,trips},first,{now:62000}).catch(e=>e.receipts);
+  expect(calls()).toBe(2);expect(second['backup-failure:b']).toMatchObject({attempts:2,nextAt:62000+120000});
+  // The cloud accepts it: uploaded, and the failure is cleared.
+  api.rpc.mockImplementation(refuse());
+  const healed=await run(api,{...state,trips},second,{now:200000});
+  expect(healed.receipts.b.revision).toBe(1);expect(healed.receipts['backup-failure:b'].cleared).toBe(true);
+ });
+ it('lets a person retry now, ignoring the wait',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const first=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e.receipts);
+  api.rpc.mockImplementation(refuse());
+  const result=await run(api,{...state,trips},first,{now:2000,retryFailed:true});
+  expect(result.receipts.b.revision).toBe(1);
+ });
+ it('failing activities do not use up the pass, so the ones behind them are still backed up',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('a','b','c'));
+  const first=await run(api,{...state,trips},{}, {now:1000,maxActivities:3}).catch(e=>e.receipts);
+  expect(first.d).toBeUndefined();                        // the budget of 3 went on the three that fail
+  const second=await run(api,{...state,trips},first,{now:2000,maxActivities:3});
+  expect(second.receipts.d.revision).toBe(1);             // next pass: a, b, c wait their turn, d goes up
+ });
+ it('does not mark anyone, and stops, when the network is down',async()=>{
+  const api=client();api.rpc.mockResolvedValue({data:null,error:{message:'Failed to fetch'}});
+  const error=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e);
+  expect(api.rpc).toHaveBeenCalledTimes(1);
+  expect(error.network).toBe(true);
+  expect(Object.keys(error.receipts).filter(k=>k.startsWith('backup-failure'))).toEqual([]);
+ });
+ it('stops on a sign-in problem instead of marking every activity',async()=>{
+  const api=client();api.rpc.mockResolvedValue({data:null,error:{status:401,message:'JWT expired'}});
+  await expect(run(api,{...state,trips},{}, {now:1000})).rejects.toThrow('Sign in again');
+  expect(api.rpc).toHaveBeenCalledTimes(1);
+ });
+ it('pushes no segment efforts or photos for an activity whose own row failed',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const withPhoto={...trips[1],details:{photos:[{id:'11111111-1111-4111-8111-111111111111'}]}};
+  api.functions={invoke:vi.fn()};
+  await run(api,{...state,trips:[trips[0],withPhoto]},{}, {now:1000}).catch(()=>{});
+  expect(api.functions.invoke).not.toHaveBeenCalled();
+ });
+ it('says how much is backed up, waiting and failing',async()=>{
+  const { backupHealth }=await import('./cloudSync.js');
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const receipts=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e.receipts);
+  expect(backupHealth({...state,trips},receipts,1000)).toEqual({total:4,backedUp:3,waiting:1,failing:[{id:'b',message:expect.stringContaining('conflict'),attempts:1,retryInSeconds:60}]});
+ });
+ it('treats a 403 on one activity as that activity\'s refusal, not as a reason to stop everything',async()=>{
+  const api=client();api.rpc.mockImplementation(async(_n,args)=>args.p_payload.id==='b'?{data:null,error:{status:403,code:'42501',message:'permission denied'}}:{data:1,error:null});
+  const error=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e);
+  expect(api.rpc).toHaveBeenCalledTimes(4);
+  expect(error.receipts['backup-failure:b']).toMatchObject({attempts:1});
+ });
+ it('does not mistake a server message that merely contains a network word for being offline',async()=>{
+  const api=client();api.rpc.mockImplementation(async(_n,args)=>args.p_payload.id==='b'?{data:null,error:{message:'Failed to fetch revision for activity'}}:{data:1,error:null});
+  const error=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e);
+  expect(error.network).toBe(false);expect(api.rpc).toHaveBeenCalledTimes(4);
+ });
+ it('can return the partial result instead of throwing, with when to come back to the refused one, and says when each one is backed up',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const done=[];
+  const result=await run(api,{...state,trips},{}, {now:1000,throwOnFailure:false,onBackedUp:()=>done.push(1)});
+  expect(result.uploaded).toBe(3);expect(done).toHaveLength(3);
+  expect(result.problem.message).toContain('1 activity could not be backed up');
+  expect(result.nextRetryAt).toBe(61000);
+  // Only the held one is left: nothing new to report, and no outstanding work.
+  const quiet=await run(api,{...state,trips},result.receipts,{now:2000,throwOnFailure:false});
+  expect(quiet.problem).toBeNull();expect(quiet.pending).toBe(false);expect(quiet.nextRetryAt).toBe(61000);
+ });
+ it('shows a refusal of an edited, already backed-up activity, and ignores another account\'s records',async()=>{
+  const { backupHealth }=await import('./cloudSync.js');
+  const receipts={a:{owner:'owner',revision:1},'backup-failure:a':{owner:'OWNER',message:'conflict',attempts:2,nextAt:61000},'backup-failure:b':{owner:'someone-else',message:'x',attempts:9,nextAt:1}};
+  const health=backupHealth({...state,trips:trips.slice(0,2)},receipts,1000);
+  expect(health).toMatchObject({total:2,backedUp:1,waiting:1});
+  expect(health.failing.map(f=>f.id)).toEqual(['a']);
+ });
+ it('recognises a wrapped fetch failure as being offline, and reads the sign-in status from the response',async()=>{
+  const api=client();api.rpc.mockResolvedValue({data:null,error:{message:'TypeError: Failed to fetch'}});
+  const down=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e);
+  expect(down.network).toBe(true);expect(api.rpc).toHaveBeenCalledTimes(1);
+  const out=client();out.rpc.mockResolvedValue({data:null,status:401,error:{message:'No API key found in request'}});
+  await expect(run(out,{...state,trips},{}, {now:1000})).rejects.toThrow('Sign in again');
+ });
+ it('retries an activity as soon as it is edited, even inside its wait, and forgets a refusal once the cloud already matches',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const edited=version=>trips.map(t=>t.id==='b'?{...t,updatedAt:version}:t);
+  const first=await run(api,{...state,trips:edited(1)},{}, {now:1000}).catch(e=>e.receipts);
+  const bCalls=()=>api.rpc.mock.calls.filter(([,args])=>args.p_payload.id==='b').length;
+  await run(api,{...state,trips:edited(1)},first,{now:2000});
+  expect(bCalls()).toBe(1);                                 // inside its wait, unchanged: not tried
+  api.rpc.mockImplementation(refuse());
+  const fixed=await run(api,{...state,trips:edited(2)},first,{now:3000});
+  expect(bCalls()).toBe(2);                                 // edited: tried now
+  expect(fixed.receipts['backup-failure:b'].cleared).toBe(true);
+ });
+ it('drops the record of a refused activity that has since been deleted',async()=>{
+  const api=client();api.rpc.mockImplementation(refuse('b'));
+  const first=await run(api,{...state,trips},{}, {now:1000}).catch(e=>e.receipts);
+  const after=await run(api,{...state,trips:trips.filter(t=>t.id!=='b')},first,{now:2000});
+  expect(after.receipts['backup-failure:b'].cleared).toBe(true);
  });
 });

@@ -11,13 +11,13 @@ export const SEGMENT_CATCH_UP_MS=6*3600*1000;
 import {syncCollections} from '../lib/collectionSync.js';
 import {syncAccountSettings} from '../lib/settingsSync.js';
 import {refreshJourneyMetadata} from '../lib/journeyMetadataStore.js';
-import {SYNC_NOW_EVENT} from '../lib/syncNow.js';
+import {BACKED_UP_EVENT,SYNC_NOW_EVENT} from '../lib/syncNow.js';
 import {receiptPatch,saveSyncReceipts} from '../lib/syncReceipts.js';
 import {notifySegmentsChanged} from '../lib/segmentEvents.js';
 import {recorder} from '../lib/recorder.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false),segmentsCaughtUp=useRef(0),publishNow=useRef(null),reportedBackup=useRef({reason:'',at:0});
+ const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false),segmentsCaughtUp=useRef(0),publishNow=useRef(null),reportedBackup=useRef({reason:'',at:0}),kick=useRef(null),retryTimer=useRef(null),lastToken=useRef(null);
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
   if(!supabase)return;
@@ -42,6 +42,7 @@ export default function AutoCloudSync({state,journeySync=null}){
    }
   }
   publishNow.current=publish;
+  kick.current=()=>{if(running.current){again.current=true;return;}void sync(true);};
   async function sync(foreground=false){
    if(running.current||document.visibilityState!=='visible'||!navigator.onLine||(!foreground&&Date.now()-lastAttempt.current<120000))return;
    const {auth:user,state:recordings,journeySync:journeys}=latest.current;
@@ -79,9 +80,14 @@ export default function AutoCloudSync({state,journeySync=null}){
      return {receipts:next};
     });
     if(!journeysOnly&&config.backupEnabled){
-     const trips=await syncPrivateActivities(supabase,recordings,receipts,{maxActivities:20,publishSegments:false,checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)});
+     // Each activity is checkpointed as it goes up, and household sharing is told straight away (it follows the backup, not a timer).
+     const trips=await syncPrivateActivities(supabase,recordings,receipts,{maxActivities:20,publishSegments:false,throwOnFailure:false,onBackedUp:()=>window.dispatchEvent(new Event(BACKED_UP_EVENT)),checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)});
      receipts=trips.receipts;
      if(trips.pending)failure=failure||new Error('Activity backup continues in the next batch.');
+     // Some activities may have been refused while the rest went up: those are reported (and retried when due), the rest stands.
+     if(trips.problem)failure=failure||trips.problem;
+     clearTimeout(retryTimer.current);
+     if(alive&&Number.isFinite(trips.nextRetryAt)){retryTimer.current=setTimeout(()=>{synced.current=null;void kick.current?.();},Math.max(1000,trips.nextRetryAt-Date.now()+500));}
      if(alive)await saveSyncReceipts(user.savePreferences,receipts,{lastBackup:trips.lastSync});
      segmentsCaughtUp.current=Date.now();
     }else if(segmentsDue&&config.backupEnabled){
@@ -96,8 +102,8 @@ export default function AutoCloudSync({state,journeySync=null}){
    }catch(error){
     // The Settings screen is the explicit retry/error surface. Nothing local is deleted. The reason also goes to the
     // diagnostic log (once per distinct reason per ten minutes), so a report shows why activities are not reaching the cloud.
-    const reason=String(error?.message||'Backup failed'),now=Date.now();
-    if(reportedBackup.current.reason!==reason||now-reportedBackup.current.at>600000){reportedBackup.current={reason,at:now};try{void recorder.noteBackupFailure(reason);}catch{/* diagnostics only */}}
+    const reason=String(error?.key||error?.message||'Backup failed'),now=Date.now();
+    if(reportedBackup.current.reason!==reason||now-reportedBackup.current.at>600000){reportedBackup.current={reason,at:now};try{void recorder.noteBackupFailure(String(error?.message||reason));}catch{/* diagnostics only */}}
    }finally{
     running.current=false;
     // An explicit sync asked while this pass ran: run once more straight away.
@@ -117,5 +123,15 @@ export default function AutoCloudSync({state,journeySync=null}){
  // authoritative snapshot. React then kicks the same stage immediately, even
  // while an unrelated private route/photo backup is still awaiting the network.
  useEffect(()=>{void publishNow.current?.();},[auth.status,auth.session?.user?.id,state?.ownerID,state?.historyToken,state?.trips]);
+ // A recording that has just finished is backed up within seconds while the app is open, not at the next two-minute check.
+ useEffect(()=>{
+  const token=state?.historyToken||null,previous=lastToken.current;
+  lastToken.current=token;
+  // Not on first sight of the history (the app opening has its own pass); only when it changes.
+  if(!token||!previous||token===previous)return undefined;
+  const timer=setTimeout(()=>void kick.current?.(),2500);
+  return()=>clearTimeout(timer);
+ },[state?.historyToken]);
+ useEffect(()=>()=>clearTimeout(retryTimer.current),[]);
  return null;
 }
