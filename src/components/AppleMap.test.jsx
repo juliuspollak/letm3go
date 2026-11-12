@@ -364,3 +364,159 @@ it('withholds an outdated snapshot while a replacement for revoked geometry is p
  rerender(<AppleMap payload={{routes:[],pins:[]}} dynamic/>);
  expect(container.querySelector('.apple-map-preview img')).toBeNull();
 });
+
+describe('native map frame: it always matches the page\'s placeholder',()=>{
+ const settle=async()=>{await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());await waitFor(()=>expect(mocks.update).toHaveBeenCalled());mocks.embed.mockClear();mocks.update.mockClear();mocks.resize.mockClear();};
+ const rect=()=>HTMLElement.prototype.getBoundingClientRect;
+ it('sends document coordinates, so the native scroll offset is never added to an earlier measurement',async()=>{
+  // Home was scrolled by 300; the map's placeholder is 100 below the top of the screen.
+  setScroll(300);rect().mockReturnValue({...BOX,y:100,top:100,bottom:450});
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  expect(mocks.embed.mock.calls[0][0]).toMatchObject({pageX:10,pageY:400,width:700,height:350,layoutSeq:expect.any(Number)});
+ });
+ it('a page that clamps its scroll to the top after the tab change leaves the map exactly where it is',async()=>{
+  setScroll(300);rect().mockReturnValue({...BOX,y:100,top:100,bottom:450});
+  render(<AppleMap payload={payload}/>);
+  await settle();
+  // The page is now at the top (scroll clamped by the shorter Map page): same document position.
+  setScroll(0);rect().mockReturnValue({...BOX,y:400,top:400,bottom:750});
+  await act(async()=>{fireEvent.scroll(window);window.dispatchEvent(new Event('resize'));});
+  expect(mocks.resize).not.toHaveBeenCalled();expect(mocks.embed).not.toHaveBeenCalled();
+ });
+ it('moves a same-sized placeholder that moved vertically, with a newer sequence number',async()=>{
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  const first=mocks.embed.mock.calls[0][0].layoutSeq;
+  await settle();
+  rect().mockReturnValue({...BOX,y:140,top:140,bottom:490});
+  await act(async()=>{window.dispatchEvent(new Event('resize'));});
+  await waitFor(()=>expect(mocks.resize).toHaveBeenCalledWith(expect.objectContaining({pageY:140,height:350})));
+  expect(mocks.resize.mock.calls.at(-1)[0].layoutSeq).toBeGreaterThan(first);
+  expect(mocks.embed).not.toHaveBeenCalled();
+ });
+ it('never extends past the top of the tab bar, with or without scrolling',async()=>{
+  const nav=document.createElement('nav');nav.className='mobile-nav';document.body.append(nav);
+  try{
+   const original=rect();
+   original.mockImplementation(function(){return this===nav?{...BOX,y:600,top:600,bottom:680,height:80}:{...BOX,y:300,top:300,bottom:800,height:500};});
+   setScroll(120);
+   render(<AppleMap payload={payload}/>);
+   await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+   const request=mocks.embed.mock.calls[0][0];
+   expect(request.height).toBe(292); // 600 - 300 - 8
+   expect(request.pageY+request.height).toBeLessThanOrEqual(600+120);
+  }finally{nav.remove();}
+ });
+ it('moves the map when only the tab bar changes (it sets where the map must stop)',async()=>{
+  const nav=document.createElement('nav');nav.className='mobile-nav';document.body.append(nav);
+  const observed=[];let notify=null;
+  vi.stubGlobal('ResizeObserver',class{constructor(callback){notify=callback;}observe(element){observed.push(element);}disconnect(){}});
+  try{
+   let navTop=700;
+   rect().mockImplementation(function(){return this===nav?{...BOX,y:navTop,top:navTop,bottom:navTop+80,height:80}:{...BOX,y:100,top:100,bottom:900,height:800};});
+   render(<AppleMap payload={payload}/>);
+   await settle();
+   expect(observed).toContain(nav);
+   expect(observed.some(element=>element.classList?.contains('apple-map-frame'))).toBe(true);
+   navTop=640;
+   await act(async()=>{notify([]);});
+   await waitFor(()=>expect(mocks.resize).toHaveBeenCalledWith(expect.objectContaining({height:532}))); // 640 - 100 - 8
+  }finally{nav.remove();}
+ });
+ it('follows an orientation change, a visual viewport change and the end of a transition',async()=>{
+  render(<AppleMap payload={payload}/>);
+  await settle();
+  rect().mockReturnValue({...BOX,y:60,top:60,bottom:410});
+  await act(async()=>{window.dispatchEvent(new Event('orientationchange'));});
+  await waitFor(()=>expect(mocks.resize).toHaveBeenCalledWith(expect.objectContaining({pageY:60})));
+  mocks.resize.mockClear();
+  rect().mockReturnValue({...BOX,y:90,top:90,bottom:440});
+  await act(async()=>{document.body.dispatchEvent(new Event('transitionend',{bubbles:true}));});
+  await waitFor(()=>expect(mocks.resize).toHaveBeenCalledWith(expect.objectContaining({pageY:90})));
+ });
+ it('does not resend anything while nothing moved',async()=>{
+  render(<AppleMap payload={payload}/>);
+  await settle();
+  await act(async()=>{window.dispatchEvent(new Event('resize'));window.dispatchEvent(new Event('orientationchange'));fireEvent.scroll(window);});
+  await act(async()=>{await new Promise(r=>setTimeout(r,60));});
+  expect(mocks.embed).not.toHaveBeenCalled();expect(mocks.resize).not.toHaveBeenCalled();expect(mocks.update).not.toHaveBeenCalled();
+ });
+ it('numbers requests in the order they were measured, even when an embed waits and a later one overtakes it',async()=>{
+  let release;mocks.embed.mockImplementationOnce(()=>new Promise(resolve=>{release=()=>resolve({frame:{x:10,y:20,width:700,height:350}});}));
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+  // The layout moves while that embed is still pending.
+  rect().mockReturnValue({...BOX,y:200,top:200,bottom:550});
+  await act(async()=>{window.dispatchEvent(new Event('resize'));});
+  await waitFor(()=>expect(mocks.embed.mock.calls.length+mocks.resize.mock.calls.length).toBeGreaterThanOrEqual(2));
+  const requests=[...mocks.embed.mock.calls,...mocks.resize.mock.calls].map(call=>call[0]).sort((a,b)=>a.layoutSeq-b.layoutSeq);
+  expect(new Set(requests.map(r=>r.layoutSeq)).size).toBe(requests.length);
+  expect(requests.at(-1).pageY).toBe(200); // the newest number carries the newest measurement
+  mocks.resize.mockClear();
+  await act(async()=>{release();await Promise.resolve();});
+  // The late answer is to a request the newer one replaced: it says nothing about the final place, so it
+  // starts no further move (the newer request is checked on its own answer).
+  await act(async()=>{await new Promise(r=>setTimeout(r,40));});
+  expect(mocks.resize).not.toHaveBeenCalled();
+ });
+ it('moves the map when the native side reports a frame different from the page\'s, once if that changes nothing',async()=>{
+  mocks.embed.mockResolvedValue({frame:{x:10,y:496,width:700,height:350}}); // 400 pt too low, as on the phone
+  mocks.resize.mockResolvedValue({resized:true,frame:{x:10,y:496,width:700,height:350}}); // and moving it changes nothing
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.resize).toHaveBeenCalledWith(expect.objectContaining({pageY:20,layoutSeq:expect.any(Number)})));
+  await act(async()=>{await new Promise(r=>setTimeout(r,80));});
+  expect(mocks.resize.mock.calls.length).toBe(1); // a constant disagreement is not chased
+ });
+ it('keeps correcting while each move does change the reported frame, but never more than three times',async()=>{
+  mocks.embed.mockResolvedValue({frame:{x:10,y:496,width:700,height:350}});
+  let n=0;mocks.resize.mockImplementation(async()=>({resized:true,frame:{x:10,y:400-(++n)*50,width:700,height:350}}));
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.resize.mock.calls.length).toBe(3));
+  await act(async()=>{await new Promise(r=>setTimeout(r,80));});
+  expect(mocks.resize.mock.calls.length).toBe(3);
+ });
+ it('leaves the map alone when the native frame matches',async()=>{
+  mocks.embed.mockResolvedValue({frame:{x:10,y:20,width:700,height:350}});
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  await act(async()=>{await new Promise(r=>setTimeout(r,60));});
+  expect(mocks.resize).not.toHaveBeenCalled();
+ });
+ it('an older native layer that reports no frame is not second-guessed',async()=>{
+  render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  await act(async()=>{await new Promise(r=>setTimeout(r,60));});
+  expect(mocks.resize).not.toHaveBeenCalled();
+ });
+ it('keeps the one native map through all of it: no unembed, no second embed',async()=>{
+  render(<AppleMap payload={payload}/>);
+  await settle();
+  for(const y of [40,80,20]){rect().mockReturnValue({...BOX,y,top:y,bottom:y+350});await act(async()=>{window.dispatchEvent(new Event('resize'));});}
+  await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
+  expect(mocks.embed).not.toHaveBeenCalled();expect(mocks.unembed).not.toHaveBeenCalled();
+ });
+});
+
+describe('Home to Map and back, repeatedly',()=>{
+ it('each visit embeds one map at the placeholder\'s document position and removes it on leaving, whatever the scroll was',async()=>{
+  const rect=HTMLElement.prototype.getBoundingClientRect;
+  for(const scroll of [0,420,0,180,0]){
+   mocks.embed.mockClear();mocks.unembed.mockClear();
+   setScroll(scroll);rect.mockReturnValue({...BOX,y:100,top:100,bottom:450});
+   const view=render(<AppleMap payload={payload}/>);
+   await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+   expect(mocks.embed.mock.calls[0][0]).toMatchObject({pageY:100+scroll});
+   view.unmount();
+   await waitFor(()=>expect(mocks.unembed).toHaveBeenCalledTimes(1));
+  }
+ });
+ it('an answer that arrives after the map has gone is ignored, not turned into more layout work',async()=>{
+  let release;mocks.embed.mockImplementationOnce(()=>new Promise(resolve=>{release=()=>resolve({frame:{x:0,y:999,width:1,height:1}});}));
+  const view=render(<AppleMap payload={payload}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+  view.unmount();mocks.resize.mockClear();
+  await act(async()=>{release();await Promise.resolve();});
+  expect(mocks.resize).not.toHaveBeenCalled();
+ });
+});

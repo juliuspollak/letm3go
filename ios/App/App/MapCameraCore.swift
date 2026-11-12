@@ -295,3 +295,33 @@ enum DayFit {
         return false
     }
 }
+
+// Where the embedded map sits inside the WebView's scroll view, decided from what the page
+// measured and nothing that can change in between.
+//
+// The page measures its placeholder and sends it through the Capacitor bridge; the native
+// side runs the call later on the main thread. The old frame was the viewport position the
+// page measured PLUS the scroll view's content offset read at that later moment. When the
+// scroll position changed in between (the page switching from a scrolled Home to a shorter
+// Map page clamps the scroll in the web layer before UIKit's offset follows), the two halves
+// came from different moments and the map landed displaced by the difference: a large blank
+// gap above it and its bottom running under the tab bar. The page now sends document
+// coordinates (viewport position + the page's own scroll position at the SAME moment), which
+// are already what the scroll view's content coordinates are, so no later read is involved.
+enum MapFrame {
+    static func resolve(pageX: Double?, pageY: Double?, x: Double, y: Double, offset: CGPoint, width: Double, height: Double) -> CGRect {
+        if let pageX = pageX, let pageY = pageY, pageX.isFinite, pageY.isFinite {
+            return CGRect(x: pageX, y: pageY, width: width, height: height)
+        }
+        // Older web layer: viewport position plus the offset as it is now.
+        return CGRect(x: x + Double(offset.x), y: y + Double(offset.y), width: width, height: height)
+    }
+
+    // Requests carry an increasing sequence number. One older than a frame already applied was
+    // measured earlier and must not move the map back (an embed that waited for the overview
+    // can arrive after a resize measured later). A request without a number is always applied.
+    static func accepts(sequence: Int?, lastApplied: Int?) -> Bool {
+        guard let sequence = sequence, let last = lastApplied else { return true }
+        return sequence >= last
+    }
+}

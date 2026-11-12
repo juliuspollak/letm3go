@@ -366,7 +366,6 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 
 
 
-@media(max-width:760px){.map-social-explorer .journey-map.large{height:min(52dvh,580px)}.map-social-explorer .apple-map-frame{margin-bottom:12px}}
 
 
 
@@ -695,11 +694,13 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 main:has(.map-page) .topbar{margin-bottom:10px}
 .map-page.map-social-explorer{padding-bottom:0}
 .map-page .apple-map-frame{margin-bottom:0}
-.map-page.map-page-people .journey-map.large{height:max(380px,calc(100dvh - 165px))}
 .map-page>.notice,.map-page>.small-copy{margin-top:10px}
-@media(max-width:760px){
- .map-page.map-page-people .journey-map.large{height:max(320px,calc(100dvh - 158px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));border-radius:16px}
-}
+/* The Map page's one height rule. The map fills what is left of the screen after the header, the person selector
+   and the tab bar (each named below), so the space the page allots to the map is the space the native map is given
+   (AppleMap measures this element and stops it above the tab bar). */
+.map-page.map-page-people{--map-top:calc(78px + env(safe-area-inset-top) + 10px);--map-bar:52px;--map-bottom:calc(74px + env(safe-area-inset-bottom) + 8px)}
+.map-page.map-page-people .journey-map.large{height:max(280px,calc(100dvh - var(--map-top) - var(--map-bar) - var(--map-bottom)));border-radius:16px}
+@media(min-width:761px){.map-page.map-page-people .journey-map.large{height:max(380px,calc(100dvh - 165px))}}
 /* The web fallback of the native controls (AppleMaps.swift draws the same model)
    and the still image shown while a sheet covers the native map. */
 .map-controls{position:absolute;z-index:3;top:12px;left:12px;right:12px;display:flex;flex-direction:column;gap:8px;pointer-events:none}
@@ -1215,4 +1216,3 @@ main:has(.map-page) .topbar{margin-bottom:10px}
 .person-map-timeline{display:flex;align-items:center;gap:10px;padding:6px 2px 0}
 .person-map-timeline input[type=range]{flex:1;min-width:0}
 .person-map-time{flex:0 0 auto;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-@media(max-width:760px){.map-page.map-page-people .journey-map.large{height:max(300px,calc(100dvh - 210px - env(safe-area-inset-top) - env(safe-area-inset-bottom)))}}

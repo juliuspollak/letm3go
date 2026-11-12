@@ -1615,6 +1615,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     private var presentedID:String?
     private var embeddedMaps:[String:MKMapView]=[:]
     private var embeddedContent:[String:MapContent]=[:]
+    // The newest frame request applied to each map (see MapFrame.accepts).
+    private var frameSequence:[String:Int]=[:]
     private var coordinators:[String:MapCoordinator]=[:]
     // Embedded maps hidden while a sheet or the photo viewer covers them.
     private var hiddenMaps=Set<String>()
@@ -1835,9 +1837,16 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             self.embeddedContent[id]=content
             let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
             let isNew=self.embeddedMaps[id] == nil
-            // Maps stay in the scroll view and add the content offset so they scroll
-            // with the page.
-            map.frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
+            // Maps stay in the scroll view, placed from the page's document coordinates (see MapFrame),
+            // so they scroll with the page and never depend on the offset at this later moment.
+            let sequence=call.getInt("layoutSeq")
+            let frame=MapFrame.resolve(pageX:call.getDouble("pageX"),pageY:call.getDouble("pageY"),x:x,y:y,offset:scroll.contentOffset,width:width,height:height)
+            // A map created now starts its own numbering; one left from an earlier map with this id cannot block it.
+            if self.embeddedMaps[id]==nil {self.frameSequence.removeValue(forKey:id)}
+            if MapFrame.accepts(sequence:sequence,lastApplied:self.frameSequence[id]) {
+                map.frame=frame
+                if let sequence=sequence {self.frameSequence[id]=sequence}
+            }
             map.layer.cornerRadius=16;map.clipsToBounds=true
             if isNew {
                 map.isZoomEnabled=true;map.isScrollEnabled=true;map.showsCompass=true
@@ -1911,7 +1920,9 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:38,left:25,bottom:38,right:25),animated:false)
                 }
             }
-            call.resolve(missingOverview ? ["missingOverview":true] : [:])
+            var result:[String:Any]=missingOverview ? ["missingOverview":true] : [:]
+            result["frame"]=Self.frameReport(map.frame)
+            call.resolve(result)
         }
     }
     // Live content update: move existing annotations in place and leave the map
@@ -1945,18 +1956,29 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                   let width=call.getDouble("width"),let height=call.getDouble("height"),
                   width>80,height>80 else {call.resolve(["missing":true]);return}
             let scroll=webView.scrollView
-            // Subviews of the scroll view add the content offset exactly once.
-            let frame=CGRect(x:x+scroll.contentOffset.x,y:y+scroll.contentOffset.y,width:width,height:height)
+            let sequence=call.getInt("layoutSeq")
+            let frame=MapFrame.resolve(pageX:call.getDouble("pageX"),pageY:call.getDouble("pageY"),x:x,y:y,offset:scroll.contentOffset,width:width,height:height)
+            // A request measured before one already applied is ignored: it would move the map back.
+            guard MapFrame.accepts(sequence:sequence,lastApplied:self.frameSequence[id]) else {
+                call.resolve(["stale":true,"frame":Self.frameReport(map.frame)]);return
+            }
+            if let sequence=sequence {self.frameSequence[id]=sequence}
             if map.frame != frame { map.frame=frame }
             map.setNeedsLayout()
             if self.presentedID==id {self.presentedMap?.view.setNeedsLayout()}
-            call.resolve(["resized":true])
+            call.resolve(["resized":true,"frame":Self.frameReport(map.frame)])
         }
+    }
+    // Where the map actually is, in the same document coordinates the page measures in, so the
+    // page can check the two agree (and move the map again if they do not).
+    private static func frameReport(_ frame:CGRect)->[String:Double] {
+        ["x":Double(frame.minX),"y":Double(frame.minY),"width":Double(frame.width),"height":Double(frame.height)]
     }
     // Everything the plugin holds for one map, removed together.
     private func removeMap(_ id:String) {
         guard let map=self.embeddedMaps.removeValue(forKey:id) else {return}
         self.embeddedContent.removeValue(forKey:id)
+        self.frameSequence.removeValue(forKey:id)
         self.hiddenMaps.remove(id)
         self.expandButtons.removeValue(forKey:id)?.removeFromSuperview()
         self.coordinators.removeValue(forKey:id)?.detach()
