@@ -53,10 +53,13 @@ it('counts only filters that change the map, and treats layers separately',()=>{
  expect(controls({segments:true})).toMatchObject({active:0,filters:{id:'panel:filters'},layers:{changed:true,label:'Map layers: Segments'}});
  expect(controls({segments:true,style:'satellite'}).layers.label).toBe('Map layers: Satellite, Segments');
 });
-it('only opens what was asked, and Layers offers Segments',()=>{
+it('only opens what was asked, and Layers offers Segments and Friends\' journeys',()=>{
  const layers=controls({},'layers').panel;
  expect(layers.id).toBe('layers');
- expect(layers.sections.find(s=>s.id==='community').options).toEqual([expect.objectContaining({id:'segments',label:'Segments',selected:false})]);
+ expect(layers.sections.find(s=>s.id==='community').options).toEqual([expect.objectContaining({id:'segments',label:'Segments',selected:false}),expect.objectContaining({id:'social',label:'Friends’ journeys',selected:false})]);
+ expect(mapControls({},'layers',[],'2026-11-10',0,true).panel.sections.find(s=>s.id==='community').options.find(o=>o.id==='social').selected).toBe(true);
+ // The friends' layer is a view of other people, not a saved filter: toggling it does not change the saved Map settings.
+ expect(toolbarChange({routes:null},'social')).toEqual({routes:null});
  expect(layers.sections.some(s=>s.id==='mode')).toBe(false);
  expect(panelChange(null,'panel:filters')).toBe('filters');
  expect(panelChange('filters','panel:layers')).toBe('layers');

@@ -325,6 +325,15 @@ describe('a person\'s day map (dynamic)',()=>{
   expect(mocks.update.mock.calls.every(call=>call[0].mapID===mapID)).toBe(true);
   expect(mocks.update.mock.calls.at(-1)[0].fitKey).toBe('her|2026-11-09');
  });
+ it('Locate asks the camera to move through an update (a focus point and a new fit key), never a re-embed',async()=>{
+  const {rerender}=render(<AppleMap payload={day()} dynamic large viewportKey="her"/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+  mocks.update.mockClear();
+  rerender(<AppleMap payload={day({focus:[-34.9,151.1],fitKey:'her|2026-11-10|locate1'})} dynamic large viewportKey="her"/>);
+  await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+  expect(mocks.embed).toHaveBeenCalledTimes(1);expect(mocks.unembed).not.toHaveBeenCalled();
+  expect(mocks.update.mock.calls.at(-1)[0]).toMatchObject({focus:[-34.9,151.1],fitKey:'her|2026-11-10|locate1'});
+ });
  it('without dynamic, changed routes still re-embed (other maps are unchanged)',async()=>{
   const {rerender}=render(<AppleMap payload={day()} large viewportKey="a"/>);
   await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));

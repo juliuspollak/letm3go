@@ -43,4 +43,35 @@ describe('people on Home',()=>{
   expect(distanceAway(here,{latitude:-34.5,longitude:150.9},'mi')).toBe('6.9 mi away');
   expect(distanceAway(here,null)).toBeNull();
  });
+ it('words a compact tile line, with the age and a distance only where they are true', ()=>{
+  const short=(extra,opts={})=>homePeople({household:[member('Kim','live',extra)],selfID:'me',selfPosition:here,...opts})[0].short;
+  expect(short({ageSeconds:480})).toBe('500 m · 8m ago');
+  expect(short({ageSeconds:20})).toBe('500 m · just now');
+  expect(short({ageSeconds:480,position:{latitude:-34.4234,longitude:150.9}})).toBe('2.6 km · 8m ago');
+  expect(short({ageSeconds:30},{activities:{Kim:'Driving'}})).toBe('Driving · 500 m');
+  expect(short({ageSeconds:30},{homeFlags:{Kim:true}})).toBe('At home');
+  expect(short({position:null,ageSeconds:30,state:'off'})).toBe('Not sharing');
+ });
+ it('never words an old or missing position as current', ()=>{
+  const one=(state,extra={},opts={})=>homePeople({household:[member('Kim',state,{source:'household',...extra})],selfID:'me',selfPosition:here,...opts})[0];
+  expect(one('stale',{ageSeconds:1500}).short).toBe('500 m · 25m ago');
+  expect(one('stale',{ageSeconds:1500,position:{...near,accuracy:10}},{homePlace:{latitude:near.latitude,longitude:near.longitude,radius:100}}).short).toBe('Last at home · 25m ago');
+  expect(one('off',{position:null}).short).toBe('Not sharing');
+  expect(one('none',{position:null}).short).toBe('No recent location');
+  expect(one('waiting',{position:null}).short).toBe('Waiting');
+  expect(one('stale',{ageSeconds:1500,position:null}).short).toBe('25m ago');
+  // The full status the screen reader reads is unchanged.
+  expect(one('stale',{ageSeconds:1500}).status.text).toMatch(/^Last seen 25 min ago/);
+ });
+ it('says which group a person belongs to', ()=>{
+  const people=homePeople({household:[member('Kim','live',{source:'household'})],friends:[member('Lee','live',{source:'friend'})],selfID:'me'});
+  expect(people.find(p=>p.name==='Kim').group).toBe('household');
+  expect(people.find(p=>p.name==='Lee').group).toBe('friend');
+ });
+ it('never leaves a dangling separator when the age is unknown', ()=>{
+  const homePlace={latitude:near.latitude,longitude:near.longitude,radius:100};
+  const [kim]=homePeople({household:[member('Kim','stale',{ageSeconds:null,source:'household',position:{...near,accuracy:10}})],selfID:'me',homePlace});
+  expect(kim.short).toBe('Last at home');
+  expect(kim.short).not.toMatch(/·\s*$/);
+ });
 });

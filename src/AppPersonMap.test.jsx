@@ -3,8 +3,8 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import App from './App.jsx';
 import {emptyRecorder} from './lib/recorder.js';
 // Person selection lives on the Map tab: Home hands over to it, the one map is updated in place,
-// and Poke is a separate action (Home ••• menu, person bar).
-const {identity,recorderHook,mapProps,mapLocationHook,friends,pokes,dayCalls}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),mapProps:{value:null,mounts:0},friends:{people:[]},pokes:{send:null},dayCalls:[]}));
+// and Poke is a separate button on the Home tile.
+const {identity,recorderHook,mapProps,mapLocationHook,friends,pokes,dayCalls,locateFn}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),mapProps:{value:null,mounts:0},friends:{people:[]},pokes:{send:null},dayCalls:[],locateFn:vi.fn()}))
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
@@ -28,21 +28,23 @@ const ann={user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updat
 beforeEach(()=>{
  mapProps.value=null;mapProps.mounts=0;dayCalls.length=0;
  friends.people=[ann];pokes.send=vi.fn(async()=>({}));
- mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:vi.fn()});
+ locateFn.mockReset();locateFn.mockResolvedValue({latitude:-33.8,longitude:151.2});
+ mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:locateFn});
  identity.value={status:'authenticated',session:{user:{id:'owner',email:'owner@example.com'}},preferences:{displayName:'Me',vehicles:[],onboardingComplete:true},
   savePreferences:vi.fn(),beginSignIn:vi.fn(),signOut:vi.fn(),retry:vi.fn()};
  recorderHook.mockReturnValue({state:emptyRecorder,run:vi.fn(),busy:false,error:''});
 });
 afterEach(()=>{cleanup();localStorage.clear();});
-const selector=()=>screen.getByRole('group',{name:'Show on map'});
+const trigger=()=>screen.getByRole('button',{name:/^Showing /});
+const choose=async name=>{fireEvent.click(trigger());fireEvent.click(within(screen.getByRole('dialog',{name:'Choose who to show'})).getByRole('button',{name}));};
 const lastOwner=()=>dayCalls.filter(c=>c.enabled).at(-1)?.owner;
+const mapSettings=()=>JSON.stringify(Object.entries(localStorage).sort());
 
 it('tapping a person on Home opens the Map tab on that person, with no second map over Home', ()=>{
  render(<App/>);
- expect(document.querySelector('.person-map')).toBeNull();
  fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
  expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();
- expect(within(selector()).getByRole('button',{name:/Ann/}).getAttribute('aria-pressed')).toBe('true');
+ expect(trigger().getAttribute('aria-label')).toMatch(/^Showing Ann/);
  expect(lastOwner()).toBe('ann');
  expect(mapProps.value.personDay.payload.fitKey).toMatch(/^ann\|/);
  expect(document.querySelector('.person-map')).toBeNull();
@@ -50,45 +52,110 @@ it('tapping a person on Home opens the Map tab on that person, with no second ma
 it('My day selects me on the same Map', ()=>{
  render(<App/>);
  fireEvent.click(screen.getByRole('button',{name:'My day'}));
- expect(within(selector()).getByRole('button',{name:'Me'}).getAttribute('aria-pressed')).toBe('true');
+ expect(trigger().getAttribute('aria-label')).toMatch(/^Showing Me/);
  expect(lastOwner()).toBe('owner');
 });
-it('switches person, changes back to All people and keeps one mounted map, without touching the saved Map settings', ()=>{
+it('the Map is the map first: no permanent notice, no friends row, no list of people, no person card, no legend text', async()=>{
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ expect(screen.queryByText(/Map shows loaded activities/)).toBeNull();
+ expect(screen.queryByText(/friends’ journeys/i)).toBeNull();
+ expect(screen.queryByText('Kim')).toBeNull();expect(screen.queryByText('Ann')).toBeNull();
+ await choose(/Ann/);
+ expect(screen.queryByText(/Solid lines/)).toBeNull();
+ expect(screen.queryByRole('button',{name:/^Poke/})).toBeNull();
+ expect(document.querySelector('.person-map-head')).toBeNull();
+});
+it('Friends\' journeys is a Layers option; toggling it does not touch the saved Map settings', ()=>{
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ act(()=>mapProps.value.onControl('panel:layers'));
+ const option=()=>mapProps.value.controls.panel.sections.flatMap(s=>s.options).find(o=>o.id==='social');
+ expect(option().selected).toBe(false);
+ const before=mapSettings();
+ act(()=>mapProps.value.onControl('social'));
+ expect(option().selected).toBe(true);
+ expect(mapSettings()).toBe(before);
+});
+it('keeps the Layers toolbar for a person (JourneyMap limits it to map style), and the Friends\' journeys setting for when All people returns', ()=>{
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ act(()=>mapProps.value.onControl('social'));
+ act(()=>mapProps.value.onControl('panel:layers'));
+ fireEvent.click(trigger());fireEvent.click(within(screen.getByRole('dialog',{name:'Choose who to show'})).getByRole('button',{name:/Ann/}));
+ expect(mapProps.value.personDay).toBeTruthy();
+ fireEvent.click(trigger());fireEvent.click(within(screen.getByRole('dialog',{name:'Choose who to show'})).getByRole('button',{name:/All people/}));
+ // The Layers panel stayed open throughout.
+ const social=mapProps.value.controls.panel.sections.flatMap(s=>s.options).find(o=>o.id==='social');
+ expect(social.selected).toBe(true);
+});
+it('switches person from the selector, restores All people, never remounts the map and leaves the saved settings alone', async()=>{
  render(<App/>);
  fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
- const mounts=mapProps.mounts;
- fireEvent.click(within(selector()).getByRole('button',{name:'Me'}));
+ const mounts=mapProps.mounts,before=mapSettings();
+ await choose(/^Me/);
  expect(lastOwner()).toBe('owner');
- fireEvent.click(within(selector()).getByRole('button',{name:/Ann/}));
+ await choose(/Ann/);
  expect(lastOwner()).toBe('ann');
- fireEvent.click(within(selector()).getByRole('button',{name:'All people'}));
+ await choose(/All people/);
  expect(mapProps.value.personDay).toBeNull();
  expect(mapProps.value.journeys).toBeDefined();
  expect(mapProps.mounts).toBe(mounts);
- expect(within(selector()).getByRole('button',{name:'All people'}).getAttribute('aria-pressed')).toBe('true');
+ expect(trigger().getAttribute('aria-label')).toMatch(/^Showing All people/);
+ expect(mapSettings()).toBe(before);
 });
-it('Poke from the Home ••• menu does not navigate, and a tap on the person does not poke', async()=>{
+it('Locate: All people goes to me; Me goes to me; another person never asks for my location', async()=>{
  render(<App/>);
- fireEvent.click(screen.getByLabelText('More actions for Ann'));
- await act(async()=>{fireEvent.click(screen.getByRole('menuitem',{name:'Poke Ann'}));});
- expect(pokes.send).toHaveBeenCalledWith('ann');
- expect(screen.queryByRole('group',{name:'Show on map'})).toBeNull();
- expect(screen.getByText('Poked ✓')).toBeInTheDocument();
- pokes.send.mockClear();
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ await act(async()=>{await mapProps.value.onLocate();});
+ expect(locateFn).toHaveBeenCalledTimes(1);
+ await choose(/^Me/);
+ locateFn.mockClear();
+ await act(async()=>{await mapProps.value.personDay.onLocate();});
+ expect(locateFn).toHaveBeenCalledTimes(1);
+ expect(mapProps.value.personDay.payload.focus).toEqual([-33.8,151.2]);
+ await choose(/Ann/);
+ locateFn.mockClear();
+ await act(async()=>{await mapProps.value.personDay.onLocate();});
+ expect(locateFn).not.toHaveBeenCalled();
+ expect(mapProps.value.personDay.payload.focus).toEqual([ann.latitude,ann.longitude]);
+});
+it('Poke is a separate button: one request, the tile does not open the Map, and it goes back to Poke', async()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true});
+ try{
+  render(<App/>);
+  const button=screen.getByRole('button',{name:'Poke Ann'});
+  await act(async()=>{fireEvent.click(button);fireEvent.click(button);});
+  expect(pokes.send).toHaveBeenCalledTimes(1);expect(pokes.send).toHaveBeenCalledWith('ann');
+  expect(screen.queryByRole('button',{name:/^Showing /})).toBeNull(); // still on Home
+  expect(screen.getByRole('button',{name:'Poked Ann'})).toHaveTextContent('✓ Poked');
+  await act(async()=>{vi.advanceTimersByTime(2600);});
+  expect(screen.getByRole('button',{name:'Poke Ann'})).toHaveTextContent('👋 Poke');
+ }finally{vi.useRealTimers();}
+});
+it('a tap on the person does not poke, and a failed poke offers a retry', async()=>{
+ render(<App/>);
  fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
  expect(pokes.send).not.toHaveBeenCalled();
-});
-it('pokes from the Map person bar without changing the selection', async()=>{
+ cleanup();
+ pokes.send=vi.fn().mockRejectedValueOnce(new Error('Slow down')).mockResolvedValue({});
  render(<App/>);
- fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
- await act(async()=>{fireEvent.click(screen.getByLabelText('Poke Ann'));});
- expect(pokes.send).toHaveBeenCalledWith('ann');
- expect(lastOwner()).toBe('ann');
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Poke Ann'}));});
+ const retry=screen.getByRole('button',{name:/failed: Slow down/});
+ expect(retry).toHaveTextContent('Retry poke');
+ await act(async()=>{fireEvent.click(retry);});
+ expect(pokes.send).toHaveBeenCalledTimes(2);
+ expect(screen.getByRole('button',{name:'Poked Ann'})).toBeInTheDocument();
+});
+it('shows the compact status line on the tile', ()=>{
+ render(<App/>);
+ expect(document.querySelector('.person-tile-status').textContent).toMatch(/just now|\dm ago/);
+ expect(document.querySelector('.person-tile-status').textContent).not.toMatch(/Sharing ·|away/);
 });
 it('leaving the Map returns to All people', ()=>{
  render(<App/>);
  fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
  fireEvent.click(screen.getAllByRole('button',{name:'Home',exact:true})[0]);
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
- expect(within(selector()).getByRole('button',{name:'All people'}).getAttribute('aria-pressed')).toBe('true');
+ expect(trigger().getAttribute('aria-label')).toMatch(/^Showing All people/);
 });

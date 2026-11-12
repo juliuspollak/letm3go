@@ -1,6 +1,4 @@
-import {useCallback,useDeferredValue,useEffect,useMemo,useState} from 'react';
-import {ChevronLeft,ChevronRight} from 'lucide-react';
-import PersonAvatar from './PersonAvatar.jsx';
+import {useCallback,useDeferredValue,useEffect,useMemo,useRef,useState} from 'react';
 import {usePersonDay} from '../lib/usePersonDay.js';
 import {addDays,dayKeyOf} from '../lib/dayWindow.js';
 import {linesUntil,positionAt} from '../lib/personDay.js';
@@ -31,19 +29,24 @@ function useToday(timeZone){
  return today;
 }
 
-export default function PersonMap({person,viewer,photos,selfAvatar,timeZone=browserZone(),poke=null,onPoke,onOpenOwn,onOpenShared,renderMap,localTrips=null,localLiveTrip=null,deletedIDs}){
+const fresh=forOwner=>({owner:forOwner,picked:null,scrub:null,notice:'',locate:null});
+
+export default function PersonMap({person,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs}){
  const owner=person?.userId||'';
  const isSelf=owner===viewer;
  const today=useToday(timeZone);
  // The day shown follows the clock until the person picks another: left open past midnight
  // on "Today", it moves on to the new today (live trail and latest location included).
  // Choice of day, slider and note belong to one person: another person starts at Today with the slider released.
- const [view,setView]=useState({owner:'',picked:null,scrub:null,notice:''});
- const mine=view.owner===owner?view:{owner,picked:null,scrub:null,notice:''};
- const update=useCallback(patch=>setView(previous=>({...(previous.owner===owner?previous:{owner,picked:null,scrub:null,notice:''}),...patch})),[owner]);
+ const [view,setView]=useState(()=>fresh(''));
+ const mine=view.owner===owner?view:fresh(owner);
+ const update=useCallback(patch=>setView(previous=>({...(previous.owner===owner?previous:fresh(owner)),...patch})),[owner]);
  const picked=mine.picked,scrub=mine.scrub,notice=mine.notice;
  const date=picked??today;
- const setScrub=value=>update({scrub:value}),setNotice=value=>update({notice:value});
+ // Locate asks the camera to go somewhere once (a new fit key, and a point when there is one); it belongs
+ // to the day it was asked on and never re-centres later.
+ const locate=mine.locate&&mine.locate.date===date?mine.locate:null;
+ const setScrub=value=>update({scrub:value});
  const {day,loading,error}=usePersonDay({viewer,owner,date,timeZone,enabled:Boolean(person),localTrips:isSelf?localTrips:null,localLiveTrip:isSelf?localLiveTrip:null,deletedIDs});
  const isToday=date===today;
  const deferred=useDeferredValue(scrub);
@@ -61,8 +64,8 @@ export default function PersonMap({person,viewer,photos,selfAvatar,timeZone=brow
   const at=scrubbing?positionAt(day,deferred):null;
   if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))}`:`Recorded at ${clock(at.t,timeZone)}`});
   // fitKey: the camera is brought to a new day once; points, the live trail and the slider never refit it.
-  return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads].map(line=>thinLine(line,2000)),live:live.length?thinLine(live.at(-1)):[],pins,fitKey:`${owner}|${date}`};
- },[day,deferred,isToday,isSelf,position,owner,person?.name,person?.status?.text,timeZone,date]);
+  return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads].map(line=>thinLine(line,2000)),live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
+ },[day,deferred,isToday,isSelf,position,owner,person?.name,person?.status?.text,timeZone,date,locate]);
  const first=day.samples[0]?.t,last=day.samples.at(-1)?.t;
  const canScrub=day.samples.length>1;
  const at=scrub!=null?positionAt(day,scrub):null;
@@ -78,34 +81,59 @@ export default function PersonMap({person,viewer,photos,selfAvatar,timeZone=brow
   }
   onOpenShared?.(id,{userId:owner,name});
  },[isSelf,owner,name,onOpenOwn,onOpenShared,update]);
- const personDay=useMemo(()=>payload?{payload,onStep}:null,[payload,onStep]);
- const shown=person?.self||isSelf?'You':person?.name||'Member';
+ // Days from the map's own date bar (native, over the map): same actions as before, no extra toolbar row.
+ const date_=useMemo(()=>({
+  label:dateLabel(date,today),
+  accessibilityLabel:`Showing ${new Date(`${date}T12:00:00Z`).toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long',year:'numeric',timeZone:'UTC'})}`,
+  previous:{id:'pday:prev',label:'Previous day',symbol:'chevron.left'},
+  next:{id:'pday:next',label:'Next day',symbol:'chevron.right',disabled:isToday},
+  today:isToday?null:{id:'pday:today',label:'Return to Today',text:'Today'},
+  clear:null,
+ }),[date,today,isToday]);
+ const onControl=useCallback(id=>{
+  if(id==='pday:prev')update({picked:addDays(date,-1),scrub:null,locate:null,notice:''});
+  else if(id==='pday:next'){const next=addDays(date,1);update({picked:next>=today?null:next,scrub:null,locate:null,notice:''});}
+  else if(id==='pday:today')update({picked:null,scrub:null,locate:null,notice:''});
+ },[date,today,update]);
+ // The Locate button. Me: where I am now. Someone else today: their latest authorised location. A
+ // past day, or no location: the day's recorded movement. Nothing to show: say so. It never goes to
+ // me when someone else is selected, and never invents a position.
+ const ownerNow=useRef(owner);
+ useEffect(()=>{ownerNow.current=owner;},[owner]);
+ const [locating,setLocating]=useState(false);
+ const hasMovement=day.recorded.length+day.live.length+day.estimated.length+day.liveRoads.length+day.markers.length>0;
+ const usable=point=>Number.isFinite(point?.latitude)&&Number.isFinite(point?.longitude);
+ const onLocate=useCallback(async()=>{
+  const forOwner=owner,forDate=date;
+  const go=point=>setView(previous=>{const base=previous.owner===forOwner?previous:fresh(forOwner);return {...base,notice:'',locate:{n:(base.locate?.n||0)+1,point,date:forDate}};});
+  if(isSelf){
+   // One request at a time: a second tap while one is pending is ignored.
+   if(locating)return;
+   setLocating(true);
+   const here=await Promise.resolve().then(()=>locateSelf?.()).catch(()=>null);
+   setLocating(false);
+   if(ownerNow.current!==forOwner)return;
+   if(usable(here))go([here.latitude,here.longitude]);
+   else update({notice:'Your location is not available. Check Location access in iOS Settings.'});
+   return;
+  }
+  if(isToday&&usable(position))go([position.latitude,position.longitude]);
+  else if(hasMovement)go(null);
+  else update({notice:isToday?name?`${name} has no location or movement to show yet.`:'No location or movement to show yet.':'Nothing to show for this day.'});
+ },[owner,date,isSelf,isToday,position,hasMovement,locateSelf,locating,name,update]);
+ const personDay=useMemo(()=>payload?{payload,onStep,date:date_,onControl,onLocate,locating}:null,[payload,onStep,date_,onControl,onLocate,locating]);
  // Slots are fixed so the map keeps its place in the tree (and is never re-created) whether
- // a person is selected or not.
+ // a person is selected or not. Everything but the map is one line, below it, only when it has something to say.
+ const status=!person?'':loading?'Loading…':error?error:notice?notice:day.isEmpty?(isToday?'No movement shared yet today.':'Nothing shared for this day.'):'';
  return <>
-  {person?<header className="person-map-head" aria-label={`${shown}’s map`}>
-   <PersonAvatar name={person.name} userId={person.userId} selfId={viewer} photos={photos} selfAvatar={selfAvatar} size="md"/>
-   <div className="person-map-who"><strong>{shown}</strong><span>{poke?(poke.state==='sent'?'Poked ✓':poke.message||'Couldn’t poke'):person.status?.text||'No location shared'}</span></div>
-   {!isSelf&&onPoke&&<button type="button" className="person-map-poke text-button" aria-label={`Poke ${shown}`} onClick={onPoke}>Poke</button>}
-  </header>:null}
-  {person?<div className="person-map-days" role="group" aria-label="Day">
-   <button type="button" aria-label="Previous day" onClick={()=>{update({picked:addDays(date,-1),scrub:null});}}><ChevronLeft size={20}/></button>
-   <strong>{dateLabel(date,today)}</strong>
-   <button type="button" aria-label="Next day" disabled={isToday} onClick={()=>{const next=addDays(date,1);update({picked:next>=today?null:next,scrub:null});}}><ChevronRight size={20}/></button>
-  </div>:null}
   <div className={person?'person-map-canvas':'map-canvas'}>
    {renderMap(personDay)}
-   {person&&loading&&<p className="person-map-note" role="status">Loading…</p>}
-   {person&&!loading&&day.isEmpty&&!error&&<p className="person-map-note" role="status">{isToday?'No movement shared yet today.':'Nothing shared for this day.'}</p>}
-   {person&&error&&<p className="person-map-note" role="alert">{error}</p>}
-   {person&&notice&&<p className="person-map-note" role="status" onClick={()=>setNotice('')}>{notice}</p>}
   </div>
+  {status?<p className="person-map-note" role={error?'alert':'status'}>{status}{notice&&!loading&&!error?<> <button type="button" className="text-button" onClick={()=>update({notice:''})}>OK</button></>:null}</p>:null}
   {person&&canScrub?<div className="person-map-timeline">
    <input type="range" aria-label="Time of day" min={Math.ceil(first)} max={Math.floor(last)} step={1} value={scrub??Math.floor(last)} onChange={event=>setScrub(Number(event.target.value))}/>
-   <div className="person-map-time"><span>{scrub==null?(isToday?'Now':'End of day'):clock(scrub,timeZone)}</span>
-    {at&&<span>{at.inGap?'No GPS signal · last recorded fix shown':'Recorded position'}</span>}
-    {scrub!=null&&<button type="button" className="text-button" onClick={()=>setScrub(null)}>{isToday?'Back to now':'Show whole day'}</button>}</div>
+   <span className="person-map-time">{scrub==null?(isToday?'Now':'End of day'):clock(scrub,timeZone)}{at?.inGap?' · No GPS signal':''}</span>
+   {scrub!=null&&<button type="button" className="text-button" onClick={()=>setScrub(null)}>{isToday?'Now':'Whole day'}</button>}
   </div>:null}
-  {person?<p className="person-map-legend">Solid lines are recorded GPS. Orange lines are estimated roads where GPS was missing.</p>:null}
  </>;
 }
