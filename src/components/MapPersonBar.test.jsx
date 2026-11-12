@@ -66,3 +66,11 @@ it('puts the map key behind a small info button, only for a person', ()=>{
  expect(within(key).getByText('Recorded GPS')).toBeTruthy();
  expect(within(key).getByText(/Estimated road/)).toBeTruthy();
 });
+it('keeps the selected person\'s name when they are no longer in the list, and returns focus to the key button', ()=>{
+ bar({selected:'gone',selectedName:'Zoe'});
+ expect(screen.getByRole('button',{name:/Showing Zoe/})).toBeTruthy();
+ const keyButton=screen.getByRole('button',{name:'Map key'});
+ fireEvent.click(keyButton);
+ fireEvent.keyDown(document,{key:'Escape'});
+ expect(document.activeElement).toBe(keyButton);
+});

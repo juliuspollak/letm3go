@@ -31,11 +31,11 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  const name=person.name||'Person';
  const shown=person.self?'You':name;
  // The compact line when there is one; the full wording stays in the accessible name and on the detailed screens.
- const line=person.poke?.state==='received'?'Poked you 👋':person.short||person.status?.text;
+ const line=person.poke?.state==='received'?'Poked you 👋':person.poke?.state==='failed'&&person.poke.message?person.poke.message:person.short||person.status?.text;
  const body=<>
   <span className="person-tile-avatar"><PersonAvatar name={name} userId={person.userId} selfId={selfId} photos={photos} selfAvatar={selfAvatar} size="lg"/>{person.status&&<StatusDot tone={person.status.tone}/>}</span>
   <span className="person-tile-name">{shown}</span>
-  {line&&<span className={`person-tile-status person-tile-status--${person.poke?.state==='received'?'received':person.status?.tone||'none'}`}>{line}</span>}
+  {line&&<span className={`person-tile-status person-tile-status--${person.poke?.state==='received'?'received':person.poke?.state==='failed'?'failed':person.status?.tone||'none'}`}>{line}</span>}
   {person.role&&<span className="person-tile-role">{person.role}</span>}
  </>;
  const description=[shown,person.status?.text,person.role].filter(Boolean).join(', ');

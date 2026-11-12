@@ -44,6 +44,7 @@ it('Poke: sending is disabled so it cannot double-send, then confirms, and a fai
  view({state:'failed',message:'Slow down'});
  const retry=screen.getByRole('button',{name:/Poke Julia failed: Slow down/});
  expect(retry.textContent).toBe('Retry poke');
+ expect(screen.getByText('Slow down')).toBeTruthy(); // the reason is visible, not only spoken
  fireEvent.click(retry);expect(poke).toHaveBeenCalledTimes(1);
 });
 it('has no ••• menu, hold gesture, bubble or wiggle', ()=>{
