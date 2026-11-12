@@ -82,3 +82,23 @@ the two), nothing is looked up again, and stored roads are reused. **A Home plac
 private activities stay private; a later joiner starts from joining. `publish_household_history(owner?)` can be run again
 (service role) and publishes nothing twice.
 
+
+### When someone's latest drive is not on their map (20261209000000)
+
+Three different things reach another person's map, by three different routes, and they do not depend on each other:
+
+| What | Sent by | Needs the app open? |
+|---|---|---|
+| Position bubble (photo, Driving, speed) | the native recorder, in the background | no |
+| Live trail while recording (and its end) | the native recorder, in the background | no |
+| The finished activity | the app's backup (`AutoCloudSync`), then household publication | **yes: it runs only while letm3go is in the foreground** |
+
+When a drive ends the live trail is cleared on purpose, and the finished activity replaces it once the owner's phone has
+backed it up. Until the owner opens the app, others see the bubble but no route for that drive, and nothing in the database
+can supply it. A map for someone else's empty day says so (it does not suggest they chose not to share).
+
+`publish_household_history` records an activity it cannot publish in `household_history_failures` (SQLSTATE and a short
+reason, never a coordinate) and raises a WARNING; a later run publishes it and clears the record.
+`select * from public.household_history_status()` (service role) gives, per member: sharing on, since, activities, with a
+route, shared with the household, waiting, failing and the newest activity, so a gap shows whether it is missing data (newest activity is
+old), waiting publication, or failing.
