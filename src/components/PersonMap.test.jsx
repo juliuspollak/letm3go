@@ -25,12 +25,15 @@ import AppleMap from './AppleMap.jsx';
 import {dayKeyOf,addDays} from '../lib/dayWindow.js';
 
 const Z='Australia/Sydney';
+const selectedPin={id:'people:her',kind:'people',point:[-34.9,151.1],title:'Julia',label:'Driving · 90 km/h',labelKind:'live',members:[{id:'her',name:'Julia',initial:'J',avatar:'data:image/png;base64,a',state:'live',activity:'driving'}]};
 const person={userId:'her',name:'Julia',position:{latitude:-34.9,longitude:151.1},state:'live',status:{text:'Sharing location · updated just now',tone:'live'}};
 // The Map tab's one map, drawn by whoever renders PersonMap (JourneyMap in the app).
 const renderMap=day=><AppleMap payload={day?.payload??{all:true}} onStep={day?.onStep} day={day}/>;
 const setup=(over={})=>{
  const onOpenShared=vi.fn();
- const view=render(<PersonMap person={person} viewer="me" timeZone={Z} renderMap={renderMap} onOpenShared={onOpenShared} {...over}/>);
+ const selected=over.person===undefined?person:over.person;
+ const personPin=over.personPin===undefined&&(selected?.userId==='her'&&selected.position&&selected.state==='live')?selectedPin:over.personPin;
+ const view=render(<PersonMap person={person} personPin={personPin} viewer="me" timeZone={Z} renderMap={renderMap} onOpenShared={onOpenShared} {...over}/>);
  return {onOpenShared,view};
 };
 const last=()=>mock.payloads.at(-1);
@@ -44,9 +47,22 @@ describe('person map',()=>{
   setup();
   const pins=last().pins;
   expect(pins.filter(p=>p.kind==='step').map(p=>[p.label,p.title])).toEqual([['1','1. Home to work'],['2','2. Work to shops']]);
-  expect(pins.find(p=>p.kind==='friend-live').title).toMatch(/Julia · Sharing location/);
+  expect(pins.find(p=>p.kind==='people')).toEqual(selectedPin);
+  expect(pins.some(p=>p.kind==='people')).toBe(false);
   expect(last().live.length).toBe(2);
   expect(mock.day.date.label).toBe('Today');
+ });
+ it('shows the same single-person avatar and speed marker as All people, not an initial-only friend marker',()=>{
+  setup();
+  const marker=last().pins.find(pin=>pin.kind==='people');
+  expect(marker).toBe(selectedPin);
+  expect(marker.members[0].avatar).toMatch(/^data:image\\/png/);
+  expect(marker.label).toBe('Driving · 90 km/h');
+  expect(last().pins.some(pin=>pin.kind==='friend-live')).toBe(false);
+ });
+ it('never shows another member or a shared-place group on a selected person map',()=>{
+  setup({personPin:{...selectedPin,members:[...selectedPin.members,{id:'other',name:'Other'}]}});
+  expect(last().pins.some(pin=>pin.kind==='people')).toBe(false);
  });
  it('hands the map a stable identity and a fit key per day, so day changes update in place',()=>{
   setup();
@@ -71,7 +87,7 @@ describe('person map',()=>{
   setup({person:{...person,position:null,state:'off',status:{text:'Not sharing live location',tone:'stale'}}});
   expect(mock.dayArgs.at(-1).enabled).toBe(true);
   expect(last().pins.filter(p=>p.kind==='step')).toHaveLength(2);
-  expect(last().pins.some(p=>p.kind==='friend-live')).toBe(false);
+  expect(last().pins.some(p=>p.kind==='people')).toBe(false);
  });
  it('shows the same single map for All people, without day loading or a date bar',()=>{
   setup({person:null});
@@ -105,7 +121,7 @@ describe('person map',()=>{
   expect(mock.dayArgs.at(-1).date).toBe(addDays(today,-1));
   expect(mock.day.date.label).toBe('Yesterday');expect(mock.day.date.today).toMatchObject({id:'pday:today'});
   // The latest-location pin and live trail belong to today only.
-  expect(last().pins.some(p=>p.kind==='friend-live')).toBe(false);expect(last().live).toEqual([]);
+  expect(last().pins.some(p=>p.kind==='people')).toBe(false);expect(last().live).toEqual([]);
   control('pday:next');
   expect(mock.dayArgs.at(-1).date).toBe(today);
   control('pday:prev');control('pday:prev');control('pday:today');
@@ -118,7 +134,7 @@ describe('person map',()=>{
   fireEvent.change(slider,{target:{value:String(Number(slider.min)+1)}});
   const marker=last().pins.find(p=>p.kind==='playback');
   expect(marker).toBeTruthy();expect(marker.title).toMatch(/Recorded at/);
-  expect(last().pins.some(p=>p.kind==='friend-live')).toBe(true); // the live marker stays distinct
+  expect(last().pins.some(p=>p.kind==='people')).toBe(true); // the live marker stays distinct
   expect(last().live).toEqual([]);expect(last().estimated).toEqual([]);
   expect(last().routes.length).toBeLessThanOrEqual(before);
   expect(mock.rpc).not.toHaveBeenCalled();
@@ -150,7 +166,7 @@ describe('person map',()=>{
    act(()=>{vi.advanceTimersByTime(61000);});
    expect(mock.dayArgs.at(-1).date).toBe('2026-11-11');
    expect(mock.day.date.label).toBe('Today');
-   expect(last().pins.some(p=>p.kind==='friend-live')).toBe(true);
+   expect(last().pins.some(p=>p.kind==='people')).toBe(true);
    control('pday:prev');
    expect(mock.dayArgs.at(-1).date).toBe('2026-11-10');
    act(()=>{vi.advanceTimersByTime(24*3600*1000);});
@@ -218,7 +234,7 @@ describe('the Locate button', ()=>{
  });
  it('Someone else, today, with an old location: still their last known place, labelled with how old it is', async()=>{
   setup({person:{...person,state:'stale',status:{text:'Last seen 25 min ago',tone:'stale'}}});
-  expect(last().pins.find(p=>p.kind==='friend-live').title).toMatch(/Last seen 25 min ago/);
+  expect(last().pins.find(p=>p.kind==='people').title).toMatch(/Last seen 25 min ago/);
   await locate();
   expect(last().focus).toEqual([-34.9,151.1]);
  });
