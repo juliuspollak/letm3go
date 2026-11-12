@@ -21,8 +21,12 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
  const forward=canShiftForward(date,today);
  const changeDay=step=>onDateChange(shiftDate(date,step,today));
  const label=dateLabel(date,today);
- const isRelative=label==='Today'||label==='Yesterday';
- const dayText=new Date((date==='today'?today:date)+'T12:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'long'});
+ // Today and Yesterday keep their names; any other day says which day of the week it was ("Tuesday · 3 November").
+ const shownDay=new Date((date==='today'?today:date)+'T12:00:00');
+ const relative=label==='Today'||label==='Yesterday';
+ const heading=relative?label:shownDay.toLocaleDateString('en-AU',{weekday:'long'});
+ const sameYear=shownDay.getFullYear()===new Date(today+'T12:00:00').getFullYear();
+ const dayText=shownDay.toLocaleDateString('en-AU',sameYear?{day:'numeric',month:'long'}:{day:'numeric',month:'long',year:'numeric'});
  const latest=latestJourneyOfDay(journeys);
  const onTouchStart=event=>{
   const touch=event.touches[0];
@@ -46,7 +50,7 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
  return <section className="home-day" aria-label="Daily activity summary" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} onTouchCancel={()=>{touchStart.current=null;}}>
   <div className="home-day-head">
    <button type="button" className="home-day-arrow" aria-label="Previous day" onClick={guarded(()=>changeDay(-1))}><ChevronLeft size={20}/></button>
-   <h2 className="home-day-title" aria-live="polite"><strong>{label}</strong>{isRelative&&<span> · {dayText}</span>}</h2>
+   <h2 className="home-day-title" aria-live="polite"><strong>{heading}</strong><span> · {dayText}</span></h2>
    <button type="button" className="home-day-arrow" aria-label="Next day" disabled={!forward} onClick={guarded(()=>changeDay(1))}><ChevronRight size={20}/></button>
    {date!=='today'&&<button type="button" className="home-day-reset" onClick={guarded(()=>onDateChange('today'))}>Today</button>}
   </div>
