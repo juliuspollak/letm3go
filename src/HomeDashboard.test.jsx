@@ -25,21 +25,20 @@ beforeEach(()=>{mapLocationHook.mockReturnValue({position:null,loading:false,err
 afterEach(()=>{cleanup();localStorage.clear();});
 const card=()=>screen.getByRole('region',{name:'Daily activity summary'});
 
-it('has no introduction, no separate Last activity card and no duplicated activity', ()=>{
+it('keeps the heading and subheading, with no separate Last activity card and no duplicated activity', ()=>{
  setup([trip('a','Morning walk',at(0,8,15))]);
- expect(screen.queryByText('Your day. Your way.')).toBeNull();
+ expect(screen.getByRole('heading',{name:'Your day. Your way.',level:1})).toBeTruthy();
+ expect(screen.getByText('A little movement. A little perspective. Your day at a glance.')).toBeTruthy();
  expect(screen.queryByText(/YOUR DAY, OUT THERE/)).toBeNull();
- expect(screen.queryByText(/A little movement/)).toBeNull();
  expect(screen.queryByRole('heading',{name:'Last activity'})).toBeNull();
  expect(screen.getAllByText('Morning walk')).toHaveLength(1); // only in the Today card
- expect(screen.getByRole('heading',{name:'Home',level:1})).toBeTruthy(); // for screen readers
 });
-it('orders the page: header with recording status, Today card, Friends', ()=>{
+it('orders the page: header with recording status, heading, Today card, Friends', ()=>{
  friends.people=[{user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updated_at:new Date().toISOString(),accuracy:10}];
  const {container}=setup([trip('a','Morning walk',at(0,8,15))],{recordingHealth:{status:'ready'}});
  const header=container.querySelector('.topbar');
  expect(within(header).getByRole('button',{name:/Recording status/})).toBeTruthy();
- const order=[header,card(),screen.getByRole('heading',{name:'Friends'})];
+ const order=[header,screen.getByRole('heading',{name:'Your day. Your way.'}),card(),screen.getByRole('heading',{name:'Friends'})];
  for(let i=1;i<order.length;i++)expect(order[i-1].compareDocumentPosition(order[i])&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 it('keeps the recording status reachable in the header and opens the existing health details', ()=>{
