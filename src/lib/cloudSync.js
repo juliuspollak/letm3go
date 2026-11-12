@@ -312,20 +312,31 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
  }
  const finished=finishedTrip(state);
+ let consecutive=0,failed=0,activityFailure=null;
  for(const trip of state.trips){
   if(!finished(trip))continue;
   const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   // Unchanged since its last backup: not serialised or hashed again.
   if(previous&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
   if(processed>=maxActivities){pending=true;break;}processed++;
+  // One activity the cloud refuses must not hold back every later one: it is recorded, the rest carry on, and the first
+  // failure is reported once the pass is done. Three failures in a row (offline, signed out) stop the pass instead.
+  try{
   const details=trip.details||{};
   const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
   if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}continue;}
   const {data:revision,error}=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});
-  if(error||!Number.isInteger(revision))throw new Error('Private backup needs the approved backend RPC, or this activity changed in the cloud. Your local data is preserved.');
+  if(error||!Number.isInteger(revision))throw new Error(`Private backup needs the approved backend RPC, or this activity changed in the cloud${error?.message?`: ${String(error.message).slice(0,160)}`:''}. Your local data is preserved.`);
   updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;await acknowledge();
+  consecutive=0;
+  }catch(error){
+   if(error?.fatal)throw error;
+   activityFailure=activityFailure||new Error(`${error?.message||'Backup failed'} (activity ${String(trip.id).slice(0,8)})`);
+   failed++;
+   if(++consecutive>=3){pending=true;break;}
+  }
  }
  {
   const efforts=await syncSegmentEfforts(client,state,updated,{owner,hash,acknowledge,finished,republish});
@@ -357,6 +368,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    updated[receiptKey]={owner,uploaded:true};photosUploaded++;await acknowledge();
   }
  }
+ if(activityFailure)throw activityFailure;
  if(segmentFailure)throw segmentFailure;
- return {receipts:updated,uploaded,photosUploaded,deleted,pending,lastSync:new Date().toISOString()};
+ return {receipts:updated,uploaded,photosUploaded,deleted,pending,failed,lastSync:new Date().toISOString()};
 }

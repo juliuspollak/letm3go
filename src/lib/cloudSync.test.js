@@ -321,3 +321,27 @@ describe('existing segments recover independently of private activity backup',()
   expect(api.rpc.mock.calls.some(([name])=>name==='backup_private_activity')).toBe(false);
  });
 });
+
+// One activity the cloud refuses (a conflict, a rejected row) used to end the whole pass at that activity, every time, so
+// nothing recorded after it was ever backed up. The others now go up, and the failure is still reported.
+describe('an activity that cannot be backed up',()=>{
+ const trips=['a','b','c','d'].map((id,i)=>({...trip,id,startedAt:100+i*1000,endedAt:200+i*1000}));
+ it('does not hold back the activities after it, and is still reported with the cloud\'s reason',async()=>{
+  const api=client();
+  api.rpc.mockImplementation(async(_name,args)=>args.p_payload.id==='b'?{data:null,error:{message:'Cloud activity conflict; reload before overwriting'}}:{data:1,error:null});
+  const checkpoint=vi.fn();
+  const error=await run(api,{...state,trips},{}, {checkpoint}).catch(e=>e);
+  expect(error.message).toContain('Cloud activity conflict');
+  expect(error.message).toContain('(activity b)');
+  const uploaded=api.rpc.mock.calls.map(([,args])=>args.p_payload.id);
+  expect(uploaded).toEqual(['a','b','c','d']);          // c and d were still attempted
+  expect(checkpoint.mock.calls.at(-1)[0]).toMatchObject({a:expect.anything(),c:expect.anything(),d:expect.anything()});
+  expect(checkpoint.mock.calls.at(-1)[0].b).toBeUndefined();
+ });
+ it('stops after three failures in a row instead of hammering an unreachable server',async()=>{
+  const api=client();
+  api.rpc.mockResolvedValue({data:null,error:{message:'Failed to fetch'}});
+  await expect(run(api,{...state,trips})).rejects.toThrow('Failed to fetch');
+  expect(api.rpc).toHaveBeenCalledTimes(3);
+ });
+});

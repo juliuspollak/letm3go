@@ -1,6 +1,6 @@
 import {render,cleanup,act} from '@testing-library/react';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mocks=vi.hoisted(()=>({publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
+const mocks=vi.hoisted(()=>({noteBackupFailure:vi.fn(),publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>mocks.native},registerPlugin:()=>({})}));
 vi.mock('@capacitor/app',()=>({App:{addListener:vi.fn(async(_event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};})}}));
 vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>mocks.auth}));
@@ -10,6 +10,7 @@ vi.mock('../lib/cloudSync.js',()=>({syncPublicSegments:mocks.publications,syncPr
 vi.mock('../lib/settingsSync.js',()=>({syncAccountSettings:mocks.settings}));
 vi.mock('../lib/collectionSync.js',()=>({syncCollections:mocks.collections}));
 vi.mock('../lib/journeyMetadataStore.js',async importOriginal=>({...await importOriginal(),refreshJourneyMetadata:mocks.journey}));
+vi.mock('../lib/recorder.js',()=>({recorder:{noteBackupFailure:mocks.noteBackupFailure}}));
 import AutoCloudSync from './AutoCloudSync.jsx';
 
 const state=(token)=>({ownerID:'owner',historyToken:token,places:[],deletedIDs:[],trips:[]});
@@ -205,4 +206,20 @@ it('preserves a publication confirmation when an older backup checkpoint finishe
  render(<AutoCloudSync state={state('old-history')}/>);await tick(5000);await act(async()=>finish());
  expect(mocks.auth.preferences.syncReceipts[key]).toMatchObject({confirmedAt:200,uploaded:true});
  expect(mocks.auth.preferences.syncReceipts.trip.revision).toBe(4);
+});
+
+it('writes why a backup failed to the diagnostic log, once per reason, never the activity data',async()=>{
+ mocks.activities.mockRejectedValue(new Error('Cloud activity conflict; reload before overwriting (activity 3f2a9c10)'));
+ const view=render(<AutoCloudSync state={state('h1')}/>);
+ await tick(5000);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledTimes(1);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledWith('Cloud activity conflict; reload before overwriting (activity 3f2a9c10)');
+ // The same failure at the next checks is not logged again; a different one is.
+ view.rerender(<AutoCloudSync state={state('h2')}/>);
+ await tick(120000);
+ expect(mocks.noteBackupFailure).toHaveBeenCalledTimes(1);
+ mocks.activities.mockRejectedValue(new Error('Failed to fetch'));
+ view.rerender(<AutoCloudSync state={state('h3')}/>);
+ await tick(120000);
+ expect(mocks.noteBackupFailure).toHaveBeenLastCalledWith('Failed to fetch');
 });

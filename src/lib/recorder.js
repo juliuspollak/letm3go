@@ -55,6 +55,8 @@ export const recorder = {
  noteHouseholdDelivery:summary=>recorderAvailable()?native.noteHouseholdDelivery(summary).catch(()=>{}):Promise.resolve(),
  // Diagnostics only: a failure here must never affect the warning itself.
  noteRecordingWarning:(action,issue)=>recorderAvailable()?native.noteRecordingWarning({action,issue}).catch(()=>{}):Promise.resolve(),
+ // Why the cloud backup failed, for the diagnostic log (the backup itself runs in JavaScript).
+ noteBackupFailure:message=>recorderAvailable()?native.noteBackupFailure({message:String(message||'')}).catch(()=>{}):Promise.resolve(),
  setAutomatic:enabled=>native.setAutomatic({enabled}),
  savePlace:place=>native.savePlace(place),
  removePlace:id=>native.removePlace({id}),
