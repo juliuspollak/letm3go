@@ -7,7 +7,7 @@ import {activityLabel} from '../lib/activityNames.js';
 import {activitySymbol} from '../lib/mapToolbar.js';
 import {formatDuration} from '../lib/peopleMap.js';
 import {distanceText} from '../lib/distanceUnits.js';
-import {filterPersonDay,personRoutes,recordedDistance} from '../lib/personMapPresentation.js';
+import {filterPersonDay,personRoutes,personFlags,boundedPersonLines,recordedDistance} from '../lib/personMapPresentation.js';
 import {formatAge} from '../lib/householdLocation.js';
 
 // The Map tab's person view: the selected person's latest shared location, the day's
@@ -66,19 +66,16 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const isToday=date===today;
  const deferred=useDeferredValue(scrub);
 
+ const savedRoutes=useMemo(()=>personRoutes(day,selected?.id),[day,selected]);
  const payload=useMemo(()=>{
   if(!owner)return null;
   const scrubbing=deferred!=null;
-  const recorded=scrubbing?[...day.untimed,...linesUntil(day,deferred)]:day.recorded;
-  // The newest live stretch is its own overlay (replaced as points arrive); earlier
-  // stretches of the same drive, separated by GPS gaps, are ordinary lines.
+  // Saved geometry, timeline segments and live roads all stay independently bounded.
   const live=scrubbing?[]:day.live;
-  const routes=scrubbing?[...recorded,...live.slice(0,-1)].map(line=>thinLine(line)):live.slice(0,-1).map(line=>thinLine(line));
-  const styled=scrubbing?routes.map(points=>({points,color:'accent',width:2.5,opacity:0.65})):personRoutes(day,selected?.id);
-  styled.push(...live.slice(0,-1).map(line=>({points:thinLine(line),color:'accent',width:3,opacity:selected?0.18:0.7})));
-  if(!scrubbing)styled.push(...day.liveRoads.map(line=>({points:thinLine(line,2000),color:'#F29927',width:2.5,opacity:selected?0.18:0.65})));
-  styled.splice(750);
-  const pins=[];
+  const styled=scrubbing?boundedPersonLines([...day.untimed,...linesUntil(day,deferred)]).map(points=>({points,color:'accent',width:3,opacity:0.85})):savedRoutes.slice();
+  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:3.5,opacity:selected?0.35:0.9})));
+  if(!scrubbing)styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3,opacity:selected?0.35:0.85})));
+  const pins=personFlags(day,savedRoutes,selected?.id);
   // Reuse the single-person pin from the All people map. The native renderer then
   // shows the same profile photo, live movement/speed label and activity ornament.
   // Never show a current position on a historical day or when its owner is hidden.
@@ -87,7 +84,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))}`:`Recorded at ${clock(at.t,timeZone)}`});
   // scope changes pause following without reframing; only an explicit Locate focus moves the camera.
   return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,deferred,isToday,isSelf,personPin,owner,timeZone,date,locate,selected]);
+ },[day,deferred,isToday,isSelf,personPin,owner,timeZone,date,locate,selected,savedRoutes]);
  const first=day.samples[0]?.t,last=day.samples.at(-1)?.t;
  const canScrub=day.samples.length>1;
  const at=scrub!=null?positionAt(day,scrub):null;

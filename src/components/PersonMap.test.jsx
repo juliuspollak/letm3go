@@ -43,12 +43,12 @@ afterEach(cleanup);
 beforeEach(()=>{mock.empty=false;mock.mounts=0;mock.payloads.length=0;mock.dayArgs.length=0;mock.day=null;mock.rpc.mockReset();});
 
 describe('person map',()=>{
- it('shows thin selectable saved routes without numbered markers, plus the latest location and live trail',()=>{
+ it('shows visible saved routes and compact numbered flags, plus the latest location and live trail',()=>{
   setup();
   const pins=last().pins;
-  expect(pins.filter(p=>p.kind==='step')).toEqual([]);
+  expect(pins.filter(p=>p.kind==='step').map(p=>[p.label,p.activityID,p.point])).toEqual([['1','a',[-34.5,150.9]],['2','b',[-34.5,150.9]]]);
   expect(last().styled.map(r=>r.activityID)).toEqual(['a','b']);
-  expect(last().styled.every(r=>r.width===2.5)).toBe(true);
+  expect(last().styled.every(r=>r.width===3)).toBe(true);
   expect(pins.find(p=>p.kind==='people')).toEqual(selectedPin);
   expect(pins.some(p=>p.kind==='friend-live')).toBe(false);
   expect(last().live.length).toBe(2);
@@ -308,8 +308,8 @@ it('selects only a visible activity, dims other routes, and clears its preview w
  expect(screen.queryByLabelText('Selected activity')).toBeNull();
  act(()=>mock.onStep('b'));
  expect(screen.getByLabelText('Selected activity').textContent).toMatch(/Work to shops.*Driving/);
- expect(last().styled.find(r=>r.activityID==='b').width).toBe(4);
- expect(last().styled.find(r=>r.activityID==='a').opacity).toBe(0.18);
+ expect(last().styled.find(r=>r.activityID==='b').width).toBe(4.5);
+ expect(last().styled.find(r=>r.activityID==='a').opacity).toBe(0.35);
  expect(last().styled.find(r=>r.activityID==='b').points).toEqual([[-34.5,150.9],[-34.6,150.9]]);
  mock.empty=true;
  view.rerender(<PersonMap person={person} personPin={selectedPin} viewer="me" timeZone={Z} renderMap={renderMap}/>);
@@ -339,5 +339,13 @@ it('selecting an activity from the accessible list releases playback and highlig
  fireEvent.click(screen.getByRole('button',{name:/Work to shops ·/}));
  await act(async()=>{});
  expect(last().pins.some(p=>p.kind==='playback')).toBe(false);
- expect(last().styled.find(r=>r.activityID==='b').width).toBe(4);
+ expect(last().styled.find(r=>r.activityID==='b').width).toBe(4.5);
+});
+it('selects an activity flag through the existing event and highlights the matching flag and preview',()=>{
+ setup();act(()=>mock.onStep('b'));
+ expect(last().pins.filter(p=>p.kind==='step').map(p=>[p.activityID,p.selected])).toEqual([['a',false],['b',true]]);
+ expect(screen.getByLabelText('Selected activity').textContent).toContain('Work to shops');
+ control('pday:activity:Walking');expect(last().pins.some(p=>p.kind==='step')).toBe(false);
+ control('pday:reset');control('pday:prev');
+ expect(last().pins.filter(p=>p.kind==='step').every(p=>!p.selected)).toBe(true);
 });

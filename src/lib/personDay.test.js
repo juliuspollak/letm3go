@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {addDays,dayKeyOf,dayWindow} from './dayWindow.js';
 import {mergeTrail,newestTime,trailLines} from './liveTrail.js';
-import {clipToWindow,composeDay,linesUntil,localDayRows,mergeOwnRows,positionAt,spreadMarkers,thinRoutePoints} from './personDay.js';
+import {clipToWindow,composeDay,linesUntil,localDayRows,mergeOwnRows,positionAt,thinRoutePoints} from './personDay.js';
 import {encodeLine} from './gapReconstruction.js';
 
 const SYD='Australia/Sydney',LA='America/Los_Angeles';
@@ -154,15 +154,17 @@ describe('composing a day',()=>{
   expect(linesUntil(day,w.start+260).map(l=>l.length).sort()).toEqual([2,2]);
   expect(positionAt(day,w.start+260)).toMatchObject({id:'auto',inGap:false});
  });
- it('fans out markers that share a spot',()=>{
-  const out=spreadMarkers([1,2,3].map(n=>({n,point:[-34.5,150.9]})));
-  expect(out[0].point).toEqual([-34.5,150.9]);
-  expect(new Set(out.map(m=>m.point.join())).size).toBe(3);
+ it('retains coincident authorised starts at their exact recorded coordinates for native clustering',()=>{
+  const rows=[0,1,2].map(i=>row('same'+i,'Same start',w.start+i*60,[[w.start+i*60,-34.5,150.9],[w.start+i*60+30,-34.51,150.9]]));
+  const day=composeDay({date,timeZone:SYD,rows:rows.reverse()});
+  expect(day.markers.map(m=>m.n)).toEqual([1,2,3]);
+  expect(day.markers.map(m=>m.activityID)).toEqual(['same0','same1','same2']);
+  expect(day.markers.every(m=>m.point[0]===-34.5&&m.point[1]===150.9)).toBe(true);
  });
  it('handles hundreds of activities without losing the first ones',()=>{
   const rows=Array.from({length:300},(_,i)=>row('id'+i,'T'+i,w.start+i*10,[[w.start+i*10,-34.5,150.9],[w.start+i*10+5,-34.51,150.9]]));
   const day=composeDay({date,timeZone:SYD,rows});
-  expect(day.markers.length).toBe(60);expect(day.markers[0].n).toBe(1);expect(day.samples.length).toBe(600);
+  expect(day.markers.length).toBe(300);expect(day.markers[0].n).toBe(1);expect(day.samples.length).toBe(600);
  });
 });
 

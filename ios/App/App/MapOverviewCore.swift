@@ -53,3 +53,19 @@ enum LiveOverlaySignature {
         return hasher.finalize()
     }
 }
+
+// Shared by native overlays and snapshots; aggregation and colour buckets stay unchanged.
+enum DensityTrailStyle {
+    static func value(_ density:Int)->(width:CGFloat,opacity:CGFloat) {
+        switch density {
+        case ...1:return (2.5,0.75)
+        case 2:return (3,0.85)
+        case 3:return (3.5,0.9)
+        case 4:return (4,0.95)
+        default:return (4.5,1)
+        }
+    }
+}
+enum ActivityClusterPolicy {
+    static func shouldZoom(spreadMetres:Double,cameraDistance:Double)->Bool {spreadMetres>=20 && cameraDistance>=250}
+}

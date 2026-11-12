@@ -5352,3 +5352,12 @@ check(RouteHitTest.activity(in:["a":2,"b":2],selected:"a") == "b", "repeated rou
 check(RouteHitTest.activity(in:["a":1,"b":9],selected:"a") == "a", "a clearly nearer route wins")
 check(RouteHitTest.activity(in:["a":19],selected:nil) == nil, "bare map taps select no activity")
 print("Final native assertion count including overlapping routes: \(assertions)")
+
+for (index,expected) in [(CGFloat(2.5),CGFloat(0.75)),(3,0.85),(3.5,0.9),(4,0.95),(4.5,1)].enumerated() {
+    let style=DensityTrailStyle.value(index+1)
+    check(style.width == expected.0 && style.opacity == expected.1, "density \(index+1) uses visible bounded styling")
+}
+check(ActivityClusterPolicy.shouldZoom(spreadMetres:100,cameraDistance:2000), "separated activity starts zoom to reveal native flags")
+check(!ActivityClusterPolicy.shouldZoom(spreadMetres:0,cameraDistance:2000), "coincident starts offer an activity chooser instead of false offsets")
+check(!ActivityClusterPolicy.shouldZoom(spreadMetres:30,cameraDistance:100), "close-zoom clusters expose every activity through the chooser")
+print("Final native assertion count including visible trails and activity clusters: \(assertions)")

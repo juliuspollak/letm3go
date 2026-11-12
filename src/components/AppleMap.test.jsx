@@ -531,3 +531,18 @@ it('updates styled person routes, selection and follow commands without re-embed
  expect(mocks.embed).toHaveBeenCalledTimes(1);
  expect(mocks.unembed).not.toHaveBeenCalled();
 });
+it('updates numbered flags and handles their existing selection event without recreating the map',async()=>{
+ const handlers={},onStep=vi.fn();
+ mocks.addListener.mockImplementation(async(name,handler)=>{handlers[name]=handler;return {remove:vi.fn()};});
+ const flag={id:'step:a',kind:'step',point:[1,2],label:'1',activityID:'a',selected:false};
+ const base={routes:[],pins:[flag],personDay:true,scope:'her|today',styled:[]};
+ const {rerender}=render(<AppleMap payload={base} dynamic onStep={onStep}/>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledTimes(1));
+ const mapID=mocks.embed.mock.calls[0][0].mapID;
+ await waitFor(()=>expect(handlers.stepSelected).toBeTypeOf('function'));
+ act(()=>handlers.stepSelected({mapID:'other',activityID:'a'}));expect(onStep).not.toHaveBeenCalled();
+ act(()=>handlers.stepSelected({mapID,activityID:'a'}));expect(onStep).toHaveBeenCalledWith('a');
+ rerender(<AppleMap payload={{...base,pins:[{...flag,selected:true}]}} dynamic onStep={onStep}/>);
+ await waitFor(()=>expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({pins:[{...flag,selected:true}]})));
+ expect(mocks.embed).toHaveBeenCalledTimes(1);expect(mocks.unembed).not.toHaveBeenCalled();
+});
