@@ -24,7 +24,7 @@ MapKit groups colliding starts. Every activity cluster now uses the same zoom-in
 
 The previous radial fan-out implementation is deleted, including temporary flag views, leader-line group layout, paging/close controls, opacity overrides, React expansion/page state, native bridge fields and the old zoom-versus-fan threshold. There is no activity-list alert or alternate cluster presentation. Tapping an individual flag or route still selects the activity bubble.
 
-Actual flag and cluster views are weakly tracked, including reused MapKit views. Standard flag placement still avoids the avatar's screen bounds, with a retention margin during camera movement. Cluster badges use required display priority while source flags remain eligible for clustering, following [MapKit's priority rules](https://developer.apple.com/documentation/mapkit/mkfeaturedisplaypriority/required).
+Actual flag and cluster views are weakly tracked, including reused MapKit views. Standard compact flag placement avoids the avatar's screen bounds, with a retention margin during camera movement. The long connector/needle layer has been deleted; only the small flag artwork remains. Cluster badges use required display priority while source flags remain eligible for clustering, following [MapKit's priority rules](https://developer.apple.com/documentation/mapkit/mkfeaturedisplaypriority/required).
 
 ## On-map activity bubble and Back navigation
 

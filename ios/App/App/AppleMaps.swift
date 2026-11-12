@@ -685,19 +685,8 @@ private func activityFlagImage(_ text:String,selected:Bool,cluster:Bool=false)->
     }
 }
 private final class ActivityFlagView:MKAnnotationView {
-    private let connector=CAShapeLayer()
     func place(offset:CGPoint) {
-        guard centerOffset != offset || connector.superlayer == nil else {return}
         if centerOffset != offset {centerOffset=offset}
-        clipsToBounds=false
-        let anchor=CGPoint(x:bounds.midX-offset.x,y:bounds.midY-offset.y)
-        let normalY=bounds.height-4
-        guard abs(anchor.y-normalY)>1 else {connector.removeFromSuperlayer();return}
-        let path=UIBezierPath()
-        path.move(to:CGPoint(x:bounds.midX,y:anchor.y<0 ? 3 : normalY));path.addLine(to:anchor)
-        connector.path=path.cgPath;connector.strokeColor=brandAccent.cgColor;connector.fillColor=nil;connector.lineWidth=1.5
-        connector.shadowColor=UIColor.systemBackground.cgColor;connector.shadowOpacity=1;connector.shadowRadius=1
-        layer.insertSublayer(connector,at:0)
     }
     override func point(inside point:CGPoint,with event:UIEvent?)->Bool {bounds.insetBy(dx:-6,dy:-6).contains(point)}
 }

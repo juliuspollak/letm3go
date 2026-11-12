@@ -66,8 +66,8 @@ enum DensityTrailStyle {
         }
     }
 }
-// Only the screen-space label moves. Its connector continues to the unchanged
-// annotation coordinate; MapKit still clusters activities at their real starts.
+// Only the compact screen-space label moves to avoid the avatar.
+// MapKit still clusters activities at their unchanged recorded starts.
 enum ActivityFlagPlacement {
     static func offset(size:CGSize,at point:CGPoint,people:[CGRect],bounds:CGRect,previous:CGPoint?=nil)->CGPoint {
         let normal=CGPoint(x:0,y:-size.height/2+4)
