@@ -16,15 +16,15 @@ The current implementation keeps that architecture and existing saved geometry, 
 | Live trail | 4 pt teal, distinct from saved routes |
 | Estimated road | Orange, kept separate from observed geometry and GPS gaps |
 
-## Flags, clustering and fan-out
+## Flags and zoom-only clustering
 
 Flags number the authorised activities chronologically for the selected day. They use small rounded accent artwork, white numbers, a pointer, border/shadow and a selected highlight. Filtered/revoked activities do not get flags. A real single-fix start remains accessible without inventing a route.
 
-MapKit groups colliding starts. Separated starts zoom apart when useful. Coincident or very close starts expand into a fan of numbered flags at different screen angles, each connected to its actual recorded coordinate. There is no activity-list alert, no geographic displacement and no new map implementation. Native photo clusters retain their existing behaviour.
+MapKit groups colliding starts. Every activity cluster now uses the same zoom-in action, regardless of member count or separation. The target fits the real starts and always narrows the current span, with a close-zoom bound to avoid unbounded repeated zooms. Exactly coincident coordinates may remain clustered at maximum zoom; no geometry is displaced to force them apart. Native photo clustering keeps its existing behaviour.
 
-Fan-out uses the existing flag artwork/views inside the existing map. It shows at most 12 flags per page, avoids avatar/control/card rectangles, and reserves touch targets for the largest selected flag. Larger groups use a compact page/close control. Tapping a flag selects the existing activity bubble; bare-map dismissal or Close collapses the group. Page/group state survives opening an activity and returning. Scope and filter changes discard it.
+The previous radial fan-out implementation is deleted, including temporary flag views, leader-line group layout, paging/close controls, opacity overrides, React expansion/page state, native bridge fields and the old zoom-versus-fan threshold. There is no activity-list alert or alternate cluster presentation. Tapping an individual flag or route still selects the activity bubble.
 
-Actual flag and cluster views are weakly tracked, including reused MapKit views. Placement updates during camera movement and content changes, with an avatar clearance retention margin. Cluster badges use required display priority while source flags remain eligible for clustering, following [MapKit's priority rules](https://developer.apple.com/documentation/mapkit/mkfeaturedisplaypriority/required). Expanded source representations are hidden temporarily; only alpha values changed by the fan-out are restored, leaving MapKit's own visibility decisions intact.
+Actual flag and cluster views are weakly tracked, including reused MapKit views. Standard flag placement still avoids the avatar's screen bounds, with a retention margin during camera movement. Cluster badges use required display priority while source flags remain eligible for clustering, following [MapKit's priority rules](https://developer.apple.com/documentation/mapkit/mkfeaturedisplaypriority/required).
 
 ## On-map activity bubble and Back navigation
 
@@ -32,7 +32,7 @@ The below-map activity list, numbered list rows, time slider, playback UI, old R
 
 Open/Close actions carry the activity ID, so delayed actions from an older selection cannot open or clear a newer one. The native map-level hit test covers the actual visible flag frame as well as MapKit annotation selection; duplicate callbacks are coalesced. Full-screen selection shows the bubble in full screen; Open dismisses that map before presenting the existing activity detail.
 
-Opening my own activity previously changed the tab to Activities, clearing the selected person. Now map-origin detail navigation keeps the Map tab active and retains person-day state in the parent. Back restores the person, explicit day, activity selection, expanded group/page, filters/layers, page scroll and the existing account-scoped native camera memory. Full-screen origin requests a single full-screen reopen after the embedded map is ready. The day is retained even if midnight passes while the detail is open. Explicit navigation to another tab resets the map scope as before. Ordinary Activities navigation keeps its existing Back destination.
+Opening my own activity previously changed the tab to Activities, clearing the selected person. Now map-origin detail navigation keeps the Map tab active and retains person-day state in the parent. Back restores the person, explicit day, activity selection, filters/layers, page scroll and the existing account-scoped native camera memory. Full-screen origin requests a single full-screen reopen after the embedded map is ready. The day is retained even if midnight passes while the detail is open. Explicit navigation to another tab resets the map scope as before. Ordinary Activities navigation keeps its existing Back destination.
 
 The top-left native Back action already emits the existing detail-closed event; the parent callback now returns to the map origin instead of the Activities list. Its accessibility label is neutral “Back”; fallback/error labels identify the map destination.
 
@@ -42,7 +42,7 @@ Avatar taps centre and follow through the existing camera planner. Gestures paus
 
 Saved display geometry remains bounded at 500 overlays / 120,000 vertices. Every displayed activity is represented before remaining capacity prioritises selected segments and then cycles across other activities. Up to 480 activity flags leave room under the native 500-pin bound. Larger days sample across chronology while retaining the selection; other activities remain available through the existing Activities screen. Prior live segments and live road estimates each reserve 125 lines / 62,500 vertices.
 
-Fan-out adds at most 12 temporary native label views, not extra route geometry or map instances. Camera-frame work projects bounded labels and computes avatar/control obstacles; it does not reconstruct roads, hash/re-encode the full route, issue API requests or redraw flag artwork unnecessarily. Dynamic styling, selection, bubble and fan state use the existing incremental bridge. No new location subscription, polling schedule, geometry store, database migration or sharing policy was added.
+No temporary group-label views or paging controls are created. Camera-frame work projects standard bounded labels and computes avatar obstacles; it does not reconstruct roads, hash/re-encode the full route, issue API requests or redraw flag artwork unnecessarily. Dynamic styling, selection, and bubble state use the existing incremental bridge. No new location subscription, polling schedule, geometry store, database migration or sharing policy was added.
 
 ## Startup crash correction
 
@@ -50,9 +50,9 @@ Physical-device crash reports and a console reproduction identified `SIGABRT` in
 
 ## Verification and review
 
-- `npm run check`: passed, 1,945 tests across 209 files, zero-warning lint, web build, 52 orchestrator passes and 11 Windows-only skips. Existing bundle-size/ineffective-dynamic-import warnings remain.
-- Latest focused map/bridge/navigation run: 91 tests passed. Coverage includes removal of list/slider, bubble actions, stale action rejection, geometry withdrawal, person/day/filter changes, retained fan group, own/shared detail Back, scroll and camera intent restoration, full-screen origin and midnight rollover.
-- `npm run test:native`: 2,235 assertions passed, including density styles, priority/placement, hysteresis, tap coalescing, bounded fan positions, avatar/touch-target separation and page selection/wrap.
+- `npm run check` before the zoom-only removal: passed, 1,945 tests across 209 files, zero-warning lint, web build, 52 orchestrator passes and 11 Windows-only skips. Existing bundle-size/ineffective-dynamic-import warnings remain.
+- Latest focused map/bridge/navigation run: 89 tests passed. Coverage includes removal of list/slider, bubble actions, stale action rejection, geometry withdrawal, person/day/filter changes, own/shared detail Back, scroll and camera intent restoration, full-screen origin and midnight rollover.
+- `npm run test:native`: 2,208 assertions passed, including density styles, priority/placement, hysteresis, tap coalescing, zoom-only cluster bounds, coincident starts and maximum-detail behaviour.
 - iOS Simulator build and final signed physical-device build/install: passed. The final build was installed and launched on Julius's iPhone.
 - `git diff --check`: passed. The pre-existing line-ending-only `ios/App/CapApp-SPM/Package.swift` change is excluded.
 
@@ -60,6 +60,9 @@ Review checked annotation reuse and ownership, native versus fallback bubbles, s
 
 ## Physical validation still required
 
-The user tested earlier PR versions on an iPhone and identified the visibility, selection and navigation issues addressed here. The final interaction changes still need physical validation: fan-out and paging at Home, hit accuracy during pan/zoom and avatar movement, bubble placement in both map sizes, own/shared top-left Back with the same viewport and expanded group, light/dark contrast and frame times on dense days. Desktop Swift policy/layout tests and compilation do not establish MapKit's actual rendering or touch delivery.
+The user tested earlier PR versions on an iPhone and identified the visibility, selection and navigation issues addressed here. The final interaction changes still need physical validation: cluster zoom at Home, hit accuracy during pan/zoom and avatar movement, bubble placement in both map sizes, own/shared top-left Back with the same viewport and selection, light/dark contrast and frame times on dense days. Desktop Swift policy/layout tests and compilation do not establish MapKit's actual rendering or touch delivery.
 
 Day data contains saved display geometry and start/end times rather than authoritative full distance/active-duration totals. Bubble distance is labelled approximate recorded distance, excluding gaps/estimates; elapsed duration can include pauses and span midnight. Existing activity details remain authoritative for full totals. Type filters withhold untyped live trails rather than guessing their activity.
+
+
+The latest change was verified with 89 focused JavaScript tests (person map, map bridge, toolbar and Back navigation), lint, native Swift tests and a signed device build/install. Tests specific to the deleted fan-out were removed and replaced with zoom-only bounds tests. The prior full-suite results above refer to the bubble/navigation implementation before this removal.

@@ -32,7 +32,7 @@ function useToday(timeZone){
  return today;
 }
 
-const fresh=forOwner=>({owner:forOwner,picked:null,notice:'',locate:null,selected:null,activity:'',expanded:[],fanPage:0});
+const fresh=forOwner=>({owner:forOwner,picked:null,notice:'',locate:null,selected:null,activity:''});
 
 // What an empty day means. A drive reaches other people's maps once the phone that recorded it has backed it up (the
 // live position is sent on its own, in the background), so for someone else's day the note says so instead of implying
@@ -80,8 +80,8 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   // Never show a current position on a historical day or when its owner is hidden.
   if(isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self')))pins.push(personPin);
   // scope changes pause following without reframing; only an explicit Locate focus moves the camera.
-  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,expandedActivities:mine.expanded??[],fanPage:mine.fanPage??0,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,isToday,isSelf,personPin,owner,date,locate,selected,savedRoutes,activityPreview,mine.expanded,mine.fanPage]);
+  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
+ },[day,isToday,isSelf,personPin,owner,date,locate,selected,savedRoutes,activityPreview]);
  const name=person?.name;
  const openActivity=useCallback((id,options={})=>{
   if(isSelf){
@@ -93,7 +93,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   update({picked:date});
   onOpenShared?.(id,{userId:owner,name},options);
  },[isSelf,owner,name,onOpenOwn,onOpenShared,update,date]);
- const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id,...(!(mine.expanded??[]).includes(id)?{expanded:[],fanPage:0}:{})});},[day.activities,update,mine.expanded]);
+ const onStep=useCallback(id=>{if(day.activities.some(a=>a.id===id))update({selected:id});},[day.activities,update]);
  // Days from the map's own date bar (native, over the map): same actions as before, no extra toolbar row.
  const date_=useMemo(()=>({
   label:dateLabel(date,today),
@@ -105,17 +105,14 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  }),[date,today,isToday]);
  const onControl=useCallback(id=>{
   const [,action,...parts]=id.split(':');
-  if(action==='expand'){const allowed=new Set(day.activities.map(a=>a.id));update({expanded:parts.join(':').split(',').filter(id=>allowed.has(id)),fanPage:0,selected:null});}
-  else if(action==='collapse')update({expanded:[],fanPage:0,selected:null});
-  else if(action==='fanpage'){const page=Number(parts[0]);update({fanPage:parts.length&&Number.isInteger(page)&&page>=0&&page<480?page:((mine.fanPage??0)+1)%480,selected:null});}
-  else if(action==='open'||action==='open-fullscreen'){if(selected&&(!parts.length||parts.join(':')===selected.id))openActivity(selected.id,{fullscreen:action==='open-fullscreen'});}
+  if(action==='open'||action==='open-fullscreen'){if(selected&&(!parts.length||parts.join(':')===selected.id))openActivity(selected.id,{fullscreen:action==='open-fullscreen'});}
   else if(action==='clear'){if(!parts.length||parts.join(':')===selected?.id)update({selected:null});}
-  else if(id.startsWith('pday:activity:'))update({activity:id.slice('pday:activity:'.length),selected:null,expanded:[],fanPage:0});
-  else if(id==='pday:reset')update({activity:'',selected:null,expanded:[],fanPage:0});
-  else if(id==='pday:prev')update({picked:addDays(date,-1),locate:null,notice:'',selected:null,expanded:[],fanPage:0});
-  else if(id==='pday:next'){const next=addDays(date,1);update({picked:next>=today?null:next,locate:null,notice:'',selected:null,expanded:[],fanPage:0});}
-  else if(id==='pday:today')update({picked:null,locate:null,notice:'',selected:null,expanded:[],fanPage:0});
- },[date,today,update,selected,openActivity,day.activities,mine.fanPage]);
+  else if(id.startsWith('pday:activity:'))update({activity:id.slice('pday:activity:'.length),selected:null});
+  else if(id==='pday:reset')update({activity:'',selected:null});
+  else if(id==='pday:prev')update({picked:addDays(date,-1),locate:null,notice:'',selected:null});
+  else if(id==='pday:next'){const next=addDays(date,1);update({picked:next>=today?null:next,locate:null,notice:'',selected:null});}
+  else if(id==='pday:today')update({picked:null,locate:null,notice:'',selected:null});
+ },[date,today,update,selected,openActivity]);
  // Locate always means my own current location, independent of the selected person/day.
  // Ignore delayed answers after either changes; never fall back to somebody else's fix.
  const requestContext=useRef('');

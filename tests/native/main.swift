@@ -5357,9 +5357,6 @@ for (index,expected) in [(CGFloat(3.5),CGFloat(1)),(4,1),(4.5,1),(5,1),(5.5,1)].
     let style=DensityTrailStyle.value(index+1)
     check(style.width == expected.0 && style.opacity == expected.1, "density \(index+1) uses visible bounded styling")
 }
-check(ActivityClusterPolicy.shouldZoom(spreadMetres:100,cameraDistance:2000), "separated activity starts zoom to reveal native flags")
-check(!ActivityClusterPolicy.shouldZoom(spreadMetres:0,cameraDistance:2000), "coincident starts use a fan-out instead of false geographic offsets")
-check(!ActivityClusterPolicy.shouldZoom(spreadMetres:30,cameraDistance:100), "close-zoom clusters expand into individual flags")
 print("Final native assertion count including visible trails and activity clusters: \(assertions)")
 
 let safePreferences=try AccountPreferencesJSON.data(["onboardingStep":2,"syncReceipts":["a":["updatedAt":NSNull(),"revision":3]]])
@@ -5401,14 +5398,8 @@ check(activityTapGate.accept("step:b",now:11), "a later tap can reveal the same 
 check(!activityTapGate.isRecent(now:12), "route gestures resume after the duplicate callback interval")
 print("Final native assertion count including activity tap routing: \(assertions)")
 
-let fanAvatar=CGRect(x:150,y:170,width:90,height:90)
-let fanCentres=ActivityFanLayout.centres(anchor:CGPoint(x:195,y:220),bounds:CGRect(x:0,y:60,width:390,height:390),obstacles:[fanAvatar])
-check(fanCentres.count>=6 && fanCentres.count<=12, "coincident starts fan out into a bounded set of readable targets")
-for (index,p) in fanCentres.enumerated() {
-    check(!CGRect(x:p.x-27,y:p.y-27,width:54,height:54).intersects(fanAvatar), "expanded flags avoid the live avatar")
-    check(fanCentres.prefix(index).allSatisfy{hypot($0.x-p.x,$0.y-p.y)>=55}, "expanded activity touch targets stay separate")
-}
-check(ActivityFanLayout.page(total:40,capacity:12,requested:1,selectedIndex:30)==2, "the selected activity remains visible if the bubble reduces available slots")
-check(ActivityFanLayout.page(total:40,capacity:12,requested:4,selectedIndex:nil)==0, "large groups cycle through bounded pages")
-check(ActivityFanLayout.centres(anchor:.zero,bounds:.zero,obstacles:[]).isEmpty, "an unlaid-out map does not fabricate fan positions")
-print("Final native assertion count including clustered activity fan-out: \(assertions)")
+check(ActivityClusterZoom.span(current:1000,spread:100,minimum:12)==150, "activity clusters zoom to their actual bounds")
+check(ActivityClusterZoom.span(current:1000,spread:0,minimum:12)==12, "coincident starts use a bounded close zoom without fan-out")
+check(ActivityClusterZoom.span(current:8,spread:0,minimum:12)==8, "a cluster tap never zooms out at maximum detail")
+check(ActivityClusterZoom.span(current:1000,spread:900,minimum:12)==450, "even a wide cluster zooms in consistently")
+print("Final native assertion count including zoom-only activity clusters: \(assertions)")

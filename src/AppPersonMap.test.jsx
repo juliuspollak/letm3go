@@ -195,7 +195,7 @@ it('Back from a shared activity restores the same person/day/selection and scrol
  const scrollY=Object.getOwnPropertyDescriptor(window,'scrollY');Object.defineProperty(window,'scrollY',{configurable:true,value:245});
  try{
   render(<App/>);fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
-  act(()=>mapProps.value.personDay.onControl('pday:prev'));act(()=>mapProps.value.personDay.onControl('pday:expand:shared'));act(()=>mapProps.value.personDay.onStep('shared'));
+  act(()=>mapProps.value.personDay.onControl('pday:prev'));act(()=>mapProps.value.personDay.onStep('shared'));
   const key=mapProps.value.personDay.payload.fitKey;
   act(()=>mapProps.value.personDay.onControl('pday:open:shared'));
   expect(screen.getByLabelText('Shared activity detail')).toBeTruthy();
@@ -203,7 +203,6 @@ it('Back from a shared activity restores the same person/day/selection and scrol
   expect(trigger().getAttribute('aria-label')).toMatch(/^Showing Ann/);
   expect(mapProps.value.personDay.payload.fitKey).toBe(key);
   expect(mapProps.value.personDay.payload.activityPreview.activityID).toBe('shared');
-  expect(mapProps.value.personDay.payload.expandedActivities).toEqual(['shared']);
   await waitFor(()=>expect(scroll).toHaveBeenCalledWith({top:245,behavior:'instant'}));
  }finally{window.scrollTo=originalScroll;if(scrollY)Object.defineProperty(window,'scrollY',scrollY);}
 });

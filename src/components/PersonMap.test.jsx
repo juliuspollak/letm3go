@@ -115,15 +115,3 @@ describe('person map activity bubble',()=>{
   setup({locateSelf:async()=>null});await locate();expect(last().focus).toBeUndefined();expect(screen.getByText(/Your location is not available/)).toBeTruthy();
  });
 });
-it('expands only current activities into a fan and retains that group when opening its bubble',()=>{
- setup();control('pday:expand:a,unauthorised,b');
- expect(last().expandedActivities).toEqual(['a','b']);
- act(()=>mock.onStep('b'));expect(last().expandedActivities).toEqual(['a','b']);
- expect(last().activityPreview.activityID).toBe('b');
- control('pday:fanpage');expect(last().activityPreview).toBeNull();expect(last().fanPage).toBe(1);
- control('pday:collapse');expect(last().expandedActivities).toEqual([]);
-});
-it('collapses the fan when changing days or filtering out its activities',()=>{
- setup();control('pday:expand:a,b');control('pday:prev');expect(last().expandedActivities).toEqual([]);
- control('pday:expand:a,b');control('pday:activity:Walking');expect(last().expandedActivities).toEqual([]);
-});

@@ -66,10 +66,6 @@ enum DensityTrailStyle {
         }
     }
 }
-enum ActivityClusterPolicy {
-    static func shouldZoom(spreadMetres:Double,cameraDistance:Double)->Bool {spreadMetres>=20 && cameraDistance>=250}
-}
-
 // Only the screen-space label moves. Its connector continues to the unchanged
 // annotation coordinate; MapKit still clusters activities at their real starts.
 enum ActivityFlagPlacement {
@@ -103,40 +99,13 @@ struct ActivityTapGate {
     func isRecent(now:Double)->Bool {at>=0 && now-at<0.5}
 }
 
-// Screen-space positions only: leader lines still end at real map coordinates.
-// A bounded page avoids trying to fit hundreds of flags around one start.
-enum ActivityFanLayout {
-    static func page(total:Int,capacity:Int,requested:Int,selectedIndex:Int?)->Int {
-        guard total>0,capacity>0 else {return 0}
-        let pages=(total+capacity-1)/capacity
-        let page=max(0,requested)%pages
-        if let selected=selectedIndex,selected>=0,selected<total,selected/capacity != page {return selected/capacity}
-        return page
-    }
-    static let pageLimit=12
-    static func centres(anchor:CGPoint,bounds:CGRect,obstacles:[CGRect])->[CGPoint] {
-        let safe=bounds.insetBy(dx:27,dy:27)
-        guard safe.width>0,safe.height>0 else {return []}
-        var placed:[CGPoint]=[]
-        func add(_ point:CGPoint) {
-            guard placed.count<pageLimit else {return}
-            let p=CGPoint(x:max(safe.minX,min(safe.maxX,point.x)),y:max(safe.minY,min(safe.maxY,point.y)))
-            let frame=CGRect(x:p.x-27,y:p.y-27,width:54,height:54)
-            guard !obstacles.contains(where:{$0.insetBy(dx:-5,dy:-5).intersects(frame)}),!placed.contains(where:{hypot($0.x-p.x,$0.y-p.y)<55}) else {return}
-            placed.append(p)
-        }
-        for radius in [76.0,126.0,176.0] {
-            for i in 0..<24 {
-                let angle = -Double.pi/2+Double(i)*Double.pi/12
-                add(CGPoint(x:anchor.x+cos(angle)*radius,y:anchor.y+sin(angle)*radius))
-            }
-        }
-        var y=safe.minY
-        while y<=safe.maxY && placed.count<pageLimit {
-            var x=safe.minX
-            while x<=safe.maxX && placed.count<pageLimit {add(CGPoint(x:x,y:y));x+=48}
-            y+=48
-        }
-        return placed
+// Cluster count does not change the action: always zoom towards the real starts.
+// Bound coincident starts without fabricating offsets or introducing another UI.
+enum ActivityClusterZoom {
+    static func span(current:Double,spread:Double,minimum:Double)->Double {
+        guard current.isFinite,current>0 else {return max(1,minimum)}
+        let floor=minimum.isFinite && minimum>0 ? minimum : 1
+        let extent=spread.isFinite && spread>0 ? spread*1.5 : floor
+        return min(current,max(floor,min(current*0.45,extent)))
     }
 }
