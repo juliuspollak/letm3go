@@ -6,8 +6,10 @@ import {healthIssues,healthLabel,healthRows,warningIssue} from '../lib/recording
 function IssueAction({issue,run,disabled,onUse}){
  return issue.action?<button type="button" className="primary" disabled={disabled} onClick={()=>{onUse?.();run(...issue.action.run);}}>{issue.action.label}</button>:null;
 }
-export function RecordingHealthChip({health,onOpen}){
+export function RecordingHealthChip({health,onOpen,compact=false}){
  if(!health)return null;
+ // In the header (compact) it is only the pill; a problem is drawn stronger (styles: .is-compact.is-limited / .is-unavailable).
+ if(compact)return <button type="button" className={`recording-health-chip is-compact is-${health.status}`} aria-label={`Recording status: ${healthLabel(health)}. Show details`} onClick={onOpen}><span aria-hidden="true"/>{healthLabel(health)}</button>;
  return <section className="recording-health" aria-label="Automatic recording status"><button type="button" className={`recording-health-chip is-${health.status}`} aria-label={`Recording status: ${healthLabel(health)}. Show details`} onClick={onOpen}><span aria-hidden="true"/>{healthLabel(health)}<ChevronRight size={15} aria-hidden="true"/></button></section>;
 }
 // The one warning in the app. It sits above every tab, so a serious problem is
