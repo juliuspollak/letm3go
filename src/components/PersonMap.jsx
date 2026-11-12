@@ -31,7 +31,7 @@ function useToday(timeZone){
 
 const fresh=forOwner=>({owner:forOwner,picked:null,scrub:null,notice:'',locate:null});
 
-export default function PersonMap({person,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs}){
+export default function PersonMap({person,personPin=null,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs}){
  const owner=person?.userId||'';
  const isSelf=owner===viewer;
  const today=useToday(timeZone);
@@ -60,12 +60,15 @@ export default function PersonMap({person,viewer,timeZone=browserZone(),onOpenOw
   const live=scrubbing?[]:day.live;
   const routes=[...recorded,...live.slice(0,-1)].map(line=>thinLine(line));
   const pins=day.markers.map(m=>({id:'step:'+m.activityID,kind:'step',point:m.point,title:m.title,label:String(m.n),activityID:m.activityID}));
-  if(!isSelf&&isToday&&position&&Number.isFinite(position.latitude))pins.push({id:'latest:'+owner,kind:'friend-live',point:[position.latitude,position.longitude],title:`${person?.name||'Member'} · ${person?.status?.text||'Latest location'}`});
+  // Reuse the single-person pin from the All people map. The native renderer then
+  // shows the same profile photo, live movement/speed label and activity ornament.
+  // Never show a current position on a historical day or when its owner is hidden.
+  if(!isSelf&&isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&personPin.members[0].id===owner)pins.push(personPin);
   const at=scrubbing?positionAt(day,deferred):null;
   if(at)pins.push({id:'playback',kind:'playback',point:at.point,title:at.inGap?`No GPS signal · last fix ${formatAge(Math.round(at.ageSeconds))}`:`Recorded at ${clock(at.t,timeZone)}`});
   // fitKey: the camera is brought to a new day once; points, the live trail and the slider never refit it.
   return {routes,gaps:[],estimated:scrubbing?[]:[...day.estimated,...day.liveRoads].map(line=>thinLine(line,2000)),live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,deferred,isToday,isSelf,position,owner,person?.name,person?.status?.text,timeZone,date,locate]);
+ },[day,deferred,isToday,isSelf,personPin,owner,timeZone,date,locate]);
  const first=day.samples[0]?.t,last=day.samples.at(-1)?.t;
  const canScrub=day.samples.length>1;
  const at=scrub!=null?positionAt(day,scrub):null;
