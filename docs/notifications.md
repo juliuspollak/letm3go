@@ -7,7 +7,7 @@ What notifies whom (migration `20261123000000_notifications_and_pokes.sql`):
 | New feedback, or a sender's reply | every admin (`app_admins`) | badge on the profile bubble; "N new" on Feedback & Support | yes |
 | Staff reply, resolved or closed | the person who sent the feedback | same | yes |
 | Trail or segment submitted for review | every moderator (`moderators`) and admin | "Trails & segments to review" in the profile sheet; opens Map → Trails → Review | yes |
-| Poke (tap a person on Home) | that friend or household member | 👋 banner | yes |
+| Poke (••• menu on a Home person tile, or **Poke** in the Map tab's person bar) | that friend or household member | 👋 banner | yes |
 
 Admins are moderators too: `is_moderator()` accepts either list.
 
