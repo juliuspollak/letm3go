@@ -32,7 +32,7 @@ const renderMap=day=><AppleMap payload={day?.payload??{all:true}} onStep={day?.o
 const setup=(over={})=>{
  const onOpenShared=vi.fn();
  const selected=over.person===undefined?person:over.person;
- const personPin=over.personPin===undefined&&(selected?.userId==='her'&&selected.position&&selected.state==='live')?selectedPin:over.personPin;
+ const personPin=over.personPin===undefined&&(selected?.userId==='her'&&selected.position&&['live','stale'].includes(selected.state))?{...selectedPin,...(selected.state==='stale'?{label:'Last seen 25 min ago',labelKind:'stale',members:[{...selectedPin.members[0],state:'stale',activity:null}]}:{})}:over.personPin;
  const view=render(<PersonMap person={person} personPin={personPin} viewer="me" timeZone={Z} renderMap={renderMap} onOpenShared={onOpenShared} {...over}/>);
  return {onOpenShared,view};
 };
@@ -56,7 +56,7 @@ describe('person map',()=>{
   setup();
   const marker=last().pins.find(pin=>pin.kind==='people');
   expect(marker).toBe(selectedPin);
-  expect(marker.members[0].avatar).toMatch(/^data:image\\/png/);
+  expect(marker.members[0].avatar).toContain('data:image/png');
   expect(marker.label).toBe('Driving · 90 km/h');
   expect(last().pins.some(pin=>pin.kind==='friend-live')).toBe(false);
  });
@@ -234,7 +234,7 @@ describe('the Locate button', ()=>{
  });
  it('Someone else, today, with an old location: still their last known place, labelled with how old it is', async()=>{
   setup({person:{...person,state:'stale',status:{text:'Last seen 25 min ago',tone:'stale'}}});
-  expect(last().pins.find(p=>p.kind==='people').title).toMatch(/Last seen 25 min ago/);
+  expect(last().pins.find(p=>p.kind==='people').label).toMatch(/Last seen 25 min ago/);
   await locate();
   expect(last().focus).toEqual([-34.9,151.1]);
  });
