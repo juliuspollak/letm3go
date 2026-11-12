@@ -13,10 +13,10 @@ export default function PokeOverlay({poke,onDismiss,quiet=false}){
   return()=>clearTimeout(timer);
  },[poke]);
  if(!poke||quiet)return null;
- // A speech bubble under the profile bubble, with a waving hand, not a bar across the top.
+ // A small, still note under the profile bubble that fades in; it dismisses itself.
  return <div className="poke-float" role="status" aria-live="polite">
   <button type="button" className="poke-float-bubble" onClick={()=>dismiss.current()}>
-   <span className="poke-float-wave" aria-hidden="true">👋</span>
+   <span aria-hidden="true">👋</span>
    <span>{String(poke.body||'Someone poked you').replace(/\s*👋\s*$/u,'')}</span>
   </button>
  </div>;

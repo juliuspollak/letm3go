@@ -60,3 +60,10 @@ Automatic publication carries `p_auto:true` into `publish_social_journey`. The R
 Authorisation and returned shared snapshots use one stable statement snapshot. Open private details subscribe to the same viewer channel and 60-second fallback as the map, and discard pre-signal responses. Pending offline privacy requests are never truncated; a persistence failure is reported before confirmation is recorded.
 
 Deployment for these guarantees requires migrations `20261204000000` then `20261205000000`, followed by the updated `journeys` Edge Function. Older backend calls default to manual publication for compatibility; the upgraded backend supplies automatic intent explicitly. No migration or deployment is performed by merging.
+
+## Where it lives in the app
+
+A person's day is part of the **Map tab**, not a separate screen. Tapping a person on Home (or **My day**) switches to the Map tab with that person selected; the selector row at the top of the Map (**All people · Me · each household member and friend**) changes the selection without leaving the tab. `PersonMap` supplies the person bar, day navigation and timeline and hands the Map tab's single `JourneyMap` a `personDay` payload; `JourneyMap` passes it to the one `AppleMap` as a `dynamic` payload, so choosing a person, changing day or scrubbing updates the native map in place (`fitKey` moves the camera once per person/day). The saved Map layers, filters and camera are not changed by choosing a person. Switching between **All people** and a person changes the map content once (the same native map is re-applied, as when a layer is toggled); person to person, day to day and scrubbing never do. Leaving the Map tab returns it to All people. Opening an activity from the map leaves the Map tab for the activity screen; coming back from a friend's shared activity returns to the Map with the person still selected but on Today.
+
+Poke is separate from navigation: the **•••** menu on a Home tile, and **Poke** in the person bar. The result is a quiet line of text ("Poked ✓"), not a bubble.
+

@@ -6,13 +6,12 @@ afterEach(()=>{cleanup();vi.useRealTimers();});
 
 const person=extra=>({id:'ann',userId:'ann',name:'Ann',status:{text:'Sharing · just now',tone:'live'},onSelect:()=>{},actionLabel:'Poke Ann.',...extra});
 
-it('wiggles the poked person\'s avatar and shows a speech bubble beside it, not a banner',()=>{
+it('shows a poke sent as a quiet line of text under the person, not a bubble, wiggle or banner',()=>{
  const {container}=render(<PeopleGrid people={[person({poke:{state:'sent'}})]} label="Friends"/>);
- expect(screen.getByRole('status')).toHaveTextContent('Poked 👋');
- expect(container.querySelector('.person-tile--poked')).not.toBeNull();
- expect(container.querySelector('.poke-layer')).toBeNull();
+ expect(screen.getByRole('status')).toHaveTextContent('Poked ✓');
+ expect(container.querySelector('.poke-bubble,.person-tile--poked,.poke-layer')).toBeNull();
 });
-it('says "Poked you" for an incoming poke and shows failures in the same bubble',()=>{
+it('says "Poked you" for an incoming poke and shows failures in the same line',()=>{
  const {rerender}=render(<PeopleGrid people={[person({poke:{state:'received'}})]} label="Friends"/>);
  expect(screen.getByRole('status')).toHaveTextContent('Poked you 👋');
  rerender(<PeopleGrid people={[person({poke:{state:'failed',message:'Slow down'}})]} label="Friends"/>);

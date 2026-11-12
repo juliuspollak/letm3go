@@ -54,3 +54,14 @@ it('highlights only the selected photo while retaining the route and rejecting u
  expect(captured.props.payload.pins.filter(pin=>pin.selected).map(pin=>pin.photoID)).toEqual(['p2']);
  expect(captured.props.payload.routes).toEqual(ride.routeSegments);
 });
+
+it('draws a person\'s day on the same map: their payload, updated in place, with the Map layers, layer controls and camera left out', ()=>{
+ const onStep=vi.fn(),controls={active:2},day={payload:{routes:[[[1,2],[3,4]]],pins:[],fitKey:'her|2026-11-11'},onStep};
+ const {rerender}=render(<JourneyMap journeys={[ride]} overview={{key:'d1'}} camera={{mode:'all'}} onCamera={vi.fn()} onRegion={vi.fn()} onSegment={vi.fn()} controls={controls} personDay={day}/>);
+ expect(captured.props.payload).toBe(day.payload);
+ expect(captured.props).toMatchObject({dynamic:true,onStep,controls:null,onControl:null,overview:null,onCamera:null,onRegion:null,onSegment:null});
+ // Back to All people: the layers return exactly as they were.
+ rerender(<JourneyMap journeys={[ride]} overview={{key:'d1'}} camera={{mode:'all'}} controls={controls}/>);
+ expect(captured.props.payload).toMatchObject({overview:'d1'});
+ expect(captured.props).toMatchObject({dynamic:false,overview:{key:'d1'}});
+});
