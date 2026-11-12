@@ -24,11 +24,12 @@ function Sheet({label,onClose,children}){
  </DismissibleSheet></div>;
 };
 
-export default function MapPersonBar({people,selected,viewer,onSelect,photos=null,selfAvatar=null}){
+export default function MapPersonBar({people,selected,selectedName,viewer,onSelect,photos=null,selfAvatar=null}){
  const [open,setOpen]=useState(false),[key,setKey]=useState(false);
- const trigger=useRef(null);
- const chosen=selected==null?null:selected===viewer?{userId:viewer,name:'Me',self:true}:people.find(p=>p.userId===selected)||{userId:selected,name:'Member'};
- const close=()=>{setOpen(false);setKey(false);trigger.current?.focus();};
+ const trigger=useRef(null),keyButton=useRef(null);
+ const chosen=selected==null?null:selected===viewer?{userId:viewer,name:'Me',self:true}:people.find(p=>p.userId===selected)||{userId:selected,name:selectedName||'Member'};
+ // Focus goes back to whatever opened the sheet.
+ const close=()=>{const returnTo=key?keyButton.current:trigger.current;setOpen(false);setKey(false);returnTo?.focus();};
  const choose=userId=>{onSelect(userId);setOpen(false);trigger.current?.focus();};
  // A secondary line only where it says something not already in the name: how fresh their location is.
  const sub=chosen&&!chosen.self?(chosen.ageText?`Updated ${chosen.ageText}`:chosen.short||''):'';
@@ -42,7 +43,7 @@ export default function MapPersonBar({people,selected,viewer,onSelect,photos=nul
     {sub&&<span className="map-person-sub">{sub}</span>}
     <ChevronDown size={16} aria-hidden="true"/>
    </button>
-   {chosen&&<button type="button" className="map-key-button" aria-label="Map key" onClick={()=>setKey(true)}><Info size={18} aria-hidden="true"/></button>}
+   {chosen&&<button type="button" ref={keyButton} className="map-key-button" aria-label="Map key" onClick={()=>setKey(true)}><Info size={18} aria-hidden="true"/></button>}
   </div>
   {open&&<Sheet label="Choose who to show" onClose={close}>
    <h2 className="map-person-heading">Show on map</h2>

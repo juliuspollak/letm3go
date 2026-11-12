@@ -159,3 +159,12 @@ it('leaving the Map returns to All people', ()=>{
  fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
  expect(trigger().getAttribute('aria-label')).toMatch(/^Showing All people/);
 });
+it('a Filters panel left open is closed when a person is chosen, and stays closed on return', async()=>{
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ act(()=>mapProps.value.onControl('panel:filters'));
+ expect(mapProps.value.controls.panel?.id).toBe('filters');
+ await choose(/Ann/);
+ await choose(/All people/);
+ expect(mapProps.value.controls.panel).toBeNull();
+});

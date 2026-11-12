@@ -124,12 +124,12 @@ export default function PersonMap({person,viewer,timeZone=browserZone(),onOpenOw
  const personDay=useMemo(()=>payload?{payload,onStep,date:date_,onControl,onLocate,locating}:null,[payload,onStep,date_,onControl,onLocate,locating]);
  // Slots are fixed so the map keeps its place in the tree (and is never re-created) whether
  // a person is selected or not. Everything but the map is one line, below it, only when it has something to say.
- const status=!person?'':loading?'Loading…':error?error:notice?notice:day.isEmpty?(isToday?'No movement shared yet today.':'Nothing shared for this day.'):'';
+ const status=!person?'':error?error:notice?notice:loading?'Loading…':day.isEmpty?(isToday?'No movement shared yet today.':'Nothing shared for this day.'):'';
  return <>
   <div className={person?'person-map-canvas':'map-canvas'}>
    {renderMap(personDay)}
   </div>
-  {status?<p className="person-map-note" role={error?'alert':'status'}>{status}{notice&&!loading&&!error?<> <button type="button" className="text-button" onClick={()=>update({notice:''})}>OK</button></>:null}</p>:null}
+  {status?<p className="person-map-note" role={error?'alert':'status'}>{status}{notice&&!error?<> <button type="button" className="text-button" onClick={()=>update({notice:''})}>OK</button></>:null}</p>:null}
   {person&&canScrub?<div className="person-map-timeline">
    <input type="range" aria-label="Time of day" min={Math.ceil(first)} max={Math.floor(last)} step={1} value={scrub??Math.floor(last)} onChange={event=>setScrub(Number(event.target.value))}/>
    <span className="person-map-time">{scrub==null?(isToday?'Now':'End of day'):clock(scrub,timeZone)}{at?.inGap?' · No GPS signal':''}</span>
