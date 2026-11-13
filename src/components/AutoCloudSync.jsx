@@ -100,7 +100,7 @@ export default function AutoCloudSync({state,journeySync=null}){
     if(failure)throw failure;
     synced.current=signature;
    }catch(error){
-    // The Settings screen is the explicit retry/error surface. Nothing local is deleted. The reason also goes to the
+    // The Settings screen reports backup status and failures. Nothing local is deleted. The reason also goes to the
     // diagnostic log (once per distinct reason per ten minutes), so a report shows why activities are not reaching the cloud.
     const reason=String(error?.key||error?.message||'Backup failed'),now=Date.now();
     if(reportedBackup.current.reason!==reason||now-reportedBackup.current.at>600000){reportedBackup.current={reason,at:now};try{void recorder.noteBackupFailure(String(error?.message||reason));}catch{/* diagnostics only */}}

@@ -18,7 +18,7 @@ it('shows how many recorded activities are backed up, waiting, and why one was r
  render(<PrivateBackup state={{ownerID:'owner',trips:ids.map(trip)}}/>);
  const status=screen.getByText(/25 of 30 recorded activities are backed up/);
  expect(status.textContent).toContain('5 waiting');
- expect(status.textContent).toContain('a0000027 was refused: Cloud activity conflict (tried 2 times; next try in 5 min)');
+ expect(status.textContent).toContain('a0000027: Cloud activity conflict. Your local recording is safe.');
 });
 it('says nothing when nothing has been recorded',()=>{
  mock.receipts={};
@@ -31,4 +31,11 @@ it('does not render blank refusal rows left by older native settings storage',()
  render(<PrivateBackup state={{ownerID:'owner',trips:[trip('a'),trip('b')]}}/>);
  expect(screen.getByText(/1 of 2 recorded activities are backed up/)).toBeTruthy();
  expect(screen.queryByText(/was refused/)).toBeNull();
+});
+
+it('provides status without manual sync or restore controls',()=>{
+ mock.receipts={};
+ render(<PrivateBackup state={{ownerID:'owner',trips:[]}}/>);
+ expect(screen.queryByRole('button')).toBeNull();
+ expect(screen.getByText(/retried automatically/)).toBeTruthy();
 });

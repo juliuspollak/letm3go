@@ -110,3 +110,29 @@ it('acknowledges equivalent typed content without rewriting, bumping revisions o
  expect((await as('service_role','',`select count(*)::int as n from public.shared_journeys where activity_id='${id}'`)).rows[0].n).toBe(1);
  expect((await backup({...payload,title:'A real local edit'},'c',ack.revision,ack.base_fingerprint)).rows[0].revision).toBe(before.revision+1);
 });
+
+it('recovers missing versioned metadata with a stale legacy receipt only when all existing content matches',async()=>{
+ const id='aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae',payload={...row(id),classification:{predicted:'Walking',confidence:'high',evidence:['GPS']}};
+ await backup(payload,'a');
+ // A prior successful upload advanced the cloud identity but its local receipt was lost.
+ await as('authenticated',a,`select public.backup_private_activity('${a}','${JSON.stringify(payload)}','${hash('b')}',1)`);
+ await as('authenticated',a,`update public.activities set updated_at=now() where id='${id}'`);
+ const enriched={...payload,classification:{...payload.classification,privateActivity:{version:1,routeQuality:{fixCount:2},sourceUpdatedAt:123},journeyStops:{version:1,stops:[{start:1794182410,end:1794182420}]}}};
+ const before=(await as('authenticated',a,`select revision from public.activities where id='${id}'`)).rows[0].revision;
+ expect((await backup(enriched,'c',1,'d')).rows[0].revision).toBe(before+1);
+ expect((await as('authenticated',a,`select classification from public.activities where id='${id}'`)).rows[0].classification).toEqual(enriched.classification);
+ // Repeating a lost acknowledgement does not rewrite the activity.
+ expect((await backup(enriched,'c',1,'d')).rows[0].revision).toBe(before+1);
+ // Existing metadata cannot be removed or overwritten by another stale device.
+ await expect(backup({...enriched,classification:{...enriched.classification,privateActivity:{version:1,sourceUpdatedAt:999}}},'e',1,'d')).rejects.toThrow('content changed');
+ await expect(backup(payload,'f',1,'d')).rejects.toThrow('content changed');
+});
+it('refuses additive metadata recovery if route, user content or existing classification changed',async()=>{
+ const id='bdbdbdbd-bdbd-4dbd-8dbd-bdbdbdbdbdbd',payload={...row(id),classification:{predicted:'Walking',confidence:'high',evidence:['GPS']}};
+ await backup(payload,'a');
+ const enriched={...payload,classification:{...payload.classification,privateActivity:{version:1,routeQuality:{fixCount:2}}}};
+ for(const change of [{title:'Stale title'},{notes:'Stale notes'},{route_points:[]},{view_metadata:{startPlace:'Stale place'}},{classification:{...enriched.classification,confidence:'low'}},{classification:{...enriched.classification,extra:'unrecognised'}},{classification:{...enriched.classification,privateActivity:{version:2}}}]){
+  await expect(backup({...enriched,...change},'b',1,'d')).rejects.toThrow('content changed');
+ }
+ expect((await as('authenticated',a,`select revision,classification from public.activities where id='${id}'`)).rows[0]).toEqual({revision:1,classification:payload.classification});
+});
