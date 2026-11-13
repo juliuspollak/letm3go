@@ -544,7 +544,17 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     @objc func assignEquipment(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         guard let id=call.getString("id"), let ids=call.getArray("ids",String.self) else { call.reject("Choose equipment for this activity."); return }
-        do { try LocationRecorder.shared.assignEquipment(id:id,ids:ids); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+        do {
+            let r=LocationRecorder.shared
+            let before=RecorderHistoryFingerprint.token(r.trips,owner:r.ownerID!)
+            try r.assignEquipment(id:id,ids:ids)
+            guard let trip=r.trips.first(where:{$0.id==id}) else {throw r.failure("Activity not found.")}
+            let refs=(trip.equipment ?? []).map {["id":$0.id,"name":$0.name]}
+            call.resolve(["ownerID":r.ownerID!,"baseHistoryToken":before,
+                "historyToken":RecorderHistoryFingerprint.token(r.trips,owner:r.ownerID!),
+                "equipmentUpdate":["id":trip.id,"equipment":refs,"vehicle":trip.vehicle as Any? ?? NSNull(),
+                    "vehicleID":trip.vehicleID as Any? ?? NSNull(),"updatedAt":trip.updatedAt as Any? ?? NSNull()]])
+        } catch { call.reject(error.localizedDescription) }
     } }
     @objc func assignTrail(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
