@@ -5426,3 +5426,8 @@ check(segmentSyncReceipt.valid(for:"mtb-segment:id",ownerID:"OWNER"), "long segm
 check(!segmentSyncReceipt.valid(for:"activity-id",ownerID:"owner"), "non-segment fingerprints retain their existing bound")
 check(!segmentSyncReceipt.valid(for:"mtb-segment:id",ownerID:"other"), "segment receipt account isolation remains enforced")
 print("Final native assertion count including complete sync receipts: \(assertions)")
+
+let baselineReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:Data(#"{"owner":"owner","fingerprint":"local","baseFingerprint":"server","revision":11,"confirmedAt":100}"#.utf8))
+let baselineRoundTrip=try! JSONSerialization.jsonObject(with:JSONEncoder().encode(baselineReceipt)) as! [String:Any]
+check(baselineRoundTrip["baseFingerprint"] as? String == "server", "native preferences retain server baseline separately from local serialization")
+print("Final native assertion count including backup content baselines: \(assertions)")

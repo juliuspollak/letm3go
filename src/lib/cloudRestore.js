@@ -24,9 +24,13 @@ export async function restoreCloudJournal({onProgress=()=>{}}={}){
   if(!locallyKnown.has(row.id.toLowerCase())){
    const activity=rawActivityFromCloudRow({...row,owner_id:owner});
    const result=await recorder.restoreActivity(activity);
-   if(result.restored){restored++;locallyKnown.add(row.id.toLowerCase());}
+   if(result.restored){
+    restored++;locallyKnown.add(row.id.toLowerCase());
+    if(row.sync_fingerprint)receipts[row.id]={owner,fingerprint:row.sync_fingerprint,revision:row.revision};
+   }
   }
-  if(row.sync_fingerprint)receipts[row.id]={owner,fingerprint:row.sync_fingerprint,revision:row.revision};
+  // Existing local copies keep their original acknowledgement. Adopting the
+  // latest cloud revision here would authorize a later stale local overwrite.
   const {data:assets,error:assetsError}=await supabase.from('media_assets').select('id,caption,latitude,longitude,location_source').eq('owner_id',owner).eq('activity_id',row.id).limit(50);
   if(assetsError)throw new Error('Could not retrieve this activity\'s private photo metadata.');
   for(const photo of assets||[]){
