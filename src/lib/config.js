@@ -14,7 +14,8 @@ export function readConfig(env = {}, { native = false } = {}) {
     // The native target is signed with the push capability; the web app has none.
     pushEnabled: native || env.VITE_ENABLE_PUSH === 'true',
     teslaEnabled: env.VITE_ENABLE_TESLA === 'true',
-    backupEnabled: env.VITE_ENABLE_PRIVATE_BACKUP === 'true',
+    // Recording backups are part of the native app, independent of browser opt-in.
+    backupEnabled: native || env.VITE_ENABLE_PRIVATE_BACKUP === 'true',
     apnsEnvironment: env.VITE_APNS_ENVIRONMENT === 'production' ? 'production' : 'sandbox',
   };
 }

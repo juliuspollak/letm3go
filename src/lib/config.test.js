@@ -11,3 +11,9 @@ it('requires both public configuration values and a valid URL', () => {
 });
 
 it('enables native Apple independently of the browser OAuth feature flag',()=>{expect(readConfig({VITE_ENABLE_APPLE_AUTH:'false'},{native:true}).appleEnabled).toBe(true);expect(readConfig({VITE_ENABLE_APPLE_AUTH:'false'}).appleEnabled).toBe(false);});
+
+it('keeps automatic backup on in native builds even when a browser flag is absent or false',()=>{
+ for(const flag of [undefined,'false','true'])expect(readConfig({VITE_ENABLE_PRIVATE_BACKUP:flag},{native:true}).backupEnabled).toBe(true);
+ expect(readConfig().backupEnabled).toBe(false);
+ expect(readConfig({VITE_ENABLE_PRIVATE_BACKUP:'true'}).backupEnabled).toBe(true);
+});
