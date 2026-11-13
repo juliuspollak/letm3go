@@ -32,7 +32,7 @@ function world(over = {}) {
     from: table => {
       if (table === 'account_deletion_requests') return thenable({ data: w.deleting, error: null });
       if (table === 'shared_journeys') { const b = thenable({ data: w.shared, error: w.deleteError || null }); const del = b.delete; b.delete = () => { w.deletes.push('shared_journeys'); return del(); }; return b; }
-      if (table === 'media_assets') { const b = thenable({ data: w.asset || null, error: null }); b.insert = async row => { w.uploads.push(row); return { error: w.insertError || null }; }; return b; }
+      if (table === 'media_assets') { const b = thenable({ data: w.asset || null, error: null }); b.insert = async row => { w.uploads.push(row); return w.onMediaInsert ? w.onMediaInsert(row,w) : { error: w.insertError || null }; }; return b; }
       return thenable({ data: null, error: null });
     },
     rpc: async (name, args) => {
@@ -50,7 +50,7 @@ function world(over = {}) {
     from: table => {
       if (table === 'activities') return thenable({ data: w.trip, error: null });
       if (table === 'saved_places') return thenable({ data: w.places, error: null });
-      if (table === 'media_assets') { const b = thenable({ data: w.assets, count: w.mediaCount, error: null }); b.maybeSingle = async () => ({ data: w.asset || null, error: null }); return b; }
+      if (table === 'media_assets') { const b = thenable({ data: w.assets, count: w.mediaCount, error: null }); b.maybeSingle = async () => ({ data: w.asset || null, error: w.mediaLookupError || null }); return b; }
       return thenable({ data: null, error: null });
     },
     rpc: async (name, args) => {
@@ -261,4 +261,36 @@ describe('the Home exemption is only for a household share', () => {
     expect((await publish(world({ places: [] }), { audience: 'household', mode: 'friends' })).status).toBeGreaterThanOrEqual(400);
     expect((await publish(world({ places: [] }), { audience: 'friends', mode: 'household' })).status).toBe(409);
   });
+});
+
+it('writes uppercase native photo ids to the canonical UUID object key required by Postgres',async()=>{
+ const w=world();
+ const image=Buffer.from([255,216,255,192,0,11,8,0,1,0,1,1,1,17,0,255,218,255,217]).toString('base64');
+ const reply=await w.post({action:'upload',id:ID,mediaID:PHOTO.toUpperCase(),base64:image});
+ expect(reply.status).toBe(200);
+ expect(w.uploads[0].object_key).toBe(`${OWNER}/${ID}/${PHOTO}.jpg`);
+});
+
+const uploadImage=()=>Buffer.from([255,216,255,192,0,11,8,0,1,0,1,1,1,17,0,255,218,255,217]).toString('base64');
+it('acknowledges a previously uploaded photo at the quota without rewriting it',async()=>{
+ const w=world({mediaCount:50,asset:{id:PHOTO,object_key:`${OWNER}/${ID}/${PHOTO}.jpg`}});
+ const reply=await w.post({action:'upload',id:ID,mediaID:PHOTO.toUpperCase()});
+ expect(reply.status).toBe(200);expect(await reply.json()).toEqual({id:PHOTO,alreadyUploaded:true});
+ expect(w.stored).toBeUndefined();expect(w.uploads).toEqual([]);
+});
+it('preserves the canonical image when a concurrent insert already committed',async()=>{
+ const w=world({onMediaInsert:(row,w)=>{w.asset=row;return {error:{code:'23505'}};}});
+ const reply=await w.post({action:'upload',id:ID,mediaID:PHOTO.toUpperCase(),base64:uploadImage()});
+ expect(reply.status).toBe(200);expect(await reply.json()).toEqual({id:PHOTO,alreadyUploaded:true});
+ expect(w.removed).toEqual([]);
+});
+it('keeps the private object available for retry when metadata was refused',async()=>{
+ const w=world({insertError:{code:'23514'}});
+ const reply=await w.post({action:'upload',id:ID,mediaID:PHOTO.toUpperCase(),base64:uploadImage()});
+ expect(reply.status).toBe(500);expect(w.removed).toEqual([]);expect(w.stored).toBe(`${OWNER}/${ID}/${PHOTO}.jpg`);
+});
+it('preserves the image when the metadata result cannot be confirmed',async()=>{
+ const w=world({onMediaInsert:(row,w)=>{w.asset=row;w.mediaLookupError={message:'Network failed'};return {error:{code:'NETWORK'}};}});
+ const reply=await w.post({action:'upload',id:ID,mediaID:PHOTO,base64:uploadImage()});
+ expect(reply.status).toBe(500);expect(w.removed).toEqual([]);
 });

@@ -500,3 +500,32 @@ it('keeps the server baseline separate from the locally serialized fingerprint a
  await run(api,{...state,trips:[{...trip,title:'Changed locally',updatedAt:20}]},first.receipts,{now:2000});
  expect(api.rpc).toHaveBeenCalledWith('backup_private_activity',expect.objectContaining({p_expected_revision:11,p_base_fingerprint:baseline}));
 });
+
+it('revalidates a held refusal even when a late acknowledgement has the same local updatedAt',async()=>{
+ const api=client(),local={...state,trips:[{...trip,updatedAt:20}]};
+ const saved=await run(api,local,{}, {now:1000});
+ const receipts={...saved.receipts,'backup-failure:trip':{owner:'owner',message:'Cloud activity conflict',attempts:1,at:500,nextAt:1000,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:20}};
+ api.rpc.mockClear();
+ const retried=await run(api,local,receipts,{now:2000,throwOnFailure:false});
+ expect(api.rpc).toHaveBeenCalledWith('backup_private_activity',expect.anything());
+ expect(retried.receipts['backup-failure:trip'].cleared).toBe(true);
+});
+
+it('preserves the retry schedule for a refused unchanged activity during cooldown',async()=>{
+ const api=client(),local={...state,trips:[{...trip,updatedAt:20}]};
+ const saved=await run(api,local,{}, {now:1000});
+ const receipts={...saved.receipts,'backup-failure:trip':{owner:'owner',message:'Cloud activity conflict',attempts:1,at:1500,nextAt:9000,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:20}};
+ api.rpc.mockClear();const result=await run(api,local,receipts,{now:2000,throwOnFailure:false});
+ expect(api.rpc).not.toHaveBeenCalled();expect(result.nextRetryAt).toBe(9000);expect(result.failed).toBe(1);
+});
+it('does not clear a real conflict merely because the old acknowledged fingerprint still matches',async()=>{
+ const api=client(),local={...state,trips:[{...trip,updatedAt:20}]};
+ const saved=await run(api,local,{}, {now:1000});
+ delete saved.receipts.trip.updatedAt;
+ const receipts={...saved.receipts,'backup-failure:trip':{owner:'owner',message:'Cloud activity conflict',attempts:1,at:500,nextAt:1000,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:20}};
+ api.rpc.mockClear();api.rpc.mockResolvedValue({error:{code:'P0001',message:'Cloud activity conflict'}});
+ const result=await run(api,local,receipts,{now:2000,throwOnFailure:false});
+ expect(api.rpc).toHaveBeenCalledWith('backup_private_activity',expect.anything());
+ expect(result.receipts['backup-failure:trip']).toMatchObject({attempts:2,message:'Cloud activity conflict'});
+ expect(result.receipts['backup-failure:trip'].cleared).not.toBe(true);expect(result.nextRetryAt).toBeGreaterThan(2000);
+});
