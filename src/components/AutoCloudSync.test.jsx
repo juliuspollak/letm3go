@@ -258,3 +258,18 @@ it('does not run an extra pass just because the history was first read',async()=
  await tick(2500);
  expect(mocks.activities).toHaveBeenCalledTimes(1);
 });
+
+it('starts private backup when sign-in completes after the startup timer',async()=>{
+ mocks.auth={...mocks.auth,status:'restoring',session:null};
+ const view=render(<AutoCloudSync state={state('h1')}/>);
+ await tick(6000);expect(mocks.activities).not.toHaveBeenCalled();
+ mocks.auth={...mocks.auth,status:'authenticated',session:{user:{id:'owner'}}};
+ view.rerender(<AutoCloudSync state={state('h1')}/>);
+ await tick(3000);expect(mocks.activities).toHaveBeenCalledTimes(1);
+});
+it('starts private backup when the recorder binds after the startup timer',async()=>{
+ const view=render(<AutoCloudSync state={{trips:[]}}/>);
+ await tick(6000);expect(mocks.activities).not.toHaveBeenCalled();
+ view.rerender(<AutoCloudSync state={state('h1')}/>);
+ await tick(3000);expect(mocks.activities).toHaveBeenCalledTimes(1);
+});

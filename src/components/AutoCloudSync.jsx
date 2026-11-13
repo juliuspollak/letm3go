@@ -17,7 +17,7 @@ import {notifySegmentsChanged} from '../lib/segmentEvents.js';
 import {recorder} from '../lib/recorder.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false),segmentsCaughtUp=useRef(0),publishNow=useRef(null),reportedBackup=useRef({reason:'',at:0}),kick=useRef(null),retryTimer=useRef(null),lastToken=useRef(null);
+ const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false),segmentsCaughtUp=useRef(0),publishNow=useRef(null),reportedBackup=useRef({reason:'',at:0}),kick=useRef(null),retryTimer=useRef(null),startupTimer=useRef(null),startupPassed=useRef(false),lastToken=useRef(null);
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
   if(!supabase)return;
@@ -110,15 +110,24 @@ export default function AutoCloudSync({state,journeySync=null}){
     if(again.current&&alive){again.current=false;synced.current=null;void sync(true);}
    }
   }
-  const starter=setTimeout(()=>void sync(),5000),periodic=setInterval(()=>{void publish();void sync(true);},120000);
+  startupTimer.current=setTimeout(()=>{startupPassed.current=true;void sync();},5000);
+  const periodic=setInterval(()=>{void publish();void sync(true);},120000);
   const resume=()=>{void publish();void sync(true);};
   // Explicit sync requests run a full pass even if nothing changed locally.
   const now=()=>{void publish();synced.current=null;if(running.current)again.current=true;else void sync(true);};
   window.addEventListener(SYNC_NOW_EVENT,now);
   window.addEventListener('online',resume);document.addEventListener('visibilitychange',resume);
   if(Capacitor.isNativePlatform())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)resume();}).then(handle=>{if(alive)listener=handle;else void handle.remove();}).catch(()=>{});
-  return()=>{alive=false;publishNow.current=null;clearTimeout(publicationTimer);clearTimeout(starter);clearInterval(periodic);window.removeEventListener(SYNC_NOW_EVENT,now);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
+  return()=>{alive=false;publishNow.current=null;clearTimeout(publicationTimer);clearTimeout(startupTimer.current);clearInterval(periodic);window.removeEventListener(SYNC_NOW_EVENT,now);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
  },[]);
+ // Sign-in and native account binding can finish after the initial timer.
+ // Start once ownership is ready instead of waiting for the periodic check.
+ useEffect(()=>{
+  if(!startupPassed.current||auth.status!=='authenticated'||!state?.ownerID||state.ownerID.toLowerCase()!==auth.session?.user?.id?.toLowerCase())return undefined;
+  clearTimeout(startupTimer.current);
+  const timer=setTimeout(()=>void kick.current?.(),2500);
+  return()=>clearTimeout(timer);
+ },[auth.status,auth.session?.user?.id,state?.ownerID]);
  // A native save already emits journeysChanged and useRecorder refreshes the
  // authoritative snapshot. React then kicks the same stage immediately, even
  // while an unrelated private route/photo backup is still awaiting the network.
