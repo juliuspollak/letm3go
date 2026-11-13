@@ -31,3 +31,24 @@ enum AccountPreferencesJSON {
         return try JSONSerialization.data(withJSONObject:object)
     }
 }
+
+struct SyncReceipt: Codable {
+    var owner: String
+    var fingerprint: String?
+    var revision: Int?
+    var deleted: Bool?
+    var uploaded: Bool?
+    // SHA-256 of the uploaded JPEG, so an unchanged Collection photo is not
+    // uploaded again after the first successful transfer.
+    var sha256: String?
+    // The activity's updatedAt when it was backed up: an unchanged activity is not
+    // serialised and hashed again on the next backup.
+    var updatedAt: Double?
+    var backupVersion: Int?
+    // Durable backup failures and their tombstones must survive the native bridge.
+    var message: String?
+    var attempts: Int?
+    var at: Double?
+    var nextAt: Double?
+    var cleared: Bool?
+}

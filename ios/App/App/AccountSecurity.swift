@@ -67,20 +67,6 @@ struct JourneyMetadataStatus: Codable {
     var conflicts: [String: Int]?
     var updatedAt: Double?
 }
-struct SyncReceipt: Codable {
-    var owner: String
-    var fingerprint: String?
-    var revision: Int?
-    var deleted: Bool?
-    var uploaded: Bool?
-    // SHA-256 of the uploaded JPEG, so an unchanged Collection photo is not
-    // uploaded again after the first successful transfer.
-    var sha256: String?
-    // The activity's updatedAt when it was backed up: an unchanged activity is not
-    // serialised and hashed again on the next backup.
-    var updatedAt: Double?
-    var backupVersion: Int?
-}
 struct LocalVehicle: Codable {
     var source: String?
     var teslaVehicleID: String?

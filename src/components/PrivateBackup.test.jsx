@@ -25,3 +25,10 @@ it('says nothing when nothing has been recorded',()=>{
  render(<PrivateBackup state={{ownerID:'owner',trips:[]}}/>);
  expect(screen.queryByText(/recorded activities are backed up/)).toBeNull();
 });
+
+it('does not render blank refusal rows left by older native settings storage',()=>{
+ mock.receipts={a:{owner:'owner',revision:1},'backup-failure:a':{owner:'owner'},'backup-failure:b':{owner:'owner',cleared:true}};
+ render(<PrivateBackup state={{ownerID:'owner',trips:[trip('a'),trip('b')]}}/>);
+ expect(screen.getByText(/1 of 2 recorded activities are backed up/)).toBeTruthy();
+ expect(screen.queryByText(/was refused/)).toBeNull();
+});
