@@ -5403,3 +5403,16 @@ check(ActivityClusterZoom.span(current:1000,spread:0,minimum:12)==12, "coinciden
 check(ActivityClusterZoom.span(current:8,spread:0,minimum:12)==8, "a cluster tap never zooms out at maximum detail")
 check(ActivityClusterZoom.span(current:1000,spread:900,minimum:12)==450, "even a wide cluster zooms in consistently")
 print("Final native assertion count including zoom-only activity clusters: \(assertions)")
+
+// Preferences must preserve the failure fields consumed by backupHealth after restart.
+let backupFailureJSON=Data(#"{"owner":"owner","message":"Cloud activity conflict","attempts":3,"at":1000,"nextAt":61000,"updatedAt":22}"#.utf8)
+let backupFailureReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:backupFailureJSON)
+let persistedBackupFailure=try! JSONSerialization.jsonObject(with:JSONEncoder().encode(backupFailureReceipt)) as! [String:Any]
+check(persistedBackupFailure["message"] as? String == "Cloud activity conflict", "native backup receipt retains refusal reason")
+check(persistedBackupFailure["attempts"] as? Int == 3 && persistedBackupFailure["nextAt"] as? Double == 61000, "native backup receipt retains retry schedule")
+let clearedBackupReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:Data(#"{"owner":"owner","cleared":true}"#.utf8))
+let persistedClearedBackup=try! JSONSerialization.jsonObject(with:JSONEncoder().encode(clearedBackupReceipt)) as! [String:Any]
+check(persistedClearedBackup["cleared"] as? Bool == true, "native backup receipt retains cleared tombstone")
+let legacyBackupReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:Data(#"{"owner":"owner","revision":1}"#.utf8))
+check(legacyBackupReceipt.revision == 1 && legacyBackupReceipt.cleared == nil, "legacy backup receipts decode without new fields")
+print("Final native assertion count including durable backup status: \(assertions)")

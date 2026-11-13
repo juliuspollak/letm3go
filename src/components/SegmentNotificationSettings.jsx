@@ -35,8 +35,8 @@ export default function SegmentNotificationSettings({owner}){
   </fieldset>
   <fieldset className="segment-notification-settings" disabled={saving||busy}>
    <legend>Segment notifications</legend>
-   <label><input type="checkbox" checked={settings.segment_community} onChange={event=>void change('segment_community',event.target.checked)}/> When others complete or set a record on my segments</label>
-   <label><input type="checkbox" checked={settings.segment_personal} onChange={event=>void change('segment_personal',event.target.checked)}/> My personal bests</label>
+   <label><input type="checkbox" checked={settings.segment_community} onChange={event=>void change('segment_community',event.target.checked)}/><span>When others complete or set a record on my segments</span></label>
+   <label><input type="checkbox" checked={settings.segment_personal} onChange={event=>void change('segment_personal',event.target.checked)}/><span>My personal bests</span></label>
   </fieldset>
   {error&&<p role="alert" className="error">{error}</p>}
  </>;

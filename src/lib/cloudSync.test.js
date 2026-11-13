@@ -421,7 +421,7 @@ describe('an activity that cannot be backed up',()=>{
   const { backupHealth }=await import('./cloudSync.js');
   const receipts={a:{owner:'owner',revision:1},'backup-failure:a':{owner:'OWNER',message:'conflict',attempts:2,nextAt:61000},'backup-failure:b':{owner:'someone-else',message:'x',attempts:9,nextAt:1}};
   const health=backupHealth({...state,trips:trips.slice(0,2)},receipts,1000);
-  expect(health).toMatchObject({total:2,backedUp:1,waiting:1});
+  expect(health).toMatchObject({total:2,backedUp:0,waiting:2});
   expect(health.failing.map(f=>f.id)).toEqual(['a']);
  });
  it('recognises a wrapped fetch failure as being offline, and reads the sign-in status from the response',async()=>{
@@ -449,4 +449,17 @@ describe('an activity that cannot be backed up',()=>{
   const after=await run(api,{...state,trips:trips.filter(t=>t.id!=='b')},first,{now:2000});
   expect(after.receipts['backup-failure:b'].cleared).toBe(true);
  });
+});
+
+it('ignores stripped legacy failure records and cleared failures when reporting current backup health',async()=>{
+ const {backupHealth}=await import('./cloudSync.js');
+ const local={...state,trips:[{...state.trips[0],updatedAt:10}]},id=local.trips[0].id;
+ for(const failure of [{owner:'owner'},{owner:'owner',cleared:true},{owner:'owner',message:'Old failure',attempts:1,nextAt:60000,cleared:true}]){
+  expect(backupHealth(local,{[id]:{owner:'owner',revision:1,updatedAt:10},['backup-failure:'+id]:failure},1000)).toEqual({total:1,backedUp:1,waiting:0,failing:[]});
+ }
+});
+it('counts an edited cloud copy and a different account receipt as still waiting',async()=>{
+ const {backupHealth}=await import('./cloudSync.js');
+ const local={...state,trips:[{...state.trips[0],updatedAt:20}]},id=local.trips[0].id;
+ for(const receipt of [{owner:'owner',revision:1,updatedAt:10},{owner:'someone-else',revision:1,updatedAt:20}])expect(backupHealth(local,{[id]:receipt})).toMatchObject({total:1,backedUp:0,waiting:1});
 });

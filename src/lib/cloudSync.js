@@ -278,7 +278,7 @@ export async function syncPublicSegments(client,state,receipts={}, {owner,checkp
 }
 
 // A refusal remembered for this activity and this account (a cleared or another account's record is not one).
-export const heldFailure=(receipts,id,owner)=>{const held=receipts[`backup-failure:${id}`];return held&&!held.cleared&&String(held.owner).toLowerCase()===String(owner).toLowerCase()?held:null;};
+export const heldFailure=(receipts,id,owner)=>{const held=receipts[`backup-failure:${id}`];return held&&!held.cleared&&String(held.owner).toLowerCase()===String(owner).toLowerCase()&&typeof held.message==='string'&&held.message.trim()&&Number.isInteger(held.attempts)&&held.attempts>0&&Number.isFinite(held.nextAt)?held:null;};
 // How much of what is recorded is in the cloud: finished recordings on this phone, the ones backed up, and the ones still
 // waiting (with the reason, and when it will be tried again, for any the cloud refused). Computed from the receipts.
 export function backupHealth(state,receipts={},now=Date.now(),owner=state?.ownerID){
@@ -288,9 +288,11 @@ export function backupHealth(state,receipts={},now=Date.now(),owner=state?.owner
   if(!finished(trip))continue;
   total++;
   const receipt=receipts[trip.id];
-  if(receipt&&!receipt.deleted&&Number.isInteger(receipt.revision))backedUp++;
   // A refusal counts whether the activity was never uploaded or an edited copy is the one refused (the cloud's copy is then stale).
   const held=heldFailure(receipts,trip.id,owner);
+  const current=receipt&&String(receipt.owner).toLowerCase()===String(owner).toLowerCase()&&!receipt.deleted&&Number.isInteger(receipt.revision)
+   &&!(Number.isFinite(trip.updatedAt)&&Number.isFinite(receipt.updatedAt)&&trip.updatedAt!==receipt.updatedAt)&&!held;
+  if(current)backedUp++;
   if(held)failing.push({id:trip.id,message:held.message,attempts:held.attempts,retryInSeconds:Math.max(0,Math.round((held.nextAt-now)/1000))});
  }
  return {total,backedUp,waiting:total-backedUp,failing};
