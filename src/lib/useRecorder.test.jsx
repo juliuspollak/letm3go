@@ -1,8 +1,8 @@
 import {act,cleanup,renderHook,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({getState:vi.fn(),deleteActivity:vi.fn(),addListener:vi.fn(),onJourneysChanged:vi.fn(),remove:vi.fn(),foreground:null,journeysChanged:null}));
+const mocks=vi.hoisted(()=>({getState:vi.fn(),assignEquipment:vi.fn(),deleteActivity:vi.fn(),addListener:vi.fn(),onJourneysChanged:vi.fn(),remove:vi.fn(),foreground:null,journeysChanged:null}));
 vi.mock('@capacitor/app',()=>({App:{addListener:mocks.addListener}}));
-vi.mock('./recorder.js',()=>({emptyRecorder:{trips:[]},recorderAvailable:()=>true,onJourneysChanged:mocks.onJourneysChanged,recorder:{getState:mocks.getState,deleteActivity:mocks.deleteActivity}}));
+vi.mock('./recorder.js',()=>({emptyRecorder:{trips:[]},recorderAvailable:()=>true,onJourneysChanged:mocks.onJourneysChanged,recorder:{getState:mocks.getState,assignEquipment:mocks.assignEquipment,deleteActivity:mocks.deleteActivity}}));
 import {useRecorder} from './useRecorder.js';
 const snapshot=(trips=[])=>({ownerID:'owner',trips});
 beforeEach(()=>{
@@ -126,4 +126,66 @@ it('does not display an obsolete polling failure after a successful deletion',as
  await act(async()=>result.current.run('deleteActivity','delete-me'));
  await act(async()=>fail(new Error('Old polling failure')));
  expect(result.current.state.trips).toEqual([]);expect(result.current.error).toBe('');
+});
+
+it('applies a metadata-only equipment acknowledgement without fetching or replacing GPS history',async()=>{
+ const points=[{latitude:1,longitude:2}],other={id:'other',points:[]};
+ mocks.getState.mockResolvedValue({...snapshot([{id:'drive',points,updatedAt:1},other]),historyToken:'h1'});
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.historyToken).toBe('h1'));
+ const calls=mocks.getState.mock.calls.length;let finish;
+ mocks.assignEquipment.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+ let saving;act(()=>{saving=result.current.run('assignEquipment',{id:'drive',ids:['tesla']});});
+ await act(async()=>mocks.journeysChanged());
+ expect(mocks.getState).toHaveBeenCalledTimes(calls);
+ await act(async()=>{finish({ownerID:'owner',baseHistoryToken:'h1',historyToken:'h2',equipmentUpdate:{id:'drive',equipment:[{id:'tesla',name:'Tesla'}],vehicle:'Tesla',vehicleID:'tesla',updatedAt:2}});await saving;});
+ expect(result.current.state.trips[0]).toMatchObject({vehicle:'Tesla',vehicleID:'tesla',updatedAt:2});
+ expect(result.current.state.trips[0].points).toBe(points);
+ expect(result.current.state.trips[1]).toBe(other);
+ expect(result.current.state.historyToken).toBe('h2');
+ expect(mocks.getState).toHaveBeenCalledTimes(calls);
+});
+it('reads authoritative history if an equipment acknowledgement was based on unseen native changes',async()=>{
+ mocks.getState.mockResolvedValueOnce({...snapshot([{id:'drive',updatedAt:1}]),historyToken:'h1'});
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.historyToken).toBe('h1'));
+ mocks.assignEquipment.mockResolvedValue({ownerID:'owner',baseHistoryToken:'unseen',historyToken:'h3',equipmentUpdate:{id:'drive',vehicle:'Tesla',updatedAt:3}});
+ mocks.getState.mockResolvedValue({...snapshot([{id:'drive',vehicle:'Tesla',updatedAt:3},{id:'newly-finished'}]),historyToken:'h3'});
+ await act(async()=>result.current.run('assignEquipment',{id:'drive',ids:['tesla']}));
+ expect(result.current.state.trips.map(t=>t.id)).toEqual(['drive','newly-finished']);
+ expect(result.current.state.historyToken).toBe('h3');
+});
+it('rejects an equipment reply from another account',async()=>{
+ mocks.getState.mockResolvedValue({...snapshot([{id:'drive',updatedAt:1}]),historyToken:'h1'});
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.historyToken).toBe('h1'));
+ mocks.assignEquipment.mockResolvedValue({ownerID:'someone-else',baseHistoryToken:'h1',historyToken:'h2',equipmentUpdate:{id:'drive',vehicle:'Tesla',updatedAt:2}});
+ await act(async()=>result.current.run('assignEquipment',{id:'drive',ids:['tesla']}));
+ expect(result.current.state.trips).toEqual([]);
+ expect(result.current.error).toMatch(/account changed/i);
+});
+it('keeps the saved assignment on failure and resumes ordinary native refreshes',async()=>{
+ mocks.getState.mockResolvedValue({...snapshot([{id:'drive',vehicle:'Original',updatedAt:1}]),historyToken:'h1'});
+ const {result}=renderHook(()=>useRecorder('owner'));
+ await waitFor(()=>expect(result.current.state.historyToken).toBe('h1'));
+ mocks.assignEquipment.mockRejectedValueOnce(new Error('Storage unavailable'));
+ await act(async()=>result.current.run('assignEquipment',{id:'drive',ids:['tesla']}));
+ expect(result.current.state.trips[0].vehicle).toBe('Original');
+ expect(result.current.busy).toBe(false);
+ const calls=mocks.getState.mock.calls.length;
+ await act(async()=>mocks.journeysChanged());
+ expect(mocks.getState.mock.calls.length).toBeGreaterThan(calls);
+});
+it('loads a newly signed-in account while an old account equipment request is pending',async()=>{
+ mocks.getState.mockResolvedValue({...snapshot([{id:'drive',updatedAt:1}]),historyToken:'h1'});
+ const {result,rerender}=renderHook(({owner})=>useRecorder(owner),{initialProps:{owner:'owner'}});
+ await waitFor(()=>expect(result.current.state.historyToken).toBe('h1'));
+ let finish,saving;mocks.assignEquipment.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+ act(()=>{saving=result.current.run('assignEquipment',{id:'drive',ids:['tesla']});});
+ mocks.getState.mockResolvedValue({ownerID:'new-owner',historyToken:'new',trips:[]});
+ rerender({owner:'new-owner'});
+ await waitFor(()=>expect(result.current.state.ownerID).toBe('new-owner'));
+ await act(async()=>{finish({ownerID:'owner',baseHistoryToken:'h1',historyToken:'h2',equipmentUpdate:{id:'drive',vehicle:'Tesla',updatedAt:2}});await saving;});
+ expect(result.current.state.ownerID).toBe('new-owner');
+ expect(result.current.state.trips).toEqual([]);
 });

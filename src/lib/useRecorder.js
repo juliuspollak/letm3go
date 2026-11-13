@@ -74,6 +74,15 @@ export function reconcileRecorderSnapshot(previous,data){
  const deletedIDs=(data.deletedIDs||[]).join('|')===(previous.deletedIDs||[]).join('|')?previous.deletedIDs:data.deletedIDs;
  return {...data,trips,places,deletedIDs};
 }
+// Equipment acknowledgements carry metadata only; unchanged routes stay in memory.
+function applyEquipmentUpdate(previous,response){
+ const update=response?.equipmentUpdate;
+ if(!update||!previous?.historyToken||previous.historyToken!==response.baseHistoryToken||!response.historyToken
+  ||!previous.ownerID||previous.ownerID.toLowerCase()!==response.ownerID?.toLowerCase()
+  ||!previous.trips?.some(t=>t.id===update.id))return null;
+ return {...previous,historyToken:response.historyToken,trips:previous.trips.map(t=>t.id===update.id
+  ?{...t,equipment:update.equipment,vehicle:update.vehicle,vehicleID:update.vehicleID,updatedAt:update.updatedAt}:t)};
+}
 function lockedSnapshot(data){
  return {...emptyRecorder,version:data?.version||emptyRecorder.version,build:data?.build||emptyRecorder.build,permission:data?.permission||'locked',storageReady:false,nativeBinding:data?.nativeBinding||null,error:data?.error||''};
 }
@@ -81,7 +90,7 @@ function lockedSnapshot(data){
 export function useRecorder(ownerID,onBindingRequired){
  const [state,setState]=useState(emptyRecorder),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const historyFingerprints=useRef(new WeakMap());
- const lastKey=useRef(''),accepted=useRef(emptyRecorder),generation=useRef(0),readRequest=useRef(0),actionSequence=useRef(0);
+ const lastKey=useRef(''),accepted=useRef(emptyRecorder),generation=useRef(0),readRequest=useRef(0),actionSequence=useRef(0),mutations=useRef(0);
  // Why the last action failed has to be readable in the same tick the awaited
  // `run(...)` resolves, before React re-renders, so it lives in a ref behind a
  // getter instead of in state (state would still hold the previous render's value).
@@ -100,7 +109,7 @@ export function useRecorder(ownerID,onBindingRequired){
   if(accepted.current.ownerID!==ownerID){accepted.current=emptyRecorder;lastKey.current='';}
   let alive=true,pending=false,requestID=0,startedAt=0;
   async function refresh(force=false){
-   if(!alive||(!force&&document.visibilityState==='hidden'))return;
+   if(!alive||(mutations.current&&accepted.current.ownerID===ownerID)||(!force&&document.visibilityState==='hidden'))return;
    // A suspended WebView can leave an old bridge request unresolved. A native
    // foreground event starts a fresh read; late responses cannot replace it.
    if(pending&&!force&&Date.now()-startedAt<10000)return;
@@ -135,19 +144,27 @@ export function useRecorder(ownerID,onBindingRequired){
   return()=>{recorder.forgetPosition?.();alive=false;generation.current+=1;clearInterval(timer);window.removeEventListener('focus',visible);window.removeEventListener('pageshow',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();void journeyListener?.remove();};
  },[ownerID,requestRebind]);
  const run=useCallback(async(method,...args)=>{
-  const epoch=++generation.current,action=++actionSequence.current;setBusy(true);setError('');failure.current='';
+  const epoch=++generation.current,action=++actionSequence.current,pausesRefresh=method==='assignEquipment';if(pausesRefresh)mutations.current++;setBusy(true);setError('');failure.current='';
   try{
    const result=await recorder[method](...args,...(['deleteActivity','deleteActivities'].includes(method)?[ownerID]:[]));
    if(epoch!==generation.current)return null;
-   if(result?.trips){
+   if(result?.trips||result?.equipmentUpdate){
     if(recorderAvailable()&&ownerID&&result.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
      accepted.current=emptyRecorder;lastKey.current='';setState(lockedSnapshot(result));requestRebind(result.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');
     }
-    const next=reconcileRecorderSnapshot(accepted.current,result);accepted.current=next;lastKey.current=snapshotKey(next,historyFingerprints.current);setState(next);
+    let data=result;
+    if(result.equipmentUpdate){
+     data=applyEquipmentUpdate(accepted.current,result);
+     // A native history change that this screen has not seen needs a full read.
+     if(!data){data=await recorder.getState();if(epoch!==generation.current)return null;
+      if(ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
+       accepted.current=emptyRecorder;lastKey.current='';setState(lockedSnapshot(data));requestRebind(data.ownerID);throw new Error('Private recorder account changed. Activity storage remains locked.');}}
+    }
+    const next=reconcileRecorderSnapshot(accepted.current,data);accepted.current=next;lastKey.current=snapshotKey(next,historyFingerprints.current);setState(next);
    }
    generation.current+=1; // also reject polls started while the mutation ran
    return result||true;
-  }catch(err){if(epoch!==generation.current)return null;generation.current+=1;failure.current=err?.message||'Recording action failed.';setError(failure.current);return null;}finally{if(action===actionSequence.current)setBusy(false);}
+  }catch(err){if(epoch!==generation.current)return null;generation.current+=1;failure.current=err?.message||'Recording action failed.';setError(failure.current);return null;}finally{if(pausesRefresh)mutations.current--;if(action===actionSequence.current)setBusy(false);}
  },[ownerID,requestRebind]);
  const lastError=useCallback(()=>failure.current,[]);
  // A forced read that ignores the snapshot-key skip. Used by Diagnostics so the
