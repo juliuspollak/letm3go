@@ -114,71 +114,166 @@ struct ActivityNoticesSection: View {
 
 struct ActivitySegmentsSection: View {
     @ObservedObject var model: ActivityDetailsViewModel
-    @State private var open: String?
-    private func counts(_ row: ActivityPresentation.RiddenSegment) -> String {
-        "\(row.thisRide) attempt\(row.thisRide == 1 ? "" : "s") on this ride"
-    }
+    @State private var expanded: Set<String> = []
+    @State private var historyExpanded: Set<String> = []
+
     var body: some View {
-        let s = model.presentation.segments
-        if s.allowed {
-            Button { model.startSegment() } label: { Label("Create Segment", systemImage: "flag").frame(maxWidth: .infinity) }
-                .buttonStyle(DetailButtonStyle()).disabled(model.busy)
+        let segments = model.presentation.segments
+        if segments.allowed || !segments.list.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label("Segments", systemImage: "flag")
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    if !segments.list.isEmpty {
+                        Text("\(segments.list.count)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if segments.allowed {
+                        Button { model.startSegment() } label: {
+                            Label("Create", systemImage: "plus").font(.subheadline.weight(.semibold))
+                        }
+                        .disabled(model.busy)
+                        .accessibilityLabel("Create segment")
+                    }
+                }
+                ForEach(segments.list) { segment in
+                    if segment.id != segments.list.first?.id { Divider() }
+                    segmentRow(segment)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(DetailStyle.cardFill, in: RoundedRectangle(cornerRadius: DetailStyle.radius, style: .continuous))
         }
-        if !s.list.isEmpty {
-            DetailCard(title: "Segments", symbol: "flag") {
-                ForEach(s.list) { row in
-                    Button { open = open == row.id ? nil : row.id } label: {
-                        HStack(alignment: .top, spacing: 8) {
-                            Circle().fill(Color(hex: row.color)).frame(width: 12, height: 12).padding(.top, 4).accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(row.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
-                                Text(counts(row)).font(.footnote).foregroundColor(DetailStyle.muted)
-                            }
-                            Spacer()
-                            Image(systemName: open == row.id ? "chevron.up" : "chevron.down").font(.footnote).foregroundColor(DetailStyle.muted)
-                        }.frame(minHeight: 44)
+    }
+
+    @ViewBuilder private func segmentRow(_ row: ActivityPresentation.RiddenSegment) -> some View {
+        let isOpen = expanded.contains(row.id)
+        Button {
+            if isOpen { expanded.remove(row.id) } else { expanded.insert(row.id) }
+        } label: {
+            HStack(spacing: 10) {
+                Circle().fill(Color(hex: row.color))
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Text("\(row.thisRide) attempt\(row.thisRide == 1 ? "" : "s") on this ride")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(row.thisRideBest?.time ?? "—").font(.subheadline.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.primary)
+                    if let comparison = row.comparison {
+                        Text(comparison).font(.caption2)
+                            .foregroundStyle(row.newPR == true ? Color.green : Color.secondary)
+                            .lineLimit(2).multilineTextAlignment(.trailing)
+                    } else {
+                        Text("Best this ride").font(.caption2).foregroundStyle(.secondary)
                     }
-                    .accessibilityValue(open == row.id ? "Expanded" : "Collapsed")
-                    if let best=row.personalBest {
-                        Button {
-                            guard !best.current else {return}
-                            Task {do {_ = try await model.request("openActivity",args:["id":best.activityID])} catch {model.errorMessage=error.localizedDescription}}
-                        } label: {
-                            VStack(alignment:.leading,spacing:3) {
-                                Text("Your PR \(best.time)").font(.headline).foregroundColor(.primary)
-                                Text("\(best.when) \u{00b7} \(best.title)").font(.caption).foregroundColor(DetailStyle.muted)
-                                if !best.current {Text("Open PR ride").font(.caption.weight(.semibold))}
-                            }.frame(maxWidth:.infinity,alignment:.leading)
-                        }.accessibilityIdentifier("segment.personal-best")
+                }
+                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .frame(minHeight: 48)
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
+
+        if isOpen {
+            HStack(alignment: .top, spacing: 10) {
+                metric("Best this ride", value: row.thisRideBest?.time ?? "—")
+                metric("Personal record", value: row.personalBest?.time ?? "—")
+            }
+            if row.newPR == true {
+                Label("New personal record", systemImage: "trophy.fill")
+                    .font(.footnote.weight(.medium)).foregroundStyle(.green)
+            }
+            if let best = row.personalBest, !best.current {
+                Button {
+                    Task { await openActivity(best.activityID) }
+                } label: {
+                    Label("Open PR ride · \(best.when)", systemImage: "arrow.up.right")
+                        .font(.footnote)
+                }
+            }
+            let current = row.passes.filter { $0.current }
+            if !current.isEmpty {
+                Text("This ride's attempts").font(.subheadline.weight(.semibold))
+                    .padding(.top, 4)
+                ForEach(current) { pass in attemptRow(pass, historical: false) }
+            }
+            if row.total > current.count {
+                Button {
+                    if historyExpanded.contains(row.id) { historyExpanded.remove(row.id) }
+                    else { historyExpanded.insert(row.id) }
+                } label: {
+                    HStack {
+                        Text("All-time attempts (\(row.total))")
+                        Spacer()
+                        Image(systemName: historyExpanded.contains(row.id) ? "chevron.up" : "chevron.down")
                     }
-                    if let best=row.thisRideBest {Text("Best this ride: \(best.time)").font(.subheadline.weight(.semibold))}
-                    if row.newPR == true {Label("New personal record",systemImage:"trophy.fill").foregroundColor(.green)}
-                    if let comparison=row.comparison {Text(comparison).font(.footnote).foregroundColor(DetailStyle.muted)}
-                    if open == row.id {
-                        Text("\(row.total) detected attempts across \(row.rideCount) available ride\(row.rideCount == 1 ? "" : "s"). Quickest attempts first.")
-                            .font(.footnote).foregroundColor(DetailStyle.muted)
-                        ForEach(row.passes) { pass in passRow(pass) }
-                    }
+                    .font(.footnote.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
+                if historyExpanded.contains(row.id) {
+                    ForEach(row.passes) { pass in attemptRow(pass, historical: true) }
                 }
             }
         }
     }
-    private func passRow(_ pass: ActivityPresentation.SegmentPass) -> some View {
-        Button {
-            guard !pass.current else { return }
-            Task { do { _ = try await model.request("openActivity", args: ["id": pass.activityID]) } catch { model.errorMessage = error.localizedDescription } }
-        } label: {
-            HStack(spacing: 8) {
-                Text("\(pass.rank)").font(.footnote.monospacedDigit()).foregroundColor(DetailStyle.muted).frame(minWidth: 22, alignment: .leading)
-                Text(pass.time).font(.subheadline.weight(.semibold).monospacedDigit()).foregroundColor(.primary)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(pass.current ? "This ride" : pass.title).font(.footnote).foregroundColor(.primary).lineLimit(1)
-                    Text(pass.interrupted == true ? "\(pass.when) · estimated, recording stopped mid-lap" : pass.when).font(.caption).foregroundColor(DetailStyle.muted)
-                }
-                Spacer()
-            }.frame(minHeight: 40)
+
+    private func metric(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title3.weight(.semibold).monospacedDigit())
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func attemptRow(_ pass: ActivityPresentation.SegmentPass, historical: Bool) -> some View {
+        Button {
+            if !pass.current { Task { await openActivity(pass.activityID) } }
+        } label: {
+            HStack(spacing: 10) {
+                Text(pass.interrupted == true ? "~\(pass.time.replacingOccurrences(of: "~", with: ""))" : pass.time)
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .frame(minWidth: 56, alignment: .leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    if historical {
+                        Text(pass.current ? "This ride" : pass.title).font(.footnote)
+                    }
+                    Text(pass.when).font(.caption).foregroundStyle(.secondary)
+                    if pass.interrupted == true {
+                        Text("Incomplete · recording stopped mid-lap")
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+                }
+                Spacer(minLength: 4)
+                if historical && !pass.current {
+                    Image(systemName: "arrow.up.right").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .frame(minHeight: 38)
+            .contentShape(Rectangle())
+            .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
+        .disabled(pass.current)
         .accessibilityIdentifier("segment.pass")
+    }
+
+    private func openActivity(_ id: String) async {
+        do { _ = try await model.request("openActivity", args: ["id": id]) }
+        catch { model.errorMessage = error.localizedDescription }
     }
 }
 
@@ -391,13 +486,11 @@ struct ActivityTrailSection: View {
             DetailCard(title: "Trail", symbol: "mountain.2") {
                 if let label = trail.linkedLabel {
                     Text(label).font(.subheadline.weight(.semibold))
-                    DetailFootnote(text: "Linked privately on this device. Community trail details are not changed by this ride.")
                     HStack {
                         Button("Change trail") { browse() }.buttonStyle(DetailButtonStyle()).disabled(model.busy || loading)
                         Button("Remove link") { unlink() }.buttonStyle(DetailButtonStyle(kind: .destructive)).disabled(model.busy)
                     }
                 } else {
-                    DetailFootnote(text: "Link this ride to a nearby community trail. The link is stored with the activity, so it works offline and never publishes your route.")
                     Button(loading ? "Looking for trails…" : "Find nearby trails") { browse() }.buttonStyle(DetailButtonStyle()).disabled(model.busy || loading)
                 }
                 if open {
@@ -457,24 +550,65 @@ struct ActivityTrailSection: View {
 }
 
 struct ActivityStorySection: View {
-    let story: ActivityPresentation.Story
+    @ObservedObject var model: ActivityDetailsViewModel
     var body: some View {
+        let story = model.presentation.story
         DetailCard(title: "Your story", symbol: "text.quote") {
-            Text(story.description.isEmpty ? "Add a description to remember the little details." : story.description)
-                .font(.subheadline).foregroundColor(story.description.isEmpty ? .secondary : .primary)
-            if !story.notes.isEmpty { Text(story.notes).font(.subheadline) }
-            if !story.tags.isEmpty { Text(story.tags.joined(separator: " · ")).font(.footnote).foregroundColor(DetailStyle.muted) }
+            Button { model.sheet = .editor } label: {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(story.description.isEmpty ? "Add a memory from this adventure…" : story.description)
+                            .font(.subheadline)
+                            .foregroundStyle(story.description.isEmpty ? Color.secondary : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !story.notes.isEmpty {
+                            Text(story.notes).font(.footnote).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    Image(systemName: "square.and.pencil").font(.subheadline).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.presentation.header.local || model.busy)
+            .accessibilityLabel(story.description.isEmpty ? "Add your story" : "Edit your story")
         }
     }
 }
 
 struct ActivityFactsSection: View {
     let presentation: ActivityPresentation
+    @State private var showTechnical = false
     var body: some View {
-        DetailCard(title: "About this recording", symbol: "info.circle") {
-            HStack(alignment: .top) { ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) } }
-            ForEach(presentation.facts?.lines ?? [], id: \.self) { Text($0).font(.footnote) }
-            ForEach(presentation.facts?.evidence ?? [], id: \.self) { Text($0).font(.caption).foregroundColor(DetailStyle.muted) }
+        if !presentation.metrics.isEmpty || presentation.facts != nil {
+            DetailCard(title: "Recording details", symbol: "info.circle") {
+                if !presentation.metrics.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) }
+                        }
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) }
+                        }
+                    }
+                }
+                if let facts = presentation.facts, !facts.lines.isEmpty || !facts.evidence.isEmpty {
+                    DisclosureGroup(isExpanded: $showTechnical) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(facts.lines, id: \.self) { Text($0).font(.footnote) }
+                            ForEach(facts.evidence, id: \.self) {
+                                Text($0).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.top, 8)
+                    } label: {
+                        Label("Technical information", systemImage: "waveform.path.ecg")
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
         }
     }
 }
@@ -596,10 +730,10 @@ struct ActivityTagsSection: View {
     @State private var scanning = false
     @State private var suggestions: [Suggestion] = []
     @State private var working = false
+    @State private var addingTag = false
     var body: some View {
         if let tags = model.presentation.tags {
-            DetailCard(title: "Your tags", symbol: "tag") {
-                DetailFootnote(text: tags.note.isEmpty ? "Personal tags describe this trip. To recognise a destination on future visits, also save it as a place." : tags.note)
+            DetailCard(title: "Places & tags", symbol: "tag") {
                 FlowTags(items: tags.auto + tags.custom, disabled: working || tags.readOnly) { tag in
                     if tags.custom.contains(tag) { act(["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom.filter { $0 != tag }]) }
                     else { act(["type": "hideTag", "anchor": tags.anchor, "tag": tag]) }
@@ -615,8 +749,16 @@ struct ActivityTagsSection: View {
                     }.font(.footnote)
                 }
                 if !tags.readOnly {
-                    Button(scanning ? "Checking route…" : "Find more places on this route") { scan() }
-                        .buttonStyle(DetailButtonStyle()).disabled(scanning || working)
+                    HStack {
+                        Button { addingTag.toggle() } label: {
+                            Label(addingTag ? "Done" : "Add tag", systemImage: addingTag ? "checkmark" : "plus")
+                        }
+                        .font(.subheadline.weight(.medium))
+                        Spacer()
+                        Button(scanning ? "Checking route…" : "Find places") { scan() }
+                            .font(.subheadline)
+                            .disabled(scanning || working)
+                    }
                     ForEach(suggestions) { suggestion in
                         HStack {
                             VStack(alignment: .leading) {
@@ -636,6 +778,7 @@ struct ActivityTagsSection: View {
                             }
                         }.font(.footnote)
                     }
+                    if addingTag {
                     HStack {
                         TextField("Search or add a tag", text: $value).textFieldStyle(.roundedBorder)
                             .textInputAutocapitalization(.words).autocorrectionDisabled()
@@ -657,6 +800,7 @@ struct ActivityTagsSection: View {
                         Button(name) { add(tags, name: name) }
                             .font(.footnote)
                             .accessibilityLabel("Use tag \(name)")
+                    }
                     }
                     if tags.canRemember {
                         Toggle(tags.rememberLabel.isEmpty ? "Remember the destination for future trips (200 m radius)" : tags.rememberLabel, isOn: $remember)

@@ -3,12 +3,12 @@ import UIKit
 
 // One visual language for the whole screen. Every section is a `DetailCard`.
 enum DetailStyle {
-    static let spacing: CGFloat = 16
-    static let radius: CGFloat = 14
+    static let spacing: CGFloat = 14
+    static let radius: CGFloat = 18
     static let margin: CGFloat = 16
-    static let cardFill = Color(.secondarySystemBackground)
-    // Stronger than the system's secondary label, which fails contrast on the cards.
-    static let muted = Color(.label).opacity(0.8)
+    // Quiet grouped surfaces let the route, memories and results take priority.
+    static let cardFill = Color(.secondarySystemBackground).opacity(0.48)
+    static let muted = Color.secondary
 }
 
 struct DetailCard<Content: View>: View {
@@ -24,7 +24,7 @@ struct DetailCard<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
+        .padding(16)
         .background(DetailStyle.cardFill, in: RoundedRectangle(cornerRadius: DetailStyle.radius, style: .continuous))
     }
 }
@@ -121,13 +121,13 @@ struct ActivityDetailsRootView: View {
                 ActivitySummarySection(items: model.presentation.summary)
                 ActivityNoticesSection(model: model)
                 ActivityMomentsSection(model: model)
-                ActivitySegmentsSection(model: model)
-                ActivityTrailSection(model: model)
-                ActivityRouteSection(model: model)
-                ActivityHeartSection(model: model)
-                ActivityStorySection(story: model.presentation.story)
+                ActivityStorySection(model: model)
                 ActivityTagsSection(model: model)
                 ActivityStopsSection(model: model)
+                ActivityRouteSection(model: model)
+                ActivitySegmentsSection(model: model)
+                ActivityTrailSection(model: model)
+                ActivityHeartSection(model: model)
                 ActivityFactsSection(presentation: model.presentation)
                 ActivityDiagnosticsSection(model: model)
                 ActivityDangerSection(model: model)
