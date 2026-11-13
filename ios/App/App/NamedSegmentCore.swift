@@ -227,7 +227,7 @@ struct WatchSegmentDefinition: Codable, Equatable, Identifiable {
     var bestAt: Double?
     var bestActivityID: String?
     var valid: Bool {
-        guard !id.isEmpty,id.count<=100,!name.isEmpty,name.count<=80,
+        guard !id.isEmpty,id.count<=100,!name.isEmpty,name.count<=160,
               ["MTB","Cycling","Road cycling","Walking","Running","Hiking"].contains(activity),
               lengthMeters.isFinite,lengthMeters>=50,lengthMeters<=100000,
               reference.count>=2,reference.count<=4096 else {return false}

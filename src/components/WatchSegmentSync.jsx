@@ -7,18 +7,18 @@ import {watchSegmentRefresh} from '../lib/segmentEvents.js';
 
 // Definitions/PRs are transferred before riding, not queried for every Watch fix.
 export default function WatchSegmentSync({state}){
- const auth=useAuth(),latest=useRef(null),running=useRef(false),sequence=useRef(0),again=useRef(false);
+ const auth=useAuth(),latest=useRef(null),cached=useRef(null),sent=useRef('');
  useEffect(()=>{latest.current={state,auth};},[state,auth]);
  useEffect(()=>{
   if(!recorderAvailable())return;
-  let alive=true;
+  let alive=true,busy=false,retry=false;
   const sync=async()=>{
    if(!alive||!navigator.onLine||document.visibilityState==='hidden')return;
-   if(running.current){again.current=true;return;}
+   if(busy){retry=true;return;}
    const {state:held,auth:user}=latest.current,owner=user.session?.user?.id;
    if(user.status!=='authenticated'||!owner||held?.ownerID?.toLowerCase()!==owner.toLowerCase())return;
-   running.current=true;const request=++sequence.current;
-   const valid=()=>alive&&request===sequence.current&&latest.current.auth.session?.user?.id===owner&&latest.current.state?.ownerID?.toLowerCase()===owner.toLowerCase()&&latest.current.state?.historyToken===held.historyToken;
+   busy=true;
+   const valid=()=>alive&&latest.current.auth.session?.user?.id===owner&&latest.current.state?.ownerID?.toLowerCase()===owner.toLowerCase()&&latest.current.state?.historyToken===held.historyToken;
    try{
     // Last actual fix, including the newest ride, gives a useful cache even when
     // Core Location has no fresh fix yet. Never invent the person's position.
@@ -27,10 +27,13 @@ export default function WatchSegmentSync({state}){
     const pad=0.18,lon=point?pad/Math.max(0.2,Math.cos(point.latitude*Math.PI/180)):pad;
     const publicSegments=point?await fetchWatchSegments({minLat:point.latitude-pad,maxLat:point.latitude+pad,minLon:point.longitude-lon,maxLon:point.longitude+lon}):[];
     if(!valid())return;
-    const catalogue=await buildWatchSegments({ownerID:owner,trips:held.trips,publicSegments,yieldWork:()=>new Promise(resolve=>setTimeout(resolve,0))});
-    if(valid())await recorder.setWatchSegments(JSON.stringify(catalogue));
+    const key=JSON.stringify([owner,held.historyToken,publicSegments.map(s=>[s.id,s.version,s.direction,s.activity,s.name])]);
+    const catalogue=cached.current?.key===key?cached.current.catalogue:await buildWatchSegments({ownerID:owner,trips:held.trips,publicSegments,yieldWork:()=>new Promise(resolve=>setTimeout(resolve,0))});
+    if(!valid())return;
+    cached.current={key,catalogue};
+    if(sent.current!==catalogue.revision){await recorder.setWatchSegments(JSON.stringify(catalogue));if(valid())sent.current=catalogue.revision;}
    }catch{/* Retain the last owner-scoped offline catalogue; reconnect retries. */}
-   finally{running.current=false;if(again.current&&alive){again.current=false;void sync();}}
+   finally{busy=false;if(retry&&alive){retry=false;void sync();}}
   };
   const timer=setTimeout(()=>void sync(),8000),stop=watchSegmentRefresh(()=>void sync(),{interval:300000});
   return()=>{alive=false;clearTimeout(timer);stop();};

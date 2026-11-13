@@ -2,6 +2,7 @@ import {namedSegments,isCommunitySegmentActivity,connected} from './namedSegment
 import {segmentDefinition,publicSegmentDefinition,matchEfforts} from './segmentMatcher.js';
 
 export const WATCH_SEGMENT_LIMIT=128,WATCH_REFERENCE_LIMIT=32768;
+export const compatibleSegmentActivity=(a,b)=>a===b||(['MTB','Cycling','Road cycling'].includes(a)&&['MTB','Cycling','Road cycling'].includes(b));
 // Prefer the deliberate recording when two devices observed the same physical
 // attempt. Never choose a source just because its GPS made the time faster.
 export function canonicalSegmentAttempts(attempts){
@@ -31,7 +32,7 @@ export function segmentReferences(trips,publicSegments=[]){
   const directions=segment.direction==='both'?[false,true]:[segment.direction==='reverse'];
   return directions.map(reverse=>({definition:publicSegmentDefinition(segment,{reverse}),activity:segment.activity,saved:false}));
  });
- return [...saved,...nearby].filter(r=>r.definition?.reference?.length>=2&&r.definition.reference.length<=4096);
+ return [...saved,...nearby].filter(r=>r.definition?.reference?.length>=2&&r.definition.reference.length<=4096&&r.definition.lengthMeters>=50&&r.definition.lengthMeters<=100000);
 }
 export async function buildWatchSegments({ownerID,trips=[],publicSegments=[],now=Date.now()/1000,yieldWork=()=>Promise.resolve(),cryptoImpl=crypto}){
  const eligible=trips.filter(t=>isCommunitySegmentActivity(t.activity)&&Number.isFinite(t.endedAt)&&t.details?.provisional!==true&&t.points?.length>=5);
@@ -41,11 +42,11 @@ export async function buildWatchSegments({ownerID,trips=[],publicSegments=[],now
   if(definitions.length>=WATCH_SEGMENT_LIMIT||vertices+definition.reference.length>WATCH_REFERENCE_LIMIT)continue;
   const attempts=[];
   for(const trip of eligible){
-   const compatible=trip.activity===activity||(['MTB','Cycling','Road cycling'].includes(trip.activity)&&['MTB','Cycling','Road cycling'].includes(activity));
+   const compatible=compatibleSegmentActivity(trip.activity,activity);
    if(!compatible)continue;
    for(const effort of matchEfforts(definition,trip).efforts)attempts.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:effort.elapsedSeconds,interrupted:effort.gapSeconds>0});
   }
-  const best=canonicalSegmentAttempts(attempts).filter(a=>!a.interrupted&&a.elapsedSeconds>0).sort((a,b)=>a.elapsedSeconds-b.elapsedSeconds||a.startedAt-b.startedAt)[0];
+  const best=canonicalSegmentAttempts(attempts).filter(a=>!a.interrupted&&a.elapsedSeconds>0&&a.elapsedSeconds<=86400).sort((a,b)=>a.elapsedSeconds-b.elapsedSeconds||a.startedAt-b.startedAt)[0];
   definitions.push({id:definition.id,name:definition.name+(definition.id.endsWith(':reverse')?' (reverse)':''),activity,reference:definition.reference.map(p=>[p.latitude,p.longitude,p.along]),lengthMeters:definition.lengthMeters,
    ...(best?{bestSeconds:best.elapsedSeconds,bestAt:best.startedAt,bestActivityID:best.trip.id}:{})});
   vertices+=definition.reference.length;

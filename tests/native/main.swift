@@ -5481,3 +5481,7 @@ for i in -6...120 {overlappingEvents += overlappingEngine.ingest(liveSegmentPoin
 check(Set(overlappingEvents.filter{$0.kind=="start"}.map{$0.feedback.id})==Set(["test","second"]),"overlapping start alerts carry their own segment identity")
 check(Set(overlappingEvents.filter{$0.kind=="finish"}.map{$0.feedback.name})==Set(["Test descent","Second segment"]),"overlapping finish alerts carry their own result")
 print("Final native assertion count including overlapping segment alerts: \(assertions)")
+
+var longNamedCatalogue=liveSegmentCatalogue;longNamedCatalogue.definitions[0].name=String(repeating:"a",count:150)+" (reverse)"
+check(WatchSegmentCatalogue.decode(try! JSONEncoder().encode(longNamedCatalogue),owner:liveSegmentOwner) != nil,"valid public segment names with reverse labels do not reject the whole catalogue")
+print("Final native assertion count including public segment names: \(assertions)")

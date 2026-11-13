@@ -1,4 +1,4 @@
-import {canonicalSegmentAttempts} from './watchSegments.js';
+import {canonicalSegmentAttempts,compatibleSegmentActivity} from './watchSegments.js';
 import {namedSegments,segmentColor,segmentRuns} from './namedSegments.js';
 import {SEGMENT_MATCHER_VERSION,matchEfforts,segmentDefinition,publicSegmentDefinition} from './segmentMatcher.js';
 import {thinLine} from './mapContent.js';
@@ -63,6 +63,8 @@ function passesOf({segment,owner,definition,definitions,isPublic=false},trips){
  const version=`${segment.updatedAt||0}`;
  const passes=[];
  for(const trip of trips){
+  const activity=segment.activity||owner.activity;
+  if(activity&&trip.activity&&!compatibleSegmentActivity(activity,trip.activity))continue;
   for(const effort of (definitions||[definition]).filter(Boolean).flatMap(def=>effortsOn(def,version,trip)))passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:Math.max(0,effort.elapsedSeconds-effort.gapSeconds),interrupted:effort.gapSeconds>0});
  }
  // A section made across a GPS gap cannot be looked for elsewhere, and a segment always
@@ -97,7 +99,7 @@ export function segmentRides(trip,trips,publicSegments=[]){
  const community=published.flatMap(row=>{
   const own=made.find(entry=>entry.segment.id.toLowerCase()===row.id.toLowerCase());
   const directions=row.direction==='both'?[false,true]:[row.direction==='reverse'];
-  return directions.map(reverse=>({segment:{id:row.id+(reverse?':reverse':''),name:row.name+(reverse?' (reverse)':''),colorIndex:own?.segment.colorIndex||0,updatedAt:`${row.version||1}:${row.updated_at||''}`},owner:own?.owner||{id:'public:'+row.id},isPublic:true,
+  return directions.map(reverse=>({segment:{id:row.id+(reverse?':reverse':''),activity:row.activity,name:row.name+(reverse?' (reverse)':''),colorIndex:own?.segment.colorIndex||0,updatedAt:`${row.version||1}:${row.updated_at||''}`},owner:own?.owner||{id:'public:'+row.id},isPublic:true,
    definitions:[publicSegmentDefinition(row,{reverse})]}));
  });
  for(const entry of [...local,...community]){

@@ -161,3 +161,12 @@ it('keeps the earlier PR and reports a slower ride or a tie accurately',()=>{
  expect(segmentRides(current,[current,tie])[0].comparison).toBe('Matched your previous PR');
  expect(segmentRides(current,[current])[0]).toMatchObject({newPR:false,previousBest:null,comparison:'No earlier clean attempt available.'});
 });
+
+it('keeps cycling PRs separate from faster journeys recorded with a different sport',()=>{
+ const cycling={...withSegment(ride('bike',1000,[5]),0,120),activity:'MTB'};
+ const running={...ride('run',100,[10]),activity:'Running'};
+ const road={...ride('road',2000,[6]),activity:'Road cycling'};
+ const row=segmentRides(cycling,[cycling,running,road])[0];
+ expect(row.total).toBe(2);expect(row.personalBest.activityID).toBe('road');
+ expect(row.passes.some(p=>p.activityID==='run')).toBe(false);
+});
