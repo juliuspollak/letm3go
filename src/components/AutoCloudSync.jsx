@@ -8,6 +8,7 @@ import {syncPrivateActivities,syncSegmentEfforts,syncPublicSegments} from '../li
 // Rides already recorded are checked against segments published since at most this
 // often when nothing local changed (on the foreground or the two-minute check).
 export const SEGMENT_CATCH_UP_MS=6*3600*1000;
+import {recoverAccountPreferences} from '../lib/accountRecovery.js';
 import {syncCollections} from '../lib/collectionSync.js';
 import {syncAccountSettings} from '../lib/settingsSync.js';
 import {refreshJourneyMetadata} from '../lib/journeyMetadataStore.js';
@@ -17,6 +18,7 @@ import {notifySegmentsChanged} from '../lib/segmentEvents.js';
 import {recorder} from '../lib/recorder.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
+ const recovered=useRef(null);
  const auth=useAuth(),latest=useRef(null),running=useRef(false),lastAttempt=useRef(0),synced=useRef(null),again=useRef(false),segmentsCaughtUp=useRef(0),publishNow=useRef(null),reportedBackup=useRef({reason:'',at:0}),kick=useRef(null),retryTimer=useRef(null),startupTimer=useRef(null),startupPassed=useRef(false),lastToken=useRef(null);
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
@@ -66,11 +68,22 @@ export default function AutoCloudSync({state,journeySync=null}){
     // Settings and the Collection are small and independent of the route upload,
     // so one failing photo must not block them. The first failure is re-thrown
     // after every stage has been attempted; nothing local is removed.
-    let failure=null,receipts=user.preferences.syncReceipts||{};
+    let failure=null,preferences=user.preferences,receipts=preferences.syncReceipts||{};
     const attempt=async(step)=>{try{receipts=(await step(receipts)).receipts;}catch(error){failure=failure||error;}};
     if(!journeysOnly&&config.backupEnabled){
-     await attempt(next=>syncAccountSettings(supabase,{owner:recordings.ownerID,preferences:user.preferences,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
-     await attempt(next=>syncCollections(supabase,{owner:recordings.ownerID,vehicles:user.preferences.vehicles,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
+     let ready=recovered.current===owner;
+     if(!ready){
+      try {
+       const result=await recoverAccountPreferences(supabase,{owner,preferences,savePreferences:user.savePreferences,isCurrent:()=>alive&&latest.current.auth.status==='authenticated'&&latest.current.auth.session?.user?.id===owner&&latest.current.state?.ownerID?.toLowerCase()===owner.toLowerCase()});
+       preferences=result.preferences;receipts=preferences.syncReceipts||{};ready=true;
+       if(!result.pending)recovered.current=owner;
+       else failure=new Error('Collection photos are recovering automatically.');
+      }catch(error){failure=failure||error;}
+     }
+     if(ready){
+     await attempt(next=>syncAccountSettings(supabase,{owner:recordings.ownerID,preferences,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
+     await attempt(next=>syncCollections(supabase,{owner:recordings.ownerID,vehicles:preferences.vehicles,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
+     }
     }
     // Journey metadata is Supabase's: this only refreshes the device's read-only cache of
     // it (start, return to the app, the periodic check). Nothing is uploaded here.

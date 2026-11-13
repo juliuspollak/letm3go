@@ -5485,3 +5485,9 @@ print("Final native assertion count including overlapping segment alerts: \(asse
 var longNamedCatalogue=liveSegmentCatalogue;longNamedCatalogue.definitions[0].name=String(repeating:"a",count:150)+" (reverse)"
 check(WatchSegmentCatalogue.decode(try! JSONEncoder().encode(longNamedCatalogue),owner:liveSegmentOwner) != nil,"valid public segment names with reverse labels do not reject the whole catalogue")
 print("Final native assertion count including public segment names: \(assertions)")
+
+let recoveringPhotoJSON=Data("{\"owner\":\"11111111-1111-4111-8111-111111111111\",\"uploaded\":true,\"restorePending\":true,\"objectKey\":\"11111111-1111-4111-8111-111111111111/collection/photo.jpg\",\"sha256\":\"abc\"}".utf8)
+let recoveringPhotoReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:recoveringPhotoJSON)
+let recoveringPhotoRoundTrip=try! JSONDecoder().decode(SyncReceipt.self,from:JSONEncoder().encode(recoveringPhotoReceipt))
+check(recoveringPhotoRoundTrip.restorePending==true && recoveringPhotoRoundTrip.objectKey==recoveringPhotoReceipt.objectKey,"pending Collection recovery references survive native preferences persistence")
+print("Final native assertion count including automatic account recovery: \(assertions)")

@@ -31,3 +31,5 @@ The cloud recovery release blocker was reconfirmed by inspecting production call
 Post-review verification: focused segment/transfer tests passed (32); zero-warning lint; 2,231 native assertions; 124 native detail assertions; Xcode simulator App and Watch build passed. Full-suite results follow below.
 
 The post-review full `npm run check` passed, including all JavaScript/database tests, orchestrator checks, lint and build. The final refresh implementation additionally passed the focused 32-test run and lint after its effect-scoped cancellation change. Existing bundle warnings remain.
+
+The subsequent automatic recovery fix is documented in `automatic-account-recovery-review.md`. It adds the missing production Collection/settings recovery path; the release hold described above is historical once that fix and its final checks are included.
