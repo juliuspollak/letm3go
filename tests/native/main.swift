@@ -5416,3 +5416,13 @@ check(persistedClearedBackup["cleared"] as? Bool == true, "native backup receipt
 let legacyBackupReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:Data(#"{"owner":"owner","revision":1}"#.utf8))
 check(legacyBackupReceipt.revision == 1 && legacyBackupReceipt.cleared == nil, "legacy backup receipts decode without new fields")
 print("Final native assertion count including durable backup status: \(assertions)")
+
+let segmentReceiptJSON=Data(#"{"owner":"owner","fingerprint":"A long segment name that takes this publication fingerprint beyond sixty-four characters|10|90","publicationVersion":1,"publicationAt":100,"confirmedAt":110,"uploaded":true,"sent":{"name":"Section","start":10,"end":90},"area":{"minLat":1,"maxLat":2,"minLon":3,"maxLon":4},"since":"2026-11-10T00:00:00Z","after":"segment-id","checkedAt":200,"queue":[{"id":"segment-id","version":2,"trips":["trip-id"]}],"blocked":false,"serverStatus":"approved","failed":"network","errorCode":"NETWORK","firstFailureAt":90,"reason":"retry","ownershipMismatch":false,"skipped":"refused"}"#.utf8)
+let segmentSyncReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:segmentReceiptJSON)
+let segmentSyncRoundTrip=try! JSONSerialization.jsonObject(with:JSONEncoder().encode(segmentSyncReceipt)) as! NSDictionary
+let segmentSyncOriginal=try! JSONSerialization.jsonObject(with:segmentReceiptJSON) as! NSDictionary
+check(segmentSyncRoundTrip.isEqual(to:segmentSyncOriginal as! [AnyHashable:Any]), "native preferences preserve segment publication and backfill progress")
+check(segmentSyncReceipt.valid(for:"mtb-segment:id",ownerID:"OWNER"), "long segment fingerprints are accepted for segment receipts")
+check(!segmentSyncReceipt.valid(for:"activity-id",ownerID:"owner"), "non-segment fingerprints retain their existing bound")
+check(!segmentSyncReceipt.valid(for:"mtb-segment:id",ownerID:"other"), "segment receipt account isolation remains enforced")
+print("Final native assertion count including complete sync receipts: \(assertions)")

@@ -81,3 +81,12 @@ it('a household share does not need a saved Home place; friends and the public s
  await expect(publishActivity({client:f,state:{ownerID:owner,trips:[trip],places:[]},id:'trip',audience:'friends',mode:'friends',receipts:{},checkpoint:vi.fn()})).rejects.toThrow('Home place');
  expect(f.functions.invoke).not.toHaveBeenCalled();
 });
+
+it('shares a native recording with a description, while still rejecting a changed reviewed description',async()=>{
+ syncPrivateActivities.mockResolvedValue({receipts:{}});
+ const trip={id:'trip',source:'device',endedAt:9,points:[{latitude:1,longitude:1}],activity:'Walking',details:{description:'Evening walk'}};
+ const c=client(),options={client:c,state:{ownerID:owner,trips:[trip],places:[]},id:'trip',reviewedTrip:trip,audience:'household',mode:'household',auto:true};
+ await expect(publishActivity(options)).resolves.toMatchObject({token:'token'});
+ await expect(publishActivity({...options,reviewedTrip:{...trip,details:{description:'Earlier description'}}})).rejects.toThrow('Activity changed');
+ await expect(publishActivity({...options,reviewedTrip:{...trip,description:'Stale displayed description'}})).rejects.toThrow('Activity changed');
+});

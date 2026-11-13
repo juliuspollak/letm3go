@@ -51,4 +51,28 @@ struct SyncReceipt: Codable {
     var at: Double?
     var nextAt: Double?
     var cleared: Bool?
+    // Segment publication acknowledgements and backfill cursors share this store.
+    var publicationVersion: Int?
+    var publicationAt: Double?
+    var confirmedAt: Double?
+    var sent: SegmentReceiptBaseline?
+    var failed: String?
+    var errorCode: String?
+    var firstFailureAt: Double?
+    var blocked: Bool?
+    var serverStatus: String?
+    var reason: String?
+    var ownershipMismatch: Bool?
+    var skipped: String?
+    var area: SegmentReceiptArea?
+    var since: String?
+    var after: String?
+    var checkedAt: Double?
+    var queue: [SegmentReceiptBackfill]?
+    func valid(for key:String,ownerID:String)->Bool {
+        owner.lowercased()==ownerID.lowercased() && (fingerprint?.count ?? 0)<=(key.hasPrefix("mtb-segment:") ? 256 : 64)
+    }
 }
+struct SegmentReceiptBaseline: Codable {var name:String;var start:Int;var end:Int}
+struct SegmentReceiptArea: Codable {var minLat:Double;var maxLat:Double;var minLon:Double;var maxLon:Double}
+struct SegmentReceiptBackfill: Codable {var id:String;var version:Int;var trips:[String]}
