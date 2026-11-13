@@ -45,7 +45,7 @@ export default function NativeActivityDetail(props){
  // App render: a long route must not be projected again for an unrelated change.
  const metadata=grouping?.metadata,destinations=grouping?.destinations,groupedJourneys=grouping?.journeys;
  // Looked up just after opening, so a long history never delays the screen.
- const library=journeys||activities||NONE;
+ const library=props.segmentActivities||journeys||activities||NONE;
  const community=usePublicSegments(sharedReadOnly?null:trip);
  const [ridden,setRidden]=useState(NO_SEGMENTS);
  useEffect(()=>{
@@ -58,7 +58,7 @@ export default function NativeActivityDetail(props){
  const context=useRef(null);
  const handlers=useRef(null);
  useEffect(()=>{
-  context.current={client:supabase,trip,ownerID,sharedReadOnly,activities:sharedReadOnly?[]:journeys||activities||[],grouping:sharedReadOnly?null:grouping||journeyGrouping,run:sharedReadOnly?null:run,places:sharedReadOnly?[]:places,lastError:props.lastError,auth,onSource:sharedReadOnly?null:onSource,addEquipmentItem:sharedReadOnly?null:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
+  context.current={client:supabase,trip,ownerID,sharedReadOnly,activities:sharedReadOnly?[]:library,grouping:sharedReadOnly?null:grouping||journeyGrouping,run:sharedReadOnly?null:run,places:sharedReadOnly?[]:places,lastError:props.lastError,auth,onSource:sharedReadOnly?null:onSource,addEquipmentItem:sharedReadOnly?null:onAddEquipment,refreshPresentation:()=>setHeartVersion(version=>version+1)};
   handlers.current={onBack,onDeleted,onUpdated,run};
  });
 

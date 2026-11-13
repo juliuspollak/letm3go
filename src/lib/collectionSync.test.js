@@ -79,3 +79,10 @@ it('merges a restore without replacing a local item or duplicating a Tesla car',
   expect(merged.vehicles[2].name).toBe('Duotone');
   expect(mergeRestoredCollection(new Array(50).fill(item()), cloud).restored).toBe(0);
 });
+
+it('keeps an undownloaded restored photo in the cloud when backing up its recovered item',async()=>{
+ const api=client();const key=collectionPhotoKey(owner,bike);
+ await run(api,[item()],{[`collection:${bike}`]:{owner,revision:5,fingerprint:'old'},[`collection-photo:${bike}`]:{owner,uploaded:true,restorePending:true,objectKey:key,sha256:'c'.repeat(64)}});
+ expect(api.rpc).toHaveBeenCalledWith('backup_collection_item',expect.objectContaining({p_expected_revision:5,p_payload:expect.objectContaining({photo_object_key:key,photo_sha256:'c'.repeat(64)})}));
+ expect(api.functions.invoke).not.toHaveBeenCalled();
+});

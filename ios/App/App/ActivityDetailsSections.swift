@@ -116,7 +116,7 @@ struct ActivitySegmentsSection: View {
     @ObservedObject var model: ActivityDetailsViewModel
     @State private var open: String?
     private func counts(_ row: ActivityPresentation.RiddenSegment) -> String {
-        "\(row.thisRide)× this ride · \(row.total)× in all · best \(row.best)"
+        "\(row.thisRide) attempt\(row.thisRide == 1 ? "" : "s") on this ride"
     }
     var body: some View {
         let s = model.presentation.segments
@@ -139,8 +139,23 @@ struct ActivitySegmentsSection: View {
                         }.frame(minHeight: 44)
                     }
                     .accessibilityValue(open == row.id ? "Expanded" : "Collapsed")
+                    if let best=row.personalBest {
+                        Button {
+                            guard !best.current else {return}
+                            Task {do {_ = try await model.request("openActivity",args:["id":best.activityID])} catch {model.errorMessage=error.localizedDescription}}
+                        } label: {
+                            VStack(alignment:.leading,spacing:3) {
+                                Text("Your PR \(best.time)").font(.headline).foregroundColor(.primary)
+                                Text("\(best.when) \u{00b7} \(best.title)").font(.caption).foregroundColor(DetailStyle.muted)
+                                if !best.current {Text("Open PR ride").font(.caption.weight(.semibold))}
+                            }.frame(maxWidth:.infinity,alignment:.leading)
+                        }.accessibilityIdentifier("segment.personal-best")
+                    }
+                    if let best=row.thisRideBest {Text("Best this ride: \(best.time)").font(.subheadline.weight(.semibold))}
+                    if row.newPR == true {Label("New personal record",systemImage:"trophy.fill").foregroundColor(.green)}
+                    if let comparison=row.comparison {Text(comparison).font(.footnote).foregroundColor(DetailStyle.muted)}
                     if open == row.id {
-                        Text("\(row.total) time\(row.total == 1 ? "" : "s") on \(row.rideCount) ride\(row.rideCount == 1 ? "" : "s"), fastest first")
+                        Text("\(row.total) detected attempts across \(row.rideCount) available ride\(row.rideCount == 1 ? "" : "s"). Quickest attempts first.")
                             .font(.footnote).foregroundColor(DetailStyle.muted)
                         ForEach(row.passes) { pass in passRow(pass) }
                     }

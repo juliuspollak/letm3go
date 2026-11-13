@@ -1,6 +1,6 @@
 import {render,cleanup,act} from '@testing-library/react';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
-const mocks=vi.hoisted(()=>({noteBackupFailure:vi.fn(),publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
+const mocks=vi.hoisted(()=>({recover:vi.fn(),noteBackupFailure:vi.fn(),publications:vi.fn(),backupEnabled:true,efforts:vi.fn(),activities:vi.fn(),settings:vi.fn(),collections:vi.fn(),journey:vi.fn(),auth:null,native:false,foreground:null,remove:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{isNativePlatform:()=>mocks.native},registerPlugin:()=>({})}));
 vi.mock('@capacitor/app',()=>({App:{addListener:vi.fn(async(_event,callback)=>{mocks.foreground=callback;return {remove:mocks.remove};})}}));
 vi.mock('../lib/AuthContext.jsx',()=>({useAuth:()=>mocks.auth}));
@@ -11,11 +11,12 @@ vi.mock('../lib/settingsSync.js',()=>({syncAccountSettings:mocks.settings}));
 vi.mock('../lib/collectionSync.js',()=>({syncCollections:mocks.collections}));
 vi.mock('../lib/journeyMetadataStore.js',async importOriginal=>({...await importOriginal(),refreshJourneyMetadata:mocks.journey}));
 vi.mock('../lib/recorder.js',()=>({recorder:{noteBackupFailure:mocks.noteBackupFailure}}));
+vi.mock('../lib/accountRecovery.js',()=>({recoverAccountPreferences:mocks.recover}));
 import AutoCloudSync from './AutoCloudSync.jsx';
 
 const state=(token)=>({ownerID:'owner',historyToken:token,places:[],deletedIDs:[],trips:[]});
 beforeEach(()=>{
- vi.useFakeTimers();mocks.backupEnabled=true;mocks.publications.mockResolvedValue({receipts:{},published:0,pending:false,failure:null});mocks.native=false;mocks.foreground=null;
+ vi.useFakeTimers();mocks.recover.mockImplementation(async(_client,{preferences})=>({preferences,pending:false}));mocks.backupEnabled=true;mocks.publications.mockResolvedValue({receipts:{},published:0,pending:false,failure:null});mocks.native=false;mocks.foreground=null;
  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'visible'});
  const savePreferences=vi.fn(async patch=>{const resolved=typeof patch==='function'?patch(mocks.auth.preferences):patch;mocks.auth={...mocks.auth,preferences:{...mocks.auth.preferences,...resolved}};return mocks.auth.preferences;});
  mocks.auth={status:'authenticated',session:{user:{id:'owner'}},preferences:{displayName:'J',syncReceipts:{}},savePreferences};
@@ -272,4 +273,20 @@ it('starts private backup when the recorder binds after the startup timer',async
  await tick(6000);expect(mocks.activities).not.toHaveBeenCalled();
  view.rerender(<AutoCloudSync state={state('h1')}/>);
  await tick(3000);expect(mocks.activities).toHaveBeenCalledTimes(1);
+});
+
+it('recovers cloud preferences before backing up a replacement device and uses the recovered collection',async()=>{
+ const vehicles=[{id:'cloud-bike',name:'Recovered bike'}];
+ mocks.recover.mockImplementationOnce(async(_client,{preferences})=>({preferences:{...preferences,vehicles,distanceUnit:'mi'},pending:false}));
+ render(<AutoCloudSync state={state('new-phone')}/>);await tick(5000);
+ expect(mocks.recover).toHaveBeenCalledTimes(1);
+ expect(mocks.collections).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({vehicles}),expect.anything());
+ expect(mocks.settings).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({preferences:expect.objectContaining({distanceUnit:'mi'})}),expect.anything());
+ expect(mocks.recover.mock.invocationCallOrder[0]).toBeLessThan(mocks.settings.mock.invocationCallOrder[0]);
+});
+it('keeps automatic activity backup working when recovery fails, without overwriting cloud preferences',async()=>{
+ mocks.recover.mockRejectedValueOnce(new Error('offline'));
+ render(<AutoCloudSync state={state('new-phone')}/>);await tick(5000);
+ expect(mocks.settings).not.toHaveBeenCalled();expect(mocks.collections).not.toHaveBeenCalled();expect(mocks.activities).toHaveBeenCalledTimes(1);
+ await tick(120000);expect(mocks.recover).toHaveBeenCalledTimes(2);expect(mocks.collections).toHaveBeenCalledTimes(1);
 });

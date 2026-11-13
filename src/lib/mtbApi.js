@@ -20,3 +20,20 @@ export async function fetchSegments(bbox) {
   if (error) throw new Error(error.message || 'Segments unavailable.');
   return data || [];
 }
+
+// Current community catalogue includes the activity type needed by Watch matching.
+// Keep raw geometry: simplifying a timing reference changes its start/finish.
+export async function fetchWatchSegments(bbox) {
+ if (!supabase) return [];
+ const [catalogue,metadata]=await Promise.all([
+  supabase.rpc('segments_for_map',{...bboxArgs(bbox),p_limit:200}),
+  supabase.rpc('mtb_segments_in_bbox',bboxArgs(bbox)),
+ ]);
+ if(catalogue.error||metadata.error)throw new Error('Segments unavailable.');
+ const details=new Map((metadata.data||[]).map(row=>[row.id,row]));
+ return (catalogue.data||[]).flatMap(row=>{
+  const detail=details.get(row.id);
+  return detail?.version===row.version&&detail.status==='approved'&&detail.visibility==='public'
+   ? [{...row,status:detail.status,visibility:detail.visibility,direction:detail.direction}]:[];
+ });
+}

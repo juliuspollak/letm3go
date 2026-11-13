@@ -1,3 +1,4 @@
+export const COLLECTION_RECOVERY_BATCH=4;
 import {COLLECTION_PHOTO_LIMIT,normaliseCollectionItem} from './collection.js';
 // Collection items are still authored locally. This module is the only path to
 // cloud: it is additive, incremental (one RPC per changed item) and never
@@ -38,7 +39,7 @@ export function mergeRestoredCollection(localItems,cloudItems,limit=50){
  const local=Array.isArray(localItems)?localItems:[];const next=[...local];let restored=0,skipped=0;
  for(const item of Array.isArray(cloudItems)?cloudItems:[]){
   if(!item||!UUID.test(String(item.id||''))){skipped++;continue;}
-  const duplicate=next.some(existing=>String(existing?.id)===String(item.id)
+  const duplicate=next.some(existing=>String(existing?.id).toLowerCase()===String(item.id).toLowerCase()
    ||(item.tesla_vehicle_id&&existing?.teslaVehicleID&&String(existing.teslaVehicleID)===String(item.tesla_vehicle_id)));
   if(duplicate){skipped++;continue;}
   if(next.length>=limit){skipped++;continue;}
@@ -103,7 +104,10 @@ export async function syncCollections(client,{owner,vehicles,receipts={}},{check
    if(failure||!String(result?.objectKey||'').endsWith(`/collection/${row.id}.jpg`))throw new Error('A Collection photo could not be uploaded. The local original is preserved.');
    updated[photoReceiptKey]={owner,uploaded:true,sha256:photoSha};photosUploaded++;await acknowledge();
   }
-  const payload={...row,photo_object_key:photo?collectionPhotoKey(owner,row.id):null,photo_sha256:photoSha};
+  // A recovered item may precede its photo. Preserve the cloud reference until
+  // the download succeeds; absence on this device is not a request to erase it.
+  const retained=!photo&&photoReceipt?.restorePending===true&&photoReceipt.objectKey===collectionPhotoKey(owner,row.id)?photoReceipt:null;
+  const payload={...row,photo_object_key:photo?collectionPhotoKey(owner,row.id):retained?.objectKey||null,photo_sha256:photoSha||retained?.sha256||null};
   const fingerprint=await sha256(cryptoImpl,JSON.stringify(payload));
   if(previous?.fingerprint===fingerprint&&!previous.deleted)continue;
   const {data:revision,error}=await client.rpc('backup_collection_item',{p_owner:owner,p_payload:payload,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});

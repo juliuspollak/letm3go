@@ -143,6 +143,9 @@ it('shows the resting place name only with the position it was published with',a
  // The next position without a label (she moved) clears it.
  await publish('null,null','now()');
  expect((await seen()).place_name).toBeNull();
+ // PGlite's wall clock can return the same millisecond for adjacent calls.
+ // The publisher correctly ignores equal capture times, so make the prior fix older.
+ await db.exec("reset role;update public.friend_presence_shares set updated_at=now()-interval '1 second' where user_id='"+a+"'");
  await publish("'School',null",'now()+interval \'1 minute\'');
  expect((await seen()).place_name).toBe('School');
  // The foreground app also reports every 30 s without a label: the same stay keeps it.
@@ -153,6 +156,7 @@ it('shows the resting place name only with the position it was published with',a
  await as('authenticated',a,`select public.set_friend_location(true,-34.59,150.87,10)`);
  expect((await seen()).place_name).toBeNull();
  // A future "since" is clamped to the capture time.
+ await db.exec("reset role;update public.friend_presence_shares set updated_at=now()-interval '1 second' where user_id='"+a+"'");
  await publish("'Home',now()+interval '1 day'",'now()+interval \'1 minute\'');
  expect(new Date((await seen()).place_since).getTime()).toBeLessThanOrEqual(Date.now()+1000);
 },30000);

@@ -290,6 +290,7 @@ struct WatchEquipmentPicker: View {
 }
 
 struct WatchReadyView: View {
+    @ObservedObject private var segmentLink=WatchConnectivitySession.shared
     @ObservedObject var recorder: WatchRecorder
     @Binding var path: [WatchRoute]
     let setup: WatchStartConfig
@@ -311,6 +312,14 @@ struct WatchReadyView: View {
                 if let bike = setup.equipmentName {
                     Label(bike, systemImage: setup.equipmentKind == "ebike" ? "bolt.fill" : "bicycle")
                         .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if !indoor,["MTB","Cycling","Road cycling","Walking","Hiking","Running"].contains(setup.activity) {
+                    let count=segmentLink.segmentCatalogue?.definitions.filter {WatchLiveSegments.compatible($0.activity,setup.activity)}.count ?? 0
+                    Text(count>0 ? "\(count) segments ready offline" : "Segments unavailable offline. Open the iPhone app online before riding.")
+                        .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if count>0 && !recorder.segmentBackgroundAlerts {
+                        Button("Enable screen-off segment alerts"){recorder.enableSegmentAlerts()}.font(.caption)
+                    }
                 }
                 if let other = recorder.startBlocked {
                     Label(other.label, systemImage: "iphone").font(.footnote.weight(.semibold)).foregroundStyle(WatchStyle.hold)
@@ -472,6 +481,21 @@ struct WatchRecordingView: View {
                         .font(.system(size: 42, weight: .bold, design: .rounded)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
                         .accessibilityLabel("Elapsed \(WatchFormat.clock(recorder.activeSeconds))")
+                    if let feedback=recorder.segmentFeedback {
+                        VStack(spacing:3) {
+                            Text(feedback.finished ? "Segment complete" : "Riding segment").font(.caption2).foregroundStyle(.secondary)
+                            Text(feedback.name).font(.headline).lineLimit(2)
+                            Text(WatchFormat.clock(feedback.elapsedSeconds)).font(.title2.bold()).monospacedDigit()
+                            if feedback.interrupted {Text("Incomplete GPS timing \u{00b7} no PR comparison").font(.caption2)}
+                            else if let pr=feedback.bestSeconds {
+                                if feedback.finished {
+                                    let delta=Int((feedback.elapsedSeconds-pr).rounded())
+                                    Text(feedback.newRecord ? "New PR! \(abs(delta))s faster" : delta==0 ? "Matched your PR" : "\(abs(delta))s slower than PR")
+                                        .font(.caption.weight(.semibold)).foregroundStyle(feedback.newRecord ? .green : WatchStyle.accent)
+                                } else {Text("PR \(WatchFormat.clock(pr))").font(.caption)}
+                            } else {Text(feedback.finished ? "First recorded attempt" : "No recorded PR yet").font(.caption)}
+                        }.frame(maxWidth:.infinity).padding(8).background(WatchStyle.card,in:RoundedRectangle(cornerRadius:10))
+                    }
                     heartRate
                     if !indoor {
                         HStack(alignment: .top) {

@@ -144,3 +144,29 @@ it('automatically matches an approved community segment without its creator reco
  expect(segmentRides(mine,[mine],[{...published,status:'submitted',visibility:'private'}])).toEqual([]);
  expect(segmentRides(mine,[mine],[{...published,direction:'reverse'}])).toEqual([]);
 });
+it('shows the previous PR ride/date and a genuine improvement instead of only a ranked list',()=>{
+ const current=withSegment(ride('current',10000,[6]),0,100);
+ const previous=ride('previous',1000,[5],'Older ride');
+ const result=segmentRides(current,[current,previous])[0];
+ expect(result.personalBest).toMatchObject({activityID:'current',time:'1:39',current:true});
+ expect(result.previousBest).toMatchObject({activityID:'previous',title:'Older ride',time:'1:59',current:false});
+ expect(result.previousBest.when).toMatch(/1970/);
+ expect(result.thisRideBest.time).toBe('1:39');expect(result.comparison).toBe('0:20 faster than your previous PR');expect(result.newPR).toBe(true);
+});
+it('keeps the earlier PR and reports a slower ride or a tie accurately',()=>{
+ const current=withSegment(ride('current',10000,[5]),0,120),previous=ride('previous',1000,[6]);
+ const result=segmentRides(current,[current,previous])[0];
+ expect(result.personalBest.activityID).toBe('previous');expect(result.newPR).toBe(false);expect(result.comparison).toBe('0:20 slower than your previous PR');
+ const tie=ride('tie',1000,[5]);
+ expect(segmentRides(current,[current,tie])[0].comparison).toBe('Matched your previous PR');
+ expect(segmentRides(current,[current])[0]).toMatchObject({newPR:false,previousBest:null,comparison:'No earlier clean attempt available.'});
+});
+
+it('keeps cycling PRs separate from faster journeys recorded with a different sport',()=>{
+ const cycling={...withSegment(ride('bike',1000,[5]),0,120),activity:'MTB'};
+ const running={...ride('run',100,[10]),activity:'Running'};
+ const road={...ride('road',2000,[6]),activity:'Road cycling'};
+ const row=segmentRides(cycling,[cycling,running,road])[0];
+ expect(row.total).toBe(2);expect(row.personalBest.activityID).toBe('road');
+ expect(row.passes.some(p=>p.activityID==='run')).toBe(false);
+});

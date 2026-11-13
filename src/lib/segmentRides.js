@@ -1,3 +1,4 @@
+import {canonicalSegmentAttempts,compatibleSegmentActivity} from './watchSegments.js';
 import {namedSegments,segmentColor,segmentRuns} from './namedSegments.js';
 import {SEGMENT_MATCHER_VERSION,matchEfforts,segmentDefinition,publicSegmentDefinition} from './segmentMatcher.js';
 import {thinLine} from './mapContent.js';
@@ -62,29 +63,26 @@ function passesOf({segment,owner,definition,definitions,isPublic=false},trips){
  const version=`${segment.updatedAt||0}`;
  const passes=[];
  for(const trip of trips){
+  const activity=segment.activity||owner.activity;
+  if(activity&&trip.activity&&!compatibleSegmentActivity(activity,trip.activity))continue;
   for(const effort of (definitions||[definition]).filter(Boolean).flatMap(def=>effortsOn(def,version,trip)))passes.push({trip,startedAt:effort.startTimestamp,elapsedSeconds:Math.max(0,effort.elapsedSeconds-effort.gapSeconds),interrupted:effort.gapSeconds>0});
  }
  // A section made across a GPS gap cannot be looked for elsewhere, and a segment always
  // counts on the ride that made it.
- if(!isPublic&&!passes.some(pass=>pass.trip.id===owner.id))passes.push({trip:owner,startedAt:segment.startTimestamp,elapsedSeconds:segment.durationSeconds});
+ if(!isPublic&&!passes.some(pass=>pass.trip.id===owner.id))passes.push({trip:owner,startedAt:segment.startTimestamp,elapsedSeconds:segment.durationSeconds,interrupted:true});
  return onePerLap(passes,trips);
 }
 
 // An automatic recording can run during a recorded ride. A lap it saw belongs to that
 // ride, and one lap seen by both counts once.
 function onePerLap(passes,trips){
- const recorded=trips.filter(trip=>trip.recordingMode!=='automatic'&&Number.isFinite(trip.endedAt));
- const placed=passes.map(pass=>{
+ const recorded=trips.filter(trip=>trip.recordingMode!=='automatic'&&Number.isFinite(trip.startedAt)&&Number.isFinite(trip.endedAt));
+ const canonical=canonicalSegmentAttempts(passes);
+ return canonical.map(pass=>{
   if(pass.trip.recordingMode!=='automatic')return pass;
-  const ride=recorded.find(trip=>trip.startedAt<=pass.startedAt&&pass.startedAt<=trip.endedAt);
-  return ride?{...pass,trip:ride,seenByAutomatic:true}:pass;
- }).sort((a,b)=>Boolean(a.seenByAutomatic)-Boolean(b.seenByAutomatic)||a.startedAt-b.startedAt);
- const kept=[];
- for(const pass of placed){
-  const same=kept.some(other=>other.trip.id===pass.trip.id&&pass.startedAt<other.startedAt+other.elapsedSeconds&&other.startedAt<pass.startedAt+pass.elapsedSeconds);
-  if(!same)kept.push(pass);
- }
- return kept;
+  const ride=recorded.find(trip=>trip.startedAt<=pass.startedAt&&pass.startedAt+pass.elapsedSeconds<=trip.endedAt);
+  return ride?{...pass,trip:ride}:pass;
+ });
 }
 
 // A lap with a break in the recording counts as ridden, but its time is not a real time.
@@ -95,16 +93,31 @@ export function segmentRides(trip,trips,publicSegments=[]){
  const library=riddenTrips(trips);
  if(!trip?.id||!library.length)return [];
  const rows=[];
- const local=allSegments(library),localIDs=new Set(local.map(entry=>entry.segment.id));
- const community=publicSegments.filter(row=>!localIDs.has(row.id)).map(row=>({segment:{id:row.id,name:row.name,colorIndex:0,updatedAt:row.updated_at},owner:{id:'public:'+row.id},isPublic:true,
-  definitions:[...(row.direction!=='reverse'?[publicSegmentDefinition(row)]:[]),...(row.direction!=='forward'?[publicSegmentDefinition(row,{reverse:true})]:[])]}));
+ const made=allSegments(library),published=publicSegments.filter(row=>row.status==='approved'&&row.visibility==='public');
+ const publishedIDs=new Set(published.map(row=>row.id.toLowerCase()));
+ const local=made.filter(entry=>!publishedIDs.has(entry.segment.id.toLowerCase()));
+ const community=published.flatMap(row=>{
+  const own=made.find(entry=>entry.segment.id.toLowerCase()===row.id.toLowerCase());
+  const directions=row.direction==='both'?[false,true]:[row.direction==='reverse'];
+  return directions.map(reverse=>({segment:{id:row.id+(reverse?':reverse':''),activity:row.activity,name:row.name+(reverse?' (reverse)':''),colorIndex:own?.segment.colorIndex||0,updatedAt:`${row.version||1}:${row.updated_at||''}`},owner:own?.owner||{id:'public:'+row.id},isPublic:true,
+   definitions:[publicSegmentDefinition(row,{reverse})]}));
+ });
  for(const entry of [...local,...community]){
   const passes=passesOf(entry,library).sort(fastestFirst);
   const thisRide=passes.filter(pass=>pass.trip.id===trip.id).length;
   if(!thisRide)continue;
   const {segment,owner}=entry;
+  const display=(pass,index=0)=>pass?{id:`${pass.trip.id}:${pass.startedAt}`,activityID:String(pass.trip.id),rank:index+1,time:`${pass.interrupted?'~':''}${clock(pass.elapsedSeconds)}`,interrupted:pass.interrupted===true,when:`${dayText(pass.startedAt)} · ${timeText(pass.startedAt)}`,title:pass.trip.title||'Activity',current:pass.trip.id===trip.id}:null;
+  const clean=passes.filter(pass=>!pass.interrupted);
+  const current=clean.filter(pass=>pass.trip.id===trip.id),thisRideBest=current[0]||null;
+  const firstThisRide=Math.min(...passes.filter(pass=>pass.trip.id===trip.id).map(pass=>pass.startedAt));
+  const previous=clean.find(pass=>pass.trip.id!==trip.id&&pass.startedAt<firstThisRide)||null;
+  const difference=thisRideBest&&previous?Math.round(thisRideBest.elapsedSeconds)-Math.round(previous.elapsedSeconds):null;
+  const comparison=difference===null?(thisRideBest?'No earlier clean attempt available.':'No uninterrupted time on this ride.')
+   :difference===0?'Matched your previous PR':`${clock(Math.abs(difference))} ${difference<0?'faster':'slower'} than your previous PR`;
   rows.push({id:segment.id,ownerID:String(owner.id),owned:owner.id===trip.id,name:segment.name,color:segmentColor(segment.colorIndex),thisRide,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:bestOf(passes),
-   passes:passes.slice(0,MAX_LISTED).map((pass,index)=>({id:`${pass.trip.id}:${pass.startedAt}`,activityID:String(pass.trip.id),rank:index+1,time:`${pass.interrupted?'~':''}${clock(pass.elapsedSeconds)}`,interrupted:pass.interrupted===true,when:`${dayText(pass.startedAt)} · ${timeText(pass.startedAt)}`,title:pass.trip.title||'Activity',current:pass.trip.id===trip.id}))});
+   personalBest:display(clean[0]),thisRideBest:display(thisRideBest),previousBest:display(previous),comparison,newPR:difference!==null&&difference<0,
+   passes:passes.slice(0,MAX_LISTED).map(display)});
  }
  return rows.sort((a,b)=>a.name.localeCompare(b.name));
 }

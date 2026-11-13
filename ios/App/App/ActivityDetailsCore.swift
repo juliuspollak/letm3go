@@ -121,6 +121,11 @@ struct ActivityPresentation: Decodable, Equatable {
         var total: Int
         var rideCount: Int
         var best: String
+        var personalBest: SegmentPass?
+        var thisRideBest: SegmentPass?
+        var previousBest: SegmentPass?
+        var comparison: String?
+        var newPR: Bool?
         var passes: [SegmentPass]
     }
     struct Segments: Decodable, Equatable {

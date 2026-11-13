@@ -42,6 +42,9 @@ struct SyncReceipt: Codable {
     // SHA-256 of the uploaded JPEG, so an unchanged Collection photo is not
     // uploaded again after the first successful transfer.
     var sha256: String?
+    // Owner-scoped cloud photo held while replacement-device download retries.
+    var objectKey: String?
+    var restorePending: Bool?
     // The activity's updatedAt when it was backed up: an unchanged activity is not
     // serialised and hashed again on the next backup.
     var updatedAt: Double?

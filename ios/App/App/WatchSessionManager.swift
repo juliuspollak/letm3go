@@ -21,6 +21,37 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     private var lastPresence: RecordingPresence?
     private var conflictLogged = false
     private var sentHistory: Data?
+    private var segmentOwner:String?
+    private var segmentCatalogue:WatchSegmentCatalogue?
+    private var segmentData:Data?
+    private var deliveredSegmentRevision=""
+    func setSegmentCatalogue(_ data:Data){
+        guard let value=WatchSegmentCatalogue.decode(data,owner:ownerID) else {return}
+        segmentOwner=ownerID;segmentCatalogue=value;segmentData=data
+        sendOwnerContext()
+    }
+    private func loadSegmentCatalogue(){
+        let r=LocationRecorder.shared
+        guard r.storeOpened,r.ownerID==ownerID else {return}
+        if segmentOwner != ownerID {
+            segmentOwner=ownerID;segmentCatalogue=nil;segmentData=nil;deliveredSegmentRevision=""
+            if let data=try? r.storage?.readData(name:"watch-segments.data"),let value=WatchSegmentCatalogue.decode(data,owner:ownerID){segmentCatalogue=value;segmentData=data}
+        }
+    }
+    private func transferSegmentCatalogue(){
+        guard let owner=ownerID,segmentOwner==owner,let value=segmentCatalogue,let data=segmentData,
+              value.revision != deliveredSegmentRevision else {return}
+        let session=WCSession.default
+        guard session.isPaired,session.isWatchAppInstalled else {return}
+        let pending=session.outstandingFileTransfers.filter {$0.file.metadata?["kind"] as? String == "segments"}
+        if pending.contains(where:{$0.file.metadata?["revision"] as? String == value.revision}){return}
+        for item in pending {item.cancel()}
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("watch-segments-\(owner)-\(value.revision).json")
+        do {try data.write(to:url,options:.atomic);try FileManager.default.setAttributes([.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication],ofItemAtPath:url.path)
+            session.transferFile(url,metadata:["kind":"segments","revision":value.revision,"ownerID":owner])
+        } catch {LocationRecorder.shared.recordDiagnostic("watch","Segment cache transfer is waiting")}
+    }
+
     // The Watch's manual recording, as last heard. Stale presence stops counting on
     // its own (CrossDeviceRecording), so nothing here needs clearing.
     private var heardWatchRecording: RecordingPresence?
@@ -79,11 +110,14 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
                                       "recording": currentPresence().dictionary, "acknowledgements": (state.acknowledgements ?? []).map(\.dictionary)]
         // Left out while the journal is closed: the Watch keeps what it has, and
         // never mistakes a locked account for one with no activities.
+        loadSegmentCatalogue()
+        if segmentOwner==ownerID,let catalogue=segmentCatalogue {context["segmentRevision"]=catalogue.revision}
         let history = openHistory
         if let history { context["history"] = history }
         do {
             try session.updateApplicationContext(context)
             if let history { sentHistory = history }
+            transferSegmentCatalogue()
         } catch {}
     }
 
@@ -383,6 +417,16 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         DispatchQueue.main.async { if session.isReachable { self.noteRecorderChanged(force: true); self.sendOwnerContext(); self.flush() } }
     }
 
+    func session(_ session:WCSession,didFinish fileTransfer:WCSessionFileTransfer,error:Error?){
+        guard fileTransfer.file.metadata?["kind"] as? String == "segments" else {return}
+        let revision=fileTransfer.file.metadata?["revision"] as? String
+        let owner=fileTransfer.file.metadata?["ownerID"] as? String
+        DispatchQueue.main.async {
+            if error==nil,self.ownerID==owner,self.segmentCatalogue?.revision==revision {self.deliveredSegmentRevision=revision ?? ""}
+            let url=fileTransfer.file.fileURL
+            if url.lastPathComponent.hasPrefix("watch-segments-"){try? FileManager.default.removeItem(at:url)}
+        }
+    }
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         let value = applicationContext["recording"]
         DispatchQueue.main.async { self.receive(presence: value) }
@@ -392,7 +436,8 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         let value = message["recording"], needsHistory = message["needsHistory"] != nil
         DispatchQueue.main.async {
             self.receive(presence: value)
-            if needsHistory { self.sendOwnerContext() }
+            if message["needsSegments"] as? Bool == true, message["segmentRevision"] as? String != self.segmentCatalogue?.revision {self.deliveredSegmentRevision=""}
+            if needsHistory || message["needsSegments"] as? Bool == true { self.sendOwnerContext() }
         }
     }
 

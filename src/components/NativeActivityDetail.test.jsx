@@ -55,6 +55,14 @@ describe('NativeActivityDetail',()=>{
   expect(props.onBack).toHaveBeenCalledTimes(1);
   await close(view);
  });
+ it('makes an older PR source available even when navigation history is scoped to today',async()=>{
+  const older={id:'older-pr',title:'Earlier ride'};
+  const view=render(<NativeActivityDetail {...props} journeys={[trip]} segmentActivities={[trip,older]}/>);await settle();
+  mocks.operation.mockResolvedValue({});
+  await act(async()=>{await mocks.listeners.request({requestID:'pr',op:'probe',args:{id:older.id}});});
+  expect(mocks.operation.mock.calls[0][0].activities).toContain(older);
+  await close(view);
+ });
  it('answers a request, and reports a failure instead of hanging',async()=>{
   const view=await open();
   mocks.operation.mockResolvedValueOnce({audience:'private'});
