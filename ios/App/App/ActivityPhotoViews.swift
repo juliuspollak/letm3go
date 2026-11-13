@@ -51,19 +51,37 @@ struct ActivityMomentsSection: View {
                         }
                     }
                 }
+            } else if photos.local {
+                Text("Keep the moments worth remembering.")
+                    .font(.subheadline).foregroundStyle(.secondary)
             } else {
-                DetailFootnote(text: photos.local ? "Add photos from this activity to keep the day together." : "No photos were added to this activity.")
+                DetailFootnote(text: "No photos were added to this activity.")
             }
             if photos.local {
-                HStack {
-                    Button { model.addPhotos() } label: { Label(model.addingPhotos ? "Adding photos…" : "Add photos", systemImage: "photo.badge.plus") }
-                        .buttonStyle(DetailButtonStyle(kind: .primary))
-                    Button { model.sheet = .suggestions } label: { Label("Find journey photos", systemImage: "camera") }
-                        .buttonStyle(DetailButtonStyle())
-                }.disabled(model.busy || model.addingPhotos)
-                DetailFootnote(text: "Only selected photos are copied locally. No automatic uploads. Dashed map bubbles indicate timestamp-inferred locations.")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { photoActions }
+                    VStack(alignment: .leading, spacing: 8) { photoActions }
+                }
+                DisclosureGroup("Photo privacy & location") {
+                    DetailFootnote(text: "Only selected photos are copied locally. No automatic uploads. Dashed map bubbles indicate timestamp-inferred locations.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
+    }
+    private var photoActions: some View {
+        Group {
+            Button { model.addPhotos() } label: {
+                Label(model.addingPhotos ? "Adding photos…" : "Add photos", systemImage: "plus")
+            }
+            .buttonStyle(DetailButtonStyle(kind: .primary))
+            Button { model.sheet = .suggestions } label: {
+                Label("Find journey photos", systemImage: "photo.on.rectangle")
+            }
+            .buttonStyle(DetailButtonStyle())
+        }
+        .disabled(model.busy || model.addingPhotos)
     }
 }
 
