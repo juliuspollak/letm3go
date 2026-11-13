@@ -53,6 +53,7 @@
     "testflight:check": "node scripts/testflight.mjs preflight",
     "testflight:package": "node scripts/testflight.mjs package",
     "release:check": "node scripts/check-release.mjs",
+    "check:backup-backend": "node scripts/check-backup-backend.mjs",
     "test:orchestrator": "node --test tests/orchestrator/*.node.mjs"
   },
   "overrides": { "minimatch": "11.0.8" },

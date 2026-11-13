@@ -64,7 +64,7 @@ jobs:
           done
       - run: npm ci
       - run: npm run release:check
-      - run: node scripts/check-backup-backend.mjs
+      - run: npm run check:backup-backend
       - run: npm run testflight:check
       - run: npm run check
       - run: npm run check:edge
