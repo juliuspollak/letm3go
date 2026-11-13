@@ -909,7 +909,6 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     private var fittedDayKey:String?
     private var fittedDayHadRoutes=false
     private var liveSignature:Int?
-    private var liveDimmed=false
     private(set) var liveUpdates=0
     private var circles:[String:MKCircle]=[:]
     private var indicators:[String:EdgeAvatarButton]=[:]
@@ -1000,17 +999,15 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
         // The live trail changes with every GPS point: replace only this overlay, and only
         // when it really changed, so the recorded day above is never rebuilt.
-        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) } ^ (next.personDay ? 1 : 0)
-        if liveKey != liveSignature || liveDimmed != (next.selectedActivity != nil) {
+        let liveKey=LiveOverlaySignature.value(next.live) { ($0.latitude, $0.longitude) }
+        if liveKey != liveSignature {
             liveUpdates+=1
             if let old=liveOverlay {map.removeOverlay(old);liveOverlay=nil}
             if next.live.count>1 {
-                let line:MKPolyline
-                if next.personDay {let styled=StyledLine(coordinates:next.live,count:next.live.count);styled.color=UIColor.systemTeal.withAlphaComponent(next.selectedActivity == nil ? 1 : 0.55);styled.width=4;line=styled}
-                else {line=LivePolyline(coordinates:next.live,count:next.live.count)}
+                let line=LivePolyline(coordinates:next.live,count:next.live.count)
                 map.addOverlay(line);liveOverlay=line
             }
-            liveSignature=liveKey;liveDimmed=next.selectedActivity != nil
+            liveSignature=liveKey
         }
         var wantedCircles:[String:(CLLocationCoordinate2D,Double)]=[:]
         for pin in next.pins {
