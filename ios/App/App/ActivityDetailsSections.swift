@@ -202,11 +202,14 @@ struct ActivitySegmentsSection: View {
                         .font(.footnote)
                 }
             }
-            let current = row.passes.filter { $0.current }
+            let current = row.currentPasses ?? row.passes.filter { $0.current }
             if !current.isEmpty {
                 Text("This ride's attempts").font(.subheadline.weight(.semibold))
                     .padding(.top, 4)
                 ForEach(current) { pass in attemptRow(pass, historical: false) }
+                if current.count < row.thisRide {
+                    Text("Showing \(current.count) of \(row.thisRide) attempts on this ride.").font(.caption).foregroundStyle(.secondary)
+                }
             }
             if row.total > current.count {
                 Button {
@@ -214,7 +217,7 @@ struct ActivitySegmentsSection: View {
                     else { historyExpanded.insert(row.id) }
                 } label: {
                     HStack {
-                        Text("All-time attempts (\(row.total))")
+                        Text("Available attempts (\(row.total))")
                         Spacer()
                         Image(systemName: historyExpanded.contains(row.id) ? "chevron.up" : "chevron.down")
                     }
@@ -224,6 +227,9 @@ struct ActivitySegmentsSection: View {
                 .padding(.top, 6)
                 if historyExpanded.contains(row.id) {
                     ForEach(row.passes) { pass in attemptRow(pass, historical: true) }
+                    if row.passes.count < row.total {
+                        Text("Showing the fastest \(row.passes.count) of \(row.total) available attempts.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -262,7 +268,7 @@ struct ActivitySegmentsSection: View {
                     Image(systemName: "arrow.up.right").font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .frame(minHeight: 38)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
             .foregroundStyle(.primary)
         }
@@ -574,6 +580,9 @@ struct ActivityStorySection: View {
             .buttonStyle(.plain)
             .disabled(!model.presentation.header.local || model.busy)
             .accessibilityLabel(story.description.isEmpty ? "Add your story" : "Edit your story")
+            if model.presentation.tags == nil && !story.tags.isEmpty {
+                Text(story.tags.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -585,10 +594,16 @@ struct ActivityFactsSection: View {
         if !presentation.metrics.isEmpty || presentation.facts != nil {
             DetailCard(title: "Recording details", symbol: "info.circle") {
                 if !presentation.metrics.isEmpty {
+                    if #available(iOS 16.0, *) {
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .top, spacing: 14) {
                             ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) }
                         }
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) }
+                        }
+                    }
+                    } else {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(presentation.metrics) { ReadoutPair(label: $0.label, value: $0.value) }
                         }
