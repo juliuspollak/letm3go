@@ -5431,3 +5431,53 @@ let baselineReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:Data(#"{"own
 let baselineRoundTrip=try! JSONSerialization.jsonObject(with:JSONEncoder().encode(baselineReceipt)) as! [String:Any]
 check(baselineRoundTrip["baseFingerprint"] as? String == "server", "native preferences retain server baseline separately from local serialization")
 print("Final native assertion count including backup content baselines: \(assertions)")
+
+// Live segments use the same ordered 5 m reference, with no network or ride rescan.
+let liveSegmentReference=(0...120).map { i -> [Double] in [-34.4,150.9+Double(i)*5/(111320*cos(-34.4 * .pi/180)),Double(i)*5] }
+let liveSegmentDefinition=WatchSegmentDefinition(id:"test",name:"Test descent",activity:"MTB",reference:liveSegmentReference,lengthMeters:600,bestSeconds:130,bestAt:100,bestActivityID:"older")
+let liveSegmentOwner="11111111-1111-4111-8111-111111111111"
+let liveSegmentCatalogue=WatchSegmentCatalogue(schema:1,ownerID:liveSegmentOwner,revision:String(repeating:"a",count:64),generatedAt:1000,definitions:[liveSegmentDefinition])
+let liveSegmentData=try! JSONEncoder().encode(liveSegmentCatalogue)
+check(WatchSegmentCatalogue.decode(liveSegmentData,owner:liveSegmentOwner) != nil,"live catalogue decodes for its owner")
+check(WatchSegmentCatalogue.decode(liveSegmentData,owner:"22222222-2222-4222-8222-222222222222")==nil,"live catalogue cannot cross accounts")
+var invalidLiveCatalogue=liveSegmentCatalogue;invalidLiveCatalogue.definitions[0].reference[1][2] = -1
+check(WatchSegmentCatalogue.decode(try! JSONEncoder().encode(invalidLiveCatalogue),owner:liveSegmentOwner)==nil,"malformed reference ordering is refused")
+func liveSegmentPoint(_ east:Double,_ time:Double,_ offset:Double=0,_ segment:Int=0)->WatchPoint {
+    WatchPoint(latitude:-34.4+offset/111320,longitude:150.9+east/(111320*cos(-34.4 * .pi/180)),timestamp:time,accuracy:5,altitude:0,speed:5,segment:segment)
+}
+var liveSegmentEngine=WatchLiveSegments();liveSegmentEngine.configure(liveSegmentCatalogue,activity:"MTB")
+var liveSegmentEvents:[String]=[]
+for i in -6...120 {liveSegmentEvents += liveSegmentEngine.ingest(liveSegmentPoint(Double(i)*5,1000+Double(i))).map(\.kind)}
+check(liveSegmentEvents.filter{$0=="start"}.count==1 && liveSegmentEvents.filter{$0=="finish"}.count==1,"one traversal gives exactly one start and finish")
+check(liveSegmentEngine.feedback?.finished==true && liveSegmentEngine.feedback?.newRecord==true,"clean completion compares against the cached PR")
+check(abs((liveSegmentEngine.feedback?.elapsedSeconds ?? 0)-120)<=1,"live elapsed time follows real start/finish fixes")
+var reverseLiveEngine=WatchLiveSegments();reverseLiveEngine.configure(liveSegmentCatalogue,activity:"MTB")
+for i in stride(from:120,through: -10,by: -1){_ = reverseLiveEngine.ingest(liveSegmentPoint(Double(i)*5,2000+Double(120-i)))}
+check(reverseLiveEngine.finishes==0 && reverseLiveEngine.starts==0,"reverse traversals do not produce a forward segment alert")
+var brokenLiveEngine=WatchLiveSegments();brokenLiveEngine.configure(liveSegmentCatalogue,activity:"MTB")
+for i in -6...120 {if i==60 {brokenLiveEngine.interrupt()};_ = brokenLiveEngine.ingest(liveSegmentPoint(Double(i)*5,3000+Double(i),0,i>=60 ? 1:0))}
+check(brokenLiveEngine.feedback?.interrupted==true && brokenLiveEngine.feedback?.newRecord==false,"a pause never becomes a personal record")
+var leavingLiveEngine=WatchLiveSegments();leavingLiveEngine.configure(liveSegmentCatalogue,activity:"MTB")
+for i in -6...20 {_ = leavingLiveEngine.ingest(liveSegmentPoint(Double(i)*5,4000+Double(i)))}
+_ = leavingLiveEngine.ingest(liveSegmentPoint(150,4045,500))
+check(leavingLiveEngine.feedback==nil,"leaving the route clears an unfinished segment card")
+var repeatedLiveEngine=WatchLiveSegments();repeatedLiveEngine.configure(liveSegmentCatalogue,activity:"MTB")
+for lap in 0..<3 {
+ for i in -6...120 {_ = repeatedLiveEngine.ingest(liveSegmentPoint(Double(i)*5,5000+Double(lap)*300+Double(i)))}
+ _ = repeatedLiveEngine.ingest(liveSegmentPoint(-50,5000+Double(lap)*300+180,300))
+}
+check(repeatedLiveEngine.finishes==3 && repeatedLiveEngine.starts==3,"three real laps remain three attempts in one ride")
+var mismatchedLiveEngine=WatchLiveSegments();mismatchedLiveEngine.configure(liveSegmentCatalogue,activity:"Running")
+for i in -6...120 {_ = mismatchedLiveEngine.ingest(liveSegmentPoint(Double(i)*5,7000+Double(i)))}
+check(mismatchedLiveEngine.starts==0,"a cycling segment does not alert during running")
+print("Final native assertion count including offline live segments: \(assertions)")
+
+var overlappingCatalogue=liveSegmentCatalogue
+var overlappingDefinition=liveSegmentDefinition;overlappingDefinition.id="second";overlappingDefinition.name="Second segment"
+overlappingCatalogue.definitions.append(overlappingDefinition)
+var overlappingEngine=WatchLiveSegments();overlappingEngine.configure(overlappingCatalogue,activity:"MTB")
+var overlappingEvents:[(kind:String,feedback:WatchSegmentFeedback)]=[]
+for i in -6...120 {overlappingEvents += overlappingEngine.ingest(liveSegmentPoint(Double(i)*5,9000+Double(i)))}
+check(Set(overlappingEvents.filter{$0.kind=="start"}.map{$0.feedback.id})==Set(["test","second"]),"overlapping start alerts carry their own segment identity")
+check(Set(overlappingEvents.filter{$0.kind=="finish"}.map{$0.feedback.name})==Set(["Test descent","Second segment"]),"overlapping finish alerts carry their own result")
+print("Final native assertion count including overlapping segment alerts: \(assertions)")

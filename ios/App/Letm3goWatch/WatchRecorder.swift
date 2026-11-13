@@ -3,6 +3,7 @@ import CoreLocation
 import HealthKit
 import Combine
 import WatchKit
+import UserNotifications
 
 // The watch records independently of the phone. An HKWorkoutSession keeps the app
 // and its location updates alive with the wrist down, and every finished ride is
@@ -21,6 +22,11 @@ final class WatchRecorder: NSObject, ObservableObject {
     @Published private(set) var activeSeconds: Double = 0
     @Published private(set) var pointCount = 0
     @Published private(set) var status = "Ready to ride"
+    @Published private(set) var segmentFeedback:WatchSegmentFeedback?
+    @Published private(set) var segmentBackgroundAlerts=false
+    private var segmentEngine=WatchLiveSegments()
+    private var segmentOwnerID:String?
+
     @Published private(set) var permission = "unknown"
     @Published private(set) var pendingCount = 0
     @Published var activity = "MTB" {
@@ -116,6 +122,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     }
     // Called at launch and when the phone reports another account.
     func loadAccountData() {
+        if segmentOwnerID != WatchConnectivitySession.shared.ownerID {segmentEngine.configure(nil,activity:activity);segmentFeedback=nil;segmentOwnerID=WatchConnectivitySession.shared.ownerID}
         let defaults = UserDefaults.standard
         memory = defaults.data(forKey: Self.key("memory")).flatMap { try? JSONDecoder().decode(WatchStartMemory.self, from: $0) } ?? WatchStartMemory()
         history = defaults.data(forKey: Self.key("history")).flatMap { try? JSONDecoder().decode([WatchHistoryEntry].self, from: $0) } ?? []
@@ -333,7 +340,33 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     // Called when the app returns to the foreground: the link may have reconnected
     // and the watch may be holding rides the phone has not acknowledged.
+    func enableSegmentAlerts(){
+        UNUserNotificationCenter.current().requestAuthorization(options:[.alert,.sound]) {allowed,_ in
+            DispatchQueue.main.async {self.segmentBackgroundAlerts=allowed}
+        }
+    }
+    private func segmentAlert(_ event:String,_ feedback:WatchSegmentFeedback){
+        if WKExtension.shared().applicationState == .active {
+            WKInterfaceDevice.current().play(event=="start" ? .start : event=="finish" ? .success : .notification)
+            return
+        }
+        guard segmentBackgroundAlerts else {return}
+        let content=UNMutableNotificationContent();content.sound = .default
+        content.title=event=="start" ? feedback.name : "\(feedback.name) complete"
+        if event=="start" {content.body=feedback.bestSeconds.map {"PR \(WatchFormat.clock($0))"} ?? "Segment started"}
+        else if feedback.interrupted {content.body="Incomplete GPS timing. No PR comparison."}
+        else if let pr=feedback.bestSeconds {
+            let delta=Int((feedback.elapsedSeconds-pr).rounded())
+            content.body="\(WatchFormat.clock(feedback.elapsedSeconds)) \u{00b7} " + (feedback.newRecord ? "New PR, \(abs(delta))s faster" : delta==0 ? "Matched your PR" : "\(abs(delta))s slower than PR")
+        } else {content.body="\(WatchFormat.clock(feedback.elapsedSeconds)) \u{00b7} first recorded attempt"}
+        let id="segment-\(draft?.id ?? "")-\(feedback.id)-\(feedback.startedAt)-\(event)"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier:id,content:content,trigger:nil))
+    }
     func refresh() {
+        UNUserNotificationCenter.current().getNotificationSettings {settings in
+            DispatchQueue.main.async {self.segmentBackgroundAlerts=settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional}
+        }
+
         pendingCount = WatchTransferQueue.shared.pendingCount()
         WatchConnectivitySession.shared.sendPending()
         retryEnergyJobs()
@@ -356,6 +389,9 @@ final class WatchRecorder: NSObject, ObservableObject {
             return
         }
         draft = ride
+        segmentOwnerID=ride.ownerID
+        segmentEngine.configure(WatchConnectivitySession.shared.segmentCatalogue,activity:ride.activity)
+        segmentFeedback=nil
         memory.remember(config)
         saveMemory()
         lastFinished = nil
@@ -391,6 +427,8 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func pause() {
         guard var ride = draft, ride.isRecording else { return }
+        segmentEngine.interrupt()
+        segmentFeedback=segmentEngine.feedback
         ride.pause(at: Date().timeIntervalSince1970)
         draft = ride
         state = "paused"
@@ -504,7 +542,20 @@ final class WatchRecorder: NSObject, ObservableObject {
                 accuracy: location.horizontalAccuracy,
                 altitude: location.altitude,
                 speed: location.speed)
-            if case .accepted = ride.ingest(fix, now: now) { accepted = true }
+            if case .accepted = ride.ingest(fix, now: now) {
+                accepted = true
+                let link=WatchConnectivitySession.shared
+                if ride.ownerID==link.ownerID,segmentOwnerID==ride.ownerID,!ride.indoor,let point=ride.points.last {
+                    // A cache arriving after start may be used before the first candidate;
+                    // geometry and PRs stay fixed for the rest of this recording.
+                    if segmentEngine.starts==0,let catalogue=link.segmentCatalogue,segmentEngine.revision != catalogue.revision {segmentEngine.configure(catalogue,activity:ride.activity)}
+                    let events=segmentEngine.ingest(point)
+                    segmentFeedback=segmentEngine.feedback
+                    for event in events {
+                        segmentAlert(event.kind,event.feedback)
+                    }
+                } else {segmentEngine.configure(nil,activity:ride.activity);segmentFeedback=nil}
+            }
         }
         if accepted {
             lastFixAt = now

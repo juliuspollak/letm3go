@@ -2720,6 +2720,29 @@
     "total": 1,
     "rideCount": 1,
     "best": "1:30",
+    "personalBest": {
+     "id": "22222222-2222-4222-8222-222222222222:1790000010",
+     "activityID": "22222222-2222-4222-8222-222222222222",
+     "rank": 1,
+     "time": "1:30",
+     "interrupted": false,
+     "when": "22 Sept 2026 · 12:13 am",
+     "title": "Morning ride",
+     "current": true
+    },
+    "thisRideBest": {
+     "id": "22222222-2222-4222-8222-222222222222:1790000010",
+     "activityID": "22222222-2222-4222-8222-222222222222",
+     "rank": 1,
+     "time": "1:30",
+     "interrupted": false,
+     "when": "22 Sept 2026 · 12:13 am",
+     "title": "Morning ride",
+     "current": true
+    },
+    "previousBest": null,
+    "comparison": "No earlier clean attempt available.",
+    "newPR": false,
     "passes": [
      {
       "id": "22222222-2222-4222-8222-222222222222:1790000010",

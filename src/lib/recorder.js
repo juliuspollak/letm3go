@@ -75,6 +75,7 @@ export const recorder = {
  roadRoute:(from,to)=>native.roadRoute({fromLatitude:from.latitude,fromLongitude:from.longitude,toLatitude:to.latitude,toLongitude:to.longitude}),
  editActivity:trip=>native.editActivity({...trip,activity:activityCode(trip.activity)}),
  assignEquipment:params=>native.assignEquipment(params),
+ setWatchSegments:catalogue=>native.setWatchSegments({catalogue}),
  // A trail link is stored on the local activity, so it works offline and never
  // alters community trail data. Passing no trail reference removes the link.
  assignTrail:params=>native.assignTrail(params),

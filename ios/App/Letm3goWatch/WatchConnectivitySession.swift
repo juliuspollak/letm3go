@@ -25,6 +25,30 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     // The open account's Collection bicycles and e-bikes, as the phone last sent
     // them. Kept per account so another account's bikes are never offered.
     @Published private(set) var equipment: [WatchEquipment] = []
+    @Published private(set) var segmentCatalogue:WatchSegmentCatalogue?
+    private var expectedSegmentRevision:String?
+    private var pendingSegmentData:Data?
+    private static func segmentURL(_ owner:String)->URL {
+        let root=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
+        return root.appendingPathComponent("watch-segments-\(owner).json")
+    }
+    private func loadSegments(){
+        segmentCatalogue=nil;pendingSegmentData=nil;expectedSegmentRevision=nil
+        guard let owner=ownerID,let data=try? Data(contentsOf:Self.segmentURL(owner)),let value=WatchSegmentCatalogue.decode(data,owner:owner) else {return}
+        segmentCatalogue=value;expectedSegmentRevision=value.revision
+    }
+    private func receiveSegments(_ data:Data){
+        guard let owner=ownerID,let value=WatchSegmentCatalogue.decode(data,owner:owner) else {return}
+        guard value.revision==expectedSegmentRevision else {pendingSegmentData=data;return}
+        do {
+            let url=Self.segmentURL(owner)
+            try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
+            try data.write(to:url,options:.atomic)
+            try FileManager.default.setAttributes([.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication],ofItemAtPath:url.path)
+            segmentCatalogue=value;pendingSegmentData=nil
+        }catch {lastMessage="Segments could not be saved for offline use"}
+    }
+
     // The iPhone's manual recording, as last heard.
     @Published private(set) var remoteRecording: RecordingPresence?
     // The iPhone's list of synced rides, as last received. WatchRecorder applies it.
@@ -43,6 +67,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
         super.init()
         ownerID = WatchOwnership.normalize(UserDefaults.standard.string(forKey: Self.ownerKey))
         equipment = Self.storedEquipment(for: ownerID)
+        loadSegments()
         refreshCounts()
     }
 
@@ -99,7 +124,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
     // not always know to.
     private func requestHistory() {
         guard WCSession.default.activationState == .activated, WCSession.default.isReachable else { return }
-        WCSession.default.sendMessage(["needsHistory": true], replyHandler: nil, errorHandler: nil)
+        WCSession.default.sendMessage(["needsHistory": true,"needsSegments":true,"segmentRevision":segmentCatalogue?.revision ?? ""], replyHandler: nil, errorHandler: nil)
     }
 
     // Queued, so it arrives whenever the phone next wakes. One batch at a time: a
@@ -202,6 +227,12 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
                 UserDefaults.standard.removeObject(forKey: Self.ownerKey)
             }
             equipment = Self.storedEquipment(for: owner)
+            loadSegments()
+        }
+        if let revision=context["segmentRevision"] as? String,revision != expectedSegmentRevision {
+            expectedSegmentRevision=revision
+            if segmentCatalogue?.revision != revision {segmentCatalogue=nil}
+            if let data=pendingSegmentData {receiveSegments(data)}
         }
         // After the owner: the list belongs to the account it arrived with. Absent
         // while the iPhone's account is closed, and from older phone builds.
@@ -306,6 +337,12 @@ extension WatchConnectivitySession: WCSessionDelegate {
         }
     }
 
+    nonisolated func session(_ session:WCSession,didReceive file:WCSessionFile){
+        guard file.metadata?["kind"] as? String == "segments",
+              let size=try? file.fileURL.resourceValues(forKeys:[.fileSizeKey]).fileSize,
+              size<=WatchSegmentCatalogue.byteLimit,let data=try? Data(contentsOf:file.fileURL) else {return}
+        DispatchQueue.main.async {self.receiveSegments(data)}
+    }
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         let context = applicationContext
         DispatchQueue.main.async { self.receive(context) }

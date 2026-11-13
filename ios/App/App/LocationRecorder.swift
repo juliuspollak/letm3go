@@ -1551,6 +1551,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "roadRoute", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "editActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "assignEquipment", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setWatchSegments", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "assignTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRouteDisplay", returnType: CAPPluginReturnPromise),

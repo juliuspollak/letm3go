@@ -541,6 +541,15 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.updateActivity(id:call.getString("id") ?? "",title:call.getString("title") ?? "",activity:call.getString("activity") ?? "Unknown",description:call.getString("description") ?? "",notes:call.getString("notes") ?? "",tags:call.getArray("tags",String.self) ?? [],collection:call.getString("collection") ?? "",vehicle:call.getString("vehicle"),vehicleID:call.getString("vehicleID")); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
+    @objc func setWatchSegments(_ call:CAPPluginCall){DispatchQueue.main.async {
+        guard self.requireAccount(call) else {return}
+        let r=LocationRecorder.shared
+        guard let text=call.getString("catalogue"),text.utf8.count<=WatchSegmentCatalogue.byteLimit,
+              let data=text.data(using:.utf8),WatchSegmentCatalogue.decode(data,owner:r.ownerID) != nil else {call.reject("Invalid Watch segments.");return}
+        guard let storage=r.storage else {call.reject("Account storage is not ready.");return}
+        do {try storage.writeData(data,name:"watch-segments.data");WatchSessionManager.shared.setSegmentCatalogue(data);call.resolve()}
+        catch {call.reject("Watch segments could not be saved.")}
+    }}
     @objc func assignEquipment(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         guard let id=call.getString("id"), let ids=call.getArray("ids",String.self) else { call.reject("Choose equipment for this activity."); return }
