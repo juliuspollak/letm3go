@@ -10,11 +10,12 @@ import {flushPendingHides,isLiveHidden} from './hideLiveActivity.js';
 // phone that is offline must not hammer the server: at most MAX_ATTEMPTS publications are
 // tried per pass, and an activity that has failed three times is left alone for half an hour
 // (this session only; a new session tries it again).
+export const HOUSEHOLD_SHARE_LIMIT=10;
 const MAX_ATTEMPTS=12,GIVE_UP_AFTER=3,PAUSE_MS=30*60*1000;
 const failures=new Map();
 export const forgetAutoShareFailures=()=>failures.clear();
 const paused=id=>{const f=failures.get(id);return Boolean(f&&f.n>=GIVE_UP_AFTER&&Date.now()-f.at<PAUSE_MS);};
-export async function shareNewHouseholdActivities({client,recorder,receipts,checkpoint,limit=10}){
+export async function shareNewHouseholdActivities({client,recorder,receipts,checkpoint,limit=HOUSEHOLD_SHARE_LIMIT}){
  // Tell the server about any "keep private" it has not heard yet before anything is published.
  await flushPendingHides(client);
  const published=[],failed=[],skip=new Set();
@@ -43,8 +44,7 @@ export async function shareNewHouseholdActivities({client,recorder,receipts,chec
     if(published.length>=limit)break;
    }catch(error){
     // One activity that cannot be published (a revision mismatch, bad points) must not
-    // hold up the rest: skip it this pass. Three failures IN A ROW mean something is wrong
-    // for everything (offline, no Home place), so stop instead of repeating it; a success resets the count.
+    // hold up the rest: skip it this pass and cap attempts across the whole pass.
     skip.add(id);failed.push({id,message:error.message});
     const before=failures.get(id);failures.set(id,{n:(before?.n||0)+1,at:Date.now()});
     if(++attempts>=MAX_ATTEMPTS)return {published,failed};

@@ -1,12 +1,12 @@
 import {act,cleanup,renderHook} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({share:vi.fn()}));
-vi.mock('./householdAutoShare.js',()=>({shareNewHouseholdActivities:mock.share}));
+vi.mock('./householdAutoShare.js',()=>({HOUSEHOLD_SHARE_LIMIT:10,shareNewHouseholdActivities:mock.share}));
 import {useHouseholdAutoShare,FOLLOW_UPS_MS} from './useHouseholdAutoShare.js';
 
 const args=over=>({client:{},recorder:{},enabled:true,finishedCount:1,...over});
 beforeEach(()=>{vi.useFakeTimers();mock.share.mockReset().mockResolvedValue({published:[],failed:[]});});
-afterEach(()=>{cleanup();vi.useRealTimers();});
+afterEach(()=>{cleanup();vi.restoreAllMocks();vi.useRealTimers();});
 
 it('runs once shortly after the app opens, and again when an activity finishes',async()=>{
  const {rerender}=renderHook(p=>useHouseholdAutoShare(p),{initialProps:args()});
@@ -41,7 +41,7 @@ it('never runs two passes at once: a trigger during a pass schedules exactly one
 it('looks again after an activity finishes, because the backup that uploads it comes a little later',async()=>{
  renderHook(()=>useHouseholdAutoShare(args()));
  await act(async()=>{await vi.advanceTimersByTimeAsync(FOLLOW_UPS_MS.at(-1)+100);});
- expect(mock.share).toHaveBeenCalledTimes(FOLLOW_UPS_MS.length);
+ expect(mock.share).toHaveBeenCalledTimes(FOLLOW_UPS_MS.length+3);
 });
 it('a trigger that arrives during a pass is still serviced when an activity finishes mid-pass',async()=>{
  let release;
@@ -70,4 +70,28 @@ it('follows the backup: an activity that has just reached the cloud is looked at
  mock.share.mockClear();
  await act(async()=>{window.dispatchEvent(new Event('letm3go:backed-up'));await vi.advanceTimersByTimeAsync(3100);});
  expect(mock.share).toHaveBeenCalledTimes(1);
+});
+
+it('drains a large eligible backlog automatically using bounded passes',async()=>{
+ const full={published:Array.from({length:10},(_,i)=>String(i)),failed:[]};
+ mock.share.mockResolvedValueOnce(full).mockResolvedValueOnce(full).mockResolvedValueOnce(full).mockResolvedValueOnce(full).mockResolvedValue({published:['last'],failed:[]});
+ renderHook(()=>useHouseholdAutoShare(args()));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(16000);});
+ expect(mock.share).toHaveBeenCalledTimes(5);
+});
+
+it('checks for delayed sharing and retries while the app stays open, without another user action',async()=>{
+ renderHook(()=>useHouseholdAutoShare(args()));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(125000);});
+ expect(mock.share).toHaveBeenCalledTimes(2);
+});
+it('does not run while offline, hidden or after sharing is disabled',async()=>{
+ const online=vi.spyOn(navigator,'onLine','get').mockReturnValue(false);
+ const visibility=vi.spyOn(document,'visibilityState','get').mockReturnValue('visible');
+ const {rerender}=renderHook(p=>useHouseholdAutoShare(p),{initialProps:args()});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(5100);});expect(mock.share).not.toHaveBeenCalled();
+ online.mockReturnValue(true);visibility.mockReturnValue('hidden');
+ await act(async()=>{window.dispatchEvent(new Event('online'));await vi.advanceTimersByTimeAsync(3100);});expect(mock.share).not.toHaveBeenCalled();
+ visibility.mockReturnValue('visible');rerender(args({enabled:false}));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(500000);});expect(mock.share).not.toHaveBeenCalled();
 });

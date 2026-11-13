@@ -13,7 +13,7 @@ export async function publishActivity({client,state,id,receipts,checkpoint,revie
  const {data:auth,error}=await client.auth.getUser();const owner=auth?.user?.id;
  if(error||!owner||state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('This activity belongs to a different account.');
  const trip=state.trips.find(t=>t.id===id);if(!trip||!['device','watch'].includes(trip.source)||!trip.endedAt)throw new Error('Only completed recordings from this account can be shared.');
- if(reviewedTrip&&(JSON.stringify(trip.points)!==JSON.stringify(reviewedTrip.points)||trip.activity!==reviewedTrip.activity||(trip.details?.description||'')!==(reviewedTrip.description||'')))throw new Error('Activity changed. Close privacy controls and review the latest activity before publishing.');
+ if(reviewedTrip&&(JSON.stringify(trip.points)!==JSON.stringify(reviewedTrip.points)||trip.activity!==reviewedTrip.activity||(trip.details?.description||'')!==(reviewedTrip.description??reviewedTrip.details?.description??'')))throw new Error('Activity changed. Close privacy controls and review the latest activity before publishing.');
  // Anyone else sees a masked route, so Home must be known; a household already knows where Home is, so it is not required for them.
  if(!(audience==='household'&&mode==='household')&&!state.places?.some(p=>p.kind==='home'&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)))throw new Error('Set your Home place before sharing a GPS activity so the private route can be masked.');
  const backup=await syncPrivateActivities(client,{...state,trips:[trip],deletedIDs:[]},receipts,{checkpoint});
