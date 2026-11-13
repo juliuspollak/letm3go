@@ -23,7 +23,7 @@ platform :ios do
     number = override.empty? ? [latest + 1, get_build_number(xcodeproj: 'ios/App/App.xcodeproj').to_i].max : override.to_i
     UI.user_error!('Build number must exceed the latest TestFlight build') if number <= latest
     sh('npm run release:check')
-    sh('node scripts/check-backup-backend.mjs')
+    sh('npm run check:backup-backend')
     # The commit is stamped into Info.plist (Letm3goCommit) so every diagnostic
     # export names the exact source a field test ran, not just the build number.
     commit = Dir.chdir(REPOSITORY_ROOT) do
