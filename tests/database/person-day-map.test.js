@@ -774,3 +774,19 @@ it('a manual revocation atomically prevents a queued automatic re-publication',a
  await as('authenticated',owner,`select public.revoke_activity_publication('${id}')`);
  await expect(share(id,'household','household',[],'Retried',1900000000,true)).rejects.toThrow(/eligible/);
 });
+
+it('preserves exact legacy thinning output for large, fragmented and partly untimed routes',async()=>{
+ // Independent historical implementation guards output compatibility while the
+ // replacement moves raw-array work out of the per-point window scan.
+ const original=await readFile('supabase/migrations/20261202000000_person_day_map.sql','utf8');
+ const start=original.indexOf('create or replace function public.thin_route_points(');
+ const end=original.indexOf('-- ------------------------------------------------------------- completed day',start);
+ await db.exec('reset role');
+ await db.exec(original.slice(start,end).replaceAll('public.thin_route_points','pg_temp.thin_route_points_before_fix'));
+ const points=Array.from({length:5446},(_,i)=>({latitude:10+i/100000,longitude:20,timestamp:1900000000+i+0.4,segment:Math.floor(i/997)}));
+ const mixed=points.map((p,i)=>i%29===0?{...p,timestamp:null}:i%31===0?{...p,timestamp:'legacy'}:p);
+ for(const value of [[],[points[0]],points.slice(0,20),points,mixed,points.slice(0,40).map((p,i)=>({...p,segment:i}))]){
+  const result=(await db.query('select public.thin_route_points($1::jsonb) as actual,pg_temp.thin_route_points_before_fix($1::jsonb) as expected',[JSON.stringify(value)])).rows[0];
+  expect(result.actual).toEqual(result.expected);
+ }
+});
