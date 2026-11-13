@@ -74,7 +74,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   if(!owner)return null;
   const live=day.live;
   const styled=savedRoutes.slice();
-  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:4,opacity:selected?0.55:1})));
+  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:6,opacity:1})));
   styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3.75,opacity:selected?0.55:1})));
   const pins=personFlags(day,savedRoutes,selected?.id);
   // Reuse the single-person pin from the All people map. The native renderer then
