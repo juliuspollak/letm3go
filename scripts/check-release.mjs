@@ -8,6 +8,7 @@ export function validateAppIcon(file='ios/App/App/Assets.xcassets/AppIcon.appico
  if(colourType===4||colourType===6)throw new Error('iOS AppIcon must not include an alpha channel. Export an opaque RGB PNG.');
 }
 export function validateRelease(env,capacitor){
+ if(env.VITE_ENABLE_PRIVATE_BACKUP!=='true')throw new Error('Release must enable automatic private backup (VITE_ENABLE_PRIVATE_BACKUP=true).');
  if(env.VITE_SUPABASE_URL!=='https://subobfmlkfqcsaekygat.supabase.co')throw new Error('Release must use the verified Letm3go Supabase project.');
  const key=env.VITE_SUPABASE_PUBLISHABLE_KEY||'';let publicKey=key.startsWith('sb_publishable_');try{publicKey||=JSON.parse(Buffer.from(key.split('.')[1],'base64url')).role==='anon';}catch{/* Not a legacy anon JWT. */}
  if(!publicKey)throw new Error('Release needs a public publishable/anon key, never a backend credential.');
