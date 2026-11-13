@@ -347,16 +347,17 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  for(const trip of state.trips){
   if(!finishedAll(trip))continue;
   const previous=updated[activityReceiptKey(trip.id)];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
-  // Unchanged since its last backup: not serialised or hashed again.
-  if(previous&&Number.isInteger(previous.revision)&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
   const held=heldFailure(updated,trip.id,owner);
+  // A held refusal must be retried when due, even after a late successful receipt.
+  // Only an activity with no unresolved failure may take the unchanged fast path.
+  if(!held&&previous&&Number.isInteger(previous.revision)&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
   if(held&&held.backupVersion===PRIVATE_BACKUP_VERSION&&held.nextAt>now&&!retryFailed&&held.updatedAt===trip.updatedAt){failedNow.add(trip.id);failures.push({id:trip.id,message:held.message,attempts:held.attempts,held:true,nextAt:held.nextAt});continue;}
   if(processed>=maxActivities){pending=true;break;}processed++;
   const details=trip.details||{};
   const row={id:activityReceiptKey(trip.id),title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
-  if(previous?.fingerprint===fingerprint&&Number.isInteger(previous.revision)&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[activityReceiptKey(trip.id)]={...previous,baseFingerprint:previous.backupVersion===PRIVATE_BACKUP_VERSION?(previous.baseFingerprint??null):previous.fingerprint,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}if(held)updated[failureKey(trip.id)]={owner,cleared:true,at:failureStamp(trip.id)};continue;}
+  if(!held&&previous?.fingerprint===fingerprint&&Number.isInteger(previous.revision)&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[activityReceiptKey(trip.id)]={...previous,baseFingerprint:previous.backupVersion===PRIVATE_BACKUP_VERSION?(previous.baseFingerprint??null):previous.fingerprint,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}if(held)updated[failureKey(trip.id)]={owner,cleared:true,at:failureStamp(trip.id)};continue;}
   let revision,baseFingerprint,error,status;
   try{const response=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null,p_base_fingerprint:previous?.backupVersion===PRIVATE_BACKUP_VERSION?(previous.baseFingerprint??null):(previous?.fingerprint??null)});({error}=response);status=response.status??error?.status;
    const data=response.data;
