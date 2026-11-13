@@ -1,3 +1,4 @@
+import {activityReceiptKey,normalizeActivityReceipts} from './activityReceiptKeys.js';
 import {SEGMENT_PUBLICATION_VERSION,segmentFingerprint,segmentReceipt} from './segmentSyncState.js';
 import {sliceActivityRoute} from './mtbSegment.js';
 import {backupClassification} from './stopBackup.js';
@@ -8,7 +9,7 @@ import {SEGMENT_MATCHER_VERSION,matchEfforts,publicSegmentDefinition} from './se
 // Owner-private permanent activity backup. Local originals stay durable until
 // confirmation. Requires the existing named-segment/Watch schema migration;
 // community MTB publication is a separate, moderated selected-geometry proposal.
-export const PRIVATE_BACKUP_VERSION=2;
+export const PRIVATE_BACKUP_VERSION=3;
 export const NAMED_SEGMENT_BACKUP=true;
 // Ownership-confirmed Watch recordings retain their provenance on replacement.
 export const WATCH_MODE_BACKUP=true;
@@ -278,16 +279,17 @@ export async function syncPublicSegments(client,state,receipts={}, {owner,checkp
 }
 
 // A refusal remembered for this activity and this account (a cleared or another account's record is not one).
-export const heldFailure=(receipts,id,owner)=>{const held=receipts[`backup-failure:${id}`];return held&&!held.cleared&&String(held.owner).toLowerCase()===String(owner).toLowerCase()&&typeof held.message==='string'&&held.message.trim()&&Number.isInteger(held.attempts)&&held.attempts>0&&Number.isFinite(held.nextAt)?held:null;};
+export const heldFailure=(receipts,id,owner)=>{const held=receipts[activityReceiptKey(`backup-failure:${id}`)];return held&&!held.cleared&&String(held.owner).toLowerCase()===String(owner).toLowerCase()&&typeof held.message==='string'&&held.message.trim()&&Number.isInteger(held.attempts)&&held.attempts>0&&Number.isFinite(held.nextAt)?held:null;};
 // How much of what is recorded is in the cloud: finished recordings on this phone, the ones backed up, and the ones still
 // waiting (with the reason, and when it will be tried again, for any the cloud refused). Computed from the receipts.
 export function backupHealth(state,receipts={},now=Date.now(),owner=state?.ownerID){
+ receipts=normalizeActivityReceipts(receipts);
  const finished=finishedTrip(state||{});
  let total=0,backedUp=0;const failing=[];
  for(const trip of state?.trips||[]){
   if(!finished(trip))continue;
   total++;
-  const receipt=receipts[trip.id];
+  const receipt=receipts[activityReceiptKey(trip.id)];
   // A refusal counts whether the activity was never uploaded or an edited copy is the one refused (the cloud's copy is then stale).
   const held=heldFailure(receipts,trip.id,owner);
   const current=receipt&&String(receipt.owner).toLowerCase()===String(owner).toLowerCase()&&!receipt.deleted&&Number.isInteger(receipt.revision)
@@ -303,7 +305,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  if(state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('Backup account does not match the native recordings.');
  if(!cryptoImpl.subtle)throw new Error('Secure backup hashing is unavailable on this device.');
  const hash=hashWith(cryptoImpl);
- const updated={...receipts};let uploaded=0,deleted=0,processed=0,pending=false;
+ const updated=normalizeActivityReceipts(receipts);let uploaded=0,deleted=0,processed=0,pending=false;
  const acknowledge=async()=>checkpoint({...updated});
  let segmentFailure=null;const republish=new Set();
  if(publishSegments){
@@ -312,11 +314,11 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   for(const id of publication.republish)republish.add(id);
  }
  for(const id of state.deletedIDs||[]){
-  const receipt=updated[id];if(receipt&&receipt.owner!==owner)throw new Error('Backup receipts belong to another account.');
+  const receipt=updated[activityReceiptKey(id)];if(receipt&&receipt.owner!==owner)throw new Error('Backup receipts belong to another account.');
   // A deletion the cloud already confirmed is not sent again on every backup.
   if(receipt?.deleted)continue;
   const {error}=await client.from('activities').delete().eq('id',id).eq('owner_id',owner);if(error)throw new Error('Cloud deletion could not be confirmed. Retry backup when connected.');
-  updated[id]={...receipt,owner,deleted:true};deleted++;await acknowledge();
+  updated[activityReceiptKey(id)]={...receipt,owner,deleted:true};deleted++;await acknowledge();
  }
  // Sensitive places precede routes; owner_id is explicit to reject a mid-request
  // account switch even if the SDK has already switched its Authorization header.
@@ -337,29 +339,33 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  // sign-in problem is not the activity's fault: the pass stops without marking anyone.
  const failedNow=new Set(),failures=[];
  let stoppedByNetwork=false;
- const failureKey=id=>`backup-failure:${id}`;
+ const failureKey=id=>activityReceiptKey(`backup-failure:${id}`);
+ const failureStamp=id=>Math.max(now,(updated[failureKey(id)]?.at||0)+1);
  // A record for an activity that is no longer here (deleted) is not kept.
- const present=new Set(state.trips.map(t=>String(t.id)));
- for(const key of Object.keys(updated))if(key.startsWith('backup-failure:')&&!updated[key]?.cleared&&!present.has(key.slice(15))){updated[key]={owner,cleared:true};}
+ const present=new Set(state.trips.map(t=>activityReceiptKey(t.id)));
+ for(const key of Object.keys(updated))if(key.startsWith('backup-failure:')&&!updated[key]?.cleared&&!present.has(key.slice(15))){updated[key]={owner,cleared:true,at:Math.max(now,(updated[key]?.at||0)+1)};}
  for(const trip of state.trips){
   if(!finishedAll(trip))continue;
-  const previous=updated[trip.id];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
+  const previous=updated[activityReceiptKey(trip.id)];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   // Unchanged since its last backup: not serialised or hashed again.
-  if(previous&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
+  if(previous&&Number.isInteger(previous.revision)&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
   const held=heldFailure(updated,trip.id,owner);
-  if(held&&held.nextAt>now&&!retryFailed&&held.updatedAt===trip.updatedAt){failedNow.add(trip.id);failures.push({id:trip.id,message:held.message,attempts:held.attempts,held:true,nextAt:held.nextAt});continue;}
+  if(held&&held.backupVersion===PRIVATE_BACKUP_VERSION&&held.nextAt>now&&!retryFailed&&held.updatedAt===trip.updatedAt){failedNow.add(trip.id);failures.push({id:trip.id,message:held.message,attempts:held.attempts,held:true,nextAt:held.nextAt});continue;}
   if(processed>=maxActivities){pending=true;break;}processed++;
   const details=trip.details||{};
-  const row={id:trip.id,title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
+  const row={id:activityReceiptKey(trip.id),title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
   const fingerprint=await hash(row);
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
-  if(previous?.fingerprint===fingerprint&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[trip.id]={...previous,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}if(held)updated[failureKey(trip.id)]={owner,cleared:true};continue;}
-  let revision,error,status;
-  try{const response=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null});({data:revision,error}=response);status=response.status??error?.status;}
+  if(previous?.fingerprint===fingerprint&&Number.isInteger(previous.revision)&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[activityReceiptKey(trip.id)]={...previous,baseFingerprint:previous.backupVersion===PRIVATE_BACKUP_VERSION?(previous.baseFingerprint??null):previous.fingerprint,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}if(held)updated[failureKey(trip.id)]={owner,cleared:true,at:failureStamp(trip.id)};continue;}
+  let revision,baseFingerprint,error,status;
+  try{const response=await client.rpc('backup_private_activity',{p_owner:owner,p_payload:row,p_fingerprint:fingerprint,p_expected_revision:previous?.revision??null,p_base_fingerprint:previous?.backupVersion===PRIVATE_BACKUP_VERSION?(previous.baseFingerprint??null):(previous?.fingerprint??null)});({error}=response);status=response.status??error?.status;
+   const data=response.data;
+   if(Number.isInteger(data)){revision=data;baseFingerprint=fingerprint;}
+   else if(Number.isInteger(data?.revision)&&(data.base_fingerprint===null||/^[a-f0-9]{64}$/.test(data.base_fingerprint||''))){revision=data.revision;baseFingerprint=data.base_fingerprint;}}
   catch(thrown){error={message:thrown?.message||'Request failed'};}
   if(!error&&Number.isInteger(revision)){
-   updated[trip.id]={owner,fingerprint,revision,backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;
-   if(held)updated[failureKey(trip.id)]={owner,cleared:true};
+   updated[activityReceiptKey(trip.id)]={owner,fingerprint,baseFingerprint,revision,confirmedAt:Math.max(now,(previous?.confirmedAt||0)+1),backupVersion:PRIVATE_BACKUP_VERSION,...(Number.isFinite(trip.updatedAt)?{updatedAt:trip.updatedAt}:{})};uploaded++;
+   if(held)updated[failureKey(trip.id)]={owner,cleared:true,at:failureStamp(trip.id)};
    await acknowledge();
    onBackedUp();
    continue;
@@ -373,7 +379,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
    failures.push({id:trip.id,message,network:true});stoppedByNetwork=true;pending=true;break;
   }
   const attempts=(held?held.attempts:0)+1;
-  updated[failureKey(trip.id)]={owner,message,attempts,at:now,updatedAt:trip.updatedAt,nextAt:now+Math.min(6*3600e3,60e3*2**(attempts-1))};
+  updated[failureKey(trip.id)]={owner,message,attempts,backupVersion:PRIVATE_BACKUP_VERSION,at:failureStamp(trip.id),updatedAt:trip.updatedAt,nextAt:now+Math.min(6*3600e3,60e3*2**(attempts-1))};
   failedNow.add(trip.id);failures.push({id:trip.id,message,attempts,nextAt:updated[failureKey(trip.id)].nextAt});
   await acknowledge();
  }

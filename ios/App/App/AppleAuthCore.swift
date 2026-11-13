@@ -35,6 +35,7 @@ enum AccountPreferencesJSON {
 struct SyncReceipt: Codable {
     var owner: String
     var fingerprint: String?
+    var baseFingerprint: String?
     var revision: Int?
     var deleted: Bool?
     var uploaded: Bool?
@@ -70,7 +71,7 @@ struct SyncReceipt: Codable {
     var checkedAt: Double?
     var queue: [SegmentReceiptBackfill]?
     func valid(for key:String,ownerID:String)->Bool {
-        owner.lowercased()==ownerID.lowercased() && (fingerprint?.count ?? 0)<=(key.hasPrefix("mtb-segment:") ? 256 : 64)
+        owner.lowercased()==ownerID.lowercased() && (baseFingerprint?.count ?? 0)<=64 && (fingerprint?.count ?? 0)<=(key.hasPrefix("mtb-segment:") ? 256 : 64)
     }
 }
 struct SegmentReceiptBaseline: Codable {var name:String;var start:Int;var end:Int}

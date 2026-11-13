@@ -1,6 +1,6 @@
 import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { syncPrivateActivities } from './cloudSync.js';
+import { PRIVATE_BACKUP_VERSION,syncPrivateActivities } from './cloudSync.js';
 const trip={id:'trip',title:'Walk',activity:'Walking',source:'device',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:50,points:[]};
 const state={ownerID:'owner',trips:[trip],places:[]};
 function client(){
@@ -85,7 +85,7 @@ it('publishes only selected segment geometry, retries a lost acknowledgement, an
  api.rpc.mockImplementation(async(name,args)=>name==='backup_private_activity'?{data:1,error:null}:name==='segments_for_map'?{data:[],error:null}:fail?{error:{message:'lost acknowledgement'}}:{data:args.p_client_id,error:null});
  let saved={};await expect(run(api,{...state,trips:[ride]}, {},{checkpoint:async receipts=>{saved=receipts;}})).rejects.toThrow('publishing was not confirmed');
  // The failure is kept so the Segments view can say it will retry; it is not a refusal.
- expect(saved.trip.backupVersion).toBe(2);expect(saved['mtb-segment:'+segmentID]).toMatchObject({owner:'owner',failed:expect.stringMatching(/lost acknowledgement/)});
+ expect(saved.trip.backupVersion).toBe(PRIVATE_BACKUP_VERSION);expect(saved['mtb-segment:'+segmentID]).toMatchObject({owner:'owner',failed:expect.stringMatching(/lost acknowledgement/)});
  expect(saved['mtb-segment:'+segmentID].uploaded).toBeUndefined();
  const privateRow=api.rpc.mock.calls.find(([name])=>name==='backup_private_activity')[1].p_payload;
  const proposal=api.rpc.mock.calls.find(([name])=>name==='publish_segment')[1];
@@ -462,4 +462,41 @@ it('counts an edited cloud copy and a different account receipt as still waiting
  const {backupHealth}=await import('./cloudSync.js');
  const local={...state,trips:[{...state.trips[0],updatedAt:20}]},id=local.trips[0].id;
  for(const receipt of [{owner:'owner',revision:1,updatedAt:10},{owner:'someone-else',revision:1,updatedAt:20}])expect(backupHealth(local,{[id]:receipt})).toMatchObject({total:1,backedUp:0,waiting:1});
+});
+
+it('uses a restored lowercase receipt for an uppercase native UUID and sends its baseline',async()=>{
+ const id='abcdef01-2345-4678-89ab-cdef01234567',api=client(),baseline='a'.repeat(64);
+ const local={...state,trips:[{...trip,id:id.toUpperCase(),updatedAt:20}]};
+ const receipts={[id]:{owner:'owner',revision:1,fingerprint:baseline},[id.toUpperCase()]:{owner:'owner',revision:0,fingerprint:'b'.repeat(64)}};
+ await run(api,local,receipts);
+ expect(api.rpc).toHaveBeenCalledWith('backup_private_activity',expect.objectContaining({p_expected_revision:1,p_base_fingerprint:baseline}));
+});
+it('rechecks an older-build refusal immediately so the repaired protocol can recover without waiting hours',async()=>{
+ const api=client(),id=trip.id;
+ const result=await run(api,{...state,trips:[{...trip,updatedAt:20}]},{[id]:{owner:'owner',revision:1,fingerprint:'a'.repeat(64)},['backup-failure:'+id]:{owner:'owner',message:'Cloud activity conflict',attempts:9,at:1000,nextAt:999999,updatedAt:20}},{now:2000});
+ expect(api.rpc).toHaveBeenCalled();expect(result.receipts['backup-failure:'+id]).toMatchObject({cleared:true,at:2000});
+});
+
+it('orders failure recovery even if an old receipt has a future clock timestamp',async()=>{
+ const {receiptPatch}=await import('./syncReceipts.js');
+ const api=client(),local={...state,trips:[{...trip,updatedAt:20}]};
+ const preferences={syncReceipts:{'backup-failure:trip':{owner:'owner',message:'Old conflict',attempts:3,updatedAt:20,at:999999,nextAt:99999999}}};
+ const recovered=await run(api,local,preferences.syncReceipts,{now:2000});
+ const saved=receiptPatch(preferences,recovered.receipts);
+ expect(saved.syncReceipts['backup-failure:trip'].cleared).toBe(true);
+ api.rpc.mockResolvedValue({data:null,error:{code:'P0001',message:'Cloud activity conflict'}});
+ const failed=await run(api,{...state,trips:[{...trip,title:'New edit',updatedAt:21}]},saved.syncReceipts,{now:3000,throwOnFailure:false});
+ const latest=receiptPatch(saved,failed.receipts).syncReceipts['backup-failure:trip'];
+ expect(latest.message).toBe('Cloud activity conflict');expect(latest.cleared).not.toBe(true);
+});
+
+it('keeps the server baseline separate from the locally serialized fingerprint after an equivalent-content acknowledgement',async()=>{
+ const api=client(),baseline='a'.repeat(64);
+ api.rpc.mockResolvedValue({data:{revision:11,base_fingerprint:baseline},error:null});
+ const first=await run(api,{...state,trips:[{...trip,updatedAt:10}]},{},{now:1000});
+ expect(first.receipts.trip.baseFingerprint).toBe(baseline);
+ expect(first.receipts.trip.fingerprint).not.toBe(baseline);
+ api.rpc.mockClear();
+ await run(api,{...state,trips:[{...trip,title:'Changed locally',updatedAt:20}]},first.receipts,{now:2000});
+ expect(api.rpc).toHaveBeenCalledWith('backup_private_activity',expect.objectContaining({p_expected_revision:11,p_base_fingerprint:baseline}));
 });

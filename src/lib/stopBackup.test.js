@@ -4,7 +4,7 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 // What survives the existing cloud backup and restore for the three kinds of stop.
 // Runs the real syncPrivateActivities and restoreCloudJournal against an in-memory
 // Supabase: rows written by the backup are what the restore reads.
-const cloud=vi.hoisted(()=>({rows:[],restored:[]}));
+const cloud=vi.hoisted(()=>({rows:[],restored:[],known:[]}));
 vi.mock('./supabase.js',()=>{
  const query=table=>{
   const chain={select:()=>chain,eq:()=>chain,is:()=>chain,order:()=>chain,limit:()=>chain,
@@ -14,7 +14,7 @@ vi.mock('./supabase.js',()=>{
  };
  return {supabase:{auth:{getUser:async()=>({data:{user:{id:'owner'}},error:null})},from:query,functions:{invoke:async()=>({data:null,error:null})}}};
 });
-vi.mock('./recorder.js',()=>({recorder:{getState:async()=>({ownerID:'owner',trips:[]}),restoreActivity:async activity=>{cloud.restored.push(activity);return {restored:true};},restorePhoto:async()=>({restored:false})}}));
+vi.mock('./recorder.js',()=>({recorder:{getState:async()=>({ownerID:'owner',trips:cloud.known}),restoreActivity:async activity=>{cloud.restored.push(activity);return {restored:true};},restorePhoto:async()=>({restored:false})}}));
 const {syncPrivateActivities}=await import('./cloudSync.js');
 const {restoreCloudJournal}=await import('./cloudRestore.js');
 const {backupClassification}=await import('./stopBackup.js');
@@ -31,7 +31,7 @@ const continued=drive('round',5000,7600,[fix(5000),fix(5100),fix(5400,1),fix(550
         {start:5500,end:6400,verdict:'ambiguous',confidence:'low',reasons:['stopped 15 min','no walking, visit or on-foot evidence; the phone may have stayed in the vehicle']}]});
 
 describe('stop metadata through cloud backup and restore',()=>{
- beforeEach(()=>{cloud.rows=[];cloud.restored=[];});
+ beforeEach(()=>{cloud.rows=[];cloud.restored=[];cloud.known=[];});
  it('keeps destination, temporary and ambiguous verdicts with timing, reasons and route breaks',async()=>{
   const rpc=vi.fn(async(name,{p_payload})=>{cloud.rows.push({...p_payload,sync_fingerprint:'f',revision:1});return {data:1,error:null};});
   const client={auth:{getUser:async()=>({data:{user:{id:'owner'}}})},from:()=>{const c={upsert:()=>c,delete:()=>c,eq:()=>c,then:r=>r({error:null})};return c;},rpc};
@@ -81,4 +81,15 @@ describe('stop metadata through cloud backup and restore',()=>{
   expect(classification.journeyStops.version).toBe(999);
  });
 
+});
+
+it('does not adopt fresh cloud acknowledgements for activities that already exist locally',async()=>{
+ const id='abcdef01-2345-4678-89ab-cdef01234567',missing='11111111-2222-4333-8444-555555555555';
+ cloud.known=[{id:id.toUpperCase(),title:'Unreviewed local edit'}];
+ const saved={title:'Cloud edit',activity:'Driving',recording_mode:'automatic',started_at:'2026-11-09T00:00:00Z',ended_at:'2026-11-09T01:00:00Z',duration_seconds:3600,distance_meters:1000,route_points:[],classification:{},sync_fingerprint:'a'.repeat(64),revision:11};
+ cloud.rows=[{...saved,id},{...saved,id:missing}];
+ const result=await restoreCloudJournal();
+ expect(result.receipts[id]).toBeUndefined();
+ expect(result.receipts[missing]).toMatchObject({revision:11});
+ expect(cloud.restored.map(t=>t.id)).toEqual([missing]);
 });
