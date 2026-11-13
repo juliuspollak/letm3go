@@ -51,7 +51,7 @@ describe('person map activity bubble',()=>{
  });
  it('shows chronological flags and visible routes without a list, slider or preview below the map',()=>{
   setup();expect(last().pins.filter(p=>p.kind==='step').map(p=>p.label)).toEqual(['1','2']);
-  expect(last().styled.every(r=>r.width===3.75)).toBe(true);
+  expect(last().styled.every(r=>r.width===6)).toBe(true);
   expect(screen.queryByRole('slider')).toBeNull();
   expect(document.querySelector('details,.person-map-preview,.person-map-timeline,.person-map-activities')).toBeNull();
   expect(last().activityPreview).toBeNull();
@@ -60,7 +60,7 @@ describe('person map activity bubble',()=>{
   const {onOpenShared}=setup();act(()=>mock.onStep('b'));
   expect(last().activityPreview).toMatchObject({activityID:'b',title:'Work to shops',symbol:'car'});
   expect(last().activityPreview.detail).toMatch(/Driving.*10m.*recorded/);
-  expect(last().styled.find(r=>r.activityID==='b').width).toBe(5);
+  expect(last().styled.find(r=>r.activityID==='b').width).toBe(7);
   control('pday:open:b');expect(onOpenShared).toHaveBeenCalledWith('b',{userId:'her',name:'Julia'},{fullscreen:false});
  });
  it('ignores unknown flags and stale Open/Close events from another activity',()=>{

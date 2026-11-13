@@ -801,7 +801,7 @@ private struct MapContent {
             let points=((item["points"] as? [[Double]]) ?? []).prefix(5000).compactMap { coordinate($0) }
             guard points.count>1 else { return nil }
             let width=(item["width"] as? NSNumber)?.doubleValue ?? 5
-            return StyledRoute(coordinates:Array(points),color:(isPersonDay && item["color"] as? String == "accent" ? personTrailColor : hexColor(item["color"])).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
+            return StyledRoute(coordinates:Array(points),color:(isPersonDay && item["color"] as? String == "accent" ? brandAccent : hexColor(item["color"])).withAlphaComponent(CGFloat(max(0.1,min(1,(item["opacity"] as? NSNumber)?.doubleValue ?? 1)))),width:CGFloat(max(2,min(9,width))),activityID:item["activityID"] as? String)
         }
         if let preview=options["activityPreview"] as? [String:Any],let id=preview["activityID"] as? String,id==selectedActivity,
            pins.contains(where:{$0["activityID"] as? String == id}) {

@@ -49,7 +49,7 @@ export function personRoutes(day,selected){
   }
  }
  const pointsPerLine=Math.min(1500,Math.floor(PERSON_VERTEX_LIMIT/Math.max(1,allocated.length)));
- return allocated.map(({line,activityID,color})=>({points:thinLine(line,pointsPerLine),activityID,color,width:selected===activityID?5:3.75,opacity:selected&&selected!==activityID?0.55:1}))
+ return allocated.map(({line,activityID,color})=>({points:thinLine(line,pointsPerLine),activityID,color,width:selected===activityID?7:6,opacity:1}))
   .sort((a,b)=>Number(a.activityID===selected)-Number(b.activityID===selected));
 }
 // Retain endpoints while bounding playback/live display data too. Extremely
