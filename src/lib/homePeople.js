@@ -64,6 +64,8 @@ export function homePeople({household=[],friends=[],selfID,selfPosition=null,hom
    group:member.source==='household'?'household':'friend',
    short:compactStatus({state:member.state,ageSeconds:member.ageSeconds,home,verifiedHome,placeName:member.place_name,activity:activities[member.user_id],distance:live&&!home&&!verifiedHome?distanceShort(selfPosition,member.position,unit):null}),
    ageText:live?shortAge(member.ageSeconds):'',
+   // The tile shows the house icon (as on the Map) instead of the word Home; `homeAge` is what follows it.
+   atHomeLine:verifiedHome||(home&&member.state==='live')?{age:verifiedHome?shortAge(member.ageSeconds):''}:null,
    status:{text:away&&!home&&!verifiedHome?`${status.text} · ${away}`:status.text,tone:home?'home':status.tone}});
  }
  return people.sort((a,b)=>(ORDER[a.state]??2)-(ORDER[b.state]??2)||a.name.localeCompare(b.name));

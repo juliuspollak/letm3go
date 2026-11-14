@@ -60,3 +60,11 @@ it('shows no poke control where poking is not offered',()=>{
  render(<PeopleGrid people={[person({onSelect:vi.fn()})]} label="People"/>);
  expect(screen.queryByRole('button',{name:/^Poke/})).toBeNull();
 });
+it('shows the house icon instead of the word Home, keeping the words for screen readers', ()=>{
+ const {container}=render(<PeopleGrid people={[person({short:'Last at home · 15m ago',atHomeLine:{age:'15m ago'}})]} label="People"/>);
+ const line=container.querySelector('.person-tile-status--home');
+ expect(line.querySelector('svg')).not.toBeNull();
+ expect(line.querySelector('[aria-hidden="true"]:not(svg)').textContent).toBe('15m ago');
+ expect(line.querySelector('.sr-only').textContent).toBe('Last at home · 15m ago');
+ expect(container.querySelector('.person-tile-status:not(.person-tile-status--home)')).toBeNull();
+});

@@ -1304,3 +1304,4 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .feedback-ticket-title small{font-size:12px;margin-top:4px}
 .feedback-status{font-size:11px;padding:5px 10px}
 @media(prefers-reduced-motion:reduce){.feedback-form .feedback-category:active{transform:none}}
+.person-tile-status--home{display:inline-flex;align-items:center;justify-content:center;gap:5px;color:var(--accent);font-weight:600}

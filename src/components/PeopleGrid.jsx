@@ -35,7 +35,9 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  const body=<>
   <span className="person-tile-avatar"><PersonAvatar name={name} userId={person.userId} selfId={selfId} photos={photos} selfAvatar={selfAvatar} size="lg"/>{person.status&&<StatusDot tone={person.status.tone}/>}</span>
   <span className="person-tile-name">{shown}</span>
-  {line&&<span className={`person-tile-status person-tile-status--${person.poke?.state==='received'?'received':person.poke?.state==='failed'?'failed':person.status?.tone||'none'}`}>{line}</span>}
+  {person.atHomeLine&&person.poke?.state!=='received'&&!(person.poke?.state==='failed'&&person.poke.message)
+   ?<span className="person-tile-status person-tile-status--home"><House size={15} strokeWidth={2.4} aria-hidden="true"/>{person.atHomeLine.age?<span aria-hidden="true">{person.atHomeLine.age}</span>:null}<span className="sr-only">{person.short}</span></span>
+   :line&&<span className={`person-tile-status person-tile-status--${person.poke?.state==='received'?'received':person.poke?.state==='failed'?'failed':person.status?.tone||'none'}`}>{line}</span>}
   {person.role&&<span className="person-tile-role">{person.role}</span>}
  </>;
  const description=[shown,person.status?.text,person.role].filter(Boolean).join(', ');
