@@ -16,7 +16,7 @@ struct ActivityHeaderSection: View {
             }
             HStack(alignment: .center, spacing: 8) {
                 Text(heading)
-                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .font(.system(.title2, design: .rounded).weight(.bold))
                     .lineLimit(model.panelPosition == .collapsed ? 1 : 3)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
@@ -82,8 +82,12 @@ struct ActivitySummarySection: View {
     var body: some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 12) { primaryMetrics }
+                if #available(iOS 16.0, *) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 12) { primaryMetrics }
+                        VStack(alignment: .leading, spacing: 14) { primaryMetrics }
+                    }
+                } else {
                     VStack(alignment: .leading, spacing: 14) { primaryMetrics }
                 }
                 if !secondary.isEmpty {
@@ -109,7 +113,7 @@ struct ActivitySummarySection: View {
     private var primaryMetrics: some View {
         ForEach(headline) { item in
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.value).font(.system(.title3, design: .rounded, weight: .bold)).monospacedDigit()
+                Text(item.value).font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
                     .minimumScaleFactor(0.75).lineLimit(1)
                 Text(item.label).font(.caption).foregroundStyle(.secondary)
                 if let detail = item.detail {
