@@ -1324,3 +1324,10 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .trip-source-switch button small{font-size:11px;font-weight:600;opacity:.75}
 .trip-source-switch button.is-active{background:var(--accent-soft);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 .trip-source-switch button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.trip-merge-hint-actions{display:inline-flex;align-items:center;gap:12px}
+.trip-merge-hint .primary{min-height:40px;padding:0 16px;display:inline-flex;align-items:center;gap:6px}
+.trip-round-action.is-active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.trip-pick{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin-left:14px;border:2px solid var(--line);border-radius:50%;color:#fff;background:transparent}
+.trip-pick.is-picked{background:var(--accent);border-color:var(--accent)}
+.trip-pick.is-disabled{opacity:.35}
+.trip-selecting.trip-not-mergeable{opacity:.45}

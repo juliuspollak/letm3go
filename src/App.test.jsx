@@ -328,7 +328,7 @@ describe('Activities filters',()=>{
  it('collapses to a title, three actions and one date row',()=>{
   open([raw('a','Park',noon(0))]);
   expect(screen.getByRole('heading',{name:'Activities',level:1})).toBeInTheDocument();
-  for(const name of ['Search all activities','Activity filters','More activity actions','Previous day','Next day'])expect(screen.getByRole('button',{name})).toBeInTheDocument();
+  for(const name of ['Search all activities','Activity filters','Merge activities','Previous day','Next day'])expect(screen.getByRole('button',{name})).toBeInTheDocument();
   for(const name of ['All','Today','Favourites','Return to Today'])expect(screen.queryByRole('button',{name,exact:true})).toBeNull();
   expect(screen.queryByRole('toolbar')).toBeNull();
   expect(screen.getByText('All dates')).toBeInTheDocument();

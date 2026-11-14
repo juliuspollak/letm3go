@@ -15,7 +15,7 @@ function pointer(row,type,x=0,y=0){
 // component with the smallest set of props App passes.
 const trip=(id,extra={})=>({id,title:`Ride ${id}`,activity:'Cycling',source:'device',date:'2026-02-14',startedAt:1_700_000_000,endedAt:1_700_000_600,durationSeconds:600,distanceMeters:4200,stops:[],...extra});
 function renderList(overrides={}){
- const props={journeys:[],unit:'km',sort:'newest',query:'',favourites:[],vehicles:[],busy:false,showArchived:false,mergeSource:null,mergeTarget:null,onOpen:vi.fn(),onBookmark:vi.fn(),onEquipment:vi.fn(),onArchive:vi.fn(),onDelete:vi.fn(),onRestore:vi.fn(),onMergeSelect:vi.fn(),onMergeTarget:vi.fn(),...overrides};
+ const props={journeys:[],unit:'km',sort:'newest',query:'',favourites:[],vehicles:[],busy:false,showArchived:false,selecting:false,selectedIDs:[],onOpen:vi.fn(),onBookmark:vi.fn(),onEquipment:vi.fn(),onArchive:vi.fn(),onDelete:vi.fn(),onRestore:vi.fn(),onToggleSelect:vi.fn(),...overrides};
  return {...render(<TripsList {...props}/>),props};
 }
 
@@ -37,15 +37,14 @@ it('renders one page of activities and appends the next page on demand',()=>{
  expect(screen.queryByText('Show more activities',{selector:'button'})).not.toBeInTheDocument();
 });
 
-it('opens a row, saves a favourite and archives it from the revealed actions',()=>{
+it('opens a row, saves a favourite and offers no archive action',()=>{
  const journeys=[trip('a'),trip('b')];
  const {props}=renderList({journeys,favourites:['a']});
  fireEvent.click(screen.getByRole('button',{name:'Open Ride a'}));
  expect(props.onOpen).toHaveBeenCalledWith(journeys[0]);
  fireEvent.click(screen.getByRole('button',{name:'Add to favourites: Ride b'}));
  expect(props.onBookmark).toHaveBeenCalledWith('b');
- fireEvent.click(screen.getByRole('button',{name:'Archive: Ride a'}));
- expect(props.onArchive).toHaveBeenCalledWith(journeys[0]);
+ expect(screen.queryByRole('button',{name:/^Archive/})).toBeNull();
  expect(props.onRestore).not.toHaveBeenCalled();
 });
 
@@ -56,14 +55,6 @@ it('restores from an archived list, where the same action means the opposite',()
  fireEvent.click(restore);
  expect(props.onRestore).toHaveBeenCalledWith('a');
  expect(props.onArchive).not.toHaveBeenCalled();
-});
-
-it('asks for a merge partner instead of opening the trip when the merge button is used',()=>{
- const {props}=renderList({journeys:[trip('a')]});
- fireEvent.click(screen.getByRole('button',{name:'Select Ride a to merge'}));
- expect(props.onMergeSelect).toHaveBeenCalledWith('a');
- expect(props.onMergeTarget).toHaveBeenCalledWith(null);
- expect(props.onOpen).not.toHaveBeenCalled();
 });
 
 it('explains why a search matched a row',()=>{
@@ -91,7 +82,7 @@ it('reveals Delete as well as Archive without deleting on the swipe itself',()=>
  const row=container.querySelector('[data-trip-id]');
  pointer(row,'pointerdown',250,100);
  pointer(row,'pointermove',150,100);pointer(row,'pointerup');
- expect(container.querySelector('.trip-swipe-surface').style.transform).toBe('translateX(-198px)');
+ expect(container.querySelector('.trip-swipe-surface').style.transform).toBe('translateX(-132px)');
  expect(props.onDelete).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole('button',{name:'Delete: Ride watch'}));
  expect(props.onDelete).toHaveBeenCalledWith(ride);
@@ -103,7 +94,7 @@ it('a held touch followed by vertical scrolling never starts merge or blocks scr
   const row=container.querySelector('[data-trip-id]');
   pointer(row,'pointerdown',180,100);vi.advanceTimersByTime(500);
   const move=pointer(row,'pointermove',180,250);
-  expect(move.defaultPrevented).toBe(false);expect(props.onMergeSelect).not.toHaveBeenCalled();expect(container.querySelector('.merge-floating-card')).toBeNull();
+  expect(move.defaultPrevented).toBe(false);expect(props.onToggleSelect).not.toHaveBeenCalled();expect(container.querySelector('.merge-floating-card')).toBeNull();
   expect(row).toHaveAttribute('draggable','false');
  }finally{vi.useRealTimers();}
 });
@@ -129,14 +120,14 @@ it('marks a distance that includes estimated GPS gaps with ~, in both sort layou
  expect([...sorted.querySelectorAll('.trip-time-distance')].map(n=>n.textContent)).toEqual(['~59 km','4.2 km']);
 });
 
-it('cancels a horizontal preview when the browser takes over a gesture',()=>{
+it('settles a horizontal preview where it was when the browser takes over a gesture',()=>{
  const {container,props}=renderList({journeys:[trip('a')]});
  const row=container.querySelector('[data-trip-id]');
  pointer(row,'pointerdown',250,100);pointer(row,'pointermove',150,100);
  expect(row).toHaveAttribute('data-swiping');
  pointer(row,'pointercancel');
  expect(row).not.toHaveAttribute('data-swiping');
- expect(row.querySelector('.trip-swipe-surface').style.transform).toBe('');
+ expect(row.querySelector('.trip-swipe-surface').style.transform).toBe('translateX(-132px)');
  expect(props.onArchive).not.toHaveBeenCalled();
 });
 
@@ -198,7 +189,7 @@ it('opens and closes a row with one write of its resting position, never passing
   const release=()=>{writes.length=0;time.tick(120);pointer(row,'pointerup');return [...new Set(writes)];};
   pointer(row,'pointerdown',250,100);time.tick(16);pointer(row,'pointermove',170,100);
   // Opening settles straight at the open offset: it never snaps back to closed first.
-  expect(release()).toEqual(['translateX(-198px)']);
+  expect(release()).toEqual(['translateX(-132px)']);
   expect(row).not.toHaveAttribute('data-swiping');
   pointer(row,'pointerdown',100,100);time.tick(16);pointer(row,'pointermove',200,100);
   // Closing goes straight to rest: it is never set back to the open offset first.
@@ -212,9 +203,9 @@ it('a small wobble on an open row keeps it open, and a flick closes it',()=>{
   const {container}=renderList({journeys:[trip('a')]});
   const row=container.querySelector('[data-trip-id]');
   swipeRow(row,250,150,{time,pause:120});
-  expect(surfaceOf(row).style.transform).toBe('translateX(-198px)');
+  expect(surfaceOf(row).style.transform).toBe('translateX(-132px)');
   swipeRow(row,150,180,{time,pause:120});
-  expect(surfaceOf(row).style.transform).toBe('translateX(-198px)');
+  expect(surfaceOf(row).style.transform).toBe('translateX(-132px)');
   // A quick rightward flick closes it even though it travelled less than half the width.
   swipeRow(row,150,200,{time,step:8});
   expect(surfaceOf(row).style.transform).toBe('');
@@ -246,57 +237,43 @@ it('keeps following the finger when the row re-renders mid-swipe',()=>{
  expect(row).toHaveAttribute('data-swiping');
  pointer(row,'pointercancel');
 });
-it('drags from the merge handle onto another activity to merge them',()=>{
- const journeys=[trip('a'),trip('b')];
- const {container,props}=renderList({journeys});
- const handle=screen.getByRole('button',{name:'Select Ride a to merge'});
- const target=container.querySelector('[data-trip-id="b"] .trip-open-button');
- const original=document.elementFromPoint;document.elementFromPoint=vi.fn(()=>target);
- try{
-  pointer(handle,'pointerdown',300,100);
-  pointer(handle,'pointermove',300,130);
-  // Nothing is selected until the drop, so the merge hint never shifts the list mid-drag.
-  expect(props.onMergeSelect).not.toHaveBeenCalled();
-  expect(container.querySelector('.merge-floating-card')).toHaveTextContent('Ride a');
-  expect(container.querySelector('[data-trip-id="b"]')).toHaveClass('merge-drop-target');
-  expect(container.querySelector('[data-trip-id="a"]')).toHaveClass('merge-dragging');
-  pointer(handle,'pointerup');
-  fireEvent.click(handle);
-  expect(props.onMergeSelect).toHaveBeenCalledWith('a');
-  expect(props.onMergeTarget).toHaveBeenCalledWith('b');
-  expect(props.onMergeSelect).toHaveBeenCalledTimes(1);
-  expect(container.querySelector('.merge-floating-card')).toBeNull();
- }finally{document.elementFromPoint=original;}
-});
-it('a merge drag dropped nowhere, or cancelled, merges nothing',()=>{
- const {container,props}=renderList({journeys:[trip('a'),trip('b')]});
- const handle=screen.getByRole('button',{name:'Select Ride a to merge'});
- const original=document.elementFromPoint;document.elementFromPoint=vi.fn(()=>null);
- try{
-  pointer(handle,'pointerdown',300,100);pointer(handle,'pointermove',300,160);pointer(handle,'pointerup');
-  pointer(handle,'pointerdown',300,100);pointer(handle,'pointermove',300,160);pointer(handle,'pointercancel');
-  expect(props.onMergeTarget).not.toHaveBeenCalled();
-  expect(props.onMergeSelect).not.toHaveBeenCalled();
-  expect(container.querySelector('.merge-floating-card')).toBeNull();
- }finally{document.elementFromPoint=original;}
-});
-it('a tap on the merge handle still selects the activity for merging',()=>{
- const {props}=renderList({journeys:[trip('a'),trip('b')]});
- const handle=screen.getByRole('button',{name:'Select Ride a to merge'});
- pointer(handle,'pointerdown',300,100);pointer(handle,'pointerup');fireEvent.click(handle);
- expect(props.onMergeSelect).toHaveBeenCalledWith('a');
-});
-
 it('shows Gym duration rather than a zero GPS distance',()=>{
  const {container}=renderList({journeys:[trip('gym',{activity:'Gym',distanceMeters:0,durationSeconds:1800})]});
  expect(container.querySelector('.recent-activity-distance')).toHaveTextContent('30 min');
  expect(container.querySelector('.recent-activity-distance')).not.toHaveTextContent('km');
 });
-
-it('leaves the browser drag off the merge handle on touch screens, and marks the chosen activity',()=>{
- const {container}=renderList({journeys:[trip('a'),trip('b')],mergeSource:'a'});
- const handle=container.querySelector('[data-merge-id="a"] .trip-merge-button');
- expect(handle.getAttribute('draggable')).toBe('false');
- expect(container.querySelector('[data-merge-id="a"]').classList.contains('merge-selected')).toBe(true);
- expect(container.querySelector('[data-merge-id="b"]').classList.contains('merge-selected')).toBe(false);
+it('while choosing activities to merge, a tap ticks the row instead of opening it and swiping is off',()=>{
+ const {container,props}=renderList({journeys:[trip('a'),trip('b')],selecting:true,selectedIDs:['b']});
+ expect(container.querySelector('.trip-swipe-actions')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'Select Ride a for merging'}));
+ expect(props.onToggleSelect).toHaveBeenCalledWith('a');
+ expect(props.onOpen).not.toHaveBeenCalled();
+ expect(screen.getByRole('button',{name:'Deselect Ride b for merging'})).toHaveAttribute('aria-pressed','true');
+ expect(container.querySelector('[data-trip-id="b"]')).toHaveClass('merge-selected');
+});
+it('has no merge control on the row itself',()=>{
+ const {container}=renderList({journeys:[trip('a')]});
+ expect(container.querySelector('.trip-merge-button,[data-action="merge"]')).toBeNull();
+});
+it('a slow drag settles open when it travelled far enough in the opening direction',()=>{
+ const time=clock();
+ try{
+  const {container}=renderList({journeys:[trip('a')]});
+  const row=container.querySelector('[data-trip-id]');
+  pointer(row,'pointerdown',250,100);
+  for(let i=1;i<=12;i++){time.tick(60);pointer(row,'pointermove',250-i*6,100);}
+  time.tick(200);pointer(row,'pointerup');
+  expect(surfaceOf(row).style.transform).toBe('translateX(-132px)');
+ }finally{time.restore();}
+});
+it('a swipe the browser cancels part-way settles where it was instead of snapping back',()=>{
+ const time=clock();
+ try{
+  const {container}=renderList({journeys:[trip('a')]});
+  const row=container.querySelector('[data-trip-id]');
+  pointer(row,'pointerdown',250,100);
+  for(let i=1;i<=6;i++){time.tick(40);pointer(row,'pointermove',250-i*14,100);}
+  fireEvent.pointerCancel(row);
+  expect(surfaceOf(row).style.transform).toBe('translateX(-132px)');
+ }finally{time.restore();}
 });
