@@ -117,6 +117,7 @@ export function segmentRides(trip,trips,publicSegments=[]){
    :difference===0?'Matched your previous PR':`${clock(Math.abs(difference))} ${difference<0?'faster':'slower'} than your previous PR`;
   rows.push({id:segment.id,ownerID:String(owner.id),owned:owner.id===trip.id,name:segment.name,color:segmentColor(segment.colorIndex),thisRide,total:passes.length,rideCount:new Set(passes.map(pass=>pass.trip.id)).size,best:bestOf(passes),
    personalBest:display(clean[0]),thisRideBest:display(thisRideBest),previousBest:display(previous),comparison,newPR:difference!==null&&difference<0,
+   currentPasses:passes.map((pass,index)=>({pass,index})).filter(({pass})=>pass.trip.id===trip.id).slice(0,MAX_LISTED).map(({pass,index})=>display(pass,index)),
    passes:passes.slice(0,MAX_LISTED).map(display)});
  }
  return rows.sort((a,b)=>a.name.localeCompare(b.name));

@@ -58,12 +58,16 @@ struct ActivityMomentsSection: View {
                 DetailFootnote(text: "No photos were added to this activity.")
             }
             if photos.local {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) { photoActions }
+                if #available(iOS 16.0, *) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) { photoActions }
+                        VStack(alignment: .leading, spacing: 8) { photoActions }
+                    }
+                } else {
                     VStack(alignment: .leading, spacing: 8) { photoActions }
                 }
                 DisclosureGroup("Photo privacy & location") {
-                    DetailFootnote(text: "Only selected photos are copied locally. No automatic uploads. Dashed map bubbles indicate timestamp-inferred locations.")
+                    DetailFootnote(text: "Only photos you select are added to this activity and backed up privately. Dashed map bubbles indicate locations inferred from photo times.")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)

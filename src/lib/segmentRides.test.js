@@ -170,3 +170,11 @@ it('keeps cycling PRs separate from faster journeys recorded with a different sp
  expect(row.total).toBe(2);expect(row.personalBest.activityID).toBe('road');
  expect(row.passes.some(p=>p.activityID==='run')).toBe(false);
 });
+
+it('keeps this ride visible when 200 faster historical attempts fill the bounded history',()=>{
+ const today=withSegment(ride('today-slow',1000000,[5]),0,120);
+ const earlier=Array.from({length:201},(_,i)=>ride('earlier-'+i,1000+i*1000,[10]));
+ const row=segmentRides(today,[today,...earlier])[0];
+ expect(row.passes).toHaveLength(200);expect(row.passes.some(pass=>pass.current)).toBe(false);
+ expect(row.currentPasses).toHaveLength(1);expect(row.currentPasses[0]).toMatchObject({activityID:today.id,current:true,rank:202});
+});

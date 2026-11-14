@@ -13,6 +13,13 @@ do {
     check(decoded.heart?.runs?.count ?? 0 > 1 && decoded.heart?.zones?.rows.count == 5, "heart rate and zones decode")
     check(decoded.segments.items.first?.name == "Rock Garden" && decoded.trim?.pointCount == 60, "segments and trim decode")
     check(decoded.editor?.types.contains { $0.value == "MTB" } == true && decoded.diagnostics?.report.isEmpty == false, "editor and diagnostics decode")
+    check(decoded.segments.list.first?.currentPasses?.first?.current == true, "this ride's separately bounded attempts reach the native layout")
+    var legacyObject=object
+    var legacySegments=object["segments"] as! [String:Any]
+    var legacyRows=legacySegments["ridden"] as! [[String:Any]]
+    for i in legacyRows.indices {legacyRows[i].removeValue(forKey:"currentPasses")}
+    legacySegments["ridden"]=legacyRows;legacyObject["segments"]=legacySegments
+    check((try? ActivityPresentation.decode(legacyObject))?.segments.list.first?.currentPasses == nil, "older projections without the separate current list still decode")
     // One damaged section does not close the screen.
     var damaged = object; damaged["heart"] = "broken"; damaged["photos"] = 5
     let survivor = try? ActivityPresentation.decode(damaged)

@@ -126,6 +126,7 @@ struct ActivityPresentation: Decodable, Equatable {
         var previousBest: SegmentPass?
         var comparison: String?
         var newPR: Bool?
+        var currentPasses: [SegmentPass]?
         var passes: [SegmentPass]
     }
     struct Segments: Decodable, Equatable {
