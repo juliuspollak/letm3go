@@ -4,15 +4,26 @@ struct ActivityHeaderSection: View {
     @ObservedObject var model: ActivityDetailsViewModel
     var body: some View {
         let p = model.presentation, h = p.header
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(h.title).font(.title2.bold()).lineLimit(model.panelPosition == .collapsed ? 1 : 3)
+        let generatedTitle = h.title.hasPrefix(h.activityLabel + " · ")
+        let heading = generatedTitle ? h.activityLabel : h.title
+        let dateLine = generatedTitle ? String(h.title.dropFirst(h.activityLabel.count + 3)) : ""
+        VStack(alignment: .leading, spacing: 7) {
+            if !dateLine.isEmpty {
+                Text(dateLine.uppercased())
+                    .font(.caption.weight(.semibold))
+                    .tracking(0.7)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(alignment: .center, spacing: 8) {
+                Text(heading)
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .lineLimit(model.panelPosition == .collapsed ? 1 : 3)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
                 if h.local {
                     Button { model.sheet = .editor } label: {
                         Image(systemName: "square.and.pencil")
-                            .font(.system(size: 19, weight: .semibold))
+                            .font(.system(size: 19, weight: .medium))
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
@@ -23,7 +34,7 @@ struct ActivityHeaderSection: View {
                     .disabled(model.busy)
                     Button { model.sheet = .privacy } label: {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 19, weight: .semibold))
+                            .font(.system(size: 19, weight: .medium))
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
@@ -33,8 +44,18 @@ struct ActivityHeaderSection: View {
                     .accessibilityIdentifier("activity.header.privacy")
                 }
             }
-            Text(h.subtitle).font(.subheadline).foregroundColor(DetailStyle.muted)
-            if !h.location.isEmpty { Label(h.location, systemImage: "mappin.and.ellipse").font(.subheadline).foregroundColor(DetailStyle.muted) }
+            // The generated title already supplies the activity name and date.
+            let subtitle = h.subtitle.components(separatedBy: " · ")
+                .filter { !generatedTitle || ($0 != h.activityLabel && !$0.hasPrefix("20")) }
+                .joined(separator: " · ")
+            if !subtitle.isEmpty {
+                Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+            }
+            if !h.location.isEmpty {
+                Label(h.location, systemImage: "mappin")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             if let equipment = p.equipment, equipment.label != nil || equipment.action != nil {
                 Button { model.sheet = .equipment } label: {
                     Label(equipment.label ?? equipment.action ?? "", systemImage: equipment.label == nil ? "plus" : "bicycle")
@@ -49,22 +70,54 @@ struct ActivityHeaderSection: View {
 
 struct ActivitySummarySection: View {
     let items: [ActivityPresentation.Readout]
-    private let columns = [GridItem(.adaptive(minimum: 140), spacing: 10, alignment: .topLeading)]
+    private var headline: [ActivityPresentation.Readout] {
+        let keys = ["distance", "time", "duration", "elevation gain"]
+        return keys.compactMap { key in
+            items.first { $0.label.lowercased() == key }
+        }.prefix(3).map { $0 }
+    }
+    private var secondary: [ActivityPresentation.Readout] {
+        items.filter { item in !headline.contains(where: { $0.id == item.id }) }
+    }
     var body: some View {
         if !items.isEmpty {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
-                ForEach(items) { item in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.label).font(.caption).foregroundColor(DetailStyle.muted)
-                        Text(item.value).font(.title3.weight(.semibold).monospacedDigit())
-                        if let detail = item.detail { Text(detail).font(.caption2).foregroundColor(DetailStyle.muted) }
+            VStack(alignment: .leading, spacing: 12) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) { primaryMetrics }
+                    VStack(alignment: .leading, spacing: 14) { primaryMetrics }
+                }
+                if !secondary.isEmpty {
+                    Divider().opacity(0.55)
+                    ForEach(secondary) { item in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.label).font(.subheadline).foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            VStack(alignment: .trailing, spacing: 1) {
+                                Text(item.value).font(.subheadline.weight(.semibold)).monospacedDigit()
+                                if let detail = item.detail {
+                                    Text(detail).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                                }
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(DetailStyle.cardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .accessibilityElement(children: .combine)
                 }
             }
+            .padding(.vertical, 10)
+        }
+    }
+    private var primaryMetrics: some View {
+        ForEach(headline) { item in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.value).font(.system(.title3, design: .rounded, weight: .bold)).monospacedDigit()
+                    .minimumScaleFactor(0.75).lineLimit(1)
+                Text(item.label).font(.caption).foregroundStyle(.secondary)
+                if let detail = item.detail {
+                    Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
         }
     }
 }
@@ -140,13 +193,12 @@ struct ActivitySegmentsSection: View {
                     }
                 }
                 ForEach(segments.list) { segment in
-                    if segment.id != segments.list.first?.id { Divider() }
+                    if segment.id != segments.list.first?.id { Divider().opacity(0.5) }
                     segmentRow(segment)
                 }
             }
-            .padding(16)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(DetailStyle.cardFill, in: RoundedRectangle(cornerRadius: DetailStyle.radius, style: .continuous))
         }
     }
 
@@ -678,8 +730,7 @@ struct ActivityDiagnosticsSection: View {
                 }.padding(.top, 6)
             }
             .font(.subheadline.weight(.semibold))
-            .padding(14)
-            .background(DetailStyle.cardFill, in: RoundedRectangle(cornerRadius: DetailStyle.radius, style: .continuous))
+            .padding(.vertical, 10)
         }
     }
 }
@@ -759,16 +810,20 @@ struct ActivityTagsSection: View {
                             .font(.subheadline)
                             .disabled(scanning || working)
                     }
-                    ForEach(suggestions) { suggestion in
+                    if !suggestions.isEmpty {
+                    DisclosureGroup("Suggested places (\(suggestions.count))") {
+                        ForEach(suggestions) { suggestion in
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(suggestion.tag).font(.subheadline.weight(.semibold))
-                                Text(suggestion.source).font(.caption).foregroundColor(DetailStyle.muted)
+                                // Provider identifiers are internal metadata, not place labels.
                             }
                             Spacer()
                             Button("Add") { resolve(suggestion, ["type": "manualTags", "anchor": tags.anchor, "tags": tags.custom + [suggestion.tag]]) }.disabled(working || tags.custom.count >= tags.limit)
                             Button("Skip") { resolve(suggestion, ["type": "hideTag", "anchor": tags.anchor, "tag": suggestion.tag]) }.disabled(working)
                         }
+                        }
+                    }
                     }
                     if !tags.hidden.isEmpty {
                         DisclosureGroup("Hidden tags (\(tags.hidden.count))") {
