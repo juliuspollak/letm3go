@@ -1240,7 +1240,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             button.tintColor = .label
             button.layer.cornerRadius=22
             button.layer.shadowOpacity=0.15;button.layer.shadowRadius=4
-            button.setImage(UIImage(systemName:"scope",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.medium)),for:.normal)
+            button.setImage(UIImage(systemName:"location",withConfiguration:UIImage.SymbolConfiguration(pointSize:16,weight:.regular)),for:.normal)
             button.accessibilityLabel="Show my location"
             button.addAction(UIAction{[weak self,weak button] _ in
                 button?.backgroundColor=brandAccent;button?.tintColor=onBrandAccent
@@ -1252,7 +1252,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let active=content.locating || (content.camera != nil && planner.mode.personID == "self")
         button.backgroundColor=active ? brandAccent : .secondarySystemBackground
         button.tintColor=active ? onBrandAccent : .label
-        button.setImage(UIImage(systemName:active ? "location.fill" : "scope",withConfiguration:UIImage.SymbolConfiguration(pointSize:active ? 18 : 20,weight:.medium)),for:.normal)
+        button.setImage(UIImage(systemName:active ? "location.fill" : "location",withConfiguration:UIImage.SymbolConfiguration(pointSize:16,weight:.regular)),for:.normal)
         button.isEnabled = !content.locating
         button.accessibilityValue=content.locating ? "Locating" : active ? "Following you" : nil
         button.accessibilityTraits=active ? [.button,.selected] : [.button]
