@@ -4,6 +4,7 @@
 // excluded too: titles, merges, tags and the answers derived for them live in their
 // own owner-scoped records, so the settings backup no longer carries a truncated
 // copy of the grouping blob.
+import {ACTIVITY_SOURCES} from './activitySource.js';
 const DISTANCE_UNITS=['km','mi'];
 const stringList=(value,limit)=>Array.isArray(value)?value.filter(entry=>typeof entry==='string'&&entry.length<=100).slice(0,limit):[];
 
@@ -13,6 +14,7 @@ export function settingsPayload(preferences={}){
  if(name)payload.displayName=name.slice(0,100);
  if(typeof preferences.avatar==='string'&&preferences.avatar)payload.avatar=preferences.avatar;
  if(DISTANCE_UNITS.includes(preferences.distanceUnit))payload.distanceUnit=preferences.distanceUnit;
+ if(ACTIVITY_SOURCES.includes(preferences.activitySource)&&preferences.activitySource!=='all')payload.activitySource=preferences.activitySource;
  payload.notificationsEnabled=preferences.notificationsEnabled===true;
  payload.bookmarks=stringList(preferences.bookmarks,1000);
  payload.archivedTrips=stringList(preferences.archivedTrips,2000);
@@ -27,6 +29,7 @@ export function mergeRestoredSettings(preferences={},payload={}){
  if(!preferences.displayName&&typeof payload.displayName==='string'&&payload.displayName.trim())patch.displayName=payload.displayName.trim().slice(0,100);
  if(!preferences.avatar&&typeof payload.avatar==='string'&&/^data:image\/(?:jpeg|png);base64,/.test(payload.avatar))patch.avatar=payload.avatar;
  if(DISTANCE_UNITS.includes(payload.distanceUnit)&&payload.distanceUnit!==preferences.distanceUnit)patch.distanceUnit=payload.distanceUnit;
+ if(!preferences.activitySource&&['automatic','manual'].includes(payload.activitySource))patch.activitySource=payload.activitySource;
  const bookmarks=[...new Set([...(preferences.bookmarks||[]),...stringList(payload.bookmarks,1000)])];
  if(bookmarks.length>(preferences.bookmarks||[]).length)patch.bookmarks=bookmarks.slice(0,1000);
  const archived=[...new Set([...(preferences.archivedTrips||[]),...stringList(payload.archivedTrips,2000)])];

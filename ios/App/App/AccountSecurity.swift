@@ -49,6 +49,8 @@ struct AccountPreferences: Codable {
     // per-account preferences so they can be backed up.
     var archivedTrips: [String]?
     var journeyGrouping: String?
+    // Activities list filter: "all", "automatic" or "manual". Kept with the account so it follows the profile.
+    var activitySource: String?
     // Legacy import keys. New mirror/pending records live in encrypted SQLite,
     // outside preferences, and these values are cleared only after durable import.
     var journeyMetadataQueue: String?

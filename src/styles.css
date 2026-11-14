@@ -1319,3 +1319,8 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .trip-merge-button{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none}
 .trip-merge-button svg{pointer-events:none}
 .trip-list-row.merge-selected{outline:2px solid var(--accent);outline-offset:-2px;background:color-mix(in srgb,var(--accent) 7%,var(--surface))}
+.trip-source-switch{display:flex;gap:4px;padding:3px;margin:2px 0 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface)}
+.trip-source-switch button{flex:1 1 0;min-width:0;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 10px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-size:13px;font-weight:650;cursor:pointer;transition:background .15s ease,color .15s ease}
+.trip-source-switch button small{font-size:11px;font-weight:600;opacity:.75}
+.trip-source-switch button.is-active{background:var(--accent-soft);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.trip-source-switch button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}

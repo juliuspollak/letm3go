@@ -47,3 +47,11 @@ it('merges a restore additively and never blanks a local value', () => {
   expect(patch).toEqual({ avatar: 'data:image/jpeg;base64,QQ==', distanceUnit: 'mi', bookmarks: ['a', 'b'], archivedTrips: ['one', 'two'] });
   expect(mergeRestoredSettings({ displayName: 'Local' }, { displayName: 'Cloud', avatar: 'javascript:alert(1)' })).toEqual({});
 });
+it('backs up and restores the Auto / Manual activities choice without overriding a local one',()=>{
+ expect(settingsPayload({activitySource:'manual'}).activitySource).toBe('manual');
+ expect(settingsPayload({activitySource:'all'}).activitySource).toBeUndefined();
+ expect(settingsPayload({activitySource:'junk'}).activitySource).toBeUndefined();
+ expect(mergeRestoredSettings({},{activitySource:'automatic'}).activitySource).toBe('automatic');
+ expect(mergeRestoredSettings({activitySource:'manual'},{activitySource:'automatic'}).activitySource).toBeUndefined();
+ expect(mergeRestoredSettings({},{activitySource:'junk'}).activitySource).toBeUndefined();
+});
