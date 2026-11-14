@@ -11,6 +11,11 @@ export default function PeopleGrid({people,photos=null,selfId=null,selfAvatar=nu
  return <ul className="people-grid" aria-label={label}>{people.map(person=><li key={person.id}><PersonTile person={person} photos={photos} selfId={selfId} selfAvatar={selfAvatar}/></li>)}</ul>;
 }
 
+// Shown in place of the list while it is still loading, so "nobody is sharing" is never claimed too early.
+export function PeopleSkeleton({count=3}){
+ return <ul className="people-grid people-skeleton" role="status" aria-busy="true" aria-label="Loading friends">{Array.from({length:count},(_,i)=><li key={i} aria-hidden="true"><span className="skeleton-avatar"/><span className="skeleton-line"/><span className="skeleton-line short"/></li>)}</ul>;
+}
+
 function StatusDot({tone}){
  if(tone==='stale')return <span className="person-dot person-dot--stale" aria-hidden="true"><Clock3 size={10} strokeWidth={2.6}/></span>;
  if(tone==='home')return <span className="person-dot person-dot--home" aria-hidden="true"><House size={10} strokeWidth={2.6}/></span>;

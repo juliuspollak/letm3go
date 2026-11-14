@@ -292,3 +292,11 @@ it('shows Gym duration rather than a zero GPS distance',()=>{
  expect(container.querySelector('.recent-activity-distance')).toHaveTextContent('30 min');
  expect(container.querySelector('.recent-activity-distance')).not.toHaveTextContent('km');
 });
+
+it('leaves the browser drag off the merge handle on touch screens, and marks the chosen activity',()=>{
+ const {container}=renderList({journeys:[trip('a'),trip('b')],mergeSource:'a'});
+ const handle=container.querySelector('[data-merge-id="a"] .trip-merge-button');
+ expect(handle.getAttribute('draggable')).toBe('false');
+ expect(container.querySelector('[data-merge-id="a"]').classList.contains('merge-selected')).toBe(true);
+ expect(container.querySelector('[data-merge-id="b"]').classList.contains('merge-selected')).toBe(false);
+});

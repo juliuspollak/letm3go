@@ -58,7 +58,7 @@ struct ActivityHeaderSection: View {
             }
             if let equipment = p.equipment, equipment.label != nil || equipment.action != nil {
                 Button { model.sheet = .equipment } label: {
-                    Label(equipment.label ?? equipment.action ?? "", systemImage: equipment.label == nil ? "plus" : "bicycle")
+                    Label(equipment.label ?? equipment.action ?? "", systemImage: equipment.label == nil ? "plus" : (equipment.symbol.flatMap { UIImage(systemName: $0) != nil ? $0 : nil } ?? "figure.walk"))
                         .font(.subheadline.weight(.medium)).foregroundColor(.primary)
                 }
                 .disabled(!equipment.editable || model.busy).padding(.top, 2)
@@ -110,18 +110,36 @@ struct ActivitySummarySection: View {
             .padding(.vertical, 10)
         }
     }
+    // The headline figures show an icon instead of a word; the word stays as the VoiceOver label.
+    private func symbol(for label: String) -> String {
+        switch label.lowercased() {
+        case "distance": return "ruler"
+        case "elevation gain": return "arrow.up.right"
+        case "duration": return "timer"
+        default: return "clock"
+        }
+    }
     private var primaryMetrics: some View {
         ForEach(headline) { item in
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.value).font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
-                    .minimumScaleFactor(0.75).lineLimit(1)
-                Text(item.label).font(.caption).foregroundStyle(.secondary)
-                if let detail = item.detail {
-                    Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .center, spacing: 9) {
+                Image(systemName: symbol(for: item.label))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(Color.accentColor)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(Color.accentColor.opacity(0.12)))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.value).font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
+                        .minimumScaleFactor(0.7).lineLimit(1)
+                    if let detail = item.detail {
+                        Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.label)
+            .accessibilityValue(item.detail.map { "\(item.value), \($0)" } ?? item.value)
         }
     }
 }

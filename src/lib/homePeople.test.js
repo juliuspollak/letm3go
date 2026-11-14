@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {distanceAway,homePeople} from './homePeople.js';
+import {distanceAway,friendsStillLoading,homePeople} from './homePeople.js';
 
 const here={latitude:-34.4,longitude:150.9};
 const near={latitude:-34.4045,longitude:150.9};
@@ -73,5 +73,22 @@ describe('people on Home',()=>{
   const [kim]=homePeople({household:[member('Kim','stale',{ageSeconds:null,source:'household',position:{...near,accuracy:10}})],selfID:'me',homePlace});
   expect(kim.short).toBe('Last at home');
   expect(kim.short).not.toMatch(/·\s*$/);
+ });
+});
+
+describe('friendsStillLoading',()=>{
+ const base={configured:true,householdReady:false,friendsReady:false};
+ it('is loading until both lists have answered',()=>{
+  expect(friendsStillLoading(base)).toBe(true);
+  expect(friendsStillLoading({...base,householdReady:true})).toBe(true);
+  expect(friendsStillLoading({...base,friendsReady:true})).toBe(true);
+  expect(friendsStillLoading({...base,householdReady:true,friendsReady:true})).toBe(false);
+ });
+ it('stops loading on a failure, a long wait, being offline, or with no account service',()=>{
+  expect(friendsStillLoading({...base,householdError:'x'})).toBe(false);
+  expect(friendsStillLoading({...base,friendsError:'x'})).toBe(false);
+  expect(friendsStillLoading({...base,waitOver:true})).toBe(false);
+  expect(friendsStillLoading({...base,online:false})).toBe(false);
+  expect(friendsStillLoading({...base,configured:false})).toBe(false);
  });
 });

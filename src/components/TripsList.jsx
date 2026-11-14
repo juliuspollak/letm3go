@@ -19,6 +19,9 @@ function SharingIndicator({sharing,photos}){
  return <small className="trip-sharing" aria-label={label} title={label}><Share2 size={12} aria-hidden="true"/>{sharing.audience==='public'&&<Globe size={12} aria-hidden="true"/>}{sharing.household&&<Home size={12} aria-hidden="true"/>}
   {shown.map(friend=><PersonAvatar key={friend.id} size="xs" userId={friend.id} name={friend.name} photos={photos}/>)}{more>0&&<span>+{more}</span>}</small>;
 }
+// The browser's own drag-and-drop is for a mouse only. On a touch screen the draggable attribute makes iOS lift the
+// row on a long press (a second, system drag on top of the app's own touch drag), so it is left off there.
+const NATIVE_DRAG=typeof window!=='undefined'&&window.matchMedia?.('(hover: hover) and (pointer: fine)')?.matches===true;
 const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,swiped,dragging,dropTarget,mergeSelected,mergeCandidate,busy,showArchived,vehicles,onEquipment,sharing=null,photos=null}){
  const shared=trip.isShared===true,mergeable=!shared&&canMergeTrip(trip),deletable=!shared&&deletionIDs(trip).length>0;
  const actionWidth=deletable?198:132;
@@ -27,7 +30,7 @@ const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,s
   data-merge-id={mergeable?trip.id:undefined}
   data-trip-id={trip.id}
   draggable={false}
-  className={`trip-list-row${shared?' trip-shared-row':''}${dropTarget?' merge-drop-target':''}${dragging?' merge-dragging':''}${swiped?' trip-swiped':''}`}>
+  className={`trip-list-row${shared?' trip-shared-row':''}${dropTarget?' merge-drop-target':''}${dragging?' merge-dragging':''}${mergeSelected?' merge-selected':''}${swiped?' trip-swiped':''}`}>
   {!shared&&<div className="trip-swipe-actions">
    <button type="button" className="trip-action-pin" data-action="pin" aria-label={`${favourite?'Unpin':'Pin'} ${trip.title}`}><Star size={20} fill={favourite?'currentColor':'none'}/><small>{favourite?'Unpin':'Pin'}</small></button>
    <button type="button" className="trip-action-archive" data-action="archive" aria-label={`${showArchived?'Restore':'Archive'}: ${trip.title}`}><Archive size={20}/><small>{showArchived?'Restore':'Archive'}</small></button>
@@ -39,7 +42,7 @@ const TripRow=memo(function TripRow({trip,formatters,unit,sort,query,favourite,s
     {shared?<ChevronRight size={16} aria-hidden="true"/>:<EquipmentChip trip={trip} items={vehicles} onOpen={onEquipment} fallback={<ChevronRight size={16} aria-hidden="true"/>}/>}
    </div>
    {!shared&&<button type="button" className="icon-button trip-row-bookmark" data-action="pin" aria-pressed={favourite} title={favourite?'Remove from favourites':'Add to favourites'} aria-label={`${favourite?'Remove from':'Add to'} favourites: ${trip.title}`}><Star size={17} fill={favourite?'currentColor':'none'}/></button>}
-   {mergeable&&<button type="button" className="text-button trip-merge-button" draggable={mergeable&&!busy} data-action="merge" disabled={busy} aria-label={mergeCandidate?`Merge with ${trip.title}`:`Select ${trip.title} to merge`} title={mergeCandidate?'Merge with this drive':mergeSelected?'Selected for merging':'Merge with another drive'}><GitMerge size={17} aria-hidden="true"/></button>}
+   {mergeable&&<button type="button" className="text-button trip-merge-button" draggable={NATIVE_DRAG&&mergeable&&!busy} data-action="merge" disabled={busy} aria-label={mergeCandidate?`Merge with ${trip.title}`:`Select ${trip.title} to merge`} title={mergeCandidate?'Merge with this drive':mergeSelected?'Selected for merging':'Merge with another drive'}><GitMerge size={17} aria-hidden="true"/></button>}
   </div>
  </div>;
 });

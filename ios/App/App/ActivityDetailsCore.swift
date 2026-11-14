@@ -281,6 +281,7 @@ struct ActivityPresentation: Decodable, Equatable {
     }
     struct Equipment: Decodable, Equatable {
         var label: String?
+        var symbol: String?
         var action: String?
         var editable: Bool
         var multi: Bool

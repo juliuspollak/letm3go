@@ -39,17 +39,40 @@ function allSegments(trips){
 const bounds=points=>{let south=Infinity,north=-Infinity,west=Infinity,east=-Infinity;for(const p of points){if(!Number.isFinite(p?.latitude)||!Number.isFinite(p?.longitude))continue;south=Math.min(south,p.latitude);north=Math.max(north,p.latitude);west=Math.min(west,p.longitude);east=Math.max(east,p.longitude);}return {south,north,west,east};};
 const overlap=(a,b,pad=0.0005)=>a.south<=b.north+pad&&b.south<=a.north+pad&&a.west<=b.east+pad&&b.west<=a.east+pad;
 
-// Segments from other rides that lie in this ride's area, so a stretch that already has
-// one can be seen before making it again. The ride's own are already on its map.
+// Cells of about 110 m. A segment counts as near the ride only when part of it is in, or beside, a
+// cell the ride passes through. The ride's bounding box is no use for this: a long drive's box covers
+// whole regions the road never enters.
+const CELL=0.001;
+const cellKey=(lat,lon)=>`${Math.floor(lat/CELL)}:${Math.floor(lon/CELL)}`;
+function routeCells(points){
+ const cells=new Set();
+ for(const p of points)if(Number.isFinite(p?.latitude)&&Number.isFinite(p?.longitude))cells.add(cellKey(p.latitude,p.longitude));
+ return cells;
+}
+function touchesRoute(section,cells){
+ for(const p of section){
+  if(!Number.isFinite(p?.latitude)||!Number.isFinite(p?.longitude))continue;
+  const row=Math.floor(p.latitude/CELL),column=Math.floor(p.longitude/CELL);
+  for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(cells.has(`${row+dr}:${column+dc}`))return true;
+ }
+ return false;
+}
+
+// Segments from other rides that this ride actually passes along, so a stretch that already has
+// one can be seen before making it again. The ride's own are already on its map, and a segment
+// for a different kind of activity (a mountain-bike trail on a drive) is never shown.
 export function nearbySegmentLayers(trip,trips){
  const library=riddenTrips(trips);
  if(!Array.isArray(trip?.points)||trip.points.length<2)return {styled:[],pins:[]};
  const area=bounds(trip.points);
+ const cells=routeCells(trip.points);
  const styled=[],pins=[];
  for(const {segment,owner} of allSegments(library)){
   if(owner.id===trip.id)continue;
+  const activity=segment.activity||owner.activity;
+  if(activity&&trip.activity&&!compatibleSegmentActivity(activity,trip.activity))continue;
   const section=owner.points.slice(segment.startIndex,segment.endIndex+1);
-  if(!overlap(bounds(section),area))continue;
+  if(!overlap(bounds(section),area)||!touchesRoute(section,cells))continue;
   const color=segmentColor(segment.colorIndex);
   const runs=segmentRuns(owner.points,segment.startIndex,segment.endIndex).filter(run=>run.length>1);
   for(const run of runs)styled.push({points:thinLine(run.map(p=>[p.latitude,p.longitude]),500),color,width:4,segmentID:segment.id});

@@ -1,6 +1,6 @@
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
-import PeopleGrid from './PeopleGrid.jsx';
+import PeopleGrid,{PeopleSkeleton} from './PeopleGrid.jsx';
 
 afterEach(cleanup);
 const person=over=>({id:'p',userId:'p',name:'Julia',status:{text:'At school',tone:'live'},...over});
@@ -67,4 +67,10 @@ it('shows the house icon instead of the word Home, keeping the words for screen 
  expect(line.querySelector('[aria-hidden="true"]:not(svg)').textContent).toBe('15m ago');
  expect(line.querySelector('.sr-only').textContent).toBe('Last at home · 15m ago');
  expect(container.querySelector('.person-tile-status:not(.person-tile-status--home)')).toBeNull();
+});
+it('shows a loading placeholder, not a list or an empty claim', ()=>{
+ render(<PeopleSkeleton/>);
+ const list=screen.getByRole('status',{name:'Loading friends'});
+ expect(list.getAttribute('aria-busy')).toBe('true');
+ expect(list.querySelectorAll('li')).toHaveLength(3);
 });

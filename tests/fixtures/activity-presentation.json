@@ -2902,6 +2902,10 @@
     "label": "Road cycling"
    },
    {
+    "value": "Gym",
+    "label": "Gym"
+   },
+   {
     "value": "Other",
     "label": "Other"
    },
@@ -2934,6 +2938,7 @@
   "action": "Add bike",
   "editable": true,
   "multi": false,
+  "symbol": null,
   "selected": [],
   "emptyNote": "Add this kind of equipment to your Collection to choose it here.",
   "options": [

@@ -122,6 +122,22 @@ describe('rides through a segment',()=>{
   expect(nearbySegmentLayers(elsewhere,[today,elsewhere]).pins).toEqual([]);
   expect(nearbySegmentLayers(today,[today]).pins).toEqual([]);
  });
+ it('does not show a trail the ride never passes, even when it lies inside the ride’s bounding box',()=>{
+  // An L-shaped route whose box covers the trail, but whose path stays more than 2 km from it.
+  const route=[];let t=0;
+  for(let east=0;east<=3000;east+=20)route.push(fix(east,t++,3000));
+  for(let lateral=3000;lateral>=0;lateral-=20)route.push(fix(3000,t++,lateral));
+  const drive={id:'drive',title:'Driving home',activity:'Driving',points:route,details:{}};
+  const trail=withSegment(ride('trail',500000,[3]),0,100);
+  expect(nearbySegmentLayers(drive,[trail,drive]).pins).toEqual([]);
+ });
+ it('does not show a segment made for a different kind of activity',()=>{
+  const trail=withSegment({...ride('trail',500000,[3]),activity:'MTB'},0,100);
+  const sameRoad={id:'drive',title:'Driving',activity:'Driving',points:ride('x',1,[3]).points,details:{}};
+  expect(nearbySegmentLayers(sameRoad,[trail,sameRoad]).pins).toEqual([]);
+  const bike={...sameRoad,id:'bike',activity:'Cycling'};
+  expect(nearbySegmentLayers(bike,[trail,bike]).pins).toHaveLength(1);
+ });
  it('lists every segment for maintenance',()=>{
   expect(segmentLibrary([today,earlier])[0]).toMatchObject({name:'Rock',activityID:'today',total:4,rideCount:2});
  });

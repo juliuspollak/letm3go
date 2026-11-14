@@ -32,6 +32,12 @@ export function shortAge(seconds){
 const MOVING=['Driving','Walking','Running','Cycling'];
 // One short line for the Home tile (the full status stays on `status`, for the screen reader and
 // the detailed screens). An old position carries its age and is never worded as current.
+// Whether the Friends row is still waiting for its first answer. An empty list means "nobody is sharing" only once
+// both lists have answered; a failure, being offline or a long wait ends the loading state, so it never spins for ever.
+export function friendsStillLoading({configured=true,householdReady,friendsReady,householdError='',friendsError='',waitOver=false,online=true}){
+ return Boolean(configured)&&!(householdReady&&friendsReady)&&!householdError&&!friendsError&&!waitOver&&online!==false;
+}
+
 export function compactStatus({state,ageSeconds,home,verifiedHome,placeName,activity,distance}){
  const age=shortAge(ageSeconds);
  if(state==='live'||state==='stale'){

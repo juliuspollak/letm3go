@@ -1,4 +1,5 @@
 import {activityLabel,activityCode} from './activityNames.js';
+import {activitySymbol} from './mapToolbar.js';
 import {activitySummary,heldEnergy} from './activitySummary.js';
 import {publicationPreview,sourceLabel} from './activityPrivacy.js';
 import {mapPayload} from './appleMaps.js';
@@ -99,6 +100,8 @@ function equipmentSection(trip,vehicles){
  const extras=refs.map(ref=>ref.item).filter(item=>item&&!compatible.some(option=>String(option.id)===String(item.id)));
  const action=refs.length?null:equipmentActionLabel(trip.activity);
  return {label:refs.length?refs.map(ref=>ref.name).join(' + '):null,action:!refs.length&&action&&compatible.length?action:null,editable:!derived&&trip.state!=='recording',multi:trip.activity==='Kitesurfing',
+  // The row's icon follows the activity (a drive shows a car, as on the main page), never a fixed bicycle.
+  symbol:refs.length?activitySymbol(trip.activity||''):null,
   selected:refs.map(ref=>String(ref.id)),
   emptyNote:trip.activity==='Kitesurfing'?'Add your kite or board to choose it here.':'Add this kind of equipment to your Collection to choose it here.',
   options:[...extras,...compatible].map(item=>({id:String(item.id),title:itemTitle(item),detail:[itemDetail(item),itemCategory(item).label].filter(Boolean).join(' · '),archived:item.archived===true}))};
