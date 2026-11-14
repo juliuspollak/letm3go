@@ -15,7 +15,17 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     let manager = CLLocationManager()
     var storage: RecordingStorage?
     var active: RecordedActivity?
-    var trips: [RecordedActivity] = []
+    // Any change to the history drops the cached fingerprint below.
+    var trips: [RecordedActivity] = [] { didSet { cachedHistoryToken = nil } }
+    // The history fingerprint hashes every activity, and the web layer polls every
+    // two seconds. It is recomputed only after `trips` or the owner changes.
+    private var cachedHistoryToken: (owner: String, token: String)?
+    func historyToken(owner: String) -> String {
+        if let cached = cachedHistoryToken, cached.owner == owner { return cached.token }
+        let token = RecorderHistoryFingerprint.token(trips, owner: owner)
+        cachedHistoryToken = (owner, token)
+        return token
+    }
     var lastError = "" {
         didSet {
             guard !lastError.isEmpty,lastError != oldValue else {return}
@@ -1461,7 +1471,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let info = Bundle.main.infoDictionary ?? [:]
         let bindingDiagnostics: [String: Any] = ["ownerPresent":ownerID != nil,"uiUnlocked":uiUnlocked,"storeOpened":storeOpened,"storageHandlePresent":storage != nil,"accountSuspended":accountSuspended,"accountDeleting":accountDeleting]
         guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"nativeBinding":bindingDiagnostics,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
-        let token = RecorderHistoryFingerprint.token(trips, owner: ownerID!)
+        let token = historyToken(owner: ownerID!)
         let unchanged = supplied == token
         let prefs = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(preferences))) as? [String:Any] ?? [:]
         // An open journey whose GPS was stopped is "interrupted", never "recording".

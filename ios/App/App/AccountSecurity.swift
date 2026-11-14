@@ -388,7 +388,11 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
-                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.sharingRestEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.sharingRestKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring(); call.resolve(r.snapshot())
+                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.sharingRestEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.sharingRestKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring()
+                    // The caller reads only the owner, readiness and preferences. A full snapshot here
+                    // encoded every recorded GPS fix on the main thread on each launch and each
+                    // return to the app (~1.3 s and 32 MB for a month of history).
+                    call.resolve(["ownerID":id,"storageReady":r.storage != nil,"preferences":(try? JSONSerialization.jsonObject(with:JSONEncoder().encode(r.preferences))) ?? [:]])
                 } catch { r.uiUnlocked = false; call.reject("Unable to open this account’s private storage. Local data is preserved.") }
             }
         }.resume()
