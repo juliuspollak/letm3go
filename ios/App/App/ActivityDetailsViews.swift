@@ -1,13 +1,13 @@
 import SwiftUI
 import UIKit
 
-// One visual language for the whole screen. Every section is a `DetailCard`.
+// One restrained journal language for the whole screen; content, not grey boxes, leads.
 enum DetailStyle {
-    static let spacing: CGFloat = 14
-    static let radius: CGFloat = 18
+    static let spacing: CGFloat = 22
+    static let radius: CGFloat = 16
     static let margin: CGFloat = 16
     // Quiet grouped surfaces let the route, memories and results take priority.
-    static let cardFill = Color(.secondarySystemBackground).opacity(0.48)
+    static let cardFill = Color(.systemBackground)
     static let muted = Color.secondary
 }
 
@@ -24,8 +24,8 @@ struct DetailCard<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(DetailStyle.cardFill, in: RoundedRectangle(cornerRadius: DetailStyle.radius, style: .continuous))
+        .padding(.vertical, 12)
+        .padding(.horizontal, 2)
     }
 }
 
@@ -40,7 +40,7 @@ struct DetailButtonStyle: ButtonStyle {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(minHeight: 44)
             .foregroundColor(kind == .primary ? .white : kind == .destructive ? .red : .primary)
-            .background(kind == .primary ? Color.accentColor : Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .background(kind == .primary ? Color.accentColor : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .opacity(!enabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
     }
 }
@@ -136,6 +136,7 @@ struct ActivityDetailsRootView: View {
             // Lists and notes held by a section belong to one activity.
             .id(model.presentation.activityID)
         }
+        .background(Color(.systemBackground))
     }
     // At accessibility text sizes an editor is taller than the panel, so it scrolls in
     // a view of its own; the panel only tracks the page's scroll view.
