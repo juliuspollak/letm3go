@@ -5353,7 +5353,7 @@ check(RouteHitTest.activity(in:["a":1,"b":9],selected:"a") == "a", "a clearly ne
 check(RouteHitTest.activity(in:["a":19],selected:nil) == nil, "bare map taps select no activity")
 print("Final native assertion count including overlapping routes: \(assertions)")
 
-for (index,expected) in [(CGFloat(3.5),CGFloat(1)),(4,1),(4.5,1),(5,1),(5.5,1)].enumerated() {
+for (index,expected) in [(CGFloat(2.5),CGFloat(1)),(3,1),(3.5,1),(4,1),(4.5,1)].enumerated() {
     let style=DensityTrailStyle.value(index+1)
     check(style.width == expected.0 && style.opacity == expected.1, "density \(index+1) uses visible bounded styling")
 }

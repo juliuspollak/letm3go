@@ -26,7 +26,7 @@ private let estimatedColor = UIColor.systemOrange
 private final class EstimatedPolyline: MKPolyline {}
 private func estimatedRenderer(_ line: EstimatedPolyline) -> MKPolylineRenderer {
     let renderer = MKPolylineRenderer(polyline: line)
-    renderer.strokeColor = estimatedColor; renderer.lineWidth = 4; renderer.lineCap = .round; renderer.lineJoin = .round
+    renderer.strokeColor = estimatedColor; renderer.lineWidth = 3; renderer.lineCap = .round; renderer.lineJoin = .round
     return renderer
 }
 // A route drawn in its own colour: named segments, the section being chosen in
@@ -57,7 +57,7 @@ private func styledRenderer(_ line: StyledLine) -> MKPolylineRenderer {
 private func routeOverlays(_ content: MapContent) -> [MKPolyline] {
     var lines: [MKPolyline] = []
     for segment in content.routes where segment.count>1 {
-        if content.muted { let line=StyledLine(coordinates:segment,count:segment.count);line.color=mutedRouteColor;line.width=4;lines.append(line) }
+        if content.muted { let line=StyledLine(coordinates:segment,count:segment.count);line.color=mutedRouteColor;line.width=3;lines.append(line) }
         else { lines.append(MKPolyline(coordinates:segment,count:segment.count)) }
     }
     for route in content.styled { let line=StyledLine(coordinates:route.coordinates,count:route.coordinates.count);line.color=route.color;line.width=route.width;lines.append(line) }
@@ -115,7 +115,7 @@ private func densityRenderer(_ lines:DensityLines,dimmed:Bool)->MKOverlayRendere
 private func highlightRenderer(_ line:HighlightLine)->MKOverlayRenderer {
     let renderer=MKPolylineRenderer(polyline:line)
     renderer.strokeColor=line.casing ? UIColor.systemBackground.withAlphaComponent(0.95) : brandAccent
-    renderer.lineWidth=line.casing ? 9 : 5.5
+    renderer.lineWidth=line.casing ? 7 : 4
     renderer.lineCap = .round;renderer.lineJoin = .round
     return renderer
 }
@@ -1240,7 +1240,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             button.tintColor = .label
             button.layer.cornerRadius=22
             button.layer.shadowOpacity=0.15;button.layer.shadowRadius=4
-            button.setImage(UIImage(systemName:"location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
+            button.setImage(UIImage(systemName:"scope",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.medium)),for:.normal)
             button.accessibilityLabel="Show my location"
             button.addAction(UIAction{[weak self,weak button] _ in
                 button?.backgroundColor=brandAccent;button?.tintColor=onBrandAccent
@@ -1252,7 +1252,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         let active=content.locating || (content.camera != nil && planner.mode.personID == "self")
         button.backgroundColor=active ? brandAccent : .secondarySystemBackground
         button.tintColor=active ? onBrandAccent : .label
-        button.setImage(UIImage(systemName:active ? "location.fill" : "location",withConfiguration:UIImage.SymbolConfiguration(pointSize:20,weight:.semibold)),for:.normal)
+        button.setImage(UIImage(systemName:active ? "location.fill" : "scope",withConfiguration:UIImage.SymbolConfiguration(pointSize:active ? 18 : 20,weight:.medium)),for:.normal)
         button.isEnabled = !content.locating
         button.accessibilityValue=content.locating ? "Locating" : active ? "Following you" : nil
         button.accessibilityTraits=active ? [.button,.selected] : [.button]

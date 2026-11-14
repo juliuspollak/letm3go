@@ -110,7 +110,7 @@ export function segmentLayers(trip,{selection=null,editingID=null}={}){
   if(at)pins.push({point:at,title:segment.name,kind:'segment',color,id:`segment:${segment.id}`});
  }
  if(selection){
-  for(const run of segmentRuns(points,selection.start,selection.end).filter(run=>run.length>1))styled.push({points:line(run),color:SELECTION_COLOR,width:7});
+  for(const run of segmentRuns(points,selection.start,selection.end).filter(run=>run.length>1))styled.push({points:line(run),color:SELECTION_COLOR,width:5});
  }
  return {styled,pins,muted:!!selection};
 }

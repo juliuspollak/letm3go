@@ -52,7 +52,7 @@ export function nearbySegmentLayers(trip,trips){
   if(!overlap(bounds(section),area))continue;
   const color=segmentColor(segment.colorIndex);
   const runs=segmentRuns(owner.points,segment.startIndex,segment.endIndex).filter(run=>run.length>1);
-  for(const run of runs)styled.push({points:thinLine(run.map(p=>[p.latitude,p.longitude]),500),color,width:6,segmentID:segment.id});
+  for(const run of runs)styled.push({points:thinLine(run.map(p=>[p.latitude,p.longitude]),500),color,width:4,segmentID:segment.id});
   const middle=section[Math.floor(section.length/2)];
   if(middle)pins.push({point:[middle.latitude,middle.longitude],title:segment.name,kind:'segment',color,id:`segment:${segment.id}`});
  }

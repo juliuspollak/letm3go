@@ -51,7 +51,7 @@ describe('person map activity bubble',()=>{
  });
  it('shows chronological flags and visible routes without a list, slider or preview below the map',()=>{
   setup();expect(last().pins.filter(p=>p.kind==='step').map(p=>p.label)).toEqual(['1','2']);
-  expect(last().styled.every(r=>r.width===6)).toBe(true);
+  expect(last().styled.every(r=>r.width===3.5)).toBe(true);
   expect(screen.queryByRole('slider')).toBeNull();
   expect(document.querySelector('details,.person-map-preview,.person-map-timeline,.person-map-activities')).toBeNull();
   expect(last().activityPreview).toBeNull();
@@ -60,7 +60,7 @@ describe('person map activity bubble',()=>{
   const {onOpenShared}=setup();act(()=>mock.onStep('b'));
   expect(last().activityPreview).toMatchObject({activityID:'b',title:'Work to shops',symbol:'car'});
   expect(last().activityPreview.detail).toMatch(/Driving.*10m.*recorded/);
-  expect(last().styled.find(r=>r.activityID==='b').width).toBe(7);
+  expect(last().styled.find(r=>r.activityID==='b').width).toBe(4.5);
   control('pday:open:b');expect(onOpenShared).toHaveBeenCalledWith('b',{userId:'her',name:'Julia'},{fullscreen:false});
  });
  it('ignores unknown flags and stale Open/Close events from another activity',()=>{
@@ -114,6 +114,18 @@ describe('person map activity bubble',()=>{
  it('keeps Locate pointed at my own current location in another person’s day',async()=>{
   const locateSelf=vi.fn(async()=>({latitude:-33.8,longitude:151.2}));setup({locateSelf});await locate();
   expect(locateSelf).toHaveBeenCalledTimes(1);expect(last().focus).toEqual([-33.8,151.2]);
+ });
+ it('frames someone’s current location when their day has no route to frame',()=>{
+  mock.empty=true;setup();expect(last().focus).toEqual(selectedPin.point);
+ });
+ it('leaves the framing to the day’s routes when there are routes',()=>{
+  setup();expect(last().focus).toBeUndefined();
+ });
+ it('marks me on someone else’s map after Locate, so the spot is recognisable',async()=>{
+  const selfPin={id:'people:self',kind:'people',point:[-33.8,151.2],title:'You',members:[{id:'self',name:'You',self:true}]};
+  setup({selfPin,locateSelf:async()=>({latitude:-33.8,longitude:151.2})});
+  expect(last().pins.some(p=>p.id==='people:self')).toBe(false);
+  await locate();expect(last().pins.some(p=>p.id==='people:self')).toBe(true);
  });
  it('ignores a slow Locate reply after date navigation',async()=>{
   let resolve;setup({locateSelf:()=>new Promise(r=>{resolve=r;})});await act(async()=>{void mock.day.onLocate();});

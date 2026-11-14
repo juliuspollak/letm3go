@@ -58,11 +58,11 @@ enum LiveOverlaySignature {
 enum DensityTrailStyle {
     static func value(_ density:Int)->(width:CGFloat,opacity:CGFloat) {
         switch density {
-        case ...1:return (3.5,1)
-        case 2:return (4,1)
-        case 3:return (4.5,1)
-        case 4:return (5,1)
-        default:return (5.5,1)
+        case ...1:return (2.5,1)
+        case 2:return (3,1)
+        case 3:return (3.5,1)
+        case 4:return (4,1)
+        default:return (4.5,1)
         }
     }
 }

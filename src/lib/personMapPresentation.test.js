@@ -16,8 +16,8 @@ describe('person map presentation',()=>{
  it('keeps disjoint saved segments disjoint and keeps all activities opaque with a stronger selected route',()=>{
   const composed=day(),routes=personRoutes(composed,'drive');
   expect(routes).toHaveLength(4);
-  expect(routes.filter(r=>r.activityID==='drive').every(r=>r.width===7&&r.opacity===1)).toBe(true);
-  expect(routes.filter(r=>r.activityID==='walk').every(r=>r.width===6&&r.opacity===1)).toBe(true);
+  expect(routes.filter(r=>r.activityID==='drive').every(r=>r.width===4.5&&r.opacity===1)).toBe(true);
+  expect(routes.filter(r=>r.activityID==='walk').every(r=>r.width===3.5&&r.opacity===1)).toBe(true);
   expect(routes[0].points).toEqual(composed.activities[0].routes[0]);
   // Two observed stretches of ~111m; the 111m silence between them is excluded.
   expect(recordedDistance(composed.activities[0])).toBeGreaterThan(220);
@@ -35,7 +35,7 @@ it('keeps a late selected activity above the bounded set of many overlapping rou
  const activities=Array.from({length:600},(_,i)=>({...activity,id:String(i),routes:[activity.routes[0]]}));
  const routes=personRoutes({activities},'599');
  expect(routes).toHaveLength(PERSON_ACTIVITY_LIMIT);
- expect(routes.at(-1)).toMatchObject({activityID:'599',width:7});
+ expect(routes.at(-1)).toMatchObject({activityID:'599',width:4.5});
 });
 it('allocates across fragmented activities before adding more segments, with a bounded vertex budget',()=>{
  const base=day().activities[0];
@@ -46,7 +46,7 @@ it('allocates across fragmented activities before adding more segments, with a b
  expect(new Set(routes.map(r=>r.activityID))).toEqual(new Set(['first','middle','selected']));
  expect(routes.filter(r=>r.activityID==='selected').length).toBe(498);
  expect(routes.reduce((n,r)=>n+r.points.length,0)).toBeLessThanOrEqual(PERSON_VERTEX_LIMIT);
- expect(routes.at(-1)).toMatchObject({activityID:'selected',width:7,opacity:1});
+ expect(routes.at(-1)).toMatchObject({activityID:'selected',width:4.5,opacity:1});
  expect(routes.every(r=>r.points[0]===long[0]&&r.points.at(-1)===long.at(-1))).toBe(true);
 });
 it('creates only authorised visible flags, at the original coordinates with stable chronological numbers',()=>{
@@ -57,7 +57,7 @@ it('creates only authorised visible flags, at the original coordinates with stab
 it('uses the stronger normal style without connecting estimates and observed routes',()=>{
  const composed=day();composed.activities[0].roads=[{line:[[1,2],[3,4]]}];
  const routes=personRoutes(composed);
- expect(routes.every(r=>r.width===6&&r.opacity===1)).toBe(true);
+ expect(routes.every(r=>r.width===3.5&&r.opacity===1)).toBe(true);
  expect(routes.find(r=>r.color==='#F29927').points).toEqual([[1,2],[3,4]]);
 });
 it('retains an authorised single-fix start without inventing a route',()=>{

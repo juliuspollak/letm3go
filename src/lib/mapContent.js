@@ -13,7 +13,7 @@ export function withCommunitySegments(payload,segments){
  return {...payload,
   // `community` marks content that changes as the map moves: AppleMap sends it as
   // an update, never as a re-embed (the native map redraws lines and pins in place).
-  styled:[...(payload.styled||[]),...shown.map(s=>({points:s.geometry,color:SEGMENT_LAYER_COLOR,width:4,community:true}))].slice(0,60),
+  styled:[...(payload.styled||[]),...shown.map(s=>({points:s.geometry,color:SEGMENT_LAYER_COLOR,width:3,community:true}))].slice(0,60),
   pins:[...(payload.pins||[]),...shown.map(s=>({id:'community-segment:'+s.id,point:s.geometry[0],title:s.name,kind:'segment',color:SEGMENT_LAYER_COLOR,segmentID:s.id}))]};
 }
 // The part of a recording the trim handles keep, split where recording segments

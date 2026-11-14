@@ -1252,3 +1252,55 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .segment-notification-settings label{min-width:0;min-height:44px;align-items:flex-start}
 .segment-notification-settings label>span{min-width:0;overflow-wrap:anywhere}
 .segment-notification-settings input[type=radio],.segment-notification-settings input[type=checkbox]{display:block;flex:0 0 20px;width:20px;height:20px;min-height:20px;padding:0;margin:2px 0 0;border-radius:0;accent-color:var(--accent)}
+
+/* Feedback & Support, modern pass: larger readable type, softer cards, clear focus. */
+.feedback-intro{font-size:15px;line-height:1.55}
+.feedback-sections{padding:5px;gap:4px;border-radius:999px;background:var(--soft)}
+.feedback-sections button{min-height:42px;font-size:13px;font-weight:650;border-radius:999px;transition:background .18s,color .18s,box-shadow .18s}
+.feedback-sections button.selected{box-shadow:0 1px 3px #0000001f,0 4px 14px #0000000d}
+.feedback-form legend{font-size:14px;font-weight:700;margin-bottom:12px}
+.feedback-category-grid{gap:10px}
+.feedback-form .feedback-category{padding:14px;border-radius:16px;background:var(--surface);border:1.5px solid var(--line);box-shadow:0 1px 2px #0000000a;transition:border-color .18s,background .18s,box-shadow .18s,transform .12s}
+.feedback-form .feedback-category:active{transform:scale(.98)}
+.feedback-category.selected{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--surface));box-shadow:0 0 0 1px var(--accent),0 6px 18px color-mix(in srgb,var(--accent) 16%,transparent)}
+.feedback-category strong{font-size:15px;font-weight:700}
+.feedback-category small{font-size:12px;margin-top:4px;line-height:1.4}
+.feedback-field{margin-top:22px;font-size:14px;font-weight:700}
+.feedback-field>span.muted{font-size:12px}
+.sheet .feedback-field input,.sheet .feedback-field textarea,.sheet .feedback-details textarea{font-size:16px;font-weight:400;padding:14px 15px;border:1.5px solid var(--line);border-radius:14px;background:var(--surface);margin-top:9px;transition:border-color .18s,box-shadow .18s}
+.sheet .feedback-field input:focus,.sheet .feedback-field textarea:focus,.sheet .feedback-details textarea:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent)}
+.feedback-field input[aria-invalid=true],.feedback-field textarea[aria-invalid=true]{border-color:var(--danger)}
+.feedback-field textarea{padding-bottom:30px}
+.feedback-count{font-size:11px;right:14px;bottom:11px}
+.field-error{font-size:13px}
+.feedback-details-toggle{font-size:14px;min-height:46px}
+.feedback-details label{font-size:14px;font-weight:700;margin-top:14px}
+.feedback-photos{padding:16px;border-radius:18px;border:1.5px dashed color-mix(in srgb,var(--accent) 40%,var(--line))}
+.feedback-photos-head strong{font-size:14px}
+.feedback-photos-head p{font-size:12px}
+.feedback-photos-head>span{font-size:12px}
+.feedback-diagnostics{padding:16px;border-radius:18px}
+.feedback-diagnostics strong{font-size:14px}
+.feedback-diagnostics p{font-size:12px;line-height:1.5}
+.feedback-privacy,.feedback-hint{font-size:12px}
+.feedback-diagnostics-preview summary{font-size:13px}
+.feedback-diagnostics-preview dl{font-size:12px}
+.feedback-form>.primary.full{min-height:54px;margin-top:22px;border-radius:16px;font-size:16px;font-weight:700;box-shadow:0 8px 22px color-mix(in srgb,var(--accent) 28%,transparent)}
+.feedback-form>.secondary.full{min-height:50px;border-radius:16px;font-size:15px}
+.feedback-progress>div{height:6px}
+.feedback-progress small{font-size:12px}
+.feedback-receipt{padding:32px 20px;border-radius:22px;background:var(--surface);box-shadow:0 8px 30px #0000000d}
+.feedback-receipt h3{font-size:24px}
+.feedback-receipt p{font-size:14px}
+.feedback-history-head h3{font-size:20px}
+.feedback-history-head .text-button{font-size:13px}
+.feedback-loading{font-size:14px}
+.feedback-empty{border-radius:20px;padding:40px 20px}
+.feedback-empty h3{font-size:18px}
+.feedback-empty p{font-size:13px}
+.feedback-ticket{margin-top:12px;border-radius:18px;background:var(--surface);box-shadow:0 1px 2px #0000000a}
+.feedback-ticket-head{min-height:68px;padding:15px 16px}
+.feedback-ticket-title strong{font-size:15px}
+.feedback-ticket-title small{font-size:12px;margin-top:4px}
+.feedback-status{font-size:11px;padding:5px 10px}
+@media(prefers-reduced-motion:reduce){.feedback-form .feedback-category:active{transform:none}}

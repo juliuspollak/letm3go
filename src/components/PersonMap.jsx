@@ -42,7 +42,7 @@ function emptyNote({isSelf,isToday,name}){
  const who=name||'This person';
  return isToday?`No recorded drives from ${who} yet today. Drives appear here once ${who}'s phone has backed them up.`:`Nothing shared by ${who} for this day.`;
 }
-export default function PersonMap({person,personPin=null,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs,unit='km',viewState=null,onViewChange=null}){
+export default function PersonMap({person,personPin=null,viewer,timeZone=browserZone(),onOpenOwn,onOpenShared,locateSelf=null,renderMap,localTrips=null,localLiveTrip=null,deletedIDs,unit='km',viewState=null,onViewChange=null,selfPin=null}){
  const owner=person?.userId||'';
  const isSelf=owner===viewer;
  const today=useToday(timeZone);
@@ -74,16 +74,24 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   if(!owner)return null;
   const live=day.live;
   const styled=savedRoutes.slice();
-  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:6,opacity:1})));
-  styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:6,opacity:1})));
+  styled.push(...boundedPersonLines(live.slice(0,-1),125,62500).map(points=>({points,color:'accent',width:3.5,opacity:1})));
+  styled.push(...boundedPersonLines(day.liveRoads,125,62500).map(points=>({points,color:'#F29927',width:3.5,opacity:1})));
   const pins=personFlags(day,savedRoutes,selected?.id);
   // Reuse the single-person pin from the All people map. The native renderer then
   // shows the same profile photo, live movement/speed label and activity ornament.
   // Never show a current position on a historical day or when its owner is hidden.
-  if(isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self')))pins.push(personPin);
+  const shownPin=isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self'))?personPin:null;
+  if(shownPin)pins.push(shownPin);
+  // "Locate" goes to where I am. While looking at someone else that spot has no marker, so it looked like an
+  // arbitrary place; mark it as me.
+  if(locate?.point&&!isSelf&&selfPin?.kind==='people')pins.push(selfPin);
+  // Someone's day with no drawn route gives the camera nothing to frame, so it stayed wherever the map was
+  // (often my own area). Frame their current location once instead.
+  const hasDrawn=savedRoutes.length>0||live.length>0||day.liveRoads.length>0;
+  const focusPoint=locate?.point||(shownPin&&!hasDrawn&&Array.isArray(shownPin.point)?shownPin.point:null);
   // scope changes pause following without reframing; only an explicit Locate focus moves the camera.
-  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,status,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(locate?.point?{focus:locate.point}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,isToday,isSelf,personPin,owner,date,locate,selected,savedRoutes,activityPreview,status]);
+  return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,status,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(focusPoint?{focus:focusPoint}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
+ },[day,isToday,isSelf,personPin,selfPin,owner,date,locate,selected,savedRoutes,activityPreview,status]);
  const openActivity=useCallback((id,options={})=>{
   if(isSelf){
    // My own activity: opened from this phone's copy. One that is only in the cloud (another
