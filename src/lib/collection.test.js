@@ -106,10 +106,6 @@ describe('trip equipment resolution',()=>{
   expect(tripEquipment({...tesla,source:'combined'},items).map(ref=>ref.id)).toEqual(['old-car']);
   expect(isDerivedEquipment(trip({}))).toBe(false);
  });
- it('unions the equipment of a grouped journey without repeating it',()=>{
-  const grouped={isGroupedJourney:true,segments:[{id:'a',equipment:[{id:'car-1',name:'Geely'}]},{id:'b',equipment:[{id:'car-1',name:'Geely'}]},{id:'c',equipment:[{id:'bike-1',name:'Trek'}]}]};
-  expect(tripEquipment(grouped,items).map(ref=>ref.id)).toEqual(['car-1','bike-1']);
- });
  it('filters and counts only journeys that used the item',()=>{
   const driving=trip({id:'a',equipment:[{id:'car-1',name:'Geely'}]});
   const cycling={id:'b',activity:'Cycling',source:'device',equipment:[{id:'bike-1',name:'Trek Marlin'}]};

@@ -52,7 +52,7 @@ export function useFriendLocations(owner,online){
    try{
     // Preferred: a device credential that keeps a closed or relaunched phone
     // publishing. Reissued only when the phone lacks one or it expires within a week.
-    const native=(await recorder.getState().catch(()=>null))?.nativeFamilySharing;
+    const native=(await recorder.getState({omitTrips:true}).catch(()=>null))?.nativeFamilySharing;
     if(!alive)return;
     if(native?.friendArmed&&native.friendMode==='device'&&native.friendTokenExpiresAt>Date.now()/1000+7*86400)return;
     const issued=await supabase.rpc('issue_my_friend_location_token');

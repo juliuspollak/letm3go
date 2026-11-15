@@ -59,8 +59,6 @@ it('shows an automatic drive before arrival confirmation and replaces it with it
  expect(visibleRecorderJourneys([finished],{ownerID:'owner',automaticTrip:null},'owner')).toEqual([finished]);
  // Native and grouping snapshots may overlap briefly during arrival processing.
  expect(visibleRecorderJourneys([finished],recording,'owner')).toEqual([finished]);
- const grouped={id:'journey:earlier',segmentIDs:['earlier','drive']};
- expect(visibleRecorderJourneys([grouped],recording,'owner')).toEqual([grouped]);
  expect(visibleRecorderJourneys([],recording,'other')).toEqual([]);
 });
 

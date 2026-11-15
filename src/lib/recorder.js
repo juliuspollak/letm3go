@@ -84,6 +84,8 @@ export const recorder = {
  // Named segments: references into a recording's own fixes; never change it.
  saveNamedSegment:params=>native.saveNamedSegment(params),
  deleteNamedSegment:params=>native.deleteNamedSegment(params),
+ fetchWeather:id=>native.fetchWeather({id}),
+ mergeActivities:params=>native.mergeActivities(params),
  deleteActivities:(ids,ownerID)=>native.deleteActivities({ids,ownerID}),
  deleteActivity:(id,ownerID)=>native.deleteActivity({id,...(ownerID?{ownerID}:{})}),
  addHistorical:trip=>native.addHistorical({...trip,activity:activityCode(trip.activity)}),
@@ -132,7 +134,7 @@ export function visibleRecorderJourneys(journeys,state,ownerID){
  const recording=owned&&state.automaticTrip&&state.automaticTrip.source==='device'?[state.automaticTrip]:[];
  if(!stopped.length&&!recording.length)return known;
  return [...stopped,...recording]
-  .filter(trip=>!known.some(j=>j.id===trip.id||j.segmentIDs?.includes(trip.id)))
+  .filter(trip=>!known.some(j=>j.id===trip.id))
   .map(recordedJourney)
   .concat(known);
 }

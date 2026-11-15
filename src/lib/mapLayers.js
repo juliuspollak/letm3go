@@ -65,9 +65,9 @@ export function mapViewJourneys(journeys,view,today,saved=[],archivedTrips=[],no
  if(view.content!=='routes'||!view.routes)return [];
  const sinceSeconds=supportsRange(view)&&RANGE_DAYS[view.range]?nowMs/1000-RANGE_DAYS[view.range]*86400:null;
  return journeys.filter(trip=>{
-  if(!view.archived&&(archivedTrips.includes(trip.id)||trip.segmentIDs?.some(id=>archivedTrips.includes(id))))return false;
+  if(!view.archived&&(archivedTrips.includes(trip.id)))return false;
   if(view.routes==='today'&&!(trip.date===today||trip.segments?.some(segment=>segment.date===today)))return false;
-  if(view.routes==='pinned'&&!(saved.includes(trip.id)||trip.segmentIDs?.some(id=>saved.includes(id))))return false;
+  if(view.routes==='pinned'&&!(saved.includes(trip.id)))return false;
   if(supportsRange(view)&&view.day&&!journeyOnDay(trip,view.day))return false;
   if(!view.day&&sinceSeconds!=null&&!((trip.endedAt||trip.startedAt||0)>=sinceSeconds))return false;
   if(supportsActivity(view)&&view.activity&&!sameActivity(trip.activity,view.activity))return false;

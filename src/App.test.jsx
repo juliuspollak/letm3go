@@ -106,27 +106,6 @@ it('opens one Home summary instead of separate distance, duration and activity l
  expect(screen.getByRole('button',{name:'Open Longest distance'})).toBeInTheDocument();
 });
 
-it('shows one grouped journey and finds it through an intermediate locality search',async()=>{
- signedIn();identity.value.preferences.vehicles=[{id:'kia',name:'Kia'}];
- const at=Date.now()/1000-36000,p=(lat,lon,time)=>({latitude:lat,longitude:lon,timestamp:time,accuracy:5,segment:0});
- const raw=(id,start,end,from,to)=>({id,title:id,source:'device',activity:'Driving',state:'finished',vehicle:'Kia',startedAt:start,endedAt:end,durationSeconds:end-start,distanceMeters:100000,points:[from,to],details:{}});
- const a=raw('a',at,at+3600,p(-33.8,151.2,at),p(-31.6,152.7,at+3600));
- const b=raw('b',at+5700,at+9300,p(-31.6,152.7,at+5700),p(-28,153.4,at+9300));
- // The recognised places are cached journey metadata: Supabase's records, held on this device.
- await import('fake-indexeddb/auto');
- const {journeyRows,emptyState}=await import('./lib/journeyMetadataStore.js'),{journeyDurableStorage,removeJourneyRecords}=await import('./lib/journeyDurableStorage.js');
- const cached=emptyState('owner');cached.status={owner:'owner',revision:1,cursorRevision:1};
- cached.metadata.places={'-33.8000,151.2000':{locality:'Sydney'},'-31.6000,152.7000':{locality:'Kew'},'-28.0000,153.4000':{locality:'Gold Coast'}};
- await journeyDurableStorage('owner').commit(Object.entries(journeyRows(cached)).map(([key,value])=>({key,value})));
- try{
- recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[a,b]},run:vi.fn(),busy:false,error:''});
- render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
- fireEvent.click(screen.getByRole('button',{name:'Search all activities'}));
- fireEvent.change(screen.getByRole('searchbox',{name:'Search all activity history'}),{target:{value:'Kew'}});
- expect(await screen.findByRole('button',{name:'Open Driving to Gold Coast'})).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open a'})).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'Open Driving to Gold Coast'}));expect(screen.getByRole('heading',{name:'Segments & stops'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Rename journey'})).toBeInTheDocument();expect(screen.getAllByText('Kew',{exact:true}).length).toBeGreaterThan(0);
- }finally{cleanup();await removeJourneyRecords('owner');}
-});
 
 it('assigns a vehicle from a trip card without leaving the activity list',async()=>{
  signedIn();const now=Date.now()/1000;
@@ -459,18 +438,6 @@ it('shows an imported Watch ride in Trips and permits opening and deleting it',a
  await waitFor(()=>expect(run).toHaveBeenCalledWith('deleteActivity','watch-bike'));
 });
 
-it('confirms the number of originals before deleting a grouped journey',async()=>{
- signedIn();const run=vi.fn().mockResolvedValue({trips:[]});
- const make=(id,start)=>({id,source:'device',recordingMode:'automatic',activity:'Driving',title:'Driving',vehicleID:'same-car',startedAt:start,endedAt:start+100,durationSeconds:100,distanceMeters:10000,details:{},points:[{latitude:-34,longitude:151,timestamp:start,accuracy:5},{latitude:-34.001,longitude:151,timestamp:start+100,accuracy:5}]});
- const a=make('a',1000),b=make('b',1120);b.points[0]={...a.points[1],timestamp:1120};
- recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[a,b]},run,busy:false,error:''});
- render(<App/>);fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);
- fireEvent.click(screen.getByRole('button',{name:/^Delete:/}));
- expect(screen.getByText('This deletes all 2 original activities in this journey.')).toBeInTheDocument();
- expect(run).not.toHaveBeenCalled();
- fireEvent.click(within(screen.getByRole('dialog',{name:'Delete activity'})).getByRole('button',{name:'Delete activity'}));
- await waitFor(()=>expect(run).toHaveBeenCalledWith('deleteActivities',['a','b']));
-});
 it('Social is for friends, household and live location: activity sharing lives on the activity',()=>{
  signedIn();render(<App/>);
  fireEvent.click(screen.getAllByRole('button',{name:'Social'})[0]);

@@ -73,16 +73,6 @@ describe('the reported drive',()=>{
   expect(estimateExplanation(journey.distanceEstimate)).toContain('as a straight line for 9 gaps (lower confidence: no road route yet)');
   expect(mapPayload([journey]).estimated).toEqual([]);
  });
- it('a grouped journey adds its recordings\' estimates and keeps the recorded total',()=>{
-  const a=lowPowerDrive(),b=lowPowerDrive({id:'later',startedAt:a.endedAt+60});
-  b.points=b.points.map(p=>({...p,latitude:p.latitude+(a.points.at(-1).latitude-b.points[0].latitude),longitude:p.longitude+(a.points.at(-1).longitude-b.points[0].longitude)}));
-  const m=emptyGrouping(OWNER);m.roads={...roadsFor(a),...roadsFor(b)};m.links=[JSON.stringify([a.id,b.id])];
-  const journey=buildJourneys([a,b].map(recordedJourney),{owner:OWNER,metadata:m}).journeys.find(j=>j.isGroupedJourney);
-  expect(journey.recordedDistanceMeters).toBe(2*RECORDED_METERS);
-  expect(journey.distanceMeters).toBe(project([a],roadsFor(a))[0].distanceMeters+project([b],roadsFor(b))[0].distanceMeters);
-  expect(journey.distanceEstimate.gapCount).toBe(18);
-  expect(journey.segments.every(s=>s.distanceEstimate&&s.recordedDistanceMeters===RECORDED_METERS)).toBe(true);
- });
 });
 
 describe('what is and is not a gap',()=>{

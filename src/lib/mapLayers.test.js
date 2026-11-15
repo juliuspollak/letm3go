@@ -13,12 +13,6 @@ const journeys=[
 afterEach(()=>localStorage.clear());
 
 describe('route layers',()=>{
- it('includes grouped journeys when a segment matches today or a saved activity',()=>{
-  expect(mapViewJourneys(journeys,view({routes:'today'}),'2026-10-27',[],[],now)).toEqual([journeys[0]]);
-  expect(mapViewJourneys(journeys,view({routes:'pinned'}),'2026-10-27',['recording'],[],now)).toEqual([journeys[0]]);
-  expect(mapViewJourneys(journeys,view({routes:'all'}),'2026-10-27',[],[],now)).toEqual(journeys);
-  expect(mapViewJourneys(journeys,view(),'2026-10-27',[],[],now)).toEqual([]);
- });
  it('keeps one route layer at a time, and choosing it again turns routes off without touching people',()=>{
   const all=chooseRouteLayer(view(),'all');
   expect(all).toMatchObject({routes:'all',people:true});
@@ -29,13 +23,6 @@ describe('route layers',()=>{
  it('lets people be shown or hidden independently of routes',()=>{
   expect(mapViewJourneys(journeys,view({routes:'all',people:false}),'2026-10-27',[],[],now)).toHaveLength(3);
   expect(activeMapFilters(view({people:false})).length).toBe(1);
- });
- it('hides archived journeys and grouped journeys only when asked, and loads older saved views',()=>{
-  const trips=[{id:'a',date:'2026-10-27'},{id:'b',date:'2026-10-27'},{id:'group',date:'2026-10-27',segmentIDs:['c','d']}];
-  expect(mapViewJourneys(trips,view({routes:'all'}),'2026-10-27',[],['a','c'],now)).toHaveLength(3);
-  expect(mapViewJourneys(trips,view({routes:'all',archived:false}),'2026-10-27',[],['a','c'],now).map(t=>t.id)).toEqual(['b']);
-  expect(normaliseMapView({routes:'all',people:false})).toMatchObject({routes:'all',people:false,style:'standard',archived:true});
-  expect(normaliseMapView({style:'neon',archived:false})).toMatchObject({style:'standard',archived:false});
  });
  it('opens a view saved on Community trails on the one map, with the Segments layer on',()=>{
   expect(normaliseMapView({content:'trails',routes:'all'})).toMatchObject({content:'routes',segments:true,routes:'all'});

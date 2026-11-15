@@ -23,7 +23,7 @@ describe('native requests',()=>{
  });
  // The native tags section sends one request and shows one answer, so a partial
  // failure reads the same there as in React.
- const tagTrip={id:'a',activity:'Driving',tags:['Bunnings'],segmentIDs:['s1'],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
+ const tagTrip={id:'s1',activity:'Driving',tags:['Bunnings'],points:[{latitude:-34.4,longitude:150.9,timestamp:1790000000,accuracy:5}]};
  it('adds a tag and remembers the destination in one request',async()=>{
   const act=vi.fn().mockResolvedValue(true),run=vi.fn().mockResolvedValue({places:[]});
   const result=await requests.tagAndRemember({trip:tagTrip,run,grouping:{metadata:{manualTags:{s1:[]}},act}},{name:'Fuel',remember:true});

@@ -9,7 +9,7 @@ export const TRIP_PREFETCH_BATCH_SIZE=10;
 
 // Only a finished, own-device activity can be merged by dragging one row onto another.
 export function canMergeTrip(trip){
- return !trip.readOnly&&!trip.provisional&&(trip.isGroupedJourney||trip.endedAt!=null&&trip.state!=='recording')&&(trip.isGroupedJourney||trip.source==='device');
+ return !trip.readOnly&&!trip.provisional&&trip.endedAt!=null&&trip.state!=='recording'&&trip.source==='device';
 }
 
 // Why a search matched: tags and equipment beat stops and free text. Evaluated once
@@ -32,10 +32,5 @@ export function tripMatchReason(trip,query,vehicles){
 // provider/shared rows cannot be passed to a private native delete operation.
 export function deletionIDs(trip){
  if(!trip||trip.readOnly||trip.state==='recording')return [];
- if(trip.isGroupedJourney){
-  const segments=trip.segments||[];
-  if(!segments.length||segments.some(s=>!deletionIDs(s).length))return [];
-  return [...new Set(segments.flatMap(deletionIDs))];
- }
  return trip.endedAt!=null&&['device','watch','simulator'].includes(trip.source)?[trip.id]:[];
 }

@@ -27,7 +27,7 @@ export function edgePair(key){
 export function stopRefs(ref){
  const pair=edgePair(ref);
  if(pair)return {after:pair[0],before:pair[1],segment:null};
- const match=typeof ref==='string'?/^(?:dwell|native):([^:]{1,80}):/.exec(ref):null;
+ const match=typeof ref==='string'?/^(?:dwell|native):(.{1,80}):[^:]+$/.exec(ref):null;
  return {after:null,before:null,segment:match?match[1]:null};
 }
 // A road gap key is `<recording id>:<from timestamp>:<to timestamp>`; the recording

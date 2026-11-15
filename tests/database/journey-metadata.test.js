@@ -220,14 +220,15 @@ it('round trips merges, splits, source links, stop edits and reloads through SQL
   rev=(await mine(owner,groupingChanges(local,next),rev??'null')).rows[0].data.revision;
   local=(await loadSnapshot(client,owner)).metadata;return local;
  };
- await roundTrip({type:'merge',ids:['z','a','b']});
+ // Older accounts still hold links and cuts: they are stored and read back, and no longer group anything.
+ const edit=async change=>{const next={...local,...change};rev=(await mine(owner,groupingChanges(local,next),rev??'null')).rows[0].data.revision;local=(await loadSnapshot(client,owner)).metadata;return local;};
+ await edit({links:['["a","b"]','["a","z"]']});
  expect(local.links).toEqual(['["a","b"]','["a","z"]']);
- expect(buildJourneys(activities,{...context,metadata:local}).journeys[0].segmentIDs).toEqual(['z','a','b']);
+ expect(buildJourneys(activities,{...context,metadata:local}).journeys).toHaveLength(3);
  await roundTrip({type:'stop',id:'["a","z"]',name:'Cafe',tags:['coffee'],replaceTags:true});
  expect(local.stopEdits['["a","z"]']).toEqual({name:'Cafe',tags:['coffee'],replaceTags:true});
- await roundTrip({type:'split',after:'z',before:'a'});
+ await edit({links:['["a","b"]'],cuts:['["a","z"]']});
  expect(local.links).toEqual(['["a","b"]']);expect(local.cuts).toEqual(['["a","z"]']);
- expect(buildJourneys(activities,{...context,metadata:local}).journeys).toHaveLength(2);
  const next={...local,sourceLinks:[['linked:z','z']]};
  await mine(owner,groupingChanges(local,next),rev);
  const reloaded=(await loadSnapshot(client,owner)).metadata;

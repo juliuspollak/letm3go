@@ -74,7 +74,7 @@ export const activityDetailsRequests={
   return {reference:feedbackReference(ticket)};
  },
  async scanPlaces({trip,grouping},args,{signal,progress}){
-  const anchor=trip.segmentIDs?.[0]||trip.id;
+  const anchor=trip.id;
   const result=await scanRoutePlaces(trip,{hidden:grouping?.metadata?.hiddenTags?.[anchor]||[],places:grouping?.metadata?.places,signal,onProgress:({notice})=>progress?.(notice)});
   return {notice:result.notice,suggestions:result.suggestions.map(item=>({tag:item.tag,source:item.source||'Apple Maps'}))};
  },
@@ -83,7 +83,7 @@ export const activityDetailsRequests={
  // retry. The activity's own tags are read here rather than sent from Swift, so a
  // screen that is a moment out of date can never drop a tag added meanwhile.
  async tagAndRemember({trip,run,grouping,places,lastError},{name,remember=false}){
-  const anchor=trip.segmentIDs?.[0]||trip.id;
+  const anchor=trip.id;
   const custom=grouping?.metadata?.manualTags?.[anchor]||[];
   const auto=(trip.tags||[]).filter(tag=>!custom.some(own=>own.toLowerCase()===tag.toLowerCase()));
   return commitTagAndPlace({name,known:cachedKnownTags(grouping?.journeys),applied:[...auto,...custom],custom,

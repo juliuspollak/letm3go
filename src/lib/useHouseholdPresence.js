@@ -236,7 +236,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    }
    // Preferred: a device credential that keeps a locked or relaunched phone
    // publishing. Reissued only when the phone lacks one or it expires within a week.
-   const native=(await recorder.getState().catch(()=>null))?.nativeFamilySharing;
+   const native=(await recorder.getState({omitTrips:true}).catch(()=>null))?.nativeFamilySharing;
    if(!alive)return;
    if(native?.armed&&native.mode==='device'&&native.tokenExpiresAt>Date.now()/1000+7*86400)return;
    const issued=await supabase.rpc('issue_my_live_location_token');

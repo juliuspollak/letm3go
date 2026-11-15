@@ -497,6 +497,95 @@ enum RecorderHistoryFingerprint {
     }
 }
 
+// Several finished recordings become one activity. The new activity has a new id,
+// the combined route (each recording keeps its own route break), time, distance
+// and photos; calories are added when every recording has a final reading.
+enum ActivityMerging {
+    static let maximumParts = 20
+    // Why these recordings cannot be merged, or nil when they can: one activity type, and no overlap in time.
+    static func problem(_ input: [RecordedActivity]) -> String? {
+        let parts = input.sorted { $0.startedAt < $1.startedAt }
+        guard Set(parts.map { $0.activity }).count <= 1 else { return "Only activities of the same type can be merged." }
+        for (earlier, later) in zip(parts, parts.dropFirst()) where (earlier.endedAt ?? .infinity) > later.startedAt {
+            return "Activities that overlap in time cannot be merged."
+        }
+        return nil
+    }
+    // Calories add up only when every recording has a final reading in the same unit;
+    // otherwise they are left out rather than shown as too low.
+    static func summedEnergy(_ values: [ActivityEnergy?]) -> ActivityEnergy? {
+        let all = values.compactMap { $0 }
+        guard all.count == values.count, let first = all.first, all.allSatisfy({ $0.state == "final" && $0.unit == first.unit }) else { return nil }
+        var sum = first
+        sum.active = all.allSatisfy({ $0.active != nil }) ? all.reduce(0) { $0 + ($1.active ?? 0) } : nil
+        sum.total = all.allSatisfy({ $0.total != nil }) ? all.reduce(0) { $0 + ($1.total ?? 0) } : nil
+        return sum.active == nil && sum.total == nil ? nil : sum
+    }
+    static func merged(_ input: [RecordedActivity], now: Double = Date().timeIntervalSince1970) -> RecordedActivity? {
+        let parts = input.sorted { $0.startedAt < $1.startedAt }
+        guard problem(input) == nil, parts.count >= 2, parts.count <= maximumParts, parts.allSatisfy({ $0.endedAt != nil }),
+              var merged = parts.first else { return nil }
+        var details = merged.details ?? ActivityDetails()
+        var points: [GPSPoint] = []
+        var offset = 0
+        var photos: [ActivityPhoto] = []
+        var segments: [NamedSegment] = []
+        var tags: [String] = []
+        var notes: [String] = []
+        var descriptions: [String] = []
+        var stops: [StopInterval] = []
+        var samples: [WatchHeartRateSample] = []
+        var pauses: [WatchPausePeriod] = []
+        var allHeartRate = true
+        for part in parts {
+            let base = points.count
+            let top = part.points.map { $0.segment }.max() ?? 0
+            points += part.points.map { var point = $0; point.segment += offset; return point }
+            offset += top + 1
+            let detail = part.details
+            photos += detail?.photos ?? []
+            segments += (detail?.namedSegments ?? []).map { var segment = $0; segment.startIndex += base; segment.endIndex += base; return segment }
+            for tag in detail?.tags ?? [] where !tags.contains(tag) { tags.append(tag) }
+            if let text = detail?.notes, !text.isEmpty { notes.append(text) }
+            if let text = detail?.description, !text.isEmpty { descriptions.append(text) }
+            stops += detail?.stops ?? []
+            if let heart = detail?.heartRate { samples += heart.samples; pauses += heart.pausePeriods } else { allHeartRate = false }
+        }
+        guard photos.count <= 50 else { return nil }
+        merged.id = UUID().uuidString
+        merged.state = "finished"
+        merged.resumedAt = nil
+        merged.endedAt = parts.compactMap { $0.endedAt }.max()
+        merged.accumulatedSeconds = parts.reduce(0) { $0 + $1.accumulatedSeconds }
+        merged.distanceMeters = parts.reduce(0) { $0 + $1.distanceMeters }
+        merged.points = points
+        merged.segment = max(0, offset - 1)
+        merged.updatedAt = now
+        details.photos = photos
+        details.namedSegments = segments.isEmpty ? nil : Array(segments.prefix(NamedSegments.maximumPerActivity))
+        details.tags = tags
+        details.notes = notes.joined(separator: "\n\n")
+        details.description = descriptions.joined(separator: "\n\n")
+        details.stops = stops.isEmpty ? nil : stops
+        details.coverPhotoID = parts.compactMap { $0.details?.coverPhotoID }.first
+        details.endPlace = parts.last?.details?.endPlace
+        details.destinationStop = nil
+        details.visibleRouteStart = nil
+        details.visibleRouteEnd = nil
+        details.provisional = nil
+        details.continuationEndsAt = nil
+        details.heartRate = allHeartRate ? ActivityHeartRate(samples: samples.sorted { $0.timestamp < $1.timestamp }, pausePeriods: pauses.sorted { $0.start < $1.start }) : nil
+        details.unverifiedHeartRate = nil
+        details.energy = summedEnergy(parts.map { $0.details?.energy })
+        details.wholeWorkoutEnergy = summedEnergy(parts.map { $0.details?.wholeWorkoutEnergy })
+        details.unverifiedEnergy = nil; details.unverifiedWholeWorkoutEnergy = nil
+        details.energyBinding = nil
+        details.weather = nil
+        merged.details = details
+        return merged
+    }
+}
+
 enum ActivityIdentity {
     static func canonical(_ id: String) -> String { UUID(uuidString: id)?.uuidString ?? id }
     static func matches(_ a: String, _ b: String) -> Bool { canonical(a) == canonical(b) }
@@ -865,12 +954,22 @@ struct ActivityDetails: Codable {
     var unverifiedWholeWorkoutEnergy: ActivityEnergy?
     // Binding/revision/consent captured at import; used to validate late enrichment.
     var energyBinding: WatchEnergyBinding?
+    // Weather where and when the activity started (Apple WeatherKit). Local, refetchable.
+    var weather: ActivityWeather?
     var indoor: Bool?
     // The GPS setting of a manual recording, so a resume keeps it.
     var recordingPrecision: String?
     // Other records on this iPhone covering the same time. Both are kept.
     var overlaps: [WatchOverlap]?
 }
+struct ActivityWeather: Codable, Equatable {
+    var condition: String
+    var symbol: String
+    var temperatureC: Double
+    var windKph: Double?
+    var fetchedAt: Double
+}
+
 struct ActivityPhoto: Codable {
     var id: String
     var filename: String

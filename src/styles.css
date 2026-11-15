@@ -1331,3 +1331,5 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .trip-pick.is-picked{background:var(--accent);border-color:var(--accent)}
 .trip-pick.is-disabled{opacity:.35}
 .trip-selecting.trip-not-mergeable{opacity:.45}
+
+.weather-badge{display:inline-flex;align-items:center;gap:3px;margin-left:8px;color:var(--muted,#626d82);font-weight:600}

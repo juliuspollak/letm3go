@@ -29,6 +29,27 @@ check(trimmedRoute?.endedAt == trip.points[2].timestamp,"trim end becomes last r
 check(trimmedRoute?.distanceMeters == 0,"segment gaps are not bridged when trimming")
 check(RouteTrimming.trimmed(trip,start:2,end:1) == nil,"inverted trimming is rejected")
 check(RouteTrimming.trimmed(trip,start:0,end:999) == nil,"out of bounds trimming is rejected")
+var mergeA=trip; mergeA.id=UUID().uuidString; mergeA.details=ActivityDetails(); mergeA.details?.tags=["road"]
+var mergeB=trip; mergeB.id=UUID().uuidString; mergeB.startedAt=trip.startedAt+1000; mergeB.endedAt=(trip.endedAt ?? trip.startedAt)+1000; mergeB.details=ActivityDetails(); mergeB.details?.tags=["road","coffee"]
+let mergedTrip=ActivityMerging.merged([mergeB,mergeA])
+check(mergedTrip != nil,"two finished recordings merge")
+check(mergedTrip?.points.count == mergeA.points.count+mergeB.points.count,"merge keeps every fix")
+check(mergedTrip?.startedAt == mergeA.startedAt && mergedTrip?.endedAt == mergeB.endedAt,"merge spans both recordings")
+check(mergedTrip?.distanceMeters == mergeA.distanceMeters+mergeB.distanceMeters,"merge adds distances")
+check(mergedTrip?.id != mergeA.id && mergedTrip?.id != mergeB.id,"merge creates a new activity")
+check(mergedTrip?.details?.tags == ["road","coffee"],"merge unions tags")
+check(Set(mergedTrip?.points.map{$0.segment} ?? []).count > Set(mergeA.points.map{$0.segment}).count,"each recording keeps its own route break")
+var energyA=ActivityEnergy(); energyA.state="final"; energyA.active=100; energyA.total=150
+var energyB=ActivityEnergy(); energyB.state="final"; energyB.active=40; energyB.total=60
+mergeA.details?.energy=energyA; mergeB.details?.energy=energyB
+check(ActivityMerging.merged([mergeA,mergeB])?.details?.energy?.active == 140 && ActivityMerging.merged([mergeA,mergeB])?.details?.energy?.total == 210,"merge adds calories")
+mergeB.details?.energy=nil
+check(ActivityMerging.merged([mergeA,mergeB])?.details?.energy == nil,"calories are left out unless every recording has them")
+var overlapping=mergeB; overlapping.startedAt=mergeA.startedAt+1
+check(ActivityMerging.merged([mergeA,overlapping]) == nil,"overlapping recordings do not merge")
+var otherType=mergeB; otherType.activity = mergeA.activity == "Walking" ? "Driving" : "Walking"
+check(ActivityMerging.merged([mergeA,otherType]) == nil,"different activity types do not merge")
+check(ActivityMerging.merged([mergeA]) == nil,"one recording is not a merge")
 check(trip.duration(at:500)==90, "finish freezes elapsed active duration")
 check(!trip.accept(point(-32.97,251),now:251), "finished sample rejected")
 // Equipment assignment keeps one ordered list and mirrors the legacy fields.

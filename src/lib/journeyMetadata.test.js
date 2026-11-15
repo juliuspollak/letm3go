@@ -40,6 +40,7 @@ describe('keys the grouping already uses',()=>{
  it('tells a stop inside one recording from a stop between two',()=>{
   expect(stopRefs(DWELL)).toEqual({after:null,before:null,segment:'a'});
   expect(stopRefs(NATIVE)).toEqual({after:null,before:null,segment:'c'});
+ expect(stopRefs('native:linked:c:1763178000.5')).toEqual({after:null,before:null,segment:'linked:c'});
   expect(stopRefs(EDGE)).toEqual({after:'a',before:'b',segment:null});
   expect(stopRefs('nonsense')).toEqual({after:null,before:null,segment:null});
  });

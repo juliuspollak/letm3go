@@ -41,11 +41,6 @@ it('shows a Tesla vehicle as read-only equipment resolved from the car itself',(
  expect(screen.getByText('chevron')).toBeInTheDocument();
 });
 
-it('keeps a grouped journey summary read-only',()=>{
- render(<EquipmentChip trip={{id:'journey:a',isGroupedJourney:true,activity:'Driving',segments:[{id:'a',equipment:[{id:'car-1',name:'Geely'}]}]}} items={[car]} onOpen={vi.fn()} fallback={<span>chevron</span>}/>);
- expect(screen.getByLabelText('Vehicle: Geely')).toBeInTheDocument();
- expect(screen.queryByRole('button')).not.toBeInTheDocument();
-});
 
 it('offers the same control on the activity detail screen',()=>{
  const onOpen=vi.fn();

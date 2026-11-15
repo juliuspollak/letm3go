@@ -1,3 +1,4 @@
+import {weatherOf,weatherText} from './weather.js';
 import {activityLabel,activityCode} from './activityNames.js';
 import {activitySymbol} from './mapToolbar.js';
 import {activitySummary,heldEnergy} from './activitySummary.js';
@@ -66,6 +67,7 @@ function notices(trip){
 
 function factLines(trip,local,pointCount){
  const lines=[`${trip.source==='tesla'?'Tesla vehicle telemetry · driver not identified':trip.isReconciled?'Linked source recordings':sourceLabel(trip)} · ${trip.source==='simulator'?'Simulator GPS':trip.recordingMode==='automatic'?'Estimated / lower-resolution route':trip.recordingMode==='historical'?'No recorded geometry':trip.source==='tesla'?'Vehicle telemetry':'Accuracy-filtered GPS'}`];
+ if(weatherOf(trip))lines.splice(1,0,`Weather: ${weatherText(weatherOf(trip))}`);
  if(trip.vehicle)lines.push(`Vehicle: ${trip.vehicle}`);
  if(trip.collection)lines.push(`Collection: ${trip.collection}`);
  if(local)lines.push(`Average pace: ${paceLabel(trip.distanceMeters,trip.durationSeconds)} · ${pointCount} GPS samples · Local only`);
@@ -96,7 +98,7 @@ function heartSection(trip,{unit,maximumHeartRate}){
 function equipmentSection(trip,vehicles){
  const refs=tripEquipment(trip,vehicles);
  const compatible=equipmentForActivity(vehicles,trip.activity);
- const derived=isDerivedEquipment(trip)||trip.isGroupedJourney;
+ const derived=isDerivedEquipment(trip);
  const extras=refs.map(ref=>ref.item).filter(item=>item&&!compatible.some(option=>String(option.id)===String(item.id)));
  const action=refs.length?null:equipmentActionLabel(trip.activity);
  return {label:refs.length?refs.map(ref=>ref.name).join(' + '):null,action:!refs.length&&action&&compatible.length?action:null,editable:!derived&&trip.state!=='recording',multi:trip.activity==='Kitesurfing',
@@ -109,7 +111,7 @@ function equipmentSection(trip,vehicles){
 
 function tagSection(trip,grouping,onActivityAvailable,places){
  if(!grouping||trip.state==='recording')return null;
- const anchor=trip.segmentIDs?.[0]||trip.id;
+ const anchor=trip.id;
  const custom=grouping.metadata?.manualTags?.[anchor]||[];
  const hidden=grouping.metadata?.hiddenTags?.[anchor]||[];
  const destination=grouping.destinations?.find(d=>d.placeID===trip.recognition?.primary?.placeID);

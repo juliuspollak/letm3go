@@ -17,7 +17,7 @@ export default function HouseholdTrips({activities=[]}){
    return {cars:results[0].data||[],ids:new Set((results[2].data||[]).map(x=>x.trip_id)),sharingEnabled:results[3].data===true};
   }catch(e){setError(e.message||'Could not load household journeys.');return null;}
  },[]);
- const eligible=useMemo(()=>activities.filter(t=>!t.readOnly&&!t.isGroupedJourney&&t.endedAt&&Number.isFinite(t.startedAt)&&
+ const eligible=useMemo(()=>activities.filter(t=>!t.readOnly&&t.endedAt&&Number.isFinite(t.startedAt)&&
   (t.activity==='Driving'||t.activity==='Unknown')&&
   vehicles.some(v=>v.local_vehicle_id&&String(v.local_vehicle_id)===String(t.vehicleID||''))),[activities,vehicles]);
  const sync=useCallback(async(initial)=>{
@@ -25,7 +25,7 @@ export default function HouseholdTrips({activities=[]}){
   active.current=true;setBusy(true);
   try{
    const current=initial||await refresh();if(!current?.sharingEnabled)return;
-   const matches=activities.filter(t=>!t.readOnly&&!t.isGroupedJourney&&t.endedAt&&Number.isFinite(t.startedAt)&&
+   const matches=activities.filter(t=>!t.readOnly&&t.endedAt&&Number.isFinite(t.startedAt)&&
     (t.activity==='Driving'||t.activity==='Unknown')).map(t=>({t,car:current.cars.find(v=>v.local_vehicle_id&&String(v.local_vehicle_id)===String(t.vehicleID||''))})).filter(x=>x.car&&!current.ids.has(String(x.t.id)));
    for(const {t,car} of matches.slice(0,30)){
     const {error:e}=await supabase.rpc('publish_household_vehicle_trip',{p_vehicle:car.id,p_local_vehicle:car.local_vehicle_id,

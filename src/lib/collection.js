@@ -225,11 +225,6 @@ function resolveItem(items,id){
 // the first entry so Household sharing and source reconciliation are unchanged.
 export function tripEquipment(trip,items=[]){
  if(!trip)return [];
- if(trip.isGroupedJourney){
-  const seen=new Set();
-  return (trip.segments||[]).flatMap(segment=>tripEquipment(segment,items))
-   .filter(ref=>{if(!ref.id||seen.has(String(ref.id)))return false;seen.add(String(ref.id));return true;});
- }
  if(trip.source==='tesla'||trip.source==='combined'){
   const provider=trip.providerVehicleID;
   if(!provider)return [];

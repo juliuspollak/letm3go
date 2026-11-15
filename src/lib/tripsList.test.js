@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {TRIP_PAGE_SIZE,canMergeTrip,tripMatchReason,deletionIDs} from './tripsList.js';
+import {TRIP_PAGE_SIZE,canMergeTrip,tripMatchReason} from './tripsList.js';
 
 const drive={id:'d1',title:'Coast road',activity:'Driving',source:'device',endedAt:1_700_000_600,state:'saved',date:'2026-02-14',stops:[]};
 
@@ -14,7 +14,6 @@ it('only offers a merge for finished, locally recorded activities',()=>{
  expect(canMergeTrip({...drive,readOnly:true})).toBe(false);
  expect(canMergeTrip({...drive,provisional:true})).toBe(false);
  expect(canMergeTrip({...drive,source:'tesla'})).toBe(false);
- expect(canMergeTrip({id:'journey:a',isGroupedJourney:true})).toBe(true);
 });
 
 it('explains a match from the most specific field first',()=>{
@@ -27,9 +26,3 @@ it('explains a match from the most specific field first',()=>{
  expect(tripMatchReason(drive,'nothing here')).toEqual({label:'Matched trip details',value:'nothing here'});
 });
 
-it('group deletion includes each original once and excludes protected sources',()=>{
- const watch={...drive,id:'watch',source:'watch'};
- expect(deletionIDs({id:'group',isGroupedJourney:true,segments:[drive,watch,watch]})).toEqual(['d1','watch']);
- expect(deletionIDs({id:'group',isGroupedJourney:true,segments:[drive,{...watch,readOnly:true}]})).toEqual([]);
- expect(deletionIDs({...drive,endedAt:null,state:'paused'})).toEqual([]);
-});

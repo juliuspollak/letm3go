@@ -142,6 +142,63 @@ extension LocationRecorder {
         notifyJourneyChange()
         for photo in photos { try? FileManager.default.removeItem(at:storage.directory.appendingPathComponent("media").appendingPathComponent(photo.filename)) }
     }
+    // Merges finished local recordings into one new activity, then removes the originals
+    // (and any other copy of them). Photo files move with the merged activity.
+    func mergeActivities(ids: [String], deleteIDs: [String]) throws {
+        guard let storage else { throw failure("Activity storage is unavailable.") }
+        var wanted: [String] = []
+        for id in ids where !wanted.contains(where: { ActivityIdentity.matches($0, id) }) { wanted.append(id) }
+        guard wanted.count >= 2, wanted.count <= ActivityMerging.maximumParts else { throw failure("Choose at least two activities to merge.") }
+        func local(_ id: String) throws -> RecordedActivity {
+            guard active.map({ ActivityIdentity.matches($0.id, id) }) != true, automaticTrip.map({ ActivityIdentity.matches($0.id, id) }) != true,
+                  let trip = trips.first(where: { ActivityIdentity.matches($0.id, id) }), trip.endedAt != nil, trip.state != "recording",
+                  ["device", "watch", "simulator"].contains(trip.source) else { throw failure("Only your completed local recordings can be merged.") }
+            return trip
+        }
+        let parts = try wanted.map(local)
+        if let problem = ActivityMerging.problem(parts) { throw failure(problem) }
+        let removals = try Array(Set(wanted + deleteIDs.filter { id in trips.contains { ActivityIdentity.matches($0.id, id) } })).map(local)
+        guard let merged = ActivityMerging.merged(parts) else { throw failure("These activities cannot be merged (up to 50 photos in total).") }
+        try storage.save(merged)
+        trips.append(merged); trips.sort { $0.startedAt > $1.startedAt }
+        let kept = Set(merged.details?.photos.map { $0.filename } ?? [])
+        var failed = false
+        for trip in removals {
+            do { try storage.delete(trip.id) } catch { failed = true; continue }
+            PhotoSuggestionSkips.remove(ownerID: ownerID, activityID: trip.id)
+            trips.removeAll { ActivityIdentity.matches($0.id, trip.id) }
+            if settledTripID.map({ ActivityIdentity.matches($0, trip.id) }) == true { settleStateReset(); cleanupContinuationRegion(); departureEvidence.reset() }
+            for photo in trip.details?.photos ?? [] where !kept.contains(photo.filename) {
+                try? FileManager.default.removeItem(at: storage.directory.appendingPathComponent("media").appendingPathComponent(photo.filename))
+            }
+        }
+        notifyJourneyChange()
+        if failed { throw failure("The activities were merged, but an original could not be removed. Delete it yourself.") }
+    }
+    // Weather at the start of a finished activity, kept on the activity. Needs the WeatherKit
+    // capability; without it (or offline) the lookup fails and the activity simply has none.
+    func fetchWeather(id: String, done: @escaping (Result<Bool, Error>) -> Void) {
+        guard let storage, let trip = trips.first(where: { ActivityIdentity.matches($0.id, id) }), trip.endedAt != nil,
+              trip.details?.weather == nil, trip.details?.indoor != true, trip.activity != "Gym",
+              let fix = trip.points.first(where: { abs($0.latitude) <= 90 && abs($0.longitude) <= 180 && $0.accuracy >= 0 }) else { done(.success(false)); return }
+        let when = Date(timeIntervalSince1970: (trip.startedAt + (trip.endedAt ?? trip.startedAt)) / 2)
+        let location = CLLocation(latitude: fix.latitude, longitude: fix.longitude)
+        ActivityWeatherLookup.lookup(location, at: when) { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .failure(let error): done(.failure(error))
+                case .success(let weather):
+                    guard let index = self.trips.firstIndex(where: { ActivityIdentity.matches($0.id, id) }) else { done(.success(false)); return }
+                    var updated = self.trips[index]
+                    var details = updated.details ?? ActivityDetails()
+                    details.weather = weather
+                    updated.details = details
+                    do { try storage.save(updated); self.trips[index] = updated; self.notifyJourneyChange(); done(.success(true)) }
+                    catch { done(.failure(error)) }
+                }
+            }
+        }
+    }
     func deleteActivities(_ ids: [String]) throws {
         guard let storage, !ids.isEmpty, ids.count <= 500 else { throw failure("Choose activities to delete.") }
         let deleted = try storage.deletedIDs()
@@ -605,6 +662,21 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             call.resolve(LocationRecorder.shared.snapshot())
         } catch { call.reject(error.localizedDescription) }
     } }
+    @objc func mergeActivities(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let ids = call.getArray("ids", String.self) else { call.reject("Choose activities to merge."); return }
+        do { try LocationRecorder.shared.mergeActivities(ids: ids, deleteIDs: call.getArray("deleteIDs", String.self) ?? ids); call.resolve(LocationRecorder.shared.snapshot()) }
+        catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func fetchWeather(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call), let id = call.getString("id") else { return }
+        LocationRecorder.shared.fetchWeather(id: id) { result in
+            switch result {
+            case .success(let stored): call.resolve(["stored": stored])
+            case .failure(let error): call.reject(error.localizedDescription)
+            }
+        }
+    } }
     @objc func deleteActivities(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         guard call.getString("ownerID")?.lowercased() == LocationRecorder.shared.ownerID else { call.reject("Account changed. Nothing was deleted."); return }
@@ -655,4 +727,23 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             call.resolve(LocationRecorder.shared.snapshot())
         } catch { call.reject(error.localizedDescription) }
     } }
+}
+
+import WeatherKit
+
+enum ActivityWeatherLookup {
+    struct Unavailable: LocalizedError { var errorDescription: String? { "Weather is unavailable on this device." } }
+    static func lookup(_ location: CLLocation, at date: Date, done: @escaping (Result<ActivityWeather, Error>) -> Void) {
+        guard #available(iOS 16.0, *) else { done(.failure(Unavailable())); return }
+        Task {
+            do {
+                let hourly = try await WeatherService.shared.weather(for: location, including: .hourly(startDate: date.addingTimeInterval(-3600), endDate: date.addingTimeInterval(3600)))
+                guard let hour = hourly.forecast.min(by: { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }) else { done(.failure(Unavailable())); return }
+                done(.success(ActivityWeather(condition: hour.condition.description, symbol: hour.symbolName,
+                                              temperatureC: hour.temperature.converted(to: .celsius).value,
+                                              windKph: hour.wind.speed.converted(to: .kilometersPerHour).value,
+                                              fetchedAt: Date().timeIntervalSince1970)))
+            } catch { done(.failure(error)) }
+        }
+    }
 }

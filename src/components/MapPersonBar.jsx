@@ -24,7 +24,8 @@ function Sheet({label,onClose,children}){
  </DismissibleSheet></div>;
 };
 
-export default function MapPersonBar({people,selected,selectedName,viewer,onSelect,photos=null,selfAvatar=null}){
+import {driveTimeText} from '../lib/useDriveTimes.js';
+export default function MapPersonBar({people,driveTimes={},selected,selectedName,viewer,onSelect,photos=null,selfAvatar=null}){
  const [open,setOpen]=useState(false),[key,setKey]=useState(false);
  const trigger=useRef(null),keyButton=useRef(null);
  const chosen=selected==null?null:selected===viewer?{userId:viewer,name:'Me',self:true}:people.find(p=>p.userId===selected)||{userId:selected,name:selectedName||'Member'};
@@ -32,7 +33,8 @@ export default function MapPersonBar({people,selected,selectedName,viewer,onSele
  const close=()=>{const returnTo=key?keyButton.current:trigger.current;setOpen(false);setKey(false);returnTo?.focus();};
  const choose=userId=>{onSelect(userId);setOpen(false);trigger.current?.focus();};
  // A secondary line only where it says something not already in the name: how fresh their location is.
- const sub=chosen&&!chosen.self?(chosen.ageText?`Updated ${chosen.ageText}`:chosen.short||''):'';
+ const driveFor=person=>driveTimeText(driveTimes?.[person?.userId]);
+ const sub=chosen&&!chosen.self?(driveFor(chosen)||(chosen.ageText?`Updated ${chosen.ageText}`:chosen.short||'')):'';
  const item=(userId,name,detail,pressed,avatar)=><li key={userId??'all'}><button type="button" className="map-person-item" aria-pressed={pressed} onClick={()=>choose(userId)}>{avatar}<span className="map-person-item-text"><strong>{name}</strong>{detail&&<small>{detail}</small>}</span></button></li>;
  const avatar=(name,userId)=><PersonAvatar name={name} userId={userId} selfId={viewer} photos={photos} selfAvatar={selfAvatar} size="sm"/>;
  return <>
@@ -51,7 +53,7 @@ export default function MapPersonBar({people,selected,selectedName,viewer,onSele
     {item(null,'All people','Everyone on the map',selected==null,<span className="map-person-all" aria-hidden="true"><Users size={16}/></span>)}
     {item(viewer,'Me','Your own day',selected===viewer,avatar('Me',viewer))}
    </ul>
-   {GROUPS.map(([group,title])=>{const members=people.filter(p=>(p.group||'friend')===group);return members.length?<section key={group} aria-label={title}><h3 className="map-person-group">{title}</h3><ul className="map-person-list">{members.map(p=>item(p.userId,p.name||'Member',p.short||p.status?.text,selected===p.userId,avatar(p.name,p.userId)))}</ul></section>:null;})}
+   {GROUPS.map(([group,title])=>{const members=people.filter(p=>(p.group||'friend')===group);return members.length?<section key={group} aria-label={title}><h3 className="map-person-group">{title}</h3><ul className="map-person-list">{members.map(p=>item(p.userId,p.name||'Member',[driveFor(p),p.short||p.status?.text].filter(Boolean).join(' · '),selected===p.userId,avatar(p.name,p.userId)))}</ul></section>:null;})}
   </Sheet>}
   {key&&<Sheet label="Map key" onClose={close}>
    <h2 className="map-person-heading">Map key</h2>

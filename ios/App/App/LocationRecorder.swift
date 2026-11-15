@@ -1456,18 +1456,22 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func failure(_ message: String) -> NSError { NSError(domain: "Letm3goRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     func dictionary(_ trip: RecordedActivity) -> [String: Any] {
+        Self.dictionary(trip, owner: ownerID, hasStorage: storage != nil)
+    }
+    // Pure, so a long history can be turned into JSON off the main thread.
+    static func dictionary(_ trip: RecordedActivity, owner: String?, hasStorage: Bool) -> [String: Any] {
         guard let data = try? JSONEncoder().encode(trip), var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [:] }
-        if storage != nil, let photos = trip.details?.photos {
+        if hasStorage, let photos = trip.details?.photos {
             dict["localPhotos"] = photos.map { photo -> [String:Any] in
                 var item = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(photo))) as? [String:Any] ?? [:]
-                item["privateURI"] = "private-photo:\(ownerID ?? "")/\(trip.id)/\(photo.id)"
+                item["privateURI"] = "private-photo:\(owner ?? "")/\(trip.id)/\(photo.id)"
                 return item
             }
         }
         dict["durationSeconds"] = trip.duration(at: Date().timeIntervalSince1970)
         return dict
     }
-    func snapshot(historyToken supplied: String? = nil) -> [String: Any] {
+    func snapshot(historyToken supplied: String? = nil, omitTrips: Bool = false) -> [String: Any] {
         let info = Bundle.main.infoDictionary ?? [:]
         let bindingDiagnostics: [String: Any] = ["ownerPresent":ownerID != nil,"uiUnlocked":uiUnlocked,"storeOpened":storeOpened,"storageHandlePresent":storage != nil,"accountSuspended":accountSuspended,"accountDeleting":accountDeleting]
         guard uiUnlocked, storeOpened, ownerID != nil, !accountDeleting else { return ["active":NSNull(),"trips":[],"places":[],"deletedIDs":[],"permission":"locked","storageReady":false,"nativeBinding":bindingDiagnostics,"version":info["CFBundleShortVersionString"] ?? "unknown","build":info["CFBundleVersion"] ?? "unknown"] }
@@ -1519,7 +1523,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "recordingHealth":recordingHealthSnapshot,
                 "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius,"shareWithFriends":p.shareWithFriends ?? false] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
-                "active": active.map(dictionary) as Any? ?? NSNull(), "trips": unchanged ? [] : trips.map(dictionary),
+                "active": active.map(dictionary) as Any? ?? NSNull(), "trips": unchanged || omitTrips ? [] : trips.map(dictionary),
                 "historyToken": token, "historyUnchanged": unchanged,
                 "permission": permission, "precise": manager.accuracyAuthorization == .fullAccuracy,
                 "locationServices": locationServicesAvailable,
@@ -1565,6 +1569,8 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "assignTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trimActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setRouteDisplay", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "mergeActivities", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "fetchWeather", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteActivities", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteActivity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addHistorical", returnType: CAPPluginReturnPromise),
@@ -1604,7 +1610,19 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     // web UI needs this read-only status to diagnose failed account binding.
     @objc func getState(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            call.resolve(LocationRecorder.shared.snapshot(historyToken: call.getString("historyToken")))
+            let recorder = LocationRecorder.shared
+            // The history can be hundreds of thousands of GPS points. Callers that
+            // only need status ask for none, and the rest have it encoded off the
+            // main thread so the app never freezes while it loads.
+            var snapshot = recorder.snapshot(historyToken: call.getString("historyToken"), omitTrips: true)
+            if call.getBool("omitTrips") == true || snapshot["historyToken"] == nil || snapshot["historyUnchanged"] as? Bool == true {
+                call.resolve(snapshot); return
+            }
+            let trips = recorder.trips, owner = recorder.ownerID, hasStorage = recorder.storage != nil
+            DispatchQueue.global(qos: .userInitiated).async {
+                snapshot["trips"] = trips.map { LocationRecorder.dictionary($0, owner: owner, hasStorage: hasStorage) }
+                call.resolve(snapshot)
+            }
         }
     }
     func requireAccount(_ call: CAPPluginCall) -> Bool {

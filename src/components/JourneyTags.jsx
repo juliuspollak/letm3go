@@ -14,7 +14,7 @@ import {rememberDestinationPlace,rememberedPlaceAt} from '../lib/rememberedPlace
 // `places` are the saved places; grouping.metadata.places is the provider lookup
 // cache, which only the route scan below reads.
 export default function JourneyTags({trip,grouping,places=[],run,lastError,onActivity}){
- const anchor=trip.segmentIDs?.[0]||trip.id;
+ const anchor=trip.id;
  const custom=grouping.metadata.manualTags?.[anchor]||[];
  const hidden=grouping.metadata.hiddenTags?.[anchor]||[];
  const destination=grouping.destinations?.find(d=>d.placeID===trip.recognition?.primary?.placeID);
