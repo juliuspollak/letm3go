@@ -49,7 +49,7 @@ extension LocationRecorder {
             // A status change is sent on the motion callback, not only on the next
             // GPS fix or timer tick. This is what removes a car promptly when a
             // drive becomes a genuine stop.
-            if self.liveSharingArmed, self.active?.state != "recording" {
+            if self.liveSharingArmed, !self.manualRecordingLive {
                 self.confirmHouseholdLocation()
                 if previousMotion.types != types || previousMotion.confidence != confidence {
                     // The status shown to the household may now be due to change.
@@ -157,7 +157,7 @@ extension LocationRecorder {
                 automaticTrip = trip
                 recordDiagnostic("recovery","Automatic journey interrupted: automatic tracking became unavailable",details:["savedFixes":String(trip.points.count)])
             }
-            if active?.state != "recording" { stopContinuousLocation(reason:"Continuous GPS stopped: automatic tracking unavailable") }
+            if !manualRecordingLive { stopContinuousLocation(reason:"Continuous GPS stopped: automatic tracking unavailable") }
         }
     }
     // Stops detection at its source for as long as a manual recording owns the
@@ -389,8 +389,9 @@ extension LocationRecorder {
         guard !reconcilingManualExclusion else { return manualExclusion.current != nil }
         reconcilingManualExclusion = true
         let now = Date().timeIntervalSince1970
-        let received = currentWatchRecording
-        let change = manualExclusion.update(local: active.map(manualPresence), remote: received, ownerID: ownerID, now: now)
+        // Only a recording that uses GPS holds off automatic detection; a Gym workout on either device does not.
+        let received = currentWatchRecording.flatMap { $0.excludesAutomatic ? $0 : nil }
+        let change = manualExclusion.update(local: active.flatMap { $0.requiresGPS ? manualPresence($0) : nil }, remote: received, ownerID: ownerID, now: now)
         noteManualExclusion(change)
         // A draft that cannot be saved stays blocked and is retried on the next pass.
         let closed = closeAutomaticOverlappingManualRecording(received, now: now)
@@ -498,7 +499,7 @@ extension LocationRecorder {
         // the wait does not age it out. Liveness bookkeeping uses the real clock.
         let clock = Date().timeIntervalSince1970
         let now = receivedAt.map { min(clock, $0) } ?? clock
-        let remoteRecording = currentWatchRecording
+        let remoteRecording = currentWatchRecording.flatMap { $0.excludesAutomatic ? $0 : nil }
         // iOS does not wake a suspended app to expire a continuation window, so
         // every wake reconciles the wall clock before processing new fixes.
         if settledTripID != nil { finishExpiredContinuation(now:now) }

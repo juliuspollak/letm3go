@@ -299,7 +299,7 @@ struct WatchReadyView: View {
 
     private func begin(anyway: Bool) {
         var chosen = setup
-        chosen.indoor = WatchCatalog.isGym(setup.activity) || (indoor && WatchCatalog.supportsIndoor(setup.activity)) ? true : nil
+        chosen.indoor = !ActivityCapabilities.of(setup.activity).gps || (indoor && WatchCatalog.supportsIndoor(setup.activity)) ? true : nil
         recorder.start(chosen, anyway: anyway)
         path = recorder.hasRide ? [.recording] : path
     }

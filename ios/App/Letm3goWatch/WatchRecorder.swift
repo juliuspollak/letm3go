@@ -1437,8 +1437,10 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
             }
             return idle
         }
-        return RecordingPresence(device: RecordingPresence.watch, ownerID: ride.ownerID ?? owner, sessionID: ride.id, activity: ride.activity,
-                                 state: ride.isRecording ? "recording" : "paused", startedAt: ride.startedAt, updatedAt: now)
+        var presence = RecordingPresence(device: RecordingPresence.watch, ownerID: ride.ownerID ?? owner, sessionID: ride.id, activity: ride.activity,
+                                         state: ride.isRecording ? "recording" : "paused", startedAt: ride.startedAt, updatedAt: now)
+        if !ActivityCapabilities.of(ride.activity, indoor: ride.indoor).gps { presence.usesGPS = false }
+        return presence
     }
 
     private func announcePresence(force: Bool) {

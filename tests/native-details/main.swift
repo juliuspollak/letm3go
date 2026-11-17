@@ -14,6 +14,22 @@ do {
     check(decoded.segments.items.first?.name == "Rock Garden" && decoded.trim?.pointCount == 60, "segments and trim decode")
     check(decoded.editor?.types.contains { $0.value == "MTB" } == true && decoded.diagnostics?.report.isEmpty == false, "editor and diagnostics decode")
     check(decoded.segments.list.first?.currentPasses?.first?.current == true, "this ride's separately bounded attempts reach the native layout")
+    // The map follows the presentation: a presentation written before routeMap existed has one, and only an
+    // explicit false (an activity without GPS) removes it.
+    check(decoded.header.routeMap == true && decoded.header.showsMap, "a GPS activity's presentation shows its map")
+    var olderObject = object
+    var olderHeader = object["header"] as! [String: Any]
+    olderHeader.removeValue(forKey: "routeMap")
+    olderObject["header"] = olderHeader
+    check((try? ActivityPresentation.decode(olderObject))?.header.showsMap == true, "an older presentation without the field still shows its map")
+    var workoutObject = object
+    var workoutHeader = object["header"] as! [String: Any]
+    workoutHeader["routeMap"] = false
+    workoutObject["header"] = workoutHeader
+    check((try? ActivityPresentation.decode(workoutObject))?.header.showsMap == false, "a workout without GPS has no map")
+    workoutHeader["routeMap"] = true
+    workoutObject["header"] = workoutHeader
+    check((try? ActivityPresentation.decode(workoutObject))?.header.showsMap == true, "a GPS activity keeps its map, even with no route saved")
     var legacyObject=object
     var legacySegments=object["segments"] as! [String:Any]
     var legacyRows=legacySegments["ridden"] as! [[String:Any]]

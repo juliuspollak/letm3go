@@ -307,15 +307,18 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var automaticAvailable: Bool { automaticPermitted && manualExclusion.current == nil }
     // A manual recording owns this iPhone's location only while it records. Paused, it
     // stays saved and resumable and holds nothing, so automatic detection runs.
-    var manualRecordingLive: Bool { active?.state == "recording" }
-    var manualGPSRecording: Bool { manualRecordingLive && active?.requiresGPS == true }
+    // A workout without GPS (Gym, Rope skipping, anything indoor) holds no location services, so it never
+    // suspends automatic detection, live sharing or another feature's location use; it is only "live".
+    var manualWorkoutLive: Bool { active?.state == "recording" }
+    var manualRecordingLive: Bool { manualWorkoutLive && active?.requiresGPS == true }
+    var manualGPSRecording: Bool { manualRecordingLive }
     var automaticRecordingState: AutomaticRecordingState {
         RecordingCoordination.state(enabled: automaticEnabled, permitted: automaticPermitted, owner: manualExclusion.current?.device)
     }
     var recordingCoordination: [String: String] {
         ["automaticRecordingState": automaticRecordingState.rawValue,
          "automaticSuppressedBy": manualExclusion.current.map { $0.device == RecordingPresence.watch ? "Apple Watch recording" : "iPhone manual recording" } ?? "none",
-         "recordingOwner": RecordingCoordination.owner(manualRecording: manualRecordingLive, watchOwns: manualExclusion.current?.device == RecordingPresence.watch,
+         "recordingOwner": RecordingCoordination.owner(manualRecording: manualWorkoutLive, watchOwns: manualExclusion.current?.device == RecordingPresence.watch,
                                                        automaticRecording: automaticActivelyRecording),
          "manualPausedPreserved": String(active?.state == "paused")]
     }
@@ -1266,12 +1269,17 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func start(activity: String, vehicle: String?, vehicleID: String? = nil, trailID: String? = nil, trailName: String? = nil, trailSegmentID: String? = nil, trailDistanceMeters: Double? = nil, precision: String? = nil) throws {
         guard storage != nil else { throw failure("Local storage is unavailable. Recording cannot start safely.") }
         guard active == nil else { throw failure("Finish the existing activity first.") }
-        guard activity == "Gym" || (authorized && locationServicesAvailable) else { throw failure("Enable location access before starting.") }
+        let usesGPS = ActivityCapabilities.of(activity).gps
+        // A workout without GPS never needs location access, so it starts with it off or denied.
+        guard !usesGPS || (authorized && locationServicesAvailable) else { throw failure("Enable location access before starting.") }
         let allowed = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Other"]
         guard allowed.contains(activity) else { throw failure("Choose a supported activity.") }
         let now = Date().timeIntervalSince1970
-        try closeAutomatic(before:now,reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started")
-        detector.reset()
+        // Only a recording that takes over location ends an automatic journey; a Gym workout runs beside it.
+        if usesGPS {
+            try closeAutomatic(before:now,reason:"Recording stopped: a manual activity was started",trigger:"start",event:"a manual activity was started")
+            detector.reset()
+        }
         var trip = RecordedActivity(activity: activity, vehicle: vehicle, startedAt: now, resumedAt: now, title: "\(activity) · \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short))")
         #if targetEnvironment(simulator)
         trip.source = "simulator"
@@ -1282,7 +1290,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         trip.recordingMode = "manual"
         trip.timezone = TimeZone.current.identifier
         trip.details = ActivityDetails()
-        trip.details?.indoor = activity == "Gym" ? true : nil
+        trip.details?.indoor = usesGPS ? nil : true
         trip.details?.recordingPrecision = RecordingPrecision.resolved(precision, activity: activity).rawValue
         if trailID != nil {
             // A trail link is optional, but a malformed one is rejected before the
@@ -1294,17 +1302,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         recordDiagnostic("journey","Manual journey started")
         reconcileManualExclusion()
         WatchSessionManager.shared.noteRecorderChanged()
-        if CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
+        if usesGPS, CMMotionActivityManager.authorizationStatus() == .authorized { startMotionUpdates() }
         beginUpdates()
     }
     func beginUpdates() {
-        if active?.requiresGPS == false {
-            adaptive.shutdown(reason: "indoor recording")
-            stopContinuousLocation(reason: "Indoor recording does not use GPS")
-            refreshAutomaticMonitoring()
-            releaseBackgroundSessionIfUnneeded("indoor recording")
-            return
-        }
+        // Nothing to start: this workout has no GPS, and the location services running now belong to
+        // automatic detection, live sharing or an automatic journey. They are left exactly as they are.
+        if active?.requiresGPS == false { return }
         // Manual recording owns standard updates; the low-power stream stops first.
         adaptive.stopLowPower(reason: "manual recording")
         let configuration = LocationConfiguration.manual(activity: active?.activity ?? "", precision: active?.details?.recordingPrecision.flatMap(RecordingPrecision.init(rawValue:)))
@@ -1334,6 +1338,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         case "resume":
             guard trip.points.count < 50_000 else { throw failure("This activity reached the point limit. Finish it and start a new activity.") }
             guard !trip.requiresGPS || (authorized && CLLocationManager.locationServicesEnabled()) else { throw failure("Location permission is unavailable.") }
+            if trip.requiresGPS {
             // Two recordings never run at once. A journey being recorded is the
             // person's to end; anything else open (a published stop waiting for a
             // continuation, a walk still being checked) ends here, as it does when
@@ -1344,6 +1349,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             }
             try closeAutomatic(before:now,reason:"Recording stopped: a manual activity was resumed",trigger:"resume",event:"a manual activity was resumed")
             detector.reset()
+            }
             trip.resume(at: now)
         case "finish": trip.finish(at: now)
         default: throw failure("Unknown recording action.")
@@ -1357,7 +1363,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         currentSpeed = 0
         confirmHouseholdLocation()
         recordDiagnostic("journey","Manual journey \(action == "finish" ? "finished" : action == "pause" ? "paused" : "resumed")",details:["stopKind":action == "pause" || action == "finish" ? "intentional journey stop; not a GPS gap" : "explicit continuation"])
-        if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring(); releaseBackgroundSessionIfUnneeded("manual recording \(action == "finish" ? "finished" : "paused")") }
+        // Pausing or finishing a workout without GPS has no location services of its own to release.
+        if trip.requiresGPS == false { refreshAutomaticMonitoring() }
+        else if active?.state == "recording" { beginUpdates() } else { stopContinuousLocation(); refreshAutomaticMonitoring(); releaseBackgroundSessionIfUnneeded("manual recording \(action == "finish" ? "finished" : "paused")") }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         handleObservations(locations, source: .standard)

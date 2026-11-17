@@ -225,6 +225,10 @@ struct RecordingPresence: Codable, Equatable {
     // reads its saved presence before WatchConnectivity hands over newer ones, so
     // silence is only believed after this. Never sent, and any new packet clears it.
     var leaseHeldUntil: Double? = nil
+    // False for a workout that records no GPS (Gym, Rope skipping, an indoor ride): it is still a
+    // recording to show and to keep from doubling, but it holds no location, so it never suspends
+    // automatic detection. Absent means GPS, which is what every earlier build sent.
+    var usesGPS: Bool? = nil
 
     var isActive: Bool { state == "recording" || state == "paused" }
     var deviceName: String { device == Self.watch ? "Apple Watch" : "iPhone" }
@@ -237,6 +241,7 @@ struct RecordingPresence: Codable, Equatable {
         var value: [String: Any] = ["device": device, "ownerID": ownerID ?? "", "sessionID": sessionID, "activity": activity,
                                     "state": state, "startedAt": startedAt, "updatedAt": updatedAt]
         if let endedAt { value["endedAt"] = endedAt }
+        if usesGPS == false { value["usesGPS"] = false }
         return value
     }
     init(device: String, ownerID: String?, sessionID: String, activity: String, state: String, startedAt: Double, updatedAt: Double) {
@@ -251,7 +256,10 @@ struct RecordingPresence: Codable, Equatable {
                   sessionID: item["sessionID"] as? String ?? "", activity: item["activity"] as? String ?? "",
                   state: state, startedAt: item["startedAt"] as? Double ?? 0, updatedAt: updatedAt)
         endedAt = item["endedAt"] as? Double
+        usesGPS = item["usesGPS"] as? Bool
     }
+    // The part of a recording that must hold off automatic detection.
+    var excludesAutomatic: Bool { usesGPS != false }
 }
 
 enum CrossDeviceStart: Equatable {
@@ -603,7 +611,7 @@ enum WatchWorkoutClassifier {
         case "Rope skipping": type = "jumpRope"
         default: type = "other"
         }
-        return WatchWorkoutClass(type: type, indoor: indoor || activity == "Gym" || activity == "Rope skipping", savesToHealth: activity != "Driving")
+        return WatchWorkoutClass(type: type, indoor: indoor || !ActivityCapabilities.of(activity).gps, savesToHealth: activity != "Driving")
     }
 }
 

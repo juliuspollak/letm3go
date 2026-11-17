@@ -1,3 +1,4 @@
+import {activityCapabilities} from './activityCapabilities.js';
 // How hard GPS works during a recording, chosen per activity. RecordingPrecision in
 // WatchActivityCore.swift holds the same three levels and defaults for the Watch.
 export const GPS_PRECISIONS=[
@@ -5,7 +6,7 @@ export const GPS_PRECISIONS=[
  {id:'balanced',label:'Balanced',detail:'Good for most activities.'},
  {id:'saver',label:'Battery saver',detail:'For long days. Corners look rougher.'},
 ];
-export const precisionOffered=activity=>!['Driving','Gym','Rope skipping'].includes(activity);
+export const precisionOffered=activity=>activity!=='Driving'&&activityCapabilities(activity).gps;
 export const defaultPrecision=activity=>activity==='MTB'?'high':'balanced';
 const key=activity=>`letm3go-gps-precision:${activity}`;
 export function savedPrecision(activity,storage=globalThis.localStorage){

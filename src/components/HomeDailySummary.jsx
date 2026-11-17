@@ -1,3 +1,4 @@
+import {workoutFigure} from '../lib/activityCapabilities.js';
 import {useRef} from 'react';
 import {ChevronLeft,ChevronRight} from 'lucide-react';
 import ActivityIcon from './ActivityIcon.jsx';
@@ -64,7 +65,7 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
   {latest
    ?<button type="button" className="home-day-latest" onClick={guarded(()=>onOpenActivity?.(latest))}>
      <span className="home-day-latest-icon"><ActivityIcon activity={activityLabel(latest.activity)} size={18}/></span>
-     <span className="home-day-latest-text"><strong>{latest.title||activityLabel(latest.activity)}</strong><small>{timeRange(latest)} · {activityLabel(latest.activity)} · {tripDistanceText(latest,unit)}</small></span>
+     <span className="home-day-latest-text"><strong>{latest.title||activityLabel(latest.activity)}</strong><small>{timeRange(latest)} · {activityLabel(latest.activity)} · {workoutFigure(latest)?`${workoutFigure(latest).value} ${workoutFigure(latest).label}`:tripDistanceText(latest,unit)}</small></span>
      <ChevronRight size={16} aria-hidden="true"/>
     </button>
    :<p className="home-day-empty">{label==='Today'?'No activities yet today.':'No activities on this day.'}</p>}

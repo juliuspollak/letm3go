@@ -287,3 +287,14 @@ it('shows the jump count for rope skipping and minutes for Gym',()=>{
  expect(gymRow.textContent).toMatch(/30\s*min/);
  expect(gymRow.textContent).not.toMatch(/jumps/);
 });
+
+it('lists a workout without GPS by its own figure and a GPS activity by distance, side by side',()=>{
+ const ride=trip('ride',{activity:'MTB',distanceMeters:12300,durationSeconds:3600});
+ const treadmill=trip('treadmill',{activity:'Running',source:'watch',distanceMeters:0,durationSeconds:1500,details:{indoor:true}});
+ const rope=trip('rope',{activity:'Rope skipping',source:'watch',distanceMeters:0,durationSeconds:900,details:{indoor:true,ropeSkipping:{jumps:1248,totalSeconds:900,activeSeconds:700,intervalCount:6,intervals:[]}}});
+ const {container}=renderList({journeys:[ride,treadmill,rope]});
+ const row=id=>container.querySelector(`[data-trip-id="${id}"]`).textContent;
+ expect(row('ride')).toMatch(/12\s*km/);
+ expect(row('treadmill')).toMatch(/25\s*min/);expect(row('treadmill')).not.toMatch(/km/);
+ expect(row('rope')).toMatch(/1,248\s*jumps/);expect(row('rope')).not.toMatch(/\bkm\b/);
+});

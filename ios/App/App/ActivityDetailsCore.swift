@@ -23,6 +23,10 @@ struct ActivityPresentation: Decodable, Equatable {
         var startedAt: Double?
         var timeZone: String?
         var noRouteDetail: String
+        // False for an activity that records no GPS: its detail has no map, and no placeholder for one.
+        // Absent from presentations written before this field, which all had a map.
+        var routeMap: Bool?
+        var showsMap: Bool { routeMap != false }
     }
     struct Readout: Decodable, Equatable, Identifiable {
         var id: String { label }

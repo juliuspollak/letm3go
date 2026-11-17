@@ -32,7 +32,7 @@ extension LocationRecorder: AdaptiveHost {
 
     func adaptiveInputs(now: Double) -> AdaptiveInputs {
         AdaptiveInputs(enabled: adaptiveEnabled, supported: liveUpdatesSupported, automaticAvailable: automaticAvailable,
-                       manualRecording: active?.state == "recording", journeyRecording: automaticActivelyRecording,
+                       manualRecording: manualRecordingLive, journeyRecording: automaticActivelyRecording,
                        probing: (automaticSampling.probeUntil ?? 0) > now,
                        continuationOpen: settledTripID != nil || (automaticTrip != nil && !automaticActivelyRecording),
                        // Any established place counts, saved or not; Home without
@@ -172,9 +172,9 @@ extension LocationRecorder: AdaptiveHost {
             continuousRunning: continuousLocationRequested, lowPowerRunning: adaptive.lowPowerRunning,
             lowPowerWanted: locationMode == .stationary,
             placeRegionRegistered: registeredPlaceRegion != nil,
-            journeyRecording: automaticActivelyRecording || active?.state == "recording",
+            journeyRecording: automaticActivelyRecording || manualRecordingLive,
             sessionHeld: backgroundActivitySession != nil,
-            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: active?.state == "recording",
+            sessionNeeded: BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: manualRecordingLive,
                 passiveRest: locationMode == .passive, liveSharing: liveSharingHoldsLocation) || !storeOpened,
             restRegionWanted: restDecision.confirmed && passiveRestEnabled && serviceSession != nil)
         var found = AdaptiveInvariants.violations(observed)

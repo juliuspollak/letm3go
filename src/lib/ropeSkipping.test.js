@@ -1,5 +1,6 @@
 import {describe,expect,it} from 'vitest';
-import {backupRope,clockText,isGymActivity,jumpsText,ropeSummary,typesWithCurrent} from './ropeSkipping.js';
+import {backupRope,clockText,jumpsText,ropeSummary,typesWithCurrent} from './ropeSkipping.js';
+import {activityCapabilities} from './activityCapabilities.js';
 import {activitySummary} from './activitySummary.js';
 import {viewMetadata} from './cloudSync.js';
 import {activityPresentation} from './activityPresentation.js';
@@ -29,10 +30,10 @@ describe('rope skipping summary',()=>{
   expect(clockText(690)).toBe('11:30');expect(clockText(210)).toBe('3:30');expect(clockText(3930)).toBe('1:05:30');expect(clockText(NaN)).toBe('0:00');
   expect(jumpsText(1250)).toBe('1,250');
  });
- it('treats rope skipping as Gym without changing Gym',()=>{
-  expect(isGymActivity('Gym')&&isGymActivity('Rope skipping')).toBe(true);
-  expect(isGymActivity('MTB')||isGymActivity('Walking')||isGymActivity(undefined)).toBe(false);
-  expect(precisionOffered('Rope skipping')||precisionOffered('Gym')).toBe(false);expect(precisionOffered('MTB')).toBe(true);
+ it('treats rope skipping like Gym for GPS, and leaves other activities alone',()=>{
+  expect(activityCapabilities('Gym').gps||activityCapabilities('Rope skipping').gps).toBe(false);
+  expect(activityCapabilities('MTB').gps&&activityCapabilities('Walking').gps).toBe(true);
+  expect(precisionOffered('Rope skipping')||precisionOffered('Gym')||precisionOffered('Driving')).toBe(false);expect(precisionOffered('MTB')).toBe(true);
  });
  it('keeps the type an activity already has in a picker',()=>{
   expect(typesWithCurrent(['Gym','Other'],'Rope skipping')).toEqual(['Gym','Other','Rope skipping']);

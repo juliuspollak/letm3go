@@ -27,6 +27,24 @@ struct EquipmentRef: Codable, Equatable {
     var name: String
 }
 
+// What an activity needs from the phone, decided once from the activity (and an indoor choice on the
+// Watch) and shared by recording, the Watch and the detail screen. Recording mode (manual or
+// automatic) is a separate question: a manual workout may or may not use GPS.
+//   gps       the activity records fixes, and may ask for location permission and hold location services
+//   routeMap  the detail screen leads with the route map (a GPS activity whose route is missing still
+//             has one, so the screen can say the route is missing instead of pretending it was never meant)
+// A subtype overrides its parent by being listed here (Rope skipping under Gym) or by being indoor.
+struct ActivityCapabilities: Equatable {
+    var gps: Bool
+    var routeMap: Bool { gps }
+    // Gym and its subtypes. Strength training, indoor cycling and treadmill running join as indoor
+    // activities (or add their value here) without any other code changing.
+    static let withoutGPS: Set<String> = ["Gym", "Rope skipping"]
+    static func of(_ activity: String, indoor: Bool? = nil) -> ActivityCapabilities {
+        ActivityCapabilities(gps: !withoutGPS.contains(activity) && indoor != true)
+    }
+}
+
 struct RecordedActivity: Codable {
     var id = UUID().uuidString
     var activity: String
@@ -50,7 +68,9 @@ struct RecordedActivity: Codable {
     var details: ActivityDetails?
     var equipment: [EquipmentRef]?
     var updatedAt: Double?
-    var requiresGPS: Bool { activity != "Gym" && activity != "Rope skipping" && details?.indoor != true }
+    // Whether this recording uses GPS and has a route, from what the activity needs (and an indoor
+    // choice) rather than from how it was started.
+    var requiresGPS: Bool { ActivityCapabilities.of(activity, indoor: details?.indoor).gps }
     mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
         if recordingMode == "automatic" {
