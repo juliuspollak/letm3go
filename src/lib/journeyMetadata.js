@@ -10,7 +10,8 @@
 // that shape. Nothing here touches React, storage or the network.
 import {emptyGrouping} from './journeyGrouping.js';
 export const JOURNEY_ENRICHMENT_VERSION=1;
-export const ACTIVITY_TYPES=['Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Gym','Other','Unknown'];
+import {ACTIVITY_TYPES} from './activityTypes.js';
+export {ACTIVITY_TYPES};
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const list=value=>Array.isArray(value)?value:[];
 const strings=value=>list(value).filter(entry=>typeof entry==='string'&&entry.length>0&&entry.length<=60).slice(0,60);

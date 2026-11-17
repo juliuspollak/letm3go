@@ -74,3 +74,78 @@ it('stays private to its owner like every other activity row', async () => {
   await backup(a, tripID, { ropeSkipping: summary() });
   expect((await as('authenticated', b, `select count(*)::int as n from public.activities where id='${tripID}'`)).rows[0].n).toBe(0);
 });
+
+// 20261214000000_rope_skipping_validation_fix.sql
+const check = async (value) => (await db.query(`select public.valid_rope_skipping(${value === undefined ? 'null' : `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`}) as ok`)).rows[0].ok;
+
+it('answers true or false for any value and never raises', async () => {
+  const odd = [
+    undefined, null, 'x', 7, true, [], {}, { jumps: 1 },
+    summary({ intervals: 'x' }), summary({ intervals: {} }), summary({ intervals: 5 }), summary({ intervals: null }), summary({ intervals: [null] }), summary({ intervals: [[1, 2]] }),
+    summary({ jumps: {} }), summary({ jumps: [] }), summary({ totalSeconds: null }), summary({ activeSeconds: 'x' }), summary({ intervalCount: false }),
+    summary({ intervals: [{ start: 'a', end: 2, jumps: 1 }] }), summary({ intervals: [{ start: 1, end: {}, jumps: 1 }] }),
+  ];
+  for (const value of odd) expect([true, false], JSON.stringify(value)).toContain(await check(value));
+  for (const value of odd) expect(await check(value), JSON.stringify(value)).toBe(false);
+  expect((await db.query(`select public.valid_rope_skipping(null::jsonb) as ok`)).rows[0].ok).toBe(false);
+  expect((await db.query(`select public.valid_rope_skipping('null'::jsonb) as ok`)).rows[0].ok).toBe(false);
+});
+
+it('requires every field, including intervals', async () => {
+  expect(await check(summary())).toBe(true);
+  for (const field of ['jumps', 'totalSeconds', 'activeSeconds', 'intervalCount', 'intervals']) {
+    const value = summary(); delete value[field];
+    expect(await check(value), `missing ${field}`).toBe(false);
+  }
+  expect(await check(summary({ extra: 1 }))).toBe(false);
+});
+
+it('keeps its bounds, at and either side of each', async () => {
+  expect(await check(summary({ jumps: 0, activeSeconds: 0, totalSeconds: 0, intervalCount: 0, intervals: [] }))).toBe(true);
+  expect(await check(summary({ jumps: 10, activeSeconds: 0 }))).toBe(true);          // 5 a second plus a little slack
+  expect(await check(summary({ jumps: 11, activeSeconds: 0 }))).toBe(false);
+  expect(await check(summary({ jumps: 100000, totalSeconds: 1000000, activeSeconds: 20000 }))).toBe(true);
+  expect(await check(summary({ jumps: 100001, totalSeconds: 1000000, activeSeconds: 100000 }))).toBe(false);
+  expect(await check(summary({ totalSeconds: 1000000, activeSeconds: 1000000, jumps: 5 }))).toBe(true);
+  expect(await check(summary({ totalSeconds: 1000001 }))).toBe(false);
+  expect(await check(summary({ activeSeconds: 900 }))).toBe(true);
+  expect(await check(summary({ activeSeconds: 900.5 }))).toBe(false);
+  expect(await check(summary({ intervalCount: 10000 }))).toBe(true);
+  expect(await check(summary({ intervalCount: 10001 }))).toBe(false);
+  const many = n => Array.from({ length: n }, (_, i) => ({ start: i, end: i + 1, jumps: 1 }));
+  expect(await check(summary({ intervals: many(200) }))).toBe(true);
+  expect(await check(summary({ intervals: many(201) }))).toBe(false);
+  expect(await check(summary({ intervals: [{ start: 1, end: 1, jumps: 1 }] }))).toBe(true);
+  expect(await check(summary({ intervals: [{ start: 2, end: 1, jumps: 1 }] }))).toBe(false);
+  expect(await check(summary({ intervals: [{ start: 1, end: 2, jumps: 100000 }] }))).toBe(true);
+  expect(await check(summary({ intervals: [{ start: 1, end: 2, jumps: 100001 }] }))).toBe(false);
+});
+
+it('still accepts what the app sends', async () => {
+  const sent = backupRope({ ...summary(), restSeconds: 210, averageCadence: 108.7 });
+  expect(await check(sent)).toBe(true);
+  expect((await backup(a, id(), { ropeSkipping: sent })).rows[0].revision).toBe(1);
+});
+
+it('a summary without intervals is a clean check failure, not a pass and not a crash', async () => {
+  const value = summary(); delete value.intervals;
+  await expect(backup(a, id(), { ropeSkipping: value })).rejects.toThrow(/check|violat/i);
+  await expect(backup(a, id(), { ropeSkipping: summary({ intervals: 'x' }) })).rejects.toThrow(/check|violat/i);
+  // A bad summary on one activity does not affect another activity's backup.
+  expect((await backup(a, id(), { startPlace: 'Home' })).rows[0].revision).toBe(1);
+});
+
+it('treats a NULL answer from a nested validator as invalid in view_metadata', async () => {
+  const ok = async (view) => (await db.query(`select public.valid_view_metadata('${JSON.stringify(view)}'::jsonb) as ok`)).rows[0].ok;
+  expect(await ok({ ropeSkipping: summary() })).toBe(true);
+  expect(await ok({ ropeSkipping: { jumps: 1 } })).toBe(false);
+  expect(await ok({ ropeSkipping: summary({ intervals: null }) })).toBe(false);
+  expect(await ok({ namedSegments: 'x' })).toBe(false);
+  expect(await ok({ startPlace: 'Home', ropeSkipping: summary(), visibleRouteStart: 1, visibleRouteEnd: 2, endPlace: 'x', coverPhotoID: 'p' })).toBe(true);
+});
+
+it('accepts Rope skipping as a journey activity type, like every other', async () => {
+  const insert = type => db.exec(`reset role; insert into public.journey_activity_metadata(owner_id,ref,type) values('${a}','${id()}','${type}')`);
+  for (const type of ['Gym', 'Rope skipping', 'MTB', 'Unknown']) await insert(type);
+  await expect(insert('Underwater basket weaving')).rejects.toThrow(/check|violat/i);
+});

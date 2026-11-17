@@ -529,3 +529,21 @@ it('does not clear a real conflict merely because the old acknowledged fingerpri
  expect(result.receipts['backup-failure:trip']).toMatchObject({attempts:2,message:'Cloud activity conflict'});
  expect(result.receipts['backup-failure:trip'].cleared).not.toBe(true);expect(result.nextRetryAt).toBeGreaterThan(2000);
 });
+
+it('parks one rejected activity and still backs up the ones after it, on this pass and the next',async()=>{
+ const api=client();
+ const rope={...trip,id:'rope',activity:'Rope skipping',source:'watch',recordingMode:'watch',details:{indoor:true,ropeSkipping:{jumps:100,totalSeconds:60,activeSeconds:50,intervalCount:1,intervals:[]}}};
+ const walk={...trip,id:'walk'};
+ api.rpc.mockImplementation(async(name,args)=>name==='backup_private_activity'&&args.p_payload.id==='rope'?{data:null,error:{code:'23514',message:'new row violates check constraint "activities_view_metadata_shape"'}}:{data:1,error:null});
+ const first=await run(api,{...state,trips:[rope,walk]},{},{now:1_000_000,throwOnFailure:false});
+ expect(first.uploaded).toBe(1);
+ expect(first.receipts.walk).toBeDefined();
+ expect(first.receipts['backup-failure:rope']).toMatchObject({message:expect.stringMatching(/check constraint/)});
+ // The rejected one waits for its retry time; the next pass does not hammer it and does not stall behind it.
+ const later={...walk,id:'walk2'};
+ const calls=api.rpc.mock.calls.length;
+ const second=await run(api,{...state,trips:[rope,walk,later]},first.receipts,{now:1_000_100,throwOnFailure:false});
+ const sent=api.rpc.mock.calls.slice(calls).map(([,args])=>args.p_payload.id);
+ expect(sent).toEqual(['walk2']);
+ expect(second.receipts.walk2).toBeDefined();
+});

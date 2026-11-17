@@ -407,7 +407,7 @@ struct WatchRecordingView: View {
                 .tabViewStyle(.page)
             }
         }
-        .navigationTitle(WatchCatalog.choice(recorder.config.activity)?.title ?? recorder.config.activity)
+        .navigationTitle(WatchCatalog.title(recorder.config.activity))
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(recorder.hasRide)
         .toolbar {

@@ -2182,8 +2182,9 @@ enum WatchCatalog {
     // "Cycling · Mountain biking", "Walking".
     static func title(_ activity: String) -> String {
         guard let picked = Self.choice(activity), let group = Self.family(of: activity) else { return activity }
-        // Plain Gym stays "Gym", as before Rope skipping joined it.
-        return group.hasSubtypes && picked.activity != group.id ? group.title + " · " + picked.title : picked.title
+        // A family's own choice that is named like the family reads as the family ("Gym"); every other
+        // choice names its family first ("Cycling · Everyday", "Cycling · Mountain biking", "Gym · Rope skipping").
+        return group.hasSubtypes && picked.title != group.title ? group.title + " · " + picked.title : picked.title
     }
 }
 

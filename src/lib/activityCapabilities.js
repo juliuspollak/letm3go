@@ -15,6 +15,16 @@ export function activityCapabilities(activity,{indoor}={}){
 export const capabilitiesOf=trip=>activityCapabilities(trip?.activity,{indoor:trip?.details?.indoor});
 export const usesGPS=trip=>capabilitiesOf(trip).gps;
 
+// The distance a friends' feed row may show, in km, or null. The feed carries only the activity name and a
+// distance, never the indoor flag, so it is decided from what is there: a workout shared without GPS sends no
+// distance (null), and a zero, which an older share of an indoor run or ride holds, is never shown as a distance.
+export function feedDistanceKm(row){
+ const km=row?.distance_km==null?NaN:Number(row.distance_km);
+ return Number.isFinite(km)&&km>0&&activityCapabilities(row.activity).gps?km:null;
+}
+// What a trip sends as its feed distance when it is shared: nothing for an activity without GPS.
+export const sharedDistanceKm=trip=>usesGPS(trip)?Math.max(0,(trip.distanceMeters||0)/1000):null;
+
 // The one figure a list row leads with when there is no route to measure: jumps for rope skipping,
 // otherwise minutes. A GPS activity returns null and shows its distance as before.
 export function workoutFigure(trip){

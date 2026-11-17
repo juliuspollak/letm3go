@@ -439,11 +439,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         segmentFeedback=segmentEngine.feedback
         let pausedNow = Date().timeIntervalSince1970
         ride.pause(at: pausedNow)
-        if WatchCatalog.isRopeSkipping(ride.activity) {
-            ropeMotion.pause(at: pausedNow)
-            ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: pausedNow))
-            rope = ropeMotion.reading()
-        }
+        pauseRopeCounting(&ride, at: pausedNow)
         draft = ride
         state = "paused"
         status = "Paused"
@@ -453,6 +449,16 @@ final class WatchRecorder: NSObject, ObservableObject {
         manager.stopUpdatingLocation()
         if workout?.state == .running { workout?.pause() }
         announcePresence(force: true)
+    }
+
+    // Every way a rope skipping ride stops recording (the button, the workout controls, the system ending
+    // the session) comes through here: the sensor stops, the count so far is kept with the ride, and
+    // nothing that arrives later is counted. Resume restarts it.
+    private func pauseRopeCounting(_ ride: inout WatchRideDraft, at time: Double) {
+        guard WatchCatalog.isRopeSkipping(ride.activity) else { return }
+        ropeMotion.pause(at: time)
+        ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: time))
+        rope = ropeMotion.reading()
     }
 
     func resume() {
@@ -1281,6 +1287,8 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         guard var ride = draft, ride.isRecording else { return }
         let now = date.timeIntervalSince1970
         ride.pause(at: now)
+        // The ride stopped recording, so the jump counter stops with it, at the same moment.
+        pauseRopeCounting(&ride, at: now)
         apply(ride, now: now)
         state = ride.state
         status = "Workout ended · finish to save this ride"
