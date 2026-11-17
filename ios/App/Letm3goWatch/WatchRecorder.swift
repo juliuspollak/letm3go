@@ -43,6 +43,9 @@ final class WatchRecorder: NSObject, ObservableObject {
     @Published private(set) var elevationGain: Double = 0
     @Published private(set) var heartRate: WatchHeartRateDisplay = .off
     @Published private(set) var heartRateSummary: WatchHeartRateSummary?
+    // Rope skipping: live jumps, cadence and Active / Resting / Paused, and the finished totals.
+    @Published private(set) var rope = WatchRopeReading.idle
+    @Published private(set) var ropeSummary: RopeSkippingSummary?
     // Set while checkpoints are not reaching storage. The ride is only in memory,
     // so the screen must not imply it is safe.
     @Published private(set) var storageWarning: String?
@@ -92,6 +95,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var recoveringWorkout = false
     private var heartSidecarLogged = false
     private let energyJobs = WatchEnergyJobStore(directory: WatchPaths.energyJobDirectory)
+    private let ropeMotion = WatchRopeMotion()
 
     override init() {
         super.init()
@@ -297,6 +301,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         // A ride interrupted by a crash or a watch restart is reopened paused: the
         // time the app was not running is never credited to the ride.
         ride.reopenPaused()
+        if WatchCatalog.isRopeSkipping(ride.activity) { ropeMotion.restore(ride.ropeSkipping ?? .empty); rope = ropeMotion.reading() }
         adopt(ride)
         persist(force: true)
         state = ride.state
@@ -414,6 +419,9 @@ final class WatchRecorder: NSObject, ObservableObject {
         heartRateGapOpen = false
         heartRate = .waiting
         heartRateSummary = nil
+        ropeSummary = nil
+        rope = .idle
+        if WatchCatalog.isRopeSkipping(ride.activity) { ropeMotion.begin(at: now); rope = ropeMotion.reading() }
         awaitingHealth = false; healthRequestRideID = nil
         collectionFailure = false; sessionFailure = false
         if !ride.indoor { startLocation() }
@@ -429,7 +437,13 @@ final class WatchRecorder: NSObject, ObservableObject {
         guard var ride = draft, ride.isRecording else { return }
         segmentEngine.interrupt()
         segmentFeedback=segmentEngine.feedback
-        ride.pause(at: Date().timeIntervalSince1970)
+        let pausedNow = Date().timeIntervalSince1970
+        ride.pause(at: pausedNow)
+        if WatchCatalog.isRopeSkipping(ride.activity) {
+            ropeMotion.pause(at: pausedNow)
+            ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: pausedNow))
+            rope = ropeMotion.reading()
+        }
         draft = ride
         state = "paused"
         status = "Paused"
@@ -443,8 +457,13 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func resume() {
         guard var ride = draft, ride.state == "paused" else { return }
-        ride.resume(at: Date().timeIntervalSince1970)
+        let resumedNow = Date().timeIntervalSince1970
+        ride.resume(at: resumedNow)
         draft = ride
+        if WatchCatalog.isRopeSkipping(ride.activity) {
+            ropeMotion.resume(at: resumedNow)
+            rope = ropeMotion.reading()
+        }
         state = "recording"
         status = "Recording"
         heartRateWaitingSince = Date().timeIntervalSince1970
@@ -474,6 +493,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         manager.stopUpdatingLocation()
         // A discarded ride leaves nothing behind in Apple Health.
         discardWorkout()
+        ropeMotion.discard(); rope = .idle; ropeSummary = nil
         draft = nil
         do {
             try store.clear()
@@ -633,6 +653,11 @@ final class WatchRecorder: NSObject, ObservableObject {
         guard var ride = draft, ride.isRecording else { return }
         let now = Date().timeIntervalSince1970
         ride.checkpoint(at: now)
+        if WatchCatalog.isRopeSkipping(ride.activity) {
+            ropeMotion.advance(to: now)
+            ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: now))
+            rope = ropeMotion.reading()
+        }
         apply(ride, now: now)
         persist(force: false)
         refreshHeartRateDisplay(now: now)
@@ -656,6 +681,12 @@ final class WatchRecorder: NSObject, ObservableObject {
         let now = Date().timeIntervalSince1970
         var ride = current
         ride.finish(at: now)
+        if WatchCatalog.isRopeSkipping(ride.activity) {
+            ropeMotion.finish(at: now)
+            ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: now))
+            ropeSummary = ride.ropeSkipping
+            rope = ropeMotion.reading()
+        }
         apply(ride, now: now)
 
         guard ride.isKeepable else {
@@ -687,6 +718,9 @@ final class WatchRecorder: NSObject, ObservableObject {
     private func finishFailed(_ ride: WatchRideDraft, now: Double) {
         var retry = ride
         retry.reopenAfterFailedFinish(at: now)
+        if WatchCatalog.isRopeSkipping(retry.activity) {
+            ropeMotion.restore(retry.ropeSkipping ?? .empty); rope = ropeMotion.reading(); ropeSummary = nil
+        }
         apply(retry, now: now)
         state = retry.state
         finishing = false
@@ -1337,6 +1371,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         case "cycling": return .cycling
         case "surfingSports": return .surfingSports
         case "mixedCardio": return .mixedCardio
+        case "jumpRope": return .jumpRope
         default: return .other
         }
     }

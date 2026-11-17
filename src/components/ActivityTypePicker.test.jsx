@@ -12,3 +12,10 @@ it('offers Mountain biking once, including for a legacy named record, while reta
  expect(screen.queryByRole('option',{name:'MTB'})).toBeNull();
  expect(screen.getByLabelText('Change activity type')).toHaveValue('MTB');
 });
+it('keeps Rope skipping as the type of a Watch recording without offering it as a new choice',()=>{
+ render(<ActivityTypePicker trip={{id:'rope',activity:'Rope skipping',title:'Rope skipping'}} run={vi.fn()} onUpdated={vi.fn()}/>);
+ expect(screen.getByLabelText('Change activity type')).toHaveValue('Rope skipping');
+ cleanup();
+ render(<ActivityTypePicker trip={{id:'gym',activity:'Gym',title:'Gym'}} run={vi.fn()} onUpdated={vi.fn()}/>);
+ expect(screen.queryByRole('option',{name:'Rope skipping'})).toBeNull();
+});

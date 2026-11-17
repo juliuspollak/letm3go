@@ -6,6 +6,7 @@ import {resolvePhoto} from './privateMedia.js';
 import {isCommunitySegmentActivity} from './namedSegments.js';
 import {activityCode} from './activityNames.js';
 import {SEGMENT_MATCHER_VERSION,matchEfforts,publicSegmentDefinition} from './segmentMatcher.js';
+import {backupRope} from './ropeSkipping.js';
 // Owner-private permanent activity backup. Local originals stay durable until
 // confirmation. Requires the existing named-segment/Watch schema migration;
 // community MTB publication is a separate, moderated selected-geometry proposal.
@@ -63,11 +64,13 @@ export function backupSegments(segments){
   .filter(s=>typeof s?.id==='string'&&s.id.length===36&&typeof s.name==='string'&&s.name.trim()&&Number.isInteger(s.startIndex)&&Number.isInteger(s.endIndex)&&s.startIndex<s.endIndex)
   .map(s=>({id:s.id,name:s.name.slice(0,80),startIndex:s.startIndex,endIndex:s.endIndex,startTimestamp:s.startTimestamp,endTimestamp:s.endTimestamp,distanceMeters:s.distanceMeters,durationSeconds:s.durationSeconds,gapSeconds:s.gapSeconds||0,pointCount:s.pointCount,colorIndex:s.colorIndex||0,visibility:'private',createdAt:s.createdAt,updatedAt:s.updatedAt}));
 }
-function viewMetadata(details){
+export function viewMetadata(details){
  const out={};
  for(const key of ['visibleRouteStart','visibleRouteEnd'])if(Number.isInteger(details?.[key]))out[key]=details[key];
  for(const key of ['startPlace','endPlace'])if(typeof details?.[key]==='string'&&details[key])out[key]=details[key].slice(0,120);
  if(typeof details?.coverPhotoID==='string'&&details.coverPhotoID)out.coverPhotoID=details.coverPhotoID.slice(0,100);
+ const rope=backupRope(details?.ropeSkipping);
+ if(rope)out.ropeSkipping=rope;
  const segments=backupSegments(details?.namedSegments);
  if(NAMED_SEGMENT_BACKUP&&segments.length)out.namedSegments=segments;
  return out;

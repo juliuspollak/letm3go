@@ -599,9 +599,11 @@ enum WatchWorkoutClassifier {
         case "MTB", "Cycling", "Road cycling": type = "cycling"
         case "Kitesurfing": type = "surfingSports"
         case "Gym": type = "mixedCardio"
+        // HealthKit has a real jump rope type, so Health shows the workout as one.
+        case "Rope skipping": type = "jumpRope"
         default: type = "other"
         }
-        return WatchWorkoutClass(type: type, indoor: indoor || activity == "Gym", savesToHealth: activity != "Driving")
+        return WatchWorkoutClass(type: type, indoor: indoor || activity == "Gym" || activity == "Rope skipping", savesToHealth: activity != "Driving")
     }
 }
 

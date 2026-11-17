@@ -88,6 +88,8 @@ struct WatchActivityTransfer: Codable, Equatable {
     var energyRevision: Int?
     var energyWorkoutExternalUUID: String?
     var energySessionIDs: [String]?
+    // Rope skipping jumps and intervals. Optional: other activities and older builds never carry it.
+    var ropeSkipping: RopeSkippingSummary?
 
     // 4 is the energy-only enrichment schema. Old phones see `schema > currentSchema`
     // and defer it instead of importing a phantom ride; normal rides stay schema 3.
@@ -102,7 +104,7 @@ struct WatchActivityTransfer: Codable, Equatable {
          elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil,
          heartRate: [WatchHeartRateSample]? = nil, energy: ActivityEnergy? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil,
          energyTargetID: String? = nil, energyRevision: Int? = nil,
-         energyWorkoutExternalUUID: String? = nil, energySessionIDs: [String]? = nil) {
+         energyWorkoutExternalUUID: String? = nil, energySessionIDs: [String]? = nil, ropeSkipping: RopeSkippingSummary? = nil) {
         self.schema = schema
         self.heartRate = heartRate
         self.energy = energy?.validated
@@ -112,6 +114,7 @@ struct WatchActivityTransfer: Codable, Equatable {
         self.energyRevision = energyRevision
         self.energyWorkoutExternalUUID = energyWorkoutExternalUUID
         self.energySessionIDs = energySessionIDs
+        self.ropeSkipping = ropeSkipping
         self.equipmentID = equipment?.id
         self.equipmentName = equipment?.name
         self.equipmentKind = equipment?.kind
@@ -169,6 +172,8 @@ extension WatchActivityTransfer {
         energyRevision = try? c.decodeIfPresent(Int.self, forKey: .energyRevision)
         energyWorkoutExternalUUID = try? c.decodeIfPresent(String.self, forKey: .energyWorkoutExternalUUID)
         energySessionIDs = try? c.decodeIfPresent([String].self, forKey: .energySessionIDs)
+        // A value this build cannot read costs the jump data, never the whole activity.
+        ropeSkipping = (try? c.decodeIfPresent(RopeSkippingSummary.self, forKey: .ropeSkipping)) ?? nil
     }
     // The bike as an equipment reference, when its fields are usable. Invalid
     // equipment is ignored, never a reason to reject the ride.
@@ -335,7 +340,7 @@ struct WatchRideFix {
 // validation lives here so it is unit-testable without WatchConnectivity, and so
 // a malformed or hostile payload can never enter the encrypted journal.
 enum WatchActivityImport {
-    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Other"]
+    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Rope skipping", "Other"]
 
     // A short reason keeps diagnostics useful without exposing payload contents.
     // `nil` means the transfer is valid.
@@ -439,6 +444,9 @@ enum WatchActivityImport {
             "Recorded on Apple Watch and transferred to this iPhone",
             "Watch active time \(active)s, moving time \(moving)s, elevation gain \(gain)m"
         ]
+        if transfer.activity == "Rope skipping", let summary = transfer.ropeSkipping?.validated(elapsedSeconds: max(1, transfer.endedAt - transfer.startedAt)) {
+            details.ropeSkipping = summary
+        }
         trip.details = details
         trip.updatedAt = now
         return trip
@@ -594,6 +602,8 @@ struct WatchRideMeta: Codable, Equatable {
     // currently being collected (nil for older drafts or before a workout started).
     var energySessions: [WatchEnergySession]? = nil
     var activeEnergySessionID: String? = nil
+    // Rope skipping only: jumps and intervals counted so far, checkpointed with the ride.
+    var ropeSkipping: RopeSkippingSummary? = nil
 }
 
 struct WatchRideDraft {
@@ -619,6 +629,7 @@ struct WatchRideDraft {
     // Per-workout-session cumulative energy, durable across pause/system-end/restart.
     var energySessions: [WatchEnergySession]
     var activeEnergySessionID: String?
+    var ropeSkipping: RopeSkippingSummary?
 
     var points: [WatchPoint] { analyzer.points }
     var metrics: WatchRideMetrics { analyzer.metrics }
@@ -630,7 +641,7 @@ struct WatchRideDraft {
         self.id = id
         self.ownerID = WatchOwnership.normalize(ownerID)
         self.ownerCaptured = true
-        self.indoor = indoor || activity == "Gym"
+        self.indoor = indoor || WatchCatalog.isGym(activity)
         self.pausedAt = nil
         self.pausePeriods = []
         self.heartRate = []
@@ -675,6 +686,7 @@ struct WatchRideDraft {
         segment = max(segment, points.last?.segment ?? 0)
         energySessions = meta.energySessions ?? []
         activeEnergySessionID = meta.activeEnergySessionID
+        ropeSkipping = meta.ropeSkipping
     }
 
     var meta: WatchRideMeta {
@@ -686,7 +698,7 @@ struct WatchRideDraft {
                       pausedAt: pausedAt, pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods,
                       heartRateCount: heartRate.count,
                       energySessions: energySessions.isEmpty ? nil : energySessions,
-                      activeEnergySessionID: activeEnergySessionID)
+                      activeEnergySessionID: activeEnergySessionID, ropeSkipping: ropeSkipping)
     }
 
     // Anything that ran. Too little to keep is reported on screen, never dropped quietly.
@@ -865,7 +877,8 @@ struct WatchRideDraft {
             pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods, indoor: indoor ? true : nil,
             energyRevision: 1,
             energyWorkoutExternalUUID: id,
-            energySessionIDs: energySessions.isEmpty ? nil : energySessions.map { $0.id })
+            energySessionIDs: energySessions.isEmpty ? nil : energySessions.map { $0.id },
+            ropeSkipping: WatchCatalog.isRopeSkipping(activity) ? ropeSkipping : nil)
     }
 }
 
@@ -2116,7 +2129,7 @@ enum RecordingPrecision: String, CaseIterable, Codable {
     }
     static func defaultFor(activity: String) -> RecordingPrecision { activity == "MTB" ? .high : .balanced }
     static func resolved(_ raw: String?, activity: String) -> RecordingPrecision { raw.flatMap(RecordingPrecision.init(rawValue:)) ?? defaultFor(activity: activity) }
-    static func offered(for activity: String) -> Bool { !["Driving", "Gym"].contains(activity) }
+    static func offered(for activity: String) -> Bool { !["Driving", "Gym", "Rope skipping"].contains(activity) }
     // Metres between fixes; -1 asks for every fix.
     var distanceFilter: Double {
         switch self {
@@ -2144,7 +2157,8 @@ enum WatchCatalog {
         WatchActivityFamily(id: "Driving", title: "Driving", symbol: "car.fill",
                             choices: [WatchActivityChoice(activity: "Driving", title: "Driving", symbol: "car.fill")]),
         WatchActivityFamily(id: "Gym", title: "Gym", symbol: "figure.mixed.cardio",
-                            choices: [WatchActivityChoice(activity: "Gym", title: "Gym", symbol: "figure.mixed.cardio")]),
+                            choices: [WatchActivityChoice(activity: "Gym", title: "Gym", symbol: "figure.mixed.cardio"),
+                                      WatchActivityChoice(activity: "Rope skipping", title: "Rope skipping", symbol: "figure.jumprope")]),
         WatchActivityFamily(id: "Other", title: "Other", symbol: "figure.mixed.cardio",
                             choices: [WatchActivityChoice(activity: "Other", title: "Other", symbol: "figure.mixed.cardio")]),
     ]
@@ -2159,6 +2173,9 @@ enum WatchCatalog {
     static func family(of activity: String) -> WatchActivityFamily? {
         families.first { family in family.choices.contains { $0.activity == activityCode(activity) } }
     }
+    // Gym and its subtypes: indoor, no GPS, no route.
+    static func isGym(_ activity: String) -> Bool { ["Gym", "Rope skipping"].contains(activityCode(activity)) }
+    static func isRopeSkipping(_ activity: String) -> Bool { activityCode(activity) == "Rope skipping" }
     static func usesBicycle(_ activity: String) -> Bool { ["MTB", "Road cycling", "Cycling"].contains(activityCode(activity)) }
     // On foot the Watch shows pace; everything else shows speed.
     static func usesPace(_ activity: String) -> Bool { ["Walking", "Running", "Hiking"].contains(activity) }
@@ -2167,7 +2184,8 @@ enum WatchCatalog {
     // "Cycling · Mountain biking", "Walking".
     static func title(_ activity: String) -> String {
         guard let picked = Self.choice(activity), let group = Self.family(of: activity) else { return activity }
-        return group.hasSubtypes ? group.title + " · " + picked.title : picked.title
+        // Plain Gym stays "Gym", as before Rope skipping joined it.
+        return group.hasSubtypes && picked.activity != group.id ? group.title + " · " + picked.title : picked.title
     }
 }
 
@@ -2212,14 +2230,14 @@ struct WatchStartConfig: Codable, Equatable, Hashable {
     var indoor: Bool?
     init(activity: String, equipment: WatchEquipment? = nil, indoor: Bool = false) {
         self.activity = activity
-        self.indoor = activity == "Gym" || (indoor && WatchCatalog.supportsIndoor(activity)) ? true : nil
+        self.indoor = WatchCatalog.isGym(activity) || (indoor && WatchCatalog.supportsIndoor(activity)) ? true : nil
         equipmentID = equipment?.id; equipmentName = equipment?.name; equipmentKind = equipment?.kind
     }
     var equipment: WatchEquipment? {
         guard let id = equipmentID, let name = equipmentName else { return nil }
         return WatchEquipment(id: id, name: name, kind: equipmentKind ?? "bicycle")
     }
-    var title: String { indoor == true && activity != "Gym" ? "Indoor " + WatchCatalog.title(activity) : WatchCatalog.title(activity) }
+    var title: String { indoor == true && !WatchCatalog.isGym(activity) ? "Indoor " + WatchCatalog.title(activity) : WatchCatalog.title(activity) }
     var detail: String? { equipmentName }
     var isValid: Bool { WatchCatalog.choice(activity) != nil && (equipmentID == nil || WatchCatalog.usesBicycle(activity)) }
 }

@@ -3007,9 +3007,9 @@ do {
 // MARK: Watch start choices, equipment and history
 do {
     // Only the iPhone's own activity values, and Cycling's subtypes in one family.
-    let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Other"]
-    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 10, "the watch records only iPhone activity values")
-    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Gym", "Other"], "the watch offers every iPhone activity value")
+    let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Rope skipping", "Other"]
+    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 11, "the watch records only iPhone activity values")
+    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Gym", "Rope skipping", "Other"], "the watch offers every iPhone activity value")
     check(WatchCatalog.family(of: "MTB")?.id == "Cycling" && WatchCatalog.family(of: "MTB")?.hasSubtypes == true, "mountain biking is a Cycling subtype")
     check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
     check(WatchCatalog.usesBicycle("MTB") && !WatchCatalog.usesBicycle("Running"), "only rides offer a bike")
@@ -5511,4 +5511,67 @@ let recoveringPhotoJSON=Data("{\"owner\":\"11111111-1111-4111-8111-111111111111\
 let recoveringPhotoReceipt=try! JSONDecoder().decode(SyncReceipt.self,from:recoveringPhotoJSON)
 let recoveringPhotoRoundTrip=try! JSONDecoder().decode(SyncReceipt.self,from:JSONEncoder().encode(recoveringPhotoReceipt))
 check(recoveringPhotoRoundTrip.restorePending==true && recoveringPhotoRoundTrip.objectKey==recoveringPhotoReceipt.objectKey,"pending Collection recovery references survive native preferences persistence")
+
+// MARK: Rope skipping (the counting rules are in tests/native/ropeSkipping.swift)
+ropeSkippingTests { ok, message in check(ok, message) }
+ropeSkippingCapTests { ok, message in check(ok, message) }
+do {
+    // A subtype of Gym, like Mountain biking under Cycling; plain Gym and the other subtypes are unchanged.
+    check(WatchCatalog.family(of: "Rope skipping")?.id == "Gym" && WatchCatalog.family(of: "Gym")?.hasSubtypes == true, "rope skipping is a Gym subtype")
+    check(WatchCatalog.title("Rope skipping") == "Gym · Rope skipping" && WatchCatalog.title("Gym") == "Gym", "plain Gym keeps its name")
+    check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Road cycling") == "Cycling · Road", "cycling subtypes are unchanged")
+    check(WatchCatalog.isGym("Gym") && WatchCatalog.isGym("Rope skipping") && !WatchCatalog.isGym("MTB") && !WatchCatalog.isRopeSkipping("Gym"), "only rope skipping joins Gym")
+    check(WatchStartConfig(activity: "Rope skipping").indoor == true && WatchStartConfig(activity: "Rope skipping").isValid, "rope skipping starts indoors without GPS")
+    check(WatchStartConfig(activity: "Gym").indoor == true && WatchStartConfig(activity: "MTB").indoor == nil, "Gym and MTB starts are unchanged")
+    check(!RecordingPrecision.offered(for: "Rope skipping") && !RecordingPrecision.offered(for: "Gym") && RecordingPrecision.offered(for: "MTB"), "no GPS choice for rope skipping")
+    check(WatchWorkoutClassifier.classify("Rope skipping", indoor: false) == WatchWorkoutClass(type: "jumpRope", indoor: true, savesToHealth: true), "Health records a jump rope workout")
+    check(WatchWorkoutClassifier.classify("Gym", indoor: false).type == "mixedCardio" && WatchWorkoutClassifier.classify("MTB", indoor: false).type == "cycling", "other Health types are unchanged")
+
+    let summary = RopeSkippingSummary(jumps: 1_250, totalSeconds: 900, activeSeconds: 690, restSeconds: 210, intervalCount: 8, averageCadence: 108.7,
+                                      intervals: [RopeSkippingInterval(start: 5_010, end: 5_120, jumps: 200)])
+    let owner = "11111111-1111-4111-8111-111111111111"
+    var rope = WatchRideDraft(activity: "Rope skipping", startedAt: 5_000, ownerID: owner)
+    check(rope.indoor && rope.ropeSkipping == nil, "a rope skipping workout is indoor and starts empty")
+    // The count is checkpointed with the workout and survives a restart.
+    rope.ropeSkipping = summary
+    check(WatchRideDraft(meta: rope.meta, points: []).ropeSkipping == summary, "the count survives a watch restart")
+    let ropeDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: ropeDirectory) }
+    let ropeStore = WatchRideDraftStore(directory: ropeDirectory)
+    try! ropeStore.save(rope)
+    check(try! WatchRideDraftStore(directory: ropeDirectory).load()?.ropeSkipping == summary, "the count is read back from disk")
+    // A draft from an earlier build has no count and still reads.
+    let plain = WatchRideDraft(activity: "Walking", startedAt: 5_000, ownerID: owner)
+    check(try! JSONDecoder().decode(WatchRideMeta.self, from: JSONEncoder().encode(plain.meta)).ropeSkipping == nil, "older drafts carry no count")
+
+    rope.checkpoint(at: 5_900)
+    rope.finish(at: 5_900)
+    let ropeTransfer = rope.transfer(now: 5_901, ownerID: owner, deviceID: "watch-1")!
+    check(ropeTransfer.ropeSkipping == summary && ropeTransfer.indoor == true, "the transfer carries the count")
+    check(plain.transfer(now: 5_901, ownerID: owner, deviceID: "watch-1") == nil, "an empty plain ride still has nothing to send")
+    let encoded = try! JSONEncoder().encode(ropeTransfer)
+    check(try! JSONDecoder().decode(WatchActivityTransfer.self, from: encoded).ropeSkipping == summary, "the transfer encodes and decodes")
+    check(!String(decoding: encoded, as: UTF8.self).contains("\"points\":[{"), "no route is sent")
+
+    let imported = WatchActivityImport.activity(from: ropeTransfer, now: 6_000)
+    check(imported != nil && imported?.activity == "Rope skipping" && imported?.requiresGPS == false, "rope skipping imports without a route")
+    check(imported?.details?.ropeSkipping?.jumps == 1_250 && imported?.details?.ropeSkipping?.intervalCount == 8, "the jumps reach the activity")
+    check(imported?.details?.ropeSkipping.map { $0.activeSeconds + $0.restSeconds == $0.totalSeconds } == true, "imported active plus rest equals total")
+    // A retry imports the same value; it never adds to the first.
+    check(WatchActivityImport.activity(from: ropeTransfer, now: 6_500)?.details?.ropeSkipping == imported?.details?.ropeSkipping, "a retried transfer does not change the totals")
+    // Hostile or broken values are bounded; other activities never take the field.
+    var long = ropeTransfer; long.ropeSkipping?.totalSeconds = 1_000_000; long.ropeSkipping?.activeSeconds = 2_000_000
+    let clamped = WatchActivityImport.activity(from: long, now: 6_000)?.details?.ropeSkipping
+    check(clamped?.totalSeconds == 900 && (clamped?.activeSeconds ?? 9_999) <= 900, "a summary cannot outlast the activity")
+    var negative = ropeTransfer; negative.ropeSkipping?.jumps = -1
+    check(WatchActivityImport.activity(from: negative, now: 6_000)?.details?.ropeSkipping == nil, "an invalid count is dropped, the activity is kept")
+    var gym = ropeTransfer; gym.activity = "Gym"
+    check(WatchActivityImport.activity(from: gym, now: 6_000)?.details?.ropeSkipping == nil, "a Gym workout never takes jump data")
+    var oldPhone = ropeTransfer; oldPhone.ropeSkipping = nil
+    check(WatchActivityImport.activity(from: oldPhone, now: 6_000)?.details?.ropeSkipping == nil, "a transfer without a count imports as before")
+    // Detail records written before rope skipping still decode.
+    check(try! JSONDecoder().decode(ActivityDetails.self, from: JSONEncoder().encode(ActivityDetails())).ropeSkipping == nil, "activity details without jump data decode")
+    let kept = try! JSONDecoder().decode(ActivityDetails.self, from: JSONEncoder().encode(imported!.details!))
+    check(kept.ropeSkipping == imported?.details?.ropeSkipping, "the count survives saving and loading the activity")
+}
 print("Final native assertion count including automatic account recovery: \(assertions)")

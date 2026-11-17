@@ -71,7 +71,8 @@ struct ActivityHeaderSection: View {
 struct ActivitySummarySection: View {
     let items: [ActivityPresentation.Readout]
     private var headline: [ActivityPresentation.Readout] {
-        let keys = ["distance", "time", "duration", "elevation gain"]
+        // Rope skipping leads with its jumps; every other activity keeps distance, time and climb.
+        let keys = items.contains { $0.label.lowercased() == "jumps" } ? ["jumps", "time", "avg cadence"] : ["distance", "time", "duration", "elevation gain"]
         return keys.compactMap { key in
             items.first { $0.label.lowercased() == key }
         }.prefix(3).map { $0 }
@@ -114,6 +115,8 @@ struct ActivitySummarySection: View {
     private func symbol(for label: String) -> String {
         switch label.lowercased() {
         case "distance": return "ruler"
+        case "jumps": return "arrow.up.and.down"
+        case "avg cadence": return "speedometer"
         case "elevation gain": return "arrow.up.right"
         case "duration": return "timer"
         default: return "clock"

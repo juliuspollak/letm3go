@@ -299,7 +299,7 @@ struct WatchReadyView: View {
 
     private func begin(anyway: Bool) {
         var chosen = setup
-        chosen.indoor = setup.activity == "Gym" || (indoor && WatchCatalog.supportsIndoor(setup.activity)) ? true : nil
+        chosen.indoor = WatchCatalog.isGym(setup.activity) || (indoor && WatchCatalog.supportsIndoor(setup.activity)) ? true : nil
         recorder.start(chosen, anyway: anyway)
         path = recorder.hasRide ? [.recording] : path
     }
@@ -331,7 +331,9 @@ struct WatchReadyView: View {
                 if WatchCatalog.supportsIndoor(setup.activity) {
                     Toggle("Indoor", isOn: $indoor).font(.footnote).tint(WatchStyle.accent)
                 }
-                if setup.activity == "Gym" { Text("Indoor · Heart rate & active calories · No GPS").font(.footnote).foregroundStyle(.secondary) }
+                if WatchCatalog.isRopeSkipping(setup.activity) {
+                    Text("Jumps counted for you · Rests detected · Heart rate & calories · No GPS").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                } else if setup.activity == "Gym" { Text("Indoor · Heart rate & active calories · No GPS").font(.footnote).foregroundStyle(.secondary) }
                 if RecordingPrecision.offered(for: setup.activity), !indoor {
                     Button {
                         let all = RecordingPrecision.allCases
@@ -388,6 +390,7 @@ struct WatchRecordingView: View {
 
     private var activity: String { recorder.config.activity }
     private var indoor: Bool { recorder.config.indoor == true }
+    private var isRope: Bool { WatchCatalog.isRopeSkipping(activity) }
 
     var body: some View {
         // Metrics first, controls one swipe away, as in Apple's Workout app. Under Water
@@ -413,7 +416,7 @@ struct WatchRecordingView: View {
             }
         }
         .sheet(isPresented: $confirming) {
-            WatchFinishSheet(title: recorder.config.title, seconds: recorder.activeSeconds, meters: recorder.distanceMeters) {
+            WatchFinishSheet(title: recorder.config.title, seconds: recorder.activeSeconds, meters: recorder.distanceMeters, jumps: isRope ? recorder.rope.jumps : nil) {
                 confirming = false
                 recorder.finish()
                 path = [.summary]
@@ -470,17 +473,19 @@ struct WatchRecordingView: View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             ScrollView {
                 VStack(spacing: 4) {
-                    status(now: context.date.timeIntervalSince1970)
+                    if isRope { ropeStatus } else { status(now: context.date.timeIntervalSince1970) }
                     if let warning = recorder.storageWarning {
                         Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption2.weight(.semibold)).foregroundStyle(WatchStyle.danger)
                     }
                     if let other = recorder.otherRecording {
                         Label("Also \(other.label)", systemImage: "iphone").font(.caption2.weight(.semibold)).foregroundStyle(WatchStyle.hold)
                     }
+                    if isRope { ropeHero } else {
                     Text(WatchFormat.clock(recorder.activeSeconds))
                         .font(.system(size: 42, weight: .bold, design: .rounded)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
                         .accessibilityLabel("Elapsed \(WatchFormat.clock(recorder.activeSeconds))")
+                    }
                     if let feedback=recorder.segmentFeedback {
                         VStack(spacing:3) {
                             Text(feedback.finished ? "Segment complete" : "Riding segment").font(.caption2).foregroundStyle(.secondary)
@@ -519,6 +524,29 @@ struct WatchRecordingView: View {
         }
     }
 
+    // Active, Resting or Paused: a manual pause always wins over what the sensor sees.
+    private var ropeStatus: some View {
+        let (text, symbol, color): (String, String, Color) = !recorder.isRecording ? ("Paused", "pause.fill", WatchStyle.hold)
+            : !recorder.rope.sensorAvailable ? ("Motion unavailable", "exclamationmark.triangle.fill", WatchStyle.danger)
+            : recorder.rope.phase == .active ? ("Active", "figure.jumprope", WatchStyle.accent) : ("Resting", "zzz", WatchStyle.hold)
+        return Label(text, systemImage: symbol).font(.caption2.weight(.semibold)).foregroundStyle(color)
+    }
+
+    // The jump count is the number to read from across a room; time and speed sit under it.
+    private var ropeHero: some View {
+        VStack(spacing: 2) {
+            Text("\(recorder.rope.jumps)")
+                .font(.system(size: 56, weight: .bold, design: .rounded)).monospacedDigit()
+                .minimumScaleFactor(0.5).lineLimit(1)
+                .accessibilityLabel("\(recorder.rope.jumps) jumps")
+            Text("JUMPS").font(.system(size: 10, weight: .semibold)).foregroundStyle(WatchStyle.quiet)
+            HStack(alignment: .top) {
+                metric(WatchFormat.clock(recorder.activeSeconds), "TIME")
+                metric(recorder.rope.cadence > 0 ? String(Int(recorder.rope.cadence.rounded())) : "—", "PER MIN")
+            }
+        }
+    }
+
     private func status(now: Double) -> some View {
         let fresh = recorder.lastFixAt.map { now - $0 < 20 } ?? false
         let (text, color): (String, Color) = !recorder.isRecording ? ("Paused", WatchStyle.hold) : indoor ? ("Indoor · Recording", WatchStyle.accent) : fresh ? ("GPS · Recording", WatchStyle.accent) : ("Finding GPS…", WatchStyle.hold)
@@ -544,6 +572,7 @@ struct WatchFinishSheet: View {
     let title: String
     let seconds: Double
     let meters: Double
+    var jumps: Int? = nil
     let save: () -> Void
     let discard: () -> Void
     let keepRecording: () -> Void
@@ -553,7 +582,7 @@ struct WatchFinishSheet: View {
         ScrollView {
             VStack(spacing: 8) {
                 Text(title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
-                Text("\(WatchFormat.clock(seconds)) · \(WatchFormat.distance(meters))").font(.footnote).monospacedDigit().foregroundStyle(WatchStyle.quiet)
+                Text("\(WatchFormat.clock(seconds)) · \(jumps.map { "\($0) jumps" } ?? WatchFormat.distance(meters))").font(.footnote).monospacedDigit().foregroundStyle(WatchStyle.quiet)
                 WatchActionButton(title: "Save", symbol: "checkmark", filled: true, action: save)
                 WatchActionButton(title: "Keep Recording", symbol: "arrow.uturn.backward", action: keepRecording)
                 Button { confirmingDiscard = true } label: {
@@ -597,6 +626,16 @@ struct WatchSummaryView: View {
                     HStack {
                         if ride.config.indoor != true { summaryMetric(WatchFormat.distance(ride.distanceMeters), "DISTANCE") }
                         summaryMetric(WatchFormat.clock(ride.activeSeconds), "TIME")
+                    }
+                    if let rope = recorder.ropeSummary, WatchCatalog.isRopeSkipping(ride.activity) {
+                        HStack {
+                            summaryMetric(String(rope.jumps), "JUMPS")
+                            summaryMetric(rope.averageCadence > 0 ? String(Int(rope.averageCadence.rounded())) : "—", "AVG /MIN")
+                        }
+                        HStack {
+                            summaryMetric(WatchFormat.clock(rope.activeSeconds), "SKIPPING")
+                            summaryMetric(String(rope.intervalCount), "ROUNDS")
+                        }
                     }
                     if ride.averageHeartRate != nil {
                         HStack {

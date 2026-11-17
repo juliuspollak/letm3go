@@ -50,7 +50,7 @@ struct RecordedActivity: Codable {
     var details: ActivityDetails?
     var equipment: [EquipmentRef]?
     var updatedAt: Double?
-    var requiresGPS: Bool { activity != "Gym" && details?.indoor != true }
+    var requiresGPS: Bool { activity != "Gym" && activity != "Rope skipping" && details?.indoor != true }
     mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
         if recordingMode == "automatic" {
@@ -956,6 +956,9 @@ struct ActivityDetails: Codable {
     var energyBinding: WatchEnergyBinding?
     // Weather where and when the activity started (Apple WeatherKit). Local, refetchable.
     var weather: ActivityWeather?
+    // Rope skipping from Apple Watch: jumps, active and rest time, intervals. Optional so records
+    // written by earlier builds decode.
+    var ropeSkipping: RopeSkippingSummary?
     var indoor: Bool?
     // The GPS setting of a manual recording, so a resume keeps it.
     var recordingPrecision: String?
