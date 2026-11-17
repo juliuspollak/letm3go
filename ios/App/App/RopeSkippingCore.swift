@@ -329,7 +329,7 @@ final class RopeSkippingTracker: @unchecked Sendable {
         }
     }
     private func rewind(to time: Double) {
-        if let saved = history.last(where: { $0.0 <= time }) { engine = saved.1 }
+        if let saved = history.last(where: { $0.0 <= time }) ?? history.first { engine = saved.1 }
         history.removeAll { $0.0 > time }
     }
 
@@ -346,7 +346,7 @@ final class RopeSkippingTracker: @unchecked Sendable {
     func pause(at time: Double) { locked { guard engine.phase != .finished else { return }; rewind(to: time); stopListening(); engine.pause(at: time); remember(at: time) } }
     // The new session, or nil when there is nothing to resume (not paused, or already finished).
     func resume(at time: Double) -> Int? {
-        locked { guard engine.phase == .manuallyPaused else { return nil }; engine.resume(at: time); startedAt = time; history = [(time, engine)]; return startListening() }
+        locked { guard engine.phase == .manuallyPaused else { return nil }; engine.resume(at: time); startedAt = time; remember(at: time); return startListening() }
     }
     func finish(at time: Double) { locked { if listening { rewind(to: time) }; stopListening(); engine.finish(at: time); history = [] } }
     func discard() { locked { stopListening(); history = []; engine = RopeSkippingEngine() } }

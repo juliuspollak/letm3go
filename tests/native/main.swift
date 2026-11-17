@@ -1181,6 +1181,37 @@ check(delayedPauseRide.duration(at: 200) == 10, "delayed HealthKit pause removes
 delayedPauseRide.pause(at: 150)
 check(delayedPauseRide.duration(at: 200) == 10, "repeated interruption never adds paused time")
 
+// Delayed system pause/end across an already recorded manual pause/resume.
+var boundaryRide = WatchRideDraft(activity: "Rope skipping", startedAt: 0)
+boundaryRide.pause(at: 10)
+boundaryRide.resume(at: 20)
+check(boundaryRide.hasRecordedPause(at: 10) && boundaryRide.hasRecordedPause(at: 15), "manual pause delegate echoes are already recorded after resume")
+check(!boundaryRide.hasRecordedPause(at: 20), "the resume timestamp belongs to the recording interval")
+boundaryRide.checkpoint(at: 30)
+boundaryRide.pause(at: 15)
+check(boundaryRide.duration(at: 40) == 10, "end in preceding pause preserves all ten valid seconds")
+boundaryRide.pause(at: 12)
+check(boundaryRide.duration(at: 40) == 10, "an earlier end inside the same pause removes no valid seconds")
+boundaryRide.pause(at: 5)
+check(boundaryRide.duration(at: 40) == 5, "end before the preceding pause removes recorded time only")
+boundaryRide.resume(at: 40)
+boundaryRide.checkpoint(at: 50)
+check(boundaryRide.duration(at: 50) == 15, "recording after corrected pause adds once")
+check(boundaryRide.pausePeriods.count == 1 && boundaryRide.pausePeriods[0] == WatchPausePeriod(start: 5, end: 40), "rewound pause history stays disjoint")
+
+// Simulate both HealthKit callbacks queued while the actor is busy. The session is
+// running again when the pause is handled; the historical pause must still apply.
+var queuedRide = WatchRideDraft(activity: "Rope skipping", startedAt: 0)
+queuedRide.checkpoint(at: 30)
+if !queuedRide.hasRecordedPause(at: 10) { queuedRide.pause(at: 10) }
+check(queuedRide.duration(at: 30) == 10 && queuedRide.state == "paused", "queued system pause is honored even after the session has resumed")
+queuedRide.resume(at: 30)
+check(queuedRide.duration(at: 35) == 15, "queued resume conservatively resumes from observation without counting interruption")
+check(queuedRide.hasRecordedPause(at: 10), "repeated system pause callback cannot undo a newer resume")
+queuedRide.finish(at: 35)
+queuedRide.pause(at: 1)
+check(queuedRide.state == "finished" && queuedRide.duration(at: 100) == 15, "delayed pause cannot mutate a finished ride")
+
 var watchRide = WatchRideDraft(activity: "MTB", startedAt: 1_000)
 check(watchRide.ingest(watchFix(-33.0000, 1_000), now: 1_000) == .accepted(newSegment: false), "the first watch fix starts the ride")
 check(watchRide.ingest(watchFix(-33.0001, 1_010), now: 1_010) == .accepted(newSegment: false), "a continuous fix joins the segment")
@@ -3678,6 +3709,8 @@ do {
     typealias Life = WatchWorkoutLifecycle
     check(Life.sessionRunning(fromPaused: false, rideState: "paused") == .pauseSession, "a session that finishes starting does not undo a pause")
     check(Life.sessionRunning(fromPaused: true, rideState: "paused") == .resumeRide, "resuming from the workout controls resumes the ride")
+    check(Life.sessionRunning(fromPaused: true, rideState: "paused", eventAt: 20, latestPauseAt: 25) == .pauseSession, "retroactive cutoff correction cannot let an old resume undo a newer manual pause")
+    check(Life.sessionRunning(fromPaused: true, rideState: "paused", eventAt: 30, latestPauseAt: 25) == .resumeRide, "a genuinely newer workout-control resume still works")
     check(Life.sessionRunning(fromPaused: false, rideState: "recording") == .none && Life.sessionRunning(fromPaused: true, rideState: nil) == .none, "nothing else changes")
     check(Life.sessionPaused(rideState: "recording") == .pauseRide && Life.sessionPaused(rideState: "paused") == .none, "session pause follows the ride")
     check(Life.afterRecovery(rideWasRecording: true, sessionRunning: true) == .resumeRide, "a crash mid-ride keeps recording with the wrist down")

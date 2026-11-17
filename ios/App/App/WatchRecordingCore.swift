@@ -139,8 +139,9 @@ struct ActivityHeartRate: Codable, Equatable {
 enum WatchWorkoutLifecycle {
     enum Action: Equatable { case none, resumeRide, pauseRide, pauseSession, resumeSession }
 
-    static func sessionRunning(fromPaused: Bool, rideState: String?) -> Action {
+    static func sessionRunning(fromPaused: Bool, rideState: String?, eventAt: Double? = nil, latestPauseAt: Double? = nil) -> Action {
         guard rideState == "paused" else { return .none }
+        if let eventAt, let latestPauseAt, eventAt < latestPauseAt { return .pauseSession }
         // A session resumed from its own controls resumes the ride. A session that
         // only finished starting must not undo a pause the rider just made.
         return fromPaused ? .resumeRide : .pauseSession

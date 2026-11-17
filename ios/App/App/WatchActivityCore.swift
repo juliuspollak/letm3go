@@ -771,21 +771,43 @@ struct WatchRideDraft {
         self.resumedAt = now
     }
 
-    mutating func pause(at now: Double) {
-        if state == "paused", let pausedAt, now < pausedAt {
-            activeSeconds = max(0, activeSeconds - (pausedAt - now))
-            self.pausedAt = now
-            return
+    // Checkpoint rollback removes recorded time only, never the pauses already excluded.
+    private func recordedSeconds(from start: Double, to end: Double) -> Double {
+        let start = max(startedAt, start)
+        guard end > start else { return 0 }
+        let paused = pausePeriods.reduce(0.0) { total, period in
+            total + max(0, min(end, period.end) - max(start, period.start))
         }
-        guard state == "recording" else { return }
-        // A HealthKit transition can predate the most recent periodic checkpoint.
-        // Remove that checkpoint's overrun before closing the recording interval.
-        if let resumedAt, now < resumedAt { activeSeconds = max(0, activeSeconds - (resumedAt - now)) }
-        checkpoint(at: now)
+        return max(0, end - start - paused)
+    }
+
+    // Delegate echoes of a pause already handled by the button must not pause a newer resume.
+    func hasRecordedPause(at time: Double) -> Bool {
+        (pausedAt.map { time >= $0 } ?? false) || pausePeriods.contains { time >= $0.start && time < $0.end }
+    }
+
+    mutating func pause(at now: Double) {
+        guard now.isFinite, state == "recording" || state == "paused" else { return }
+        let cutoff = max(startedAt, now)
+        if state == "paused" {
+            guard let pausedAt, cutoff < pausedAt else { return }
+            activeSeconds = max(0, activeSeconds - recordedSeconds(from: cutoff, to: pausedAt))
+        } else {
+            if let resumedAt, cutoff < resumedAt {
+                activeSeconds = max(0, activeSeconds - recordedSeconds(from: cutoff, to: resumedAt))
+            }
+            checkpoint(at: cutoff)
+            segment += 1
+        }
+        // A retroactive pause replaces later pauses; keep the history disjoint for
+        // duration, heart-rate filtering and the next checkpoint rollback.
+        pausePeriods = pausePeriods.compactMap { period in
+            guard period.start < cutoff else { return nil }
+            return WatchPausePeriod(start: period.start, end: min(period.end, cutoff))
+        }
         resumedAt = nil
         state = "paused"
-        pausedAt = now
-        segment += 1
+        pausedAt = cutoff
     }
 
     mutating func resume(at now: Double) {
