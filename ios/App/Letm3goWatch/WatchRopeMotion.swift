@@ -41,15 +41,17 @@ final class WatchRopeMotion: @unchecked Sendable {
     private func listen(_ session: Int) {
         // A restart replaces the previous sensor stream, whose late samples are ignored by session.
         motion.stopDeviceMotionUpdates()
-        guard motion.isDeviceMotionAvailable else { tracker.setUnavailable(true); return }
-        tracker.setUnavailable(false)
+        guard motion.isDeviceMotionAvailable else { tracker.setUnavailable(true, session: session); return }
+        tracker.setUnavailable(false, session: session)
         motion.deviceMotionUpdateInterval = 1 / Self.sampleRate
         let tracker = self.tracker
-        motion.startDeviceMotionUpdates(to: queue) { data, _ in
+        motion.startDeviceMotionUpdates(to: queue) { data, error in
+            if error != nil { tracker.setUnavailable(true, session: session); return }
             guard let data else { return }
             let a = data.userAcceleration
             tracker.ingest(magnitude: (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot(), sensorTime: data.timestamp,
-                           now: Date().timeIntervalSince1970, session: session)
+                           now: Date().timeIntervalSince1970, session: session,
+                           clockOffset: Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime)
         }
     }
 

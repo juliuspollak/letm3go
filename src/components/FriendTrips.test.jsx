@@ -1,4 +1,4 @@
-import { render,screen,cleanup,fireEvent,waitFor,within } from '@testing-library/react';
+import { render,screen,cleanup } from '@testing-library/react';
 import { afterEach,beforeEach,it,expect,vi } from 'vitest';
 const m=vi.hoisted(()=>({rpc:vi.fn()}));vi.mock('../lib/supabase.js',()=>({supabase:m}));
 import FriendTrips from './FriendTrips.jsx';
@@ -20,20 +20,13 @@ it("shows a distance only where there is a route to measure, and nothing mislead
  expect(await line('walk')).toMatch(/3\.3 km/);
 });
 
-it('shares a workout without GPS with no distance and an outdoor activity with its distance',async()=>{
- m.rpc.mockImplementation(async name=>name==='my_friend_trip_feed'||name==='my_published_friend_trip_ids'?{data:[],error:null}:{error:null});
- const base={startedAt:1_790_000_000,endedAt:1_790_000_900};
- const trips=[{id:'g',title:'Gym',activity:'Gym',distanceMeters:0,...base},{id:'t',title:'Treadmill',activity:'Running',distanceMeters:0,details:{indoor:true},...base},{id:'r',title:'Ride',activity:'MTB',distanceMeters:12400,...base}];
- render(<FriendTrips activities={trips}/>);
- fireEvent.click(screen.getByText('Share one of my activities'));
- const published=()=>m.rpc.mock.calls.filter(([n])=>n==='publish_friend_trip');
- for(const [index,title] of ['Gym','Treadmill','Ride'].entries()){
-  fireEvent.click(within(screen.getByText(title).closest('.status-row')).getByRole('button'));
-  await waitFor(()=>expect(published()).toHaveLength(index+1));
-  await waitFor(()=>expect(within(screen.getByText(title).closest('.status-row')).getByRole('button')).not.toBeDisabled());
- }
- const sent=Object.fromEntries(m.rpc.mock.calls.filter(([n])=>n==='publish_friend_trip').map(([,a])=>[a.p_id,a.p_distance_km]));
- expect(sent).toEqual({g:null,t:null,r:12.4});
+it('keeps sharing management in the activity Share sheet',async()=>{
+ m.rpc.mockResolvedValue({data:[],error:null});
+ render(<FriendTrips activities={[{id:'mine',title:'My ride',startedAt:1,endedAt:2}]}/>);
+ expect(await screen.findByText('No shared friend activities yet.')).toBeInTheDocument();
+ expect(screen.queryByText('Share one of my activities')).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:/share/i})).not.toBeInTheDocument();
+ expect(m.rpc.mock.calls.every(([name])=>name==='my_friend_trip_feed')).toBe(true);
 });
 
 it('decides the figure from one rule',()=>{

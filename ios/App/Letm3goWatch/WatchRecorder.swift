@@ -433,11 +433,12 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     // MARK: - Ride control
 
-    func pause() {
-        guard var ride = draft, ride.isRecording else { return }
+    func pause() { pause(at: Date().timeIntervalSince1970) }
+
+    private func pause(at pausedNow: Double) {
+        guard var ride = draft, ride.isRecording || (ride.state == "paused" && pausedNow < (ride.pausedAt ?? pausedNow)) else { return }
         segmentEngine.interrupt()
         segmentFeedback=segmentEngine.feedback
-        let pausedNow = Date().timeIntervalSince1970
         ride.pause(at: pausedNow)
         pauseRopeCounting(&ride, at: pausedNow)
         draft = ride
@@ -662,7 +663,11 @@ final class WatchRecorder: NSObject, ObservableObject {
         if WatchCatalog.isRopeSkipping(ride.activity) {
             ropeMotion.advance(to: now)
             ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: now))
-            rope = ropeMotion.reading()
+            let reading = ropeMotion.reading()
+            if reading.sensorAvailable != rope.sensorAvailable {
+                WatchDiagnostics.log("motion", reading.sensorAvailable ? "Motion samples resumed" : "Motion samples unavailable")
+            }
+            rope = reading
         }
         apply(ride, now: now)
         persist(force: false)
@@ -1252,10 +1257,16 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         case .paused:
             // The rider paused from the workout controls: pause the ride with the
             // same rules as the in-app button.
-            Task { @MainActor in guard workoutSession === self.workout else { return }; if WatchWorkoutLifecycle.sessionPaused(rideState: self.draft?.state) == .pauseRide { self.pause() } }
+            Task { @MainActor in guard workoutSession === self.workout else { return }; if workoutSession.state == .paused, WatchWorkoutLifecycle.sessionPaused(rideState: self.draft?.state) == .pauseRide { self.pause(at: date.timeIntervalSince1970) } }
         case .running:
             Task { @MainActor in
-                guard workoutSession === self.workout else { return }
+                guard workoutSession === self.workout, workoutSession.state == .running, !self.sessionFailure else { return }
+                // A queued resume must not undo a newer manual pause.
+                if let pausedAt = self.draft?.pausedAt, self.draft?.state == "paused",
+                   date.timeIntervalSince1970 < pausedAt {
+                    workoutSession.pause()
+                    return
+                }
                 WatchDiagnostics.log("health", "Workout session running")
                 switch WatchWorkoutLifecycle.sessionRunning(fromPaused: fromState == .paused, rideState: self.draft?.state) {
                 case .resumeRide: self.resume()
@@ -1284,27 +1295,18 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
             self.applyFinalEnergy(reading, rideID: rideID, sessionID: sessionID)
         }
         WatchDiagnostics.log("health", "Workout session ended by the system")
-        guard var ride = draft, ride.isRecording else { return }
-        let now = date.timeIntervalSince1970
-        ride.pause(at: now)
-        // The ride stopped recording, so the jump counter stops with it, at the same moment.
-        pauseRopeCounting(&ride, at: now)
-        apply(ride, now: now)
-        state = ride.state
+        pause(at: date.timeIntervalSince1970)
         status = "Workout ended · finish to save this ride"
-        // The wrist may be down: this ride has stopped and only a tap brings it back.
         WKInterfaceDevice.current().play(.failure)
-        heartRate = .paused
-        manager.stopUpdatingLocation()
-        ticker?.invalidate(); ticker = nil
-        persist(force: true)
-        announcePresence(force: true)
     }
 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
+        let failedAt = Date().timeIntervalSince1970
         Task { @MainActor in
             guard workoutSession === self.workout else { return }
+            guard !self.finishing else { return }
+            self.pause(at: failedAt)
             self.sessionFailure = true
             self.heartRate = .sessionFailed
             self.status = "Workout stopped: \(message)"

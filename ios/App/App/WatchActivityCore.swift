@@ -772,7 +772,15 @@ struct WatchRideDraft {
     }
 
     mutating func pause(at now: Double) {
+        if state == "paused", let pausedAt, now < pausedAt {
+            activeSeconds = max(0, activeSeconds - (pausedAt - now))
+            self.pausedAt = now
+            return
+        }
         guard state == "recording" else { return }
+        // A HealthKit transition can predate the most recent periodic checkpoint.
+        // Remove that checkpoint's overrun before closing the recording interval.
+        if let resumedAt, now < resumedAt { activeSeconds = max(0, activeSeconds - (resumedAt - now)) }
         checkpoint(at: now)
         resumedAt = nil
         state = "paused"
