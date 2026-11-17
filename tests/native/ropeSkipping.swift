@@ -422,6 +422,28 @@ func ropeSkippingTrackerTests(_ check: (Bool, String) -> Void) {
     interrupted.setUnavailable(false, session: recovered)
     check(!interrupted.isListening, "manual pause during sensor failure stays paused")
 
+    // HealthKit can end during a pause while its delegate waits behind a manual resume.
+    let boundary = RopeSkippingTracker()
+    let boundaryFirst = boundary.begin(at: 0)
+    feed(boundary, session: boundaryFirst, from: 0, to: 10)
+    boundary.pause(at: 10)
+    let validBeforeResume = boundary.reading().jumps
+    let boundarySecond = boundary.resume(at: 20)!
+    feed(boundary, session: boundarySecond, from: 20, to: 30)
+    check(boundary.reading().jumps > validBeforeResume, "resumed interval has jumps to roll back")
+    boundary.pause(at: 15)
+    check(boundary.reading().jumps == validBeforeResume, "delayed end before resume preserves only the preceding valid jumps")
+    boundary.pause(at: 15)
+    boundary.finish(at: 40)
+    feed(boundary, session: boundarySecond, from: 30, to: 40)
+    check(boundary.reading().jumps == validBeforeResume, "repeated delayed end and finish cannot resurrect rolled-back jumps")
+
+    let preStart = RopeSkippingTracker()
+    let preStartSession = preStart.begin(at: 100)
+    feed(preStart, session: preStartSession, from: 100, to: 110)
+    preStart.pause(at: 99)
+    check(preStart.reading().jumps == 0, "an interruption preceding the earliest snapshot fails closed")
+
     // Delivery on another thread while the workout is paused and finished: the lock holds and nothing counts late.
     let c = RopeSkippingTracker()
     let cs = c.begin(at: 0)

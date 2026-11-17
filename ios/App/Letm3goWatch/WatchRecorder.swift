@@ -82,6 +82,9 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var waterLock = WatchWaterLockPolicy(automatic: true)
     private var healthRequestRideID: String?
     private var collectionFailure = false
+    // User intent is separate from the effective data cutoff, which a delayed
+    // HealthKit timestamp may move backward. Old resumes cannot undo this button tap.
+    private var lastManualPauseAt: Double?
     private var sessionFailure = false
     private var heartRateWaitingSince: Double?
     private var lastHeartRate: WatchHeartRateSample?
@@ -433,9 +436,14 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     // MARK: - Ride control
 
-    func pause() { pause(at: Date().timeIntervalSince1970) }
+    func pause() {
+        guard isRecording else { return }
+        let now = Date().timeIntervalSince1970
+        lastManualPauseAt = now
+        pause(at: now)
+    }
 
-    private func pause(at pausedNow: Double) {
+    private func pause(at pausedNow: Double, pauseSession: Bool = true) {
         guard var ride = draft, ride.isRecording || (ride.state == "paused" && pausedNow < (ride.pausedAt ?? pausedNow)) else { return }
         segmentEngine.interrupt()
         segmentFeedback=segmentEngine.feedback
@@ -448,7 +456,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         heartRate = .paused
         persist(force: true)
         manager.stopUpdatingLocation()
-        if workout?.state == .running { workout?.pause() }
+        if pauseSession, workout?.state == .running { workout?.pause() }
         announcePresence(force: true)
     }
 
@@ -1253,22 +1261,25 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                                     from fromState: HKWorkoutSessionState, date: Date) {
         switch toState {
         case .ended:
-            Task { @MainActor in self.systemEndedWorkout(workoutSession, at: date) }
+            DispatchQueue.main.async { self.systemEndedWorkout(workoutSession, at: date) }
         case .paused:
             // The rider paused from the workout controls: pause the ride with the
             // same rules as the in-app button.
-            Task { @MainActor in guard workoutSession === self.workout else { return }; if workoutSession.state == .paused, WatchWorkoutLifecycle.sessionPaused(rideState: self.draft?.state) == .pauseRide { self.pause(at: date.timeIntervalSince1970) } }
+            // Process the transition that occurred, even if HealthKit has already resumed.
+            // Main-queue delivery preserves callback receipt order; session identity still
+            // rejects callbacks from workouts replaced before this block executes.
+            DispatchQueue.main.async {
+                guard workoutSession === self.workout,
+                      self.draft?.hasRecordedPause(at: date.timeIntervalSince1970) == false else { return }
+                self.pause(at: date.timeIntervalSince1970, pauseSession: false)
+            }
         case .running:
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 guard workoutSession === self.workout, workoutSession.state == .running, !self.sessionFailure else { return }
-                // A queued resume must not undo a newer manual pause.
-                if let pausedAt = self.draft?.pausedAt, self.draft?.state == "paused",
-                   date.timeIntervalSince1970 < pausedAt {
-                    workoutSession.pause()
-                    return
-                }
                 WatchDiagnostics.log("health", "Workout session running")
-                switch WatchWorkoutLifecycle.sessionRunning(fromPaused: fromState == .paused, rideState: self.draft?.state) {
+                let latestPause = [self.lastManualPauseAt, self.draft?.pausedAt].compactMap { $0 }.max()
+                switch WatchWorkoutLifecycle.sessionRunning(fromPaused: fromState == .paused, rideState: self.draft?.state,
+                                                           eventAt: date.timeIntervalSince1970, latestPauseAt: latestPause) {
                 case .resumeRide: self.resume()
                 case .pauseSession: workoutSession.pause()
                 default: break
@@ -1303,7 +1314,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     nonisolated func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         let message = error.localizedDescription
         let failedAt = Date().timeIntervalSince1970
-        Task { @MainActor in
+        DispatchQueue.main.async {
             guard workoutSession === self.workout else { return }
             guard !self.finishing else { return }
             self.pause(at: failedAt)
