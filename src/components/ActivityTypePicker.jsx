@@ -1,9 +1,10 @@
 import {activityLabel,activityCode,sameActivity} from '../lib/activityNames.js';
 import {typesWithCurrent} from '../lib/ropeSkipping.js';
+import {CHOOSABLE_ACTIVITY_TYPES} from '../lib/activityTypes.js';
 import { useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { automaticTitle } from '../lib/activityTitle.js';
-const types=['Walking','Running','Cycling','MTB','Road cycling','Driving','Kitesurfing','Hiking','Gym','Other','Unknown'];
+const types=CHOOSABLE_ACTIVITY_TYPES;
 export default function ActivityTypePicker({trip,run,onUpdated,busy}){
  const [saving,setSaving]=useState(false),[error,setError]=useState('');
  async function change(event){const activity=event.target.value;if(sameActivity(activity,trip.activity))return;setSaving(true);setError('');try{const result=await run('editActivity',{id:trip.id,activity,title:automaticTitle(trip)||trip.titleIsAutomatic?activity:trip.title,description:trip.description||'',notes:trip.notes||'',tags:trip.tags||[],collection:trip.collection||'',vehicle:trip.vehicle||undefined});const updated=result?.trips?.find(t=>t.id===trip.id);if(!updated)throw new Error();onUpdated(updated);}catch{setError('Activity type was not saved. Please retry.');}finally{setSaving(false);}}

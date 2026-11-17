@@ -2,6 +2,7 @@ import {metres} from './journeyGeometry.js';
 export {metres} from './journeyGeometry.js';
 import {assessRoutePlaces,destinationTitle,destinationVisits} from './journeyRecognition.js';
 import {activityCode} from './activityNames.js';
+import {ACTIVITY_TYPES} from './activityTypes.js';
 import {personalPlace} from './rememberedPlace.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
@@ -231,7 +232,7 @@ export function changeGrouping(meta,action,{activities,owner,vehicles=[]}){
   const trips=activities.filter(t=>action.ids.includes(t.id)&&(!t.ownerID||t.ownerID===owner||t.sharedToHousehold===true));const identity=t=>t.providerVehicleID||vehicles.find(v=>v.id===t.vehicleID||v.name===t.vehicle)?.teslaVehicleID||vehicle(t,vehicles);if(trips.length!==2||!identity(trips[0])||identity(trips[0])!==identity(trips[1]))throw new Error('Select matching recordings of your vehicle.');
   next.sourceLinks=[...(next.sourceLinks||[]),action.ids];
  }else if(action.type==='classify'){
-  if(!ordered.some(t=>t.id===action.anchor)||!['Driving','Walking','Running','Cycling','MTB','Road cycling','Kitesurfing','Hiking','Gym','Other','Unknown'].includes(activityCode(action.activity)))throw new Error('Choose a supported journey activity type.');
+  if(!ordered.some(t=>t.id===action.anchor)||!ACTIVITY_TYPES.includes(activityCode(action.activity)))throw new Error('Choose a supported journey activity type.');
   next.types[action.anchor]=activityCode(action.activity);
  }else if(action.type==='rename'){
   if(!ordered.some(t=>t.id===action.anchor)||!action.title?.trim()||action.title.length>150)throw new Error('Enter a journey name (up to 150 characters).');next.titles[action.anchor]=action.title.trim();

@@ -246,3 +246,163 @@ func ropeSkippingCapTests(_ check: (Bool, String) -> Void) {
     check(sum.intervalCount == 130, "the interval count keeps counting past the cap (\(sum.intervalCount))")
     check(abs(sum.jumps - spikes.count) <= 20 && near(sum.activeSeconds + sum.restSeconds, sum.totalSeconds, 0.001), "totals are unaffected by the cap (\(sum.jumps) of \(spikes.count))")
 }
+
+// Active time counts the rope turning, not the time spent not skipping.
+func ropeSkippingActiveTimeTests(_ check: (Bool, String) -> Void) {
+    // A trip of the rope: skip 10 s, stop for `gap`, skip 10 s. The gap is not skipping, whatever its length,
+    // and a trip shorter than the 5 s rest stays one interval.
+    // The gap between the last jump of the first stretch and the first of the second is gap + 0.5 s, and the
+    // jumps after it need about a second to be confirmed, all inside the 5 s rest: trips up to about 3.5 s stay one interval.
+    for gap in [1.2, 2.0, 2.8] {
+        var s = Stream(); s.engine.begin(at: 0)
+        let first = steady(from: 1, seconds: 10, interval: 0.5)
+        let second = steady(from: 11 + gap, seconds: 10, interval: 0.5)
+        s.run(until: 24 + gap, spikes: first + second)
+        let sum = s.engine.summary()
+        check(sum.intervalCount == 1, "a \(gap) s trip stays one interval (\(sum.intervalCount))")
+        check(near(sum.activeSeconds, 20, 1.5), "a \(gap) s trip is not counted as skipping: \(sum.activeSeconds) s active")
+        check(near(sum.averageCadence, 120, 8), "average cadence ignores the trip (\(sum.averageCadence))")
+        check(near(sum.activeSeconds + sum.restSeconds, sum.totalSeconds, 0.001), "active plus rest equals total after a \(gap) s trip")
+        check(sum.restSeconds >= gap - 0.5, "the trip shows up as rest (\(sum.restSeconds) s)")
+    }
+    // Live cadence is the speed of the rope, not of the recovery.
+    do {
+        var s = Stream(); s.engine.begin(at: 0)
+        let spikes = steady(from: 1, seconds: 9, interval: 0.5) + steady(from: 13, seconds: 12, interval: 0.5)
+        s.run(until: 17, spikes: spikes)
+        check(s.engine.phase == .active && near(s.engine.currentCadence, 120, 8), "cadence after a trip is the rope's speed (\(s.engine.currentCadence))")
+        s.run(until: 22, spikes: spikes)
+        check(near(s.engine.currentCadence, 120, 8), "and stays so while skipping (\(s.engine.currentCadence))")
+    }
+    // Changing speed does not change what counts as active time.
+    do {
+        var s = Stream(); s.engine.begin(at: 0)
+        let spikes = steady(from: 1, seconds: 10, interval: 0.6) + steady(from: 11.2, seconds: 10, interval: 0.4)
+        s.run(until: 23, spikes: spikes)
+        let sum = s.engine.summary()
+        check(near(sum.activeSeconds, 21, 1.5), "a change of pace keeps the whole stretch active (\(sum.activeSeconds))")
+    }
+    // Manual pause and finish during a rest keep the same totals.
+    do {
+        var s = Stream(); s.engine.begin(at: 0)
+        s.run(until: 14, spikes: steady(from: 1, seconds: 10, interval: 0.5))
+        s.engine.pause(at: s.clock)
+        let paused = s.engine.summary(totalSeconds: s.engine.trackedSeconds)
+        s.engine.resume(at: s.clock + 30)
+        s.engine.finish(at: s.clock + 40)
+        let done = s.engine.summary(totalSeconds: s.engine.trackedSeconds)
+        check(near(paused.activeSeconds, done.activeSeconds, 0.001), "a pause and a rest after it add no skipping time")
+        check(near(done.activeSeconds + done.restSeconds, done.totalSeconds, 0.001) && done.totalSeconds > paused.totalSeconds, "totals stay consistent through pause, resume and finish")
+    }
+}
+
+// The rule for which sensor samples may count, with no sensor: sessions, stale callbacks and concurrent delivery.
+func ropeSkippingTrackerTests(_ check: (Bool, String) -> Void) {
+    // Samples of steady skipping at 50 Hz between `from` and `to`, as the sensor would deliver them.
+    func feed(_ tracker: RopeSkippingTracker, session: Int, from: Double, to: Double, interval: Double = 0.5, boot: Double = 5_000, tick: Double = 0) {
+        var rng = Seeded(state: 3)
+        var t = from
+        let spikes = steady(from: from + 0.2, seconds: to - from, interval: interval)
+        while t < to {
+            var value = 0.12 * rng.next()
+            for spike in spikes where abs(t - spike) < 0.08 { value += 1.4 * exp(-((t - spike) * (t - spike)) / (2 * 0.02 * 0.02)) }
+            tracker.ingest(magnitude: value, sensorTime: t, now: t + boot + tick, session: session)
+            t += 0.02
+        }
+    }
+    let t = RopeSkippingTracker()
+    let s1 = t.begin(at: 100)
+    check(t.isListening, "a started workout listens")
+    feed(t, session: s1, from: 100, to: 120)
+    let counted = t.reading().jumps
+    check(counted >= 36 && t.reading().phase == .active, "samples inside the session count (\(counted))")
+
+    // Pause: the session closes first, so a callback still queued from it is ignored.
+    t.pause(at: 120)
+    check(!t.isListening && t.reading().phase == .manuallyPaused, "pause stops listening and pauses the engine")
+    feed(t, session: s1, from: 120, to: 130)
+    check(t.reading().jumps == counted, "late samples after a pause are not counted")
+    let pausedSummary = t.summary(totalSeconds: 20)
+    check(pausedSummary.jumps == counted && pausedSummary.activeSeconds > 15, "the count and time before the pause are kept")
+
+    // Resume starts a new session; the old one stays dead.
+    let s2 = t.resume(at: 140)
+    check(s2 != nil && s2! > s1 && t.isListening, "resume opens a newer session")
+    feed(t, session: s1, from: 140, to: 150)
+    check(t.reading().jumps == counted, "samples from the earlier session never count after a resume")
+    feed(t, session: s2!, from: 140, to: 160)
+    check(t.reading().jumps > counted + 30, "samples of the new session count (\(t.reading().jumps))")
+    check(near(t.summary(totalSeconds: 40).activeSeconds, 40, 4), "the interrupted period is not part of the active time (\(t.summary(totalSeconds: 40).activeSeconds))")
+
+    // Repeated starts and rapid pause/resume: only the newest session may count.
+    var sessions: [Int] = []
+    for k in 0..<40 { t.pause(at: 160 + Double(k)); if let s = t.resume(at: 160.5 + Double(k)) { sessions.append(s) } }
+    check(sessions.count == 40 && sessions == sessions.sorted() && Set(sessions).count == 40, "every resume opens a distinct, newer session")
+    let before = t.reading().jumps
+    for s in sessions.dropLast() { feed(t, session: s, from: 200, to: 205) }
+    check(t.reading().jumps == before, "stale sessions from rapid pause and resume never count")
+    check(t.resume(at: 300) == nil, "a workout that is already running cannot be resumed twice")
+
+    // Finish: nothing counts afterwards, and it cannot be resumed.
+    t.finish(at: 210)
+    let final = t.reading().jumps
+    feed(t, session: sessions.last!, from: 210, to: 220)
+    check(t.reading().jumps == final && t.reading().phase == .finished && !t.isListening, "nothing counts after finish")
+    check(t.resume(at: 230) == nil, "a finished workout cannot be resumed")
+
+    // Discard resets everything and stays closed.
+    let d = RopeSkippingTracker()
+    let ds = d.begin(at: 0)
+    feed(d, session: ds, from: 0, to: 10, boot: 7)
+    d.discard()
+    feed(d, session: ds, from: 10, to: 20, boot: 7)
+    check(d.reading().jumps == 0 && !d.isListening, "a discarded workout keeps nothing and counts nothing")
+
+    // A second begin replaces the first workout and kills its session.
+    let r = RopeSkippingTracker()
+    let first = r.begin(at: 0)
+    feed(r, session: first, from: 0, to: 10, boot: 7)
+    let second = r.begin(at: 20)
+    feed(r, session: first, from: 20, to: 30, boot: 7)
+    check(second > first && r.reading().jumps == 0, "a repeated start begins again and ignores the first session")
+
+    // Recovery: a restored workout waits paused, ignores every sample until resumed, and continues from its count.
+    let saved = pausedSummary
+    let rec = RopeSkippingTracker()
+    rec.restore(saved)
+    check(!rec.isListening && rec.reading().phase == .manuallyPaused && rec.reading().jumps == saved.jumps, "a restored workout is paused with its count")
+    feed(rec, session: 1, from: 300, to: 310)
+    check(rec.reading().jumps == saved.jumps, "a restored workout counts nothing until it is resumed")
+    let rs = rec.resume(at: 320)
+    feed(rec, session: rs!, from: 320, to: 335, boot: 9_000)
+    check(rec.reading().jumps > saved.jumps + 20, "it continues from the saved count after resume")
+    check(rec.summary(totalSeconds: 60).jumps == rec.reading().jumps, "the summary and the live count agree")
+    // The same checkpoint restored twice gives the same start; nothing is added twice.
+    let again = RopeSkippingTracker(); again.restore(saved)
+    check(again.summary(totalSeconds: saved.totalSeconds).jumps == saved.jumps, "restoring a checkpoint again adds nothing")
+
+    // Each session takes its own offset from boot time to clock time: a restart whose sensor clock jumps is aligned.
+    let o = RopeSkippingTracker()
+    let o1 = o.begin(at: 1_000)
+    feed(o, session: o1, from: 0, to: 10, boot: 1_000)
+    o.pause(at: 1_010)
+    let o2 = o.resume(at: 2_000)!
+    feed(o, session: o2, from: 50, to: 60, boot: 1_950)
+    check(o.reading().jumps > 15 && o.summary(totalSeconds: 20).activeSeconds > 14, "a new session is aligned to the clock again (\(o.reading().jumps))")
+
+    // Delivery on another thread while the workout is paused and finished: the lock holds and nothing counts late.
+    let c = RopeSkippingTracker()
+    let cs = c.begin(at: 0)
+    let group = DispatchGroup()
+    let queue = DispatchQueue(label: "sensor", attributes: .concurrent)
+    for worker in 0..<4 {
+        group.enter()
+        queue.async { feed(c, session: cs, from: Double(worker) * 0.01, to: 30, boot: 5); group.leave() }
+    }
+    Thread.sleep(forTimeInterval: 0.05)
+    c.pause(at: 8)
+    let atPause = c.reading().jumps
+    c.finish(at: 9)
+    group.wait()
+    check(c.reading().jumps == atPause && c.reading().phase == .finished, "samples delivered concurrently after pause and finish are ignored")
+}

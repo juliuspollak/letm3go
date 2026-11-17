@@ -8,6 +8,7 @@ motion, notices rests and resumes by itself, and sends one summary with the fini
 | Concern | File |
 |---|---|
 | Counting rules, rest detection, summary | `ios/App/App/RopeSkippingCore.swift` (pure logic, both targets) |
+| Sensor sessions and the rule for which samples count | `RopeSkippingTracker` in `RopeSkippingCore.swift` (tested without a sensor) |
 | Sensor feed (Core Motion, 50 Hz) | `ios/App/Letm3goWatch/WatchRopeMotion.swift` (Watch only) |
 | Watch recorder, UI, Health type `jumpRope` | `WatchRecorder.swift`, `WatchContentView.swift`, `WatchRecordingCore.swift` |
 | Catalog, draft checkpoint, transfer, import | `WatchActivityCore.swift` |
@@ -46,9 +47,21 @@ They have not been tuned on a real wrist (see Limits).
 ## Time
 
 `totalSeconds` is the recorded time without manually paused time (the existing convention).
-`activeSeconds` is the time in skipping intervals; an interval of N jumps lasts N jump periods.
-`restSeconds = totalSeconds − activeSeconds`, so the three always add up. Average cadence is jumps ÷ active
-minutes. Live cadence is 60 ÷ the median of the last five jump intervals.
+`activeSeconds` is the time the rope was turning: the gaps between consecutive jumps, plus one more period for the last jump
+of each stretch (N jumps last N periods). A trip longer than 1.25 s adds nothing, so time spent not skipping is not skipping
+and does not lower the cadence. `restSeconds = totalSeconds − activeSeconds`, so the three always add up. Average cadence is
+jumps ÷ active minutes. Live cadence is 60 ÷ the median of the last five normal jump gaps, so a trip does not distort it.
+The rest clock runs from the last confirmed jump and the first jumps after a trip need about a second to be confirmed, so a
+trip of roughly 3.5 s or less stays one interval and a longer one becomes a rest.
+
+## Pausing
+
+Everything that stops a rope skipping ride recording goes through one path (`pauseRopeCounting`): the pause button, the workout
+controls and the system ending the HealthKit session. It stops the sensor, keeps the count so far with the ride, and closes the
+sensor session. Samples are accepted only inside the session they were started in (`RopeSkippingTracker`), so a callback still
+queued from before a pause, finish or discard is ignored, and a resume opens a new session with its own clock offset.
+When HealthKit ends the session the pause is dated at the session's end, but samples delivered in the moment before the event
+arrived were already counted. If a HealthKit session fails while the ride keeps recording, counting continues with the ride.
 
 ## Storage and sync
 

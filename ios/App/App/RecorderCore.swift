@@ -45,6 +45,12 @@ struct ActivityCapabilities: Equatable {
     }
 }
 
+// Every activity value an activity may hold and be edited to. Watch activities and those without GPS are
+// subsets of it (checked in tests), so a type that can be recorded can always be saved again.
+enum ActivityTypes {
+    static let stored = ["Walking", "Running", "Cycling", "MTB", "Road cycling", "Driving", "Kitesurfing", "Hiking", "Unknown", "Gym", "Rope skipping", "Other"]
+}
+
 struct RecordedActivity: Codable {
     var id = UUID().uuidString
     var activity: String
@@ -71,6 +77,10 @@ struct RecordedActivity: Codable {
     // Whether this recording uses GPS and has a route, from what the activity needs (and an indoor
     // choice) rather than from how it was started.
     var requiresGPS: Bool { ActivityCapabilities.of(activity, indoor: details?.indoor).gps }
+    // The one decision about location ownership: this recording is running and uses GPS. A paused one, or
+    // a workout without GPS (Gym, Rope skipping, anything indoor), owns no location service and so never
+    // suspends automatic detection, live sharing or another feature's location use.
+    var ownsLocation: Bool { state == "recording" && requiresGPS }
     mutating func applyPrediction(_ classification: Classification, distance: Double = 1) {
         var metadata = details ?? ActivityDetails()
         if recordingMode == "automatic" {

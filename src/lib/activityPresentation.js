@@ -1,6 +1,7 @@
 import {weatherOf,weatherText} from './weather.js';
 import {activityLabel,activityCode} from './activityNames.js';
 import {typesWithCurrent} from './ropeSkipping.js';
+import {ACTIVITY_TYPES,CHOOSABLE_ACTIVITY_TYPES} from './activityTypes.js';
 import {capabilitiesOf} from './activityCapabilities.js';
 import {activitySymbol} from './mapToolbar.js';
 import {activitySummary,heldEnergy} from './activitySummary.js';
@@ -29,7 +30,7 @@ import {equipmentActionLabel,equipmentForActivity,isDerivedEquipment,itemCategor
 // which decodes it: tests/fixtures/activity-presentation.json pins both sides.
 export const PRESENTATION_SCHEMA=1;
 export const HEART_CHART_SAMPLES=600;
-export const ACTIVITY_TYPES=['Walking','Running','Cycling','MTB','Road cycling','Gym','Other','Driving','Kitesurfing','Hiking','Unknown'];
+export {ACTIVITY_TYPES};
 
 const clockDuration=seconds=>{const s=Math.max(0,Math.round(seconds||0)),h=Math.floor(s/3600),m=Math.floor(s/60)%60;return h?`${h} h ${m} min`:m?`${m} min ${s%60} s`:`${s%60} s`;};
 const segmentLength=(meters,unit)=>unit==='km'&&meters<1000?`${Math.round(meters)} m`:distanceText(meters/1000,unit);
@@ -202,7 +203,7 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
   stops:(trip.recognisedStops||[]).map(stop=>({id:String(stop.id),name:stop.name,tags:stop.tags||[],detail:`${Math.round(stop.durationSeconds/60)} min${stop.charging==='possible'?' · Possible charging':stop.charging==='confirmed'?' · Charging confirmed by vehicle':''}${stop.verdict==='ambiguous'&&typeof stop.reasons?.[1]==='string'?` · ${stop.reasons[1]}`:''}`,nearby:stop.nearbyName||null,canIgnore:!trip.readOnly})),
   story:{description:trip.description||'',notes:trip.notes||'',tags:trip.tags||[]},
   editor:{title:trip.title,activity:activityCode(trip.activity||'Walking'),description:trip.description||'',notes:trip.notes||'',tags:(trip.tags||[]).join(', '),collection:trip.collection||'',vehicleID:trip.vehicleID?String(trip.vehicleID):null,vehicle:trip.vehicle||null,
-   types:typesWithCurrent(ACTIVITY_TYPES,trip.activity).map(value=>({value,label:activityLabel(value)})),equipment:vehicles.filter(v=>!v.archived).map(v=>({id:String(v.id),title:itemTitle(v)}))},
+   types:typesWithCurrent(CHOOSABLE_ACTIVITY_TYPES,trip.activity).map(value=>({value,label:activityLabel(value)})),equipment:vehicles.filter(v=>!v.archived).map(v=>({id:String(v.id),title:itemTitle(v)}))},
   equipment:equipmentSection(trip,vehicles),
   privacy:local?privacySection(trip,places):null,
   map:activityMap(trip,{selectedPhotoID,nearby:nearbySegments})};

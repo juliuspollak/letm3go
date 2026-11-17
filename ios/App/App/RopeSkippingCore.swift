@@ -100,6 +100,10 @@ struct RopeSkippingEngine {
     // The open interval, when active.
     private var openStart: Double?
     private var openJumps = 0
+    // Time between consecutive jumps inside the open interval, only where the rope kept turning.
+    // A trip (a gap longer than `maximumInterval`) adds nothing: time not skipping is not skipping.
+    private var openSpan = 0.0
+    private var openGaps = 0
     private var lastJump: Double?
     private var recent: [Double] = []
     // Spike detection.
@@ -232,7 +236,11 @@ struct RopeSkippingEngine {
 
     private mutating func count(_ times: [Double]) {
         for time in times {
-            if let last = lastJump, time > last { recent.append(time - last); if recent.count > 5 { recent.removeFirst() } }
+            if let last = lastJump, time > last, time - last <= config.maximumInterval {
+                let gap = time - last
+                recent.append(gap); if recent.count > 5 { recent.removeFirst() }
+                openSpan += gap; openGaps += 1
+            }
             jumps += 1
             openJumps += 1
             lastJump = time
@@ -240,11 +248,9 @@ struct RopeSkippingEngine {
     }
 
     private mutating func closeInterval() {
-        defer { openStart = nil; openJumps = 0; lastJump = nil; recent = [] }
+        defer { openStart = nil; openJumps = 0; openSpan = 0; openGaps = 0; lastJump = nil; recent = [] }
         guard let start = openStart, let end = lastJump, openJumps > 0 else { return }
-        // N jumps last N periods, so the time from the first to the last is stretched by N/(N-1).
-        let seconds = openJumps > 1 ? (end - start) * Double(openJumps) / Double(openJumps - 1) : 0
-        closedActive += seconds
+        closedActive += openActiveSeconds
         intervalCount += 1
         if intervals.count < RopeSkippingSummary.maximumIntervals { intervals.append(RopeSkippingInterval(start: start, end: end, jumps: openJumps)) }
     }
@@ -263,10 +269,11 @@ struct RopeSkippingEngine {
     }
 
     // Skipping time including the interval still open.
-    var activeSeconds: Double {
-        guard let start = openStart, let end = lastJump, openJumps > 1 else { return closedActive }
-        return closedActive + (end - start) * Double(openJumps) / Double(openJumps - 1)
-    }
+    var activeSeconds: Double { closedActive + openActiveSeconds }
+
+    // The open interval's skipping time: the gaps between jumps plus one more period for the last jump
+    // (N jumps last N periods), so it is span x N/(N-1) when the rope never stopped, and a trip adds none.
+    private var openActiveSeconds: Double { openGaps > 0 ? openSpan + openSpan / Double(openGaps) : 0 }
 
     var trackedSeconds: Double { tracked }
 
@@ -283,4 +290,65 @@ struct RopeSkippingEngine {
                                    intervalCount: intervalCount + (openStart != nil && openJumps > 0 ? 1 : 0),
                                    averageCadence: active >= 1 ? Double(jumps) / active * 60 : 0, intervals: list)
     }
+}
+
+// What the screen reads once a second.
+struct WatchRopeReading: Equatable {
+    var phase: RopeSkippingPhase = .resting
+    var jumps = 0
+    var cadence = 0.0
+    var activeSeconds = 0.0
+    var sensorAvailable = true
+    static let idle = WatchRopeReading()
+}
+
+// The engine behind one lock, written by the sensor's queue and read by the recorder. Everything that
+// changes what may be counted lives here, so it can be tested without a sensor:
+//  - a sample is accepted only inside the listening session it was started in: every start, pause, finish
+//    and discard opens a new session number, so a callback still queued from an earlier one is ignored
+//  - the offset that turns sensor time (since boot) into clock time belongs to a session, and is taken
+//    from its first sample, so a restarted sensor never reuses an old one
+// The lock is only ever held for a few lines and no other lock or callback is taken inside it.
+final class RopeSkippingTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var engine = RopeSkippingEngine()
+    private var session = 0
+    private var listening = false
+    private var offset: Double?
+    private var unavailable = false
+
+    private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
+    private func startListening() -> Int { session += 1; listening = true; offset = nil; return session }
+    private func stopListening() { session += 1; listening = false; offset = nil }
+
+    // A new workout. Returns the session the sensor must deliver into.
+    func begin(at time: Double) -> Int {
+        locked { engine = RopeSkippingEngine(); engine.begin(at: time); return startListening() }
+    }
+    // A workout reopened after a restart: what was counted stays, and it waits paused.
+    func restore(_ summary: RopeSkippingSummary) { locked { stopListening(); engine = RopeSkippingEngine(restoring: summary) } }
+    func pause(at time: Double) { locked { stopListening(); engine.pause(at: time) } }
+    // The new session, or nil when there is nothing to resume (not paused, or already finished).
+    func resume(at time: Double) -> Int? {
+        locked { guard engine.phase == .manuallyPaused else { return nil }; engine.resume(at: time); return startListening() }
+    }
+    func finish(at time: Double) { locked { stopListening(); engine.finish(at: time) } }
+    func discard() { locked { stopListening(); engine = RopeSkippingEngine() } }
+    func advance(to time: Double) { locked { engine.advance(to: time) } }
+    func setUnavailable(_ value: Bool) { locked { unavailable = value } }
+
+    // `sensorTime` counts from boot; `now` is the clock. The offset is fixed by the session's first sample
+    // and retaken if the two drift apart by more than a second.
+    func ingest(magnitude: Double, sensorTime: Double, now: Double, session id: Int) {
+        locked {
+            guard listening, id == session else { return }
+            if offset == nil || abs(now - (sensorTime + (offset ?? 0))) > 1 { offset = now - sensorTime }
+            engine.ingest(magnitude: magnitude, at: sensorTime + (offset ?? 0))
+        }
+    }
+    func reading() -> WatchRopeReading {
+        locked { WatchRopeReading(phase: engine.phase, jumps: engine.jumps, cadence: engine.currentCadence, activeSeconds: engine.activeSeconds, sensorAvailable: !unavailable) }
+    }
+    func summary(totalSeconds: Double) -> RopeSkippingSummary { locked { engine.summary(totalSeconds: totalSeconds) } }
+    var isListening: Bool { locked { listening } }
 }

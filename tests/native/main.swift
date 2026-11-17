@@ -5515,6 +5515,8 @@ check(recoveringPhotoRoundTrip.restorePending==true && recoveringPhotoRoundTrip.
 // MARK: Rope skipping (the counting rules are in tests/native/ropeSkipping.swift)
 ropeSkippingTests { ok, message in check(ok, message) }
 ropeSkippingCapTests { ok, message in check(ok, message) }
+ropeSkippingActiveTimeTests { ok, message in check(ok, message) }
+ropeSkippingTrackerTests { ok, message in check(ok, message) }
 do {
     // A subtype of Gym, like Mountain biking under Cycling; plain Gym and the other subtypes are unchanged.
     check(WatchCatalog.family(of: "Rope skipping")?.id == "Gym" && WatchCatalog.family(of: "Gym")?.hasSubtypes == true, "rope skipping is a Gym subtype")
@@ -5614,6 +5616,52 @@ do {
     var control = ManualExclusionGate()
     _ = control.update(local: nil, remote: ridePresence.excludesAutomatic ? ridePresence : nil, ownerID: "11111111-1111-4111-8111-111111111111", now: 200)
     check(control.current != nil, "a GPS recording on the Watch still does")
+}
+
+
+// MARK: Follow-ups: titles, location ownership, types
+do {
+    // Every family and subtype keeps its title; a family's own choice named like it reads as the family.
+    let titles: [String: String] = ["Walking": "Walking", "Running": "Running", "Cycling": "Cycling · Everyday", "MTB": "Cycling · Mountain biking",
+        "Road cycling": "Cycling · Road", "Hiking": "Hiking", "Kitesurfing": "Kitesurfing", "Driving": "Driving", "Gym": "Gym",
+        "Rope skipping": "Gym · Rope skipping", "Other": "Other"]
+    check(Set(titles.keys) == Set(WatchCatalog.activities), "the title table covers every activity the Watch records")
+    for (activity, expected) in titles { check(WatchCatalog.title(activity) == expected, "title of \(activity) is \(expected), not \(WatchCatalog.title(activity))") }
+    for family in WatchCatalog.families {
+        for choice in family.choices {
+            let title = WatchCatalog.title(choice.activity)
+            check(!title.isEmpty && (title == family.title || title == choice.title || title == family.title + " · " + choice.title), "\(choice.activity) reads as its family or its family and subtype")
+            check(WatchStartConfig(activity: choice.activity).title.hasSuffix(title), "the start setup and the finish summary use the same title for \(choice.activity)")
+        }
+        check(family.choices.count > 1 ? family.choices.contains { WatchCatalog.title($0.activity).contains(" · ") || WatchCatalog.title($0.activity) == family.title } : true, "\(family.id) subtypes name their family")
+    }
+
+    // One decision about who owns location: a recording that is running and uses GPS.
+    var ride = RecordedActivity(activity: "Cycling", startedAt: 100, resumedAt: 100, title: "Ride")
+    var gym = RecordedActivity(activity: "Gym", startedAt: 100, resumedAt: 100, title: "Gym")
+    var rope = RecordedActivity(activity: "Rope skipping", startedAt: 100, resumedAt: 100, title: "Rope")
+    var treadmill = RecordedActivity(activity: "Running", startedAt: 100, resumedAt: 100, title: "Run"); treadmill.details = ActivityDetails(); treadmill.details?.indoor = true
+    check(ride.ownsLocation && !gym.ownsLocation && !rope.ownsLocation && !treadmill.ownsLocation, "only a running GPS recording owns location")
+    ride.pause(at: 150); gym.pause(at: 150)
+    check(!ride.ownsLocation, "a paused GPS recording holds no location, so automatic detection runs")
+    ride.resume(at: 160)
+    check(ride.ownsLocation, "resuming takes it back")
+    ride.finish(at: 200); gym.finish(at: 200)
+    check(!ride.ownsLocation && !gym.ownsLocation, "a finished recording owns nothing")
+    // Starting, pausing and finishing a workout without GPS never changes the answer for location services.
+    var workout = RecordedActivity(activity: "Gym", startedAt: 100, resumedAt: 100, title: "Gym")
+    var answers = [workout.ownsLocation]
+    workout.pause(at: 120); answers.append(workout.ownsLocation)
+    workout.resume(at: 130); answers.append(workout.ownsLocation)
+    workout.finish(at: 140); answers.append(workout.ownsLocation)
+    check(!answers.contains(true), "a Gym workout never owns location at any point of its life")
+
+    // A type that can be recorded can always be saved again.
+    check(Set(WatchCatalog.activities).isSubset(of: Set(ActivityTypes.stored)), "every Watch activity is a stored type")
+    check(ActivityCapabilities.withoutGPS.isSubset(of: Set(ActivityTypes.stored)), "every activity without GPS is a stored type")
+    check(Set(WatchActivityImport.supported).isSubset(of: Set(ActivityTypes.stored)), "every activity the phone imports from the Watch is a stored type")
+    check(Set(["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Other"]).isSubset(of: Set(ActivityTypes.stored)), "every activity the phone starts is a stored type")
+    check(Set(ActivityTypes.stored).count == ActivityTypes.stored.count && ActivityTypes.stored.contains("Rope skipping") && ActivityTypes.stored.contains("Unknown"), "the stored list has no duplicates and includes Rope skipping and Unknown")
 }
 
 print("Final native assertion count including automatic account recovery: \(assertions)")
