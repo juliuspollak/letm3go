@@ -1,6 +1,7 @@
 import {useEffect,useRef} from 'react';
 import {recorder,recorderAvailable} from './recorder.js';
 import {weatherOf} from './weather.js';
+import {isGymActivity} from './ropeSkipping.js';
 
 // Fetches the weather for recent finished activities that have none, one at a time, once
 // per app launch each. A failure (offline, WeatherKit not enabled) just leaves them without.
@@ -10,7 +11,7 @@ export function useActivityWeather({trips,enabled,fetch=id=>recorder.fetchWeathe
  useEffect(()=>{latest.current=fetch;});
  useEffect(()=>{
   if(!enabled||!recorderAvailable()||running.current)return;
-  const wanted=(trips||[]).filter(t=>t.endedAt!=null&&t.state!=='recording'&&['device','watch'].includes(t.source)&&t.activity!=='Gym'&&t.points?.length>0&&!weatherOf(t)&&!tried.current.has(t.id)).sort((a,b)=>b.startedAt-a.startedAt).slice(0,MAX_PER_LAUNCH).map(t=>t.id);
+  const wanted=(trips||[]).filter(t=>t.endedAt!=null&&t.state!=='recording'&&['device','watch'].includes(t.source)&&!isGymActivity(t.activity)&&t.points?.length>0&&!weatherOf(t)&&!tried.current.has(t.id)).sort((a,b)=>b.startedAt-a.startedAt).slice(0,MAX_PER_LAUNCH).map(t=>t.id);
   if(!wanted.length)return;
   running.current=true;
   (async()=>{

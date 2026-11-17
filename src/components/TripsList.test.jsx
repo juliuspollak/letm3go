@@ -277,3 +277,13 @@ it('a swipe the browser cancels part-way settles where it was instead of snappin
   expect(surfaceOf(row).style.transform).toBe('translateX(-132px)');
  }finally{time.restore();}
 });
+
+it('shows the jump count for rope skipping and minutes for Gym',()=>{
+ const rope=trip('rope',{activity:'Rope skipping',source:'watch',distanceMeters:0,durationSeconds:900,details:{indoor:true,ropeSkipping:{jumps:1250,totalSeconds:900,activeSeconds:690,intervalCount:8,intervals:[]}}});
+ const gym=trip('gym',{activity:'Gym',source:'watch',distanceMeters:0,durationSeconds:1800,details:{indoor:true}});
+ const {container}=renderList({journeys:[rope,gym]});
+ const ropeRow=container.querySelector('[data-trip-id="rope"]'),gymRow=container.querySelector('[data-trip-id="gym"]');
+ expect(ropeRow.textContent).toMatch(/1,250\s*jumps/);
+ expect(gymRow.textContent).toMatch(/30\s*min/);
+ expect(gymRow.textContent).not.toMatch(/jumps/);
+});

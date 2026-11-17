@@ -1,4 +1,5 @@
 import {distanceText} from './distanceUnits.js';
+import {isGymActivity,ropeSummary,clockText,jumpsText} from './ropeSkipping.js';
 
 // The at-a-glance summary at the top of an activity. It only ever reports values
 // the recording actually holds: an absent calorie or heart-rate value is omitted
@@ -121,15 +122,22 @@ export function activitySummary(trip,{unit='km'}={}){
  const entries=[];
  const distanceKm=finite(trip?.distanceMeters)?trip.distanceMeters/1000:finite(trip?.distance)?trip.distance:null;
  // Includes estimates for GPS gaps: read as approximate, with the recorded part beside it.
- if(trip?.activity!=='Gym'&&trip?.details?.indoor!==true&&distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
+ if(!isGymActivity(trip?.activity)&&trip?.details?.indoor!==true&&distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
   ...(trip?.distanceEstimate?{detail:`${distanceText(trip.distanceEstimate.recordedMeters/1000,unit)} recorded`}:{})});
  const movingSeconds=[trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds].find(value=>finite(value)&&value>0);
  const elapsedSeconds=finite(trip?.durationSeconds)?trip.durationSeconds:Number.isFinite(trip?.minutes)?trip.minutes*60:null;
+ // Rope skipping reads jumps first, then time and cadence; GPS figures do not apply.
+ const rope=ropeSummary(trip);
+ if(rope)entries.push({id:'jumps',label:'Jumps',value:jumpsText(rope.jumps)});
  if(movingSeconds!=null)entries.push({id:'moving',label:'Moving time',value:durationText(movingSeconds)});
- if(elapsedSeconds!=null)entries.push({id:'elapsed',label:movingSeconds!=null?'Elapsed time':'Time',value:durationText(elapsedSeconds)});
+ if(elapsedSeconds!=null)entries.push({id:'elapsed',label:movingSeconds!=null?'Elapsed time':'Time',value:rope?clockText(rope.totalSeconds):durationText(elapsedSeconds)});
+ if(rope){
+  if(rope.averageCadence>0)entries.push({id:'cadence',label:'Avg cadence',value:`${Math.round(rope.averageCadence)} /min`,detail:'Jumps per minute of skipping'});
+  entries.push({id:'active-skipping',label:'Active skipping',value:clockText(rope.activeSeconds)},{id:'rest',label:'Rest',value:clockText(rope.restSeconds)},{id:'intervals',label:'Skipping intervals',value:String(rope.intervalCount)});
+ }
  const elevation=elevationGainMeters(trip);
  const savedElevation=[trip?.details?.elevationGain,trip?.details?.elevationGainMeters,trip?.elevationGainMeters,trip?.elevationGain].some(value=>finite(value)&&value>=0);
- if(trip?.activity!=='Gym'&&trip?.details?.indoor!==true&&elevation!=null)entries.push({id:'elevation',label:'Elevation gain',value:`${Math.round(elevation)} m`,detail:savedElevation?null:'Estimated from recorded altitude'});
+ if(!isGymActivity(trip?.activity)&&trip?.details?.indoor!==true&&elevation!=null)entries.push({id:'elevation',label:'Elevation gain',value:`${Math.round(elevation)} m`,detail:savedElevation?null:'Estimated from recorded altitude'});
  const heart=heartRateSummary(trip);
  if(heart)entries.push({id:'heart',label:'Avg heart rate',value:`${heart.average} BPM`,detail:heart.maximum?`Max ${heart.maximum} BPM`:null});
  const energy=activeCalories(trip);

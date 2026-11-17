@@ -24,6 +24,8 @@
 	<false/>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Letm3go counts your jumps from your wrist movement while you record rope skipping.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Letm3go reads your heart rate while you record an activity and shows it with that activity.</string>
 	<key>NSHealthUpdateUsageDescription</key>
