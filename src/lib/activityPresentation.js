@@ -1,6 +1,7 @@
 import {weatherOf,weatherText} from './weather.js';
 import {activityLabel,activityCode} from './activityNames.js';
-import {isGymActivity,typesWithCurrent} from './ropeSkipping.js';
+import {typesWithCurrent} from './ropeSkipping.js';
+import {capabilitiesOf} from './activityCapabilities.js';
 import {activitySymbol} from './mapToolbar.js';
 import {activitySummary,heldEnergy} from './activitySummary.js';
 import {publicationPreview,sourceLabel} from './activityPrivacy.js';
@@ -184,9 +185,9 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
  const segmentsAllowed=canCreateSegments(trip);
  return {schema:PRESENTATION_SCHEMA,ownerID:String(ownerID||''),activityID:String(trip.id),updatedAt:Number.isFinite(trip.updatedAt)?trip.updatedAt:null,unit,
   header:{title:trip.title,recordedTitle:trip.recordedTitle??trip.title,activity:activityCode(trip.activity),activityLabel:activityLabel(trip.activity),
-   subtitle:`${activityLabel(trip.activity)}${trip.source==='watch'?' · Apple Watch':''} · ${trip.date}`,location:trip.location||'',state:trip.state||'finished',source:trip.source||null,local,readOnly:trip.readOnly===true,startedAt:trip.startedAt??null,timeZone:trip.timezone||trip.timeZone||null,noRouteDetail:isGymActivity(trip.activity)||trip.details?.indoor?'Indoor activity · no GPS route is recorded.':trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'},
+   subtitle:`${activityLabel(trip.activity)}${trip.source==='watch'?' · Apple Watch':''} · ${trip.date}`,location:trip.location||'',state:trip.state||'finished',source:trip.source||null,local,readOnly:trip.readOnly===true,startedAt:trip.startedAt??null,timeZone:trip.timezone||trip.timeZone||null,routeMap:capabilitiesOf(trip).routeMap,noRouteDetail:!capabilitiesOf(trip).gps?'Indoor activity · no GPS route is recorded.':trip.recordingMode==='historical'?'This activity was added manually.':'No accurate GPS points were captured.'},
   summary:activitySummary(trip,{unit}).map(({id,label,value,detail})=>({id,label,value,detail:detail||null})),
-  metrics:isGymActivity(trip.activity)||trip.details?.indoor?[{label:'Active duration',value:clockDuration(trip.durationSeconds)}]:[{label:'Estimated distance',value:`${trip.distanceEstimate?'~':''}${distanceText(trip.distance,unit)}`},{label:'Active duration',value:trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`},{label:'Average speed',value:trip.source?`${trip.distanceEstimate?'~':''}${speedLabel(trip.distanceMeters,trip.durationSeconds)}`:'—'}],
+  metrics:!capabilitiesOf(trip).gps?[{label:'Active duration',value:clockDuration(trip.durationSeconds)}]:[{label:'Estimated distance',value:`${trip.distanceEstimate?'~':''}${distanceText(trip.distance,unit)}`},{label:'Active duration',value:trip.source?`${Math.floor(trip.durationSeconds/60)}m ${Math.floor(trip.durationSeconds%60)}s`:`${trip.minutes} min`},{label:'Average speed',value:trip.source?`${trip.distanceEstimate?'~':''}${speedLabel(trip.distanceMeters,trip.durationSeconds)}`:'—'}],
   notices:notices(trip),
   consent:{energy:Boolean(heldEnergy(trip)),heartRate:Boolean(trip.details?.unverifiedHeartRate)},
   sources:(trip.sourceRecords||[]).map(s=>({id:String(s.id),label:`View ${s.source==='tesla'?'Tesla':'iPhone'} recording`})),

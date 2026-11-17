@@ -179,7 +179,7 @@ extension LocationRecorder {
     // capability; without it (or offline) the lookup fails and the activity simply has none.
     func fetchWeather(id: String, done: @escaping (Result<Bool, Error>) -> Void) {
         guard let storage, let trip = trips.first(where: { ActivityIdentity.matches($0.id, id) }), trip.endedAt != nil,
-              trip.details?.weather == nil, trip.details?.indoor != true, trip.activity != "Gym",
+              trip.details?.weather == nil, trip.requiresGPS,
               let fix = trip.points.first(where: { abs($0.latitude) <= 90 && abs($0.longitude) <= 180 && $0.accuracy >= 0 }) else { done(.success(false)); return }
         let when = Date(timeIntervalSince1970: (trip.startedAt + (trip.endedAt ?? trip.startedAt)) / 2)
         let location = CLLocation(latitude: fix.latitude, longitude: fix.longitude)

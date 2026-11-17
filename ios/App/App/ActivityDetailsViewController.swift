@@ -106,6 +106,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         engine.apply(mapBase)
         installNoRoutePlaceholder()
         installMapControls()
+        applyMapVisibility()
         installPanel()
         edgePan.edges = .left
         view.addGestureRecognizer(edgePan)
@@ -136,6 +137,16 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     }
     private func fit(animated: Bool) { engine.fit(insets: fitInsets, animated: animated) }
     private func recentre() { if camera.recentre() { fit(animated: true) } }
+    // An activity without GPS (Gym, Rope skipping) shows its workout, not a map: no map, no "No GPS route"
+    // placeholder and no map buttons. A GPS activity whose route is missing keeps the placeholder, which
+    // says so. Both decisions come from the presentation, never from the activity's name.
+    private var showsMap: Bool { model.presentation.header.showsMap }
+    private func applyMapVisibility() {
+        mapView.isHidden = !showsMap
+        placeholder?.view.isHidden = !showsMap || engine.hasRoute
+        view.backgroundColor = showsMap ? .systemBackground : .systemGroupedBackground
+        for button in view.subviews.compactMap({ $0 as? UIButton }) where ["activity.recentre", "activity.mapStyle"].contains(button.accessibilityIdentifier ?? "") { button.isHidden = !showsMap }
+    }
     private func installNoRoutePlaceholder() {
         let hosted = UIHostingController(rootView: ActivityNoRouteView(text: model.noRouteText))
         hosted.view.frame = view.bounds
@@ -181,7 +192,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     }
     private func installPanel() {
         panel.delegate = self
-        panel.layout = ActivityPanelSnapLayout(initial: panelState(ActivityPanelLayout.initial(hasRoute: engine.hasRoute)), mediumHeight: CGFloat(ActivityPanelLayout.mediumHeight(container: Double(UIScreen.main.bounds.height))))
+        panel.layout = ActivityPanelSnapLayout(initial: panelState(ActivityPanelLayout.initial(hasRoute: engine.hasRoute && showsMap)), mediumHeight: CGFloat(ActivityPanelLayout.mediumHeight(container: Double(UIScreen.main.bounds.height))))
         panel.isRemovalInteractionEnabled = false
         // Static, so the content has the expanded height and scrolls within it. With
         // fitToBounds the SwiftUI content's own height stretches the surface instead.
@@ -240,10 +251,10 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         model.apply(presentation)
         // A draft on the map stays there until it is saved or cancelled.
         if model.draft == nil { engine.apply(map) } else { draftChanged(model.draft) }
-        placeholder?.view.isHidden = engine.hasRoute
+        applyMapVisibility()
         if changedActivity {
             placeholder?.rootView = ActivityNoRouteView(text: model.noRouteText)
-            move(to: ActivityPanelLayout.initial(hasRoute: engine.hasRoute))
+            move(to: ActivityPanelLayout.initial(hasRoute: engine.hasRoute && showsMap))
         }
         if view.window != nil, camera.shouldFit(activityID: presentation.activityID, hasRoute: engine.hasRoute) { fit(animated: false) }
     }

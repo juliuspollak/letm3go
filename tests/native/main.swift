@@ -5520,7 +5520,7 @@ do {
     check(WatchCatalog.family(of: "Rope skipping")?.id == "Gym" && WatchCatalog.family(of: "Gym")?.hasSubtypes == true, "rope skipping is a Gym subtype")
     check(WatchCatalog.title("Rope skipping") == "Gym · Rope skipping" && WatchCatalog.title("Gym") == "Gym", "plain Gym keeps its name")
     check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Road cycling") == "Cycling · Road", "cycling subtypes are unchanged")
-    check(WatchCatalog.isGym("Gym") && WatchCatalog.isGym("Rope skipping") && !WatchCatalog.isGym("MTB") && !WatchCatalog.isRopeSkipping("Gym"), "only rope skipping joins Gym")
+    check(!ActivityCapabilities.of("Gym").gps && !ActivityCapabilities.of("Rope skipping").gps && ActivityCapabilities.of("MTB").gps && !WatchCatalog.isRopeSkipping("Gym"), "only rope skipping joins Gym")
     check(WatchStartConfig(activity: "Rope skipping").indoor == true && WatchStartConfig(activity: "Rope skipping").isValid, "rope skipping starts indoors without GPS")
     check(WatchStartConfig(activity: "Gym").indoor == true && WatchStartConfig(activity: "MTB").indoor == nil, "Gym and MTB starts are unchanged")
     check(!RecordingPrecision.offered(for: "Rope skipping") && !RecordingPrecision.offered(for: "Gym") && RecordingPrecision.offered(for: "MTB"), "no GPS choice for rope skipping")
@@ -5574,4 +5574,46 @@ do {
     let kept = try! JSONDecoder().decode(ActivityDetails.self, from: JSONEncoder().encode(imported!.details!))
     check(kept.ropeSkipping == imported?.details?.ropeSkipping, "the count survives saving and loading the activity")
 }
+
+// MARK: GPS capabilities
+do {
+    // One table decides whether an activity records GPS and has a route; subtypes and indoor override it.
+    for outdoor in ["Driving", "Walking", "Running", "Cycling", "MTB", "Road cycling", "Hiking", "Kitesurfing", "Other", "Unknown"] {
+        check(ActivityCapabilities.of(outdoor).gps && ActivityCapabilities.of(outdoor).routeMap, "\(outdoor) records GPS and has a route map")
+    }
+    check(!ActivityCapabilities.of("Gym").gps && !ActivityCapabilities.of("Gym").routeMap, "Gym has no GPS and no map")
+    check(!ActivityCapabilities.of("Rope skipping").gps, "the Rope skipping subtype overrides nothing outdoors: it has no GPS")
+    check(!ActivityCapabilities.of("Walking", indoor: true).gps && !ActivityCapabilities.of("Cycling", indoor: true).gps, "an indoor choice overrides the parent (treadmill, indoor cycling)")
+    check(ActivityCapabilities.of("Running", indoor: false).gps && ActivityCapabilities.of("MTB", indoor: nil).gps, "an outdoor choice changes nothing")
+    // A saved activity is read the same way whatever its recording mode.
+    for mode in ["manual", "automatic", "watch", nil] as [String?] {
+        var gps = RecordedActivity(activity: "Cycling", startedAt: 100, resumedAt: 100, title: "Ride"); gps.recordingMode = mode
+        var gym = RecordedActivity(activity: "Gym", startedAt: 100, resumedAt: 100, title: "Gym"); gym.recordingMode = mode
+        check(gps.requiresGPS && !gym.requiresGPS, "GPS follows the activity, not the recording mode (\(mode ?? "none"))")
+    }
+    var treadmill = RecordedActivity(activity: "Running", startedAt: 100, resumedAt: 100, title: "Run"); treadmill.details = ActivityDetails(); treadmill.details?.indoor = true
+    check(!treadmill.requiresGPS, "an indoor run needs no GPS")
+    // A workout without GPS never accepts a fix, so no artificial route can appear.
+    var gymTrip = RecordedActivity(activity: "Gym", startedAt: 100, resumedAt: 100, title: "Gym")
+    check(!gymTrip.accept(point(-33, 101), now: 101) && gymTrip.points.isEmpty, "a workout without GPS never gets a route")
+    gymTrip.finish(at: 700)
+    check(gymTrip.points.isEmpty && gymTrip.duration(at: 800) == 600 && gymTrip.state == "finished", "a workout without coordinates is a valid finished activity")
+    let gymJSON = try! JSONEncoder().encode(gymTrip)
+    check((try! JSONDecoder().decode(RecordedActivity.self, from: gymJSON)).points.isEmpty, "it saves and loads without coordinates")
+
+    // Presence: a workout without GPS is still shown, but never holds off automatic detection.
+    let gymPresence: RecordingPresence = { var p = RecordingPresence(device: "watch", ownerID: "11111111-1111-4111-8111-111111111111", sessionID: "s", activity: "Rope skipping", state: "recording", startedAt: 100, updatedAt: 200); p.usesGPS = false; return p }()
+    let ridePresence = RecordingPresence(device: "watch", ownerID: "11111111-1111-4111-8111-111111111111", sessionID: "r", activity: "Cycling", state: "recording", startedAt: 100, updatedAt: 200)
+    check(!gymPresence.excludesAutomatic && ridePresence.excludesAutomatic, "only a GPS recording excludes automatic detection")
+    check(RecordingPresence(dictionary: gymPresence.dictionary)?.usesGPS == false && RecordingPresence(dictionary: gymPresence.dictionary)?.excludesAutomatic == false, "the flag crosses to the phone")
+    check(ridePresence.dictionary["usesGPS"] == nil && RecordingPresence(dictionary: ridePresence.dictionary)?.excludesAutomatic == true, "an earlier Watch build, which sends no flag, still excludes")
+    // The shared exclusion, fed the way the phone feeds it: a workout without GPS never reaches it.
+    var exclusion = ManualExclusionGate()
+    _ = exclusion.update(local: nil, remote: gymPresence.excludesAutomatic ? gymPresence : nil, ownerID: "11111111-1111-4111-8111-111111111111", now: 200)
+    check(exclusion.current == nil, "a Gym workout on the Watch does not suspend automatic detection")
+    var control = ManualExclusionGate()
+    _ = control.update(local: nil, remote: ridePresence.excludesAutomatic ? ridePresence : nil, ownerID: "11111111-1111-4111-8111-111111111111", now: 200)
+    check(control.current != nil, "a GPS recording on the Watch still does")
+}
+
 print("Final native assertion count including automatic account recovery: \(assertions)")

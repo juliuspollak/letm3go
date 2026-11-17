@@ -17,6 +17,7 @@
   "readOnly": false,
   "startedAt": 1790000000,
   "timeZone": null,
+  "routeMap": true,
   "noRouteDetail": "No accurate GPS points were captured."
  },
  "summary": [

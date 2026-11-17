@@ -278,7 +278,7 @@ extension LocationRecorder {
     // After the mode is applied: release or restore the activity session, run
     // the keep-alive while precise GPS has no session, and account mode time.
     func reconcilePassiveSessions(now: Double) {
-        modeClock.enter(active?.state == "recording" ? "manualPrecise" : locationMode.rawValue, now: now)
+        modeClock.enter(manualRecordingLive ? "manualPrecise" : locationMode.rawValue, now: now)
         if locationMode == .passive {
             if passiveSince == nil {
                 passiveSince = now

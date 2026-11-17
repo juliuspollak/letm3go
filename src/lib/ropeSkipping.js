@@ -2,7 +2,6 @@
 // sends one summary that is stored with the activity (details.ropeSkipping): it is a whole
 // value that replaces the earlier one, never a running total, so a retry cannot double it.
 export const ROPE_SKIPPING='Rope skipping';
-export const isGymActivity=activity=>activity==='Gym'||activity===ROPE_SKIPPING;
 const finite=Number.isFinite;
 const MAX_JUMPS=100000,MAX_INTERVALS=200;
 
