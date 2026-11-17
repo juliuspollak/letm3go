@@ -299,7 +299,7 @@ func ropeSkippingActiveTimeTests(_ check: (Bool, String) -> Void) {
 // The rule for which sensor samples may count, with no sensor: sessions, stale callbacks and concurrent delivery.
 func ropeSkippingTrackerTests(_ check: (Bool, String) -> Void) {
     // Samples of steady skipping at 50 Hz between `from` and `to`, as the sensor would deliver them.
-    func feed(_ tracker: RopeSkippingTracker, session: Int, from: Double, to: Double, interval: Double = 0.5, boot: Double = 5_000, tick: Double = 0) {
+    func feed(_ tracker: RopeSkippingTracker, session: Int, from: Double, to: Double, interval: Double = 0.5, boot: Double = 0, tick: Double = 0) {
         var rng = Seeded(state: 3)
         var t = from
         let spikes = steady(from: from + 0.2, seconds: to - from, interval: interval)
@@ -389,6 +389,38 @@ func ropeSkippingTrackerTests(_ check: (Bool, String) -> Void) {
     let o2 = o.resume(at: 2_000)!
     feed(o, session: o2, from: 50, to: 60, boot: 1_950)
     check(o.reading().jumps > 15 && o.summary(totalSeconds: 20).activeSeconds > 14, "a new session is aligned to the clock again (\(o.reading().jumps))")
+
+    let interrupted = RopeSkippingTracker()
+    let generation = interrupted.begin(at: 0)
+    interrupted.setUnavailable(true, session: generation)
+    check(!interrupted.reading().sensorAvailable, "unavailable sensor at startup is visible")
+    feed(interrupted, session: generation, from: 0, to: 20, boot: 0)
+    interrupted.pause(at: 10)
+    let reference = RopeSkippingTracker()
+    let referenceSession = reference.begin(at: 0)
+    feed(reference, session: referenceSession, from: 0, to: 10, boot: 0)
+    reference.pause(at: 10)
+    check(interrupted.reading().jumps == reference.reading().jumps, "delayed interruption restores pre-interruption rhythm and counts")
+    interrupted.pause(at: 8)
+    check(interrupted.reading().jumps < reference.reading().jumps, "earlier ended timestamp corrects a preceding failure pause")
+    let preserved = interrupted.reading().jumps
+    interrupted.pause(at: 20)
+    interrupted.finish(at: 30)
+    interrupted.finish(at: 40)
+    check(interrupted.reading().jumps == preserved, "failure followed by end and repeated finish preserve counts")
+    interrupted.restore(interrupted.summary(totalSeconds: 10))
+    let recovered = interrupted.resume(at: 100)!
+    interrupted.setUnavailable(true, session: generation)
+    check(interrupted.reading().sensorAvailable, "old sensor errors cannot affect recovery")
+    interrupted.setUnavailable(true, session: recovered)
+    check(!interrupted.reading().sensorAvailable, "sensor errors are visible")
+    feed(interrupted, session: recovered, from: 100, to: 105, boot: 0)
+    check(interrupted.reading().sensorAvailable, "new samples recover sensor availability")
+    interrupted.advance(to: 110)
+    check(!interrupted.reading().sensorAvailable, "missing delivery is distinct from resting motion")
+    interrupted.pause(at: 110)
+    interrupted.setUnavailable(false, session: recovered)
+    check(!interrupted.isListening, "manual pause during sensor failure stays paused")
 
     // Delivery on another thread while the workout is paused and finished: the lock holds and nothing counts late.
     let c = RopeSkippingTracker()

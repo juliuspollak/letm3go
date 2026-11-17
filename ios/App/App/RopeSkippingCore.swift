@@ -316,34 +316,60 @@ final class RopeSkippingTracker: @unchecked Sendable {
     private var listening = false
     private var offset: Double?
     private var unavailable = false
+    private var lastDelivery: Double?
+    private var startedAt = 0.0
+    // Bound snapshot memory, thinning older snapshots while retaining recent samples.
+    // Very delayed interruptions conservatively use the preceding snapshot; never subtract
+    // jumps, since rhythm acquisition can credit several earlier peaks together.
+    private var history: [(Double, RopeSkippingEngine)] = []
+    private func remember(at time: Double) {
+        history.append((time, engine))
+        if history.count > 1500 {
+            history = history.enumerated().filter { $0.offset >= 750 || $0.offset % 2 == 0 }.map { $0.element }
+        }
+    }
+    private func rewind(to time: Double) {
+        if let saved = history.last(where: { $0.0 <= time }) { engine = saved.1 }
+        history.removeAll { $0.0 > time }
+    }
 
     private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
-    private func startListening() -> Int { session += 1; listening = true; offset = nil; return session }
+    private func startListening() -> Int { session += 1; listening = true; offset = nil; unavailable = false; lastDelivery = nil; return session }
     private func stopListening() { session += 1; listening = false; offset = nil }
 
     // A new workout. Returns the session the sensor must deliver into.
     func begin(at time: Double) -> Int {
-        locked { engine = RopeSkippingEngine(); engine.begin(at: time); return startListening() }
+        locked { engine = RopeSkippingEngine(); engine.begin(at: time); startedAt = time; history = [(time, engine)]; return startListening() }
     }
     // A workout reopened after a restart: what was counted stays, and it waits paused.
-    func restore(_ summary: RopeSkippingSummary) { locked { stopListening(); engine = RopeSkippingEngine(restoring: summary) } }
-    func pause(at time: Double) { locked { stopListening(); engine.pause(at: time) } }
+    func restore(_ summary: RopeSkippingSummary) { locked { stopListening(); history = []; engine = RopeSkippingEngine(restoring: summary) } }
+    func pause(at time: Double) { locked { guard engine.phase != .finished else { return }; rewind(to: time); stopListening(); engine.pause(at: time); remember(at: time) } }
     // The new session, or nil when there is nothing to resume (not paused, or already finished).
     func resume(at time: Double) -> Int? {
-        locked { guard engine.phase == .manuallyPaused else { return nil }; engine.resume(at: time); return startListening() }
+        locked { guard engine.phase == .manuallyPaused else { return nil }; engine.resume(at: time); startedAt = time; history = [(time, engine)]; return startListening() }
     }
-    func finish(at time: Double) { locked { stopListening(); engine.finish(at: time) } }
-    func discard() { locked { stopListening(); engine = RopeSkippingEngine() } }
-    func advance(to time: Double) { locked { engine.advance(to: time) } }
-    func setUnavailable(_ value: Bool) { locked { unavailable = value } }
+    func finish(at time: Double) { locked { if listening { rewind(to: time) }; stopListening(); engine.finish(at: time); history = [] } }
+    func discard() { locked { stopListening(); history = []; engine = RopeSkippingEngine() } }
+    func advance(to time: Double) { locked {
+        if listening, time - (lastDelivery ?? startedAt) > 3 { unavailable = true }
+        // Motion samples advance rest detection. Silence is a sensor warning, not a rest.
+    } }
+    func setUnavailable(_ value: Bool, session id: Int) { locked { guard listening, id == session else { return }; unavailable = value } }
 
     // `sensorTime` counts from boot; `now` is the clock. The offset is fixed by the session's first sample
-    // and retaken if the two drift apart by more than a second.
-    func ingest(magnitude: Double, sensorTime: Double, now: Double, session id: Int) {
+    // or supplied from the boot clock by Core Motion; delivery latency never moves a sample forward.
+    func ingest(magnitude: Double, sensorTime: Double, now: Double, session id: Int, clockOffset: Double? = nil) {
         locked {
-            guard listening, id == session else { return }
-            if offset == nil || abs(now - (sensorTime + (offset ?? 0))) > 1 { offset = now - sensorTime }
-            engine.ingest(magnitude: magnitude, at: sensorTime + (offset ?? 0))
+            guard listening, id == session, magnitude.isFinite, magnitude >= 0, magnitude < 50,
+                  sensorTime.isFinite, now.isFinite else { return }
+            if let clockOffset { offset = clockOffset }
+            else if offset == nil { offset = now - sensorTime }
+            let time = sensorTime + (offset ?? 0)
+            guard time.isFinite, time >= startedAt, time >= (history.last?.0 ?? startedAt) else { return }
+            lastDelivery = now
+            unavailable = false
+            engine.ingest(magnitude: magnitude, at: time)
+            remember(at: time)
         }
     }
     func reading() -> WatchRopeReading {

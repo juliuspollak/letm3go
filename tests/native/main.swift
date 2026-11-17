@@ -1174,6 +1174,13 @@ check(String(data: zonedData, encoding: .utf8)?.contains("\"timezone\":") == tru
 func watchFix(_ latitude: Double, _ timestamp: Double, accuracy: Double = 5) -> WatchRideFix {
     WatchRideFix(latitude: latitude, longitude: 151, timestamp: timestamp, accuracy: accuracy, altitude: 120, speed: 4)
 }
+var delayedPauseRide = WatchRideDraft(activity: "Rope skipping", startedAt: 100)
+delayedPauseRide.checkpoint(at: 120)
+delayedPauseRide.pause(at: 110)
+check(delayedPauseRide.duration(at: 200) == 10, "delayed HealthKit pause removes checkpoint overrun")
+delayedPauseRide.pause(at: 150)
+check(delayedPauseRide.duration(at: 200) == 10, "repeated interruption never adds paused time")
+
 var watchRide = WatchRideDraft(activity: "MTB", startedAt: 1_000)
 check(watchRide.ingest(watchFix(-33.0000, 1_000), now: 1_000) == .accepted(newSegment: false), "the first watch fix starts the ride")
 check(watchRide.ingest(watchFix(-33.0001, 1_010), now: 1_010) == .accepted(newSegment: false), "a continuous fix joins the segment")
