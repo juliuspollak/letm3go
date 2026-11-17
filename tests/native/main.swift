@@ -1417,6 +1417,52 @@ final class FailingWatchBackend: WatchFileBackend {
     func createDirectory(_ url: URL) throws { try base.createDirectory(url) }
 }
 
+// A delayed HealthKit interruption must correct every observation, including
+// observations already persisted before its effective timestamp was delivered.
+do {
+    var ride = WatchRideDraft(activity: "Cycling", startedAt: 1_000)
+    for (index, time) in [1_000.0, 1_010.0, 1_020.0].enumerated() {
+        _ = ride.ingest(WatchRideFix(latitude: -33 + Double(index) * 0.0001, longitude: 151,
+                                   timestamp: time, accuracy: 5, altitude: 120 + Double(index) * 5, speed: 4), now: time)
+    }
+    _ = ride.ingest(heartRate: WatchHeartRateSample(timestamp: 1_005, bpm: 110), now: 1_005)
+    _ = ride.ingest(heartRate: WatchHeartRateSample(timestamp: 1_015, bpm: 200), now: 1_020)
+    ride.checkpoint(at: 1_020)
+    let beforePause = ride
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let disk = FailingWatchBackend()
+    let store = WatchRideDraftStore(directory: directory, backend: disk)
+    try store.save(ride)
+    ride.pause(at: 1_010)
+    let expected = WatchTrackAnalyzer(points: Array(beforePause.points.prefix(2)), activity: "Cycling")
+    check(ride.points == expected.points, "delayed pause keeps the GPS fix at the cutoff and removes later fixes")
+    check(ride.metrics == expected.metrics, "delayed pause rebuilds distance, moving time and elevation from valid fixes")
+    check(ride.heartRate.count == 1 && ride.heartRateSummary?.average == 110, "late pause removes interrupted heart readings and their contribution to the summary")
+    disk.failWrite = { $0.lastPathComponent == "draft.heart" }
+    try store.save(ride)
+    check(store.heartSidecarFailed, "test exercises a failed heart-sidecar rewrite after interruption")
+    let restored = try WatchRideDraftStore(directory: directory).load()!
+    check(restored.points == ride.points && restored.heartRate == ride.heartRate, "saved interruption prevents old sidecar samples from returning after restart")
+    let staleLogs = WatchRideDraft(meta: ride.meta, points: beforePause.points, heartRate: beforePause.heartRate)
+    check(staleLogs.points == ride.points && staleLogs.metrics == ride.metrics && staleLogs.heartRate == ride.heartRate, "restoring stale logs honors the durable pause cutoff for GPS and heart rate")
+    ride.pause(at: 1_010)
+    check(ride.points == expected.points && ride.heartRate.count == 1, "repeated interruption preserves the valid observations")
+    ride.resume(at: 1_030)
+    check(ride.ingest(watchFix(-32.9997, 1_025), now: 1_030) == .dropped("paused"), "delayed GPS sample from a closed pause is rejected after resume")
+    check(ride.ingest(watchFix(-32.9997, 1_030), now: 1_030) == .accepted(newSegment: true), "GPS recording resumes at the interval boundary in a new segment")
+    let staleResumedLogs = WatchRideDraft(meta: ride.meta, points: beforePause.points, heartRate: beforePause.heartRate)
+    check(staleResumedLogs.points == expected.points && staleResumedLogs.heartRate.count == 1, "closed pause periods also filter stale logs after resume")
+    disk.failWrite = nil
+    try store.save(ride)
+    let repaired = try WatchRideDraftStore(directory: directory).load()!
+    check(repaired.points == ride.points && repaired.heartRate == ride.heartRate, "a successful retry replaces stale sidecars without duplicating observations")
+    ride.finish(at: 1_040)
+    let transfer = ride.transfer(now: 1_040, ownerID: nil, deviceID: nil)!
+    check(transfer.points == ride.points && transfer.heartRate?.count == 1, "manual finish transfers only valid observations")
+    check(WatchActivityImport.activity(from: transfer, now: 1_040) != nil, "corrected workout still imports on the iPhone")
+}
+
 let ackDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 defer { try? FileManager.default.removeItem(at: ackDirectory) }
 let ackBackend = FailingWatchBackend()
@@ -3711,6 +3757,13 @@ do {
     check(Life.sessionRunning(fromPaused: true, rideState: "paused") == .resumeRide, "resuming from the workout controls resumes the ride")
     check(Life.sessionRunning(fromPaused: true, rideState: "paused", eventAt: 20, latestPauseAt: 25) == .pauseSession, "retroactive cutoff correction cannot let an old resume undo a newer manual pause")
     check(Life.sessionRunning(fromPaused: true, rideState: "paused", eventAt: 30, latestPauseAt: 25) == .resumeRide, "a genuinely newer workout-control resume still works")
+    check(Life.acceptsRecovery(requestedRideID: "old", currentRideID: "old", hasSession: false), "recovery rejoins its original draft when no session replaced it")
+    check(!Life.acceptsRecovery(requestedRideID: "old", currentRideID: "new", hasSession: false), "recovery cannot attach an old workout to a replacement activity")
+    check(!Life.acceptsRecovery(requestedRideID: "old", currentRideID: nil, hasSession: false), "recovery cannot resurrect a discarded or finished draft")
+    check(!Life.acceptsRecovery(requestedRideID: "old", currentRideID: "old", hasSession: true), "recovery cannot overwrite an already live session or builder")
+    check(Life.predatesRecoveryRequest(sessionStartedAt: 10, requestedAt: 20), "a preexisting orphan can be retired")
+    check(!Life.predatesRecoveryRequest(sessionStartedAt: 30, requestedAt: 20), "a delayed orphan lookup cannot discard a workout started afterward")
+    check(!Life.predatesRecoveryRequest(sessionStartedAt: nil, requestedAt: 20), "unknown workout ownership is not grounds to discard it")
     check(Life.sessionRunning(fromPaused: false, rideState: "recording") == .none && Life.sessionRunning(fromPaused: true, rideState: nil) == .none, "nothing else changes")
     check(Life.sessionPaused(rideState: "recording") == .pauseRide && Life.sessionPaused(rideState: "paused") == .none, "session pause follows the ride")
     check(Life.afterRecovery(rideWasRecording: true, sessionRunning: true) == .resumeRide, "a crash mid-ride keeps recording with the wrist down")

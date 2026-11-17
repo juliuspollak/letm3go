@@ -666,7 +666,15 @@ struct WatchRideDraft {
         indoor = meta.indoor ?? false
         pausedAt = meta.pausedAt
         pausePeriods = meta.pausePeriods ?? []
-        self.heartRate = heartRate
+        // Optional sidecar rewrites can fail, leaving old observations behind a
+        // successfully saved interruption. The durable interval boundaries win.
+        let periods = meta.pausePeriods ?? []
+        let cutoff = meta.state == "paused" ? meta.pausedAt : (meta.state == "finished" ? meta.endedAt : nil)
+        let belongsToRecording: (Double) -> Bool = { time in
+            (cutoff.map { time <= $0 } ?? true) && !WatchHeartRate.inside(time, periods)
+        }
+        let keptPoints = points.filter { belongsToRecording($0.timestamp) }
+        self.heartRate = heartRate.filter { belongsToRecording($0.timestamp) }
         activity = meta.activity
         if let equipmentID = meta.equipmentID, let equipmentName = meta.equipmentName {
             equipment = WatchEquipment(id: equipmentID, name: equipmentName, kind: meta.equipmentKind ?? "bicycle")
@@ -680,10 +688,10 @@ struct WatchRideDraft {
         queued = meta.queued
         // Counters are rebuilt from the fixes themselves, so a cached value can
         // never inflate distance after a restart.
-        analyzer = WatchTrackAnalyzer(points: points, activity: meta.activity)
+        analyzer = WatchTrackAnalyzer(points: keptPoints, activity: meta.activity)
         // A fix may carry a later segment than the meta if the process stopped
         // between the two writes; the fixes win.
-        segment = max(segment, points.last?.segment ?? 0)
+        segment = max(segment, keptPoints.last?.segment ?? 0)
         energySessions = meta.energySessions ?? []
         activeEnergySessionID = meta.activeEnergySessionID
         ropeSkipping = meta.ropeSkipping
@@ -799,6 +807,13 @@ struct WatchRideDraft {
             checkpoint(at: cutoff)
             segment += 1
         }
+        // Delegate delivery can lag behind sensor ingestion. Keep the same effective
+        // cutoff for all observations, and rebuild derived track metrics from the
+        // retained points instead of trying to subtract distance or elevation.
+        if let last = points.last, last.timestamp > cutoff {
+            analyzer = WatchTrackAnalyzer(points: points.filter { $0.timestamp <= cutoff }, activity: activity)
+        }
+        heartRate.removeAll { $0.timestamp > cutoff }
         // A retroactive pause replaces later pauses; keep the history disjoint for
         // duration, heart-rate filtering and the next checkpoint rollback.
         pausePeriods = pausePeriods.compactMap { period in
@@ -869,6 +884,7 @@ struct WatchRideDraft {
         guard fix.timestamp <= now + 1 else { return .dropped("future") }
         guard now - fix.timestamp <= WatchTransferLimits.maximumFixAge else { return .dropped("stale") }
         guard fix.timestamp >= startedAt - 1 else { return .dropped("before-start") }
+        guard !WatchHeartRate.inside(fix.timestamp, pausePeriods) else { return .dropped("paused") }
         guard points.count < WatchTransferLimits.maximumPoints else { return .dropped("full") }
 
         var newSegment = false

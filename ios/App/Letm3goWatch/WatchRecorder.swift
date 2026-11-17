@@ -449,10 +449,10 @@ final class WatchRecorder: NSObject, ObservableObject {
         segmentFeedback=segmentEngine.feedback
         ride.pause(at: pausedNow)
         pauseRopeCounting(&ride, at: pausedNow)
-        draft = ride
+        apply(ride, now: pausedNow)
+        heartRateSummary = ride.heartRateSummary
         state = "paused"
         status = "Paused"
-        activeSeconds = ride.duration(at: Date().timeIntervalSince1970)
         heartRate = .paused
         persist(force: true)
         manager.stopUpdatingLocation()
@@ -1013,7 +1013,8 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // one workout and returns the sensor stream, while the ride stays paused until
     // the rider resumes.
     private func recoverActiveWorkout() {
-        guard HKHealthStore.isHealthDataAvailable(), workout == nil else { return }
+        guard HKHealthStore.isHealthDataAvailable(), workout == nil, let requestedRideID = draft?.id else { return }
+        let requestedAt = Date().timeIntervalSince1970
         recoveringWorkout = true
         health.recoverActiveWorkoutSession { session, _ in
             Task { @MainActor in
@@ -1023,7 +1024,20 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                     if self.draft?.isRecording == true, self.workout == nil { self.requestHealthAccessThenStartWorkout() }
                     return
                 }
-                guard var ride = self.draft else { session.end(); return }
+                guard WatchWorkoutLifecycle.acceptsRecovery(requestedRideID: requestedRideID,
+                                                            currentRideID: self.draft?.id, hasSession: self.workout != nil),
+                      var ride = self.draft else {
+                    // A recovery requested for a discarded/replaced draft cannot adopt
+                    // its session into the replacement or overwrite a new live builder.
+                    if session !== self.workout, !self.finishing, session.state != .ended,
+                       WatchWorkoutLifecycle.predatesRecoveryRequest(sessionStartedAt: session.startDate?.timeIntervalSince1970,
+                                                                     requestedAt: requestedAt) {
+                        session.end()
+                        session.associatedWorkoutBuilder().discardWorkout()
+                    }
+                    if self.draft?.isRecording == true, self.workout == nil { self.requestHealthAccessThenStartWorkout() }
+                    return
+                }
                 self.healthWorkoutSaves = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor).savesToHealth
                 session.delegate = self
                 self.workout = session
@@ -1056,9 +1070,12 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // Launch with no draft but a live session: nothing to attach it to.
     private func recoverOrphanWorkout() {
         guard HKHealthStore.isHealthDataAvailable() else { return }
+        let requestedAt = Date().timeIntervalSince1970
         health.recoverActiveWorkoutSession { session, _ in
             Task { @MainActor in
-                guard let session, self.draft == nil else { return }
+                guard let session, self.draft == nil, self.workout == nil, !self.finishing, session.state != .ended,
+                      WatchWorkoutLifecycle.predatesRecoveryRequest(sessionStartedAt: session.startDate?.timeIntervalSince1970,
+                                                                    requestedAt: requestedAt) else { return }
                 session.end()
                 session.associatedWorkoutBuilder().discardWorkout()
                 WatchDiagnostics.log("health", "Stray workout session ended")

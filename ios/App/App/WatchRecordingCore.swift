@@ -148,6 +148,15 @@ enum WatchWorkoutLifecycle {
     }
     static func sessionPaused(rideState: String?) -> Action { rideState == "recording" ? .pauseRide : .none }
 
+    static func acceptsRecovery(requestedRideID: String, currentRideID: String?, hasSession: Bool) -> Bool {
+        requestedRideID == currentRideID && !hasSession
+    }
+
+    static func predatesRecoveryRequest(sessionStartedAt: Double?, requestedAt: Double) -> Bool {
+        guard let sessionStartedAt, sessionStartedAt.isFinite, requestedAt.isFinite else { return false }
+        return sessionStartedAt <= requestedAt
+    }
+
     // watchOS kept a running session through a crash, so the rider was still
     // recording and may not be looking. The unobserved time stays a pause; recording
     // picks up by itself. A ride already paused stays paused.
