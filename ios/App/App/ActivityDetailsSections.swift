@@ -83,14 +83,8 @@ struct ActivitySummarySection: View {
     var body: some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                if #available(iOS 16.0, *) {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .top, spacing: 12) { primaryMetrics }
-                        VStack(alignment: .leading, spacing: 14) { primaryMetrics }
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 14) { primaryMetrics }
-                }
+                // One row, always: the figures shrink to fit instead of stacking.
+                HStack(alignment: .top, spacing: 8) { primaryMetrics }
                 if !secondary.isEmpty {
                     Divider().opacity(0.55)
                     ForEach(secondary) { item in
@@ -124,18 +118,18 @@ struct ActivitySummarySection: View {
     }
     private var primaryMetrics: some View {
         ForEach(headline) { item in
-            HStack(alignment: .center, spacing: 9) {
+            HStack(alignment: .center, spacing: 6) {
                 Image(systemName: symbol(for: item.label))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color.accentColor)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 24, height: 24)
                     .background(Circle().fill(Color.accentColor.opacity(0.12)))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.value).font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
-                        .minimumScaleFactor(0.7).lineLimit(1)
+                        .minimumScaleFactor(0.5).lineLimit(1)
                     if let detail = item.detail {
-                        Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
             }
