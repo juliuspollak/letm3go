@@ -471,6 +471,44 @@ func carMotion(_ now: Double) -> MotionEvidence { MotionEvidence(types:["Driving
 func metreFix(_ metres: Double, _ time: Double, speed: Double, accuracy: Double = 8) -> GPSPoint {
     GPSPoint(latitude:-33 + metres/111_320, longitude:151, timestamp:time, accuracy:accuracy, altitude:0, speed:speed)
 }
+// Feedback #31: a GPS-confirmed departure starts Unknown. Walking arrives just
+// after the last fix, then briefly alternates with Stationary before GPS resumes.
+do {
+    var trip = RecordedActivity(activity: "Unknown", startedAt: 1000, resumedAt: 1000, title: "Journey")
+    trip.recordingMode = "automatic"
+    for index in 0...35 {
+        let p = metreFix(Double(index) * 6, 1000 + Double(index) * 4, speed: 1.5, accuracy: 5)
+        _ = trip.accept(p, now: p.timestamp)
+    }
+    check(JourneyFamily.profile(trip.points) == .onFoot && trip.activity == "Unknown",
+          "a walking-speed route still needs motion evidence for its label")
+    check(!trip.corroborateAutomaticWalk(nil) && !trip.corroborateAutomaticWalk(footMotion(1160)),
+          "missing or unrelated walking motion cannot label a route")
+    let mixed = MotionEvidence(types: ["Walking", "Driving"], confidence: "high", timestamp: 1147)
+    check(mixed.contradictsWalking && !trip.corroborateAutomaticWalk(mixed), "vehicle motion cannot corroborate walking")
+
+    var stopped = trip
+    stopped.publishStop(at: 1140, continuationEndsAt: 2040)
+    check(stopped.corroborateAutomaticWalk(footMotion(1147)), "walking delivered after the last fix labels the published stop")
+    check(stopped.id == trip.id && stopped.points.count == trip.points.count && stopped.distanceMeters == trip.distanceMeters &&
+          stopped.isProvisional && stopped.endedAt == 1140, "classification preserves the route, stop and journey identity")
+
+    let followingFix = metreFix(219, 1149, speed: 1.5, accuracy: 5)
+    _ = trip.accept(followingFix, now: followingFix.timestamp)
+    check(trip.corroborateAutomaticWalk(footMotion(1147)), "a recent walking callback can corroborate a later GPS fix")
+
+    var drive = RecordedActivity(activity: "Unknown", startedAt: 1000, resumedAt: 1000, title: "Journey")
+    drive.recordingMode = "automatic"
+    for index in 0...10 {
+        let p = metreFix(Double(index) * 60, 1000 + Double(index) * 4, speed: 15, accuracy: 5)
+        _ = drive.accept(p, now: p.timestamp)
+    }
+    check(!drive.corroborateAutomaticWalk(footMotion(1045)), "walking after parking cannot relabel a vehicle route")
+    var corrected = stopped
+    corrected.activity = "Unknown"
+    corrected.details?.userCorrected = true
+    check(!corrected.corroborateAutomaticWalk(footMotion(1147)), "explicit corrections are preserved")
+}
 var parkedWalk=MovementTransition()
 check(parkedWalk.observe(metreFix(40,1010,speed:1.4),motion:footMotion(1010),now:1010,from:.driving) == nil,"a few metres from the parked car cannot end the drive")
 check(parkedWalk.observe(metreFix(75,1040,speed:1.4),motion:footMotion(1040),now:1040,from:.driving) == nil,"two walking fixes cannot end the drive")
@@ -3857,17 +3895,25 @@ do {
 
     // Water Lock: once per recording, and never straight back on.
     var lock = WatchWaterLockPolicy(automatic: true)
-    check(!lock.shouldLock(workoutRunning: false, recording: true), "needs a running workout session")
-    check(lock.shouldLock(workoutRunning: true, recording: true), "locks when recording starts")
+    check(!lock.shouldLock(ready: false, recording: true), "needs a running workout session")
+    check(lock.shouldLock(ready: true, recording: true), "locks when recording starts")
     lock.noteRequested()
     check(lock.observe(locked: true) == .locked && lock.observe(locked: true) == nil, "lock observed once")
     check(lock.observe(locked: false) == .unlocked && lock.unlockedByRider, "unlock noted")
-    check(!lock.shouldLock(workoutRunning: true, recording: true), "does not re-lock after a deliberate unlock")
+    check(!lock.shouldLock(ready: true, recording: true), "does not re-lock after a deliberate unlock")
     lock.noteManualLock()
     check(lock.observe(locked: true) == .locked, "the rider can lock again")
     lock.reset()
-    check(lock.shouldLock(workoutRunning: true, recording: true), "the next recording locks")
-    check(!WatchWaterLockPolicy(automatic: false).shouldLock(workoutRunning: true, recording: true), "the setting turns it off")
+    check(lock.shouldLock(ready: true, recording: true), "the next recording locks")
+    check(!WatchWaterLockPolicy(automatic: false).shouldLock(ready: true, recording: true), "the setting turns it off")
+    let holdReady = WatchScreenLockMode.holdToUnlock.readyForAutomaticLock(workoutRunning: false, workoutUnavailable: false)
+    let waterReady = WatchScreenLockMode.waterLock.readyForAutomaticLock(workoutRunning: false, workoutUnavailable: false)
+    check(holdReady && !waterReady, "on-screen lock can start before HealthKit, Water Lock waits")
+    check(WatchScreenLockMode.waterLock.readyForAutomaticLock(workoutRunning: false, workoutUnavailable: true),
+          "Water Lock can fall back when a workout session is unavailable")
+    lock.noteRequested()
+    lock.noteSoftUnlock()
+    check(!lock.shouldLock(ready: holdReady, recording: true), "touch and hold unlock stays unlocked")
 
     // One recording per account.
     let watchNow = RecordingPresence(device: RecordingPresence.watch, ownerID: ownerA, sessionID: "W", activity: "Running", state: "recording", startedAt: start, updatedAt: start)

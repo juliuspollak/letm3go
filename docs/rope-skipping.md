@@ -21,18 +21,20 @@ indoor, has no GPS and no route, and Health records it as a jump rope workout.
 
 ## Jump detection
 
-The Watch feeds the length of Core Motion's user acceleration (gravity removed, so wrist orientation
-does not matter). A landing is a short spike. A spike is a candidate when it clears an adaptive
-threshold and is at least 0.30 s after the previous one, so the second bump of one landing is ignored.
+The Watch projects Core Motion's user acceleration onto the upward axis. An upward peak
+must clear an adaptive threshold and be at least 0.30 s after the previous candidate.
 
-Candidates are not counted one by one. While resting they are held in a chain and counted only once six
-of them follow each other at a steady rhythm (each interval within 0.7–1.4 of the chain's median and under
-1.25 s). The held spikes are then counted, so the first jumps are not lost, and shaking the wrist never
-counts. Inside an interval each spike within 1.25 s of the last jump counts; after a longer gap (a trip) three
-steady spikes are needed before counting continues.
+While resting, six candidates at a steady rhythm establish an interval. Each gap must fall
+within 0.7–1.4 times the chain's median and be at most 1.25 s. The detector then credits the
+six jumps. During active skipping, peaks less than 65% of the recent median jump period
+after the last jump are ignored. After a gap longer than 1.25 s, three steady peaks are needed
+to resume counting.
 
-No machine learning: a threshold, a refractory period and a rhythm check were enough on synthetic motion.
-They have not been tuned on a real wrist (see Limits).
+A recording report includes the jump total, skipping time, rest time, intervals and a
+Watch motion trace when available. The trace captures up to 6,000 samples at 50 Hz with
+relative time, upward acceleration, total acceleration magnitude, the running count and
+the latest confirmed jump time. The trace stays with the local recording and can be attached
+by sending its recording report as feedback.
 
 ## States
 
@@ -73,7 +75,8 @@ One `RopeSkippingSummary` value (jumps, total/active/rest seconds, interval coun
 4. backed up in the activity's `view_metadata` (jumps, total, active, interval count, intervals).
 
 It is a whole value that replaces the earlier one, and the transfer is keyed by the ride id, so a retry cannot add jumps twice.
-Heart rate and calories use the existing HealthKit and Watch energy paths unchanged.
+The HealthKit workout collects heart rate and energy. The jumps recorded during each HealthKit session are included as
+Letm3go workout metadata, and the workout source excludes distance collection.
 
 ## Limits
 

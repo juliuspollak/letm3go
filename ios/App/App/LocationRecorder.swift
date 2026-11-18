@@ -63,6 +63,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var heldReplayChecked = true
     var stopHistoryGeneration = 0
     var motion = MotionEvidence()
+    var recentAutomaticWalkingMotion: MotionEvidence?
     var detector = AutomaticDetector()
     var automaticTrip: RecordedActivity?
     // A stopped journey is published to history immediately and stays open for a
@@ -1242,7 +1243,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func stopSignificantMonitoring(){guard significantLocationRequested else{return};manager.stopMonitoringSignificantLocationChanges();significantLocationRequested=false;recordDiagnostic("service","Significant-change monitoring stopped")}
     func startVisitMonitoring(){guard !visitMonitoringRequested else{return};manager.startMonitoringVisits();visitMonitoringRequested=true;recordDiagnostic("service","Visit monitoring started")}
     func stopVisitMonitoring(){guard visitMonitoringRequested else{return};manager.stopMonitoringVisits();visitMonitoringRequested=false;recordDiagnostic("service","Visit monitoring stopped")}
-    func stopMotionUpdates(){guard motionUpdatesRequested else{return};motionManager?.stopActivityUpdates();motionUpdatesRequested=false;recordDiagnostic("service","Motion monitoring stopped")}
+    func stopMotionUpdates(){recentAutomaticWalkingMotion=nil;guard motionUpdatesRequested else{return};motionManager?.stopActivityUpdates();motionUpdatesRequested=false;recordDiagnostic("service","Motion monitoring stopped")}
     func noteMonitoringStopped(_ region:CLRegion){
         guard let ended=monitoringFailures.stopped(region.identifier) else {return}
         recordDiagnostic("region","Region monitoring failure closed: monitoring was stopped",details:["regionKind":regionKind(region),"lastMonitoringFailure":ended])

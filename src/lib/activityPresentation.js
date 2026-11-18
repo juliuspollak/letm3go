@@ -1,6 +1,6 @@
 import {weatherOf,weatherText} from './weather.js';
 import {activityLabel,activityCode} from './activityNames.js';
-import {typesWithCurrent} from './ropeSkipping.js';
+import {ropeSummary,typesWithCurrent} from './ropeSkipping.js';
 import {ACTIVITY_TYPES,CHOOSABLE_ACTIVITY_TYPES} from './activityTypes.js';
 import {capabilitiesOf} from './activityCapabilities.js';
 import {activitySymbol} from './mapToolbar.js';
@@ -46,7 +46,7 @@ export function activityMapJourney(trip){
 
 export function activityMap(trip,{selectedPhotoID=null,nearby=null}={}){
  const points=Array.isArray(trip.points)?trip.points:[];
- if(!(Array.isArray(trip.route)?trip.route:[]).length)return {routes:[],pins:[],gaps:[]};
+ if(!capabilitiesOf(trip).routeMap||!(Array.isArray(trip.route)?trip.route:[]).length)return {routes:[],pins:[],gaps:[]};
  const own=canCreateSegments(trip)||trip.details?.namedSegments?.length?segmentLayers(trip):null;
  const layers=own||nearby?.pins?.length?{styled:[...(own?.styled||[]),...(nearby?.styled||[])],pins:[...(own?.pins||[]),...(nearby?.pins||[])],muted:false}:null;
  const payload=withSegments(mapPayload([activityMapJourney(trip)],null,null,[],[],{selectedPhotoID}),layers);
@@ -69,11 +69,12 @@ function notices(trip){
 }
 
 function factLines(trip,local,pointCount){
- const lines=[`${trip.source==='tesla'?'Tesla vehicle telemetry · driver not identified':trip.isReconciled?'Linked source recordings':sourceLabel(trip)} · ${trip.source==='simulator'?'Simulator GPS':trip.recordingMode==='automatic'?'Estimated / lower-resolution route':trip.recordingMode==='historical'?'No recorded geometry':trip.source==='tesla'?'Vehicle telemetry':'Accuracy-filtered GPS'}`];
+ const gps=capabilitiesOf(trip).gps;
+ const lines=!gps?[sourceLabel(trip)]:[`${trip.source==='tesla'?'Tesla vehicle telemetry · driver not identified':trip.isReconciled?'Linked source recordings':sourceLabel(trip)} · ${trip.source==='simulator'?'Simulator GPS':trip.recordingMode==='automatic'?'Estimated / lower-resolution route':trip.recordingMode==='historical'?'No recorded geometry':trip.source==='tesla'?'Vehicle telemetry':'Accuracy-filtered GPS'}`];
  if(weatherOf(trip))lines.splice(1,0,`Weather: ${weatherText(weatherOf(trip))}`);
  if(trip.vehicle)lines.push(`Vehicle: ${trip.vehicle}`);
  if(trip.collection)lines.push(`Collection: ${trip.collection}`);
- if(local)lines.push(`Average pace: ${paceLabel(trip.distanceMeters,trip.durationSeconds)} · ${pointCount} GPS samples · Local only`);
+ if(local&&gps)lines.push(`Average pace: ${paceLabel(trip.distanceMeters,trip.durationSeconds)} · ${pointCount} GPS samples · Local only`);
  if(trip.classification)lines.push(`Prediction: ${trip.classification.predicted} · ${trip.classification.confidence} confidence ${trip.corrected?'· Your correction is preserved':''}`.trim());
  return lines;
 }
@@ -86,8 +87,9 @@ function heartSection(trip,{unit,maximumHeartRate}){
  const start=trip.startedAt??samples[0].timestamp,end=Math.max(trip.endedAt??samples.at(-1).timestamp,start+1);
  const stride=Math.max(1,Math.ceil(samples.length/HEART_CHART_SAMPLES));
  // Thinned for drawing only. Every run keeps its ends, so a gap stays a gap.
+ const gps=capabilitiesOf(trip).gps;
  const runs=heartRateRuns(samples,pausePeriods).map(run=>run.filter((_,index)=>index%stride===0||index===run.length-1).map(sample=>{
-  const place=routeAt(trip.points,sample.timestamp);
+  const place=gps?routeAt(trip.points,sample.timestamp):null;
   return {t:sample.timestamp,bpm:Math.round(sample.bpm),place:[place?distanceText(place.distanceMeters/1000,unit):null,place?.speed!=null?`${(place.speed*3.6).toFixed(1)} km/h`:null].filter(Boolean).join(' · ')};
  }));
  const zones=maximumHeartRate?timeInZones(samples,pausePeriods,maximumHeartRate):null;
@@ -144,8 +146,32 @@ function roadReport(estimate){
  return [`Road estimate lookup: ${ROAD_LOOKUP[estimate.lookup]||'unknown'}`,...(estimate.gaps||[]).map((g,i)=>`Gap ${i+1}: ${Math.round(g.seconds)}s, ${g.straightMeters}m straight-line -> ${g.source==='road'?`road ${g.roadMeters}m`:`${GAP_OUTCOME[g.status]||g.status}${g.failures?` (${g.failures} failures)`:''}; straight line used, no road drawn`}`)];
 }
 function diagnostics(trip,segmentReport=[]){
+ const heading=[
+  'Letm3go recording report',
+  `Activity: ${trip.title||trip.activity||'Activity'}`,
+  `Type: ${activityLabel(trip.activity||'Unknown')}`,
+  `Started: ${Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toISOString():'Unknown'}`,
+  `Ended: ${Number.isFinite(trip.endedAt)?new Date(trip.endedAt*1000).toISOString():'Unknown'}`,
+ ];
+ if(!capabilitiesOf(trip).gps){
+  const rope=ropeSummary(trip);
+  const stats=rope?[
+   {label:'Jumps',value:String(rope.jumps)},
+   {label:'Total time',value:clockDuration(rope.totalSeconds)},
+   {label:'Skipping time',value:clockDuration(rope.activeSeconds)},
+   {label:'Rest time',value:clockDuration(rope.restSeconds)},
+   {label:'Intervals',value:String(rope.intervalCount)},
+   {label:'Average cadence',value:`${Math.round(rope.averageCadence)} jumps/min`},
+  ]:[{label:'Workout time',value:clockDuration(trip.durationSeconds)}];
+  const events=(trip.details?.trackingNotes||[]).map(item=>typeof item==='string'?item:item.message||JSON.stringify(item));
+  const motion=activityCode(trip.activity)==='Rope skipping'
+   ?[rope?`Rope intervals: ${JSON.stringify(trip.details.ropeSkipping.intervals??[])}`:'Rope summary unavailable',trip.details?.ropeMotionTrace||'Watch motion trace unavailable']
+   :[];
+  const report=[...heading,...stats.map(({label,value})=>`${label}: ${value}`),'Recorder events:',...events,...motion].join('\n');
+  return {stats,warnings:[],events,report};
+ }
  const d=tripDiagnostics(trip);
- const report=['Letm3go recording report',`Activity: ${trip.title||trip.activity||'Activity'}`,`Type: ${activityLabel(trip.activity||'Unknown')}`,`Started: ${Number.isFinite(trip.startedAt)?new Date(trip.startedAt*1000).toISOString():'Unknown'}`,`Ended: ${Number.isFinite(trip.endedAt)?new Date(trip.endedAt*1000).toISOString():'Unknown'}`,`Recorded distance (m): ${Number(trip.recordedDistanceMeters??trip.distanceMeters??0).toFixed(0)}`,...(trip.distanceEstimate?[`Estimated distance (m): ${trip.distanceEstimate.estimatedMeters} (${trip.distanceEstimate.roadGaps} of ${trip.distanceEstimate.gapCount} GPS gaps along roads, the rest straight-line)`,...roadReport(trip.distanceEstimate)]:[]),`GPS fixes: ${d.points}`,`Median accuracy (m): ${d.medianAccuracy??'Unknown'}`,`First fix lag (s): ${d.lag??'Unknown'}`,`Largest GPS gap (s): ${d.longestGap}`,`End GPS lag (s): ${d.endLag??'Unknown'}`,`Warnings: ${d.warnings.join('; ')||'None'}`,'Recorder events:',...d.events,...segmentReport].join('\n');
+ const report=[...heading,`Recorded distance (m): ${Number(trip.recordedDistanceMeters??trip.distanceMeters??0).toFixed(0)}`,...(trip.distanceEstimate?[`Estimated distance (m): ${trip.distanceEstimate.estimatedMeters} (${trip.distanceEstimate.roadGaps} of ${trip.distanceEstimate.gapCount} GPS gaps along roads, the rest straight-line)`,...roadReport(trip.distanceEstimate)]:[]),`GPS fixes: ${d.points}`,`Median accuracy (m): ${d.medianAccuracy??'Unknown'}`,`First fix lag (s): ${d.lag??'Unknown'}`,`Largest GPS gap (s): ${d.longestGap}`,`End GPS lag (s): ${d.endLag??'Unknown'}`,`Warnings: ${d.warnings.join('; ')||'None'}`,'Recorder events:',...d.events,...segmentReport].join('\n');
  return {stats:[{label:'GPS fixes',value:String(d.points)},{label:'Median accuracy',value:d.medianAccuracy==null?'—':`${Math.round(d.medianAccuracy)} m`},{label:'First fix delay',value:diagnosticTime(d.lag)},{label:'Largest GPS gap',value:diagnosticTime(d.longestGap)},{label:'End fix delay',value:diagnosticTime(d.endLag)}],
   warnings:d.warnings,events:d.events.map(item=>typeof item==='string'?item:item.message||JSON.stringify(item)),report};
 }
@@ -161,14 +187,18 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
  // are ever sent for another person's shared recording.
  if(trip.isShared===true&&trip.readOnly===true){
   const photos=Array.isArray(trip.photos)?trip.photos:[];
+  const {gps,routeMap}=capabilitiesOf(trip);
+  const metrics=[
+   ...(gps?[{id:'distance',label:'Distance',value:distanceText(trip.distance,unit)}]:[]),
+   {id:'duration',label:'Duration',value:clockDuration(trip.durationSeconds)},
+  ];
   return {schema:PRESENTATION_SCHEMA,ownerID:String(ownerID||''),activityID:String(trip.id),updatedAt:null,unit,
    header:{title:trip.title,recordedTitle:trip.title,activity:activityCode(trip.activity),activityLabel:activityLabel(trip.activity),
     subtitle:`${activityLabel(trip.activity)} · Shared by ${trip.ownerName||'a friend'}`,location:'',state:'finished',source:'shared',
-    local:false,readOnly:true,startedAt:trip.startedAt??null,timeZone:null,noRouteDetail:'No route was included in this shared activity.'},
-   summary:[{id:'distance',label:'Distance',value:distanceText(trip.distance,unit)},
-    {id:'duration',label:'Duration',value:clockDuration(trip.durationSeconds)},
+    local:false,readOnly:true,startedAt:trip.startedAt??null,timeZone:null,routeMap,noRouteDetail:'No route was included in this shared activity.'},
+   summary:[...metrics,
     {id:'date',label:'Date',value:trip.date||'—'}],
-   metrics:[{label:'Distance',value:distanceText(trip.distance,unit)},{label:'Duration',value:clockDuration(trip.durationSeconds)}],
+   metrics:metrics.map(({label,value})=>({label,value})),
    notices:[{id:'shared',tone:'info',text:`Shared by ${trip.ownerName||'a friend'} · Read-only activity`}],
    consent:{energy:false,heartRate:false},sources:[],
    photos:{coverID:null,local:false,items:photos.map(photo=>({id:String(photo.id),caption:photo.caption||'',locationSource:photo.locationSource||'unlocated',captureTime:null,assetID:null}))},
@@ -196,7 +226,7 @@ export function activityPresentation(trip,{ownerID,segmentRides=[],segmentReport
   heart:heartSection(trip,{unit,maximumHeartRate}),
   segments:{allowed:segmentsAllowed,ridden:segmentRides,editID:editSegmentID,items:namedSegments(trip).map(segment=>({id:segment.id,name:segment.name,color:segmentColor(segment.colorIndex),startIndex:segment.startIndex,endIndex:segment.endIndex,summary:`${segmentLength(segment.distanceMeters,unit)} · ${clockDuration(segment.durationSeconds)}`,detail:`${clockTime(points[segment.startIndex])} – ${clockTime(points[segment.endIndex])} · ${segment.pointCount} GPS points · ${isCommunitySegmentActivity(trip.activity)?'Community segment':'Private section'}`}))},
   trail:canLinkTrail(trip)?{linkedID:trip.trail?.id??null,linkedLabel:trip.trail?trailLinkLabel(trip.trail):null}:null,
-  trim:!segmentsBlockedTrim(trip,pointCount)?{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??pointCount-1,pointCount}:null,
+  trim:capabilitiesOf(trip).gps&&!segmentsBlockedTrim(trip,pointCount)?{start:trip.visibleRouteStart??0,end:trip.visibleRouteEnd??pointCount-1,pointCount}:null,
   diagnostics:diagnostics(trip,segmentReport),
   tags:tagSection(trip,grouping,canOpenActivities,places),
   facts:{lines:factLines(trip,local,pointCount),evidence:trip.classification?.evidence||[]},

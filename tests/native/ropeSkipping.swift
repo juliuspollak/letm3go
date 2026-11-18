@@ -151,6 +151,26 @@ func ropeSkippingTests(_ check: (Bool, String) -> Void) {
         s.run(until: 32, spikes: spikes, doublePeak: true)
         check(abs(s.engine.jumps - spikes.count) <= 2, "double bumps are not double counted (\(s.engine.jumps) of \(spikes.count))")
     }
+    // Established slow skipping can have two upward peaks far enough apart to pass
+    // the fixed refractory period. Preserve the original jump rhythm.
+    do {
+        var s = Stream(); s.engine.begin(at: 0)
+        let jumps = steady(from: 1, seconds: 30, interval: 0.8)
+        let secondary = jumps.dropFirst(8).map { $0 + 0.4 }
+        s.run(until: 32, spikes: jumps + secondary)
+        check(s.engine.jumps == jumps.count, "half-period peaks do not double the count")
+    }
+    // With an orientation-independent signed input, a downward flick halfway
+    // through a jump cycle must not acquire its own skipping rhythm.
+    do {
+        var engine = RopeSkippingEngine(); engine.begin(at: 0)
+        for i in 0..<1600 {
+            let phase = (i + 30) % 40
+            let acceleration = phase == 0 ? 1.4 : phase == 20 ? -1.4 : 0
+            engine.ingest(magnitude: acceleration, at: Double(i) / 50)
+        }
+        check(engine.jumps == 40, "opposite-direction spikes count once per jump cycle")
+    }
     // Bad and missing samples.
     do {
         var s = Stream(); s.engine.begin(at: 0)
@@ -316,6 +336,38 @@ func ropeSkippingTrackerTests(_ check: (Bool, String) -> Void) {
     feed(t, session: s1, from: 100, to: 120)
     let counted = t.reading().jumps
     check(counted >= 36 && t.reading().phase == .active, "samples inside the session count (\(counted))")
+
+    // The feedback trace travels with the workout, while a stray location callback
+    // and any legacy route in the transfer are excluded from the saved workout.
+    do {
+        let fix = WatchRideFix(latitude: -34, longitude: 151, timestamp: 101, accuracy: 5, altitude: 10, speed: 0)
+        var ride = WatchRideDraft(activity: "Rope skipping", startedAt: 100)
+        check(ride.ingest(fix, now: 101) == .dropped("gps-disabled"), "a rope workout rejects stray location callbacks")
+        ride.finish(at: 120)
+        ride.ropeSkipping = t.summary(totalSeconds: 20)
+        ride.ropeMotionTrace = t.diagnosticTrace()
+        let restored = WatchRideDraft(meta: ride.meta, points: [])
+        var transfer = restored.transfer(now: 120, ownerID: nil, deviceID: nil)!
+        transfer.points = [WatchPoint(latitude: -34, longitude: 151, timestamp: 101, accuracy: 5, altitude: 10, speed: 0, segment: 0)]
+        let decoded = try! JSONDecoder().decode(WatchActivityTransfer.self, from: JSONEncoder().encode(transfer))
+        let activity = WatchActivityImport.activity(from: decoded, now: 120)!
+        check(activity.points.isEmpty && activity.distanceMeters == 0, "a rope workout discards legacy GPS fixes during import")
+        check(activity.details?.ropeMotionTrace == ride.ropeMotionTrace && ride.ropeMotionTrace?.contains("last_confirmed_jump_ms") == true,
+              "the motion trace survives the draft and Watch transfer")
+    }
+
+    // HealthKit can create a replacement session within one Letm3go workout.
+    do {
+        var ride = WatchRideDraft(activity: "Rope skipping", startedAt: 100)
+        ride.beginEnergySession(at: 102, ropeJumpsAtStart: 2)
+        ride.ropeSkipping = t.summary(totalSeconds: 20)
+        check(ride.healthWorkoutJumpCount == counted - 2, "HealthKit metadata counts jumps within its session")
+        ride.beginEnergySession(at: 120, ropeJumpsAtStart: counted)
+        ride.ropeSkipping?.jumps += 12
+        var resumed = WatchRideDraft(meta: ride.meta, points: [])
+        resumed.recoverEnergySession(at: 121)
+        check(resumed.healthWorkoutJumpCount == 12, "a recovered replacement HealthKit session does not repeat earlier jumps")
+    }
 
     // Pause: the session closes first, so a callback still queued from it is ignored.
     t.pause(at: 120)

@@ -456,7 +456,7 @@ struct WatchRecordingView: View {
                     WatchActionButton(title: "Resume", symbol: "play.fill", filled: true) { recorder.resume() }
                 }
                 WatchActionButton(title: "Finish", symbol: "stop.fill") { confirming = true }
-                WatchActionButton(title: "Lock", symbol: "drop.fill", tint: WatchStyle.quiet) { tab = 0; recorder.lockScreen() }
+                WatchActionButton(title: "Lock", symbol: recorder.screenLockMode == .waterLock ? "drop.fill" : "lock.fill", tint: WatchStyle.quiet) { tab = 0; recorder.lockScreen() }
             }
         }
     }
@@ -604,7 +604,14 @@ struct WatchSettingsView: View {
     var body: some View {
         List {
             Toggle("Automatically Lock During Recording", isOn: $recorder.autoLock)
-            Text("Water Lock stops accidental touches. Press and hold the Digital Crown to unlock. Recording carries on either way.")
+            Picker("Lock Method", selection: $recorder.screenLockMode) {
+                ForEach(WatchScreenLockMode.allCases, id: \.self) { method in
+                    Text(method.title).tag(method)
+                }
+            }
+            Text(recorder.screenLockMode == .waterLock
+                 ? "Hold the Digital Crown to unlock. If Water Lock is unavailable, hold Unlock on the screen."
+                 : "Touch and hold Unlock on the recording screen.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .navigationTitle("Settings")

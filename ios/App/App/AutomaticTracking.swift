@@ -43,6 +43,9 @@ extension LocationRecorder {
                     }
                 }
             }
+            if self.automaticAvailable && !self.manualRecordingLive {
+                self.noteAutomaticWalkingMotion(self.motion)
+            }
             self.noteStopMotion(MotionMark(at:activity.startDate.timeIntervalSince1970,
                 kind:StopEvidenceSummary.kind(walking:activity.walking,running:activity.running,automotive:activity.automotive,cycling:activity.cycling,stationary:activity.stationary),
                 confident:activity.confidence != .low))
@@ -84,6 +87,38 @@ extension LocationRecorder {
             }
         }
     }
+    private func noteAutomaticWalkingMotion(_ evidence: MotionEvidence) {
+        if evidence.contradictsWalking {
+            recentAutomaticWalkingMotion = nil
+            return
+        }
+        guard evidence.isConfidentWalking else { return }
+        recentAutomaticWalkingMotion = evidence
+        let stoppedIndex = automaticTrip == nil ? settledTripID.flatMap { id in trips.firstIndex { $0.id == id } } : nil
+        guard let storage, var trip = automaticTrip ?? stoppedIndex.map({ trips[$0] }),
+              trip.corroborateAutomaticWalk(evidence) else { return }
+        if stoppedIndex != nil { nameEndpoints(&trip) }
+        trip.updatedAt = Date().timeIntervalSince1970
+        do {
+            try storage.save(trip)
+            if let stoppedIndex {
+                trips[stoppedIndex] = trip
+                notifyJourneyChange()
+            } else {
+                automaticTrip = trip
+            }
+            recordAutomaticWalkingMatch()
+        } catch {
+            recordDiagnostic("error", "Automatic walking classification could not be saved",
+                             details: ["code": String((error as NSError).code)])
+        }
+    }
+
+    private func recordAutomaticWalkingMatch() {
+        recordDiagnostic("classification", "Automatic activity classification changed",
+                         details: ["predicted": "Walking", "evidence": "Recent walking motion and sustained GPS movement"])
+    }
+
     func setAutomatic(_ enabled: Bool) throws {
         guard storage != nil else { throw failure("Recording storage is unavailable.") }
         if !enabled, automaticTrip != nil || settledTripID != nil {
@@ -679,7 +714,9 @@ extension LocationRecorder {
                     // never held back.
                     let vehicle = LocalWalk.vehicleDeparture(detector.candidate,motion:motion,now:observedAt)
                     if let area = dwell, !vehicle { trip.details?.localWalkOrigin = area }
+                    let matchedWalking = trip.corroborateAutomaticWalk(recentAutomaticWalkingMotion)
                     try storage.save(trip); automaticTrip = trip
+                    if matchedWalking { recordAutomaticWalkingMatch() }
                     diagnosticGPSAccepted+=trip.points.count
                     recordDiagnostic("detection",trip.details?.localWalkOrigin != nil ? "Possible walk from the current place; checking before recording" : "Automatic departure confirmed",
                         details:["firstFixAt":String(first.timestamp),"confirmationDelaySeconds":String(now-first.timestamp),"bufferedFixes":String(trip.points.count)].merging(dwell?.summary ?? [:]){a,_ in a})
@@ -717,9 +754,11 @@ extension LocationRecorder {
                         if sample.speed >= 0.3, !(onFoot && JourneyFamily.of(prediction.predicted) != .onFoot) {
                             trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)
                         }
+                        let matchedWalking = trip.corroborateAutomaticWalk(recentAutomaticWalkingMotion)
                         let classificationChanged=automaticTrip?.activity != trip.activity
                         automaticTrip = trip; unsavedTripID = trip.id
-                        if classificationChanged {recordDiagnostic("classification","Automatic activity classification changed",details:["predicted":trip.activity])}
+                        if matchedWalking { recordAutomaticWalkingMatch() }
+                        else if classificationChanged {recordDiagnostic("classification","Automatic activity classification changed",details:["predicted":trip.activity])}
                         diagnosticGPSAccepted+=1
                         if trip.details?.localWalkOrigin != nil { evaluatePendingWalk() }
                     }else{diagnosticReject("routeDuplicateJitterOrImplausibleMovement")}
@@ -1198,6 +1237,7 @@ extension LocationRecorder {
         } else {
             diagnosticReject("continuationJitter")
         }
+        let matchedWalking = trip.corroborateAutomaticWalk(recentAutomaticWalkingMotion)
         trip.updateDetails { metadata in
             metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + ["Journey continued after \(Int(max(0,now-settled)))s stopped"]).suffix(24))
         }
@@ -1205,6 +1245,7 @@ extension LocationRecorder {
         try storage.save(trip)
         trips.removeAll { $0.id == trip.id }
         automaticTrip = trip
+        if matchedWalking { recordAutomaticWalkingMatch() }
         settleStateReset()
         detector.phase = "recording"
         detector.anchor = trip.points.last ?? last

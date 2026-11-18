@@ -38,6 +38,8 @@ final class WatchRopeMotion: @unchecked Sendable {
     func reading() -> WatchRopeReading { tracker.reading() }
     func summary(totalSeconds: Double) -> RopeSkippingSummary { tracker.summary(totalSeconds: totalSeconds) }
 
+    func diagnosticTrace() -> String? { tracker.diagnosticTrace() }
+
     private func listen(_ session: Int) {
         // A restart replaces the previous sensor stream, whose late samples are ignored by session.
         motion.stopDeviceMotionUpdates()
@@ -49,9 +51,15 @@ final class WatchRopeMotion: @unchecked Sendable {
             if error != nil { tracker.setUnavailable(true, session: session); return }
             guard let data else { return }
             let a = data.userAcceleration
-            tracker.ingest(magnitude: (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot(), sensorTime: data.timestamp,
+            let g = data.gravity
+            let gravityLength = (g.x * g.x + g.y * g.y + g.z * g.z).squareRoot()
+            guard gravityLength.isFinite, gravityLength > 0 else { return }
+            let upward = -(a.x * g.x + a.y * g.y + a.z * g.z) / gravityLength
+            let magnitude = (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot()
+            tracker.ingest(magnitude: upward, sensorTime: data.timestamp,
                            now: Date().timeIntervalSince1970, session: session,
-                           clockOffset: Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime)
+                           clockOffset: Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime,
+                           totalMagnitude: magnitude.isFinite && magnitude < 50 ? magnitude : nil)
         }
     }
 

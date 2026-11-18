@@ -6,10 +6,9 @@ import Foundation
 // validates and shows what the watch sends).
 //
 // How a jump is recognised
-//   The watch feeds the length of Core Motion's user acceleration (gravity removed, so wrist
-//   orientation does not matter). Each landing shows as a short spike. A spike counts as a
-//   candidate when it clears an adaptive threshold and is at least `refractory` after the
-//   previous one (the second bump of one landing is ignored).
+//   The watch projects user acceleration onto the upward axis using Core Motion's
+//   gravity vector. A positive peak that clears the adaptive threshold is a candidate.
+//   Once active, we reject peaks much earlier than the established jump period.
 //   Candidates do not count one by one: skipping is rhythmic, a wrist waved around is not.
 //   While resting, candidates are held in a chain and only counted once `acquireJumps` of
 //   them follow each other at a steady skipping rhythm. The held ones are then counted
@@ -104,7 +103,7 @@ struct RopeSkippingEngine {
     // A trip (a gap longer than `maximumInterval`) adds nothing: time not skipping is not skipping.
     private var openSpan = 0.0
     private var openGaps = 0
-    private var lastJump: Double?
+    private(set) var lastJump: Double?
     private var recent: [Double] = []
     // Spike detection.
     private var earlier: Double?, previous: Double?, previousAt = 0.0, lastSample: Double?, lastSampleAt: Double?
@@ -169,9 +168,9 @@ struct RopeSkippingEngine {
 
     // MARK: - Motion
 
-    // `magnitude` is the length of user acceleration in g. Bad samples are skipped.
+    // `magnitude` is signed upward user acceleration in g. Bad samples are skipped.
     mutating func ingest(magnitude: Double, at time: Double) {
-        guard magnitude.isFinite, magnitude >= 0, time.isFinite, magnitude < 50 else { return }
+        guard magnitude.isFinite, abs(magnitude) < 50, time.isFinite else { return }
         if let at = lastSampleAt, time <= at { return }
         advance(to: time)
         guard phase == .resting || phase == .active else { return }
@@ -186,6 +185,7 @@ struct RopeSkippingEngine {
         let threshold = max(config.minimumPeak, (typical ?? 0) * config.relativePeak)
         guard middle >= threshold else { return }
         if let spike = lastSpike, peakAt - spike < config.refractory { return }
+        if phase == .active, let lastJump, let period = recentPeriod, peakAt - lastJump < period * 0.65 { return }
         lastSpike = peakAt
         spike(strength: middle, at: peakAt)
     }
@@ -261,11 +261,17 @@ struct RopeSkippingEngine {
 
     // MARK: - Readings
 
+    private var recentPeriod: Double? {
+        guard !recent.isEmpty else { return nil }
+        let sorted = recent.sorted()
+        return sorted[sorted.count / 2]
+    }
+
     // The skipping speed right now: zero unless jumping was confirmed within the last seconds.
     var currentCadence: Double {
-        guard phase == .active, let last = lastJump, let at = lastSampleAt, at - last <= 2, !recent.isEmpty else { return 0 }
-        let sorted = recent.sorted()
-        return 60 / sorted[sorted.count / 2]
+        guard phase == .active, let last = lastJump, let at = lastSampleAt, at - last <= 2,
+              let period = recentPeriod else { return 0 }
+        return 60 / period
     }
 
     // Skipping time including the interval still open.
@@ -318,6 +324,10 @@ final class RopeSkippingTracker: @unchecked Sendable {
     private var unavailable = false
     private var lastDelivery: Double?
     private var startedAt = 0.0
+    private var traceStart: Double?
+    private var trace: [(time: Double, acceleration: Double, magnitude: Double?, jumps: Int, confirmed: Double?, session: Int)] = []
+    private static let traceLimit = 6_000
+    private var traceTruncated = false
     // Bound snapshot memory, thinning older snapshots while retaining recent samples.
     // Very delayed interruptions conservatively use the preceding snapshot; never subtract
     // jumps, since rhythm acquisition can credit several earlier peaks together.
@@ -331,6 +341,7 @@ final class RopeSkippingTracker: @unchecked Sendable {
     private func rewind(to time: Double) {
         if let saved = history.last(where: { $0.0 <= time }) ?? history.first { engine = saved.1 }
         history.removeAll { $0.0 > time }
+        while let last = trace.last, last.time > time { trace.removeLast() }
     }
 
     private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
@@ -339,17 +350,26 @@ final class RopeSkippingTracker: @unchecked Sendable {
 
     // A new workout. Returns the session the sensor must deliver into.
     func begin(at time: Double) -> Int {
-        locked { engine = RopeSkippingEngine(); engine.begin(at: time); startedAt = time; history = [(time, engine)]; return startListening() }
+        locked {
+            engine = RopeSkippingEngine()
+            engine.begin(at: time)
+            startedAt = time
+            traceStart = time
+            trace.removeAll(keepingCapacity: true)
+            traceTruncated = false
+            history = [(time, engine)]
+            return startListening()
+        }
     }
     // A workout reopened after a restart: what was counted stays, and it waits paused.
-    func restore(_ summary: RopeSkippingSummary) { locked { stopListening(); history = []; engine = RopeSkippingEngine(restoring: summary) } }
+    func restore(_ summary: RopeSkippingSummary) { locked { stopListening(); history = []; trace = []; traceStart = nil; traceTruncated = false; engine = RopeSkippingEngine(restoring: summary) } }
     func pause(at time: Double) { locked { guard engine.phase != .finished else { return }; rewind(to: time); stopListening(); engine.pause(at: time); remember(at: time) } }
     // The new session, or nil when there is nothing to resume (not paused, or already finished).
     func resume(at time: Double) -> Int? {
         locked { guard engine.phase == .manuallyPaused else { return nil }; engine.resume(at: time); startedAt = time; remember(at: time); return startListening() }
     }
     func finish(at time: Double) { locked { if listening { rewind(to: time) }; stopListening(); engine.finish(at: time); history = [] } }
-    func discard() { locked { stopListening(); history = []; engine = RopeSkippingEngine() } }
+    func discard() { locked { stopListening(); history = []; trace = []; engine = RopeSkippingEngine() } }
     func advance(to time: Double) { locked {
         if listening, time - (lastDelivery ?? startedAt) > 3 { unavailable = true }
         // Motion samples advance rest detection. Silence is a sensor warning, not a rest.
@@ -358,9 +378,9 @@ final class RopeSkippingTracker: @unchecked Sendable {
 
     // `sensorTime` counts from boot; `now` is the clock. The offset is fixed by the session's first sample
     // or supplied from the boot clock by Core Motion; delivery latency never moves a sample forward.
-    func ingest(magnitude: Double, sensorTime: Double, now: Double, session id: Int, clockOffset: Double? = nil) {
+    func ingest(magnitude: Double, sensorTime: Double, now: Double, session id: Int, clockOffset: Double? = nil, totalMagnitude: Double? = nil) {
         locked {
-            guard listening, id == session, magnitude.isFinite, magnitude >= 0, magnitude < 50,
+            guard listening, id == session, magnitude.isFinite, abs(magnitude) < 50,
                   sensorTime.isFinite, now.isFinite else { return }
             if let clockOffset { offset = clockOffset }
             else if offset == nil { offset = now - sensorTime }
@@ -368,8 +388,28 @@ final class RopeSkippingTracker: @unchecked Sendable {
             guard time.isFinite, time >= startedAt, time >= (history.last?.0 ?? startedAt) else { return }
             lastDelivery = now
             unavailable = false
+            let previousCount = engine.jumps
             engine.ingest(magnitude: magnitude, at: time)
+            if trace.count < Self.traceLimit {
+                if traceStart == nil { traceStart = time }
+                let confirmed = engine.jumps > previousCount ? engine.lastJump : nil
+                trace.append((time, magnitude, totalMagnitude, engine.jumps, confirmed, id))
+            } else { traceTruncated = true }
             remember(at: time)
+        }
+    }
+    func diagnosticTrace() -> String? {
+        locked {
+            guard let traceStart, !trace.isEmpty else { return nil }
+            let header = "Rope motion v2 · \(trace.count) samples\(traceTruncated ? " (capture limit reached)" : "")"
+            let rows = trace.map { sample in
+                let magnitude = sample.magnitude.map { Int(($0 * 1000).rounded()).description } ?? ""
+                let elapsed = Int(((sample.time - traceStart) * 1000).rounded())
+                let acceleration = Int((sample.acceleration * 1000).rounded())
+                let confirmed = sample.confirmed.map { Int((($0 - traceStart) * 1000).rounded()).description } ?? ""
+                return "\(elapsed),\(acceleration),\(magnitude),\(sample.jumps),\(confirmed),\(sample.session)"
+            }
+            return ([header, "elapsed_ms,upward_milli_g,magnitude_milli_g,count,last_confirmed_jump_ms,session"] + rows).joined(separator: "\n")
         }
     }
     func reading() -> WatchRopeReading {

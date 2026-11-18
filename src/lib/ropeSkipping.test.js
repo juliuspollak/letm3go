@@ -67,6 +67,22 @@ describe('rope skipping on the activity detail',()=>{
   const ride=activitySummary({activity:'MTB',distanceMeters:12000,durationSeconds:3600,details:{movingSeconds:3000}});
   expect(ride.map(e=>e.id)).toEqual(['distance','moving','elapsed']);
  });
+ it('includes rope motion and the jump tally in feedback without GPS diagnostics',()=>{
+  const trace='Rope motion v2\nelapsed_ms,upward_milli_g,magnitude_milli_g,count,last_confirmed_jump_ms,session\n20,640,650,1,0,1';
+  const view=activityPresentation(trip({ropeMotionTrace:trace}),{segmentReport:['GPS segment matching']});
+  expect(view.diagnostics.report).toContain('Jumps: 1250');
+  expect(view.diagnostics.report).toContain(trace);
+  expect(view.diagnostics.report).not.toMatch(/GPS|distance/i);
+  expect(view.diagnostics.warnings).toEqual([]);
+  expect(view.header.routeMap).toBe(false);
+ });
+ it('omits legacy distance and routes on shared rope skipping workouts',()=>{
+  const shared=trip({}, {isShared:true,readOnly:true,distance:1.5,route:[[-34,151],[-34.01,151]]});
+  const view=activityPresentation(shared);
+  expect(view.header.routeMap).toBe(false);
+  expect(view.summary.map(item=>item.id)).toEqual(['duration','date']);
+  expect(view.map.routes).toEqual([]);
+ });
  it('explains the missing route as indoor and offers the type it already has',()=>{
   const presentation=activityPresentation(trip(),{ownerID:'o'});
   expect(presentation.noRouteDetail||JSON.stringify(presentation)).toMatch(/Indoor activity/);

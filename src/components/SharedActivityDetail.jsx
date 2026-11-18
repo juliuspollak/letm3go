@@ -35,7 +35,7 @@ export default function SharedActivityDetail({activityID=null,token=null,ownerNa
  return <main className="public-journey"><button className="secondary" type="button" onClick={onBack}>Back</button>
   <h1>{detail.header.title}</h1><p>{detail.header.subtitle}</p>
   <div className="shared-journey-facts">{detail.summary.map(item=><p key={item.id}><strong>{item.label}:</strong> {item.value}</p>)}</div>
-  {trip.routeSegments.some(segment=>segment.length>1)&&<JourneyMap journeys={[trip]} large/>}
+  {detail.header.routeMap&&trip.routeSegments.some(segment=>segment.length>1)&&<JourneyMap journeys={[trip]} large/>}
   {trip.description&&<p>{trip.description}</p>}
   {token&&trip.photos.length>0&&<div className="shared-photo-gallery">{trip.photos.map(photo=><BrowserSharedPhoto key={photo.id} token={token} photo={photo}/>)}</div>}
  </main>;

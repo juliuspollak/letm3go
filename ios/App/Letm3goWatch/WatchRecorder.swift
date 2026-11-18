@@ -52,7 +52,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     @Published private(set) var startBlocked: RecordingPresence?
     @Published private(set) var otherRecording: RecordingPresence?
     @Published private(set) var waterLockActive = false
-    // On-screen lock for when Water Lock cannot be used.
+    // On-screen lock selected in Settings or used when Water Lock cannot engage.
     @Published private(set) var softLocked = false
     @Published private(set) var waterLockUnavailable = false
     @Published var autoLock = true {
@@ -62,8 +62,13 @@ final class WatchRecorder: NSObject, ObservableObject {
         }
     }
 
+    @Published var screenLockMode: WatchScreenLockMode = .waterLock {
+        didSet { UserDefaults.standard.set(screenLockMode.rawValue, forKey: Self.screenLockModeKey) }
+    }
+
     static let activityKey = "watch.activity"
     static let autoLockKey = "watch.autoLock"
+    private static let screenLockModeKey = "watch.screenLockMode"
     // Fixes are persisted at most this often, which bounds flash wear without
     // risking more than a few seconds of a ride.
     private static let persistInterval = 5.0
@@ -115,6 +120,8 @@ final class WatchRecorder: NSObject, ObservableObject {
         pendingCount = WatchTransferQueue.shared.pendingCount()
         autoLock = UserDefaults.standard.object(forKey: Self.autoLockKey) as? Bool ?? true
         waterLock.automatic = autoLock
+        screenLockMode = UserDefaults.standard.string(forKey: Self.screenLockModeKey)
+            .flatMap(WatchScreenLockMode.init(rawValue:)) ?? .waterLock
     }
 
     var isRecording: Bool { draft?.isRecording == true }
@@ -329,7 +336,7 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func start() {
         guard draft == nil else { return }
-        if config.indoor == true { beginRide(); return }
+        if !ActivityCapabilities.of(config.activity, indoor: config.indoor == true).gps { beginRide(); return }
         switch manager.authorizationStatus {
         case .notDetermined:
             // Wait for the delegate to report an authorised status: starting now
@@ -427,7 +434,8 @@ final class WatchRecorder: NSObject, ObservableObject {
         if WatchCatalog.isRopeSkipping(ride.activity) { ropeMotion.begin(at: now); rope = ropeMotion.reading() }
         awaitingHealth = false; healthRequestRideID = nil
         collectionFailure = false; sessionFailure = false
-        if !ride.indoor { startLocation() }
+        startLocation()
+        activateLockIfWanted()
         requestHealthAccessThenStartWorkout()
         startTicker()
         WatchDiagnostics.log("watch", "Watch recording started", ["activity": ride.activity, "indoor": String(ride.indoor)])
@@ -485,23 +493,28 @@ final class WatchRecorder: NSObject, ObservableObject {
         lastHeartRate = nil
         heartRate = .waiting
         persist(force: true)
-        if !ride.indoor { startLocation() }
+        startLocation()
         if collectionFailure || sessionFailure { discardWorkout() }
         if WatchWorkoutLifecycle.startsNewSession(hasSession: workout != nil, recovering: recoveringWorkout) {
             requestHealthAccessThenStartWorkout()
         } else if workout?.state == .paused {
             workout?.resume()
         }
+        activateLockIfWanted()
         startTicker()
         announcePresence(force: true)
     }
 
     // A deliberate unlock stays unlocked: only this explicit press locks again.
     func lockScreen() {
+        guard hasRide else { return }
         waterLock.noteManualLock()
-        activateWaterLock()
+        activateScreenLock()
     }
-    func softUnlock() { softLocked = false }
+    func softUnlock() {
+        softLocked = false
+        waterLock.noteSoftUnlock()
+    }
 
     func discard() {
         ticker?.invalidate(); ticker = nil
@@ -617,7 +630,8 @@ final class WatchRecorder: NSObject, ObservableObject {
     // asserted on it on the Watch simulator, even with `location` in WKBackgroundModes,
     // which ends the app the moment a recording starts.
     private func startLocation() {
-        let chosen = precision(for: draft?.activity ?? activity)
+        guard let ride = draft, ActivityCapabilities.of(ride.activity, indoor: ride.indoor).gps else { return }
+        let chosen = precision(for: ride.activity)
         manager.desiredAccuracy = chosen == .high ? kCLLocationAccuracyBestForNavigation : chosen == .balanced ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
         manager.distanceFilter = chosen.distanceFilter < 0 ? kCLDistanceFilterNone : chosen.distanceFilter
         manager.startUpdatingLocation()
@@ -703,6 +717,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         if WatchCatalog.isRopeSkipping(ride.activity) {
             ropeMotion.finish(at: now)
             ride.ropeSkipping = ropeMotion.summary(totalSeconds: ride.duration(at: now))
+            ride.ropeMotionTrace = ropeMotion.diagnosticTrace() ?? ride.ropeMotionTrace
             ropeSummary = ride.ropeSkipping
             rope = ropeMotion.reading()
         }
@@ -813,7 +828,7 @@ final class WatchRecorder: NSObject, ObservableObject {
             "heartRateSamples": String(ride.heartRate.count), "heartRateGaps": String(summary?.gaps ?? 0)])
         announcePresence(force: true)
 
-        finishWorkout { [weak self] saved, reading, collectionEnded in
+        finishWorkout(jumpCount: ride.healthWorkoutJumpCount) { [weak self] saved, reading, collectionEnded in
             guard let self else { return }
             self.finishing = false
             self.status = saved ? "Saved to Health · waiting for iPhone" : "Saved · waiting for iPhone"
@@ -899,10 +914,16 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     nonisolated private static var activeEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) }
     nonisolated private static var basalEnergyType: HKQuantityType? { HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned) }
 
-    private static func configureDataSource(_ source: HKLiveWorkoutDataSource) {
-        for identifier: HKQuantityTypeIdentifier in [.heartRate, .activeEnergyBurned, .basalEnergyBurned] {
-            if let type = HKQuantityType.quantityType(forIdentifier: identifier) { source.enableCollection(for: type, predicate: nil) }
+    private static func configureDataSource(_ source: HKLiveWorkoutDataSource, ropeSkipping: Bool) {
+        let bodyMetrics = Set([HKQuantityTypeIdentifier.heartRate, .activeEnergyBurned, .basalEnergyBurned]
+            .compactMap { HKQuantityType.quantityType(forIdentifier: $0) })
+        if ropeSkipping {
+            // HealthKit can collect pedometer distance even with location disabled.
+            for type in source.typesToCollect.subtracting(bodyMetrics) {
+                source.disableCollection(for: type)
+            }
         }
+        for type in bodyMetrics { source.enableCollection(for: type, predicate: nil) }
     }
 
     // Cumulative builder statistics for active and resting energy, in kcal. Zero is
@@ -957,6 +978,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         status = "Recording without a workout session"
         heartRate = .unavailable
         waterLockUnavailable = true
+        activateLockIfWanted(workoutUnavailable: true)
     }
 
     private func startWorkout() {
@@ -965,17 +987,18 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         let classification = WatchWorkoutClassifier.classify(ride.activity, indoor: ride.indoor)
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = Self.workoutType(classification.type)
-        configuration.locationType = ride.indoor ? .indoor : .outdoor
+        configuration.locationType = classification.indoor ? .indoor : .outdoor
         healthWorkoutSaves = classification.savesToHealth
         // A fresh workout opens a fresh measured segment. Recovery reuses its id.
-        ride.beginEnergySession(at: Date().timeIntervalSince1970)
+        let jumpBaseline = WatchCatalog.isRopeSkipping(ride.activity) ? ropeMotion.reading().jumps : nil
+        ride.beginEnergySession(at: Date().timeIntervalSince1970, ropeJumpsAtStart: jumpBaseline)
         draft = ride
         do {
             let session = try HKWorkoutSession(healthStore: health, configuration: configuration)
             let builder = session.associatedWorkoutBuilder()
             let source = HKLiveWorkoutDataSource(healthStore: health, workoutConfiguration: configuration)
             // Heart rate plus active and resting energy come from this one source.
-            Self.configureDataSource(source)
+            Self.configureDataSource(source, ropeSkipping: WatchCatalog.isRopeSkipping(ride.activity))
             builder.dataSource = source
             session.delegate = self
             builder.delegate = self
@@ -1045,12 +1068,12 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                 builder.delegate = self
                 if builder.dataSource == nil {
                     let source = HKLiveWorkoutDataSource(healthStore: self.health, workoutConfiguration: session.workoutConfiguration)
-                    Self.configureDataSource(source)
+                    Self.configureDataSource(source, ropeSkipping: WatchCatalog.isRopeSkipping(ride.activity))
                     builder.dataSource = source
                 } else if let source = builder.dataSource {
                     // A prior build may have joined without energy collection: enable it
                     // now so recovered sessions keep producing active and resting energy.
-                    Self.configureDataSource(source)
+                    Self.configureDataSource(source, ropeSkipping: WatchCatalog.isRopeSkipping(ride.activity))
                 }
                 self.builder = builder
                 // Rejoining the SAME workout keeps the SAME measured segment identity.
@@ -1086,7 +1109,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
     // Called by watchOS when it relaunches the app for an interrupted workout.
     func handleWorkoutRecovery() { restore() }
 
-    private func finishWorkout(_ completion: @escaping (Bool, WatchEnergyReading, Bool) -> Void) {
+    private func finishWorkout(jumpCount: Int? = nil, _ completion: @escaping (Bool, WatchEnergyReading, Bool) -> Void) {
         guard let session = workout, let builder = builder else {
             completion(false, WatchEnergy.reading(activeKcal: nil, basalKcal: nil), false)
             return
@@ -1105,11 +1128,18 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                 Task { @MainActor in completion(false, reading, ended) }
                 return
             }
-            builder.finishWorkout { saved, _ in
-                Task { @MainActor in
-                    if saved == nil { WatchDiagnostics.log("health", "Workout was not saved to Health") }
-                    completion(saved != nil, reading, ended)
+            let save: @Sendable () -> Void = {
+                builder.finishWorkout { saved, _ in
+                    Task { @MainActor in
+                        if saved == nil { WatchDiagnostics.log("health", "Workout was not saved to Health") }
+                        completion(saved != nil, reading, ended)
+                    }
                 }
+            }
+            if ended, let jumpCount {
+                builder.addMetadata(["au.jpollak.journey.jumpCount": jumpCount]) { _, _ in save() }
+            } else {
+                save()
             }
         }
     }
@@ -1301,7 +1331,7 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
                 case .pauseSession: workoutSession.pause()
                 default: break
                 }
-                self.activateWaterLockIfWanted()
+                self.activateLockIfWanted()
             }
         default:
             break
@@ -1318,12 +1348,12 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         // to a newer session or a ride that has since been replaced.
         let rideID = draft?.id
         let sessionID = draft?.activeEnergySessionID
-        finishWorkout { [weak self] _, reading, _ in
+        pause(at: date.timeIntervalSince1970, pauseSession: false)
+        finishWorkout(jumpCount: draft?.healthWorkoutJumpCount) { [weak self] _, reading, _ in
             guard let self, let rideID, let sessionID else { return }
             self.applyFinalEnergy(reading, rideID: rideID, sessionID: sessionID)
         }
         WatchDiagnostics.log("health", "Workout session ended by the system")
-        pause(at: date.timeIntervalSince1970)
         status = "Workout ended · finish to save this ride"
         WKInterfaceDevice.current().play(.failure)
     }
@@ -1414,31 +1444,36 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         }
     }
 
-    // MARK: - Water Lock
+    // MARK: - Recording screen lock
 
-    private func activateWaterLockIfWanted() {
-        guard waterLock.shouldLock(workoutRunning: workout?.state == .running, recording: isRecording) else { return }
+    private func activateLockIfWanted(workoutUnavailable: Bool = false) {
+        let ready = screenLockMode.readyForAutomaticLock(workoutRunning: workout?.state == .running,
+                                                         workoutUnavailable: workoutUnavailable)
+        guard waterLock.shouldLock(ready: ready, recording: isRecording) else { return }
         waterLock.noteRequested()
-        activateWaterLock()
+        activateScreenLock()
     }
 
-    // watchOS allows this only for the frontmost app with a workout session, and has
-    // no way to report a refusal, so the result is read back on the next tick.
-    private func activateWaterLock() {
-        let device = WKInterfaceDevice.current()
-        if workout?.state == .running, WKExtension.shared().applicationState == .active {
-            device.enableWaterLock()
-            waterLockActive = device.isWaterLockEnabled
-            if waterLockActive { _ = waterLock.observe(locked: true) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.confirmWaterLock() }
-        } else {
-            useSoftLock(reason: "noWorkoutOrBackground")
+    private func activateScreenLock() {
+        if screenLockMode == .holdToUnlock {
+            softLocked = true
+            WatchDiagnostics.log("watch", "On-screen lock on")
+            return
         }
-    }
-
-    private func confirmWaterLock() {
+        // watchOS accepts requests from a frontmost app with a running workout.
+        // Read the device state back because the call does not report a refusal.
+        guard let rideID = draft?.id, workout?.state == .running, WKExtension.shared().applicationState == .active else {
+            useSoftLock(reason: "noWorkoutOrBackground")
+            return
+        }
+        let device = WKInterfaceDevice.current()
+        device.enableWaterLock()
         observeWaterLock()
-        if draft != nil, !waterLockActive, !waterLock.unlockedByRider { useSoftLock(reason: "notEnabled") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, self.draft?.id == rideID, self.screenLockMode == .waterLock else { return }
+            self.observeWaterLock()
+            if !self.waterLockActive, !self.waterLock.unlockedByRider { self.useSoftLock(reason: "notEnabled") }
+        }
     }
 
     private func useSoftLock(reason: String) {

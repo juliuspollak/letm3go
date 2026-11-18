@@ -107,7 +107,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         installNoRoutePlaceholder()
         installMapControls()
         applyMapVisibility()
-        installPanel()
+        installDetailsContent()
         edgePan.edges = .left
         view.addGestureRecognizer(edgePan)
         model.onClose = { [weak self] in self?.onClose?() }
@@ -118,7 +118,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         model.onFocusRange = { [weak self] start, end in self?.focusMap(start: start, end: end) }
         installMapPicking()
         keyboardObserver = NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self, self.presentedViewController == nil, self.panel.state != .full else { return }
+            guard let self, self.showsMap, self.presentedViewController == nil, self.panel.state != .full else { return }
             self.panel.move(to: .full, animated: true)
         }
     }
@@ -126,7 +126,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.camera.shouldFit(activityID: self.activityID, hasRoute: self.engine.hasRoute) else { return }
+            guard let self, self.showsMap, self.camera.shouldFit(activityID: self.activityID, hasRoute: self.engine.hasRoute) else { return }
             self.fit(animated: false)
         }
     }
@@ -144,7 +144,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
     private func applyMapVisibility() {
         mapView.isHidden = !showsMap
         placeholder?.view.isHidden = !showsMap || engine.hasRoute
-        view.backgroundColor = showsMap ? .systemBackground : .systemGroupedBackground
+        view.backgroundColor = .systemBackground
         for button in view.subviews.compactMap({ $0 as? UIButton }) where ["activity.recentre", "activity.mapStyle"].contains(button.accessibilityIdentifier ?? "") { button.isHidden = !showsMap }
     }
     private func installNoRoutePlaceholder() {
@@ -190,9 +190,36 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         engine.style(mapStyle)
         view.subviews.compactMap { $0 as? UIButton }.first { $0.accessibilityIdentifier == "activity.mapStyle" }?.accessibilityLabel = mapStyle == "standard" ? "Show satellite map" : "Show standard map"
     }
-    private func installPanel() {
+    private func installDetailsContent() {
+        let root = ActivityDetailsRootView(model: model) { [weak self] scrollView in
+            guard let self, self.showsMap, self.panel.trackingScrollView !== scrollView else { return }
+            self.panel.track(scrollView: scrollView)
+        }
+        let hosting = UIHostingController(rootView: root)
+        hosting.view.backgroundColor = .clear
+        self.hosting = hosting
+
+        if showsMap {
+            installPanel(hosting)
+        } else {
+            model.panelPosition = .expanded
+            addChild(hosting)
+            hosting.view.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(hosting.view)
+            let guide = view.safeAreaLayoutGuide
+            NSLayoutConstraint.activate([
+                hosting.view.topAnchor.constraint(equalTo: guide.topAnchor, constant: 56),
+                hosting.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                hosting.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                hosting.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+            hosting.didMove(toParent: self)
+        }
+    }
+
+    private func installPanel(_ hosting: UIHostingController<ActivityDetailsRootView>) {
         panel.delegate = self
-        panel.layout = ActivityPanelSnapLayout(initial: panelState(ActivityPanelLayout.initial(hasRoute: engine.hasRoute && showsMap)), mediumHeight: CGFloat(ActivityPanelLayout.mediumHeight(container: Double(UIScreen.main.bounds.height))))
+        panel.layout = ActivityPanelSnapLayout(initial: panelState(ActivityPanelLayout.initial(hasRoute: engine.hasRoute)), mediumHeight: CGFloat(ActivityPanelLayout.mediumHeight(container: Double(UIScreen.main.bounds.height))))
         panel.isRemovalInteractionEnabled = false
         // Static, so the content has the expanded height and scrolls within it. With
         // fitToBounds the SwiftUI content's own height stretches the surface instead.
@@ -205,13 +232,6 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         shadow.opacity = 0.18; shadow.radius = 12
         panel.surfaceView.appearance.shadows = [shadow]
         panel.surfaceView.accessibilityIdentifier = "activity.panel"
-        let root = ActivityDetailsRootView(model: model) { [weak self] scrollView in
-            guard let self, self.panel.trackingScrollView !== scrollView else { return }
-            self.panel.track(scrollView: scrollView)
-        }
-        let hosting = UIHostingController(rootView: root)
-        hosting.view.backgroundColor = .clear
-        self.hosting = hosting
         panel.set(contentViewController: hosting)
         panel.addPanel(toParent: self)
         model.panelPosition = panelPosition
@@ -227,6 +247,7 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
         panel.state == .tip ? .collapsed : panel.state == .full ? .expanded : .medium
     }
     private func move(to position: ActivityPanelPosition) {
+        guard showsMap else { return }
         // Content only scrolls when expanded, so anything lower must start from the top.
         if position != .expanded, let scroll = panel.trackingScrollView { scroll.setContentOffset(.zero, animated: false) }
         panel.move(to: panelState(position), animated: !UIAccessibility.isReduceMotionEnabled) { [weak self] in
@@ -247,16 +268,30 @@ final class ActivityDetailsViewController: UIViewController, FloatingPanelContro
 
     func update(_ presentation: ActivityPresentation, map: [String: Any]) {
         let changedActivity = presentation.activityID != activityID
+        let hadMap = showsMap
         mapBase = map
         model.apply(presentation)
+        guard isViewLoaded else { return }
         // A draft on the map stays there until it is saved or cancelled.
         if model.draft == nil { engine.apply(map) } else { draftChanged(model.draft) }
         applyMapVisibility()
+        if hadMap != showsMap {
+            if hadMap {
+                if let scroll = panel.trackingScrollView { panel.untrack(scrollView: scroll) }
+                panel.removePanelFromParent(animated: false)
+                panel.set(contentViewController: nil)
+            } else if let hosting {
+                hosting.willMove(toParent: nil)
+                hosting.view.removeFromSuperview()
+                hosting.removeFromParent()
+            }
+            installDetailsContent()
+        }
         if changedActivity {
             placeholder?.rootView = ActivityNoRouteView(text: model.noRouteText)
-            move(to: ActivityPanelLayout.initial(hasRoute: engine.hasRoute && showsMap))
+            move(to: ActivityPanelLayout.initial(hasRoute: engine.hasRoute))
         }
-        if view.window != nil, camera.shouldFit(activityID: presentation.activityID, hasRoute: engine.hasRoute) { fit(animated: false) }
+        if showsMap, view.window != nil, camera.shouldFit(activityID: presentation.activityID, hasRoute: engine.hasRoute) { fit(animated: false) }
     }
     // A handle can move on every touch; the map follows at a rate MapKit can draw.
     private func draftChanged(_ draft: ActivityMapDraft?) {

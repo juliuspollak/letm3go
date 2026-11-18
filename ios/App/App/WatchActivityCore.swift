@@ -89,6 +89,7 @@ struct WatchActivityTransfer: Codable, Equatable {
     var energyWorkoutExternalUUID: String?
     var energySessionIDs: [String]?
     // Rope skipping jumps and intervals. Optional: other activities and older builds never carry it.
+    var ropeMotionTrace: String?
     var ropeSkipping: RopeSkippingSummary?
 
     // 4 is the energy-only enrichment schema. Old phones see `schema > currentSchema`
@@ -104,7 +105,7 @@ struct WatchActivityTransfer: Codable, Equatable {
          elevationLossMeters: Double? = nil, appVersion: String? = nil, equipment: WatchEquipment? = nil,
          heartRate: [WatchHeartRateSample]? = nil, energy: ActivityEnergy? = nil, pausePeriods: [WatchPausePeriod]? = nil, indoor: Bool? = nil,
          energyTargetID: String? = nil, energyRevision: Int? = nil,
-         energyWorkoutExternalUUID: String? = nil, energySessionIDs: [String]? = nil, ropeSkipping: RopeSkippingSummary? = nil) {
+         energyWorkoutExternalUUID: String? = nil, energySessionIDs: [String]? = nil, ropeSkipping: RopeSkippingSummary? = nil, ropeMotionTrace: String? = nil) {
         self.schema = schema
         self.heartRate = heartRate
         self.energy = energy?.validated
@@ -115,6 +116,7 @@ struct WatchActivityTransfer: Codable, Equatable {
         self.energyWorkoutExternalUUID = energyWorkoutExternalUUID
         self.energySessionIDs = energySessionIDs
         self.ropeSkipping = ropeSkipping
+        self.ropeMotionTrace = ropeMotionTrace
         self.equipmentID = equipment?.id
         self.equipmentName = equipment?.name
         self.equipmentKind = equipment?.kind
@@ -173,6 +175,7 @@ extension WatchActivityTransfer {
         energyWorkoutExternalUUID = try? c.decodeIfPresent(String.self, forKey: .energyWorkoutExternalUUID)
         energySessionIDs = try? c.decodeIfPresent([String].self, forKey: .energySessionIDs)
         // A value this build cannot read costs the jump data, never the whole activity.
+        ropeMotionTrace = try? c.decodeIfPresent(String.self, forKey: .ropeMotionTrace)
         ropeSkipping = (try? c.decodeIfPresent(RopeSkippingSummary.self, forKey: .ropeSkipping)) ?? nil
     }
     // The bike as an equipment reference, when its fields are usable. Invalid
@@ -385,8 +388,10 @@ enum WatchActivityImport {
     static func activity(from transfer: WatchActivityTransfer, now: Double = Date().timeIntervalSince1970,
                          heartRateVerified: Bool = true) -> RecordedActivity? {
         guard issue(with: transfer, now: now) == nil else { return nil }
-        let analyzer = WatchTrackAnalyzer(points: transfer.points, activity: transfer.activity)
-        let points = transfer.points.map {
+        let usesGPS = ActivityCapabilities.of(transfer.activity, indoor: transfer.indoor == true).gps
+        let fixes = usesGPS ? transfer.points : []
+        let analyzer = WatchTrackAnalyzer(points: fixes, activity: transfer.activity)
+        let points = fixes.map {
             GPSPoint(latitude: $0.latitude, longitude: $0.longitude, timestamp: $0.timestamp,
                      accuracy: $0.accuracy, altitude: $0.altitude, speed: $0.speed, segment: $0.segment)
         }
@@ -406,7 +411,7 @@ enum WatchActivityImport {
         trip.points = points
         trip.segment = points.last?.segment ?? 0
         var details = ActivityDetails()
-        details.indoor = transfer.indoor == true ? true : nil
+        details.indoor = usesGPS ? nil : true
         let paused = WatchHeartRate.cleaned(transfer.pausePeriods ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt)
         let series = ActivityHeartRate(samples: WatchHeartRate.cleaned(transfer.heartRate ?? [], startedAt: transfer.startedAt, endedAt: transfer.endedAt, paused: paused), pausePeriods: paused)
         if heartRateVerified {
@@ -442,10 +447,11 @@ enum WatchActivityImport {
         let gain = Int(analyzer.metrics.elevationGainMeters.rounded())
         details.trackingNotes = [
             "Recorded on Apple Watch and transferred to this iPhone",
-            "Watch active time \(active)s, moving time \(moving)s, elevation gain \(gain)m"
+            usesGPS ? "Watch active time \(active)s, moving time \(moving)s, elevation gain \(gain)m" : "Watch workout time \(active)s"
         ]
         if transfer.activity == "Rope skipping", let summary = transfer.ropeSkipping?.validated(elapsedSeconds: max(1, transfer.endedAt - transfer.startedAt)) {
             details.ropeSkipping = summary
+            if let trace = transfer.ropeMotionTrace, trace.utf8.count <= 256_000 { details.ropeMotionTrace = trace }
         }
         trip.details = details
         trip.updatedAt = now
@@ -461,6 +467,7 @@ enum WatchActivityImport {
 
     static func metrics(for transfer: WatchActivityTransfer) -> WatchRideMetrics? {
         guard issue(with: transfer) == nil else { return nil }
+        guard ActivityCapabilities.of(transfer.activity, indoor: transfer.indoor == true).gps else { return WatchRideMetrics() }
         return WatchTrackAnalyzer(points: transfer.points, activity: transfer.activity).metrics
     }
 
@@ -603,6 +610,7 @@ struct WatchRideMeta: Codable, Equatable {
     var energySessions: [WatchEnergySession]? = nil
     var activeEnergySessionID: String? = nil
     // Rope skipping only: jumps and intervals counted so far, checkpointed with the ride.
+    var ropeMotionTrace: String?
     var ropeSkipping: RopeSkippingSummary? = nil
 }
 
@@ -629,6 +637,7 @@ struct WatchRideDraft {
     // Per-workout-session cumulative energy, durable across pause/system-end/restart.
     var energySessions: [WatchEnergySession]
     var activeEnergySessionID: String?
+    var ropeMotionTrace: String?
     var ropeSkipping: RopeSkippingSummary?
 
     var points: [WatchPoint] { analyzer.points }
@@ -663,7 +672,7 @@ struct WatchRideDraft {
         id = meta.id
         ownerID = WatchOwnership.normalize(meta.ownerID)
         ownerCaptured = meta.ownerCaptured ?? false
-        indoor = meta.indoor ?? false
+        indoor = !ActivityCapabilities.of(meta.activity, indoor: meta.indoor == true).gps
         pausedAt = meta.pausedAt
         pausePeriods = meta.pausePeriods ?? []
         // Optional sidecar rewrites can fail, leaving old observations behind a
@@ -673,7 +682,7 @@ struct WatchRideDraft {
         let belongsToRecording: (Double) -> Bool = { time in
             (cutoff.map { time <= $0 } ?? true) && !WatchHeartRate.inside(time, periods)
         }
-        let keptPoints = points.filter { belongsToRecording($0.timestamp) }
+        let keptPoints = indoor ? [] : points.filter { belongsToRecording($0.timestamp) }
         self.heartRate = heartRate.filter { belongsToRecording($0.timestamp) }
         activity = meta.activity
         if let equipmentID = meta.equipmentID, let equipmentName = meta.equipmentName {
@@ -695,6 +704,7 @@ struct WatchRideDraft {
         energySessions = meta.energySessions ?? []
         activeEnergySessionID = meta.activeEnergySessionID
         ropeSkipping = meta.ropeSkipping
+        ropeMotionTrace = meta.ropeMotionTrace
     }
 
     var meta: WatchRideMeta {
@@ -706,7 +716,7 @@ struct WatchRideDraft {
                       pausedAt: pausedAt, pausePeriods: pausePeriods.isEmpty ? nil : pausePeriods,
                       heartRateCount: heartRate.count,
                       energySessions: energySessions.isEmpty ? nil : energySessions,
-                      activeEnergySessionID: activeEnergySessionID, ropeSkipping: ropeSkipping)
+                      activeEnergySessionID: activeEnergySessionID, ropeMotionTrace: ropeMotionTrace, ropeSkipping: ropeSkipping)
     }
 
     // Anything that ran. Too little to keep is reported on screen, never dropped quietly.
@@ -714,10 +724,17 @@ struct WatchRideDraft {
     var heartRateSummary: WatchHeartRateSummary? { WatchHeartRate.summary(heartRate, paused: pausePeriods) }
 
     // A fresh HK workout session opens a new measured segment with its own identity.
-    mutating func beginEnergySession(at now: Double) {
-        let session = WatchEnergySession(segment: segment, startedAt: now)
+    mutating func beginEnergySession(at now: Double, ropeJumpsAtStart: Int? = nil) {
+        var session = WatchEnergySession(segment: segment, startedAt: now)
+        session.ropeJumpsAtStart = ropeJumpsAtStart
         energySessions.append(session)
         activeEnergySessionID = session.id
+    }
+
+    var healthWorkoutJumpCount: Int? {
+        guard let id = activeEnergySessionID, let total = ropeSkipping?.jumps,
+              let baseline = energySessions.first(where: { $0.id == id })?.ropeJumpsAtStart else { return nil }
+        return max(0, total - baseline)
     }
 
     // Recovery rejoins the SAME builder: the existing session identity is reused so
@@ -877,6 +894,7 @@ struct WatchRideDraft {
 
     mutating func ingest(_ fix: WatchRideFix, now: Double) -> Ingest {
         guard state == "recording" else { return .dropped("not-recording") }
+        guard ActivityCapabilities.of(activity, indoor: indoor).gps else { return .dropped("gps-disabled") }
         guard fix.latitude.isFinite, fix.longitude.isFinite,
               abs(fix.latitude) <= 90, abs(fix.longitude) <= 180 else { return .dropped("coordinate") }
         guard fix.timestamp.isFinite else { return .dropped("timestamp") }
@@ -924,7 +942,8 @@ struct WatchRideDraft {
             energyRevision: 1,
             energyWorkoutExternalUUID: id,
             energySessionIDs: energySessions.isEmpty ? nil : energySessions.map { $0.id },
-            ropeSkipping: WatchCatalog.isRopeSkipping(activity) ? ropeSkipping : nil)
+            ropeSkipping: WatchCatalog.isRopeSkipping(activity) ? ropeSkipping : nil,
+            ropeMotionTrace: WatchCatalog.isRopeSkipping(activity) ? ropeMotionTrace : nil)
     }
 }
 
@@ -1804,6 +1823,8 @@ struct WatchEnergySession: Codable, Equatable {
     var activeMeasured: Bool
     var basalMeasured: Bool
     var finalized: Bool
+    // Cumulative Letm3go count when this HealthKit session began.
+    var ropeJumpsAtStart: Int?
 
     init(id: String = UUID().uuidString, segment: Int, startedAt: Double) {
         self.id = id

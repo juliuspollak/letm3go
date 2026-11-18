@@ -108,6 +108,23 @@ struct RecordedActivity: Codable {
         if recordingMode == "automatic" && !metadata.userCorrected { activity=winner }
         details=metadata
     }
+    // A short Walking signal can arrive between GPS fixes. Match it to the
+    // recorded route's walking-speed profile, without creating a GPS-only label
+    // or giving an established activity a new type.
+    @discardableResult
+    mutating func corroborateAutomaticWalk(_ walking: MotionEvidence?) -> Bool {
+        guard recordingMode == "automatic", activity == "Unknown", details?.userCorrected != true,
+              let walking, walking.isConfidentWalking, let last = points.last,
+              walking.timestamp >= startedAt, abs(walking.timestamp - last.timestamp) <= 15,
+              JourneyFamily.profile(points) == .onFoot else { return false }
+        var classified = self
+        classified.applyPrediction(Classification(predicted: "Walking", confidence: "medium",
+                                                  evidence: ["Recent Core Motion: Walking (high)", "Sustained walking-speed GPS movement"]),
+                                   distance: distanceMeters)
+        guard classified.activity == "Walking" else { return false }
+        self = classified
+        return true
+    }
     // The person's answer about held readings. Returns false when there were none.
     mutating func resolveUnverifiedHeartRate(accept: Bool) -> Bool {
         guard var metadata = details else { return false }
@@ -732,6 +749,18 @@ struct MotionEvidence {
     var continuous = false
     // Core Motion's startDate, for diagnostics only.
     var startedAt: Double = 0
+
+    var isConfidentWalking: Bool {
+        confidence == "high" && types.contains("Walking") && !types.contains(where: Self.conflictsWithWalking)
+    }
+
+    var contradictsWalking: Bool {
+        confidence != "low" && types.contains(where: Self.conflictsWithWalking)
+    }
+
+    private static func conflictsWithWalking(_ type: String) -> Bool {
+        type == "Driving" || type == "Cycling" || type == "Running"
+    }
 }
 // Raw sensor classifications and manually chosen activities support many types.
 // Only these two types may be assigned by the automatic recorder.
@@ -989,6 +1018,7 @@ struct ActivityDetails: Codable {
     // Rope skipping from Apple Watch: jumps, active and rest time, intervals. Optional so records
     // written by earlier builds decode.
     var ropeSkipping: RopeSkippingSummary?
+    var ropeMotionTrace: String?
     var indoor: Bool?
     // The GPS setting of a manual recording, so a resume keeps it.
     var recordingPrecision: String?
@@ -1221,8 +1251,8 @@ enum JourneyFamily: String {
     }
     // A journey recorded without Core Motion keeps its "Unknown" label, but a split
     // still needs to know what it was. Its own GPS speed profile decides that for the
-    // transition only; the stored activity is never renamed from GPS alone, and an
-    // ambiguous profile stays `.other` so the journey is never split.
+    // transition; a stored Walking label also needs motion evidence. An ambiguous
+    // profile stays `.other` so the journey is never split.
     static func detected(_ trip: RecordedActivity) -> JourneyFamily {
         let named = of(trip.activity)
         return named != .other ? named : profile(trip.points)

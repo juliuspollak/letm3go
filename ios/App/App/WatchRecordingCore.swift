@@ -177,7 +177,23 @@ enum WatchWorkoutLifecycle {
     static func sensorExpected(sessionRunning: Bool, awaitingHealth: Bool) -> Bool { sessionRunning || awaitingHealth }
 }
 
-// MARK: - Water Lock
+// MARK: - Recording screen lock
+
+enum WatchScreenLockMode: String, CaseIterable {
+    case waterLock
+    case holdToUnlock
+
+    var title: String {
+        switch self {
+        case .waterLock: return "Water Lock"
+        case .holdToUnlock: return "Hold to Unlock"
+        }
+    }
+
+    func readyForAutomaticLock(workoutRunning: Bool, workoutUnavailable: Bool) -> Bool {
+        self == .holdToUnlock || workoutRunning || workoutUnavailable
+    }
+}
 
 // The one automatic activation per recording. A rider who unlocks with the Digital
 // Crown meant to, so the screen stays unlocked until they lock it again. Unlocking
@@ -192,10 +208,11 @@ struct WatchWaterLockPolicy: Equatable {
 
     init(automatic: Bool) { self.automatic = automatic }
 
-    func shouldLock(workoutRunning: Bool, recording: Bool) -> Bool {
-        automatic && workoutRunning && recording && !requested && !locked && !unlockedByRider
+    func shouldLock(ready: Bool, recording: Bool) -> Bool {
+        automatic && ready && recording && !requested && !locked && !unlockedByRider
     }
     mutating func noteRequested() { requested = true }
+    mutating func noteSoftUnlock() { unlockedByRider = true }
     // The rider pressed Lock: an explicit request replaces an earlier unlock.
     mutating func noteManualLock() { requested = true; unlockedByRider = false }
     mutating func observe(locked now: Bool) -> Event? {

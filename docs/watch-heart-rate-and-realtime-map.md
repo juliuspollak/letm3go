@@ -41,11 +41,16 @@ The Watch offers every iPhone activity value. Bike selection appears only for cy
 
 Walking, Running, Cycling and Other can be marked Indoor. Finish & Save keeps any recording that ran for at least a second, or has a fix or a reading, with or without a route. Discard is the way to drop a mistaken start.
 
-## Water Lock
+## Recording screen lock
 
-When the workout session is running and Automatically Lock During Recording is on (the default), the Watch asks for Water Lock once per recording. A press and hold of the Digital Crown unlocks it, the recording carries on unchanged, and it is not locked again unless the rider presses Lock.
+On the Watch, **Settings → Lock Method** applies to every activity. **Water Lock** uses the
+Digital Crown to unlock. **Hold to Unlock** uses a long press on the recording screen. When
+watchOS cannot enable Water Lock, the app uses Hold to Unlock.
 
-watchOS gives no result for the request, so the Watch reads the state back after two seconds. If Water Lock did not engage, it uses an on-screen lock with Hold to Unlock.
+**Automatically Lock During Recording** controls locking at the start of a recording. With
+it off, swipe from the workout metrics to the controls and tap **Lock** to use the selected
+method. Unlocking leaves the workout recording and leaves the screen unlocked until you
+tap Lock again.
 
 ## One recording per account
 
