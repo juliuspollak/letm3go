@@ -109,7 +109,7 @@ struct ActivitySummarySection: View {
     private func symbol(for label: String) -> String {
         switch label.lowercased() {
         case "distance": return "ruler"
-        case "jumps": return "arrow.up.and.down"
+        case "jumps": return UIImage(systemName: "figure.jumprope") != nil ? "figure.jumprope" : "arrow.up.and.down"
         case "avg cadence": return "speedometer"
         case "elevation gain": return "arrow.up.right"
         case "duration": return "timer"
@@ -128,7 +128,7 @@ struct ActivitySummarySection: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.value).font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
                         .minimumScaleFactor(0.5).lineLimit(1)
-                    if let detail = item.detail {
+                    if item.id != "cadence", let detail = item.detail {
                         Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }

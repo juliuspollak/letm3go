@@ -1,6 +1,7 @@
 import {useEffect} from 'react';
-import {Activity,Archive,Bike,Car,ChevronLeft,ChevronRight,Footprints,Globe,Layers,ListFilter,Map,Mountain,Route,Star,Sun,Users,Waves,X} from 'lucide-react';
-const icons={'map':Map,'globe.americas':Globe,'mountain.2':Mountain,'person.2':Users,'point.topleft.down.to.point.bottomright.curvepath':Route,'sun.max':Sun,'star':Star,'nosign':X,'archivebox':Archive,'figure.mixed.cardio':Activity,'car':Car,'bicycle':Bike,'figure.run':Activity,'figure.hiking':Mountain,'figure.walk':Footprints,'figure.surfing':Waves,'chevron.left':ChevronLeft,'chevron.right':ChevronRight,'xmark':X};
+import {Activity,Archive,ChevronLeft,ChevronRight,Globe,Layers,ListFilter,Map,Route,Star,Sun,Users,X} from 'lucide-react';
+import {activityGlyphs} from './activityGlyphs.js';
+const icons={...activityGlyphs,'map':Map,'globe.americas':Globe,'person.2':Users,'point.topleft.down.to.point.bottomright.curvepath':Route,'sun.max':Sun,'star':Star,'nosign':X,'archivebox':Archive,'figure.mixed.cardio':Activity,'chevron.left':ChevronLeft,'chevron.right':ChevronRight,'xmark':X};
 const glyph=(symbol,size=18)=>{const Icon=icons[symbol]||Activity;return <Icon size={size} aria-hidden="true"/>;};
 function Pill({item,icon,onAction,children}){
  return <button type="button" className="map-pill" aria-label={item.label} aria-expanded={item.expanded} onClick={()=>onAction(item.id)}>{icon}<span className="map-pill-text">{item.text}</span>{children}</button>;

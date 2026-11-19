@@ -1,11 +1,12 @@
 import {useLayoutEffect,useRef} from 'react';
-import {Activity,Bike,Car,Check,Compass,Dumbbell,Footprints,Mountain,Waves} from 'lucide-react';
+import {Check} from 'lucide-react';
+import ActivityIcon from './ActivityIcon.jsx';
 
 const choices=[
- ['Walking',Footprints,'walk','#287c68'],['Running',Activity,'run','#bd5a30'],
- ['Cycling',Bike,'ride','#5168d8'],['Hiking',Mountain,'hike','#48784b'],
- ['Driving',Car,'drive','#7661ba'],['Kitesurfing',Waves,'surf','#247f99'],
- ['Gym',Dumbbell,'lift','#ad4d80'],['Other',Compass,'explore','#64748b'],
+ ['Walking','walk','#287c68'],['Running','run','#bd5a30'],
+ ['Cycling','ride','#5168d8'],['Hiking','hike','#48784b'],
+ ['Driving','drive','#7661ba'],['Kitesurfing','surf','#247f99'],
+ ['Gym','lift','#ad4d80'],['Other','explore','#64748b'],
 ];
 const family=value=>['Cycling','Road cycling','MTB'].includes(value)?'Cycling':value;
 
@@ -28,13 +29,13 @@ export default function ActivityPicker({value,onChange}){
   const observer=new ResizeObserver(update);observer.observe(element);
   return()=>observer.disconnect();
  },[selected]);
- const tint=choices.find(([name])=>name===selected)?.[3];
+ const tint=choices.find(([name])=>name===selected)?.[2];
  return <div ref={grid} className="record-types activity-family-grid manual-activity-picker" aria-label="Activity type" style={{'--tile-accent':tint}}>
   <span ref={selection} className="activity-selection" aria-hidden="true"/>
-  {choices.map(([name,Icon,motion,color])=><button type="button" key={name}
+  {choices.map(([name,motion,color])=><button type="button" key={name}
    className={`activity-tile${selected===name?' selected':''}`} aria-pressed={selected===name}
    data-motion={motion} style={{'--tile-accent':color}} onClick={()=>onChange(name)}>
-   <span className="activity-tile-icon" aria-hidden="true"><Icon size={27} strokeWidth={1.65}/></span>
+   <span className="activity-tile-icon" aria-hidden="true"><ActivityIcon activity={name} size={27} strokeWidth={1.65}/></span>
    <span className="activity-tile-label">{name==='Gym'?'Fitness':name}</span>
    <span className="activity-tile-check" aria-hidden="true"><Check size={11} strokeWidth={3}/></span>
   </button>)}

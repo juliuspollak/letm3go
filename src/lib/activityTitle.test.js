@@ -23,4 +23,5 @@ it('shows General workout for the default title of a saved Gym activity',()=>{
  const trip={activity:'Gym',recordingMode:'watch',title:'Gym · 19 Nov 2026 at 6:30 pm'};
  expect(activityTitle(trip)).toBe('General workout · 19 Nov 2026 at 6:30 pm');
  expect(activityTitle({...trip,details:{titleEdited:true}})).toBe(trip.title);
+ expect(activityTitle({...trip,recordingMode:'manual',title:'Gym · Nov 19, 2026 at 6:30 PM'})).toBe('General workout · Nov 19, 2026 at 6:30 PM');
 });

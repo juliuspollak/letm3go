@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, LifeBuoy, LoaderCircle, Lock, MessageCircle, Send, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, Lock, MessageCircle, Send, X } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabase.js';
@@ -297,10 +297,9 @@ export default function FeedbackSupport({ recording }) {
   const filter = ADMIN_FILTERS.find(item => item.id === adminFilter) || ADMIN_FILTERS[0];
   const shownTickets = section === 'all' ? history.tickets.filter(filter.match) : mineTickets;
   const showReceipt = Boolean(result);
-  return <>
-    <p className="eyebrow">WE&apos;RE LISTENING</p>
+  return <div className="feedback-page">
     <h2>Feedback &amp; Support</h2>
-    <p className="muted feedback-intro">Tell us what broke, what would help, or ask a question. Your message goes to the small letm3go team — never to other members or people you share with.</p>
+    <p className="muted feedback-intro">Report a problem, suggest an idea or ask the letm3go team a question. Your feedback is private.</p>
 
     <div className="feedback-sections" role="group" aria-label="Feedback sections">
       {sections.map(item => <button key={item.id} type="button" className={section === item.id ? 'selected' : ''} aria-pressed={section === item.id} onClick={() => showSection(item.id)}>{item.label}{item.id === 'mine' && mineTickets.some(feedbackHasUnread) && <span className="feedback-dot" aria-label="Unread reply" />}</button>)}
@@ -473,7 +472,7 @@ export default function FeedbackSupport({ recording }) {
     </section>}
 
     {section === 'help' && <section className="feedback-help" aria-label="Help and troubleshooting">
-      <div className="feedback-help-intro"><LifeBuoy size={22} aria-hidden="true" /><div><h3>Try these first</h3><p className="muted small-copy">Most issues come down to permissions or a fresh location fix.</p></div></div>
+      <h3 className="feedback-help-intro">Troubleshooting</h3>
       {HELP_TOPICS.map(topic => <details key={topic.title} className="feedback-help-topic">
         <summary>{topic.title}<ChevronDown size={16} aria-hidden="true" /></summary>
         <p>{topic.body}</p>
@@ -494,6 +493,6 @@ export default function FeedbackSupport({ recording }) {
         <p>{viewer.index + 1} / {viewer.photos.length}</p>
       </div>
     </div>}
-  </>;
+  </div>;
 }
 

@@ -140,6 +140,7 @@ it('starts Fitness workouts without location permission or GPS settings',()=>{
  const run=vi.fn();render(<RecorderPanel state={{active:null,permission:'denied',storageReady:true}} run={run} vehicles={[]}/>);
  fireEvent.click(screen.getByRole('button',{name:'Fitness',exact:true}));
  expect(screen.getByRole('button',{name:'Start general workout'})).toBeEnabled();
+ expect(screen.getByText(/Indoor workouts are recorded without a GPS route/)).toBeInTheDocument();
  expect(screen.queryByText('GPS accuracy')).not.toBeInTheDocument();
  expect(screen.queryByRole('button',{name:'Open location settings'})).not.toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Start general workout'}));

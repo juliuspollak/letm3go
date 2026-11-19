@@ -125,7 +125,7 @@ it('shows an empty state when the account has no feedback yet', async () => {
 it('keeps help topics available without an account connection', () => {
   render(<FeedbackSupport />);
   fireEvent.click(screen.getByRole('button', { name: 'Help' }));
-  expect(screen.getByText('Try these first')).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Troubleshooting' })).toBeInTheDocument();
   expect(screen.getByText('Notifications are not arriving')).toBeInTheDocument();
   expect(screen.getByText(/Enable notifications for letm3go/)).toBeInTheDocument();
 });

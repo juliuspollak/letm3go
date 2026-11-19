@@ -2,17 +2,20 @@ import {activityCode,activityLabel,activityOptions,sameActivity} from './activit
 import {activeMapFilters,chooseMapDay,chooseRouteLayer,dayLabel,localDay,mapLayersChanged,RANGE_OPTIONS,resetMapFilters,shiftMapDay,supportsRange} from './mapLayers.js';
 
 export function activitySymbol(activity){
- const name=activity.toLowerCase();
+ const name=typeof activity==='string'?activity.trim().toLowerCase():'';
  if(/driv|car/.test(name))return 'car';
  if(activityCode(activity)==='MTB')return 'mountain.2';
  if(/cycl|bik/.test(name))return 'bicycle';
  if(/run/.test(name))return 'figure.run';
  if(/hik/.test(name))return 'figure.hiking';
  if(/kite|surf/.test(name))return 'figure.surfing';
+ if(name==='gym'||name==='general workout'||name==='workout')return 'dumbbell';
  if(name==='strength training')return 'figure.strengthtraining.traditional';
  if(name==='pilates')return 'figure.pilates';
  if(/rope/.test(name))return 'figure.jumprope';
  if(/walk/.test(name))return 'figure.walk';
+ if(name==='other')return 'compass';
+ if(name==='unknown'||!name)return 'questionmark.circle';
  return 'figure.mixed.cardio';
 }
 // Serializable controls are rendered by UIKit and React. Actions always return

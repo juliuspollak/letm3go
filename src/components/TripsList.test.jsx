@@ -19,6 +19,20 @@ function renderList(overrides={}){
  return {...render(<TripsList {...props}/>),props};
 }
 
+it('shows the activity glyph in each row, including renamed general workouts',()=>{
+ const icons={
+  Walking:'footprints',Running:'running',Cycling:'bike',MTB:'mountain-snow','Road cycling':'bike',
+  Gym:'dumbbell','Strength training':'dumbbell',Pilates:'accessibility','Rope skipping':'jump-rope',
+  Other:'compass',Driving:'car',Kitesurfing:'waves',Hiking:'mountain',Unknown:'circle-help',
+ };
+ const journeys=Object.keys(icons).map(activity=>trip(activity,{activity}));
+ const {container}=renderList({journeys});
+ for(const [activity,icon] of Object.entries(icons)){
+  const row=container.querySelector(`[data-trip-id="${activity}"]`);
+  expect(row.querySelector('.recent-activity-icon svg')).toHaveClass(`lucide-${icon}`);
+ }
+});
+
 it('renders one page of activities and appends the next page on demand',()=>{
  const journeys=Array.from({length:TRIP_PAGE_SIZE+5},(_,index)=>trip(`t${index}`));
  const {container}=renderList({journeys});

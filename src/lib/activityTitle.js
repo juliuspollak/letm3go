@@ -1,6 +1,7 @@
 import {activityCode,activityLabel} from './activityNames.js';
 export function automaticTitle(trip){
  if(trip.details?.titleEdited||trip.details?.userCorrected||trip.corrected)return false;
+ if(activityCode(trip.activity)==='Gym'&&['manual','watch'].includes(trip.recordingMode)&&/^Gym · [^·]*\d{1,2}:\d{2}\s*[ap]m$/i.test(trip.title||''))return true;
  if(['manual','watch'].includes(trip.recordingMode)&&new RegExp(`^${trip.activity} · \\d{1,2} [A-Za-z]{3} \\d{4} at \\d{1,2}:\\d{2}\\s*[ap]m$`).test(trip.title||''))return true;
  return trip.recordingMode==='automatic'&&(trip.title==='Automatically detected journey'||/ · Automatically detected$/.test(trip.title)||trip.title===trip.activity);
 }

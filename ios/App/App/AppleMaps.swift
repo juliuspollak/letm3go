@@ -395,7 +395,7 @@ private final class PhotoCard:UIView {
         photoButton.isHidden=activity
         journeyButton.configuration?.title=activity ? "Open activity" : "View journey"
         closeButton.accessibilityLabel=activity ? "Close activity preview" : "Close photo preview"
-        if activity {thumbnail.preferredSymbolConfiguration=UIImage.SymbolConfiguration(pointSize:24,weight:.semibold);thumbnail.image=UIImage(systemName:metadata["symbol"] as? String ?? "figure.mixed.cardio");thumbnail.contentMode = .center}
+        if activity {thumbnail.preferredSymbolConfiguration=UIImage.SymbolConfiguration(pointSize:24,weight:.semibold);thumbnail.image=(metadata["symbol"] as? String).flatMap{UIImage(systemName:$0)} ?? UIImage(systemName:"figure.mixed.cardio");thumbnail.contentMode = .center}
         else if let photoID=metadata["photoID"] as? String,let image=journalPhotoImage(photoID,size:112,circle:false) {thumbnail.image=image;thumbnail.contentMode = .scaleAspectFill}
         else {thumbnail.image=UIImage(systemName:"photo");thumbnail.contentMode = .center}
         let text={(value:Any?)->String? in (value as? String).flatMap{$0.isEmpty ? nil : $0}}
