@@ -616,6 +616,9 @@ struct WatchSettingsView: View {
                  ? "Hold the Digital Crown to unlock. If Water Lock is unavailable, hold Unlock on the screen."
                  : "Touch and hold Unlock on the recording screen.")
                 .font(.caption2).foregroundStyle(.secondary)
+            #if KITE_DIAGNOSTIC
+            NavigationLink("Kite Diagnostic") { KiteDiagnosticView() }
+            #endif
         }
         .navigationTitle("Settings")
     }

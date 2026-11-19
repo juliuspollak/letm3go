@@ -401,6 +401,9 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     #endif
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        #if KITE_DIAGNOSTIC
+        if file.metadata?["kind"] as? String == "kiteDiagnostic" { KiteDiagnosticInbox.shared.receive(file); return }
+        #endif
         // Read inside the callback: iOS deletes the received file as soon as this
         // method returns, so the payload must be in memory before any hop.
         guard let data = try? Data(contentsOf: file.fileURL),

@@ -69,6 +69,11 @@
 		C20000000000000000000009 /* WatchActivityCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
 		C20000000000000000000008 /* Letm3goWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C20000000000000000000046 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000046; };
+		D10000000000000000000010 /* KiteDiagnosticCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001; };
+		D10000000000000000000011 /* KiteDiagnosticCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000001; };
+		D10000000000000000000012 /* KiteDiagnosticInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000002; };
+		D10000000000000000000013 /* KiteDiagnosticRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000003; };
+		D10000000000000000000014 /* KiteDiagnosticView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000004; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -164,6 +169,11 @@
 		C10000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C10000000000000000000008 /* Letm3goWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Letm3goWatch.entitlements; sourceTree = "<group>"; };
 		C10000000000000000000046 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		D10000000000000000000001 /* KiteDiagnosticCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticCore.swift; sourceTree = "<group>"; };
+		D10000000000000000000002 /* KiteDiagnosticInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticInbox.swift; sourceTree = "<group>"; };
+		D10000000000000000000003 /* KiteDiagnosticRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticRecorder.swift; sourceTree = "<group>"; };
+		D10000000000000000000004 /* KiteDiagnosticView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticView.swift; sourceTree = "<group>"; };
+		D10000000000000000000005 /* Info-KiteDiagnostic.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-KiteDiagnostic.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -227,6 +237,8 @@
 				AD100000000000000000000D /* TagSearchCore.swift */,
 				B10000000000000000000003 /* WatchActivityCore.swift */,
 				B10000000000000000000033 /* WatchRecordingCore.swift */,
+				D10000000000000000000001 /* KiteDiagnosticCore.swift */,
+				D10000000000000000000002 /* KiteDiagnosticInbox.swift */,
 				B10000000000000000000044 /* RopeSkippingCore.swift */,
 				B30000000000000000000001 /* AutomaticTracking.swift */,
 				B30000000000000000000002 /* ActivityServices.swift */,
@@ -268,6 +280,9 @@
 				C10000000000000000000003 /* WatchRecorder.swift */,
 				C10000000000000000000004 /* WatchTransferQueue.swift */,
 				C10000000000000000000045 /* WatchRopeMotion.swift */,
+				D10000000000000000000003 /* KiteDiagnosticRecorder.swift */,
+				D10000000000000000000004 /* KiteDiagnosticView.swift */,
+				D10000000000000000000005 /* Info-KiteDiagnostic.plist */,
 				C10000000000000000000046 /* PrivacyInfo.xcprivacy */,
 				C10000000000000000000005 /* WatchConnectivitySession.swift */,
 				C10000000000000000000006 /* Assets.xcassets */,
@@ -439,6 +454,8 @@
 				AD200000000000000000000D /* TagSearchCore.swift in Sources */,
 				B20000000000000000000003 /* WatchActivityCore.swift in Sources */,
 				B20000000000000000000033 /* WatchRecordingCore.swift in Sources */,
+				D10000000000000000000010 /* KiteDiagnosticCore.swift in Sources */,
+				D10000000000000000000012 /* KiteDiagnosticInbox.swift in Sources */,
 				B20000000000000000000044 /* RopeSkippingCore.swift in Sources */,
 				B40000000000000000000001 /* AutomaticTracking.swift in Sources */,
 				B40000000000000000000002 /* ActivityServices.swift in Sources */,
@@ -471,6 +488,9 @@
 				C20000000000000000000003 /* WatchRecorder.swift in Sources */,
 				C20000000000000000000004 /* WatchTransferQueue.swift in Sources */,
 				C20000000000000000000045 /* WatchRopeMotion.swift in Sources */,
+				D10000000000000000000011 /* KiteDiagnosticCore.swift in Sources */,
+				D10000000000000000000013 /* KiteDiagnosticRecorder.swift in Sources */,
+				D10000000000000000000014 /* KiteDiagnosticView.swift in Sources */,
 				C20000000000000000000005 /* WatchConnectivitySession.swift in Sources */,
 				C20000000000000000000007 /* RecorderCore.swift in Sources */,
 				C20000000000000000000009 /* WatchActivityCore.swift in Sources */,
@@ -648,7 +668,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
+				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\" \"-DKITE_DIAGNOSTIC\"";
 				PRODUCT_BUNDLE_IDENTIFIER = au.jpollak.journey;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -690,7 +710,7 @@
 				DEVELOPMENT_TEAM = 8YP6PFWVZ9;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Letm3goWatch/Info.plist;
+				INFOPLIST_FILE = "Letm3goWatch/Info-KiteDiagnostic.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -702,7 +722,7 @@
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "watchos watchsimulator";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG KITE_DIAGNOSTIC";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
