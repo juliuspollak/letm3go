@@ -3129,9 +3129,9 @@ do {
 // MARK: Watch start choices, equipment and history
 do {
     // Only the iPhone's own activity values, and Cycling's subtypes in one family.
-    let iPhoneActivities: Set<String> = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Rope skipping", "Other"]
-    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 11, "the watch records only iPhone activity values")
-    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Gym", "Rope skipping", "Other"], "the watch offers every iPhone activity value")
+    let iPhoneActivities = Set(ActivityTypes.stored)
+    check(Set(WatchCatalog.activities).isSubset(of: iPhoneActivities) && WatchCatalog.activities.count == 13, "the watch records only iPhone activity values")
+    check(Set(WatchCatalog.activities) == ["MTB", "Cycling", "Road cycling", "Running", "Hiking", "Walking", "Kitesurfing", "Driving", "Gym", "Strength training", "Pilates", "Rope skipping", "Other"], "the watch offers every iPhone activity value")
     check(WatchCatalog.family(of: "MTB")?.id == "Cycling" && WatchCatalog.family(of: "MTB")?.hasSubtypes == true, "mountain biking is a Cycling subtype")
     check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Walking") == "Walking", "titles name the subtype only where there is one")
     check(WatchCatalog.usesBicycle("MTB") && !WatchCatalog.usesBicycle("Running"), "only rides offer a bike")
@@ -5460,7 +5460,7 @@ print("Final native assertion count including durable journey storage: \(asserti
 // Gym is a timed indoor workout; neither device needs route samples.
 do {
     let setup = WatchStartConfig(activity: "Gym")
-    check(setup.isValid && setup.indoor == true && setup.title == "Gym", "Gym is always indoor")
+    check(setup.isValid && setup.indoor == true && setup.title == "Fitness · General workout", "Gym is always indoor")
     check(!RecordingPrecision.offered(for: "Gym"), "Gym offers no GPS precision")
     check(WatchWorkoutClassifier.classify("Gym", indoor: false) == WatchWorkoutClass(type: "mixedCardio", indoor: true, savesToHealth: true), "Gym saves an indoor cardio workout")
     var timer = RecordedActivity(activity: "Gym", startedAt: 1000, resumedAt: 1000, title: "Gym")
@@ -5657,11 +5657,11 @@ ropeSkippingCapTests { ok, message in check(ok, message) }
 ropeSkippingActiveTimeTests { ok, message in check(ok, message) }
 ropeSkippingTrackerTests { ok, message in check(ok, message) }
 do {
-    // A subtype of Gym, like Mountain biking under Cycling; plain Gym and the other subtypes are unchanged.
-    check(WatchCatalog.family(of: "Rope skipping")?.id == "Gym" && WatchCatalog.family(of: "Gym")?.hasSubtypes == true, "rope skipping is a Gym subtype")
-    check(WatchCatalog.title("Rope skipping") == "Gym · Rope skipping" && WatchCatalog.title("Gym") == "Gym", "plain Gym keeps its name")
+    // Fitness groups general Gym workouts with its named workout types.
+    check(WatchCatalog.family(of: "Rope skipping")?.title == "Fitness" && WatchCatalog.family(of: "Pilates") == WatchCatalog.family(of: "Gym"), "Gym, Pilates and rope skipping sit under Fitness")
+    check(WatchCatalog.title("Rope skipping") == "Fitness · Rope skipping" && WatchCatalog.title("Gym") == "Fitness · General workout", "the generic Gym activity is displayed as General workout")
     check(WatchCatalog.title("MTB") == "Cycling · Mountain biking" && WatchCatalog.title("Road cycling") == "Cycling · Road", "cycling subtypes are unchanged")
-    check(!ActivityCapabilities.of("Gym").gps && !ActivityCapabilities.of("Rope skipping").gps && ActivityCapabilities.of("MTB").gps && !WatchCatalog.isRopeSkipping("Gym"), "only rope skipping joins Gym")
+    check(!ActivityCapabilities.of("Gym").gps && !ActivityCapabilities.of("Rope skipping").gps && ActivityCapabilities.of("MTB").gps && !WatchCatalog.isRopeSkipping("Gym"), "Gym and rope skipping use the indoor recording path")
     check(WatchStartConfig(activity: "Rope skipping").indoor == true && WatchStartConfig(activity: "Rope skipping").isValid, "rope skipping starts indoors without GPS")
     check(WatchStartConfig(activity: "Gym").indoor == true && WatchStartConfig(activity: "MTB").indoor == nil, "Gym and MTB starts are unchanged")
     check(!RecordingPrecision.offered(for: "Rope skipping") && !RecordingPrecision.offered(for: "Gym") && RecordingPrecision.offered(for: "MTB"), "no GPS choice for rope skipping")
@@ -5758,12 +5758,29 @@ do {
 }
 
 
+do {
+    let setup = WatchStartConfig(activity: "Pilates")
+    check(setup.isValid && setup.indoor == true && !RecordingPrecision.offered(for: setup.activity), "Pilates starts indoors without GPS")
+    check(WatchWorkoutClassifier.classify(setup.activity, indoor: true) == WatchWorkoutClass(type: "pilates", indoor: true, savesToHealth: true), "Pilates uses the dedicated HealthKit workout type")
+    check(WatchWorkoutClassifier.classify("Strength training", indoor: false) == WatchWorkoutClass(type: "traditionalStrengthTraining", indoor: true, savesToHealth: true), "Strength training uses the indoor HealthKit type for weights")
+    var draft = WatchRideDraft(activity: setup.activity, startedAt: 5_000)
+    draft.beginEnergySession(at: 5_000)
+    _ = draft.ingest(heartRate: WatchHeartRateSample(timestamp: 5_030, bpm: 112), now: 5_030)
+    draft.applyEnergy(WatchEnergy.reading(activeKcal: 35, basalKcal: 8))
+    draft.finish(at: 5_300)
+    let transfer = draft.transfer(now: 5_301, ownerID: nil, deviceID: nil)
+    check(transfer?.schema == 5 && transfer.map(WatchActivityImport.isFromNewerBuild) == false, "older iPhones defer Pilates and the updated importer accepts it")
+    let trip = transfer.flatMap { WatchActivityImport.activity(from: $0, now: 5_301) }
+    check(trip?.activity == "Pilates" && trip?.points.isEmpty == true && trip?.details?.indoor == true, "Pilates imports as an indoor workout with no route")
+    check(trip?.details?.heartRate?.summary.average == 112 && trip?.details?.energy?.active == 35, "Pilates imports heart rate and active calories")
+}
+
 // MARK: Follow-ups: titles, location ownership, types
 do {
     // Every family and subtype keeps its title; a family's own choice named like it reads as the family.
     let titles: [String: String] = ["Walking": "Walking", "Running": "Running", "Cycling": "Cycling · Everyday", "MTB": "Cycling · Mountain biking",
-        "Road cycling": "Cycling · Road", "Hiking": "Hiking", "Kitesurfing": "Kitesurfing", "Driving": "Driving", "Gym": "Gym",
-        "Rope skipping": "Gym · Rope skipping", "Other": "Other"]
+        "Road cycling": "Cycling · Road", "Hiking": "Hiking", "Kitesurfing": "Kitesurfing", "Driving": "Driving", "Gym": "Fitness · General workout",
+        "Strength training": "Fitness · Strength training", "Pilates": "Fitness · Pilates", "Rope skipping": "Fitness · Rope skipping", "Other": "Other"]
     check(Set(titles.keys) == Set(WatchCatalog.activities), "the title table covers every activity the Watch records")
     for (activity, expected) in titles { check(WatchCatalog.title(activity) == expected, "title of \(activity) is \(expected), not \(WatchCatalog.title(activity))") }
     for family in WatchCatalog.families {

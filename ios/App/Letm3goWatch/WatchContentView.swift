@@ -209,8 +209,11 @@ struct WatchActivityGrid: View {
     let family: String?
 
     struct Tile: Identifiable { let id: String; let title: String; let symbol: String }
+    private var selectedFamily: WatchActivityFamily? {
+        WatchCatalog.families.first { $0.id == family }
+    }
     private var items: [Tile] {
-        if let family, let group = WatchCatalog.families.first(where: { $0.id == family }) {
+        if let group = selectedFamily {
             return group.choices.map { Tile(id: $0.activity, title: $0.title, symbol: $0.symbol) }
         }
         return WatchCatalog.families.map { Tile(id: $0.id, title: $0.title, symbol: $0.symbol) }
@@ -233,7 +236,7 @@ struct WatchActivityGrid: View {
                 }
             }
         }
-        .navigationTitle(family ?? "Activity")
+        .navigationTitle(selectedFamily?.title ?? "Activity")
     }
 
     private func choose(_ id: String) {
@@ -333,7 +336,7 @@ struct WatchReadyView: View {
                 }
                 if WatchCatalog.isRopeSkipping(setup.activity) {
                     Text("Jumps counted for you · Rests detected · Heart rate & calories · No GPS").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                } else if setup.activity == "Gym" { Text("Indoor · Heart rate & active calories · No GPS").font(.footnote).foregroundStyle(.secondary) }
+                } else if !ActivityCapabilities.of(setup.activity).gps { Text("Indoor · Heart rate & active calories · No GPS").font(.footnote).foregroundStyle(.secondary) }
                 if RecordingPrecision.offered(for: setup.activity), !indoor {
                     Button {
                         let all = RecordingPrecision.allCases

@@ -634,6 +634,8 @@ enum WatchWorkoutClassifier {
         case "MTB", "Cycling", "Road cycling": type = "cycling"
         case "Kitesurfing": type = "surfingSports"
         case "Gym": type = "mixedCardio"
+        case "Pilates": type = "pilates"
+        case "Strength training": type = "traditionalStrengthTraining"
         // HealthKit has a real jump rope type, so Health shows the workout as one.
         case "Rope skipping": type = "jumpRope"
         default: type = "other"

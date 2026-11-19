@@ -39,7 +39,7 @@ struct ActivityCapabilities: Equatable {
     var routeMap: Bool { gps }
     // Gym and its subtypes. Strength training, indoor cycling and treadmill running join as indoor
     // activities (or add their value here) without any other code changing.
-    static let withoutGPS: Set<String> = ["Gym", "Rope skipping"]
+    static let withoutGPS: Set<String> = ["Gym", "Strength training", "Pilates", "Rope skipping"]
     static func of(_ activity: String, indoor: Bool? = nil) -> ActivityCapabilities {
         ActivityCapabilities(gps: !withoutGPS.contains(activity) && indoor != true)
     }
@@ -48,7 +48,7 @@ struct ActivityCapabilities: Equatable {
 // Every activity value an activity may hold and be edited to. Watch activities and those without GPS are
 // subsets of it (checked in tests), so a type that can be recorded can always be saved again.
 enum ActivityTypes {
-    static let stored = ["Walking", "Running", "Cycling", "MTB", "Road cycling", "Driving", "Kitesurfing", "Hiking", "Unknown", "Gym", "Rope skipping", "Other"]
+    static let stored = ["Walking", "Running", "Cycling", "MTB", "Road cycling", "Driving", "Kitesurfing", "Hiking", "Unknown", "Gym", "Strength training", "Pilates", "Rope skipping", "Other"]
 }
 
 struct RecordedActivity: Codable {

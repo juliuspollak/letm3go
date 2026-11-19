@@ -1439,6 +1439,8 @@ extension WatchRecorder: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate 
         case "cycling": return .cycling
         case "surfingSports": return .surfingSports
         case "mixedCardio": return .mixedCardio
+        case "pilates": return .pilates
+        case "traditionalStrengthTraining": return .traditionalStrengthTraining
         case "jumpRope": return .jumpRope
         default: return .other
         }

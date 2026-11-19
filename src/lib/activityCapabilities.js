@@ -7,7 +7,7 @@ import {ropeSummary,jumpsText} from './ropeSkipping.js';
 //   gps       the activity records GPS fixes
 //   routeMap  its detail leads with the route map
 // A subtype overrides its parent by being listed (Rope skipping under Gym) or by being recorded indoors.
-export const WITHOUT_GPS=['Gym','Rope skipping'];
+export const WITHOUT_GPS=['Gym','Strength training','Pilates','Rope skipping'];
 export function activityCapabilities(activity,{indoor}={}){
  const gps=!WITHOUT_GPS.includes(activityCode(activity))&&indoor!==true;
  return {gps,routeMap:gps};

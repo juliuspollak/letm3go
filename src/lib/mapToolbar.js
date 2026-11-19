@@ -9,6 +9,8 @@ export function activitySymbol(activity){
  if(/run/.test(name))return 'figure.run';
  if(/hik/.test(name))return 'figure.hiking';
  if(/kite|surf/.test(name))return 'figure.surfing';
+ if(name==='strength training')return 'figure.strengthtraining.traditional';
+ if(name==='pilates')return 'figure.pilates';
  if(/rope/.test(name))return 'figure.jumprope';
  if(/walk/.test(name))return 'figure.walk';
  return 'figure.mixed.cardio';

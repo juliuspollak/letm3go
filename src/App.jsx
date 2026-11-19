@@ -99,7 +99,7 @@ import { supabase } from './lib/supabase.js';
 const HOME_PEOPLE=6;
 // One empty list, so a missing places value does not look like a change on every render.
 const NO_PLACES=[];
-const activities=['All activities','Unknown','Cycling','MTB','Hiking','Walking','Running','Road cycling','Kitesurfing','Driving','Gym','Rope skipping','Other'];
+const activities=['All activities','Unknown','Cycling','MTB','Hiking','Walking','Running','Road cycling','Kitesurfing','Driving','Gym','Strength training','Pilates','Rope skipping','Other'];
 export default function App(){
  useEffect(()=>{const theme=localStorage.getItem('letm3go-theme')==='dark'?'dark':'light';document.documentElement.dataset.theme=theme;void setNativeAppearance(theme).catch(()=>{});},[]);
  const token=new URLSearchParams(window.location.search).get('journey');

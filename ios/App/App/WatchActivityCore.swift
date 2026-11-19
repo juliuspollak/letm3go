@@ -46,6 +46,9 @@ struct WatchActivityTransfer: Codable, Equatable {
     // 3 adds heart rate, pause periods, indoor recordings and recordings with no route.
     static let currentSchema = 3
     static let supportedSchemas = 1...3
+    // Older phones defer schema 5, so new workout types stay in the Watch outbox until the phone updates.
+    static let fitnessSchema = 5
+    static let newFitnessActivities: Set<String> = ["Pilates", "Strength training"]
 
     var schema = WatchActivityTransfer.currentSchema
     var id: String
@@ -343,12 +346,14 @@ struct WatchRideFix {
 // validation lives here so it is unit-testable without WatchConnectivity, and so
 // a malformed or hostile payload can never enter the encrypted journal.
 enum WatchActivityImport {
-    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Rope skipping", "Other"]
+    static let supported = ["Walking", "Cycling", "MTB", "Driving", "Kitesurfing", "Hiking", "Running", "Road cycling", "Gym", "Strength training", "Pilates", "Rope skipping", "Other"]
 
     // A short reason keeps diagnostics useful without exposing payload contents.
     // `nil` means the transfer is valid.
     static func issue(with transfer: WatchActivityTransfer, now: Double = Date().timeIntervalSince1970) -> String? {
-        guard WatchActivityTransfer.supportedSchemas.contains(transfer.schema) else { return "unsupported-schema" }
+        let supportedSchema = WatchActivityTransfer.supportedSchemas.contains(transfer.schema) ||
+            transfer.schema == WatchActivityTransfer.fitnessSchema
+        guard supportedSchema else { return "unsupported-schema" }
         guard UUID(uuidString: transfer.id) != nil else { return "invalid-identifier" }
         guard supported.contains(transfer.activity) else { return "unsupported-activity" }
         guard transfer.startedAt.isFinite, transfer.startedAt > 0 else { return "invalid-start" }
@@ -459,10 +464,9 @@ enum WatchActivityImport {
     }
 
     // A schema newer than this build is not a bad ride: the phone waits for its own
-    // update instead of telling the Watch to give up. Schema 4 (energy-only) is
-    // supported by this build, so only schema > 4 is deferred.
+    // update instead of telling the Watch to give up.
     static func isFromNewerBuild(_ transfer: WatchActivityTransfer) -> Bool {
-        transfer.schema > WatchActivityTransfer.energySchema
+        transfer.schema > WatchActivityTransfer.fitnessSchema
     }
 
     static func metrics(for transfer: WatchActivityTransfer) -> WatchRideMetrics? {
@@ -928,12 +932,14 @@ struct WatchRideDraft {
         guard isKeepable, isFinished, let endedAt else { return nil }
         let elapsed = max(0, endedAt - startedAt)
         guard elapsed > 0 else { return nil }
+        let schema = WatchActivityTransfer.newFitnessActivities.contains(activity)
+            ? WatchActivityTransfer.fitnessSchema : WatchActivityTransfer.currentSchema
         return WatchActivityTransfer(
             id: id, ownerID: ownerID, activity: activity, startedAt: startedAt, endedAt: endedAt,
             activeSeconds: min(max(0, activeSeconds), elapsed), points: points,
             trailID: trail?.trailID, trailName: trail?.name, trailSegmentID: trail?.segmentID,
             trailDistanceMeters: trail?.distanceMeters,
-            deviceID: deviceID, movingSeconds: metrics.movingSeconds,
+            schema: schema, deviceID: deviceID, movingSeconds: metrics.movingSeconds,
             elevationGainMeters: metrics.elevationGainMeters, elevationLossMeters: metrics.elevationLossMeters,
             appVersion: appVersion, equipment: equipment,
             heartRate: heartRate.isEmpty ? nil : heartRate,
@@ -2223,8 +2229,10 @@ enum WatchCatalog {
                             choices: [WatchActivityChoice(activity: "Kitesurfing", title: "Kitesurfing", symbol: "wind")]),
         WatchActivityFamily(id: "Driving", title: "Driving", symbol: "car.fill",
                             choices: [WatchActivityChoice(activity: "Driving", title: "Driving", symbol: "car.fill")]),
-        WatchActivityFamily(id: "Gym", title: "Gym", symbol: "figure.mixed.cardio",
-                            choices: [WatchActivityChoice(activity: "Gym", title: "Gym", symbol: "figure.mixed.cardio"),
+        WatchActivityFamily(id: "Gym", title: "Fitness", symbol: "figure.mixed.cardio",
+                            choices: [WatchActivityChoice(activity: "Gym", title: "General workout", symbol: "figure.mixed.cardio"),
+                                      WatchActivityChoice(activity: "Strength training", title: "Strength training", symbol: "figure.strengthtraining.traditional"),
+                                      WatchActivityChoice(activity: "Pilates", title: "Pilates", symbol: "figure.pilates"),
                                       WatchActivityChoice(activity: "Rope skipping", title: "Rope skipping", symbol: "figure.jumprope")]),
         WatchActivityFamily(id: "Other", title: "Other", symbol: "figure.mixed.cardio",
                             choices: [WatchActivityChoice(activity: "Other", title: "Other", symbol: "figure.mixed.cardio")]),
@@ -2249,8 +2257,6 @@ enum WatchCatalog {
     // "Cycling · Mountain biking", "Walking".
     static func title(_ activity: String) -> String {
         guard let picked = Self.choice(activity), let group = Self.family(of: activity) else { return activity }
-        // A family's own choice that is named like the family reads as the family ("Gym"); every other
-        // choice names its family first ("Cycling · Everyday", "Cycling · Mountain biking", "Gym · Rope skipping").
         return group.hasSubtypes && picked.title != group.title ? group.title + " · " + picked.title : picked.title
     }
 }

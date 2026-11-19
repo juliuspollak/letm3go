@@ -456,3 +456,11 @@ it('syncs a private Rope skipping classification through the same function, and 
  await expect(mine(a,{activities:[{ref:'nope',type:'Underwater basket weaving'}]})).rejects.toThrow('Unsupported journey activity type');
  expect((await as('authenticated',b,"select type from public.journey_activity_metadata where ref='rope-session'")).rows).toEqual([]);
 });
+
+it('syncs private Pilates and Strength training classifications and preserves existing activity types',async()=>{
+ await db.exec('reset role');
+ await db.exec(await readFile('supabase/migrations/20261214020000_pilates_journey_type.sql','utf8'));
+ await mine(a,{activities:[{ref:'pilates-session',type:'Pilates'},{ref:'rope-session',type:'Rope skipping'},{ref:'strength-session',type:'Strength training'}]});
+ expect((await as('authenticated',a,"select ref,type from public.journey_activity_metadata where ref in ('pilates-session','rope-session','strength-session') order by ref")).rows).toEqual([{ref:'pilates-session',type:'Pilates'},{ref:'rope-session',type:'Rope skipping'},{ref:'strength-session',type:'Strength training'}]);
+ expect((await as('authenticated',b,"select type from public.journey_activity_metadata where ref='pilates-session'")).rows).toEqual([]);
+});
