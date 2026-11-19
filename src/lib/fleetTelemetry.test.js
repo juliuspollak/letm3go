@@ -1,6 +1,6 @@
 import {it,expect} from 'vitest';
 import {webcrypto,createHmac} from 'node:crypto';
-import {normaliseFleetPayload,reconstructFleet,compatibility,pairingURL,automaticRecordingStatus,verifyIngestion,eventFingerprint} from '../../supabase/functions/_shared/fleetTelemetry.js';
+import {normaliseFleetPayload,reconstructFleet,compatibility,pairingURL,automaticRecordingStatus,checkedFleetConfiguration,fleetConfigurationRemoved,receiverIsReady,CONFIGURATION_PENDING,REMOVAL_PENDING,verifyIngestion,eventFingerprint} from '../../supabase/functions/_shared/fleetTelemetry.js';
 const vin='5YJ3E1EA0KF000001',owner='owner',vehicle='car',base=Date.now()/1000-10000;
 const event=(delta,fields)=>({vin,timestamp:base+delta,fields});
 const options={ownerID:owner,vehicleID:vehicle,enabledSince:base,cryptoImpl:webcrypto,now:base+1000};
@@ -33,7 +33,7 @@ it('validates pairing URL and gates unsupported or legacy vehicle prerequisites'
  expect(pairingURL(vin)).toBe(`https://tesla.com/_ak/letm3go.au?vin=${vin}`);expect(()=>pairingURL('bad')).toThrow();expect(compatibility({firmware_version:'2024.25',fleet_telemetry_version:'1'}).ready).toBe(false);expect(compatibility({firmware_version:'2026.1',fleet_telemetry_version:'1',vehicle_command_protocol_required:true,key_paired:false}).ready).toBe(false);expect(compatibility({firmware_version:'2026.1',fleet_telemetry_version:'1',vehicle_command_protocol_required:false,safety_screen_streaming_toggle_enabled:true}).ready).toBe(true);
 });
 it('never calls a connection active without enablement, verified config, healthy receiver and actual data',()=>{
- const setting={enabled:true,config_synced:true,last_received:new Date().toISOString()};expect(automaticRecordingStatus(null,null).active).toBe(false);expect(automaticRecordingStatus(setting,null).active).toBe(false);expect(automaticRecordingStatus({...setting,last_received:null},{ready:true,last_seen:new Date().toISOString()}).active).toBe(false);expect(automaticRecordingStatus(setting,{ready:true,last_seen:new Date().toISOString()}).active).toBe(true);
+ const setting={enabled:true,config_synced:true,location_verified:true,enabled_since:new Date(Date.now()-1000).toISOString(),last_received:new Date().toISOString()};expect(automaticRecordingStatus(null,null).active).toBe(false);expect(automaticRecordingStatus(setting,null).active).toBe(false);expect(automaticRecordingStatus({...setting,last_received:null},{ready:true,last_seen:new Date().toISOString()}).active).toBe(false);expect(automaticRecordingStatus(setting,{ready:true,last_seen:new Date().toISOString()}).active).toBe(true);
 });
 it('authenticates the exact body and timestamp and rejects spoofing/replay',async()=>{
  const secret='s'.repeat(32),body=JSON.stringify({event:drive[0]}),time=String(Date.now()),signature=createHmac('sha256',secret).update(`${time}.${body}`).digest('hex');expect(await verifyIngestion(body,time,signature,secret,{cryptoImpl:webcrypto})).toBe(true);expect(await verifyIngestion(body+' ',time,signature,secret,{cryptoImpl:webcrypto})).toBe(false);expect(await verifyIngestion(body,time,signature,secret,{cryptoImpl:webcrypto,now:Number(time)+70000})).toBe(false);expect(await eventFingerprint(drive[0],webcrypto)).toBe(await eventFingerprint({...drive[0],fields:{odometer:10000,location:p,gear:'D'}},webcrypto));
@@ -49,4 +49,43 @@ it('validates actual connectivity messages without turning a connection into a d
 });
 it('requires new telemetry after re-enabling rather than using yesterday’s successful recording',()=>{
  const now=Date.now();const result=automaticRecordingStatus({enabled:true,config_synced:true,enabled_since:new Date(now).toISOString(),last_received:new Date(now-3600000).toISOString()},{ready:true,last_seen:new Date(now).toISOString()},now);expect(result.active).toBe(false);expect(result.label).toContain('first telemetry');
+});
+
+it('retains pending consent until the exact receiver configuration is verified',()=>{
+ const now=Date.now(),host='fleet.letm3go.au', support={ready:true},pending={error:CONFIGURATION_PENDING};
+ const report={synced:true,config:{hostname:host,port:443}};
+ expect(checkedFleetConfiguration(null,support,report,host,now).enabled).toBe(false);
+ expect(checkedFleetConfiguration(pending,support,{...report,config:{...report.config,port:8443}},host,now).error).toBe(CONFIGURATION_PENDING);
+ expect(checkedFleetConfiguration(pending,support,report,host,now)).toEqual({config_synced:true,enabled:true,enabled_since:new Date(now).toISOString(),error:null});
+ expect(checkedFleetConfiguration({error:REMOVAL_PENDING},support,report,host,now)).toMatchObject({enabled:false,error:REMOVAL_PENDING});
+});
+
+it('fails closed for invalid or stale heartbeats and for telemetry awaiting durable projection',()=>{
+ const now=Date.now(),ts=new Date(now).toISOString();
+ const setting={enabled:true,config_synced:true,location_verified:true,enabled_since:ts,last_received:ts,revision:2,projected_revision:1};
+ expect(receiverIsReady({ready:true,last_seen:'invalid'},now)).toBe(false);
+ expect(receiverIsReady({ready:true,last_seen:new Date(now-120000).toISOString()},now)).toBe(false);
+ expect(automaticRecordingStatus(setting,{ready:true,last_seen:ts},now)).toMatchObject({code:'projection_pending',active:false});
+ expect(automaticRecordingStatus({...setting,projected_revision:2},{ready:true,last_seen:ts},now)).toMatchObject({code:'active',active:true});
+ expect(automaticRecordingStatus({...setting,location_verified:false},{ready:true,last_seen:ts},now)).toMatchObject({code:'awaiting_location',active:false});
+});
+
+it('does not report streaming removed until Tesla confirms a synced empty configuration',()=>{
+ expect(fleetConfigurationRemoved({synced:false,config:null})).toBe(false);
+ expect(fleetConfigurationRemoved({synced:true,config:{hostname:'fleet.letm3go.au',port:443}})).toBe(false);
+ expect(fleetConfigurationRemoved({synced:true})).toBe(false);
+ expect(fleetConfigurationRemoved({synced:true,config:null})).toBe(true);
+});
+
+it('uses strong new speed evidence when the Drive transition was lost after an earlier Park',async()=>{
+ const frames=[
+  {timestamp:100,fields:{gear:'P'}},
+  {timestamp:105,fields:{speed:8}},
+  {timestamp:160,fields:{speed:12,location:{latitude:-34,longitude:151}}},
+  {timestamp:185,fields:{location:{latitude:-34.002,longitude:151}}},
+  {timestamp:200,fields:{gear:'P'}},
+ ];
+ const result=await reconstructFleet(frames,{enabledSince:90,vehicleID:'car',ownerID:'owner'});
+ expect(result.drives).toHaveLength(1);
+ expect(result.drives[0]).toMatchObject({startedAt:160,endedAt:200,incomplete:false});
 });

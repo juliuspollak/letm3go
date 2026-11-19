@@ -1,11 +1,71 @@
 import {useEffect,useState} from 'react';
 import {teslaRecordingRequest,openTeslaPairingURL} from '../lib/tesla.js';
-export default function TeslaRecording({vehicle,compact=false}){
- const [status,setStatus]=useState(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[consent,setConsent]=useState(false),[share,setShare]=useState(false);
- useEffect(()=>{let alive=true;teslaRecordingRequest('status',{vehicleID:vehicle.id}).then(s=>{if(alive){setStatus(s);setShare(!!s.setting?.sharingHousehold);}}).catch(()=>{if(alive)setError('Automatic recording needs backend and receiver setup. Tesla connection alone does not record journeys.');});return()=>{alive=false;};},[vehicle.id]);
- async function act(action,params={}){setBusy(true);setError('');setMessage('');try{const result=await teslaRecordingRequest(action,{vehicleID:vehicle.id,...params});if(result.url)await openTeslaPairingURL(result.url);setMessage(result.message||result.compatibility?.reason||(result.disabled?'Automatic recording disabled.':'Setup checked.'));setStatus(await teslaRecordingRequest('status',{vehicleID:vehicle.id}));}catch(e){setError(e.message);}finally{try{const latest=await teslaRecordingRequest('status',{vehicleID:vehicle.id});setStatus(latest);setShare(!!latest.setting?.sharingHousehold);}catch{/* Keep previous verified status. */}setBusy(false);}}
- if(compact)return <small>{status?.label||'Setup required'}</small>;
- return <section className="garage-tesla-summary"><h3>Automatic recording</h3><p role="status" className="small-copy">{status?.label||'Setup required'}</p><dl className="garage-tesla-facts"><div><dt>Virtual key</dt><dd>{status?.setting?.keyRequired===false?'Use vehicle Safety streaming toggle':status?.setting?.keyPaired?'Paired':'Not verified'}</dd></div><div><dt>Telemetry configuration</dt><dd>{status?.setting?.configSynced?'Verified by vehicle':'Not verified'}</dd></div><div><dt>Vehicle stream</dt><dd>{typeof status?.setting?.streamConnected==='boolean'?(status.setting.streamConnected?'Connected':'Disconnected / may be asleep'):'Not reported'}</dd></div><div><dt>Last telemetry</dt><dd>{status?.setting?.lastReceived?new Date(status.setting.lastReceived).toLocaleString():'None yet'}</dd></div><div><dt>Recording starts</dt><dd>{status?.setting?.enabledSince?new Date(status.setting.enabledSince).toLocaleString():'After setup is verified'}</dd></div></dl><div className="garage-detail-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>act('check')}>Check vehicle setup</button>{status?.setting?.keyRequired!==false&&<button type="button" className="secondary" disabled={busy} onClick={()=>act('pairingLink')}>Pair Letm3go key</button>}</div>
- {status?.setting?.enabled?<button type="button" className="secondary full" disabled={busy} onClick={()=>act('disable')}>Disable automatic recording</button>:<><label className="checkbox-label"><input type="checkbox" checked={consent} disabled={busy} onChange={e=>setConsent(e.target.checked)}/> Record future journeys and vehicle locations automatically.</label><button type="button" className="primary full" disabled={busy||!consent} onClick={()=>act('enable',{consent:true})}>Enable automatic recording</button></>}
- <label className="checkbox-label"><input type="checkbox" checked={share} disabled={busy||!status?.setting} onChange={e=>{void act('shareHousehold',{enabled:e.target.checked,consent:e.target.checked});}}/> Share future vehicle journeys with my household</label><p className="muted small-copy">Vehicle recording is independent of your iPhone. It collects future telemetry after setup, not a historical Tesla trip archive. Household sharing is separate from recording.</p>{status?.setting?.error&&<p className="notice">{status.setting.error}</p>}{message&&<p role="status" className="notice">{message}</p>}{error&&<p role="alert" className="error">{error}</p>}</section>;
+import {teslaConnected} from '../lib/teslaStatus.js';
+
+export default function TeslaRecording({vehicle,accountStatus,compact=false}){
+ const [status,setStatus]=useState(null),[error,setError]=useState(''),[message,setMessage]=useState('');
+ const [busy,setBusy]=useState(false),[consent,setConsent]=useState(false),[loaded,setLoaded]=useState(false);
+ useEffect(()=>{
+  let current=true;
+  teslaRecordingRequest('status',{vehicleID:vehicle.id})
+   .then(result=>{if(current){setStatus(result);setError('');}})
+   .catch(failure=>{if(current){setStatus(null);setError(failure.message);}})
+   .finally(()=>{if(current)setLoaded(true);});
+  return()=>{current=false;};
+ },[vehicle.id]);
+
+ async function refresh(){
+  try{setStatus(await teslaRecordingRequest('status',{vehicleID:vehicle.id}));}
+  catch(failure){setStatus(null);setError(previous=>previous||failure.message);}
+  finally{setLoaded(true);}
+ }
+ async function act(action,params={}){
+  setBusy(true);setError('');setMessage('');
+  try{
+   if(action!=='status'){
+    const result=await teslaRecordingRequest(action,{vehicleID:vehicle.id,...params});
+    if(result.url)await openTeslaPairingURL(result.url);
+    setMessage(result.message||result.compatibility?.reason|| (result.disabled?'Automatic recording disabled and vehicle streaming removed.':''));
+    if(action==='enable')setConsent(false);
+   }
+  }catch(failure){setError(failure.message);}
+  finally{await refresh();setBusy(false);}
+ }
+
+ const label=status?.label||(loaded?'Recording status unavailable':'Checking recording status…');
+ if(compact)return <small>{label}</small>;
+ const actions=status?.actions||{},setting=status?.setting;
+ const connected=status?.accountConnected??(accountStatus?teslaConnected(accountStatus):null);
+ return <section className="garage-tesla-summary">
+  <h3>Automatic recording</h3>
+  <p role="status" className="small-copy">{label}</p>
+  <dl className="garage-tesla-facts">
+   <div><dt>Tesla account</dt><dd>{connected===null?'Not verified':connected?'Connected':'Not connected'}</dd></div>
+   <div><dt>Vehicle</dt><dd>Imported to My Collection</dd></div>
+   {status&&<>
+    <div><dt>Receiver</dt><dd>{status.receiverReady?'Online':'Unavailable'}</dd></div>
+    <div><dt>Virtual key</dt><dd>{setting?.keyRequired===false?'Use vehicle Safety streaming toggle':setting?.keyPaired?'Paired':actions.pair?'Pairing required':'Not verified'}</dd></div>
+    <div><dt>Telemetry configuration</dt><dd>{setting?.configSynced?'Verified by vehicle':status.code==='configuration_pending'?'Waiting for verification':'Not verified'}</dd></div>
+    <div><dt>Vehicle stream</dt><dd>{typeof setting?.streamConnected==='boolean'?(setting.streamConnected?'Connected':'Disconnected / may be asleep'):'Not reported'}</dd></div>
+    <div><dt>Last telemetry</dt><dd>{setting?.lastReceived?new Date(setting.lastReceived).toLocaleString():'None yet'}</dd></div>
+    {setting?.enabledSince&&<div><dt>Recording enabled</dt><dd>{new Date(setting.enabledSince).toLocaleString()}</dd></div>}
+   </>}
+  </dl>
+  {status?.reason&&<p className="notice">{status.reason}</p>}
+  <div className="garage-detail-actions">
+   <button type="button" className="text-button" disabled={busy||!loaded} onClick={()=>act('status')}>Refresh recording status</button>
+   {actions.check&&<button type="button" className="secondary" disabled={busy} onClick={()=>act('check')}>Check vehicle setup</button>}
+   {actions.pair&&<button type="button" className="secondary" disabled={busy} onClick={()=>act('pairingLink')}>Pair Letm3go key</button>}
+  </div>
+  {actions.disable&&<button type="button" className="secondary full" disabled={busy} onClick={()=>act('disable')}>{status.code==='removal_pending'?'Retry removing vehicle streaming':'Disable automatic recording'}</button>}
+  {actions.enable&&<>
+   <label className="checkbox-label"><input type="checkbox" checked={consent} disabled={busy} onChange={event=>setConsent(event.target.checked)}/> Record future journeys and vehicle locations automatically.</label>
+   <button type="button" className="primary full" disabled={busy||!consent} onClick={()=>act('enable',{consent:true})}>Enable automatic recording</button>
+  </>}
+  {(setting?.enabled||setting?.sharingHousehold)&&<label className="checkbox-label"><input type="checkbox" checked={!!setting.sharingHousehold} disabled={busy} onChange={event=>act('shareHousehold',{enabled:event.target.checked,consent:event.target.checked})}/> Share future vehicle journeys with my household</label>}
+  <p className="muted small-copy">Tesla records future vehicle journeys independently of your iPhone once telemetry is verified.</p>
+  {setting?.error&&<p className="notice">{setting.error}</p>}
+  {message&&<p role="status" className="notice">{message}</p>}
+  {error&&<p role="alert" className="error">{error}</p>}
+ </section>;
 }

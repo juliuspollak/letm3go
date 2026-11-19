@@ -6,6 +6,7 @@
 !services/fleet-telemetry/package.json
 !services/fleet-telemetry/package-lock.json
 !services/fleet-telemetry/consumer.mjs
+!services/fleet-telemetry/delivery.mjs
 !services/fleet-telemetry/control.mjs
 !supabase/
 !supabase/functions/
