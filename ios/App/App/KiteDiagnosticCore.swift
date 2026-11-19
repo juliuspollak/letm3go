@@ -1,3 +1,4 @@
+#if KITE_DIAGNOSTIC
 import Foundation
 import Compression
 
@@ -18,9 +19,10 @@ enum KiteDiagnostic {
     static let barometerHeader = "seq,t_mono,t_recv,t_wall,relative_altitude_m,pressure_kpa"
     static let gpsHeader = "seq,t_wall,t_recv,lat,lon,altitude_m,h_acc_m,v_acc_m,speed_mps,speed_acc_mps,course_deg,course_acc_deg"
     // A recording never runs forever or fills the watch.
-    static let maxSessionSeconds = 90.0 * 60
-    static let maxSessionBytes = 160 * 1024 * 1024
-    static let maxTotalBytes = 400 * 1024 * 1024
+    static let maxSessionSeconds = 60.0 * 60   // also the extended-runtime session cap
+    // 3 motion streams at 100 Hz is ~34 KB/s, so one hour is ~125 MB: the motion cap must cover it.
+    static let maxSessionBytes = 220 * 1024 * 1024
+    static let maxTotalBytes = 500 * 1024 * 1024
     static let stallSeconds = 2.0
 }
 
@@ -110,6 +112,8 @@ struct KiteStreamStats: Codable, Equatable {
     var errors = 0
     // Bound memory: only the first 200 gaps are listed; the total is still counted.
     var gapCount = 0
+    // Samples that arrived in order but were not written because a file cap was reached.
+    var dropped = 0
 
     var achievedHz: Double {
         guard count > 1, let first = firstMono, let last = lastMono, last > first else { return 0 }
@@ -146,6 +150,7 @@ struct KiteStreamTracker {
     }
 
     mutating func noteError() { stats.errors += 1 }
+    mutating func noteDropped() { stats.dropped += 1 }
 }
 
 // MARK: CSV rows
@@ -289,6 +294,22 @@ final class KiteSessionStore {
     func delete(_ id: String) { try? FileManager.default.removeItem(at: directory(id)) }
     func deleteAll() { sessionIDs().forEach(delete) }
 
+    // Streams a file line by line in 256 KB chunks so recovery never holds a whole recording in memory.
+    static func forEachLine(_ url: URL, _ body: (Substring) -> Void) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        var carry = Data()
+        while let chunk = try? handle.read(upToCount: 256 * 1024), !chunk.isEmpty {
+            carry.append(chunk)
+            guard let last = carry.lastIndex(of: 10) else { continue }
+            let complete = carry[carry.startIndex...last]
+            carry = Data(carry[(last + 1)...])
+            // A decoded chunk is dropped before the next is read.
+            if let text = String(data: complete, encoding: .utf8) { for line in text.split(separator: "\n", omittingEmptySubsequences: true) { body(line) } }
+        }
+        // A trailing line with no newline was torn by a kill: ignored.
+    }
+
     // Rebuilds a summary from the CSV files of a session that never finished.
     @discardableResult
     func recover(_ id: String, now: Double = Date().timeIntervalSince1970) -> KiteSummary? {
@@ -297,11 +318,9 @@ final class KiteSessionStore {
         var trackers: [KiteStream: KiteStreamTracker] = [:]
         for stream in KiteStream.allCases { trackers[stream] = KiteStreamTracker(stream) }
         func scan(_ file: String, _ each: (String, [Substring]) -> Void) {
-            guard let text = try? String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8) else { return }
             var first = true
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                if first { first = false; continue }
-                // A torn final line (killed mid-write) lacks all columns and is ignored.
+            Self.forEachLine(dir.appendingPathComponent(file)) { line in
+                if first { first = false; return }
                 each(String(line), line.split(separator: ",", omittingEmptySubsequences: false))
             }
         }
@@ -332,8 +351,9 @@ final class KiteSessionStore {
     }
 
     func eventCount(_ id: String) -> Int {
-        guard let text = try? String(contentsOf: directory(id).appendingPathComponent("events.jsonl"), encoding: .utf8) else { return 0 }
-        return text.split(separator: "\n").count
+        var n = 0
+        Self.forEachLine(directory(id).appendingPathComponent("events.jsonl")) { _ in n += 1 }
+        return n
     }
 
     // Recover every session left marked as recording. Call at launch, before a new recording starts.
@@ -546,6 +566,8 @@ final class KiteRecordingSession {
 
     private func note(_ stream: KiteStream, mono m: Double, recv: Double) -> Bool {
         guard isActive else { return false }
+        // Every stream passes through here, so the duration bound holds whichever sensors are alive.
+        if hasHitLimit { log("limit", "Maximum recording duration reached"); _ = finish(reason: "max-duration"); return false }
         let result = trackers[stream]!.record(mono: m, recv: recv)
         guard result.accepted else { return false }
         lastDelivery = recv
@@ -564,8 +586,9 @@ final class KiteRecordingSession {
     private func write(_ writer: KiteFileWriter?, _ line: String, _ stream: KiteStream) {
         guard let writer else { return }
         do {
-            if try !writer.append(line: line), cappedStreams.insert(stream.csvName).inserted {
-                log("storage-cap", "\(stream.csvName) reached its size cap; further rows dropped")
+            if try !writer.append(line: line) {
+                trackers[stream]?.noteDropped()
+                if cappedStreams.insert(stream.csvName).inserted { log("storage-cap", "\(stream.csvName) reached its size cap; further rows dropped") }
             }
         } catch { fail("write-error", "\(stream.csvName): \(error.localizedDescription)") }
     }
@@ -694,3 +717,4 @@ struct KiteTransferLedger {
     mutating func noteDelivered(_ id: String) { var r = record(id); r.delivered = true; r.lastError = nil; records[id] = r; save() }
     mutating func forget(_ id: String) { records[id] = nil; save() }
 }
+#endif

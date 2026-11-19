@@ -155,12 +155,36 @@ for _ in 0..<1000 { if try! w.append(line: "0123456789") { accepted += 1 } }
 try! w.close()
 check(w.capped && w.bytesWritten <= 500 && accepted < 1000, "writer honours byte cap")
 check(try! Data(contentsOf: wdir.appendingPathComponent("a.csv")).count == w.bytesWritten, "bytes on disk match")
-check(KiteDiagnostic.maxSessionSeconds <= 90 * 60, "duration bounded")
+check(KiteDiagnostic.maxSessionSeconds <= 60 * 60, "duration bounded")
+check(Int(KiteDiagnostic.maxSessionSeconds) * 34_000 <= KiteDiagnostic.maxSessionBytes * 3 / 4, "motion cap covers a full-length recording at 100 Hz")
 let cs = tempStore(); let cm = manifest()
 let capped = try! KiteRecordingSession(store: cs, manifest: cm, wall: { clock.wall }, mono: { clock.mono })
 clock.advance(KiteDiagnostic.maxSessionSeconds + 1)
-check(capped.hasHitLimit, "duration limit reported so recorder can stop")
-_ = capped.finish(reason: "max-duration")
+check(capped.hasHitLimit, "duration limit reported")
+capped.barometer(mono: 9e6, recv: 9e6, wall: 0, altitude: 0, pressureKPa: 101)   // any stream, not just accelerometer
+check(capped.status == .saved && !capped.isActive, "limit finalises the session from any stream")
+check(capped.events.contains { $0.kind == "limit" }, "limit logged")
+
+// failed session: finish() returns nil afterwards but the summary is already on disk for packaging
+let fstore = tempStore(); let fm = manifest()
+let fc = Clock()
+let fs = try! KiteRecordingSession(store: fstore, manifest: fm, wall: { fc.wall }, mono: { fc.mono })
+fs.vector(.accelerometer, mono: 1001, recv: 1001, x: 0, y: 0, z: 0)
+fs.fail("write-error", "disk full")
+check(fs.status == .failed && fstore.hasSummary(fm.sessionID), "failed session still leaves a summary")
+check(fs.finish(reason: "session-ended") == nil, "finish after failure is a no-op")
+_ = try! KitePackage.build(store: fstore, id: fm.sessionID)
+check(FileManager.default.fileExists(atPath: fstore.directory(fm.sessionID).appendingPathComponent("package.zip").path), "failed session can be packaged")
+
+// streaming recovery handles a large file and a torn last line
+let lstore = tempStore(); let lm = manifest()
+try! FileManager.default.createDirectory(at: lstore.directory(lm.sessionID), withIntermediateDirectories: true)
+var big2 = KiteDiagnostic.barometerHeader + "\n"
+for i in 0..<30000 { big2 += KiteCSV.barometer(seq: i, mono: 100 + Double(i), recv: 100 + Double(i), wall: 0, altitude: 0, pressureKPa: 101) + "\n" }
+big2 += "5,1"
+try! big2.write(to: lstore.directory(lm.sessionID).appendingPathComponent("barometer.csv"), atomically: true, encoding: .utf8)
+let lr = lstore.recover(lm.sessionID)
+check(lr?.streams["barometer"]?.count == 30000, "streamed recovery counts every complete row across chunks")
 
 // transfer failure + retry
 let ledgerURL = FileManager.default.temporaryDirectory.appendingPathComponent("ledger-" + UUID().uuidString + ".json")

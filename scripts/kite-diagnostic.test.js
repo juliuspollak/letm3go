@@ -22,6 +22,6 @@ describe('kitesurfing sensor diagnostic isolation', () => {
   });
   it('wraps every diagnostic source in the compile flag', () => {
     for (const f of ['KiteDiagnosticRecorder.swift', 'KiteDiagnosticView.swift']) expect(watch(f).startsWith('#if KITE_DIAGNOSTIC')).toBe(true);
-    expect(readFileSync(new URL('../ios/App/App/KiteDiagnosticInbox.swift', import.meta.url), 'utf8').startsWith('#if KITE_DIAGNOSTIC')).toBe(true);
+    for (const f of ['KiteDiagnosticInbox.swift', 'KiteDiagnosticCore.swift']) expect(readFileSync(new URL(`../ios/App/App/${f}`, import.meta.url), 'utf8').startsWith('#if KITE_DIAGNOSTIC')).toBe(true);
   });
 });

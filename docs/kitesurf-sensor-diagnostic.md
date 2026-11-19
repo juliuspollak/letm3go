@@ -41,7 +41,7 @@ Likely: sensors alone (Test A) work in the foreground. **Uncertain, probably fra
 
 ## 4. What was implemented
 
-All behind the `KITE_DIAGNOSTIC` compile flag, set **only on Debug** configurations. Release builds contain no diagnostic code (checked: zero `KiteDiagnosticRecorder` symbols in a Release Watch binary) and a plist without the background mode (guarded by `scripts/kite-diagnostic.test.js`).
+All behind the `KITE_DIAGNOSTIC` compile flag, set **only on Debug** configurations. Release builds contain no diagnostic code, including the core (all four Swift sources are wrapped in `#if KITE_DIAGNOSTIC`) and a plist without the background mode (guarded by `scripts/kite-diagnostic.test.js`).
 
 - `ios/App/App/KiteDiagnosticCore.swift`: pure logic: lifecycle state machine, per-stream ordering/duplicate/gap/rate tracking, bounded incremental file writer, session store with crash recovery and storage limits, ZIP packager (streamed deflate), transfer ledger with retry backoff.
 - `ios/App/Letm3goWatch/KiteDiagnosticRecorder.swift` + `KiteDiagnosticView.swift`: Core Motion / CMAltimeter / CoreLocation / `WKExtendedRuntimeSession` wiring and the Watch screen (Settings → Kite Diagnostic).
@@ -52,7 +52,7 @@ All behind the `KITE_DIAGNOSTIC` compile flag, set **only on Debug** configurati
 
 **Timing:** each motion row carries `t_mono` (sensor timestamp, seconds since boot) and `t_recv` (monotonic arrival time). `wall = t_mono + manifest.wallMinusMono`. Events carry both `wall` and `mono`, exposing drift. `t_recv − t_mono` large ⇒ batched delivery after suspension.
 
-**Safety bounds:** 90 min max per recording, 160 MB per recording (per-file caps), 400 MB total; a full store refuses to start and never auto-deletes. Rows are flushed every 32 KB; a killed app is recovered at next launch as `complete: false`.
+**Safety bounds:** 60 min max per recording (the extended-runtime cap; enforced by the core on any stream), 220 MB per recording (per-file caps; motion cap covers an hour at 100 Hz), 500 MB total. Rows refused by a cap are counted as `dropped` per stream; a full store refuses to start and never auto-deletes. Rows are flushed every 32 KB; a killed app is recovered at next launch as `complete: false`.
 
 **Not done on purpose:** no HealthKit workout, no letm3go activity, no Supabase, no upload, no jump detection.
 

@@ -35,6 +35,7 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
     private let motion = CMMotionManager()
     private let altimeter = CMAltimeter()
     private let location = CLLocationManager()
+    private var packaging = Set<String>()
     private var runtime: WKExtendedRuntimeSession?
     private var timer: Timer?
     private var lastTick: Double?
@@ -63,7 +64,10 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
                                     requestedHz: ["accelerometer": Self.requestedHz, "gyroscope": Self.requestedHz, "deviceMotion": Self.requestedHz, "barometer": 1, "gps": 1],
                                     extendedRuntimeRequested: useExtendedRuntime,
                                     notes: "Developer diagnostic. No HealthKit workout was started by letm3go.")
-        guard let created = try? KiteRecordingSession(store: store, manifest: manifest) else { message = "Could not create recording files"; return }
+        guard let created = try? KiteRecordingSession(store: store, manifest: manifest) else {
+            store.delete(manifest.sessionID)   // never leave a half-created, marked session behind
+            message = "Could not create recording files"; return
+        }
         ioQueue.sync { session = created }
         message = ""
         counts = [:]; rates = [:]; lastTick = mono
@@ -79,12 +83,11 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
         timer?.invalidate(); timer = nil
         stopSensors()
         runtime?.invalidate(); runtime = nil; extendedState = "off"
-        let summary = ioQueue.sync { created.finish(reason: reason) }
-        ioQueue.sync { session = nil }
+        ioQueue.sync { _ = created.finish(reason: reason); session = nil }   // nil when it already ended itself
         refreshSnapshot(final: created)
         status = created.status
-        guard summary != nil else { return }
-        if let url = try? KitePackage.build(store: store, id: created.id) { _ = url; message = "Saved on Watch" } else { message = "Saved, but the package could not be built" }
+        guard store.hasSummary(created.id) else { message = "Recording could not be saved"; return }
+        message = "Saved on Watch. Packaging…"
         refreshRecordings()
         send(created.id)
     }
@@ -100,7 +103,6 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
                 if let error { session.sensorError(.accelerometer, error.localizedDescription); return }
                 guard let d = data else { return }
                 session.vector(.accelerometer, mono: d.timestamp, recv: ProcessInfo.processInfo.systemUptime, x: d.acceleration.x, y: d.acceleration.y, z: d.acceleration.z)
-                self.checkLimit(session)
             }
         } else { s.sensorUnavailable(.accelerometer, "isAccelerometerAvailable == false") }
         if motion.isGyroAvailable {
@@ -147,9 +149,6 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
         altimeter.stopRelativeAltitudeUpdates(); location.stopUpdatingLocation()
     }
 
-    private func checkLimit(_ s: KiteRecordingSession) {
-        if s.hasHitLimit { DispatchQueue.main.async { self.stop(reason: "max-duration") } }
-    }
 
     // MARK: extended runtime session
 
@@ -176,10 +175,10 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
             ioQueue.sync { session?.interruption("app ran again after \(String(format: "%.1f", now - last)) s without a timer tick", ["suspendedSeconds": String(format: "%.1f", now - last)]) }
         }
         lastTick = now
-        ioQueue.sync { session?.watchdog() }
+        ioQueue.sync { session?.watchdog(); if session?.hasHitLimit == true { _ = session?.finish(reason: "max-duration") } }
         refreshSnapshot()
         // The session ended itself (write failure): stop the sensors instead of letting them burn battery.
-        if timer != nil, !isRecording { stop(reason: "session-ended") }
+        if timer != nil, !isRecording { stop(reason: "session-ended") }   // also covers the duration limit, which the core enforces on any stream
     }
 
     private func refreshSnapshot(final: KiteRecordingSession? = nil) {
@@ -195,7 +194,8 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
     // MARK: recordings list, transfer, delete
 
     func refreshRecordings() {
-        recordings = store.sessionIDs().reversed().map { id in
+        let live = activeID
+        recordings = store.sessionIDs().filter { $0 != live }.reversed().map { id in
             let summary = (try? Data(contentsOf: store.directory(id).appendingPathComponent("summary.json"))).flatMap { try? JSONDecoder().decode(KiteSummary.self, from: $0) }
             let r = ledger.record(id)
             return KiteRecordingInfo(id: id, durationSeconds: summary?.durationSeconds ?? 0, complete: summary?.complete ?? false, bytes: store.size(of: id),
@@ -204,17 +204,31 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
     }
 
     func send(_ id: String) {
-        let zip = store.directory(id).appendingPathComponent("package.zip")
-        if !FileManager.default.fileExists(atPath: zip.path) { _ = try? KitePackage.build(store: store, id: id) }
-        guard FileManager.default.fileExists(atPath: zip.path) else { message = "No package to send"; return }
-        guard WCSession.isSupported(), WCSession.default.activationState == .activated else {
-            ledger.noteFailure(id, error: "Watch connectivity not active"); message = "iPhone link not active; recording kept"; refreshRecordings(); return
+        guard id != activeID, !packaging.contains(id) else { return }
+        // Never queue the same package twice while the first is still in flight.
+        if WCSession.isSupported(), WCSession.default.outstandingFileTransfers.contains(where: { $0.file.metadata?["id"] as? String == id }) { return }
+        packaging.insert(id)
+        let store = self.store
+        // CRC + deflate of tens of MB must not run on the main thread.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let zip = store.directory(id).appendingPathComponent("package.zip")
+            let built = FileManager.default.fileExists(atPath: zip.path) || (try? KitePackage.build(store: store, id: id)) != nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.packaging.remove(id)
+                guard built else { self.message = "Saved, but the package could not be built"; self.refreshRecordings(); return }
+                guard WCSession.isSupported(), WCSession.default.activationState == .activated else {
+                    self.ledger.noteFailure(id, error: "Watch connectivity not active"); self.message = "iPhone link not active; recording kept"; self.refreshRecordings(); return
+                }
+                self.ledger.noteAttempt(id, now: Date().timeIntervalSince1970)
+                WCSession.default.transferFile(zip, metadata: ["kind": "kiteDiagnostic", "id": id, "bytes": store.size(of: id)])
+                self.message = "Sending to iPhone…"
+                self.refreshRecordings()
+            }
         }
-        ledger.noteAttempt(id, now: Date().timeIntervalSince1970)
-        WCSession.default.transferFile(zip, metadata: ["kind": "kiteDiagnostic", "id": id, "bytes": store.size(of: id)])
-        message = "Sending to iPhone…"
-        refreshRecordings()
     }
+
+    private var activeID: String? { ioQueue.sync { session?.id } }
 
     func transferFinished(id: String, error: Error?) {
         if let error { ledger.noteFailure(id, error: error.localizedDescription); message = "Transfer failed; recording kept. Tap Send to retry." }
@@ -228,8 +242,8 @@ final class KiteDiagnosticRecorder: NSObject, ObservableObject {
         for r in recordings where !r.delivered && ledger.canSend(r.id, now: Date().timeIntervalSince1970) && !isRecording { send(r.id) }
     }
 
-    func delete(_ id: String) { store.delete(id); ledger.forget(id); refreshRecordings() }
-    func deleteAll() { store.deleteAll(); recordings.forEach { ledger.forget($0.id) }; refreshRecordings() }
+    func delete(_ id: String) { guard id != activeID else { return }; store.delete(id); ledger.forget(id); refreshRecordings() }
+    func deleteAll() { guard !isRecording else { return }; store.deleteAll(); recordings.forEach { ledger.forget($0.id) }; refreshRecordings() }
 
     private static func machine() -> String {
         var size = 0
