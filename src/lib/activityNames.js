@@ -4,6 +4,7 @@ export const MOUNTAIN_BIKING='Mountain biking';
 export function activityCode(activity){
  return typeof activity==='string'&&['mtb','mountain biking'].includes(activity.trim().toLowerCase())?'MTB':activity;
 }
-export const activityLabel=activity=>activityCode(activity)==='MTB'?MOUNTAIN_BIKING:activity;
+const displayNames={MTB:MOUNTAIN_BIKING,Gym:'General workout'};
+export const activityLabel=activity=>Object.hasOwn(displayNames,activityCode(activity))?displayNames[activityCode(activity)]:activity;
 export const sameActivity=(a,b)=>activityCode(a)===activityCode(b);
 export const activityOptions=activities=>[...new Set(activities.map(activityCode))];

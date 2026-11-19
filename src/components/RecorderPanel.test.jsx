@@ -136,18 +136,20 @@ it('allows resume while an automatic walk is still unconfirmed',()=>{
  expect(screen.getByRole('button',{name:/Resume/})).toBeEnabled();
 });
 
-it('starts Gym without location permission or GPS settings',()=>{
+it('starts Fitness workouts without location permission or GPS settings',()=>{
  const run=vi.fn();render(<RecorderPanel state={{active:null,permission:'denied',storageReady:true}} run={run} vehicles={[]}/>);
- fireEvent.click(screen.getByRole('button',{name:'Gym',exact:true}));
- expect(screen.getByRole('button',{name:'Start gym'})).toBeEnabled();
+ fireEvent.click(screen.getByRole('button',{name:'Fitness',exact:true}));
+ expect(screen.getByRole('button',{name:'Start general workout'})).toBeEnabled();
  expect(screen.queryByText('GPS accuracy')).not.toBeInTheDocument();
  expect(screen.queryByRole('button',{name:'Open location settings'})).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'Start gym'}));
+ fireEvent.click(screen.getByRole('button',{name:'Start general workout'}));
  expect(run).toHaveBeenCalledWith('start','Gym','',undefined);
+ expect(screen.getByRole('list',{name:'Fitness workouts'})).toHaveTextContent('General workoutiPhone & Apple WatchStrength trainingApple WatchPilatesApple WatchRope skippingApple Watch');
+ for(const type of ['Strength training','Pilates','Rope skipping'])expect(screen.queryByRole('button',{name:type,exact:true})).not.toBeInTheDocument();
 });
 it('shows an indoor timer instead of a missing GPS warning or distance',()=>{
  render(<RecorderPanel state={{active:{activity:'Gym',source:'device',state:'recording',startedAt:1000,points:[],durationSeconds:120,distanceMeters:0,details:{indoor:true}},permission:'denied'}} run={vi.fn()} vehicles={[]}/>);
- expect(screen.getByText('Indoor gym')).toBeInTheDocument();
+ expect(screen.getByText('Indoor workout')).toBeInTheDocument();
  expect(screen.getByText('00:02:00')).toBeInTheDocument();
  expect(screen.queryByText('Waiting for an accurate GPS fix')).not.toBeInTheDocument();
  expect(screen.queryByText('km recorded')).not.toBeInTheDocument();

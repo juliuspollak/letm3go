@@ -35,7 +35,7 @@ export default function ActivityPicker({value,onChange}){
    className={`activity-tile${selected===name?' selected':''}`} aria-pressed={selected===name}
    data-motion={motion} style={{'--tile-accent':color}} onClick={()=>onChange(name)}>
    <span className="activity-tile-icon" aria-hidden="true"><Icon size={27} strokeWidth={1.65}/></span>
-   <span className="activity-tile-label">{name}</span>
+   <span className="activity-tile-label">{name==='Gym'?'Fitness':name}</span>
    <span className="activity-tile-check" aria-hidden="true"><Check size={11} strokeWidth={3}/></span>
   </button>)}
  </div>;

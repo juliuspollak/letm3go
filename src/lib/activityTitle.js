@@ -8,7 +8,9 @@ export function activityTitle(trip){
  if(trip.recordingMode==='automatic'&&automaticTitle(trip))return trip.activity==='Unknown'?'Journey':activityLabel(trip.activity);
  // Default iPhone/Watch titles include a date after the separator. This is a
  // display projection; personal titles and stored titles are never rewritten.
- if(activityCode(trip.activity)==='MTB'&&/^MTB · \d/.test(trip.title||''))return trip.title.replace(/^MTB/,activityLabel('MTB'));
+ const code=activityCode(trip.activity);
+ if(code==='MTB'&&/^MTB · \d/.test(trip.title||''))return trip.title.replace(/^MTB/,activityLabel(code));
+ if(code==='Gym'&&automaticTitle(trip))return trip.title.replace(/^Gym/,activityLabel(code));
  return trip.title;
 }
 

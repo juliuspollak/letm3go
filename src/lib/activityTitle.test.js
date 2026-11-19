@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {contextualJourneyTitle} from './activityTitle.js';
+import {activityTitle,contextualJourneyTitle} from './activityTitle.js';
 
 const home={name:'Home',kind:'home'};
 const grove={name:'Warilla Grove',nearbyName:'Warilla Grove'};
@@ -17,4 +17,10 @@ it('never says a drive from Home was "to Home" when the destination is not recog
 it('keeps loops and unnamed trips as they were',()=>{
  expect(contextualJourneyTitle('Driving',home,unknown,true)).toBe('Drive around Home');
  expect(contextualJourneyTitle('Driving',unknown,unknown)).toBe('Driving');
+});
+
+it('shows General workout for the default title of a saved Gym activity',()=>{
+ const trip={activity:'Gym',recordingMode:'watch',title:'Gym · 19 Nov 2026 at 6:30 pm'};
+ expect(activityTitle(trip)).toBe('General workout · 19 Nov 2026 at 6:30 pm');
+ expect(activityTitle({...trip,details:{titleEdited:true}})).toBe(trip.title);
 });
