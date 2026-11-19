@@ -77,3 +77,9 @@ it('resets filters without touching how the map is drawn',()=>{
  const view={...DEFAULT_MAP_VIEW,style:'satellite',people:false,routes:'all',activity:'Walking',range:'7d',day:'2026-10-28',archived:false};
  expect(toolbarChange(view,'reset')).toEqual({...DEFAULT_MAP_VIEW,style:'satellite'});
 });
+
+it('maps every activity to a symbol with a glyph',async()=>{
+ const {activityGlyphs}=await import('../components/activityGlyphs.js');
+ for(const a of ['Walking','Running','Cycling','MTB','Hiking','Kitesurfing','Gym','Pilates','Strength training','Rope skipping','Driving','Other','Unknown','Swimming','',undefined])
+  expect(activityGlyphs[activitySymbol(a)],String(a)).toBeTruthy();
+});

@@ -22,7 +22,7 @@ function renderList(overrides={}){
 it('shows the activity glyph in each row, including renamed general workouts',()=>{
  const icons={
   Walking:'footprints',Running:'running',Cycling:'bike',MTB:'mountain-snow','Road cycling':'bike',
-  Gym:'dumbbell','Strength training':'dumbbell',Pilates:'accessibility','Rope skipping':'jump-rope',
+  Gym:'dumbbell','Strength training':'dumbbell',Pilates:'person-standing','Rope skipping':'jump-rope',
   Other:'compass',Driving:'car',Kitesurfing:'waves',Hiking:'mountain',Unknown:'circle-help',
  };
  const journeys=Object.keys(icons).map(activity=>trip(activity,{activity}));

@@ -128,7 +128,7 @@ struct ActivitySummarySection: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.value).font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
                         .minimumScaleFactor(0.5).lineLimit(1)
-                    if item.id != "cadence", let detail = item.detail {
+                    if item.label.lowercased() != "avg cadence", let detail = item.detail {
                         Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }

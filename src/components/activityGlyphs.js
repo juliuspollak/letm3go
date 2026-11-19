@@ -1,4 +1,4 @@
-import {Accessibility,Bike,Car,CircleHelp,Compass,createLucideIcon,Dumbbell,Footprints,Mountain,MountainSnow,Waves} from 'lucide-react';
+import {Activity,Bike,Car,CircleHelp,Compass,createLucideIcon,Dumbbell,Footprints,Mountain,MountainSnow,PersonStanding,Waves} from 'lucide-react';
 
 const JumpRope=createLucideIcon('JumpRope',[
  ['path',{d:'M5 8v6a7 7 0 0 0 14 0V8',key:'rope'}],
@@ -18,11 +18,12 @@ export const activityGlyphs={
  'mountain.2':MountainSnow,
  'dumbbell':Dumbbell,
  'figure.strengthtraining.traditional':Dumbbell,
- 'figure.pilates':Accessibility,
+ 'figure.pilates':PersonStanding,
  'figure.jumprope':JumpRope,
  'car':Car,
  'figure.surfing':Waves,
  'figure.hiking':Mountain,
  'compass':Compass,
+ 'figure.mixed.cardio':Activity,
  'questionmark.circle':CircleHelp,
 };

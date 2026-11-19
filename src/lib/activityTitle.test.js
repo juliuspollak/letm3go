@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {activityTitle,contextualJourneyTitle} from './activityTitle.js';
+import {activityTitle,automaticTitle,contextualJourneyTitle} from './activityTitle.js';
 
 const home={name:'Home',kind:'home'};
 const grove={name:'Warilla Grove',nearbyName:'Warilla Grove'};
@@ -24,4 +24,9 @@ it('shows General workout for the default title of a saved Gym activity',()=>{
  expect(activityTitle(trip)).toBe('General workout · 19 Nov 2026 at 6:30 pm');
  expect(activityTitle({...trip,details:{titleEdited:true}})).toBe(trip.title);
  expect(activityTitle({...trip,recordingMode:'manual',title:'Gym · Nov 19, 2026 at 6:30 PM'})).toBe('General workout · Nov 19, 2026 at 6:30 PM');
+});
+
+it('does not treat a user-written Gym title as automatic',()=>{
+ expect(automaticTitle({activity:'Gym',recordingMode:'manual',title:'Gym · Leg day 6:30 pm'})).toBe(false);
+ expect(automaticTitle({activity:'Gym',recordingMode:'manual',title:'Gym · 19 Nov 2026 at 6:30 pm'})).toBe(true);
 });
