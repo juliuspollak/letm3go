@@ -1,6 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { boundedJSON } from '../_shared/media.js';
 import { withTeslaLease, saveTeslaCredentials, readTeslaCredentials, freshTeslaCredentials, teslaLocationAccess } from '../_shared/teslaCredentials.js';
+import {automaticRecordingStatus,receiverIsReady} from '../_shared/fleetTelemetry.js';
 const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization,apikey,content-type,x-client-info','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Content-Type':'application/json','Cache-Control':'no-store'};
 const reply=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers});
 const digest=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
@@ -45,10 +46,10 @@ Deno.serve(async request=>{
     try{locationAccess=teslaLocationAccess(await readTeslaCredentials(admin,owner,encryption!));}catch{/* Missing or unreadable scopes must remain unverified; never infer consent. */}
    }
    const receiver=await admin.from('fleet_receiver_health').select('ready,last_seen').eq('id','primary').maybeSingle();
-   const bindings=await admin.from('fleet_bindings').select('enabled,enabled_since,config_synced,last_received,error,location_verified').eq('owner_id',owner);
-   const receiverReady=!receiver.error&&receiver.data?.ready===true&&Date.now()-Date.parse(receiver.data.last_seen)<120000;
+   const bindings=await admin.from('fleet_bindings').select('enabled,enabled_since,config_synced,last_received,error,location_verified,stream_connected,revision,projected_revision').eq('owner_id',owner);
+   const receiverReady=!receiver.error&&receiverIsReady(receiver.data);
    if(locationAccess===null&&(bindings.data||[]).some(b=>b.enabled&&b.location_verified))locationAccess=true;
-   const recordingReady=receiverReady&&!bindings.error&&(bindings.data||[]).some(b=>b.enabled&&b.config_synced&&!b.error&&b.last_received&&Date.parse(b.last_received)>=Date.parse(b.enabled_since)&&Date.now()-Date.parse(b.last_received)<86400000);
+   const recordingReady=receiverReady&&!bindings.error&&(bindings.data||[]).some(b=>automaticRecordingStatus(b,receiver.data).active);
    return reply({connectionReady:configured&&!schemaError,connected:connection?.status==='connected',status:connection?.status||'disconnected',locationAccess,vehicleSelectionReady:fleetApproved,automaticImportReady:recordingReady,importReason:recordingReady?'ready':receiverReady?'vehicle_setup_required':'telemetry_not_configured'});
   }
   if(!configured)return reply({code:'TESLA_SETUP_REQUIRED',error:'Tesla connection needs Letm3go server setup.'},503);

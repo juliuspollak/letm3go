@@ -32,7 +32,7 @@ export default function Garage({vehicles,onSave,onViewTrips=()=>{},tripCounts={}
     <button type="button" className="text-button" disabled={saving} onClick={()=>setRemoving(true)}><Trash2 size={16}/> Remove {itemTitle(editing)}</button>
    </div>
    {removing&&<div className="notice"><p>Remove {itemTitle(editing)} from My Collection? Activities that already mention it keep their label. Your Tesla account stays connected.</p><div className="garage-detail-actions"><button type="button" className="secondary" disabled={saving} onClick={()=>setRemoving(false)}>Cancel removal</button><button type="button" className="primary" disabled={saving} onClick={async()=>{if(await persist(vehicles.filter(v=>v.id!==editing.id))){setMessage('Item removed.');back();}}}>Confirm removal</button></div></div>}
-   {editing.source==='tesla'&&<TeslaRecording vehicle={editing}/>}
+   {editing.source==='tesla'&&<TeslaRecording key={editing.id} vehicle={editing} accountStatus={status}/>}
    {message&&<p role="status" className="notice">{message}</p>}
   </section>}</>;
  if(view==='tesla')return <TeslaManagement status={status} onStatus={setStatus} vehicles={vehicles} onImport={importVehicles} onBack={back} onRefresh={refresh}/>;

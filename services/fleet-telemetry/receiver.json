@@ -4,7 +4,7 @@
  "reliable_ack_sources":{"V":"kafka","connectivity":"kafka"},
  "kafka":{"bootstrap.servers":"kafka:9092","acks":"all","enable.idempotence":true,"queue.buffering.max.messages":100000,"compression.type":"gzip"},
  "records":{"V":["kafka"],"connectivity":["kafka"],"errors":["kafka"]},
- "logger":{"verbose":false},"rate_limit":{"enabled":true,"message_limit":1000},
+ "logger":{"verbose":false},"rate_limit":{"enabled":true,"message_interval_time":30,"message_limit":1000},
  "tls":{"server_cert":"/run/tls/fullchain.pem","server_key":"/run/tls/privkey.pem"},
  "monitoring":{"prometheus_metrics_port":9090}
 }

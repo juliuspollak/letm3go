@@ -14,7 +14,13 @@ export async function openTeslaURL(url){
 export async function teslaRecordingRequest(action,params={}){
  if(!supabase)throw new Error('Sign in to manage vehicle recording.');
  const {data,error}=await supabase.auth.getUser();if(error||!data.user)throw new Error('Sign in to manage vehicle recording.');
- const result=await supabase.functions.invoke('tesla-recording',{body:{action,...params}});if(result.error||result.data?.error)throw new Error(result.data?.error||'Tesla recording setup is not available yet.');return result.data;
+ const result=await supabase.functions.invoke('tesla-recording',{body:{action,...params}});if(result.error||result.data?.error){
+  const response=result.error?.context;
+  const body=await response?.json?.().catch(()=>null);
+  if(response?.status===404&&body?.code==='NOT_FOUND')throw new Error('The recording backend is not deployed. Letm3go must deploy it before vehicle setup.');
+  throw new Error(result.data?.error||body?.error||'Could not reach the recording backend. Refresh status and retry.');
+ }
+ return result.data;
 }
 export async function openTeslaPairingURL(url){
  const parsed=new URL(url);if(parsed.origin!=='https://tesla.com'||parsed.pathname!=='/_ak/letm3go.au'||parsed.searchParams.size!==1||!/^[A-HJ-NPR-Z0-9]{17}$/.test(parsed.searchParams.get('vin')||''))throw new Error('Invalid pairing link');
