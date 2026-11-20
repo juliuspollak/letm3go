@@ -43,6 +43,7 @@ export function notificationTarget(data){
  if(screen==='segment'&&typeof id==='string'&&id)return {screen:'segment',id};
  if(screen==='review')return {screen:'review'};
  if(screen==='home')return {screen:'home'};
+ if(screen==='household')return {screen:'household'};
  return null;
 }
 

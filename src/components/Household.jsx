@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 import { Car, ChevronRight, Copy, House, LogOut, Map as MapIcon, Settings, Share2, ShieldCheck, UserPlus, X } from 'lucide-react';
 import { supabase } from '../lib/supabase.js';
 import {newUUID} from '../lib/uuid.js';
+import {invitationLink,parseInvitationLink} from '../lib/invitationLink.js';
 
 // Household: its name, my location for the household, the members (the same
 // tiles as Friends), then Family map, Invite and Settings. Shared vehicles,
@@ -21,7 +22,7 @@ import {newUUID} from '../lib/uuid.js';
 // memberLocations: user id → {state, ageSeconds, home, activity, position} from
 // the household location rows. A member missing from them is not sharing (the
 // household rows include everyone's sharing setting).
-export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,memberLocations={},selfLocation=null,onShowMember=null,onSetHome=null,hasHome=false}){
+export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,onReviewInvitation,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,memberLocations={},selfLocation=null,onShowMember=null,onSetHome=null,hasHome=false}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[loadError,setLoadError]=useState(''),[reload,setReload]=useState(0);
  const [membersLoading,setMembersLoading]=useState(false);
  const [sheet,setSheet]=useState(null),[showTransport,setShowTransport]=useState(false);
@@ -56,6 +57,36 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
    onSelect:location.position&&onShowMember?()=>onShowMember(location.position,m.user_id):null};
  });
  // A household is built from friends, and each one chooses to join.
+ async function join(event){
+  event.preventDefault();
+  const value=String(new FormData(event.currentTarget).get('invitation')||'').trim();
+  const link=parseInvitationLink(value);
+  const token=link?.code||value;
+  if(!invitationLink('household',token)){setError('Paste a valid Letm3go household invitation code or link.');return;}
+  if(!supabase){setError('Sign in and connect to join a household.');return;}
+  setBusy(true);setError('');
+  try{
+   const {data:previews,error:previewError}=await supabase.rpc('friend_invite_preview',{p_token:token});
+   const preview=previews?.[0];
+   if(preview?.household_name){
+    onReviewInvitation(token,preview);return;
+   }
+   if(link?.kind==='friend'||preview){
+    setError(preview?'This invitation adds a friend. Ask for a household invitation to join.':previewError?'Could not check the invitation. Retry when connected.':'This invitation is invalid, expired or already used.');
+    return;
+   }
+   const {data,error:failure}=await supabase.rpc('accept_household_invitation',{p_token:token});
+   if(!failure&&data?.[0]){setHousehold(data[0]);setInviteAccepted(true);onInviteConsumed?.();return;}
+   if(failure?.message==='Invitation invalid or expired'){
+    setError(previewError?'Could not check the invitation. Retry when connected.':'This invitation is invalid, expired or already used. Ask for a new household invitation.');
+   }else if(failure?.code==='23505'){
+    setError('You may already belong to a household. Check your membership before trying again.');
+   }else{
+    setError('Could not join the household. Check your connection and retry.');
+   }
+  }catch{setError('Could not join the household. Check your connection and retry.');}
+  finally{setBusy(false);}
+ }
  const [friends,setFriends]=useState([]),[invited,setInvited]=useState([]);
  async function openFriends(){
   setSheet('friends');setError('');
@@ -119,7 +150,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
    <div className="social-heading"><h2>Household</h2></div>
    <p className="social-hint">Share a family map and vehicles with the people you live with.</p>
    <form className="social-code-form" onSubmit={async e=>{e.preventDefault();const name=new FormData(e.currentTarget).get('name');const data=await request('create_household',{p_name:name});if(data)setHousehold(data[0]);}}><label>Household name<input name="name" required maxLength={100} placeholder="Our household"/></label><button className="primary full" disabled={busy||loading}>Create household</button></form>
-   <form className="social-code-form" onSubmit={async e=>{e.preventDefault();const token=new FormData(e.currentTarget).get('invitation').trim();const data=await request('accept_household_invitation',{p_token:token});if(data){setHousehold(data[0]);setInviteAccepted(true);onInviteConsumed?.();}}}><label>Have an invitation code?<input key={invitationCode||'manual'} name="invitation" defaultValue={invitationCode||''} required placeholder="Paste the invitation code"/></label><button className="secondary full" disabled={busy||loading}>Join household</button></form>
+   <form className="social-code-form" onSubmit={join}><label>Have an invitation code?<input key={invitationCode||'manual'} name="invitation" defaultValue={invitationCode||''} required placeholder="Paste the invitation code"/></label><button className="secondary full" disabled={busy||loading}>Join household</button></form>
    <p className="social-hint"><ShieldCheck size={14} aria-hidden="true"/> Membership never shares your location or past activities.</p>
   </>:null}
   {error&&!sheet&&<p role="alert" className="error">{error}</p>}

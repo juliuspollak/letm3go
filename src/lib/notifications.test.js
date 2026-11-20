@@ -8,6 +8,7 @@ describe('notifications',()=>{
   expect(notificationTarget({screen:'feedback',id})).toEqual({screen:'feedback',id});
   expect(notificationTarget({route:{screen:'review'}})).toEqual({screen:'review'});
   expect(notificationTarget({screen:'home',from:id})).toEqual({screen:'home'});
+  expect(notificationTarget({route:{screen:'household'}})).toEqual({screen:'household'});
   // Segment notifications open that segment, from the inbox (route) or a push (flat).
   expect(notificationTarget({route:{screen:'segment',id}})).toEqual({screen:'segment',id});
   expect(notificationTarget({screen:'segment',id,kind:'segment_pb'})).toEqual({screen:'segment',id});

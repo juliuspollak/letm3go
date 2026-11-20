@@ -19,24 +19,24 @@ import {House,UserMinus,UserPlus,X} from 'lucide-react';
 // shown as "sharing off", because this viewer cannot know it. `self.state` is
 // what friends actually received from you (live, stale or waiting), never just
 // the sharing setting.
-export default function Friends({personPhotos={},selfId=null,selfAvatar=null,self=null,onHouseholdJoined=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,onInviteConsumed}){
+export default function Friends({personPhotos={},selfId=null,selfAvatar=null,self=null,onHouseholdJoined=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  const [friends,setFriends]=useState([]),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
  const [adding,setAdding]=useState(Boolean(invitationCode));
+ // Joining a household shares location, so the person sees that before accepting.
+ const [preview,setPreview]=useState(null);
  const rpc=useCallback(async(name,params)=>{if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;},[]);
  const refresh=useCallback(async()=>{try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}},[rpc]);
  useEffect(()=>{const t=setTimeout(()=>void refresh(),0);return()=>clearTimeout(t);},[refresh]);
- useEffect(()=>{if(invitationCode)queueMicrotask(()=>{setCode(invitationCode);setAdding(true);});},[invitationCode]);
+ useEffect(()=>{if(invitationCode)queueMicrotask(()=>{setCode(invitationCode);setPreview(invitationPreview);setAdding(true);});},[invitationCode,invitationPreview]);
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
- const closeAdding=()=>{setAdding(false);setPreview(null);};
- // Joining a household shares location, so the person sees that before accepting.
- const [preview,setPreview]=useState(null);
+ const closeAdding=()=>{setAdding(false);setPreview(null);if(invitationPreview)onInviteConsumed?.();};
  async function accept(){await rpc('accept_friend_invite',{p_token:code.trim()});const joined=preview?.can_join;setCode('');setPreview(null);await refresh();setAdding(false);setInviteAccepted(true);onInviteConsumed?.();if(joined)onHouseholdJoined?.();}
  async function review(){
-  // Before the backend update this call does not exist: accept as a plain friend invitation.
-  const found=await rpc('friend_invite_preview',{p_token:code.trim()}).catch(()=>null);
+  const found=await rpc('friend_invite_preview',{p_token:code.trim()});
   const details=Array.isArray(found)?found[0]:null;
-  if(details?.household_name){setPreview(details);return;}
+  if(!details)throw Error('This invitation is invalid, expired or already used.');
+  if(details.household_name){setPreview(details);return;}
   await accept();
  }
  // Everyone you are connected to, once: you are not in your own list.
@@ -60,7 +60,7 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,sel
    <InviteComposer busy={busy} create={()=>rpc('create_friend_invite')}/>
    {preview?<div className="notice" role="status"><strong>{preview.invited_by_name} invited you to {preview.household_name}</strong>
     <p className="small-copy">{preview.can_join?'You will be friends and join this household. Household members can see each other on the map once they turn on location sharing.':'You are already in a household, so you will be added as a friend only.'}</p>
-    <div className="detail-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>setPreview(null)}>Cancel</button><button type="button" className="primary" disabled={busy} onClick={()=>action(accept)}>{preview.can_join?'Join':'Add friend'}</button></div>
+    <div className="detail-actions"><button type="button" className="secondary" disabled={busy} onClick={invitationPreview?closeAdding:()=>setPreview(null)}>Cancel</button><button type="button" className="primary" disabled={busy} onClick={()=>action(accept)}>{preview.can_join?'Join':'Add friend'}</button></div>
    </div>:<form className="social-code-form" onSubmit={e=>{e.preventDefault();void action(review);}}>
     <label>Have an invitation code?<input value={code} onChange={e=>setCode(e.target.value)} required placeholder="Paste their code"/></label><button className="secondary full" disabled={busy}>Add friend</button>
    </form>}

@@ -105,6 +105,7 @@ describe('Friends',()=>{
   expect(screen.queryByRole('dialog',{name:'Add friend'})).toBeNull();
  });
  it('accepts an invitation code and then offers, but never enables, location sharing',async()=>{
+  mock.rpc.mockImplementation(async name=>({data:name==='friend_invite_preview'?[{invited_by_name:'Alex',household_name:null}]:[]}));
   const share=vi.fn();
   render(<Friends invitationCode="THEIR-CODE" onShareLive={share}/>);
   const sheet=await screen.findByRole('dialog',{name:'Add friend'});

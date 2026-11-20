@@ -243,3 +243,22 @@ describe('server-side dispatch (20261124000000): pushes go out while every app i
  });
 });
 
+
+it('welcomes someone who joins through either invitation path to existing members only',async()=>{
+ await as('authenticated',ann,"select * from public.create_household('Family')");
+ const joined=async user=>(await inbox(user)).filter(note=>note.kind==='household_joined');
+ expect(await joined(ann)).toEqual([]);
+ const modern=(await as('authenticated',ann,'select public.create_household_friend_invite() as code')).rows[0].code;
+ await as('authenticated',bob,`select public.accept_friend_invite('${modern}')`);
+ await expect(as('authenticated',bob,`select public.accept_friend_invite('${modern}')`)).rejects.toThrow();
+ expect(await joined(ann)).toEqual([{
+  kind:'household_joined',title:'Your household has a new member',body:'Bob joined your household. Say hello! 👋',route:{screen:'household'},actor_id:bob,
+ }]);
+ expect(await joined(bob)).toEqual([]);
+ const legacy=(await as('authenticated',ann,'select public.invite_to_household() as code')).rows[0].code;
+ await as('authenticated',moderator,`select * from public.accept_household_invitation('${legacy}')`);
+ expect((await joined(ann)).map(note=>note.actor_id)).toEqual([bob,moderator]);
+ expect((await joined(bob)).map(note=>note.actor_id)).toEqual([moderator]);
+ expect(await joined(moderator)).toEqual([]);
+ expect(await joined(stranger)).toEqual([]);
+});

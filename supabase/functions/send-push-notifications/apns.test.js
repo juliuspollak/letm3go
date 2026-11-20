@@ -25,3 +25,8 @@ describe('APNs payload', () => {
     expect(classifyApns(403, 'Forbidden')).toBe('failed');
   });
 });
+
+it('preserves the household destination for membership notifications',()=>{
+ const payload=JSON.parse(apnsPayload({title:'Your household has a new member',body:'Say hello!',kind:'household_joined',route:{screen:'household'},notification_id:12}));
+ expect(payload.screen).toBe('household');
+});
