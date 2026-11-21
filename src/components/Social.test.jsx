@@ -1,3 +1,4 @@
+import {socialCache} from '../lib/socialCache.js';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 const mock=vi.hoisted(()=>({rpc:vi.fn()}));
@@ -8,7 +9,7 @@ import LocationSharingRow from './LocationSharingRow.jsx';
 import {personStatus,selfStatus} from '../lib/personStatus.js';
 
 const household=(role='owner')=>async name=>({data:name==='my_household'?[{id:'family',name:'WarillaFamily',role}]:name==='household_members'?[{user_id:'me',display_name:'Julius',role}]:name==='create_household_friend_invite'?'HOUSE-CODE':name==='my_household_vehicles'?[{id:'car',display_name:'Family car',local_vehicle_id:null}]:name==='create_friend_invite'?'FRIEND-CODE':name==='my_friends'?[]:null,error:null});
-beforeEach(()=>{mock.rpc.mockImplementation(household());});
+beforeEach(()=>{socialCache.clear();mock.rpc.mockImplementation(household());});
 afterEach(cleanup);
 
 describe('My location',()=>{
@@ -137,7 +138,7 @@ describe('Household',()=>{
   await waitFor(()=>expect(mock.rpc).toHaveBeenCalledWith('create_household_friend_invite',undefined));
   expect(within(sheet).getByRole('button',{name:/Share invitation/})).toBeInTheDocument();
   expect(within(sheet).getByText('HOUSE-CODE')).toBeInTheDocument();
-  cleanup();
+  cleanup();socialCache.clear();
   mock.rpc.mockImplementation(household('member'));
   render(<Household selfId="me"/>);
   await screen.findByRole('heading',{name:'WarillaFamily'});
@@ -206,6 +207,8 @@ describe('sharing setting versus delivery',()=>{
  });
  it('flags denied or imprecise location while sharing is on, and clears it once iOS settings change',async()=>{
   const {rerender}=render(friends({self:{state:'live'},permission:'denied'}));
+  // The friends list loads first; its spinner is also a status, so wait for it to finish.
+  await waitFor(()=>expect(screen.queryByRole('status',{name:'Loading friends'})).toBeNull());
   expect(screen.getByText('Your location: Location access needed')).toBeInTheDocument();
   expect(screen.getByRole('status')).toHaveTextContent('Turn on Location and Precise Location');
   rerender(friends({self:{state:'live'},permission:'always',precise:false}));
@@ -222,5 +225,86 @@ describe('sharing setting versus delivery',()=>{
   render(<Household selfId="me" liveEnabled selfLocation={{state:'waiting'}}/>);
   const tile=(await screen.findByRole('img',{name:'Julius avatar'})).closest('.person-tile');
   expect(within(tile).getByText('Sharing · waiting to send')).toBeInTheDocument();
+ });
+});
+
+describe('opening Social again',()=>{
+ it('Friends shows a loader at once on a first visit, never "No friends yet" before the list has loaded',async()=>{
+  let release;mock.rpc.mockImplementation(name=>name==='my_friends'?new Promise(resolve=>{release=()=>resolve({data:[],error:null});}):household()(name));
+  render(<Friends selfId="me"/>);
+  expect(screen.getByRole('status',{name:'Loading friends'})).toBeInTheDocument();
+  expect(screen.queryByText(/No friends yet/)).toBeNull();
+  await waitFor(()=>expect(release).toBeTypeOf('function'));
+  await act(async()=>{release();});
+  await waitFor(()=>expect(screen.queryByRole('status',{name:'Loading friends'})).toBeNull());
+  expect(screen.getByText(/No friends yet/)).toBeInTheDocument();
+ });
+ it('Friends shows the last list immediately on a repeat visit and refreshes it quietly',async()=>{
+  mock.rpc.mockImplementation(name=>name==='my_friends'?Promise.resolve({data:[{user_id:'f1',display_name:'Emily'}],error:null}):household()(name));
+  const first=render(<Friends selfId="me"/>);
+  expect(await screen.findAllByText('Emily')).not.toHaveLength(0);
+  first.unmount();
+  let release;mock.rpc.mockImplementation(name=>name==='my_friends'?new Promise(resolve=>{release=()=>resolve({data:[{user_id:'f1',display_name:'Emily'}],error:null});}):household()(name));
+  render(<Friends selfId="me"/>);
+  expect(screen.queryByRole('status',{name:'Loading friends'})).toBeNull();
+  expect(screen.getAllByText('Emily').length).toBeGreaterThan(0);
+  await waitFor(()=>expect(release).toBeTypeOf('function'));
+  await act(async()=>{release();});
+ });
+ it('Household shows one spinner while it first loads and none on a repeat visit',async()=>{
+  const first=render(<Household selfId="me"/>);
+  expect(screen.getAllByRole('status')).toHaveLength(1);
+  await screen.findByRole('heading',{name:'WarillaFamily'});
+  await waitFor(()=>expect(screen.queryByRole('status',{name:/Loading/})).toBeNull());
+  first.unmount();
+  render(<Household selfId="me"/>);
+  expect(screen.queryByRole('status',{name:/Loading/})).toBeNull();
+  expect(screen.getByRole('heading',{name:'WarillaFamily'})).toBeInTheDocument();
+ });
+});
+
+describe('Household requests',()=>{
+ it('sends the household and members requests together instead of one after the other',async()=>{
+  const started=[];
+  // Neither request ever answers: only the order in which they are sent matters here.
+  mock.rpc.mockImplementation(name=>{started.push(name);if(name==='my_household'||name==='household_members')return new Promise(()=>{});return household()(name);});
+  render(<Household selfId="me"/>);
+  await waitFor(()=>expect(started).toContain('my_household'));
+  // Neither has answered yet, and the second has already been asked for.
+  expect(started).toContain('household_members');
+ });
+});
+
+
+describe('Household after the person changes it',()=>{
+ it('loads the members after leaving is undone by creating a new household',async()=>{
+  let created=false;
+  mock.rpc.mockImplementation(async name=>{
+   if(name==='my_household')return {data:created?[{id:'new',name:'Fresh',role:'owner'}]:[],error:null};
+   if(name==='household_members')return {data:created?[{user_id:'me',display_name:'Julius',role:'owner'}]:[],error:null};
+   if(name==='create_household'){created=true;return {data:[{id:'new',name:'Fresh',role:'owner'}],error:null};}
+   return household()(name);
+  });
+  render(<Household selfId="me"/>);
+  const name=await screen.findByLabelText(/name/i);
+  fireEvent.change(name,{target:{value:'Fresh'}});
+  fireEvent.submit(name.closest('form'));
+  await screen.findByRole('heading',{name:'Fresh'});
+  // The members are fetched again for the new household: the screen never sits on "No members available".
+  expect(await screen.findByRole('img',{name:'Julius avatar'})).toBeInTheDocument();
+  expect(screen.queryByText(/No members available/)).toBeNull();
+ });
+ it('does not show a household the person has left when the screen is opened again',async()=>{
+  const first=render(<Household selfId="me"/>);
+  await screen.findByRole('heading',{name:'WarillaFamily'});
+  fireEvent.click(screen.getByRole('button',{name:'Settings'}));
+  fireEvent.click(await screen.findByRole('button',{name:/Leave household/}));
+  mock.rpc.mockImplementation(async name=>name==='my_household'?{data:[],error:null}:name==='household_members'?{data:[],error:null}:{data:true,error:null});
+  fireEvent.click(await screen.findByRole('button',{name:'Confirm leave'}));
+  await waitFor(()=>expect(screen.queryByRole('heading',{name:'WarillaFamily'})).toBeNull());
+  first.unmount();
+  mock.rpc.mockImplementation(()=>new Promise(()=>{}));   // the refresh never answers: only the cache can speak
+  render(<Household selfId="me"/>);
+  expect(screen.queryByRole('heading',{name:'WarillaFamily'})).toBeNull();
  });
 });

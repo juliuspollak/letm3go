@@ -1,4 +1,6 @@
 import InviteSharingPrompt from './InviteSharingPrompt.jsx';
+import LoadingMark from './LoadingMark.jsx';
+import {socialCache} from '../lib/socialCache.js';
 import InviteComposer from './InviteComposer.jsx';
 import DismissibleSheet from './DismissibleSheet.jsx';
 import LocationSharingRow from './LocationSharingRow.jsx';
@@ -21,12 +23,14 @@ import {House,UserMinus,UserPlus,X} from 'lucide-react';
 // the sharing setting.
 export default function Friends({personPhotos={},selfId=null,selfAvatar=null,self=null,onHouseholdJoined=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
- const [friends,setFriends]=useState([]),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
+ // Opened before: show the last list at once and refresh it quietly. Only a first visit shows the spinner.
+ const cacheKey='friends:'+(selfId||'');
+ const [friends,setFriends]=useState(()=>socialCache.get(cacheKey)?.friends??[]),[loaded,setLoaded]=useState(()=>Boolean(socialCache.get(cacheKey)?.friendsLoaded)),[code,setCode]=useState(''),[error,setError]=useState(''),[feedback,setFeedback]=useState(''),[busy,setBusy]=useState(false);
  const [adding,setAdding]=useState(Boolean(invitationCode));
  // Joining a household shares location, so the person sees that before accepting.
  const [preview,setPreview]=useState(null);
  const rpc=useCallback(async(name,params)=>{if(!supabase)throw Error('Connect to manage friends.');const {data,error:e}=await supabase.rpc(name,params);if(e)throw Error(e.message||'Friend request failed.');return data;},[]);
- const refresh=useCallback(async()=>{try{setFriends(await rpc('my_friends')||[]);}catch(e){setError(e.message);}},[rpc]);
+ const refresh=useCallback(async()=>{try{const list=await rpc('my_friends')||[];setFriends(list);socialCache.set(cacheKey,{friends:list,friendsLoaded:true});}catch(e){setError(e.message);}finally{setLoaded(true);}},[rpc,cacheKey]);
  useEffect(()=>{const t=setTimeout(()=>void refresh(),0);return()=>clearTimeout(t);},[refresh]);
  useEffect(()=>{if(invitationCode)queueMicrotask(()=>{setCode(invitationCode);setPreview(invitationPreview);setAdding(true);});},[invitationCode,invitationPreview]);
  async function action(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
@@ -49,8 +53,9 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,sel
   {sharing&&<LocationSharingRow audience="friends" enabled={sharing.enabled} ready={sharing.ready!==false} error={sharing.error} onChange={sharing.onChange} permission={permission} precise={precise}/>}
   {sharing?.enabled&&<p className="social-hint">Your location: {selfStatus({enabled:true,state:self?.state,ageSeconds:self?.ageSeconds,home:self?.home,activity:self?.activity,permission,precise}).text}</p>}
   <div className="social-heading"><h2>Friends</h2>{people.length>0&&<span className="social-count">{people.length}</span>}</div>
+  {!loaded&&<LoadingMark label="Loading friends"/>}
   <PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Friends"/>
-  {!people.length&&<p className="social-empty">No friends yet. Add someone to see each other on the map.</p>}
+  {loaded&&!people.length&&<p className="social-empty">No friends yet. Add someone to see each other on the map.</p>}
   <SocialActions label="Friend actions" actions={[{id:'add',label:'Add friend',icon:UserPlus,onClick:()=>setAdding(true),expanded:adding},onSetHome&&{id:'home',label:hasHome?'Home':'Set Home',icon:House,onClick:onSetHome}]}/>
   {inviteAccepted&&<InviteSharingPrompt kind="friend" busy={shareBusy} error={shareError} onClose={()=>{setInviteAccepted(false);setShareError('');}} onEnable={async()=>{setShareBusy(true);setShareError('');try{if(!onShareLive)throw new Error('Location sharing is unavailable.');await onShareLive();setInviteAccepted(false);setFeedback('Live location sharing is on.');}catch(e){setShareError(e.message||'Could not enable sharing.');}finally{setShareBusy(false);}}}/>}
   {feedback&&!adding&&<p role="status" className="notice">{feedback}</p>}

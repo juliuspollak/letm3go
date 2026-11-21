@@ -249,3 +249,24 @@ describe('review follow-ups',()=>{
   await expect(sync.ready()).resolves.toBeDefined();
  });
 });
+
+describe('saving the metadata cache',()=>{
+ it('writes nothing, notifies nobody and keeps the same state when a write changes nothing',async()=>{
+  const storage=memoryStorage();
+  const sync=createJourneySync({owner,storage});await sync.ready();
+  await sync.write({savedPlaces:[{id:'p',name:'Home',kind:'home',latitude:1,longitude:2,radius:100}]});
+  const commit=vi.spyOn(storage,'commit'),listener=vi.fn();commit.mockClear();sync.subscribe(listener);
+  const before=sync.read(),version=sync.getSnapshot();
+  const result=await sync.write({savedPlaces:[{id:'p',name:'Home',kind:'home',latitude:1,longitude:2,radius:100}]});
+  expect(commit).not.toHaveBeenCalled();expect(listener).not.toHaveBeenCalled();
+  expect(sync.getSnapshot()).toBe(version);expect(sync.read()).toBe(before);expect(result).toBe(before);
+ });
+ it('still writes and notifies when something changed',async()=>{
+  const storage=memoryStorage();
+  const sync=createJourneySync({owner,storage});await sync.ready();
+  const commit=vi.spyOn(storage,'commit'),listener=vi.fn();commit.mockClear();sync.subscribe(listener);
+  await sync.write({savedPlaces:[{id:'p',name:'Home',kind:'home',latitude:1,longitude:2,radius:100}]});
+  expect(commit).toHaveBeenCalledTimes(1);expect(listener).toHaveBeenCalledTimes(1);
+  expect(sync.read().savedPlaces).toHaveLength(1);
+ });
+});

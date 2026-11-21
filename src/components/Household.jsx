@@ -1,4 +1,5 @@
 import LoadingMark from './LoadingMark.jsx';
+import {socialCache} from '../lib/socialCache.js';
 import {App as NativeApp} from '@capacitor/app';
 import {recorderAvailable} from '../lib/recorder.js';
 import DismissibleSheet from './DismissibleSheet.jsx';
@@ -28,24 +29,37 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
  const [membersLoading,setMembersLoading]=useState(false);
  const [sheet,setSheet]=useState(null),[showTransport,setShowTransport]=useState(false);
  const [garage,setGarage]=useState([]),[garageMessage,setGarageMessage]=useState('');
- const [household,setHousehold]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[members,setMembers]=useState([]),[loading,setLoading]=useState(Boolean(supabase)),[leaving,setLeaving]=useState(false);
+ const cacheKey='household:'+(selfId||'');
+ // Opened before: show what was loaded last time at once and refresh it quietly. Only a first visit shows a spinner.
+ const [household,setHousehold]=useState(()=>socialCache.get(cacheKey)?.household??null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[members,setMembers]=useState(()=>socialCache.get(cacheKey)?.members??[]),[loading,setLoading]=useState(()=>Boolean(supabase)&&!socialCache.get(cacheKey)?.householdLoaded),[leaving,setLeaving]=useState(false);
  useEffect(()=>{
   if(!supabase)return;
   let active=true,listener;
   async function load(){
-   setLoading(true);
-   try{const {data,error}=await supabase.rpc('my_household');if(!active)return;if(error)throw error;setHousehold(data?.[0]||null);setLoadError('');}
+   if(!socialCache.get(cacheKey)?.householdLoaded)setLoading(true);
+   if(!socialCache.get(cacheKey)?.membersLoaded)setMembersLoading(true);
+   try{
+    // household_members takes no argument, so it does not have to wait for my_household: both go out together (they used to run one after the other).
+    const [mine,theirs]=await Promise.all([supabase.rpc('my_household'),Promise.resolve(supabase.rpc('household_members')).catch(()=>({data:null,error:new Error('members')}))]);
+    if(!active)return;
+    if(mine.error)throw mine.error;
+    const current=mine.data?.[0]||null;
+    setHousehold(current);socialCache.set(cacheKey,{household:current,householdLoaded:true});setLoadError('');
+    if(current){
+     if(theirs.error)setError('Could not load household members. Please reopen the screen.');
+     else{setMembers(theirs.data||[]);socialCache.set(cacheKey,{members:theirs.data||[],membersLoaded:true});}
+    }
+   }
    catch{if(active)setLoadError('Household status could not be loaded. Check your connection and retry.');}
-   finally{if(active)setLoading(false);}
+   finally{if(active){setLoading(false);setMembersLoading(false);}}
   }
   const timer=setTimeout(()=>void load(),0);
   const visible=()=>{if(document.visibilityState!=='hidden')void load();};
   window.addEventListener('online',visible);document.addEventListener('visibilitychange',visible);
   if(recorderAvailable())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)void load();}).then(handle=>{if(active)listener=handle;else void handle.remove();}).catch(()=>{});
   return()=>{active=false;clearTimeout(timer);window.removeEventListener('online',visible);document.removeEventListener('visibilitychange',visible);void listener?.remove();};
- },[reload]);
+ },[reload,cacheKey]);
  const householdID=household?.id;
- useEffect(()=>{if(!householdID||!supabase)return;let active=true;queueMicrotask(()=>{if(active)setMembersLoading(true);});supabase.rpc('household_members').then(({data,error})=>{if(!active)return;if(error){setError('Could not load household members. Please reopen the screen.');return;}setMembers(data||[]);}).catch(()=>{if(active)setError('Could not load household members.');}).finally(()=>{if(active)setMembersLoading(false);});return()=>{active=false;};},[householdID]);
  useEffect(()=>{onMembershipChanged?.();},[householdID,onMembershipChanged]);
  async function request(method,params){setBusy(true);setError('');try{if(!supabase)throw new Error('Sign in and connect to set up a household.');const {data,error}=await supabase.rpc(method,params);if(error)throw new Error('Household request failed. Check your connection and invitation, then retry.');return ['leave_household','link_household_vehicle'].includes(method)?true:data;}catch(err){setError(err.message);return null;}finally{setBusy(false);}}
  const closeSheet=()=>{setSheet(null);setLeaving(false);};
@@ -77,7 +91,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
     return;
    }
    const {data,error:failure}=await supabase.rpc('accept_household_invitation',{p_token:token});
-   if(!failure&&data?.[0]){setHousehold(data[0]);setInviteAccepted(true);onInviteConsumed?.();return;}
+   if(!failure&&data?.[0]){setHousehold(data[0]);socialCache.set(cacheKey,{household:data[0],householdLoaded:true,members:[],membersLoaded:false});setReload(value=>value+1);setInviteAccepted(true);onInviteConsumed?.();return;}
    if(failure?.message==='Invitation invalid or expired'){
     setError(previewError?'Could not check the invitation. Retry when connected.':'This invitation is invalid, expired or already used. Ask for a new household invitation.');
    }else if(failure?.code==='23505'){
@@ -102,16 +116,17 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
   setInvited(current=>[...current,friend.user_id]);
  }
  return <section className="social-screen household-screen" aria-label="Household">
-  {loading&&!household&&<LoadingMark label="Loading household"/>}
+  {/* One spinner for the whole screen, not one per request. */}
+  {((loading&&!household)||(household&&membersLoading&&!members.length))&&<LoadingMark label="Loading household"/>}
   {loadError&&<div className="notice" role="alert"><p>{loadError}</p><button type="button" className="secondary full" onClick={()=>setReload(value=>value+1)}>Retry household</button></div>}
   {household?<>
    <div className="social-heading household-title"><h2>{household.name}</h2>{!membersLoading&&members.length>0&&<span className="social-count">{members.length}</span>}</div>
    {inviteAccepted&&<p role="status" className="notice">You joined {household.name}. Turn on My location to appear on the family map.</p>}
    <LocationSharingRow audience="household" enabled={liveEnabled} ready={liveReady} error={liveError} permission={permission} precise={precise} onChange={async enabled=>{if(enabled){if(!onShareLive)throw new Error('Update Letm3go to enable household location sharing.');await onShareLive();}else{if(!onStopLive)throw new Error('Location sharing is unavailable.');await onStopLive();}}}/>
-   <ActivitySharingRow/>
+   <ActivitySharingRow cacheKey={selfId}/>
    {!liveReady&&onRetrySharing&&<button type="button" className="text-button" onClick={onRetrySharing}>Retry location status</button>}
    <h3 className="social-subheading">Members</h3>
-   {membersLoading&&!members.length?<LoadingMark label="Loading members"/>:<PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Members"/>}
+   {membersLoading&&!members.length?null:<PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Members"/>}
    {!membersLoading&&!members.length&&<p className="social-empty">No members available. Reopen to retry.</p>}
    <SocialActions label="Household actions" actions={[
     onOpenMap&&{id:'map',label:'Family map',icon:MapIcon,onClick:onOpenMap},
@@ -143,14 +158,14 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
     <p className="social-hint"><ShieldCheck size={14} aria-hidden="true"/> Membership never shares your location or past activities. If the organiser leaves, another member becomes organiser.</p>
     <div className="grouped-list grouped-danger">
      {!leaving?<button type="button" className="grouped-row danger-row" disabled={busy||loading} onClick={()=>setLeaving(true)}><span className="grouped-row-label"><LogOut size={18} aria-hidden="true"/>Leave household</span></button>
-     :<div className="grouped-panel" role="group" aria-label="Confirm leaving"><p>Leave {household.name}? Your private activities stay yours. If you are the organiser, another member becomes organiser; an empty household is removed.</p><div className="social-inline-actions"><button type="button" className="secondary" onClick={()=>setLeaving(false)}>Stay</button><button type="button" className="primary danger" disabled={busy||loading} onClick={async()=>{if(await request('leave_household')){setHousehold(null);setMembers([]);closeSheet();}}}>Confirm leave</button></div></div>}
+     :<div className="grouped-panel" role="group" aria-label="Confirm leaving"><p>Leave {household.name}? Your private activities stay yours. If you are the organiser, another member becomes organiser; an empty household is removed.</p><div className="social-inline-actions"><button type="button" className="secondary" onClick={()=>setLeaving(false)}>Stay</button><button type="button" className="primary danger" disabled={busy||loading} onClick={async()=>{if(await request('leave_household')){setHousehold(null);setMembers([]);socialCache.set(cacheKey,{household:null,householdLoaded:true,members:[],membersLoaded:true});closeSheet();}}}>Confirm leave</button></div></div>}
     </div>
     {error&&<p role="alert" className="error">{error}</p>}
    </DismissibleSheet></div>}
   </>:!loading&&!loadError?<>
    <div className="social-heading"><h2>Household</h2></div>
    <p className="social-hint">Share a family map and vehicles with the people you live with.</p>
-   <form className="social-code-form" onSubmit={async e=>{e.preventDefault();const name=new FormData(e.currentTarget).get('name');const data=await request('create_household',{p_name:name});if(data)setHousehold(data[0]);}}><label>Household name<input name="name" required maxLength={100} placeholder="Our household"/></label><button className="primary full" disabled={busy||loading}>Create household</button></form>
+   <form className="social-code-form" onSubmit={async e=>{e.preventDefault();const name=new FormData(e.currentTarget).get('name');const data=await request('create_household',{p_name:name});if(data){setHousehold(data[0]);socialCache.set(cacheKey,{household:data[0],householdLoaded:true,members:[],membersLoaded:false});setReload(value=>value+1);}}}><label>Household name<input name="name" required maxLength={100} placeholder="Our household"/></label><button className="primary full" disabled={busy||loading}>Create household</button></form>
    <form className="social-code-form" onSubmit={join}><label>Have an invitation code?<input key={invitationCode||'manual'} name="invitation" defaultValue={invitationCode||''} required placeholder="Paste the invitation code"/></label><button className="secondary full" disabled={busy||loading}>Join household</button></form>
    <p className="social-hint"><ShieldCheck size={14} aria-hidden="true"/> Membership never shares your location or past activities.</p>
   </>:null}

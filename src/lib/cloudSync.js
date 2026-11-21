@@ -83,6 +83,14 @@ export function finishedTrip(state){
  const tombstones=new Set((state.deletedIDs||[]).map(id=>id.toLowerCase()));
  return trip=>BACKED_UP_SOURCES.includes(trip.source)&&trip.details?.provisional!==true&&Number.isFinite(trip.endedAt)&&!tombstones.has(trip.id.toLowerCase());
 }
+// The same content, with every object's keys in sorted order. The phone hands over points and classifications as dictionaries whose
+// key order changes from one launch to the next, and a fingerprint of the text of that content then changed with it: an activity with
+// nothing new in it looked changed on every launch and was hashed and sent again (ten of them, every time, about three seconds).
+export function stableCopy(value){
+ if(Array.isArray(value))return value.map(stableCopy);
+ if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,stableCopy(value[key])]));
+ return value;
+}
 const hashWith=cryptoImpl=>async value=>Array.from(new Uint8Array(await cryptoImpl.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)))),b=>b.toString(16).padStart(2,'0')).join('');
 // Segment efforts on their own: run by syncPrivateActivities after a backup, and
 // by AutoCloudSync now and then even when nothing local changed, so rides already
@@ -308,7 +316,8 @@ export function backupHealth(state,receipts={},now=Date.now(),owner=state?.owner
  return {total,backedUp,waiting:total-backedUp,failing};
 }
 export async function syncPrivateActivities(client,state,receipts={}, {checkpoint=async()=>{},cryptoImpl=crypto,maxActivities=Infinity,publishSegments=true,now=Date.now(),retryFailed=false,throwOnFailure=true,onBackedUp=()=>{}}={}){
- const {data,error}=await client.auth.getUser();if(error||!data.user)throw new Error('Sign in before backing up.');
+ const endUser=perfSpan('backup:getUser');
+ const {data,error}=await client.auth.getUser();endUser();if(error||!data.user)throw new Error('Sign in before backing up.');
  const owner=data.user.id;
  if(state.ownerID?.toLowerCase()!==owner.toLowerCase())throw new Error('Backup account does not match the native recordings.');
  if(!cryptoImpl.subtle)throw new Error('Secure backup hashing is unavailable on this device.');
@@ -321,6 +330,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   Object.assign(updated,publication.receipts);segmentFailure=publication.failure;pending=publication.pending;
   for(const id of publication.republish)republish.add(id);
  }
+ const endDeletions=perfSpan('backup:deletions');
  for(const id of state.deletedIDs||[]){
   const receipt=updated[activityReceiptKey(id)];if(receipt&&receipt.owner!==owner)throw new Error('Backup receipts belong to another account.');
   // A deletion the cloud already confirmed is not sent again on every backup.
@@ -328,6 +338,8 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   const {error}=await client.from('activities').delete().eq('id',id).eq('owner_id',owner);if(error)throw new Error('Cloud deletion could not be confirmed. Retry backup when connected.');
   updated[activityReceiptKey(id)]={...receipt,owner,deleted:true};deleted++;await acknowledge();
  }
+ endDeletions({ids:(state.deletedIDs||[]).length});
+ const endPlaces=perfSpan('backup:places');
  // Sensitive places precede routes; owner_id is explicit to reject a mid-request
  // account switch even if the SDK has already switched its Authorization header.
  // Never infer cloud deletions from a missing local place on a new device.
@@ -341,6 +353,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(error&&/share_with_friends/i.test(error.message||'')){const legacy={...row};delete legacy.share_with_friends;({error}=await client.from('saved_places').upsert(legacy));}
   if(error)throw new Error('Private places could not be backed up.');updated[key]={owner,fingerprint};await acknowledge();
  }
+ endPlaces({places:(state.places||[]).length});
  const finishedAll=finishedTrip(state);
  // Each activity stands alone. One the cloud refuses is remembered (what, how often, when to try again) and the others
  // carry on; it does not use up the pass's budget until its retry time, and nothing later waits for it. A network or
@@ -352,18 +365,20 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  // A record for an activity that is no longer here (deleted) is not kept.
  const present=new Set(state.trips.map(t=>activityReceiptKey(t.id)));
  for(const key of Object.keys(updated))if(key.startsWith('backup-failure:')&&!updated[key]?.cleared&&!present.has(key.slice(15))){updated[key]={owner,cleared:true,at:Math.max(now,(updated[key]?.at||0)+1)};}
+ const endTrips=perfSpan('backup:trips');let hashedTrips=0,skippedTrips=0;
  for(const trip of state.trips){
   if(!finishedAll(trip))continue;
   const previous=updated[activityReceiptKey(trip.id)];if(previous&&previous.owner!==owner)throw new Error('Activity backup belongs to another account.');
   const held=heldFailure(updated,trip.id,owner);
   // A held refusal must be retried when due, even after a late successful receipt.
   // Only an activity with no unresolved failure may take the unchanged fast path.
-  if(!held&&previous&&Number.isInteger(previous.revision)&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt)continue;
+  if(!held&&previous&&Number.isInteger(previous.revision)&&!previous.deleted&&previous.backupVersion===PRIVATE_BACKUP_VERSION&&Number.isFinite(trip.updatedAt)&&previous.updatedAt===trip.updatedAt){skippedTrips++;continue;}
   if(held&&held.backupVersion===PRIVATE_BACKUP_VERSION&&held.nextAt>now&&!retryFailed&&held.updatedAt===trip.updatedAt){failedNow.add(trip.id);failures.push({id:trip.id,message:held.message,attempts:held.attempts,held:true,nextAt:held.nextAt});continue;}
   if(processed>=maxActivities){pending=true;break;}processed++;
   const details=trip.details||{};
   const row={id:activityReceiptKey(trip.id),title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
-  const fingerprint=await hash(row);
+  hashedTrips++;
+  const fingerprint=await hash(stableCopy(row));
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.
   if(!held&&previous?.fingerprint===fingerprint&&Number.isInteger(previous.revision)&&!previous.deleted){if(Number.isFinite(trip.updatedAt)){updated[activityReceiptKey(trip.id)]={...previous,baseFingerprint:previous.backupVersion===PRIVATE_BACKUP_VERSION?(previous.baseFingerprint??null):previous.fingerprint,backupVersion:PRIVATE_BACKUP_VERSION,updatedAt:trip.updatedAt};}if(held)updated[failureKey(trip.id)]={owner,cleared:true,at:failureStamp(trip.id)};continue;}
   let revision,baseFingerprint,error,status;
@@ -392,6 +407,7 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   failedNow.add(trip.id);failures.push({id:trip.id,message,attempts,nextAt:updated[failureKey(trip.id)].nextAt});
   await acknowledge();
  }
+ endTrips({trips:state.trips.length,skipped:skippedTrips,hashed:hashedTrips,uploaded});
  const finished=trip=>finishedAll(trip)&&!failedNow.has(trip.id);   // nothing is pushed about an activity whose own row is not in the cloud
  {
   const efforts=await syncSegmentEfforts(client,state,updated,{owner,hash,acknowledge,finished,republish});

@@ -5895,4 +5895,30 @@ do {
     check(!SmartClassifier.cyclingEvidence(motion: MotionEvidence(types: ["Driving"], confidence: "high", timestamp: 100), speed: 12, displacement: 300, seconds: 60, accuracy: 8, now: 105), "driving readings are not cycling evidence")
 }
 
+
+// MARK: Forgotten Watch recordings
+do {
+    func watch(_ state: String, started: Double, ended: Double? = nil, session: String = "S1") -> RecordingPresence {
+        var p = RecordingPresence(device: "watch", ownerID: "owner", sessionID: session, activity: "Gym", state: state, startedAt: started, updatedAt: started + 60)
+        p.endedAt = ended
+        return p
+    }
+    let t0 = 100_000.0
+    check(ForgottenRecording.reminders(for: watch("recording", started: t0), now: t0 + 600).map { $0.at } == [t0 + 7200, t0 + 21600], "a fresh recording is reminded about at 2 h and at 6 h")
+    check(ForgottenRecording.reminders(for: watch("recording", started: t0), now: t0 + 600).map { $0.id }.allSatisfy { $0.hasPrefix(ForgottenRecording.prefix) }, "reminder ids carry the prefix that lets them be found and cancelled")
+    let late = ForgottenRecording.reminders(for: watch("recording", started: t0), now: t0 + 3 * 3600)
+    check(late.count == 2 && late[0].at == t0 + 3 * 3600 + 45 && late[1].at == t0 + 21600, "found after 3 h: the 2 h reminder comes soon, once, and the 6 h one stays")
+    let veryLate = ForgottenRecording.reminders(for: watch("recording", started: t0), now: t0 + 10 * 3600)
+    check(veryLate.count == 1 && veryLate[0].id.hasSuffix(".1"), "found after 10 h: only the latest missed reminder, never a burst")
+    check(ForgottenRecording.reminders(for: watch("paused", started: t0), now: t0 + 600).count == 2, "a paused recording is reminded about too")
+    check(ForgottenRecording.reminders(for: watch("idle", started: t0), now: t0 + 600).isEmpty, "an ended (idle) recording has no reminders, so any scheduled ones are cancelled")
+    check(ForgottenRecording.reminders(for: watch("recording", started: t0, ended: t0 + 100), now: t0 + 600).isEmpty, "a recording with an end time has none")
+    check(ForgottenRecording.reminders(for: nil, now: t0).isEmpty, "no recording, no reminders")
+    check(ForgottenRecording.reminders(for: watch("recording", started: t0 + 5000), now: t0).isEmpty, "a start time far in the future (a wrong clock) is ignored")
+    check(ForgottenRecording.identifier(sessionID: "ABC", index: 0) != ForgottenRecording.identifier(sessionID: "ABC", index: 1), "each reminder of a session has its own id")
+    check(ForgottenRecording.identifier(sessionID: "ABC", index: 0) == ForgottenRecording.identifier(sessionID: "abc", index: 0), "the session id spelling does not matter")
+    let text = ForgottenRecording.message(activity: "Gym", state: "recording", startedAt: t0) { _ in "7:51 am" }
+    check(text.title == "Still recording?" && text.body.contains("7:51 am") && text.body.contains("Open letm3go"), "the reminder says what, since when, and what to do")
+}
+
 print("Final native assertion count including automatic account recovery: \(assertions)")

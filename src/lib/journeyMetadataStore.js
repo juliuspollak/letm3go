@@ -89,6 +89,9 @@ export function createJourneySync({owner,preferences=null,savePreferences=null,s
     const next={...state,...(typeof patch==='function'?patch(state):patch)},wanted=journeyRows(next),operations=[];
     for(const [key,value] of Object.entries(wanted))if(rows[key]!==value&&JSON.stringify(rows[key])!==JSON.stringify(value))operations.push({key,value});
     for(const key of Object.keys(rows))if(!Object.hasOwn(wanted,key))operations.push({key,remove:true});
+    // Every part of the state is in a row, so no differing row means nothing changed: nothing is written to the phone, nobody is
+    // notified, and the same state object is kept (a new one would make everything that reads it recompute).
+    if(!operations.length)return state;
     await storage.commit(operations);
     rows=wanted;state=next;notify();return state;
    };

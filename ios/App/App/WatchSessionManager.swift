@@ -1,5 +1,6 @@
 import Foundation
 import WatchConnectivity
+import UserNotifications
 
 // Receives finished Apple Watch rides and hands them to the open account.
 //
@@ -185,6 +186,8 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         if previous != merged, !commit(merged) { return }
         LocationRecorder.shared.reconcileManualExclusion()
         LocationRecorder.shared.confirmHouseholdLocation()
+        // A recording that runs for hours is reminded about (see ForgottenRecording); an ended one cancels its reminders.
+        ForgottenRecordingReminders.shared.update(merged)
         guard previous?.state != merged.state || previous?.activity != merged.activity else { return }
         LocationRecorder.shared.recordDiagnostic("watch", "Apple Watch recording state changed", details: ["watchRecording": merged.state])
         checkConflict(now: Date().timeIntervalSince1970)
@@ -449,6 +452,42 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         DispatchQueue.main.async {
             self.receive(presence: presence)
             self.receive(diagnostics: value)
+        }
+    }
+}
+
+// Schedules the "still recording?" reminders as local notifications. They are handed to iOS, so they fire even if the app is not
+// running, and they are replaced or cancelled whenever the Watch reports something new. Only when notifications are already
+// allowed: nothing here asks for permission.
+final class ForgottenRecordingReminders {
+    static let shared = ForgottenRecordingReminders()
+    private let center = UNUserNotificationCenter.current()
+    private let remindedKey = "letm3go.forgotten-recording.reminded"
+    func update(_ presence: RecordingPresence?, now: Double = Date().timeIntervalSince1970) {
+        let due = ForgottenRecording.reminders(for: presence, now: now)
+        center.getNotificationSettings { [weak self] settings in
+            guard let self, [.authorized, .provisional, .ephemeral].contains(settings.authorizationStatus) else { return }
+            self.center.getPendingNotificationRequests { pending in
+                let ours = pending.map(\.identifier).filter { $0.hasPrefix(ForgottenRecording.prefix) }
+                let wanted = Set(due.map(\.id))
+                let stale = ours.filter { !wanted.contains($0) }
+                if !stale.isEmpty { self.center.removePendingNotificationRequests(withIdentifiers: stale) }
+                var reminded = Set(UserDefaults.standard.stringArray(forKey: self.remindedKey) ?? [])
+                guard let presence else { return }
+                for reminder in due where !ours.contains(reminder.id) && !reminded.contains(reminder.id) {
+                    let text = ForgottenRecording.message(activity: presence.activity, state: presence.state, startedAt: presence.startedAt) {
+                        DateFormatter.localizedString(from: Date(timeIntervalSince1970: $0), dateStyle: .none, timeStyle: .short)
+                    }
+                    let content = UNMutableNotificationContent()
+                    content.title = text.title; content.body = text.body; content.sound = .default
+                    content.userInfo = ["route": ["screen": "record"]]
+                    let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(5, reminder.at - now), repeats: false)
+                    self.center.add(UNNotificationRequest(identifier: reminder.id, content: content, trigger: trigger))
+                    reminded.insert(reminder.id)
+                }
+                // Keep the record of reminders bounded.
+                UserDefaults.standard.set(Array(reminded.sorted().suffix(40)), forKey: self.remindedKey)
+            }
         }
     }
 }

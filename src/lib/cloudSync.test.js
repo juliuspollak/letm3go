@@ -547,3 +547,43 @@ it('parks one rejected activity and still backs up the ones after it, on this pa
  expect(sent).toEqual(['walk2']);
  expect(second.receipts.walk2).toBeDefined();
 });
+
+describe('the backup fingerprint of an activity',()=>{
+ it('does not depend on the order of keys inside points or the classification',async()=>{
+  const {stableCopy}=await import('./cloudSync.js');
+  const a={title:'t',classification:{predicted:'Driving',confidence:'high',evidence:['x']},route_points:[{latitude:1,longitude:2,timestamp:3,accuracy:4},{timestamp:5,latitude:6,longitude:7,accuracy:8}]};
+  const b={route_points:[{accuracy:4,timestamp:3,longitude:2,latitude:1},{accuracy:8,longitude:7,latitude:6,timestamp:5}],classification:{evidence:['x'],confidence:'high',predicted:'Driving'},title:'t'};
+  expect(JSON.stringify(stableCopy(a))).toBe(JSON.stringify(stableCopy(b)));
+ });
+ it('still tells a genuine change apart, and keeps array order',async()=>{
+  const {stableCopy}=await import('./cloudSync.js');
+  expect(JSON.stringify(stableCopy({p:[{a:1},{a:2}]}))).not.toBe(JSON.stringify(stableCopy({p:[{a:2},{a:1}]})));
+  expect(JSON.stringify(stableCopy({a:1}))).not.toBe(JSON.stringify(stableCopy({a:2})));
+  expect(stableCopy(null)).toBeNull();expect(stableCopy(5)).toBe(5);
+ });
+});
+
+describe('an activity saved before updatedAt existed',()=>{
+ const legacy=order=>({...trip,id:'11111111-1111-4111-8111-111111111111',updatedAt:undefined,
+  details:{classification:order?{predicted:'Driving',confidence:'high',evidence:['x']}:{evidence:['x'],confidence:'high',predicted:'Driving'}},
+  points:order
+   ?[{latitude:1,longitude:2,timestamp:3,accuracy:4,speed:5,altitude:6,segment:0},{latitude:1.1,longitude:2.1,timestamp:8,accuracy:4,speed:5,altitude:6,segment:0}]
+   :[{segment:0,altitude:6,speed:5,accuracy:4,timestamp:3,longitude:2,latitude:1},{segment:0,altitude:6,speed:5,accuracy:4,timestamp:8,longitude:2.1,latitude:1.1}]});
+ it('is not sent again just because the phone listed the same content in a different key order',async()=>{
+  const api=client();
+  const first=await run(api,{...state,trips:[legacy(true)]});
+  expect(first.uploaded).toBe(1);
+  const callsAfterFirst=api.rpc.mock.calls.filter(([name])=>name==='backup_private_activity').length;
+  // The next launch: same activity, same content, keys in another order, and no updatedAt to shortcut on.
+  const second=await run(api,{...state,trips:[legacy(false)]},first.receipts);
+  expect(second.uploaded).toBe(0);
+  expect(api.rpc.mock.calls.filter(([name])=>name==='backup_private_activity').length).toBe(callsAfterFirst);
+ });
+ it('is sent again when its content really changed',async()=>{
+  const api=client();
+  const first=await run(api,{...state,trips:[legacy(true)]});
+  const edited={...legacy(false),title:'Renamed'};
+  const second=await run(api,{...state,trips:[edited]},first.receipts);
+  expect(second.uploaded).toBe(1);
+ });
+});

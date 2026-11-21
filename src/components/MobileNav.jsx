@@ -12,7 +12,7 @@ export default function MobileNav({tab,onSelect,recordState='idle'}){
   {status&&<span className="sr-only" role="status">{status}</span>}
   {NAV_ITEMS.map(({name})=>name==='Record'
    ?<div className={`mobile-nav-record${tab===name?' is-current':''}`} key={name}>
-     <RecordControl variant="nav" state={recordState} current={tab===name} label="Record" title={recordState==='recording'?'Recording — open the record screen':recordState==='auto'?'Automatic journey active — open the record screen':'Record'} onClick={()=>onSelect(name)}/>
+     <RecordControl variant="nav" state={recordState} current={tab===name} label="Record" title={recordState==='recording'?'Recording — open the record screen':recordState==='auto'?'Automatic journey active — open the record screen':recordState==='elsewhere'?'Recording on your Apple Watch — open the record screen':'Record'} onClick={()=>onSelect(name)}/>
     </div>
    :<NavButton key={name} name={name} active={tab===name} onSelect={()=>onSelect(name)}/>)}
  </nav>;

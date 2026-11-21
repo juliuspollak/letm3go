@@ -14,6 +14,7 @@ import {syncAccountSettings} from '../lib/settingsSync.js';
 import {refreshJourneyMetadata} from '../lib/journeyMetadataStore.js';
 import {BACKED_UP_EVENT,SYNC_NOW_EVENT} from '../lib/syncNow.js';
 import {receiptPatch,saveSyncReceipts} from '../lib/syncReceipts.js';
+import {createReceiptCheckpointer} from '../lib/receiptCheckpointer.js';
 import {notifySegmentsChanged} from '../lib/segmentEvents.js';
 import {recorder} from '../lib/recorder.js';
 import {perfSpan} from '../lib/perfMonitor.js';
@@ -24,6 +25,10 @@ export default function AutoCloudSync({state,journeySync=null}){
  useEffect(()=>{latest.current={auth,state,journeySync};},[auth,state,journeySync]);
  useEffect(()=>{
   if(!supabase)return;
+  // Receipts for the sync pass are collected and written together (see lib/receiptCheckpointer.js). The household share that follows
+  // a backup waits for the write, because it reads the saved receipts.
+  let backedUp=false;
+  const checkpointer=createReceiptCheckpointer({savePreferences:patch=>latest.current.auth.savePreferences(patch),onSaved:()=>{if(backedUp&&!checkpointer.hasPending()){backedUp=false;window.dispatchEvent(new Event(BACKED_UP_EVENT));}}});
   let alive=true,listener,publishing=false,publishAgain=false,publicationTimer,publicationOwner=null,publicationReceipts={};
   async function publish(){
    if(!alive||document.visibilityState!=='visible'||!navigator.onLine)return;
@@ -70,7 +75,7 @@ export default function AutoCloudSync({state,journeySync=null}){
     // so one failing photo must not block them. The first failure is re-thrown
     // after every stage has been attempted; nothing local is removed.
     let failure=null,preferences=user.preferences,receipts=preferences.syncReceipts||{};
-    const attempt=async(step)=>{try{receipts=(await step(receipts)).receipts;}catch(error){failure=failure||error;}};
+    const attempt=async(step,stage='step')=>{const end=perfSpan('sync:'+stage);try{receipts=(await step(receipts)).receipts;}catch(error){failure=failure||error;}finally{end();}};
     if(!journeysOnly&&config.backupEnabled){
      let ready=recovered.current===owner;
      if(!ready){
@@ -82,8 +87,8 @@ export default function AutoCloudSync({state,journeySync=null}){
       }catch(error){failure=failure||error;}
      }
      if(ready){
-     await attempt(next=>syncAccountSettings(supabase,{owner:recordings.ownerID,preferences,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
-     await attempt(next=>syncCollections(supabase,{owner:recordings.ownerID,vehicles:preferences.vehicles,receipts:next},{checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)}));
+     await attempt(next=>syncAccountSettings(supabase,{owner:recordings.ownerID,preferences,receipts:next},{checkpoint:async syncReceipts=>checkpointer.record(syncReceipts)}));
+     await attempt(next=>syncCollections(supabase,{owner:recordings.ownerID,vehicles:preferences.vehicles,receipts:next},{checkpoint:async syncReceipts=>checkpointer.record(syncReceipts)}));
      }
     }
     // Journey metadata is Supabase's: this only refreshes the device's read-only cache of
@@ -92,21 +97,22 @@ export default function AutoCloudSync({state,journeySync=null}){
      await refreshJourneyMetadata({client:supabase,owner,...journeys});
      await journeys.flush();
      return {receipts:next};
-    });
+    },'journeyMetadata');
     if(!journeysOnly&&config.backupEnabled){
      // Each activity is checkpointed as it goes up, and household sharing is told straight away (it follows the backup, not a timer).
-     const trips=await syncPrivateActivities(supabase,recordings,receipts,{maxActivities:20,publishSegments:false,throwOnFailure:false,onBackedUp:()=>window.dispatchEvent(new Event(BACKED_UP_EVENT)),checkpoint:syncReceipts=>saveSyncReceipts(user.savePreferences,syncReceipts)});
+     const endBackup=perfSpan('sync:activityBackup');const trips=await syncPrivateActivities(supabase,recordings,receipts,{maxActivities:20,publishSegments:false,throwOnFailure:false,onBackedUp:()=>{backedUp=true;},checkpoint:async syncReceipts=>checkpointer.record(syncReceipts)});
+     endBackup({pending:Boolean(trips.pending)});
      receipts=trips.receipts;
      if(trips.pending)failure=failure||new Error('Activity backup continues in the next batch.');
      // Some activities may have been refused while the rest went up: those are reported (and retried when due), the rest stands.
      if(trips.problem)failure=failure||trips.problem;
      clearTimeout(retryTimer.current);
      if(alive&&Number.isFinite(trips.nextRetryAt)){retryTimer.current=setTimeout(()=>{synced.current=null;void kick.current?.();},Math.max(1000,trips.nextRetryAt-Date.now()+500));}
-     if(alive)await saveSyncReceipts(user.savePreferences,receipts,{lastBackup:trips.lastSync});
+     if(alive){checkpointer.record(receipts,{lastBackup:trips.lastSync});await checkpointer.flush();}
      segmentsCaughtUp.current=Date.now();
     }else if(segmentsDue&&config.backupEnabled){
      const updated={...receipts};
-     const efforts=await syncSegmentEfforts(supabase,recordings,updated,{owner,acknowledge:()=>saveSyncReceipts(user.savePreferences,{...updated})});
+     const efforts=await syncSegmentEfforts(supabase,recordings,updated,{owner,acknowledge:async()=>checkpointer.record({...updated})});
      // Unfinished work (more rides or segments) continues at the next check.
      if(!efforts.pending&&!efforts.failure)segmentsCaughtUp.current=Date.now();
      if(efforts.failure)failure=failure||efforts.failure;
@@ -119,6 +125,8 @@ export default function AutoCloudSync({state,journeySync=null}){
     const reason=String(error?.key||error?.message||'Backup failed'),now=Date.now();
     if(reportedBackup.current.reason!==reason||now-reportedBackup.current.at>600000){reportedBackup.current={reason,at:now};try{void recorder.noteBackupFailure(String(error?.message||reason));}catch{/* diagnostics only */}}
    }finally{
+    // Whatever the pass recorded is saved now, success or failure, before it counts as finished.
+    try{await checkpointer.flush();}catch{/* kept and retried with the next write */}
     endPass({journeysOnly,segmentsDue});running.current=false;
     // An explicit sync asked while this pass ran: run once more straight away.
     if(again.current&&alive){again.current=false;synced.current=null;void sync(true);}
@@ -130,9 +138,11 @@ export default function AutoCloudSync({state,journeySync=null}){
   // Explicit sync requests run a full pass even if nothing changed locally.
   const now=()=>{void publish();synced.current=null;if(running.current)again.current=true;else void sync(true);};
   window.addEventListener(SYNC_NOW_EVENT,now);
-  window.addEventListener('online',resume);document.addEventListener('visibilitychange',resume);
-  if(Capacitor.isNativePlatform())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)resume();}).then(handle=>{if(alive)listener=handle;else void handle.remove();}).catch(()=>{});
-  return()=>{alive=false;publishNow.current=null;clearTimeout(publicationTimer);clearTimeout(startupTimer.current);clearInterval(periodic);window.removeEventListener(SYNC_NOW_EVENT,now);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
+  // Receipts waiting for their batched write are saved when the app is hidden or goes to the background, before iOS can freeze it.
+  const saveNow=()=>{if(document.visibilityState==='hidden')void checkpointer.flush().catch(()=>{});};
+  window.addEventListener('online',resume);document.addEventListener('visibilitychange',resume);document.addEventListener('visibilitychange',saveNow);
+  if(Capacitor.isNativePlatform())void NativeApp.addListener('appStateChange',({isActive})=>{if(isActive)resume();else void checkpointer.flush().catch(()=>{});}).then(handle=>{if(alive)listener=handle;else void handle.remove();}).catch(()=>{});
+  return()=>{void checkpointer.flush().catch(()=>{});document.removeEventListener('visibilitychange',saveNow);alive=false;publishNow.current=null;clearTimeout(publicationTimer);clearTimeout(startupTimer.current);clearInterval(periodic);window.removeEventListener(SYNC_NOW_EVENT,now);window.removeEventListener('online',resume);document.removeEventListener('visibilitychange',resume);void listener?.remove();};
  },[]);
  // Sign-in and native account binding can finish after the initial timer.
  // Start once ownership is ready instead of waiting for the periodic check.

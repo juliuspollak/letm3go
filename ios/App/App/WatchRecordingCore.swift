@@ -674,3 +674,34 @@ struct WatchDiagnosticBuffer: Codable, Equatable {
     }
     mutating func drain(sentThrough at: Double) { events.removeAll { $0.at <= at } }
 }
+
+// A recording that has run for hours is almost always a forgotten one (a Watch workout left running, the phone in a pocket).
+// The phone reminds the person, from what the Watch last reported. Pure: scheduling lives in ForgottenRecordingReminders.
+enum ForgottenRecording {
+    static let prefix = "letm3go.forgotten-recording."
+    // How long a recording runs before each reminder.
+    static let thresholds: [Double] = [2 * 3600, 6 * 3600]
+    struct Reminder: Equatable { var id: String; var at: Double }
+    static func identifier(sessionID: String, index: Int) -> String { prefix + sessionID.lowercased() + "." + String(index) }
+    // The reminders still to come for a recording that is going (or paused), as absolute times. An ended, idle or unknown
+    // recording has none, so anything scheduled for it is cancelled. A recording first heard about after a threshold has
+    // passed gets that one reminder shortly (never a burst of every missed one).
+    static func reminders(for presence: RecordingPresence?, now: Double, soon: Double = 45) -> [Reminder] {
+        guard let p = presence, p.isActive, p.endedAt == nil, !p.sessionID.isEmpty, p.startedAt > 0,
+              p.startedAt <= now + CrossDeviceRecording.clockTolerance else { return [] }
+        var result: [Reminder] = []
+        var latestPassed: Int?
+        for (index, after) in thresholds.enumerated() {
+            let due = p.startedAt + after
+            if due > now { result.append(Reminder(id: identifier(sessionID: p.sessionID, index: index), at: due)) } else { latestPassed = index }
+        }
+        if let index = latestPassed { result.insert(Reminder(id: identifier(sessionID: p.sessionID, index: index), at: now + soon), at: 0) }
+        return result
+    }
+    static func message(activity: String, state: String, startedAt: Double, formatter: (Double) -> String) -> (title: String, body: String) {
+        let name = WatchCatalog.title(activity)
+        let since = formatter(startedAt)
+        return (state == "paused" ? "Paused recording still open" : "Still recording?",
+                "Your Apple Watch \(state == "paused" ? "has a paused" : "has been recording") \(name) since \(since). Open letm3go to finish it.")
+    }
+}

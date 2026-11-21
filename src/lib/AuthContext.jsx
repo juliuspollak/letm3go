@@ -1,3 +1,4 @@
+import {socialCache} from './socialCache.js';
 import { isDiscardedRefresh } from './authMessages.js';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { App as NativeApp } from '@capacitor/app';
@@ -11,6 +12,8 @@ import { setPrivateMediaOwner } from './privateMedia.js';
 import { stopAccountPush, resumeAccountPush } from './pushAccount.js';
 import { ensureUserProfile, saveProfileAvatar } from './userProfile.js';
 const Context=createContext(null);
+// Same value, whatever the object identity.
+const samePreference=(a,b)=>a===b||JSON.stringify(a)===JSON.stringify(b);
 export function AuthProvider({children}){
  const [identity,setIdentity]=useState({status:'restoring',session:null,preferences:defaultPreferences()}),[error,setError]=useState(''),[integrationWarning,setIntegrationWarning]=useState(''),[recovery,setRecovery]=useState(()=>new URLSearchParams(window.location.search).get('flow')==='recovery');
  const preferencesRef=useRef(defaultPreferences()),preferencesQueue=useRef(Promise.resolve());
@@ -105,7 +108,7 @@ export function AuthProvider({children}){
   void resumeAccountPush(owner,report).catch(report);return()=>{alive=false;};
  },[identity.session?.user.id,identity.status,identity.preferences?.notificationsEnabled]);
  async function signOut(){
-  explicitLogout.current=true;++generation.current;setPrivateMediaOwner(null);
+  explicitLogout.current=true;socialCache.clear();++generation.current;setPrivateMediaOwner(null);
   try{await accountStore.lock();}
   catch(err){explicitLogout.current=false;setError(err.message);throw err;}
   // Once the native recorder is safely locked, auxiliary token/push cleanup must
@@ -125,6 +128,10 @@ export function AuthProvider({children}){
   const operation=async()=>{
    if(!owner||latestSession.current?.user.id!==owner)throw new Error('Account changed. Settings were not saved.');
    const resolvedPatch=typeof patch==='function'?patch(preferencesRef.current):patch;
+   // A save that changes nothing writes nothing: no encrypted rewrite of the settings file and no new preferences object, which
+   // would re-render everything that reads them. (A patch that names the avatar always goes through: choosing the same photo again
+   // is how a failed copy to the cloud is retried.)
+   if(resolvedPatch&&!Object.hasOwn(resolvedPatch,'avatar')&&Object.keys(resolvedPatch).every(key=>samePreference(preferencesRef.current[key],resolvedPatch[key])))return preferencesRef.current;
    const preferences={...preferencesRef.current,...resolvedPatch};const result=await accountStore.save(preferences,owner);
    if(latestSession.current?.user.id!==owner)throw new Error('Account changed.');
    preferencesRef.current=result.preferences;setIdentity(old=>({...old,preferences:result.preferences}));

@@ -7,5 +7,7 @@ export function recordControlState(state={},busy=false){
  if(busy)return active?'saving':'starting';
  if(active)return active.state==='recording'?'recording':'paused';
  if(state?.automaticTrip||state?.automaticState==='recording')return 'auto';
+ // Recording on the Apple Watch: this phone is not, but the person should still see that something is.
+ if(state?.recordingElsewhere)return 'elsewhere';
  return 'idle';
 }

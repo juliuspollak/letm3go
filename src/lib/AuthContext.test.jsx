@@ -55,3 +55,24 @@ it('retries a discarded refresh without exposing the SDK error or forcing logout
 it('ignores an old restore finishing after a newer sign-in',async()=>{let finish;mocks.auth.getSession.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));render(<AuthProvider><Probe/></AuthProvider>);await waitFor(()=>expect(finish).toBeTypeOf('function'));act(()=>mocks.callback('SIGNED_IN',mocks.session));await screen.findByText('authenticated:owner-a');await act(async()=>finish({data:{session:null}}));expect(screen.getByRole('status')).toHaveTextContent('authenticated:owner-a');expect(mocks.store.lock).not.toHaveBeenCalled();});
 
 it('keeps deletion availability in account settings and isolated to the correct account',async()=>{render(<AuthProvider><Probe/></AuthProvider>);await screen.findByText('authenticated:owner-a');act(()=>window.dispatchEvent(new CustomEvent('letm3go:account-service-warning',{detail:{ownerID:'owner-a',message:'Account deletion is temporarily unavailable.'}})));expect(screen.getByTestId('account-notice')).toHaveTextContent('temporarily unavailable');expect(screen.getByTestId('integration-banner')).toBeEmptyDOMElement();mocks.user={id:'owner-b',email_confirmed_at:'2026-10-24'};mocks.session={access_token:'other',user:mocks.user};act(()=>mocks.callback('SIGNED_IN',mocks.session));await screen.findByText('authenticated:owner-b');expect(screen.getByTestId('account-notice')).toBeEmptyDOMElement();});
+
+function Saver({patch,onResult}){const value=useAuth();return <button type="button" onClick={()=>void value.savePreferences(patch).then(onResult)}>save-it</button>;}
+it('writes nothing and keeps the same settings object when a save changes nothing',async()=>{
+ const results=[];
+ render(<AuthProvider><Probe/><Saver patch={{displayName:'',vehicles:[]}} onResult={value=>results.push(value)}/></AuthProvider>);
+ await screen.findByText('authenticated:owner-a');
+ const before=mocks.store.save.mock.calls.length;
+ fireEvent.click(screen.getByRole('button',{name:'save-it'}));
+ await waitFor(()=>expect(results).toHaveLength(1));
+ expect(mocks.store.save.mock.calls.length).toBe(before);
+});
+it('still saves when a value really changes',async()=>{
+ const results=[];
+ render(<AuthProvider><Probe/><Saver patch={{displayName:'New name'}} onResult={value=>results.push(value)}/></AuthProvider>);
+ await screen.findByText('authenticated:owner-a');
+ const before=mocks.store.save.mock.calls.length;
+ fireEvent.click(screen.getByRole('button',{name:'save-it'}));
+ await waitFor(()=>expect(results).toHaveLength(1));
+ expect(mocks.store.save.mock.calls.length).toBe(before+1);
+ expect(results[0].displayName).toBe('New name');
+});

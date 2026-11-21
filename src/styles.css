@@ -491,7 +491,8 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .record-control-spinner{position:absolute;width:44%;height:44%;border-radius:50%;border:2px solid color-mix(in srgb,var(--accent) 26%,transparent);border-top-color:var(--accent);animation:record-spin .9s linear infinite}
 .record-control.is-recording .record-control-core{background:linear-gradient(155deg,color-mix(in srgb,var(--accent) 92%,#fff),var(--accent));box-shadow:0 10px 22px color-mix(in srgb,var(--accent) 42%,transparent),inset 0 1px 0 color-mix(in srgb,#fff 35%,transparent)}
 .record-control.is-recording .record-control-shape{width:15px;height:15px;border-radius:4.5px;background:var(--on-accent);box-shadow:none}
-.record-control.is-recording .record-control-halo{animation:record-breathe 2.9s ease-in-out infinite}
+.record-control.is-recording .record-control-halo,.record-control.is-elsewhere .record-control-halo{animation:record-breathe 2.9s ease-in-out infinite}
+.record-control.is-elsewhere .record-control-core{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}
 .record-control.is-paused .record-control-shape{width:15px;height:15px;border-radius:4px;background:color-mix(in srgb,var(--accent) 70%,var(--ink))}
 .record-control.is-paused .record-control-core{background:linear-gradient(155deg,var(--surface),color-mix(in srgb,var(--accent) 22%,var(--surface)))}
 .record-control.is-auto .record-control-ring{border-color:color-mix(in srgb,var(--accent) 42%,transparent);animation:record-auto 3.4s ease-in-out infinite}
@@ -1282,3 +1283,9 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .loading-mark .boot-ring{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px));mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px))}.loading-mark .boot-ring::after{border-width:3px}
 .loading-mark--inline .boot-ring{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 1px));mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 1px))}.loading-mark--inline .boot-ring::after{border-width:2px}
 @keyframes loading-in{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}
+
+/* A recording running on the Apple Watch, shown on every screen until it ends. */
+.watch-recording-banner{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--accent) 12%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line))}
+.watch-recording-banner.is-long{background:color-mix(in srgb,#f29927 16%,var(--surface));border-color:color-mix(in srgb,#f29927 55%,var(--line))}
+.watch-recording-dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--accent);animation:record-breathe 2.9s ease-in-out infinite}
+.watch-recording-text{flex:1;display:grid;gap:2px;min-width:0}.watch-recording-text small{color:var(--muted)}
