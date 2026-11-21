@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { App as NativeApp } from '@capacitor/app';
 import { emptyRecorder, onJourneysChanged, recorder, recorderAvailable } from './recorder.js';
+import { perfCall, perfSpan } from './perfMonitor.js';
 
 // A cheap, point-free fingerprint of the snapshot. It covers every field that
 // affects the rendered UI (journeys, places, permission, motion, sampling state,
@@ -116,7 +117,9 @@ export function useRecorder(ownerID,onBindingRequired){
    const id=++requestID;pending=true;startedAt=Date.now();
    const epoch=generation.current,request=++readRequest.current;
    try{
+    const callStarted=performance.now();
     const incoming=await recorder.getState(accepted.current.historyToken?{historyToken:accepted.current.historyToken}:undefined);
+    perfCall('recorder.getState',callStarted,{delta:Boolean(accepted.current.historyToken),trips:Array.isArray(incoming?.trips)?incoming.trips.length:0});
     if(!alive||id!==requestID||epoch!==generation.current||request!==readRequest.current)return;
     const data=incoming;
     if(recorderAvailable()&&ownerID&&data.ownerID?.toLowerCase()!==ownerID.toLowerCase()){
@@ -126,7 +129,7 @@ export function useRecorder(ownerID,onBindingRequired){
     setError('');
     // Skip an identical poll: keeps the state reference stable so memoised
     // journey lists and maps do not recompute while nothing actually changed.
-    const next=reconcileRecorderSnapshot(accepted.current,data),key=snapshotKey(next,historyFingerprints.current);
+    const endPoll=perfSpan('recorderPollProcessing');const next=reconcileRecorderSnapshot(accepted.current,data),key=snapshotKey(next,historyFingerprints.current);endPoll({changed:key!==lastKey.current,deleted:(data.deletedIDs||[]).length});
     if(key===lastKey.current)return;
     lastKey.current=key;accepted.current=next;
     setState(next);

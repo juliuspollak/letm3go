@@ -105,8 +105,33 @@ struct RecordedActivity: Codable {
             metadata.classification=classification
             metadata.classification.evidence.append("Journey prediction uses accumulated movement distance, not the final sample")
         }
-        if recordingMode == "automatic" && !metadata.userCorrected { activity=winner }
+        if recordingMode == "automatic" && !metadata.userCorrected {
+            // A ride that picked up a few Driving readings is not a drive: Driving needs to outweigh the Cycling evidence.
+            if winner == "Driving", Self.cyclingOutweighsDriving(cycling: metadata.cyclingEvidenceMeters ?? 0, driving: weights["Driving"] ?? 0, total: distanceMeters) { activity = "Unknown" }
+            else { activity=winner }
+        }
         details=metadata
+    }
+    // Cycling is manual-only: automatic recording must not call anything Cycling. It also must not fall through to Driving.
+    // Distance moved under Cycling motion counts against Driving; once it clearly outweighs it the journey stays Unknown, so
+    // the person sees an honest "Journey" they can set to Cycling rather than a wrong "Driving".
+    static let cyclingEvidenceMinimumMeters: Double = 150
+    static let cyclingOutweighsRatio: Double = 2
+    // `total` is all the distance moved so far: Cycling evidence must also be most of it, so a long drive that
+    // began with a stretch of misread motion is never relabelled.
+    static func cyclingOutweighsDriving(cycling: Double, driving: Double, total: Double = 0) -> Bool {
+        cycling >= cyclingEvidenceMinimumMeters && cycling >= driving * cyclingOutweighsRatio && cycling >= total * 0.5
+    }
+    mutating func noteCyclingEvidence(_ distance: Double) {
+        guard recordingMode == "automatic", distance.isFinite, distance > 0 else { return }
+        var metadata = details ?? ActivityDetails()
+        guard !metadata.userCorrected else { return }
+        metadata.cyclingEvidenceMeters = (metadata.cyclingEvidenceMeters ?? 0) + distance
+        details = metadata
+        if activity == "Driving", Self.cyclingOutweighsDriving(cycling: metadata.cyclingEvidenceMeters ?? 0, driving: metadata.classificationDistances?["Driving"] ?? 0, total: distanceMeters) {
+            activity = "Unknown"
+            updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + ["Not labelled Driving: most of the movement was Cycling motion"]).suffix(24)) }
+        }
     }
     // A short Walking signal can arrive between GPS fixes. Match it to the
     // recorded route's walking-speed profile, without creating a GPS-only label
@@ -787,6 +812,10 @@ struct SmartClassifier {
         }
         return result
     }
+    // Whether this reading is Cycling evidence (which automatic recording does not label, but must not hide).
+    static func cyclingEvidence(motion: MotionEvidence, speed: Double, displacement: Double, seconds: Double, accuracy: Double, now: Double) -> Bool {
+        classify(motion:motion,speed:speed,displacement:displacement,seconds:seconds,accuracy:accuracy,now:now).predicted == "Cycling"
+    }
     static func classify(motion: MotionEvidence, speed: Double, displacement: Double, seconds: Double, accuracy: Double, now: Double) -> Classification {
         let moving = motion.types.filter { ["Walking", "Running", "Cycling", "Driving"].contains($0) }
         guard (motion.continuous || now - motion.timestamp <= 90), motion.confidence != "low", moving.count == 1,
@@ -963,6 +992,9 @@ struct ActivityDetails: Codable {
     var titleEdited: Bool?
     var classification = Classification(predicted: "Unknown", confidence: "low", evidence: [])
     var classificationDistances: [String:Double]?
+    // Distance moved while Core Motion said Cycling. Automatic recording never assigns Cycling, but this evidence must stop a
+    // ride being labelled Driving (see RecordedActivity.noteCyclingEvidence).
+    var cyclingEvidenceMeters: Double?
     var trackingNotes: [String]?
     var visibleRouteStart: Int?
     var visibleRouteEnd: Int?
@@ -2235,6 +2267,44 @@ enum AutomaticFinalisation {
     }
 }
 
+// The few minutes of fixes before a departure was confirmed. AutomaticDetector keeps only its own candidate run and starts it
+// again whenever Core Motion flickers (Stationary at a driveway, a pause), so a journey began where that run last restarted:
+// the first stretch of the walk or ride was missing. This buffer is independent of those restarts. When a departure is
+// confirmed, the stretch of real movement just before the first candidate fix is added to the start of the journey.
+struct DepartureBackfill {
+    static let window: Double = 240
+    static let capacity = 80
+    static let maximumGap: Double = 30
+    static let maximumLead = 60
+    private(set) var fixes: [GPSPoint] = []
+    mutating func record(_ point: GPSPoint) {
+        guard point.accuracy >= 0, point.accuracy <= 65 else { return }
+        if let last = fixes.last, point.timestamp <= last.timestamp { return }
+        fixes.append(point)
+        let cutoff = point.timestamp - Self.window
+        fixes.removeAll { $0.timestamp < cutoff }
+        if fixes.count > Self.capacity { fixes.removeFirst(fixes.count - Self.capacity) }
+    }
+    mutating func clear() { fixes = [] }
+    // Oldest first, always before `first`. Walks back through fixes that are real movement, stops at a silence of more than
+    // `maximumGap`, and includes the one resting fix the movement began from. Standing-still jitter is never added.
+    func lead(before first: GPSPoint) -> [GPSPoint] {
+        var run: [GPSPoint] = []
+        var next = first
+        for fix in fixes.filter({ $0.timestamp < first.timestamp }).reversed() {
+            let seconds = next.timestamp - fix.timestamp
+            if seconds > Self.maximumGap || seconds <= 0 { break }
+            let step = fix.distance(to: next)
+            if step / seconds > 85 { break }
+            run.append(fix)
+            if run.count >= Self.maximumLead { break }
+            let noise = max(3, (fix.accuracy + next.accuracy) / 4)
+            if step <= noise { break }   // this fix is where the person was standing: the movement starts here
+            next = fix
+        }
+        return run.reversed()
+    }
+}
 struct AutomaticDetector {
     // iOS queues location updates while the app is suspended and delivers them when
     // it runs again. For an open journey, a queued fix newer than its last saved fix

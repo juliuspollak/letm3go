@@ -1,3 +1,4 @@
+import LoadingMark from './LoadingMark.jsx';
 import {useEffect,useState} from 'react';
 import {useSharedActivityDetail} from '../lib/useSharedActivityDetail.js';
 import ActivityDetailScreen from './ActivityDetailScreen.jsx';
@@ -24,7 +25,7 @@ function BrowserSharedPhoto({token,photo}){
 export default function SharedActivityDetail({activityID=null,token=null,ownerName='Friend',ownerID,viewer=null,unit='km',onBack}){
  const {trip,loading,error}=useSharedActivityDetail(activityID,token,ownerName,viewer);
  if(error)return <div className="notice" role="alert"><h2>{error}</h2><button type="button" className="secondary" onClick={onBack}>Back</button></div>;
- if(loading||!trip)return <p role="status">Loading shared activity…</p>;
+ if(loading||!trip)return <LoadingMark label="Loading shared activity"/>;
  if(Capacitor.getPlatform()==='ios'&&ownerID){
   // The native screen belongs to the signed-in account (it rejects any other id as "Account changed"), so it is given the
   // viewer's id; whose activity this is travels in the trip itself and the screen is read-only.

@@ -669,11 +669,25 @@ private func edgeAvatarImage(_ members:[[String:Any]])->UIImage {
 // Small flags retain exact recorded coordinates; MapKit handles collision clustering.
 // Each activity's number is a round badge that sits on its own line, so the order of the day reads along
 // the route. It is never merged with its neighbours: the web layer spreads the anchors along the lines.
-private func activityBadgeImage(_ text:String,selected:Bool)->UIImage {
+private func activityBadgeImage(_ text:String,selected:Bool,time:String="")->UIImage {
     let diameter:CGFloat=selected ? 28 : 22
     let margin:CGFloat=4
-    return UIGraphicsImageRenderer(size:CGSize(width:diameter+margin*2,height:diameter+margin*2)).image { context in
+    // The start time rides in a small pill to the right of the number; the number itself stays on the route.
+    let timeAttrs:[NSAttributedString.Key:Any]=[.font:UIFont.monospacedDigitSystemFont(ofSize:10,weight:.semibold),.foregroundColor:UIColor(white:0.12,alpha:1)]
+    let timeSize=time.isEmpty ? CGSize.zero : (time as NSString).size(withAttributes:timeAttrs)
+    let pillWidth:CGFloat=time.isEmpty ? 0 : timeSize.width+14
+    let pillHeight:CGFloat=16
+    let overlap:CGFloat=8
+    let width=margin*2+diameter+(time.isEmpty ? 0 : pillWidth-overlap)
+    return UIGraphicsImageRenderer(size:CGSize(width:width,height:diameter+margin*2)).image { context in
         let ring=CGRect(x:margin,y:margin,width:diameter,height:diameter)
+        if !time.isEmpty {
+            let pill=CGRect(x:ring.maxX-overlap,y:ring.midY-pillHeight/2,width:pillWidth,height:pillHeight)
+            context.cgContext.setShadow(offset:CGSize(width:0,height:1),blur:2,color:UIColor.black.withAlphaComponent(0.25).cgColor)
+            UIColor.white.setFill();UIBezierPath(roundedRect:pill,cornerRadius:pillHeight/2).fill()
+            context.cgContext.setShadow(offset:.zero,blur:0,color:nil)
+            (time as NSString).draw(at:CGPoint(x:pill.minX+overlap+(pillWidth-overlap-timeSize.width)/2,y:pill.midY-timeSize.height/2),withAttributes:timeAttrs)
+        }
         context.cgContext.setShadow(offset:CGSize(width:0,height:1),blur:3,color:UIColor.black.withAlphaComponent(0.3).cgColor)
         (selected ? UIColor.systemOrange : UIColor.white).setFill();UIBezierPath(ovalIn:ring).fill()
         context.cgContext.setShadow(offset:.zero,blur:0,color:nil)
@@ -702,6 +716,8 @@ private func activityFlagImage(_ text:String,selected:Bool,cluster:Bool=false)->
     }
 }
 private final class ActivityFlagView:MKAnnotationView {
+    // A numbered badge sits on its route point; only the legacy flag-style views are moved clear of people bubbles.
+    var isBadge=false
     func place(offset:CGPoint) {
         if centerOffset != offset {centerOffset=offset}
     }
@@ -719,9 +735,12 @@ private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation)->
     let view=map.dequeueReusableAnnotationView(withIdentifier:reuse) ?? ActivityFlagView(annotation:annotation,reuseIdentifier:reuse)
     view.annotation=annotation
     let selected=pins.contains{$0.metadata["selected"] as? Bool == true}
-    view.image=clustered ? activityFlagImage(String(pins.count),selected:selected,cluster:true) : activityBadgeImage(pins[0].metadata["label"] as? String ?? "",selected:selected)
+    view.image=clustered ? activityFlagImage(String(pins.count),selected:selected,cluster:true) : activityBadgeImage(pins[0].metadata["label"] as? String ?? "",selected:selected,time:pins[0].metadata["time"] as? String ?? "")
     // The badge is centred on its point on the line; only a (legacy) cluster flag hangs above its point.
-    (view as? ActivityFlagView)?.place(offset:clustered ? CGPoint(x:0,y:-(view.image?.size.height ?? 0)/2+4) : .zero)
+    // The badge is centred on its point on the line; with a time pill the image is wider, so shift it to keep the number on the point.
+    let circle:CGFloat=selected ? 28 : 22
+    (view as? ActivityFlagView)?.isBadge = !clustered
+    (view as? ActivityFlagView)?.place(offset:clustered ? CGPoint(x:0,y:-(view.image?.size.height ?? 0)/2+4) : CGPoint(x:((view.image?.size.width ?? 0)/2)-(4+circle/2),y:0))
     // No clustering: merging numbers into "×2" hid the order of the day.
     view.clusteringIdentifier=nil
     view.collisionMode = .circle
@@ -1711,7 +1730,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         }
     }
     private func placeActivityFlag(_ flag:ActivityFlagView,on map:MKMapView,obstacles:[CGRect]) {
-        guard let annotation=flag.annotation,let size=flag.image?.size else {return}
+        guard !flag.isBadge,let annotation=flag.annotation,let size=flag.image?.size else {return}
         let point=map.convert(annotation.coordinate,toPointTo:map)
         flag.place(offset:ActivityFlagPlacement.offset(size:size,at:point,people:obstacles,bounds:map.bounds,previous:flag.centerOffset))
     }

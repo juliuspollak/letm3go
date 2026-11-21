@@ -1,3 +1,4 @@
+import LoadingMark from './LoadingMark.jsx';
 import {watchSegmentRefresh} from '../lib/segmentEvents.js';
 import {useEffect,useMemo,useState} from 'react';
 import {ChevronRight,Flag,LocateFixed,Search} from 'lucide-react';
@@ -69,7 +70,7 @@ export default function SegmentsView({owner,journeys,receipts,position=null,onLo
 
   </ul>}
   {result.error&&!loading&&<p role="alert" className="notice">{result.error} <button type="button" className="text-button" onClick={()=>setAttempt(n=>n+1)}>Retry</button></p>}
-  {loading&&!rows.length&&<p role="status" className="muted">Loading segments…</p>}
+  {loading&&!rows.length&&<LoadingMark label="Loading segments"/>}
   {!loading&&!waitingForPlace&&!result.error&&!rows.length&&!unpublished.length&&<div className="empty"><Flag/><h3>{scope==='mine'?'No segments yet':'No segments found'}</h3>
    <p>{scope==='mine'?'Open a ride, walk or run and choose Create Segment.':'Try another search, activity or area.'}</p></div>}
   {rows.length>0&&<ul className="segment-list" aria-busy={loading}>

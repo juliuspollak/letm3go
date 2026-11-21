@@ -47,6 +47,16 @@ it('permits deliberately public journey links without mounting private recording
 });
 it('opens Tracking & Permissions from Profile through Account settings',()=>{signedIn();render(<App/>);fireEvent.click(screen.getByRole('button',{name:'Open profile'}));fireEvent.click(screen.getByRole('button',{name:'Account & settings'}));fireEvent.click(screen.getByRole('button',{name:'Tracking & Permissions'}));expect(screen.getByRole('heading',{name:'Tracking & Permissions'})).toBeInTheDocument();expect(screen.getByRole('switch',{name:'Automatic Tracking'})).toBeInTheDocument();});
 it('keeps the activity list in Trips rather than duplicating it on Home and Map',()=>{signedIn();recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[{id:'trip',source:'device',title:'Walk to park',activity:'Walking',startedAt:100,endedAt:200,durationSeconds:100,distanceMeters:100,points:[],details:{}}]},run:vi.fn(),busy:false,error:''});render(<App/>);expect(screen.queryByRole('button',{name:'Open Walk to park'})).not.toBeInTheDocument();expect(screen.queryByLabelText('Interactive journey route map')).not.toBeInTheDocument();fireEvent.click(screen.getAllByRole('button',{name:'Trips',exact:true})[0]);expect(screen.getByRole('button',{name:'Open Walk to park'})).toBeInTheDocument();fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);expect(screen.getByLabelText('Interactive journey route map')).toBeInTheDocument();expect(screen.queryByRole('button',{name:'Open Walk to park'})).not.toBeInTheDocument();expect(screen.queryByText('Recorded paths')).not.toBeInTheDocument();});
+it('counts Auto / Manual / All for the chosen day, not for every date',()=>{
+ signedIn();const date=new Date();date.setHours(12,0,0,0);const previous=new Date(date);previous.setDate(date.getDate()-1);
+ const trip=(id,title,at)=>({id,title,source:'device',recordingMode:'manual',activity:'Walking',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{}});
+ recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('today','Today walk',date),trip('yesterday','Yesterday walk',previous),trip('older','Older walk',new Date(date.getTime()-5*86400000))]},run:vi.fn(),busy:false,error:''});
+ render(<App/>);
+ fireEvent.click(screen.getByRole('button',{name:'View activities for Today'}));
+ expect(screen.getByRole('button',{name:'Open Today walk'})).toBeInTheDocument();
+ expect(within(screen.getByRole('button',{name:'Manual activities, started by you'})).getByText('1')).toBeInTheDocument();
+ expect(within(screen.getByRole('button',{name:'All activities'})).getByText('1')).toBeInTheDocument();
+});
 it('opens the selected Home day in Activities and can return to all dates',()=>{
  signedIn();const date=new Date();date.setHours(12,0,0,0);const previous=new Date(date);previous.setDate(date.getDate()-1);
  const trip=(id,title,at)=>({id,title,source:'device',activity:'Walking',startedAt:at.getTime()/1000,endedAt:at.getTime()/1000+60,durationSeconds:60,distanceMeters:100,points:[],details:{}});

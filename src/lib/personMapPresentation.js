@@ -1,5 +1,6 @@
 import {thinLine} from './mapContent.js';
 import {distanceMetres} from './householdLocation.js';
+import {formatDuration} from './peopleMap.js';
 
 // Keep composition, access checks and saved geometry in personDay. This projection
 // only changes which authorised activity is visible and how its existing line looks.
@@ -93,17 +94,39 @@ export function badgeAnchors(lines,placed=[]){
  }
  return choice;
 }
-export function personFlags(day,routes,selected){
+// "08:05" style time for a badge or label, in the viewer's zone.
+export function clockText(seconds,timeZone){
+ try{return new Date(seconds*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',timeZone}).replace(/\s?([AP])M$/i,(m,x)=>x.toLowerCase()+'m').replace(/\s/g,'');}catch{return '';}
+}
+// A person standing somewhere the server did not name ("At a place") still has a "here since": the end of their last
+// recorded activity today is when they arrived. Added to their bubble only when it has no label of its own (a label
+// already says speed, a saved place or Home) and they are not moving.
+export function withTimeHere(pin,day,nowMs){
+ if(!pin||pin.label||pin.kind!=='people'||!Array.isArray(pin.members)||pin.members.length!==1)return pin;
+ const member=pin.members[0];
+ if(member.state!=='live'||!['stationary','unknown'].includes(member.activity))return pin;
+ let since=null;
+ for(const a of day?.activities||[]){
+  const end=Number.isFinite(a.startedAt)&&Number.isFinite(a.durationSeconds)?a.startedAt+a.durationSeconds:null;
+  if(end!=null&&(since==null||end>since))since=end;
+ }
+ const seconds=since==null?null:Math.round(nowMs/1000-since);
+ if(seconds==null||seconds<60||seconds>86400)return pin;
+ return {...pin,label:`Here · ${formatDuration(seconds)}`,labelKind:'place'};
+}
+export function personFlags(day,routes,selected,timeZone){
  const visible=new Set(routes.map(r=>r.activityID));
  // A real single-fix start still deserves a flag even though it cannot draw a line.
  for(const a of displayActivities(day,selected))if(!a.routes.some(r=>r.length>1)&&!a.roads.some(r=>r.line.length>1))visible.add(a.id);
  const linesOf=new Map();
  for(const r of routes){if(!linesOf.has(r.activityID))linesOf.set(r.activityID,[]);linesOf.get(r.activityID).push(r.points);}
+ const startOf=new Map((day.activities||[]).map(a=>[a.id,a.startedAt]));
  const placed=[];
  return day.markers.filter(m=>visible.has(m.activityID)).map(m=>{
   const anchor=linesOf.has(m.activityID)?badgeAnchors(linesOf.get(m.activityID),placed):null;
   if(anchor)placed.push(anchor);
-  return {id:'step:'+m.activityID,kind:'step',point:anchor||m.point,title:m.title,label:String(m.n),activityID:m.activityID,selected:m.activityID===selected};
+  const started=startOf.get(m.activityID),time=started!=null&&timeZone?clockText(started,timeZone):'';
+  return {id:'step:'+m.activityID,kind:'step',point:anchor||m.point,title:m.title,label:String(m.n),...(time?{time}:{}),activityID:m.activityID,selected:m.activityID===selected};
  });
 }
 // Observed distance only: never connect GPS gaps, redacted stretches or activities.

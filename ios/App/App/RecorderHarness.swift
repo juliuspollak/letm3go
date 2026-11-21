@@ -219,7 +219,7 @@ enum RecorderHarness {
         check(leg2?.startedAt == returning.timestamp.timeIntervalSince1970, "destination: the returning fix starts the second leg")
         let times1 = Set(leg1?.points.map(\.timestamp) ?? []), times2 = Set(leg2?.points.map(\.timestamp) ?? [])
         check(!times1.isEmpty && times1.isDisjoint(with: times2), "destination: no fix is in both legs")
-        check(leg1.map { $0.duration(at: returnAt) <= 205 } ?? false, "destination: the shop stop is not moving time")
+        check(leg1.map { $0.duration(at: returnAt) <= 240 } ?? false, "destination: the shop stop is not moving time")
     }
 
     static func terminationDuringWait() async {

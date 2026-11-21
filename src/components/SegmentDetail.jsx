@@ -1,3 +1,4 @@
+import LoadingMark from './LoadingMark.jsx';
 import {useEffect,useMemo,useState} from 'react';
 import {Flag,Pencil,Scissors,Trash2,Upload} from 'lucide-react';
 import JourneyMap from './JourneyMap.jsx';
@@ -25,7 +26,7 @@ export default function SegmentDetail({id,unit='km',onChanged,onDeleted}){
  },[id,reload]);
  const segment=state.id===id?state.segment:null;
  const loading=state.id!==id;
- if(loading)return <p role="status" className="muted">Loading segment…</p>;
+ if(loading)return <LoadingMark label="Loading segment"/>;
  if(!segment)return <div className="empty"><Flag/><h3>Segment unavailable</h3><p>{state.error}</p><button type="button" className="secondary" onClick={()=>setReload(n=>n+1)}>Retry</button></div>;
  if(segment.deleted)return <div className="empty"><Flag/><h3>{segment.name}</h3><p>This segment was deleted. It is no longer shown to anyone.</p></div>;
  const run=async(action,after)=>{

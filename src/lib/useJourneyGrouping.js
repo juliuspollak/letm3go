@@ -1,3 +1,4 @@
+import { perfChanged, perfSpan } from './perfMonitor.js';
 import {liveRoad} from './liveRoads.js';
 import {recognitionSampleIndexes,lookupDue,cachedLookup,failedLookup} from './journeyRecognition.js';
 import {reconcileSources} from './fleetJourneys.js';
@@ -13,7 +14,7 @@ import {routeGaps,gapKey,roadLookupDue,roadRecord,failedRecord,estimatedDistance
 // written to Supabase first (commitJourneyChanges); there is no local copy to edit and no
 // queue. Offline, a change is refused with a connection message.
 export function useJourneyGrouping({owner,activities,processingActivities=activities,places,vehicles,metadataValue,telemetry=[],sync}){
- const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
+  const projectionCache=useMemo(()=>({owner,values:new Map()}),[owner]);
  const metadata=useMemo(()=>metadataValue??emptyGrouping(owner),[metadataValue,owner]);
  // Retain unsaved provider answers across effect restarts, but never accounts.
  const pending=useMemo(()=>({owner,places:{},roads:{},enriched:{},distanceSummaries:{}}),[owner]);
@@ -42,7 +43,7 @@ export function useJourneyGrouping({owner,activities,processingActivities=activi
   const missing=links.filter(pair=>!current.current.sourceLinks.some(old=>JSON.stringify([...old].sort())===JSON.stringify(pair)));
   if(missing.length)void persist(meta=>({...meta,sourceLinks:[...new Map([...meta.sourceLinks,...missing].map(pair=>[JSON.stringify([...pair].sort()),pair])).values()]}),{derived:true}).catch(()=>{/* Retried when the associations are next worked out. */});
  },[sourceLinks,sync,persist]);
- const model=useMemo(()=>{const own=buildJourneys(reconciled.activities,{owner,metadata,places,vehicles,telemetry,projectionCache:projectionCache.values});const shared=reconciled.activities.filter(t=>t.ownerID&&t.ownerID!==owner&&t.sharedToHousehold);const publicPlaces=Object.fromEntries(Object.entries(metadata.places).filter(([,p])=>p.source==='apple-geocoder-mapkit'));const sharedJourneys=[...new Set(shared.map(t=>t.ownerID))].flatMap(sharedOwner=>buildJourneys(shared.filter(t=>t.ownerID===sharedOwner),{owner:sharedOwner,metadata:{...emptyGrouping(sharedOwner),places:publicPlaces},places:[],vehicles:[],telemetry}).journeys.map(j=>({...j,readOnly:true})));return {...own,journeys:[...own.journeys,...sharedJourneys]};},[reconciled.activities,owner,metadata,places,vehicles,telemetry,projectionCache]);
+ const model=useMemo(()=>{const endSpan=perfSpan('buildJourneys');const own=buildJourneys(reconciled.activities,{owner,metadata,places,vehicles,telemetry,projectionCache:projectionCache.values});const shared=reconciled.activities.filter(t=>t.ownerID&&t.ownerID!==owner&&t.sharedToHousehold);const publicPlaces=Object.fromEntries(Object.entries(metadata.places).filter(([,p])=>p.source==='apple-geocoder-mapkit'));const sharedJourneys=[...new Set(shared.map(t=>t.ownerID))].flatMap(sharedOwner=>buildJourneys(shared.filter(t=>t.ownerID===sharedOwner),{owner:sharedOwner,metadata:{...emptyGrouping(sharedOwner),places:publicPlaces},places:[],vehicles:[],telemetry}).journeys.map(j=>({...j,readOnly:true})));endSpan({activities:reconciled.activities.length,changed:perfChanged('buildJourneys',[reconciled.activities,owner,metadata,places,vehicles,telemetry,projectionCache],['activities','owner','metadata','places','vehicles','telemetry','cache'])});return {...own,journeys:[...own.journeys,...sharedJourneys]};},[reconciled.activities,owner,metadata,places,vehicles,telemetry,projectionCache]);
  // Enrichment runs once, for an activity as it is saved: its places and road
  // estimates are retrieved, kept, and the activity is marked done
  // (metadata.enriched); it is never looked up or refreshed again. History is never

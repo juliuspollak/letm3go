@@ -651,6 +651,9 @@ extension LocationRecorder {
             }
             noteFirstPreciseFix(sample,now:now)
             let observedAt=sample.timestamp
+            // Remember recent fixes even while the detector restarts its own run, so a confirmed departure can include the
+            // stretch of movement that came just before it.
+            if automaticTrip == nil { departureBackfill.record(sample) }
             if automaticTrip == nil,AutomaticDetector.shouldProbe(sample,motion:motion,now:observedAt) {beginAutomaticProbe()}
             // Standby fixes only watch for departure. Do not turn time spent
             // parked into the beginning of a journey or accumulate GPS jitter.
@@ -694,20 +697,29 @@ extension LocationRecorder {
             let event = detector.observe(sample,motion:motion,manualActive:false,now:observedAt,activity:automaticTrip?.activity ?? "Driving")
             do {
                 if event == "depart", let first = detector.candidate.first {
-                    var trip = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Automatically detected journey")
+                    // The movement just before the first candidate fix belongs to the journey too (see DepartureBackfill).
+                    let lead = departureBackfill.lead(before:first)
+                    let begin = lead.first ?? first
+                    var trip = RecordedActivity(activity:"Unknown",startedAt:begin.timestamp,resumedAt:begin.timestamp,title:"Automatically detected journey")
                     trip.recordingMode = "automatic"; trip.details = ActivityDetails()
                     trip.timezone = TimeZone.current.identifier
                     #if targetEnvironment(simulator)
                     trip.source = "simulator"
                     #endif
+                    for earlier in lead { _ = trip.accept(earlier,now:earlier.timestamp) }
                     for candidate in detector.candidate { _ = trip.accept(candidate,now:candidate.timestamp) }
+                    departureBackfill.clear()
+                    // The journey starts at the first fix actually kept (the filters can reject a lead fix), not at the one offered.
+                    let startFix = trip.points.first ?? first
+                    trip.startedAt = startFix.timestamp; trip.resumedAt = startFix.timestamp
                     trip.details?.trackingNotes = recentTrackingNotes(before:now) + [
                         "Detection confirmed after buffered GPS movement",
-                        "First accepted GPS: \(Date(timeIntervalSince1970:first.timestamp))",
+                        "First accepted GPS: \(Date(timeIntervalSince1970:trip.points.first?.timestamp ?? begin.timestamp))",
+                        "Fixes added from before the confirmed departure: \(lead.count)",
                         "GPS candidate samples: \(detector.candidate.count)",
                         "Motion: \(motion.types.joined(separator:", ")) (\(motion.confidence))"
                     ]
-                    trip.details?.startPlace = places.first { $0.contains(first) }?.name
+                    trip.details?.startPlace = places.first { $0.contains(trip.points.first ?? begin) }?.name
                     // A walk that begins inside the current place may be local
                     // movement. It is recorded from its first real fix but held back
                     // from History until it proves to be a journey. Vehicles are
@@ -750,6 +762,7 @@ extension LocationRecorder {
                         // A late or stale Core Motion classification must not turn a
                         // walk into a drive on a single sample.
                         let prediction = SmartClassifier.classifyAutomatic(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:observedAt)
+                        if SmartClassifier.cyclingEvidence(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:observedAt) { trip.noteCyclingEvidence(trip.distanceMeters-previousDistance) }
                         let onFoot = JourneyFamily.of(trip.activity) == .onFoot && trip.details?.userCorrected != true
                         if sample.speed >= 0.3, !(onFoot && JourneyFamily.of(prediction.predicted) != .onFoot) {
                             trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)
@@ -1229,6 +1242,7 @@ extension LocationRecorder {
         if trip.accept(sample,now:sample.timestamp) {
             if let first = trip.points.first {
                 let prediction = SmartClassifier.classifyAutomatic(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now)
+                if SmartClassifier.cyclingEvidence(motion:motion,speed:sample.speed,displacement:first.distance(to:sample),seconds:sample.timestamp-first.timestamp,accuracy:sample.accuracy,now:now) { trip.noteCyclingEvidence(trip.distanceMeters-previousDistance) }
                 let onFoot = family == .onFoot && trip.details?.userCorrected != true
                 if sample.speed >= 0.3, !(onFoot && JourneyFamily.of(prediction.predicted) != .onFoot) {
                     trip.applyPrediction(prediction,distance:trip.distanceMeters-previousDistance)

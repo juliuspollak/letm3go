@@ -1270,3 +1270,15 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .fitness-options li{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;font-size:13px}
 .fitness-options li+li{border-top:1px solid var(--line)}
 .fitness-options li span:last-child{color:var(--muted);font-size:11px;text-align:right}
+
+/* LoadingMark: one standard loader. The page version floats centred over the content and takes no space, so it never
+   pushes a filter or list down. The ring's own styles come from index.html. */
+.loading-overlay{position:fixed;inset:0;z-index:60;display:grid;place-items:center;pointer-events:none}
+.loading-mark{--b-accent:var(--accent);--b-track:var(--line);position:relative;display:grid;place-items:center;color:var(--accent)}
+.loading-mark--page{width:72px;height:72px;border-radius:50%;background:color-mix(in srgb,var(--surface) 92%,transparent);box-shadow:0 8px 28px rgba(20,30,60,.22);animation:loading-in .18s ease-out both}
+.loading-mark--page .boot-glyph{width:28px;height:28px}
+.loading-mark--page .boot-ring{inset:6px}
+.loading-mark--inline{display:inline-grid;width:18px;height:18px;vertical-align:middle}.loading-mark--inline .boot-glyph{width:8px;height:8px}
+.loading-mark .boot-ring{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px));mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3px))}.loading-mark .boot-ring::after{border-width:3px}
+.loading-mark--inline .boot-ring{-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 1px));mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 1px))}.loading-mark--inline .boot-ring::after{border-width:2px}
+@keyframes loading-in{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}

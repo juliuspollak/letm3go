@@ -5818,4 +5818,81 @@ do {
     check(Set(ActivityTypes.stored).count == ActivityTypes.stored.count && ActivityTypes.stored.contains("Rope skipping") && ActivityTypes.stored.contains("Unknown"), "the stored list has no duplicates and includes Rope skipping and Unknown")
 }
 
+
+// MARK: Departure backfill and cycling evidence
+do {
+    // A ride that starts at a driveway: standing, then a slow run of real movement, then the first candidate fix.
+    var backfill = DepartureBackfill()
+    for t in stride(from: 0.0, to: 60.0, by: 5.0) { backfill.record(metreFix(t.truncatingRemainder(dividingBy: 10) == 0 ? 0 : 1, 1000 + t, speed: 0, accuracy: 6)) }   // standing jitter, a metre or so
+    for (i, t) in stride(from: 60.0, to: 120.0, by: 5.0).enumerated() { backfill.record(metreFix(6 + Double(i) * 12, 1000 + t, speed: 2.5, accuracy: 6)) }   // moving about 2.4 m/s
+    let first = metreFix(6 + 12 * 12, 1120, speed: 2.5, accuracy: 6)
+    let lead = backfill.lead(before: first)
+    check(!lead.isEmpty, "the movement before the first candidate fix is found")
+    check(lead.allSatisfy { $0.timestamp < first.timestamp }, "backfill is always before the first candidate fix")
+    check(zip(lead, lead.dropFirst()).allSatisfy { $0.timestamp < $1.timestamp }, "backfill is oldest first")
+    check(lead.first!.timestamp >= 1050 && lead.first!.timestamp <= 1060, "it begins at the resting fix the movement started from, not at the earlier standing jitter")
+    check(lead.count >= 13 && lead.count <= 14, "every fix of the run is kept (the resting fix and the moving ones)")
+
+    var gappy = DepartureBackfill()
+    gappy.record(metreFix(0, 1000, speed: 2, accuracy: 6)); gappy.record(metreFix(30, 1010, speed: 2, accuracy: 6))
+    gappy.record(metreFix(200, 1100, speed: 2, accuracy: 6)); gappy.record(metreFix(230, 1110, speed: 2, accuracy: 6))
+    let afterGap = gappy.lead(before: metreFix(260, 1120, speed: 2, accuracy: 6))
+    check(afterGap.map { $0.timestamp } == [1100, 1110], "a silence of more than 30 s ends the run; earlier fixes are not joined across it")
+
+    var standing = DepartureBackfill()
+    for t in stride(from: 0.0, to: 120.0, by: 5.0) { standing.record(metreFix(0.4, 1000 + t, speed: 0, accuracy: 6)) }
+    check(standing.lead(before: metreFix(0.6, 1125, speed: 0, accuracy: 6)).count <= 1, "standing still never adds a trail of jitter")
+
+    var stale = DepartureBackfill()
+    stale.record(metreFix(0, 1000, speed: 2, accuracy: 6)); stale.record(metreFix(500, 1400, speed: 2, accuracy: 6))
+    check(stale.fixes.count == 1, "fixes older than the lookback window are dropped")
+    var rough = DepartureBackfill()
+    rough.record(metreFix(0, 1000, speed: 2, accuracy: 120))
+    check(rough.fixes.isEmpty, "a poor fix (accuracy over 65 m) is never buffered")
+    var many = DepartureBackfill()
+    for i in 0..<500 { many.record(metreFix(Double(i), 1000 + Double(i) * 0.4, speed: 2, accuracy: 6)) }
+    check(many.fixes.count <= DepartureBackfill.capacity, "the buffer is bounded")
+    many.clear()
+    check(many.fixes.isEmpty, "clearing empties it")
+
+    // Cycling evidence stops a ride being labelled Driving, without ever labelling anything Cycling.
+    func autoTrip() -> RecordedActivity {
+        var trip = RecordedActivity(activity: "Unknown", startedAt: 1000, resumedAt: 1000, title: "Automatically detected journey")
+        trip.recordingMode = "automatic"; trip.details = ActivityDetails()
+        return trip
+    }
+    let drive = Classification(predicted: "Driving", confidence: "high", evidence: ["Core Motion: Driving (high)"])
+    var ride = autoTrip()
+    ride.applyPrediction(drive, distance: 60)
+    check(ride.activity == "Driving", "a short Driving reading labels a fresh journey Driving")
+    ride.noteCyclingEvidence(100)
+    check(ride.activity == "Driving", "under 150 m of Cycling evidence changes nothing")
+    ride.noteCyclingEvidence(80)
+    check(ride.activity == "Unknown", "clearly more Cycling than Driving evidence takes the Driving label back")
+    check(ride.details?.trackingNotes?.last?.contains("Cycling motion") == true, "the change is explained in the tracking notes")
+    ride.applyPrediction(drive, distance: 10)
+    check(ride.activity == "Unknown", "a stray later Driving reading cannot restore it while Cycling outweighs Driving")
+    ride.applyPrediction(drive, distance: 400)
+    check(ride.activity == "Driving", "sustained Driving evidence that outweighs the Cycling evidence does restore it")
+    check(ride.activity != "Cycling", "automatic recording never assigns Cycling")
+
+    var realDrive = autoTrip()
+    realDrive.applyPrediction(drive, distance: 3000)
+    realDrive.noteCyclingEvidence(200)
+    check(realDrive.activity == "Driving", "a real drive with a little stray Cycling evidence stays Driving")
+    var longStart = autoTrip(); longStart.applyPrediction(drive, distance: 20)
+    longStart.distanceMeters = 1500
+    longStart.noteCyclingEvidence(200)
+    check(longStart.activity == "Driving", "Cycling evidence that is only a small part of the distance moved never relabels a drive")
+    var edited = autoTrip(); edited.applyPrediction(drive, distance: 60)
+    edited.updateDetails { $0.userCorrected = true }
+    edited.noteCyclingEvidence(1000)
+    check(edited.activity == "Driving" && edited.details?.cyclingEvidenceMeters == nil, "a person's own choice is never overridden")
+    var walk = autoTrip(); walk.recordingMode = "manual"
+    walk.noteCyclingEvidence(500)
+    check(walk.details?.cyclingEvidenceMeters == nil, "manual recordings keep no cycling evidence")
+    check(SmartClassifier.cyclingEvidence(motion: MotionEvidence(types: ["Cycling"], confidence: "high", timestamp: 100), speed: 4, displacement: 100, seconds: 60, accuracy: 8, now: 105), "plausible cycling readings count as evidence")
+    check(!SmartClassifier.cyclingEvidence(motion: MotionEvidence(types: ["Driving"], confidence: "high", timestamp: 100), speed: 12, displacement: 300, seconds: 60, accuracy: 8, now: 105), "driving readings are not cycling evidence")
+}
+
 print("Final native assertion count including automatic account recovery: \(assertions)")

@@ -1,3 +1,4 @@
+import {perfSpan} from './perfMonitor.js';
 import {activityReceiptKey,normalizeActivityReceipts} from './activityReceiptKeys.js';
 import {SEGMENT_PUBLICATION_VERSION,segmentFingerprint,segmentReceipt} from './segmentSyncState.js';
 import {sliceActivityRoute} from './mtbSegment.js';
@@ -86,7 +87,11 @@ const hashWith=cryptoImpl=>async value=>Array.from(new Uint8Array(await cryptoIm
 // Segment efforts on their own: run by syncPrivateActivities after a backup, and
 // by AutoCloudSync now and then even when nothing local changed, so rides already
 // recorded meet segments other people published since.
-export async function syncSegmentEfforts(client,state,updated,{owner,hash=hashWith(crypto),acknowledge=async()=>{},finished=finishedTrip(state),republish=new Set()}){
+export async function syncSegmentEfforts(client,state,updated,options){
+ const endEfforts=perfSpan('syncSegmentEfforts');
+ try{return await syncSegmentEffortsWork(client,state,updated,options);}finally{endEfforts({trips:(state.trips||[]).length});}
+}
+async function syncSegmentEffortsWork(client,state,updated,{owner,hash=hashWith(crypto),acknowledge=async()=>{},finished=finishedTrip(state),republish=new Set()}){
  let pending=false,failure=null;
  // Efforts. Only the segment, time taken and start time are sent, under a one-way
  // hashed key, so the server learns nothing about the activity itself, and only

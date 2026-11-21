@@ -1,3 +1,4 @@
+import { perfSnapshot } from './perfMonitor.js';
 // Pure helpers for Feedback & Support: validation, optional diagnostics, history shaping
 // and the idempotent submission pipeline used by both the app and its tests.
 import { config } from './config.js';
@@ -84,6 +85,7 @@ export function feedbackDiagnostics({ state = {}, preferences = {}, session, nat
   // A deliberately small snapshot. Routes, coordinates, saved places, email and IDs never leave the device.
   return {
     schema: 1,
+    performance: perfSnapshot(),
     app: { version: String(state.version || 'unknown'), build: String(state.build || 'unknown') },
     platform: native ? 'ios' : 'web',
     locale: globalThis.navigator?.language || 'unknown',

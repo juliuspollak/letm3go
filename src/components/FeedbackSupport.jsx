@@ -1,3 +1,4 @@
+import LoadingMark from './LoadingMark.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, Lock, MessageCircle, Send, X } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
@@ -401,7 +402,7 @@ export default function FeedbackSupport({ recording }) {
         <button type="button" className="text-button" disabled={history.status === 'loading' || history.status === 'refreshing'} onClick={reloadHistory}>Refresh</button>
       </div>
       {!supabase && <p className="notice" role="status">Feedback history needs a connection to your account.</p>}
-      {supabase && history.status === 'loading' && <p className="feedback-loading" role="status"><LoaderCircle className="spin" size={17} /> Loading your feedback…</p>}
+      {supabase && history.status === 'loading' && <LoadingMark label="Loading your feedback" />}
       {history.status === 'error' && <div className="error" role="alert"><p>{history.error}</p><button type="button" className="secondary" onClick={reloadHistory}>Try again</button></div>}
       {section === 'all' && <div className="feedback-sections" role="group" aria-label="Filter feedback">
         {ADMIN_FILTERS.map(item => <button key={item.id} type="button" className={adminFilter === item.id ? 'selected' : ''} aria-pressed={adminFilter === item.id} onClick={() => setAdminFilter(item.id)}>{item.label} ({history.tickets.filter(item.match).length})</button>)}

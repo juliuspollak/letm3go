@@ -16,6 +16,7 @@ import {BACKED_UP_EVENT,SYNC_NOW_EVENT} from '../lib/syncNow.js';
 import {receiptPatch,saveSyncReceipts} from '../lib/syncReceipts.js';
 import {notifySegmentsChanged} from '../lib/segmentEvents.js';
 import {recorder} from '../lib/recorder.js';
+import {perfSpan} from '../lib/perfMonitor.js';
 // Foreground/offline-aware sync. Never deletes local photos or recorder files.
 export default function AutoCloudSync({state,journeySync=null}){
  const recovered=useRef(null);
@@ -63,7 +64,7 @@ export default function AutoCloudSync({state,journeySync=null}){
    // Nothing local changed, but other people may have published segments since.
    const segmentsDue=ownsRecordings&&journeysOnly&&Date.now()-segmentsCaughtUp.current>=SEGMENT_CATCH_UP_MS;
    if(journeysOnly&&!journeys&&!segmentsDue)return;
-   running.current=true;lastAttempt.current=Date.now();
+   running.current=true;lastAttempt.current=Date.now();const endPass=perfSpan('cloudSyncPass');
    try{
     // Settings and the Collection are small and independent of the route upload,
     // so one failing photo must not block them. The first failure is re-thrown
@@ -118,7 +119,7 @@ export default function AutoCloudSync({state,journeySync=null}){
     const reason=String(error?.key||error?.message||'Backup failed'),now=Date.now();
     if(reportedBackup.current.reason!==reason||now-reportedBackup.current.at>600000){reportedBackup.current={reason,at:now};try{void recorder.noteBackupFailure(String(error?.message||reason));}catch{/* diagnostics only */}}
    }finally{
-    running.current=false;
+    endPass({journeysOnly,segmentsDue});running.current=false;
     // An explicit sync asked while this pass ran: run once more straight away.
     if(again.current&&alive){again.current=false;synced.current=null;void sync(true);}
    }

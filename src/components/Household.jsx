@@ -1,3 +1,4 @@
+import LoadingMark from './LoadingMark.jsx';
 import {App as NativeApp} from '@capacitor/app';
 import {recorderAvailable} from '../lib/recorder.js';
 import DismissibleSheet from './DismissibleSheet.jsx';
@@ -101,7 +102,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
   setInvited(current=>[...current,friend.user_id]);
  }
  return <section className="social-screen household-screen" aria-label="Household">
-  {loading&&!household&&<p role="status" className="social-hint">Loading household…</p>}
+  {loading&&!household&&<LoadingMark label="Loading household"/>}
   {loadError&&<div className="notice" role="alert"><p>{loadError}</p><button type="button" className="secondary full" onClick={()=>setReload(value=>value+1)}>Retry household</button></div>}
   {household?<>
    <div className="social-heading household-title"><h2>{household.name}</h2>{!membersLoading&&members.length>0&&<span className="social-count">{members.length}</span>}</div>
@@ -110,7 +111,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
    <ActivitySharingRow/>
    {!liveReady&&onRetrySharing&&<button type="button" className="text-button" onClick={onRetrySharing}>Retry location status</button>}
    <h3 className="social-subheading">Members</h3>
-   {membersLoading&&!members.length?<p role="status" className="social-hint">Loading members…</p>:<PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Members"/>}
+   {membersLoading&&!members.length?<LoadingMark label="Loading members"/>:<PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Members"/>}
    {!membersLoading&&!members.length&&<p className="social-empty">No members available. Reopen to retry.</p>}
    <SocialActions label="Household actions" actions={[
     onOpenMap&&{id:'map',label:'Family map',icon:MapIcon,onClick:onOpenMap},

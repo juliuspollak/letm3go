@@ -95,6 +95,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         DispatchQueue.main.async { [weak self] in self?.notifyJourneyChange() }
     }
     var movementTransition = MovementTransition()
+    var departureBackfill = DepartureBackfill()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
     var locationMode: AutomaticLocationMode = .off
