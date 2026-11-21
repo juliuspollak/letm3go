@@ -81,11 +81,6 @@ enum ActivityFlagPlacement {
     }
 }
 
-// Required source annotations cannot cluster. A cluster itself can be required,
-// preventing a higher-priority avatar from hiding the only activity access point.
-enum ActivityFlagVisibility {
-    static func required(clustered:Bool)->Bool {clustered}
-}
 
 // MapKit selection and visual-frame fallback may report the same physical tap.
 // Coalesce that pair without suppressing a quick tap on another activity.

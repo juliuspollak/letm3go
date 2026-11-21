@@ -31,7 +31,8 @@ it('reads a rolling range the way the Map does',()=>{
  expect(matchesDate({endedAt:now/1000-8*86400},'7d',today,now)).toBe(false);
 });
 it('names every kind of selection',()=>{
- expect(['all','today','2026-10-29','7d','2026-01-05'].map(date=>dateLabel(date,today))).toEqual(['All dates','Today','Yesterday','Past 7 days','5 Jan 2026']);
+ expect(['all','today','2026-10-29','7d','2026-01-05'].map(date=>dateLabel(date,today))).toEqual(['All dates','Today','Yesterday','Past 7 days',new Date('2026-01-05T12:00:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})]);
+ expect(dateLabel('2025-01-06',today)).toBe(new Date('2025-01-06T12:00:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'}));
 });
 it('counts filters that hide activities, not the sort order',()=>{
  expect(activeFilterCount(none)).toBe(0);

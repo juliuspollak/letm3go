@@ -667,6 +667,23 @@ private func edgeAvatarImage(_ members:[[String:Any]])->UIImage {
 // user ids at that place); other pins are identified by what they show.
 // A named segment's label, in the segment's colour, with its name always shown.
 // Small flags retain exact recorded coordinates; MapKit handles collision clustering.
+// Each activity's number is a round badge that sits on its own line, so the order of the day reads along
+// the route. It is never merged with its neighbours: the web layer spreads the anchors along the lines.
+private func activityBadgeImage(_ text:String,selected:Bool)->UIImage {
+    let diameter:CGFloat=selected ? 28 : 22
+    let margin:CGFloat=4
+    return UIGraphicsImageRenderer(size:CGSize(width:diameter+margin*2,height:diameter+margin*2)).image { context in
+        let ring=CGRect(x:margin,y:margin,width:diameter,height:diameter)
+        context.cgContext.setShadow(offset:CGSize(width:0,height:1),blur:3,color:UIColor.black.withAlphaComponent(0.3).cgColor)
+        (selected ? UIColor.systemOrange : UIColor.white).setFill();UIBezierPath(ovalIn:ring).fill()
+        context.cgContext.setShadow(offset:.zero,blur:0,color:nil)
+        UIColor(red:0.275,green:0.35,blue:0.85,alpha:1).setFill();UIBezierPath(ovalIn:ring.insetBy(dx:2,dy:2)).fill()
+        let label=text as NSString
+        let attrs:[NSAttributedString.Key:Any]=[.font:UIFont.monospacedDigitSystemFont(ofSize:text.count>2 ? 9 : (selected ? 13 : 11),weight:.bold),.foregroundColor:UIColor.white]
+        let size=label.size(withAttributes:attrs)
+        label.draw(at:CGPoint(x:ring.midX-size.width/2,y:ring.midY-size.height/2),withAttributes:attrs)
+    }
+}
 private func activityFlagImage(_ text:String,selected:Bool,cluster:Bool=false)->UIImage {
     let width:CGFloat=cluster ? 36 : (selected ? 34 : 28),height:CGFloat=selected ? 36 : 32
     return UIGraphicsImageRenderer(size:CGSize(width:width+8,height:height+6)).image { context in
@@ -702,12 +719,15 @@ private func activityAnnotationView(_ map:MKMapView,_ annotation:MKAnnotation)->
     let view=map.dequeueReusableAnnotationView(withIdentifier:reuse) ?? ActivityFlagView(annotation:annotation,reuseIdentifier:reuse)
     view.annotation=annotation
     let selected=pins.contains{$0.metadata["selected"] as? Bool == true}
-    view.image=activityFlagImage(clustered ? String(pins.count) : (pins[0].metadata["label"] as? String ?? ""),selected:selected,cluster:clustered)
-    (view as? ActivityFlagView)?.place(offset:CGPoint(x:0,y:-(view.image?.size.height ?? 0)/2+4))
-    view.clusteringIdentifier=clustered ? nil : "person-activities"
-    view.collisionMode = .rectangle
+    view.image=clustered ? activityFlagImage(String(pins.count),selected:selected,cluster:true) : activityBadgeImage(pins[0].metadata["label"] as? String ?? "",selected:selected)
+    // The badge is centred on its point on the line; only a (legacy) cluster flag hangs above its point.
+    (view as? ActivityFlagView)?.place(offset:clustered ? CGPoint(x:0,y:-(view.image?.size.height ?? 0)/2+4) : .zero)
+    // No clustering: merging numbers into "×2" hid the order of the day.
+    view.clusteringIdentifier=nil
+    view.collisionMode = .circle
     // Source flags must remain clusterable. The resulting cluster badge must not be culled by the avatar.
-    view.displayPriority=ActivityFlagVisibility.required(clustered:clustered) ? .required : .defaultHigh
+    // Every number stays visible: the order of the day is the point of them.
+    view.displayPriority = .required
     view.zPriority = .max;view.selectedZPriority = .max
     view.canShowCallout=false;view.isAccessibilityElement=true
     view.accessibilityTraits=selected ? [.button,.selected] : .button

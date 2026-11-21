@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {composeDay,linesUntil,positionAt} from './personDay.js';
-import {filterPersonDay,personRoutes,personFlags,recordedDistance,PERSON_VERTEX_LIMIT,PERSON_ACTIVITY_LIMIT,boundedPersonLines} from './personMapPresentation.js';
+import {filterPersonDay,personRoutes,personFlags,badgeAnchors,recordedDistance,PERSON_VERTEX_LIMIT,PERSON_ACTIVITY_LIMIT,boundedPersonLines} from './personMapPresentation.js';
 const date='2026-11-10',timeZone='UTC',t=Date.parse(date+'T00:00:00Z')/1000;
 const row=(id,activity,offset)=>({activity_id:id,title:id,activity,started_at:new Date((t+offset)*1000).toISOString(),ended_at:new Date((t+offset+600)*1000).toISOString(),points:[0,60,500,560].map((n,i)=>({t:t+offset+n,latitude:-34+i*0.001,longitude:151,segment:0})),roads:{}});
 const day=()=>composeDay({date,timeZone,rows:[row('drive','Driving',10),row('walk','Walking',30)]});
@@ -51,7 +51,7 @@ it('allocates across fragmented activities before adding more segments, with a b
 });
 it('creates only authorised visible flags, at the original coordinates with stable chronological numbers',()=>{
  const composed=day(),filtered=filterPersonDay(composed,'Walking'),routes=personRoutes(filtered,'walk');
- expect(personFlags(filtered,routes,'walk')).toEqual([{id:'step:walk',kind:'step',point:composed.activities[1].start,title:'2. walk',label:'2',activityID:'walk',selected:true}]);
+ expect(personFlags(filtered,routes,'walk')).toEqual([{id:'step:walk',kind:'step',point:expect.any(Array),title:'2. walk',label:'2',activityID:'walk',selected:true}]);
  expect(personFlags(composed,[],null)).toEqual([]);
 });
 it('uses the stronger normal style without connecting estimates and observed routes',()=>{
@@ -81,4 +81,35 @@ it('keeps bounded flags and displayed activities consistent across a huge day in
  expect(flags).toHaveLength(PERSON_ACTIVITY_LIMIT);
  expect(new Set(flags.map(f=>f.activityID))).toEqual(new Set(routes.map(r=>r.activityID)));
  expect(flags.at(-1)).toMatchObject({activityID:'599',label:'600',selected:true});
+});
+describe('numbers sit on their own line',()=>{
+ const line=(lat,fromLon,toLon,n=11)=>Array.from({length:n},(_,i)=>[lat,fromLon+(toLon-fromLon)*i/(n-1)]);
+ it('places a number on the line, not at the shared start',()=>{
+  const l=line(-34.5,150.9,150.95);
+  const anchor=badgeAnchors([l]);
+  expect(anchor[0]).toBeCloseTo(-34.5,6);
+  expect(anchor[1]).toBeGreaterThan(150.92);expect(anchor[1]).toBeLessThan(150.93);
+ });
+ it('uses the longest line of an activity',()=>{
+  const anchor=badgeAnchors([line(-34.5,150.9,150.901),line(-34.6,150.9,150.95)]);
+  expect(anchor[0]).toBeCloseTo(-34.6,6);
+ });
+ it('moves a number along its line when another number already sits there',()=>{
+  const l=line(-34.5,150.9,150.95);
+  const first=badgeAnchors([l]),second=badgeAnchors([l],[first]);
+  expect(second).not.toEqual(first);
+ });
+ it('keeps trips that start at the same place from stacking their numbers',()=>{
+  const base=day().activities[0];
+  const a={...base,id:'a',routes:[line(-34.5,150.9,150.95)],roads:[]},b={...base,id:'b',routes:[line(-34.5,150.9,150.95)],roads:[]};
+  const composed={activities:[a,b],markers:[{n:1,activityID:'a',title:'1. a',point:a.start},{n:2,activityID:'b',title:'2. b',point:b.start}]};
+  const flags=personFlags(composed,personRoutes(composed,null),null);
+  expect(flags.map(f=>f.label)).toEqual(['1','2']);
+  expect(flags[0].point).not.toEqual(flags[1].point);
+ });
+ it('still marks a single-fix activity at its start',()=>{
+  const base=day().activities[0],single={...base,id:'s',routes:[],roads:[]};
+  const composed={activities:[single],markers:[{n:1,activityID:'s',title:'1. s',point:single.start}]};
+  expect(personFlags(composed,[],null)[0].point).toEqual(single.start);
+ });
 });

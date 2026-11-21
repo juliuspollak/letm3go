@@ -5539,8 +5539,6 @@ let edgeOffset=ActivityFlagPlacement.offset(size:flagSize,at:CGPoint(x:195,y:35)
 check(35+edgeOffset.y-flagSize.height/2>80, "near the top edge flags sit below the avatar instead of outside the map")
 print("Final native assertion count including avatar/flag collision placement: \(assertions)")
 
-check(ActivityFlagVisibility.required(clustered:true), "MapKit activity clusters cannot be culled by the avatar")
-check(!ActivityFlagVisibility.required(clustered:false), "source activity flags remain eligible for native clustering")
 let stableFlag=ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds)
 check(ActivityFlagPlacement.offset(size:flagSize,at:homePoint,people:[avatarBounds],bounds:mapBounds,previous:stableFlag) == stableFlag, "unchanged camera/avatar input keeps the same label offset")
 let nearEdgePoint=CGPoint(x:130,y:240)

@@ -464,7 +464,18 @@ function PrivateApp(){
  useEffect(()=>()=>{clearPersonDays(session.user.id);forgetLiveRoads();forgetAutoShareFailures();},[session.user.id]);
  const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
- const onMapCamera=useCallback(event=>dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command}),[]);
+ // Pressing someone's bubble on the all-people map follows them; it now also shows only that person
+ // (the same choice as the person bar), so their day replaces everyone else's pins and routes.
+ const everyoneRef=useRef(everyone);useEffect(()=>{everyoneRef.current=everyone;},[everyone]);
+ const onMapCamera=useCallback(event=>{
+  dispatchCamera({type:'native',mode:event.mode,personId:event.personId,command:event.command});
+  if(event.mode!=='person'||!event.personId)return;
+  const id=event.personId==='self'?session.user.id:String(event.personId);
+  const person=id===session.user.id?{userId:id,name:'You'}:everyoneRef.current.find(p=>p.userId===id);
+  if(!person)return;
+  setMapPersonSel(previous=>previous?.userId===person.userId?previous:{userId:person.userId,name:person.name});
+  setMapPanel(open=>open==='filters'?null:open);
+ },[session.user.id]);
  useEffect(()=>{
   const opened=event=>{const invite=event.detail;if(!invite||!['friend','household'].includes(invite.kind))return;setPendingInvitation(invite);setSocialSection(invite.kind==='household'?'household':'friends');setTab('Social');};
   window.addEventListener('letm3go:invitation-opened',opened);

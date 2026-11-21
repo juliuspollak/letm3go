@@ -38,7 +38,10 @@ export function dateLabel(date,today){
  if(!day)return 'All dates';
  if(day===today)return 'Today';
  if(day===shiftMapDay(today,-1))return 'Yesterday';
- return new Date(day+'T12:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'});
+ // Any other day names its weekday first, as the Home page does ("Thu 19 Nov"); the year only when it is not this one.
+ const shown=new Date(day+'T12:00:00');
+ const sameYear=shown.getFullYear()===new Date(today+'T12:00:00').getFullYear();
+ return shown.toLocaleDateString('en-AU',sameYear?{weekday:'short',day:'numeric',month:'short'}:{weekday:'short',day:'numeric',month:'short',year:'numeric'});
 }
 
 // Sort is a preference, not a filter: it never hides an activity.

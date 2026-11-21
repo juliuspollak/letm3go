@@ -60,11 +60,51 @@ export function boundedPersonLines(lines,limit=750,vertices=120000){
  const points=Math.min(1500,Math.floor(vertices/Math.max(1,chosen.length)));
  return chosen.map(line=>thinLine(line,points));
 }
+// Where along a line its number sits. The number goes ON the activity's own line, away from the
+// shared start (home, a car park) where every trip begins, and the spot is chosen per activity so
+// two trips over the same road do not put their numbers on top of each other.
+const ANCHOR_FRACTIONS=[.5,.4,.6,.3,.7,.2,.8];
+const ANCHOR_CROWDED_METRES=120;
+// Street-scale flat distance: placing a number needs metres, not haversine accuracy, and runs for every activity.
+const flat=(a,b)=>{const dy=(a[0]-b[0])*111320,dx=(a[1]-b[1])*111320*Math.cos((a[0]+b[0])*Math.PI/360);return Math.hypot(dx,dy);};
+function pointAtFraction(line,cumulative,fraction){
+ const target=cumulative.at(-1)*fraction;
+ let i=1;while(i<cumulative.length-1&&cumulative[i]<target)i++;
+ const span=cumulative[i]-cumulative[i-1],t=span>0?(target-cumulative[i-1])/span:0;
+ return [line[i-1][0]+(line[i][0]-line[i-1][0])*t,line[i-1][1]+(line[i][1]-line[i-1][1])*t];
+}
+export function badgeAnchors(lines,placed=[]){
+ // The longest drawn line stands for the activity.
+ let best=null,bestLength=0;
+ for(const line of lines){
+  const cumulative=[0];
+  for(let i=1;i<line.length;i++)cumulative.push(cumulative[i-1]+flat(line[i-1],line[i]));
+  if(cumulative.at(-1)>bestLength){bestLength=cumulative.at(-1);best={line,cumulative};}
+ }
+ if(!best||bestLength<=0)return null;
+ let choice=null,choiceGap=-1;
+ for(const fraction of ANCHOR_FRACTIONS){
+  const point=pointAtFraction(best.line,best.cumulative,fraction);
+  let gap=Infinity;
+  for(const other of placed)gap=Math.min(gap,flat(point,other));
+  // The first spot that is clear of every earlier number wins; otherwise the clearest one.
+  if(gap>=ANCHOR_CROWDED_METRES){choice=point;break;}
+  if(gap>choiceGap){choiceGap=gap;choice=point;}
+ }
+ return choice;
+}
 export function personFlags(day,routes,selected){
  const visible=new Set(routes.map(r=>r.activityID));
  // A real single-fix start still deserves a flag even though it cannot draw a line.
  for(const a of displayActivities(day,selected))if(!a.routes.some(r=>r.length>1)&&!a.roads.some(r=>r.line.length>1))visible.add(a.id);
- return day.markers.filter(m=>visible.has(m.activityID)).map(m=>({id:'step:'+m.activityID,kind:'step',point:m.point,title:m.title,label:String(m.n),activityID:m.activityID,selected:m.activityID===selected}));
+ const linesOf=new Map();
+ for(const r of routes){if(!linesOf.has(r.activityID))linesOf.set(r.activityID,[]);linesOf.get(r.activityID).push(r.points);}
+ const placed=[];
+ return day.markers.filter(m=>visible.has(m.activityID)).map(m=>{
+  const anchor=linesOf.has(m.activityID)?badgeAnchors(linesOf.get(m.activityID),placed):null;
+  if(anchor)placed.push(anchor);
+  return {id:'step:'+m.activityID,kind:'step',point:anchor||m.point,title:m.title,label:String(m.n),activityID:m.activityID,selected:m.activityID===selected};
+ });
 }
 // Observed distance only: never connect GPS gaps, redacted stretches or activities.
 // A day can contain only part of a drive, so this is labelled "recorded", not a total.

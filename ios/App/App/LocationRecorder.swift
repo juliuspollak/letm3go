@@ -76,7 +76,24 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Native journey changes are pushed to the WebView so History updates without
     // polling or relaunching. Set by the Capacitor plugin.
     var journeyChangeHandler: (() -> Void)?
-    func notifyJourneyChange() { journeyChangeHandler?(); WatchSessionManager.shared.noteRecorderChanged(); WatchSessionManager.shared.noteHistoryChanged() }
+    // True once init has returned. While the shared recorder is still being created, the Watch manager must not be
+    // told about a change: it reads `LocationRecorder.shared`, which waits for this very initialisation to finish and
+    // traps (dispatch_once re-entered). Restoring a journey whose window ended while the app was closed used to do that
+    // on a cold launch, crashing it. The change is announced right after init instead.
+    var initialisationComplete = false
+    private var journeyChangeDeferred = false
+    func notifyJourneyChange() {
+        journeyChangeHandler?()
+        guard initialisationComplete else { journeyChangeDeferred = true; return }
+        WatchSessionManager.shared.noteRecorderChanged(); WatchSessionManager.shared.noteHistoryChanged()
+    }
+    func announceDeferredJourneyChange() {
+        initialisationComplete = true
+        guard journeyChangeDeferred else { return }
+        journeyChangeDeferred = false
+        // After the shared instance exists, on the next turn of the main queue.
+        DispatchQueue.main.async { [weak self] in self?.notifyJourneyChange() }
+    }
     var movementTransition = MovementTransition()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
@@ -684,6 +701,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
 
     override init() {
         super.init()
+        // Whatever way init exits, the Watch is told about changes made while it ran (see notifyJourneyChange).
+        defer { announceDeferredJourneyChange() }
         manager.delegate = self
         refreshLocationServicesAvailable()
         foregroundLocationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.noteExecution("foreground");self?.recordDiagnostic("lifecycle","App became active");self?.refreshLocationServicesAvailable();self?.refreshAutomaticMonitoring();self?.recoverStalledAutomaticGPS();self?.finishExpiredContinuation(now:Date().timeIntervalSince1970);self?.noteForegroundReturn(now:Date().timeIntervalSince1970) }

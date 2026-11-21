@@ -5,13 +5,20 @@ export function automaticTitle(trip){
  if(['manual','watch'].includes(trip.recordingMode)&&new RegExp(`^${trip.activity} · \\d{1,2} [A-Za-z]{3} \\d{4} at \\d{1,2}:\\d{2}\\s*[ap]m$`).test(trip.title||''))return true;
  return trip.recordingMode==='automatic'&&(trip.title==='Automatically detected journey'||/ · Automatically detected$/.test(trip.title)||trip.title===trip.activity);
 }
+const DATED=String.raw` · (?:\d{1,2} [A-Za-z]{3} \d{4}|[A-Za-z]{3} \d{1,2}, \d{4}) at \d{1,2}:\d{2}\s*[ap]m$`;
+const escape=text=>String(text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+function generatedDatedTitle(trip){
+ const title=trip.title||'';
+ return [trip.activity,activityCode(trip.activity),activityLabel(trip.activity)].filter(Boolean).some(name=>new RegExp('^'+escape(name)+DATED,'i').test(title));
+}
 export function activityTitle(trip){
  if(trip.recordingMode==='automatic'&&automaticTitle(trip))return trip.activity==='Unknown'?'Journey':activityLabel(trip.activity);
- // Default iPhone/Watch titles include a date after the separator. This is a
- // display projection; personal titles and stored titles are never rewritten.
  const code=activityCode(trip.activity);
- if(code==='MTB'&&/^MTB · \d/.test(trip.title||''))return trip.title.replace(/^MTB/,activityLabel(code));
- if(code==='Gym'&&automaticTitle(trip))return trip.title.replace(/^Gym/,activityLabel(code));
+ // A phone or Watch recording is titled "<activity> · <date> at <time>" when it starts. The date and time already
+ // sit under the title, so lists and details show just the activity ("Rope skipping"). Only that generated form:
+ // an edited or personal title is shown as written. This is a display projection; stored titles are never rewritten.
+ if(['manual','watch'].includes(trip.recordingMode)&&!trip.details?.titleEdited&&!trip.details?.userCorrected&&!trip.corrected&&generatedDatedTitle(trip))return activityLabel(code);
+ if(code==='MTB'&&!trip.details?.titleEdited&&!trip.details?.userCorrected&&!trip.corrected&&/^MTB · \d/.test(trip.title||''))return trip.title.replace(/^MTB/,activityLabel(code));
  return trip.title;
 }
 
