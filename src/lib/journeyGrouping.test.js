@@ -62,3 +62,16 @@ it('refuses a 61st hidden tag without discarding an earlier user decision',()=>{
  expect(meta).toEqual(before);
 });
 
+it('titles a drive that ends at Home as driving home, not after a park beside Home',()=>{
+ const shop=p(-34.4,150.88),home=p(-34.42,150.9);
+ const t=drive('home-drive',shop,home,10000,540);
+ // The car sat beside Morley Park (dwell evidence) right where Home is.
+ t.points=[{...shop,timestamp:10000},{...home,timestamp:10300},{...home,timestamp:10420},{...home,timestamp:10540}];
+ t.visibleRouteStart=0;t.visibleRouteEnd=3;t.title='Automatically detected journey';
+ const meta=emptyGrouping(owner);
+ meta.places[placeKey(home)]={candidates:[{name:'Morley Park',placeID:'apple:morley',category:'park',latitude:home.latitude+.0004,longitude:home.longitude}],nearbyName:'Morley Park'};
+ const places=[{id:'home',name:'Home',kind:'home',latitude:home.latitude,longitude:home.longitude,radius:150}];
+ const [journey]=buildJourneys([t],{owner,metadata:meta,vehicles,places}).journeys;
+ expect(journey.generatedTitle).not.toMatch(/Morley Park/);
+ expect(journey.generatedTitle).toBe('Driving home');
+});
