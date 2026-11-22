@@ -775,6 +775,7 @@ final class RecordingStorage {
     // retried using the digest of the exact draft, never a newer activity.
     func retainUnconfirmedWalk(_ trip: RecordedActivity, preserveSourcePoints: Bool = true) throws {
         guard UUID(uuidString:trip.id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
+        lastEvictions = []
         let activeName = "\(trip.id).json"
         let retainedName = "\(trip.id).unconfirmed-walk"
         var evidence = trip
@@ -794,7 +795,18 @@ final class RecordingStorage {
         }
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedName).path) {
             let saved = try decoder.decode(RecordedActivity.self,from:readData(name:retainedName))
-            guard saved.points == evidence.points else { throw CocoaError(.fileWriteFileExists) }
+            if saved.points != evidence.points {
+                // A retry can carry more fixes than the first write. Merge, never
+                // throw: a permanent failure here would wedge finishing the journey.
+                let known = Set(evidence.points.map(\.timestamp))
+                evidence.points.append(contentsOf:saved.points.filter { !known.contains($0.timestamp) })
+                evidence.points.sort { $0.timestamp < $1.timestamp }
+                evidence.distanceMeters = evidence.measuredDistance
+                try writeData(encoder.encode(evidence),name:retainedName)
+                try removeRetainedSource(evidence)
+                lastEvictions = (try? pruneUnconfirmedWalks(protecting:retainedName)) ?? []
+                return
+            }
             if evidence.retainedSourceDigest == nil || evidence.retainedSourceDigest == saved.retainedSourceDigest {
                 try removeRetainedSource(saved)
                 return
@@ -816,8 +828,9 @@ final class RecordingStorage {
         for url in try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)
             where url.pathExtension == "unconfirmed-walk" {
             // Older evidence and test fixtures may not have a cleanup marker.
-            let bytes = try readData(name:url.lastPathComponent)
-            guard let evidence = try? decoder.decode(RecordedActivity.self,from:bytes) else { continue }
+            // One unreadable evidence file must not break loading or pruning.
+            guard let bytes = try? readData(name:url.lastPathComponent),
+                  let evidence = try? decoder.decode(RecordedActivity.self,from:bytes) else { continue }
             try removeRetainedSource(evidence)
         }
     }

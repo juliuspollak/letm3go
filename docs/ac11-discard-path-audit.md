@@ -28,3 +28,7 @@ Fixes are saved once per location delivery, and immediately on settle/finish/spl
 
 ## Not built
 A "Recovered / Unclassified Activities" view (recommendation only).
+
+## Review notes (966067c and later)
+Fixed: a retry carrying more fixes merges into existing evidence instead of throwing; one corrupt evidence file no longer breaks load/prune; stale eviction diagnostics are cleared per retain.
+Open by design, no data loss: quotas are suspended while a legacy `local-walks.data` migration is unfinished (storage can grow until it succeeds); retaining an unconfirmed clipped trip may duplicate fixes also held in a tail file; `reconcileRetainedSources` decodes all evidence on load (startup cost, bounded by 12 MB).

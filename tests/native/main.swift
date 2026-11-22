@@ -5989,6 +5989,22 @@ do {
     check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedFile).path),"unconfirmed route expires within the retention budget")
 }
 
+// AC11 review: a retry with more fixes merges instead of throwing; a corrupt evidence file never breaks load.
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:directory) }
+    let storage = try! RecordingStorage(directory:directory,encryptionKey:Data(repeating:7,count:32))
+    let pts = walkPath([(0,0),(60,0),(120,0),(180,0)],start:1000)
+    var first = RecordedActivity(activity:"Unknown",startedAt:1000,resumedAt:1000,title:"Journey"); first.points = Array(pts.prefix(2))
+    try! storage.retainUnconfirmedWalk(first)
+    var more = first; more.points = pts
+    try! storage.retainUnconfirmedWalk(more)
+    let saved = try! JSONDecoder().decode(RecordedActivity.self,from:storage.readData(name:"\(first.id).unconfirmed-walk"))
+    check(saved.points.count == pts.count,"a retry with more fixes merges all of them")
+    try! Data("not encrypted".utf8).write(to:directory.appendingPathComponent("\(UUID().uuidString).unconfirmed-walk"))
+    check((try? storage.load()) != nil && (try? storage.pruneUnconfirmedWalks()) != nil,"a corrupt evidence file never breaks load or prune")
+}
+
 // AC11: legacy ledger migration, unreadable ledger, and failed persistence.
 do {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
