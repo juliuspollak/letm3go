@@ -1340,7 +1340,8 @@ struct JourneyContinuation {
     // keeps the journey open long enough to absorb a continuation.
     static let savedPlaceWindow: Double = 10*60
     static let vehiclePauseWindow: Double = 20*60
-    static let onFootPauseWindow: Double = 15*60
+    // A walker stops for a coffee, a bench, a view, and carries on: the walk waits two hours for them.
+    static let onFootPauseWindow: Double = 2*3600
     static let fallbackWindow: Double = 15*60
     static func window(for stop: StopContext) -> Double {
         if stop.placeKind != nil { return savedPlaceWindow }
@@ -2592,6 +2593,8 @@ struct DwellArea: Codable, Equatable {
     var longitude: Double
     var radius: Double
     var since: Double
+    // The 100 m circle round Home inside which walking is not an activity (see LocalWalk.homeZone). Leaving it is the departure.
+    var zone: Bool? = nil
     static let minimumRadius: Double = 50
     static let maximumRadius: Double = 250
     static let savedMaximumRadius: Double = 400
@@ -2621,6 +2624,7 @@ struct DwellArea: Codable, Equatable {
     // may be a venue of unknown size (a school, a shopping centre), so walking
     // across it must not count as leaving it.
     var departureMargin: Double {
+        if zone == true { return 0 }
         switch source {
         case .saved: return max(100, radius * 0.5)
         case .visit: return max(200, radius)
@@ -2677,6 +2681,47 @@ struct DwellInference {
 // Milling around a house, a school or a shopping centre is slow, stop-start and
 // stays inside the area, so it never qualifies. Until one of these is met the
 // walk is pending; when it ends without one, it was local movement.
+// Walking around the place you arrived at is not recorded as a journey, and each stretch used to be thrown away the moment it
+// ended. A walk that was cut into several stretches (GPS going quiet, a stop for a coffee) was then lost piece by piece: every
+// piece was too short to count, and the place grew to cover the next one. The pieces are kept here instead. When the ones near
+// each other add up to a real walk, they become one Walking activity; the rest are dropped after a while, as before.
+struct LocalWalkLedger: Codable, Equatable {
+    struct Piece: Codable, Equatable { var points: [GPSPoint]; var endedAt: Double }
+    static let maximumAge: Double = 2 * 3600
+    static let maximumPieces = 12
+    static let maximumPointsPerPiece = 1500
+    // Pieces count together only if they began this close to each other.
+    static let neighbourhood: Double = 450
+    static let minimumPath: Double = 400
+    static let minimumSeconds: Double = 15 * 60
+    var pieces: [Piece] = []
+    mutating func add(_ points: [GPSPoint], now: Double) {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }.sorted { $0.timestamp < $1.timestamp }
+        pieces.removeAll { now - $0.endedAt > Self.maximumAge }
+        guard usable.count >= 3, let last = usable.last else { return }
+        pieces.append(Piece(points: Array(usable.suffix(Self.maximumPointsPerPiece)), endedAt: last.timestamp))
+        if pieces.count > Self.maximumPieces { pieces.removeFirst(pieces.count - Self.maximumPieces) }
+    }
+    // Every point of the pieces that together make a walk, in time order, or nil when they do not.
+    func combinedWalk(now: Double) -> [GPSPoint]? {
+        let recent = pieces.filter { now - $0.endedAt <= Self.maximumAge }
+        guard recent.count >= 2, let anchor = recent.last?.points.first else { return nil }
+        let near = recent.filter { piece in piece.points.first.map { anchor.distance(to: $0) <= Self.neighbourhood } ?? false }
+        guard near.count >= 2 else { return nil }
+        var path = 0.0, seconds = 0.0
+        for piece in near {
+            path += LocalWalk.pathLength(piece.points)
+            if let first = piece.points.first, let last = piece.points.last { seconds += max(0, last.timestamp - first.timestamp) }
+        }
+        guard path >= Self.minimumPath, seconds >= Self.minimumSeconds else { return nil }
+        let all = near.flatMap { $0.points }.sorted { $0.timestamp < $1.timestamp }
+        // Outdoors only: stretches of indoor milling never add up to a walk.
+        guard LocalWalk.outdoorFraction(all) >= LocalWalk.outdoorFraction else { return nil }
+        return all
+    }
+    mutating func clear() { pieces = [] }
+}
+
 enum LocalWalk {
     enum Verdict: Equatable { case pending, genuine(String), local(String) }
     struct Metrics: Equatable {
@@ -2772,6 +2817,71 @@ enum LocalWalk {
                           accurateFraction: Double(leg.filter { $0.accuracy <= legAccuracy }.count) / Double(leg.count),
                           endReach: area.reach(last))
     }
+    // Walking outdoors for a good while is a walk wherever it started. What separates it from milling round a shop or a school is that
+    // outdoor fixes are accurate, and the walk covers real ground (path and extent) over a good while. How much of the time was spent
+    // standing is deliberately not judged: a stroll with stops looks exactly like that.
+    // Where walking is not an activity, and what is: the person's rules, in one place.
+    //  * Round Home (100 m) walking is ignored; once the walk leaves the circle it is recorded from where it began.
+    //  * Anywhere else a walk outdoors is recorded at once. Outdoors means accurate GPS: indoors (a shopping centre) fixes are poor.
+    //  * A walk that never covered much ground is not worth an activity.
+    static let homeZoneRadius: Double = 100
+    static let indoorAccuracy: Double = 30
+    static let outdoorShare: Double = 0.6
+    static let trivialWalkMeters: Double = 150
+    static func homeZone(_ area: DwellArea?) -> DwellArea? {
+        guard var zone = area, zone.source == .saved, zone.placeKind == "home" else { return nil }
+        zone.radius = min(zone.radius, homeZoneRadius)
+        zone.zone = true
+        return zone
+    }
+    static func walkingOutdoors(_ points: [GPSPoint]) -> Bool {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
+        guard !usable.isEmpty else { return false }
+        return Double(usable.filter { $0.accuracy <= indoorAccuracy }.count) / Double(usable.count) >= outdoorShare
+    }
+    static let outdoorSeconds: Double = 8 * 60
+    static let outdoorPath: Double = 300
+    static let outdoorAccuracy: Double = 20
+    static let outdoorFraction: Double = 0.75
+    // Time spent motionless for two minutes or more (inside a shop, on a bench), as a share of the whole stretch. A stroll stops for
+    // seconds; a shopping visit stops for minutes.
+    static let outdoorMaximumStill: Double = 0.35
+    static func stillFraction(_ points: [GPSPoint]) -> Double {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
+        guard let first = usable.first, let last = usable.last, last.timestamp > first.timestamp else { return 0 }
+        var still = 0.0
+        var start = 0
+        for index in 1..<max(1, usable.count) {
+            let anchor = usable[start]
+            if anchor.distance(to: usable[index]) <= max(20, anchor.accuracy + usable[index].accuracy) { continue }
+            let held = usable[index - 1].timestamp - anchor.timestamp
+            if held >= 120 { still += held }
+            start = index
+        }
+        if let tail = usable.last, tail.timestamp - usable[start].timestamp >= 120 { still += tail.timestamp - usable[start].timestamp }
+        return still / (last.timestamp - first.timestamp)
+    }
+
+    static func outdoorFraction(_ points: [GPSPoint]) -> Double {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
+        guard !usable.isEmpty else { return 0 }
+        return Double(usable.filter { $0.accuracy <= outdoorAccuracy }.count) / Double(usable.count)
+    }
+    // The distance actually walked: measured between anchors that move by more than both fixes' uncertainty (and at least 15 m),
+    // so jitter adds nothing. The same measure `metrics` uses, without needing the place.
+    static func pathLength(_ points: [GPSPoint]) -> Double {
+        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
+        var path = 0.0
+        var anchor = usable.first
+        for point in usable.dropFirst() {
+            guard let from = anchor, point.timestamp > from.timestamp else { continue }
+            let step = from.distance(to: point)
+            guard step >= max(15, from.accuracy + point.accuracy) else { continue }
+            path += step
+            anchor = point
+        }
+        return path
+    }
     static func steadyDeparture(_ leg: OutwardLeg, from area: DwellArea) -> Bool {
         leg.endReach >= area.radius + legEndMargin && leg.path >= legMinimumPath &&
         leg.net >= leg.path * legStraightness && leg.accurateFraction >= legMinimumAccurate &&
@@ -2790,6 +2900,11 @@ enum LocalWalk {
             if m.path >= walkPath && m.duration >= walkSeconds && m.movingSpeed >= walkSpeed {
                 return .genuine("Sustained walk within the \(area.source.rawValue) area")
             }
+        }
+        // An outdoor walk of a good length, even if it never left the area: a stroll along the water from where you parked.
+        if m.duration >= outdoorSeconds, m.path >= outdoorPath, m.extent >= minimumLoopExtent,
+           outdoorFraction(points) >= outdoorFraction, stillFraction(points) <= outdoorMaximumStill {
+            return .genuine("Sustained outdoor walk within the \(area.source.rawValue) area")
         }
         guard ending else { return .pending }
         return .local("Local walking within the \(area.source.rawValue) area: \(Int(m.path)) m over \(Int(m.duration)) s, never beyond the area")

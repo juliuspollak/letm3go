@@ -96,6 +96,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     var movementTransition = MovementTransition()
     var departureBackfill = DepartureBackfill()
+    var localWalkLedger = LocalWalkLedger()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
     var locationMode: AutomaticLocationMode = .off

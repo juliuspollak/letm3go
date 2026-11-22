@@ -1900,6 +1900,7 @@ func walkPath(_ waypoints: [(Double,Double)], start: Double, speed: Double = 1.3
     return fixes
 }
 func isGenuine(_ verdict: LocalWalk.Verdict) -> Bool { if case .genuine = verdict { return true }; return false }
+func isPending(_ verdict: LocalWalk.Verdict) -> Bool { if case .pending = verdict { return true }; return false }
 func isLocal(_ verdict: LocalWalk.Verdict) -> Bool { if case .local = verdict { return true }; return false }
 let savedHome = DwellArea.saved(SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:50),now:0)
 let carPark = DwellArea.arrival(at:placeFix(0,0,0,speed:0))
@@ -5919,6 +5920,132 @@ do {
     check(ForgottenRecording.identifier(sessionID: "ABC", index: 0) == ForgottenRecording.identifier(sessionID: "abc", index: 0), "the session id spelling does not matter")
     let text = ForgottenRecording.message(activity: "Gym", state: "recording", startedAt: t0) { _ in "7:51 am" }
     check(text.title == "Still recording?" && text.body.contains("7:51 am") && text.body.contains("Open letm3go"), "the reminder says what, since when, and what to do")
+}
+
+
+// MARK: Local walking that adds up to a walk
+do {
+    // A walk along the water in three pieces, with the numbers from a real one: 263 m over 521 s, 209 m over 596 s, 490 m over 1046 s.
+    func stretch(startNorth: Double, east: Double, metres: Double, seconds: Double, from t0: Double) -> [GPSPoint] {
+        let count = Int(seconds / 10)
+        return (0...count).map { i in
+            let along = metres * Double(i) / Double(count)
+            return GPSPoint(latitude: -33 + (startNorth + along) / 111_320, longitude: 151 + east / 93_000, timestamp: t0 + Double(i) * 10, accuracy: 8, altitude: 0, speed: 0.6)
+        }
+    }
+    let t0 = 1_000_000.0
+    // A real stroll is stop-start: 30 s of walking, 30 s standing about, over and over.
+    func strollingStretch(metres: Double, seconds: Double, from t0: Double) -> [GPSPoint] {
+        let count = Int(seconds / 10)
+        let movingFixes = (0...count).filter { ($0 / 3) % 2 == 0 }.count
+        let perFix = metres / Double(max(1, movingFixes))
+        var along = 0.0
+        return (0...count).map { i in
+            if (i / 3) % 2 == 0 { along += perFix }
+            return GPSPoint(latitude: -33 + along / 111_320, longitude: 151, timestamp: t0 + Double(i) * 10, accuracy: 8, altitude: 0, speed: ((i / 3) % 2 == 0) ? 1.0 : 0.1)
+        }
+    }
+    let a = stretch(startNorth: 0, east: 0, metres: 263, seconds: 521, from: t0)
+    let b = stretch(startNorth: 40, east: 30, metres: 209, seconds: 596, from: t0 + 700)
+    let c = strollingStretch(metres: 490, seconds: 1046, from: t0 + 1500)
+    check(LocalWalk.pathLength(a) > 200 && LocalWalk.pathLength(a) <= 270, "path length follows the walked distance")
+    var ledger = LocalWalkLedger()
+    ledger.add(a, now: t0 + 600)
+    check(ledger.combinedWalk(now: t0 + 600) == nil, "one stretch alone is still local walking")
+    ledger.add(b, now: t0 + 1400)
+    let early = ledger.combinedWalk(now: t0 + 1400)
+    check(early != nil && early!.count == a.count + b.count, "two outdoor stretches (472 m over 18 min) already add up to a walk")
+    ledger.add(c, now: t0 + 2600)
+    let walk = ledger.combinedWalk(now: t0 + 2600)
+    check(walk != nil, "the three stretches together (about 960 m over 36 min) are a walk")
+    check(walk.map { $0.count == a.count + b.count + c.count } ?? false, "every fix of every stretch is in it")
+    // The same stretches with poor, indoor-quality fixes never add up.
+    var indoor = LocalWalkLedger()
+    for (i, piece) in [a, b, c].enumerated() { indoor.add(piece.map { var q = $0; q.accuracy = 45; return q }, now: t0 + 600 + Double(i) * 800) }
+    check(indoor.combinedWalk(now: t0 + 2600) == nil, "stretches of indoor-quality fixes never add up to a walk")
+    // The place you arrived at, as the recorder grows it: about 200 m across.
+    func bigArea(_ p: GPSPoint) -> DwellArea { DwellArea(source: .arrival, placeKind: nil, latitude: p.latitude, longitude: p.longitude, radius: 200, since: p.timestamp) }
+    // One long outdoor stretch is a walk by itself, even inside the area you arrived at.
+    let area = bigArea(c.first!)
+    if case .genuine = LocalWalk.assess(c, from: area, ending: true) { check(true, "17 minutes of outdoor walking from where you parked is a walk") } else { check(false, "17 minutes of outdoor walking from where you parked is a walk") }
+    if case .local = LocalWalk.assess(a, from: bigArea(a.first!), ending: true) { check(true, "a short stretch (263 m, 8.7 min) alone is still local walking") } else { check(false, "a short stretch (263 m, 8.7 min) alone is still local walking") }
+    if case .local = LocalWalk.assess(c.map { var q = $0; q.accuracy = 45; return q }, from: bigArea(c.first!), ending: true) { check(true, "the same 17 minutes with indoor-quality fixes is local milling") } else { check(false, "the same 17 minutes with indoor-quality fixes is local milling") }
+    let slow = stretch(startNorth: 0, east: 0, metres: 120, seconds: 1200, from: t0)
+    if case .local = LocalWalk.assess(slow, from: bigArea(slow.first!), ending: true) { check(true, "20 minutes of milling that covers 120 m of ground is local walking") } else { check(false, "20 minutes of milling that covers 120 m of ground is local walking") }
+    check(walk.map { zip($0, $0.dropFirst()).allSatisfy { $0.timestamp <= $1.timestamp } } ?? false, "in time order")
+    check(ledger.pieces.count == 3, "the pieces are kept until something uses them")
+    ledger.clear()
+    check(ledger.pieces.isEmpty && ledger.combinedWalk(now: t0 + 2600) == nil, "clearing empties it")
+
+    // Stretches near each other only: a walk elsewhere, an hour later and a kilometre away, never joins in.
+    var spread = LocalWalkLedger()
+    spread.add(a, now: t0 + 600)
+    let farA = stretch(startNorth: 3000, east: 3000, metres: 250, seconds: 500, from: t0 + 800)
+    let farB = stretch(startNorth: 3000, east: 3000, metres: 100, seconds: 300, from: t0 + 2000)
+    spread.add(farA, now: t0 + 1400)
+    spread.add(farB, now: t0 + 2400)
+    check(spread.combinedWalk(now: t0 + 2400) == nil, "pieces that began far from the latest one are not counted with it (and the two near ones alone are too little)")
+    let farC = stretch(startNorth: 3000, east: 3000, metres: 300, seconds: 600, from: t0 + 2600)
+    spread.add(farC, now: t0 + 3300)
+    let farWalk = spread.combinedWalk(now: t0 + 3300)
+    check(farWalk != nil && farWalk!.count == farA.count + farB.count + farC.count, "once the latest three add up they make a walk, without the stretch a kilometre away")
+
+    var old = LocalWalkLedger()
+    old.add(a, now: t0 + 600)
+    old.add(b, now: t0 + 1400)
+    old.add(c, now: t0 + 1400 + LocalWalkLedger.maximumAge + 100)
+    check(old.pieces.count == 1 && old.combinedWalk(now: t0 + 1400 + LocalWalkLedger.maximumAge + 100) == nil, "pieces older than two hours are dropped when the next one arrives")
+
+    var junk = LocalWalkLedger()
+    junk.add([GPSPoint(latitude: -33, longitude: 151, timestamp: t0, accuracy: 8, altitude: 0, speed: 0)], now: t0)
+    junk.add(a.map { var p = $0; p.accuracy = 120; return p }, now: t0)
+    check(junk.pieces.isEmpty, "a stretch with fewer than three usable fixes is not kept")
+
+    var many = LocalWalkLedger()
+    for i in 0..<40 { many.add(stretch(startNorth: 0, east: 0, metres: 30, seconds: 120, from: t0 + Double(i) * 200), now: t0 + Double(i) * 200 + 130) }
+    check(many.pieces.count <= LocalWalkLedger.maximumPieces, "the ledger is bounded")
+    let encoded = try! JSONEncoder().encode(ledger)
+    check((try? JSONDecoder().decode(LocalWalkLedger.self, from: encoded)) == ledger, "it survives being saved and loaded")
+    var shop = LocalWalkLedger()
+    shop.add(stretch(startNorth: 0, east: 0, metres: 150, seconds: 400, from: t0), now: t0 + 420)
+    shop.add(stretch(startNorth: 20, east: 10, metres: 150, seconds: 400, from: t0 + 900), now: t0 + 1320)
+    check(shop.combinedWalk(now: t0 + 1320) == nil, "two short wanders round a shop never turn into a walk")
+}
+
+
+// MARK: Walking rules: Home circle, outdoors, indoors, stops
+do {
+    let home = DwellArea.saved(SavedPlace(id: "home", name: "Home", kind: "home", latitude: -33, longitude: 151, radius: 150), now: 0)
+    let zone = LocalWalk.homeZone(home)
+    check(zone != nil && zone!.radius == 100 && zone!.departureDistance == 100, "Home is a 100 m circle, and leaving it is the departure")
+    check(LocalWalk.homeZone(DwellArea.saved(SavedPlace(id: "w", name: "Gym", kind: "favourite", latitude: -33, longitude: 151, radius: 150), now: 0)) == nil, "another saved place does not hold a walk back")
+    check(LocalWalk.homeZone(DwellArea.arrival(at: placeFix(0, 0, 0, speed: 0))) == nil, "the place a car stopped at does not hold a walk back")
+    check(LocalWalk.homeZone(DwellArea.visit(latitude: -33, longitude: 151, accuracy: 50, at: 0)) == nil && LocalWalk.homeZone(nil) == nil, "neither does a visit or no place at all")
+    let smallHome = DwellArea.saved(SavedPlace(id: "home", name: "Home", kind: "home", latitude: -33, longitude: 151, radius: 60), now: 0)
+    check(LocalWalk.homeZone(smallHome)!.radius == 60, "a Home smaller than 100 m keeps its own size")
+
+    // Walking round the house is ignored; walking away from it is a walk that keeps its first fixes.
+    let around = walkPath([(0, 0), (40, 0), (40, 60), (0, 60), (0, 0), (60, 30)], start: 0, speed: 1.2, every: 5)
+    check(isLocal(LocalWalk.assess(around, from: zone!, ending: true)), "100 m round the house is not an activity")
+    let away = walkPath([(0, 0), (260, 0)], start: 0, speed: 1.3, every: 5)
+    check(isGenuine(LocalWalk.assess(away, from: zone!, ending: false)), "walking out of the circle is confirmed while it is happening")
+    check(away.first?.timestamp == 0, "and the walk keeps every fix from where it began")
+    check(isPending(LocalWalk.assess(away.filter { $0.latitude < -33 + 60 / 111_320 }, from: zone!, ending: false)), "still inside the circle it is only being watched")
+
+    // Outdoors means accurate fixes.
+    let open = (0..<10).map { placeFix(Double($0) * 8, 0, Double($0) * 6, speed: 1.3, accuracy: 6) }
+    let mall = (0..<10).map { placeFix(Double($0) * 8, 0, Double($0) * 6, speed: 1.0, accuracy: 55) }
+    check(LocalWalk.walkingOutdoors(open), "accurate fixes are a walk outdoors")
+    check(!LocalWalk.walkingOutdoors(mall), "poor fixes are a walk indoors, which is ignored")
+    check(LocalWalk.walkingOutdoors(Array(open.prefix(6)) + Array(mall.prefix(4))), "mostly accurate is still outdoors")
+    check(!LocalWalk.walkingOutdoors(Array(open.prefix(5)) + Array(mall.prefix(5))), "half poor is indoors")
+    check(!LocalWalk.walkingOutdoors([]), "no fixes is not outdoors")
+
+    // A stop of any ordinary length does not end a walk.
+    check(JourneyContinuation.window(for: StopContext(family: .onFoot)) == 2 * 3600, "a walker's stop is waited out for two hours")
+    check(JourneyContinuation.window(for: StopContext(family: .driving)) == JourneyContinuation.vehiclePauseWindow, "a driver's stop is unchanged")
+    check(JourneyContinuation.window(for: StopContext(family: .onFoot, placeKind: "home", placeName: "Home")) == JourneyContinuation.savedPlaceWindow, "arriving at Home still ends the walk")
+    check(LocalWalk.trivialWalkMeters == 150, "under 150 m of walking is not an activity")
 }
 
 print("Final native assertion count including automatic account recovery: \(assertions)")

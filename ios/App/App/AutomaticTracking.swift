@@ -696,7 +696,13 @@ extension LocationRecorder {
             }
             let event = detector.observe(sample,motion:motion,manualActive:false,now:observedAt,activity:automaticTrip?.activity ?? "Driving")
             do {
-                if event == "depart", let first = detector.candidate.first {
+                // Walking indoors (a shopping centre) is ignored: its fixes are poor. A vehicle, or walking in the open, is not.
+                if event == "depart", !LocalWalk.vehicleDeparture(detector.candidate,motion:motion,now:observedAt), !LocalWalk.walkingOutdoors(detector.candidate) {
+                    recordDiagnostic("detection","Walking indoors ignored",details:["fixes":String(detector.candidate.count)])
+                    trackingEvent("Walking indoors ignored")
+                    departureBackfill.clear()
+                    detector.reset()
+                } else if event == "depart", let first = detector.candidate.first {
                     // The movement just before the first candidate fix belongs to the journey too (see DepartureBackfill).
                     let lead = departureBackfill.lead(before:first)
                     let begin = lead.first ?? first
@@ -725,7 +731,8 @@ extension LocationRecorder {
                     // from History until it proves to be a journey. Vehicles are
                     // never held back.
                     let vehicle = LocalWalk.vehicleDeparture(detector.candidate,motion:motion,now:observedAt)
-                    if let area = dwell, !vehicle { trip.details?.localWalkOrigin = area }
+                    // Only Home holds a walk back (100 m); everywhere else an outdoor walk is a walk from its first fixes.
+                    if let zone = LocalWalk.homeZone(dwell), !vehicle { trip.details?.localWalkOrigin = zone }
                     let matchedWalking = trip.corroborateAutomaticWalk(recentAutomaticWalkingMotion)
                     try storage.save(trip); automaticTrip = trip
                     if matchedWalking { recordAutomaticWalkingMatch() }
@@ -861,7 +868,7 @@ extension LocationRecorder {
         ended.title = previousName
         let endedQuality = ended.routeQualitySummary()
         ended.updateDetails { $0.routeQuality = endedQuality }
-        guard var next = makeAutomaticJourney(family, from: confirmed) else { return }
+        guard var next = makeAutomaticJourney(family, from: confirmed) else { movementTransition.reset(); return }
         next.details?.trackingNotes = [
             "\(previousName) to \(next.activity) transition confirmed using sustained GPS, speed and motion evidence",
             "Movement change samples: \(confirmed.count)"
@@ -892,6 +899,8 @@ extension LocationRecorder {
     }
     func makeAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint]) -> RecordedActivity? {
         guard AutomaticActivityPolicy.allows(family), let first = points.first, let last = points.last, last.timestamp > first.timestamp else { return nil }
+        // Walking away from a parked car into a shopping centre: indoor-quality fixes never start a walk.
+        if family == .onFoot, !LocalWalk.walkingOutdoors(points) { return nil }
         let name = activityName(family, preserving: "")
         var trip = RecordedActivity(activity:name,startedAt:first.timestamp,resumedAt:first.timestamp,title:name)
         trip.recordingMode = "automatic"
@@ -906,7 +915,7 @@ extension LocationRecorder {
         for point in points { _ = trip.accept(point,now:point.timestamp) }
         // Walking away from a parked car is where a shopping trip or a school
         // visit begins: the walk is checked against the place the car stopped at.
-        if family == .onFoot { trip.details?.localWalkOrigin = dwell ?? DwellArea.arrival(at: first) }
+        if family == .onFoot, let zone = LocalWalk.homeZone(dwell) { trip.details?.localWalkOrigin = zone }
         return trip
     }
     func activityName(_ family: JourneyFamily, preserving current: String) -> String {
@@ -995,6 +1004,14 @@ extension LocationRecorder {
             case .pending:
                 break
             }
+        }
+        // A walk that never covered much ground (a few steps from the car to a shop door) is not an activity. It is kept with the
+        // other short stretches: near each other they can still add up to a walk.
+        if JourneyFamily.detected(trip) == .onFoot, trip.distanceMeters < LocalWalk.trivialWalkMeters, let start = trip.points.first {
+            try? storage.delete(trip.id)
+            automaticTrip = nil
+            absorbLocalWalk(trip, origin: dwell ?? DwellArea.arrival(at: start), reason: "Walk too short to record: \(Int(trip.distanceMeters)) m")
+            return
         }
         // Genuine movement is required before a journey is worth publishing.
         guard trip.points.count >= 2, trip.distanceMeters >= 25 else {
@@ -1128,16 +1145,67 @@ extension LocationRecorder {
         trackingEvent("Walk confirmed as a journey")
         notifyJourneyChange()
     }
+    // Publishes the kept stretches of local walking as one Walking activity when together they were a real walk.
+    @discardableResult
+    func promoteLocalWalks(now: Double) -> [GPSPoint]? {
+        guard let storage, let points = localWalkLedger.combinedWalk(now: now), let first = points.first, let last = points.last else { return nil }
+        var trip = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:first.timestamp,title:"Automatically detected journey")
+        trip.recordingMode = "automatic"; trip.details = ActivityDetails()
+        trip.timezone = TimeZone.current.identifier
+        #if targetEnvironment(simulator)
+        trip.source = "simulator"
+        #endif
+        for point in points { _ = trip.accept(point,now:point.timestamp) }
+        guard trip.points.count >= 5 else { return nil }
+        trip.distanceMeters = trip.measuredDistance
+        trip.applyPrediction(Classification(predicted:"Walking",confidence:"medium",evidence:["Walking stretches near one place added up to a walk"]),distance:max(1,trip.distanceMeters))
+        trip.updateDetails { $0.trackingNotes = ["Walk put together from \(localWalkLedger.pieces.count) shorter stretches of walking near the same place",
+            "Together: \(Int(LocalWalk.pathLength(points))) m of walking over \(Int((last.timestamp-first.timestamp)/60)) min"] }
+        trip.finish(at:last.timestamp)
+        trip.completeProvisional()
+        nameEndpoints(&trip)
+        let quality = trip.routeQualitySummary()
+        trip.updateDetails { $0.routeQuality = quality }
+        trip.updatedAt = Date().timeIntervalSince1970
+        do { try storage.save(trip) } catch { lastError = "Walk could not be saved: \(error.localizedDescription)"; return nil }
+        trips.insert(trip,at:0)
+        localWalkLedger.clear()
+        persistLocalWalkLedger()
+        notifyJourneyChange()
+        return points
+    }
+    func persistLocalWalkLedger() {
+        guard let storage else { return }
+        if let data = try? JSONEncoder().encode(localWalkLedger) { try? storage.writeData(data,name:"local-walks.data") }
+    }
+    func loadLocalWalkLedger() {
+        localWalkLedger = LocalWalkLedger()
+        guard let storage, FileManager.default.fileExists(atPath:storage.directory.appendingPathComponent("local-walks.data").path),
+              let data = try? storage.readData(name:"local-walks.data"),
+              let ledger = try? JSONDecoder().decode(LocalWalkLedger.self,from:data) else { return }
+        localWalkLedger = ledger
+    }
     // Local movement is not a journey. Its record (never published) is already
     // deleted by the caller; the place now covers the area it walked, within the cap.
     func absorbLocalWalk(_ trip: RecordedActivity, origin: DwellArea, reason: String) {
+        let now = Date().timeIntervalSince1970
+        // The stretch is kept, not thrown away: with the others near it, it may turn out to have been a walk.
+        localWalkLedger.add(trip.points, now: now)
+        persistLocalWalkLedger()
+        let metrics = LocalWalk.metrics(trip.points, from: origin)
+        lastPlaceDecision = reason
+        if let assembled = promoteLocalWalks(now: now) {
+            setDwell(nil,reason:"stretches of walking added up to a walk")
+            recordDiagnostic("detection","Walking assembled from shorter stretches",details:["pathMeters":String(Int(LocalWalk.pathLength(assembled))),
+                "fixes":String(assembled.count),"lastStretch":reason])
+            trackingEvent("Walk assembled from shorter stretches")
+        } else {
         var area = dwell ?? origin
         area.absorb(trip.points)
         setDwell(area,reason:"local walking absorbed")
-        let metrics = LocalWalk.metrics(trip.points, from: origin)
-        lastPlaceDecision = reason
         recordDiagnostic("place","Local walking not recorded",details:["reason":reason,"pathMeters":String(Int(metrics.path)),
-            "durationSeconds":String(Int(metrics.duration)),"savedFixes":String(trip.points.count)].merging(area.summary){a,_ in a})
+            "durationSeconds":String(Int(metrics.duration)),"savedFixes":String(trip.points.count),"keptForReview":"true"].merging(area.summary){a,_ in a})
+        }
         settleStateReset()
         detector.reset()
         movementTransition.reset()

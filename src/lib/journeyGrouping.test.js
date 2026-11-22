@@ -75,3 +75,25 @@ it('titles a drive that ends at Home as driving home, not after a park beside Ho
  expect(journey.generatedTitle).not.toMatch(/Morley Park/);
  expect(journey.generatedTitle).toBe('Driving home');
 });
+it('titles a drive that ends at Home as driving home when the person also saved a place right on top of Home',()=>{
+ // The real case: Home, and a favourite "MorleyPark" saved about ten metres away, so every drive home ended inside both.
+ const shop=p(-34.5725,150.8150),home=p(-34.546189,150.853836);
+ const t=drive('home-drive-2',shop,home,10000,600);
+ t.points=[{...shop,timestamp:10000},{...p(-34.56,150.84),timestamp:10200},...Array.from({length:10},(_,i)=>({...p(-34.54625+i*0.00001,150.85380+i*0.00001),timestamp:10400+i*20}))];
+ t.visibleRouteStart=0;t.visibleRouteEnd=11;t.title='Automatically detected journey';
+ const places=[{id:'home',name:'Home',kind:'home',latitude:home.latitude,longitude:home.longitude,radius:150},
+  {id:'morley',name:'MorleyPark',kind:'favourite',latitude:-34.546285,longitude:150.853784,radius:200}];
+ const [journey]=buildJourneys([t],{owner,metadata:emptyGrouping(owner),vehicles,places}).journeys;
+ expect(journey.generatedTitle).not.toMatch(/Morley/);
+ expect(journey.generatedTitle).toBe('Driving home');
+});
+it('still names a saved destination that is nowhere near Home',()=>{
+ const home=p(-34.546189,150.853836),gym=p(-34.5509,150.8601);
+ const t=drive('to-gym',home,gym,10000,300);
+ t.points=[{...home,timestamp:10000},{...p(-34.549,150.857),timestamp:10150},{...gym,timestamp:10300}];
+ t.visibleRouteStart=0;t.visibleRouteEnd=2;t.title='Automatically detected journey';
+ const places=[{id:'home',name:'Home',kind:'home',latitude:home.latitude,longitude:home.longitude,radius:150},
+  {id:'gym',name:'PlusFitness',kind:'favourite',latitude:gym.latitude,longitude:gym.longitude,radius:200}];
+ const [journey]=buildJourneys([t],{owner,metadata:emptyGrouping(owner),vehicles,places}).journeys;
+ expect(journey.generatedTitle).toMatch(/PlusFitness/);
+});

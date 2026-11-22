@@ -114,6 +114,7 @@ extension LocationRecorder {
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         loadHomeWiFi()
+        loadLocalWalkLedger()
         var records = try storage!.load()
         for index in records.indices where records[index].isFinalisedButUnmarked {
             records[index].repairFinalisedState()
