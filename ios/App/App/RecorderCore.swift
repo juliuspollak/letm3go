@@ -827,6 +827,9 @@ final class RecordingStorage {
     private func reconcileRetainedSources() throws {
         for url in try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)
             where url.pathExtension == "unconfirmed-walk" {
+            // Only evidence whose source is still on disk can need cleanup; skip
+            // decrypting and decoding the rest.
+            guard FileManager.default.fileExists(atPath:directory.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".json").path) else { continue }
             // Older evidence and test fixtures may not have a cleanup marker.
             // One unreadable evidence file must not break loading or pruning.
             guard let bytes = try? readData(name:url.lastPathComponent),
@@ -844,7 +847,7 @@ final class RecordingStorage {
         let fm = FileManager.default
         // An unfinished legacy batch still owns its originals. Apply quotas
         // only once every piece is durable and the source has been acknowledged.
-        guard !fm.fileExists(atPath:directory.appendingPathComponent("local-walks.data").path) else { return [] }
+        let migrating = fm.fileExists(atPath:directory.appendingPathComponent("local-walks.data").path)
         try reconcileRetainedSources()
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
         let files = try fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:Array(keys))
@@ -856,7 +859,12 @@ final class RecordingStorage {
         for (index,file) in files.enumerated() {
             bytes += file.values.fileSize ?? 0
             if file.url.lastPathComponent == protecting { continue }
-            let reason: String? = index >= 8 ? "more than 8 unconfirmed walks retained"
+            // While a legacy migration is unfinished its originals are still on disk,
+            // so only a generous hard cap applies; this keeps storage bounded even if
+            // the migration keeps failing.
+            let reason: String? = migrating
+                ? (index >= 32 || bytes > 48 * 1024 * 1024 ? "unconfirmed walks exceeded the migration hard cap" : nil)
+                : index >= 8 ? "more than 8 unconfirmed walks retained"
                 : bytes > 12 * 1024 * 1024 ? "unconfirmed walks exceeded 12 MB"
                 : now.timeIntervalSince(file.values.contentModificationDate ?? .distantPast) > 7 * 86_400 ? "unconfirmed walk older than 7 days" : nil
             if let reason { try fm.removeItem(at:file.url); evicted.append((file.url.lastPathComponent,reason)) }

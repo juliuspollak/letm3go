@@ -31,4 +31,5 @@ A "Recovered / Unclassified Activities" view (recommendation only).
 
 ## Review notes (966067c and later)
 Fixed: a retry carrying more fixes merges into existing evidence instead of throwing; one corrupt evidence file no longer breaks load/prune; stale eviction diagnostics are cleared per retain.
-Open by design, no data loss: quotas are suspended while a legacy `local-walks.data` migration is unfinished (storage can grow until it succeeds); retaining an unconfirmed clipped trip may duplicate fixes also held in a tail file; `reconcileRetainedSources` decodes all evidence on load (startup cost, bounded by 12 MB).
+Also fixed: quotas now apply during an unfinished legacy migration as a hard cap (32 files / 48 MB); evidence is decoded on load only when its source file still exists; `endSettledJourney` with a missing settled trip now resets state and continues; handoffs log a diagnostic and refresh place regions.
+Accepted, no data loss: retaining a clipped unconfirmed trip can duplicate fixes also held in a tail file (duplication, not loss); handoff trimming is the other session's deliberate design (fixes outside either route are kept as unassigned evidence).

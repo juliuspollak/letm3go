@@ -914,7 +914,10 @@ extension LocationRecorder {
             handoff.unassignedEvidence = evidence
         }
         pendingWalkingHandoff = handoff
+        recordDiagnostic("detection","Journey ended at a confirmed movement change",
+            details:["from":source.rawValue,"to":family.rawValue,"retainedAsEvidence":retained ? "yes" : "no"])
         try completeWalkingHandoff()
+        if automaticAvailable { configurePlaceRegions() }
     }
 
     func completeWalkingHandoff() throws {
@@ -1323,7 +1326,18 @@ extension LocationRecorder {
     }
     // A stopped activity uses the same durable journal as an active split.
     func endSettledJourney(_ reason: String, starting family: JourneyFamily) throws {
-        guard let id = settledTripID, let previous = trips.first(where: { $0.id == id }) else { return }
+        guard let id = settledTripID, let previous = trips.first(where: { $0.id == id }) else {
+            // Nothing to hand off: reset the settled state as finalising does, then
+            // carry on into the new journey instead of leaving stale state set.
+            let confirmed = movementTransition.candidates
+            try finalizeSettledAutomatic(reason:reason,trigger:"endSettledJourney",event:"sustained movement proved a different activity")
+            guard AutomaticActivityPolicy.allows(family) else { return }
+            if let next = makeAutomaticJourney(family,from:confirmed), let last = next.points.last, let storage {
+                try storage.save(next)
+                beginRecordingAutomaticJourney(next,at:last)
+            }
+            return
+        }
         let source = previous.isAutomaticWalk ? .onFoot : JourneyFamily.detected(previous)
         if AutomaticActivityPolicy.allows(family) || (source == .onFoot && family == .cycling) {
             try beginAutomaticHandoff(previous,from:source,to:family,confirmed:movementTransition.candidates)
