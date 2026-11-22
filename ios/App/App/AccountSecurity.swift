@@ -114,6 +114,8 @@ extension LocationRecorder {
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         loadHomeWiFi()
+        do { let moved = try storage!.migrateLegacyWalkLedger(); if moved > 0 { recordDiagnostic("recovery","Legacy walking stretches kept as evidence",details:["stretches":String(moved)]) } }
+        catch { recordDiagnostic("error","Legacy walking stretches could not be migrated",details:["error":error.localizedDescription]) }
         try? storage!.pruneUnconfirmedWalks()
         var records = try storage!.load()
         for index in records.indices where records[index].isFinalisedButUnmarked {

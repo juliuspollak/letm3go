@@ -5989,6 +5989,30 @@ do {
     check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedFile).path),"unconfirmed route expires within the retention budget")
 }
 
+// AC11: legacy ledger migration, unreadable ledger, and failed persistence.
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:directory.path); try? FileManager.default.removeItem(at:directory) }
+    let storage = try! RecordingStorage(directory:directory,encryptionKey:Data(repeating:7,count:32))
+    let pts = walkPath([(0,0),(60,0),(120,0)],start:1000)
+    struct Legacy: Codable { struct Piece: Codable { var points: [GPSPoint]; var endedAt: Double }; var pieces: [Piece] }
+    try! storage.writeData(JSONEncoder().encode(Legacy(pieces:[.init(points:pts,endedAt:pts.last!.timestamp)])),name:"local-walks.data")
+    check(try! storage.migrateLegacyWalkLedger() == 1,"legacy walking stretch migrated")
+    let files = try! FileManager.default.contentsOfDirectory(atPath:directory.path)
+    check(files.contains { $0.hasSuffix(".unconfirmed-walk") } && !files.contains("local-walks.data"),"legacy stretch kept as evidence, ledger removed")
+    try! storage.writeData(Data("junk".utf8),name:"local-walks.data")
+    check(try! storage.migrateLegacyWalkLedger() == 0 && !FileManager.default.fileExists(atPath:directory.appendingPathComponent("local-walks.data").path),"unreadable legacy ledger is set aside")
+    // Failed persistence must throw and leave already-retained evidence intact.
+    let before = try! FileManager.default.contentsOfDirectory(atPath:directory.path).filter { $0.hasSuffix(".unconfirmed-walk") }
+    try! FileManager.default.setAttributes([.posixPermissions:0o500],ofItemAtPath:directory.path)
+    var blocked = RecordedActivity(activity:"Unknown",startedAt:2000,resumedAt:2000,title:"Journey"); blocked.points = pts
+    var threw = false
+    do { try storage.retainUnconfirmedWalk(blocked) } catch { threw = true }
+    try! FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:directory.path)
+    let after = try! FileManager.default.contentsOfDirectory(atPath:directory.path).filter { $0.hasSuffix(".unconfirmed-walk") }
+    check(threw && Set(before).isSubset(of:Set(after)),"a failed write throws and existing evidence survives")
+}
+
 // A journal written before either activity is sufficient to recover a handoff.
 do {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

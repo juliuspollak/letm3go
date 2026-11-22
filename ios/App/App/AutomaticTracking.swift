@@ -1415,11 +1415,13 @@ extension LocationRecorder {
         // start can land inside it. A stop that is all manual time has no route left.
         if let manualStart, (trip.endedAt ?? trip.points.last?.timestamp ?? trip.startedAt) > manualStart {
             guard let kept = JourneySplit.kept(trip, before: manualStart) else {
-                try storage.delete(trip.id)
+                // Kept as unpublished evidence rather than destroyed: the manual
+                // recording owns this time in history, but the fixes are retained.
+                try retainWalkingEvidence(trip,reason:"stop lay entirely inside a manual recording")
                 trips.removeAll { $0.id == trip.id }
                 settleStateReset(); detector.reset(); movementTransition.reset(); cleanupContinuationRegion()
                 notifyJourneyChange()
-                trackingEvent("Stopped journey discarded: it was entirely inside a manual recording")
+                trackingEvent("Stopped journey not published: it was entirely inside a manual recording (fixes retained)")
                 return
             }
             trip = kept

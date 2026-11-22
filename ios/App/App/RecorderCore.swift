@@ -786,6 +786,34 @@ final class RecordingStorage {
         }
         return evicted
     }
+    // bbc97d7 kept short walking stretches in local-walks.data. Move any left on
+    // disk into unpublished evidence so they are not orphaned. The legacy file is
+    // removed only after every stretch has been retained.
+    private struct LegacyWalkLedger: Codable {
+        struct Piece: Codable { var points: [GPSPoint]; var endedAt: Double }
+        var pieces: [Piece]
+    }
+    @discardableResult
+    func migrateLegacyWalkLedger() throws -> Int {
+        let name = "local-walks.data"
+        guard FileManager.default.fileExists(atPath:directory.appendingPathComponent(name).path) else { return 0 }
+        guard let ledger = try? decoder.decode(LegacyWalkLedger.self,from:readData(name:name)) else {
+            try FileManager.default.moveItem(at:directory.appendingPathComponent(name),
+                to:directory.appendingPathComponent(name + ".corrupt-\(Int(Date().timeIntervalSince1970))"))
+            return 0
+        }
+        var moved = 0
+        for piece in ledger.pieces where !piece.points.isEmpty {
+            var record = RecordedActivity(activity:"Unknown",startedAt:piece.points[0].timestamp,resumedAt:piece.points[0].timestamp,title:"Journey")
+            record.recordingMode = "automatic"
+            record.points = piece.points
+            record.distanceMeters = record.measuredDistance
+            try retainUnconfirmedWalk(record)
+            moved += 1
+        }
+        try FileManager.default.removeItem(at:directory.appendingPathComponent(name))
+        return moved
+    }
     func prepareWalkingHandoff(_ handoff: WalkingTransportHandoff) throws {
         try writeData(encoder.encode(handoff),name:WalkingTransportHandoff.fileName)
     }
