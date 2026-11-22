@@ -44,6 +44,9 @@ enum RecorderHarness {
             if status != .authorizedAlways {
                 check(false, "the simulator app has Always location access (status \(status.rawValue)); grant it with simctl privacy")
             } else {
+                walkingOuting()
+                shellCoveOuting()
+                homeWalkingAndDrift()
                 await destinationSplit()
                 await terminationDuringWait()
                 await interruptionDuringDrain()
@@ -69,6 +72,143 @@ enum RecorderHarness {
             fflush(stdout)
             exit(failed == 0 ? 0 : 1)
         }
+    }
+
+    static func walkingOuting() {
+        let (directory, key, owner) = freshStore()
+        defer { try? FileManager.default.removeItem(at:directory) }
+        do {
+            let r = try makeRecorder(directory:directory, owner:owner, key:key, motion:HarnessMotion())
+            let stop = Date().timeIntervalSince1970 - 105 * 60
+            let start = stop - 500
+            let cafe = home.latitude + 500 / 111_320
+            r.places.append(SavedPlace(id:UUID().uuidString, name:"Café", kind:"favourite",
+                latitude:cafe, longitude:home.longitude, radius:60))
+            var walk = RecordedActivity(activity:"Walking",startedAt:start,resumedAt:start,title:"Walking")
+            walk.recordingMode = "automatic"
+            for index in 0...50 {
+                let point = GPSPoint(latitude:home.latitude+Double(index)*10/111_320,longitude:home.longitude,
+                    timestamp:start+Double(index)*10,accuracy:5,altitude:0,speed:1)
+                _ = walk.accept(point,now:point.timestamp)
+            }
+            r.automaticTrip = walk
+            r.detector.lastMovementAt = stop
+            r.settleAutomatic()
+            check(r.continuationEndsAt == stop + 7200, "saved café leaves the walk open for two hours")
+            check(r.locationMode == .resting && r.manager.desiredAccuracy == kCLLocationAccuracyHundredMeters,
+                "a stopped café walk releases precise GPS and asks for 100 m standby")
+            let reopened = try makeRecorder(directory:directory, owner:owner, key:key, motion:HarnessMotion())
+            reopened.restoreSettledAutomaticJourney()
+            check(reopened.settledTripID == walk.id, "the stored café stop restores within the window")
+            let leave = stop + 90 * 60
+            for index in 0...50 {
+                let at = leave + Double(index)*10
+                reopened.motion = MotionEvidence(types:["Walking"],confidence:"high",timestamp:at,continuous:true)
+                deliver(reopened,location(cafe-Double(index)*10/111_320,home.longitude,at,speed:1))
+            }
+            check(reopened.automaticTrip?.id == walk.id, "GPS delivery resumes the original café walk")
+            let drive = leave + 520
+            for index in 0...4 {
+                let at = drive + Double(index)*10
+                reopened.motion = MotionEvidence(types:["Driving"],confidence:"high",timestamp:at,continuous:true)
+                deliver(reopened,location(home.latitude+Double(index)*90/111_320,home.longitude,at,speed:9))
+            }
+            let saved = reopened.trips.filter { $0.id == walk.id }
+            check(saved.count == 1 && saved.first?.state == "finished" && reopened.automaticTrip?.activity == "Driving",
+                  "confirmed driving finishes one walk and opens a separate drive")
+            if let finished = saved.first {
+                check(finished.points.allSatisfy { $0.timestamp < drive } && finished.details?.stops?.count == 1,
+                      "no driving fixes enter the walk and the café pause is retained")
+                check((900...1050).contains(finished.distanceMeters), "the café walk records approximately one kilometre")
+                check((6300...6500).contains((finished.endedAt ?? 0) - finished.startedAt) &&
+                    (900...1050).contains(finished.automaticWalkMovingSeconds ?? 0),
+                    "elapsed includes the 90-minute pause and moving time follows the two walking legs")
+            }
+        } catch { check(false,"walking outing harness: \(error.localizedDescription)") }
+    }
+
+    static func shellCoveOuting() {
+        let (directory,key,owner) = freshStore()
+        defer { try? FileManager.default.removeItem(at:directory) }
+        do {
+            let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+            let start = Date().timeIntervalSince1970 - 4000
+            let park = home.latitude + 900 / 111_320
+            var drive = RecordedActivity(activity:"Driving",startedAt:start-100,resumedAt:start-100,title:"Driving")
+            drive.recordingMode = "automatic"
+            for index in 0...10 {
+                let at = start-100+Double(index)*10
+                let point = GPSPoint(latitude:park+Double(index-10)*90/111_320,longitude:home.longitude,
+                    timestamp:at,accuracy:5,altitude:0,speed:9)
+                _ = drive.accept(point,now:at)
+            }
+            r.automaticTrip = drive
+            r.detector.phase = "recording"
+            r.detector.lastMovementAt = start
+            var north = 0.0
+            var at = start + 10
+            var walkID: String?
+            for (length, pause) in [(263.0,180.0),(209.0,860.0),(490.0,0.0)] {
+                let fixes = Int(ceil(length/10))
+                for index in 0...fixes {
+                    let offset = length * Double(index) / Double(fixes)
+                    deliver(r,location(park+(north+offset)/111_320,home.longitude,at+Double(index)*10,speed:1))
+                }
+                walkID = walkID ?? r.automaticTrip?.id
+                check(r.automaticTrip?.id == walkID && r.automaticTrip?.activity == "Walking",
+                    "Shell Cove walking segment of \(Int(length)) m belongs to the same walk")
+                at += Double(fixes)*10
+                north += length
+                if pause > 0 {
+                    r.settleAutomatic()
+                    at += pause
+                }
+            }
+            let departure = at + 10
+            for index in 0...5 {
+                deliver(r,location(park+(north+Double(index)*100)/111_320,home.longitude,departure+Double(index)*10,speed:10))
+            }
+            let walk = r.trips.first { $0.id == walkID }
+            check(walk?.details?.stops?.count == 2 && (860...1010).contains(walk?.distanceMeters ?? 0),
+                "Shell Cove saves all three legs in one walk")
+            check(r.trips.first { $0.id == drive.id }?.points.allSatisfy { $0.timestamp <= start } == true &&
+                r.automaticTrip?.points.allSatisfy { $0.timestamp >= departure } == true,
+                "Shell Cove excludes walking fixes from both drives")
+        } catch { check(false,"Shell Cove harness: \(error.localizedDescription)") }
+    }
+
+    static func homeWalkingAndDrift() {
+        let (directory,key,owner) = freshStore()
+        defer { try? FileManager.default.removeItem(at:directory) }
+        do {
+            let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+            let start = Date().timeIntervalSince1970 - 1600
+            r.beginAutomaticProbe(movementBegan:true)
+            for index in 0...30 {
+                let offset = Double((index*7)%31)-15
+                deliver(r,location(home.latitude+offset/111_320,home.longitude,start+Double(index)*5,speed:0,accuracy:25))
+            }
+            check(r.automaticTrip == nil && r.trips.isEmpty,"stationary GPS drift starts no activity")
+            r.detector.reset()
+            r.departureBackfill.clear()
+            let longitudeScale = 111_320 * cos(home.latitude * .pi/180)
+            for index in 0...52 {
+                let angle = Double(index) / 26 * 2 * Double.pi
+                let latitude = home.latitude + 29*cos(angle)/111_320
+                let longitude = home.longitude + 29*sin(angle)/longitudeScale
+                deliver(r,location(latitude,longitude,start+170+Double(index)*5,speed:1.4,accuracy:4))
+            }
+            let id = r.automaticTrip?.id
+            check(r.automaticTrip?.activity == "Walking" && (r.automaticTrip?.distanceMeters ?? 0) > 250,
+                "a real two-lap walk wholly inside 30 m Home is recorded")
+            r.settleAutomatic()
+            r.heldReplayChecked = true
+            if let deadline = r.continuationEndsAt {
+                r.finishExpiredContinuation(now:deadline+1)
+            }
+            check(id != nil && r.trips.first { $0.id == id }?.state == "finished",
+                "the Home walk finalises once when the two-hour window expires")
+        } catch { check(false,"Home walking and drift harness: \(error.localizedDescription)") }
     }
 
     // A short shopping walk must close a drive without requiring 30-80m of

@@ -390,7 +390,14 @@ struct RecordedActivity: Codable {
             return distance / dt >= 0.35 && distance >= jitterFloor ? total + distance : total
         }
     }
-    var measuredDistance: Double { Self.measuredDistance(points, automatic: recordingMode == "automatic") }
+    var measuredDistance: Double {
+        let measured = Self.measuredDistance(points, automatic: recordingMode == "automatic")
+        guard recordingMode == "automatic",
+              JourneyFamily.of(activity) == .onFoot || details?.localWalkOrigin != nil else { return measured }
+        // Frequent coarse fixes can all fall below the per-fix jitter floor
+        // even though the route progresses well beyond its uncertainty.
+        return max(measured, WalkingConfidence(points).distance)
+    }
 
     // One definition of an unobserved automatic gap, shared by segmentation, the
     // tracking notes, route quality and the map. A silence longer than
@@ -733,6 +740,35 @@ final class RecordingStorage {
         let data = try encoder.encode(trip)
         try writeData(data,name:"\(trip.id).json")
     }
+    // Move unpublished evidence out of the active journal atomically. These
+    // encrypted files are invisible to history, recovery, and cloud sync.
+    func retainUnconfirmedWalk(_ trip: RecordedActivity) throws {
+        try save(trip)
+        let active = directory.appendingPathComponent("\(trip.id).json")
+        let retained = directory.appendingPathComponent("\(trip.id).unconfirmed-walk")
+        if FileManager.default.fileExists(atPath:retained.path) {
+            _ = try FileManager.default.replaceItemAt(retained, withItemAt:active)
+        } else {
+            try FileManager.default.moveItem(at:active, to:retained)
+        }
+        try? pruneUnconfirmedWalks()
+    }
+    func pruneUnconfirmedWalks(now: Date = Date()) throws {
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        let files = try fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:Array(keys))
+            .filter { $0.pathExtension == "unconfirmed-walk" }
+            .map { (url: $0, values: try $0.resourceValues(forKeys:keys)) }
+            .sorted { ($0.values.contentModificationDate ?? .distantPast) > ($1.values.contentModificationDate ?? .distantPast) }
+        var bytes = 0
+        for (index,file) in files.enumerated() {
+            bytes += file.values.fileSize ?? 0
+            if index >= 8 || bytes > 12 * 1024 * 1024 ||
+               now.timeIntervalSince(file.values.contentModificationDate ?? .distantPast) > 7 * 86_400 {
+                try fm.removeItem(at:file.url)
+            }
+        }
+    }
     func load() throws -> [RecordedActivity] {
         let deleted = try deletedIDs()
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -753,6 +789,19 @@ struct SavedPlace: Codable {
     // Friends may be shown this place's name while the phone rests here. Absent
     // (older saved places) means off.
     var shareWithFriends: Bool?
+    // The existing radius retains arrival and naming semantics.
+    var homeRecognitionRadius: Double?
+    static let defaultHomeRadius: Double = 30
+    static let homeRadiusRange: ClosedRange<Double> = 15...150
+    var recognitionRadius: Double {
+        guard kind == "home" else { return radius }
+        return homeRecognitionRadius.flatMap { Self.homeRadiusRange.contains($0) ? $0 : nil } ?? Self.defaultHomeRadius
+    }
+    var recognitionPlace: SavedPlace {
+        var place = self
+        place.radius = recognitionRadius
+        return place
+    }
     var sensitive: Bool { kind == "home" || kind == "work" }
     func contains(_ point: GPSPoint) -> Bool {
         point.accuracy >= 0 && point.accuracy <= radius &&
@@ -1017,9 +1066,9 @@ struct ActivityDetails: Codable {
     // with its verdict and reasons. The next leg is a separate activity.
     var destinationStop: StopInterval?
     // Set while an automatic walk that began inside a dwell area is not yet known
-    // to be a journey. Such a walk is never shown or published; it is either
-    // confirmed (and this is cleared) or discarded as local movement.
+    // to be a journey. It is kept in the recorder across stops and relaunches.
     var localWalkOrigin: DwellArea?
+    var walkingMotionSupported: Bool?
     // Optional MTB trail linkage. A ride can be recorded without a trail and
     // linked later, so every one of these keys stays optional.
     var mtbTrailID: String?
@@ -1111,7 +1160,7 @@ struct MovementTransition {
         guard point.accuracy >= 0, point.accuracy <= 65, abs(now-point.timestamp) <= 20,
               point.latitude.isFinite, point.longitude.isFinite else { return nil }
         // An unusable fix never erases the evidence chain built from real movement.
-        guard let family = Self.candidate(point, motion: motion, now: now), family != from,
+        guard let family = Self.candidate(point, motion: motion, now: now, allowCycling: from == .onFoot), family != from,
               point.speed >= Self.minimumSpeed(family, motion: motion, now: now) else {
             reset()
             return nil
@@ -1170,8 +1219,9 @@ struct MovementTransition {
     // vehicle-sized speed may propose a vehicle, and only clearly walking-sized
     // movement may propose an on-foot change, so a slow queue is never a walk and a
     // fast bicycle is never a drive.
-    static func candidate(_ point: GPSPoint, motion: MotionEvidence, now: Double) -> JourneyFamily? {
+    static func candidate(_ point: GPSPoint, motion: MotionEvidence, now: Double, allowCycling: Bool = false) -> JourneyFamily? {
         if AutomaticDetector.drivingMotion(motion,now:now) { return .driving }
+        if allowCycling, AutomaticDetector.cyclingMotion(motion,now:now) { return .cycling }
         if AutomaticActivityPolicy.unsupportedMotion(motion,now:now) { return nil }
         if AutomaticDetector.onFootMotion(motion,now:now), point.speed >= 0.4,
            point.speed <= maximumSpeed(.onFoot,motion:motion,now:now) { return .onFoot }
@@ -1344,15 +1394,14 @@ struct JourneyContinuation {
     static let onFootPauseWindow: Double = 2*3600
     static let fallbackWindow: Double = 15*60
     static func window(for stop: StopContext) -> Double {
-        if stop.placeKind != nil { return savedPlaceWindow }
         switch stop.family {
-        case .driving, .cycling: return vehiclePauseWindow
         case .onFoot: return onFootPauseWindow
-        case .other: return fallbackWindow
+        case .driving, .cycling: return stop.placeKind == nil ? vehiclePauseWindow : savedPlaceWindow
+        case .other: return stop.placeKind == nil ? fallbackWindow : savedPlaceWindow
         }
     }
     static func stopSummary(_ stop: StopContext) -> String {
-        if let place = stop.placeName ?? stop.placeKind {
+        if stop.family != .onFoot, let place = stop.placeName ?? stop.placeKind {
             return "Arrived at a saved place (\(place)); a new journey starts after \(Int(savedPlaceWindow/60)) minutes"
         }
         switch stop.family {
@@ -1395,6 +1444,10 @@ struct JourneyContinuation {
         if now-stoppedAt > window { return .finish(reason: "Journey completed after the continuation window") }
         if let change = change, change != .other, change != family {
             return .finish(reason: changeReason(from: family, to: change))
+        }
+        if family == .onFoot {
+            guard movement == .onFoot else { return .waiting }
+            return distance <= radius ? .resume : .finish(reason: "Walk resumed away from its last stop")
         }
         if distance > radius { return .finish(reason: "Stopped journey ended: movement resumed away from the stop") }
         switch family {
@@ -1766,7 +1819,8 @@ enum ProvisionalRecovery {
     static func plan(_ trips: [RecordedActivity], now: Double, fallbackWindow: Double = JourneyContinuation.window) -> Plan {
         let provisional = trips.filter { $0.isProvisional }.sorted { ($0.endedAt ?? 0) > ($1.endedAt ?? 0) }
         guard let newest = provisional.first else { return Plan(resumed: nil, closed: []) }
-        let endsAt = newest.details?.continuationEndsAt ?? (newest.endedAt ?? 0) + fallbackWindow
+        let endsAt = newest.isAutomaticWalk ? (newest.endedAt ?? 0) + JourneyContinuation.onFootPauseWindow :
+            newest.details?.continuationEndsAt ?? (newest.endedAt ?? 0) + fallbackWindow
         let resumable = endsAt > now && newest.points.count >= 2
         var closed = provisional.dropFirst().map { $0.id }
         if !resumable { closed.append(newest.id) }
@@ -1799,6 +1853,7 @@ enum AutomaticRecovery {
         guard let newest = unfinished.first else { return Plan() }
         var closed = unfinished.dropFirst().map { $0.id }
         let lastFix = newest.points.last?.timestamp ?? newest.startedAt
+        let resumeWindow = newest.isAutomaticWalk ? max(resumeWindow, JourneyContinuation.onFootPauseWindow) : resumeWindow
         let action: Action
         if newest.points.count < 2 {
             action = .finish(reason: "Journey ended at its only saved GPS fix: a restart with fewer than two fixes cannot describe movement")
@@ -2423,7 +2478,9 @@ struct AutomaticDetector {
                 ? max(35,first.accuracy+point.accuracy+15)
                 : max(minimumDistance,first.accuracy+point.accuracy+30)
             let requiredSeconds = automotive ? 12.0 : sustainedSpeed ? 15.0 : minimumSeconds
-            if candidate.count >= 3 && distance >= requiredDistance && point.timestamp-first.timestamp >= requiredSeconds {
+            let onFoot = !automotive && !sustainedSpeed && !Self.freshStationary(motion,now:now) &&
+                WalkingConfidence(candidate).confirms(motionSupported: Self.onFootMotion(motion,now:now))
+            if onFoot || (candidate.count >= 3 && distance >= requiredDistance && point.timestamp-first.timestamp >= requiredSeconds) {
                 phase = "recording"; stationarySince=nil; lastMovementAt = point.timestamp; anchor = point
                 return "depart"
             }
@@ -2433,10 +2490,20 @@ struct AutomaticDetector {
             stationarySince=nil
             if point.speed >= 5 { walkingArrivalSince=nil; walkingArrivalEndAt=nil }
         }
-        if let old = anchor, old.distance(to: point) >= max(20, point.accuracy) {
-            lastMovementAt = point.timestamp; anchor = point
+        if let old = anchor {
+            let walking = JourneyFamily.of(activity) == .onFoot
+            let displacement = old.distance(to:point)
+            let threshold = walking ? max(20, old.accuracy + point.accuracy) : max(20, point.accuracy)
+            if displacement >= threshold, !walking || stationarySince == nil {
+                lastMovementAt = point.timestamp; anchor = point
+            }
         }
         return shouldArrive(now:now,activity:activity) ? "arrive" : nil
+    }
+    func walkingStopWithoutFreshGPS(now: Double) -> Bool {
+        guard phase == "recording", let still = stationarySince, let fix = lastValidFixAt,
+              now - fix > 45, still >= fix - 45 else { return false }
+        return now - still >= Self.motionStopDwell
     }
     func shouldArrive(now: Double, activity: String = "Driving") -> Bool {
         // The arrival timer also calls this when no delegate callbacks arrive.
@@ -2579,10 +2646,8 @@ struct HomeRest {
 // MARK: Place awareness
 //
 // Where the person is staying, separate from whether a journey is recording. A
-// dwell area is the likely occupied area of a place: a saved place, a Core
-// Location visit, the stop a journey arrived at, or an area inferred from ten
-// minutes of staying put. It only changes how an automatic *walk* that begins
-// inside it is confirmed; vehicles, cycling and manual activities are unaffected.
+// dwell area is the likely occupied area of a saved place, Core Location visit,
+// journey stop or inferred stay. Its boundary informs location sampling.
 // The area never grows beyond `maximumRadius`, so it cannot swallow a
 // neighbourhood, and it is cleared as soon as a journey is confirmed.
 struct DwellArea: Codable, Equatable {
@@ -2593,8 +2658,6 @@ struct DwellArea: Codable, Equatable {
     var longitude: Double
     var radius: Double
     var since: Double
-    // The 100 m circle round Home inside which walking is not an activity (see LocalWalk.homeZone). Leaving it is the departure.
-    var zone: Bool? = nil
     static let minimumRadius: Double = 50
     static let maximumRadius: Double = 250
     static let savedMaximumRadius: Double = 400
@@ -2603,7 +2666,7 @@ struct DwellArea: Codable, Equatable {
     func steppedOut(_ point: GPSPoint) -> Bool { point.accuracy >= 0 && point.accuracy <= 30 && reach(point) > radius + Self.exitMargin }
     static func saved(_ place: SavedPlace, now: Double) -> DwellArea {
         DwellArea(source: .saved, placeKind: place.kind, latitude: place.latitude, longitude: place.longitude,
-                  radius: min(savedMaximumRadius, max(minimumRadius, place.radius)), since: now)
+                  radius: place.kind == "home" ? place.recognitionRadius : min(savedMaximumRadius, max(minimumRadius, place.radius)), since: now)
     }
     static func arrival(at point: GPSPoint, source: Source = .arrival) -> DwellArea {
         DwellArea(source: source, placeKind: nil, latitude: point.latitude, longitude: point.longitude,
@@ -2624,7 +2687,6 @@ struct DwellArea: Codable, Equatable {
     // may be a venue of unknown size (a school, a shopping centre), so walking
     // across it must not count as leaving it.
     var departureMargin: Double {
-        if zone == true { return 0 }
         switch source {
         case .saved: return max(100, radius * 0.5)
         case .visit: return max(200, radius)
@@ -2635,13 +2697,6 @@ struct DwellArea: Codable, Equatable {
     // Clearly somewhere else: a fix with usable accuracy beyond the departure
     // distance. Used to drop a stale area, never to start a journey on its own.
     func clearlyLeft(_ point: GPSPoint) -> Bool { point.accuracy >= 0 && point.accuracy <= 65 && reach(point) > departureDistance }
-    // Local movement that was suppressed widens the area it covered, within the
-    // cap. A saved place keeps the boundary the person chose.
-    mutating func absorb(_ points: [GPSPoint]) {
-        guard source != .saved else { return }
-        let farthest = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }.map(reach).max() ?? 0
-        radius = min(Self.maximumRadius, max(radius, farthest))
-    }
     // Shareable diagnostics: never coordinates, radius rounded to 10 m.
     var summary: [String: String] {
         ["placeSource": source.rawValue, "placeKind": placeKind ?? "none", "placeRadiusMeters": String(Int((radius/10).rounded())*10)]
@@ -2671,243 +2726,114 @@ struct DwellInference {
     }
 }
 
-// Whether an automatic walk that began inside a dwell area is a journey. Three
-// kinds of evidence confirm it, and none of them is distance from the arrival
-// coordinate alone:
-//  * leaving: at least two fixes beyond the area's departure distance;
-//  * a sustained purposeful walk or run (the park loop, a walk around the
-//    neighbourhood that returns home): long, steady, rarely stopping;
-//  * vehicle movement (handled by the caller: vehicles are never suppressed).
-// Milling around a house, a school or a shopping centre is slow, stop-start and
-// stays inside the area, so it never qualifies. Until one of these is met the
-// walk is pending; when it ends without one, it was local movement.
-// Walking around the place you arrived at is not recorded as a journey, and each stretch used to be thrown away the moment it
-// ended. A walk that was cut into several stretches (GPS going quiet, a stop for a coffee) was then lost piece by piece: every
-// piece was too short to count, and the place grew to cover the next one. The pieces are kept here instead. When the ones near
-// each other add up to a real walk, they become one Walking activity; the rest are dropped after a while, as before.
-struct LocalWalkLedger: Codable, Equatable {
-    struct Piece: Codable, Equatable { var points: [GPSPoint]; var endedAt: Double }
-    static let maximumAge: Double = 2 * 3600
-    static let maximumPieces = 12
-    static let maximumPointsPerPiece = 1500
-    // Pieces count together only if they began this close to each other.
-    static let neighbourhood: Double = 450
-    static let minimumPath: Double = 400
-    static let minimumSeconds: Double = 15 * 60
-    var pieces: [Piece] = []
-    mutating func add(_ points: [GPSPoint], now: Double) {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }.sorted { $0.timestamp < $1.timestamp }
-        pieces.removeAll { now - $0.endedAt > Self.maximumAge }
-        guard usable.count >= 3, let last = usable.last else { return }
-        pieces.append(Piece(points: Array(usable.suffix(Self.maximumPointsPerPiece)), endedAt: last.timestamp))
-        if pieces.count > Self.maximumPieces { pieces.removeFirst(pieces.count - Self.maximumPieces) }
-    }
-    // Every point of the pieces that together make a walk, in time order, or nil when they do not.
-    func combinedWalk(now: Double) -> [GPSPoint]? {
-        let recent = pieces.filter { now - $0.endedAt <= Self.maximumAge }
-        guard recent.count >= 2, let anchor = recent.last?.points.first else { return nil }
-        let near = recent.filter { piece in piece.points.first.map { anchor.distance(to: $0) <= Self.neighbourhood } ?? false }
-        guard near.count >= 2 else { return nil }
-        var path = 0.0, seconds = 0.0
-        for piece in near {
-            path += LocalWalk.pathLength(piece.points)
-            if let first = piece.points.first, let last = piece.points.last { seconds += max(0, last.timestamp - first.timestamp) }
+// Confidence is independent of saved-place boundaries. GPS anchors must
+// progress beyond their combined uncertainty at a plausible on-foot speed.
+struct WalkingConfidence {
+    var distance: Double = 0
+    var movingSeconds: Double = 0
+    var steps = 0
+    var extent: Double = 0
+
+    init(_ points: [GPSPoint]) {
+        var anchor: GPSPoint?
+        var origin: GPSPoint?
+        var last: GPSPoint?
+        var observedMoving = 0.0
+        for point in points {
+            guard point.accuracy >= 0, point.accuracy <= 65 else { continue }
+            defer { last = point }
+            if let last, last.segment == point.segment, point.timestamp - last.timestamp <= 30,
+               point.speed >= 0.4, point.speed <= 3.8 {
+                observedMoving += max(0, point.timestamp - last.timestamp)
+            }
+            guard let from = anchor else { anchor = point; origin = point; continue }
+            let seconds = point.timestamp - from.timestamp
+            if point.segment != from.segment || seconds > 120 {
+                anchor = point; origin = point; observedMoving = 0
+                continue
+            }
+            guard seconds > 0 else { continue }
+            let metres = from.distance(to: point)
+            let speed = metres / seconds
+            guard metres >= max(12, from.accuracy + point.accuracy) else { continue }
+            anchor = point
+            let moving = observedMoving
+            observedMoving = 0
+            guard speed >= 0.45, speed <= 3.8 else { origin = point; continue }
+            distance += metres
+            movingSeconds += moving > 0 ? min(seconds, moving) : seconds
+            steps += 1
+            if let origin { extent = max(extent, origin.distance(to: point)) }
         }
-        guard path >= Self.minimumPath, seconds >= Self.minimumSeconds else { return nil }
-        let all = near.flatMap { $0.points }.sorted { $0.timestamp < $1.timestamp }
-        // Outdoors only: stretches of indoor milling never add up to a walk.
-        guard LocalWalk.outdoorFraction(all) >= LocalWalk.outdoorFraction else { return nil }
-        return all
     }
-    mutating func clear() { pieces = [] }
+
+    static func vehicleDeparture(_ points: [GPSPoint], motion: MotionEvidence, now: Double) -> Bool {
+        AutomaticDetector.drivingMotion(motion, now: now) ||
+            (points.count >= 3 && points.suffix(3).allSatisfy { $0.speed >= 3.5 })
+    }
+
+    func confirms(motionSupported: Bool) -> Bool {
+        if motionSupported { return steps >= 3 && distance >= 60 && movingSeconds >= 45 && extent >= 30 }
+        return steps >= 5 && distance >= 150 && movingSeconds >= 90 && extent >= 55
+    }
 }
 
-enum LocalWalk {
-    enum Verdict: Equatable { case pending, genuine(String), local(String) }
-    struct Metrics: Equatable {
-        var farthest: Double
-        var fixesBeyond: Int
-        var path: Double
-        var duration: Double
-        var movingSeconds: Double
-        var extent: Double
-        var stoppedFraction: Double { duration > 0 ? max(0, 1 - movingSeconds / duration) : 1 }
-        var movingSpeed: Double { movingSeconds > 0 ? path / movingSeconds : 0 }
-    }
-    static let walkPath: Double = 1200, walkSeconds: Double = 12*60, walkSpeed: Double = 0.9
-    static let runPath: Double = 800, runSeconds: Double = 4*60, runSpeed: Double = 2.0
-    static let maximumStoppedFraction: Double = 0.3
-    // A loop must reach well away from where it began; drift never does.
-    static let minimumLoopExtent: Double = 150
-    // Path is measured between anchors that move by more than both fixes'
-    // uncertainty (and at least 15 m), so indoor jitter that hops back and forth
-    // adds nothing, while a real walk adds its distance in short steps.
-    static func metrics(_ points: [GPSPoint], from area: DwellArea) -> Metrics {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
-        var path = 0.0, moving = 0.0
-        var anchor = usable.first
-        for point in usable.dropFirst() {
-            guard let from = anchor, point.timestamp > from.timestamp else { continue }
-            let step = from.distance(to: point)
-            guard step >= max(15, from.accuracy + point.accuracy) else { continue }
-            let dt = point.timestamp - from.timestamp
-            path += step
-            if dt <= 60, step / dt >= 0.5 { moving += dt }
-            anchor = point
+// Keep the beginning of a resumed leg while testing for real movement.
+// Compare the return with the stop, but never add the stop-to-resume gap as route.
+struct WalkingResumption {
+    private(set) var points: [GPSPoint] = []
+
+    mutating func observe(_ point: GPSPoint, after stop: GPSPoint, motionSupported: Bool) -> Bool {
+        if let last = points.last {
+            guard point.timestamp > last.timestamp else { return false }
+            if point.timestamp - last.timestamp > 45 { clear() }
         }
-        let start = usable.first
-        return Metrics(farthest: usable.map(area.reach).max() ?? 0,
-                       fixesBeyond: usable.filter { area.reach($0) >= area.departureDistance }.count,
-                       path: path,
-                       duration: max(0, (usable.last?.timestamp ?? 0) - (start?.timestamp ?? 0)),
-                       movingSeconds: moving,
-                       extent: start.map { first in usable.map { first.distance(to: $0) }.max() ?? 0 } ?? 0)
-    }
-    // Driving or cycling is never held back as possible local movement: fresh
-    // vehicle motion, or the last three fixes all faster than a brisk walk.
-    static func vehicleDeparture(_ candidate: [GPSPoint], motion: MotionEvidence, now: Double) -> Bool {
-        if AutomaticDetector.drivingMotion(motion, now: now) || AutomaticDetector.cyclingMotion(motion, now: now) { return true }
-        return candidate.count >= 3 && candidate.suffix(3).allSatisfy { $0.speed >= 3.5 }
-    }
-    // A shorter departure (a shopping centre to a station 250 m away, an office to
-    // a café) is proved by how it was walked, not only by how far: the leg since
-    // the walk last stood inside the area must be outdoors-accurate, steadily in
-    // one direction, rarely stopped, and must end clearly beyond the area. Indoor
-    // fixes are rarely this accurate, and milling around turns and stops, so
-    // neither qualifies.
-    struct OutwardLeg: Equatable {
-        var path: Double
-        var net: Double
-        var movingSeconds: Double
-        var duration: Double
-        var accurateFraction: Double
-        var endReach: Double
-    }
-    static let legAccuracy: Double = 20
-    static let legMinimumAccurate: Double = 0.7
-    static let legMinimumPath: Double = 200
-    static let legStraightness: Double = 0.6
-    static let legMinimumMoving: Double = 90
-    static let legMaximumStopped: Double = 0.35
-    static let legEndMargin: Double = 150
-    static func outwardLeg(_ points: [GPSPoint], from area: DwellArea) -> OutwardLeg? {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
-        // The leg starts where the walk last stood inside the area or last paused
-        // for a minute (a shop on the way out): only the current, uninterrupted
-        // stretch of walking is judged. A walk that began at the area's edge and
-        // never paused is judged whole.
-        var start = 0
-        var stillSince: Double?
-        for (index, point) in usable.enumerated() {
-            if area.contains(point) { start = index; stillSince = nil; continue }
-            if index > 0, point.timestamp - usable[index-1].timestamp >= 60, usable[index-1].distance(to: point) < 20 { start = index }
-            if point.speed < 0.3 {
-                let since = stillSince ?? point.timestamp
-                stillSince = since
-                if point.timestamp - since >= 60 { start = index }
-            } else {
-                stillSince = nil
-            }
-        }
-        let leg = Array(usable[start...])
-        guard let first = leg.first, let last = leg.last, leg.count >= 3 else { return nil }
-        let legMetrics = metrics(leg, from: area)
-        return OutwardLeg(path: legMetrics.path, net: first.distance(to: last), movingSeconds: legMetrics.movingSeconds,
-                          duration: legMetrics.duration,
-                          accurateFraction: Double(leg.filter { $0.accuracy <= legAccuracy }.count) / Double(leg.count),
-                          endReach: area.reach(last))
-    }
-    // Walking outdoors for a good while is a walk wherever it started. What separates it from milling round a shop or a school is that
-    // outdoor fixes are accurate, and the walk covers real ground (path and extent) over a good while. How much of the time was spent
-    // standing is deliberately not judged: a stroll with stops looks exactly like that.
-    // Where walking is not an activity, and what is: the person's rules, in one place.
-    //  * Round Home (100 m) walking is ignored; once the walk leaves the circle it is recorded from where it began.
-    //  * Anywhere else a walk outdoors is recorded at once. Outdoors means accurate GPS: indoors (a shopping centre) fixes are poor.
-    //  * A walk that never covered much ground is not worth an activity.
-    static let homeZoneRadius: Double = 100
-    static let indoorAccuracy: Double = 30
-    static let outdoorShare: Double = 0.6
-    static let trivialWalkMeters: Double = 150
-    static func homeZone(_ area: DwellArea?) -> DwellArea? {
-        guard var zone = area, zone.source == .saved, zone.placeKind == "home" else { return nil }
-        zone.radius = min(zone.radius, homeZoneRadius)
-        zone.zone = true
-        return zone
-    }
-    static func walkingOutdoors(_ points: [GPSPoint]) -> Bool {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
-        guard !usable.isEmpty else { return false }
-        return Double(usable.filter { $0.accuracy <= indoorAccuracy }.count) / Double(usable.count) >= outdoorShare
-    }
-    static let outdoorSeconds: Double = 8 * 60
-    static let outdoorPath: Double = 300
-    static let outdoorAccuracy: Double = 20
-    static let outdoorFraction: Double = 0.75
-    // Time spent motionless for two minutes or more (inside a shop, on a bench), as a share of the whole stretch. A stroll stops for
-    // seconds; a shopping visit stops for minutes.
-    static let outdoorMaximumStill: Double = 0.35
-    static func stillFraction(_ points: [GPSPoint]) -> Double {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
-        guard let first = usable.first, let last = usable.last, last.timestamp > first.timestamp else { return 0 }
-        var still = 0.0
-        var start = 0
-        for index in 1..<max(1, usable.count) {
-            let anchor = usable[start]
-            if anchor.distance(to: usable[index]) <= max(20, anchor.accuracy + usable[index].accuracy) { continue }
-            let held = usable[index - 1].timestamp - anchor.timestamp
-            if held >= 120 { still += held }
-            start = index
-        }
-        if let tail = usable.last, tail.timestamp - usable[start].timestamp >= 120 { still += tail.timestamp - usable[start].timestamp }
-        return still / (last.timestamp - first.timestamp)
+        points.append(point)
+        if points.count > 40 { points.removeFirst() }
+        guard let first = points.first, point.timestamp - first.timestamp >= 8 else { return false }
+        let fromStop = stop.distance(to: point)
+        let displacement = first.distance(to: point)
+        let threshold = max(12, (first.accuracy + point.accuracy) * (motionSupported ? 0.4 : 0.65))
+        let speed = displacement / (point.timestamp - first.timestamp)
+        return points.count >= 3 && fromStop >= max(20, (stop.accuracy + point.accuracy) / 2) &&
+            displacement >= threshold && (0.4...3.8).contains(speed)
     }
 
-    static func outdoorFraction(_ points: [GPSPoint]) -> Double {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
-        guard !usable.isEmpty else { return 0 }
-        return Double(usable.filter { $0.accuracy <= outdoorAccuracy }.count) / Double(usable.count)
+    mutating func clear() { points.removeAll() }
+}
+
+extension RecordedActivity {
+    var isAutomaticWalk: Bool {
+        recordingMode == "automatic" && (details?.localWalkOrigin != nil || JourneyFamily.detected(self) == .onFoot)
     }
-    // The distance actually walked: measured between anchors that move by more than both fixes' uncertainty (and at least 15 m),
-    // so jitter adds nothing. The same measure `metrics` uses, without needing the place.
-    static func pathLength(_ points: [GPSPoint]) -> Double {
-        let usable = points.filter { $0.accuracy >= 0 && $0.accuracy <= 65 }
-        var path = 0.0
-        var anchor = usable.first
-        for point in usable.dropFirst() {
-            guard let from = anchor, point.timestamp > from.timestamp else { continue }
-            let step = from.distance(to: point)
-            guard step >= max(15, from.accuracy + point.accuracy) else { continue }
-            path += step
-            anchor = point
-        }
-        return path
+
+    mutating func noteWalkingMotion(_ motion: MotionEvidence, now: Double) {
+        guard details?.walkingMotionSupported != true,
+              AutomaticDetector.onFootMotion(motion, now: now),
+              !AutomaticDetector.drivingMotion(motion, now: now),
+              !AutomaticDetector.cyclingMotion(motion, now: now) else { return }
+        updateDetails { $0.walkingMotionSupported = true }
     }
-    static func steadyDeparture(_ leg: OutwardLeg, from area: DwellArea) -> Bool {
-        leg.endReach >= area.radius + legEndMargin && leg.path >= legMinimumPath &&
-        leg.net >= leg.path * legStraightness && leg.accurateFraction >= legMinimumAccurate &&
-        leg.movingSeconds >= legMinimumMoving && (leg.duration <= 0 || leg.movingSeconds / leg.duration >= 1 - legMaximumStopped)
+
+    @discardableResult
+    mutating func confirmPendingWalk() -> Bool {
+        guard details?.localWalkOrigin != nil else { return true }
+        let supported = details?.walkingMotionSupported == true
+        let evidence = WalkingConfidence(points)
+        guard evidence.confirms(motionSupported: supported) else { return false }
+        distanceMeters = max(distanceMeters, evidence.distance)
+        if activity == "Unknown" {
+            applyPrediction(Classification(predicted:"Walking",confidence:supported ? "high" : "medium",
+                evidence:["Credible on-foot GPS movement", supported ? "Core Motion corroborated walking" : "Sustained distance and moving time"]),
+                distance:max(1,distanceMeters))
+        }
+        updateDetails { $0.localWalkOrigin = nil }
+        return true
     }
-    static func assess(_ points: [GPSPoint], from area: DwellArea, ending: Bool) -> Verdict {
-        let m = metrics(points, from: area)
-        if m.fixesBeyond >= 2 { return .genuine("Walk left the \(area.source.rawValue) area") }
-        if let leg = outwardLeg(points, from: area), steadyDeparture(leg, from: area) {
-            return .genuine("Walked steadily away from the \(area.source.rawValue) area")
-        }
-        if m.stoppedFraction <= maximumStoppedFraction, m.extent >= minimumLoopExtent {
-            if m.path >= runPath && m.duration >= runSeconds && m.movingSpeed >= runSpeed {
-                return .genuine("Sustained run within the \(area.source.rawValue) area")
-            }
-            if m.path >= walkPath && m.duration >= walkSeconds && m.movingSpeed >= walkSpeed {
-                return .genuine("Sustained walk within the \(area.source.rawValue) area")
-            }
-        }
-        // An outdoor walk of a good length, even if it never left the area: a stroll along the water from where you parked.
-        if m.duration >= outdoorSeconds, m.path >= outdoorPath, m.extent >= minimumLoopExtent,
-           outdoorFraction(points) >= outdoorFraction, stillFraction(points) <= outdoorMaximumStill {
-            return .genuine("Sustained outdoor walk within the \(area.source.rawValue) area")
-        }
-        guard ending else { return .pending }
-        return .local("Local walking within the \(area.source.rawValue) area: \(Int(m.path)) m over \(Int(m.duration)) s, never beyond the area")
+
+    var automaticWalkMovingSeconds: Double? {
+        guard recordingMode == "automatic", JourneyFamily.of(activity) == .onFoot, !points.isEmpty else { return nil }
+        return WalkingConfidence(points).movingSeconds
     }
 }
 
@@ -3088,7 +3014,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters sharingRest liveSharingHoldsLocation wakeCheckSeconds restoresThisHour automaticRecordingState automaticSuppressedBy recordingOwner manualPausedPreserved reducedAccuracyRest restStage backgroundRecovery backgroundRecoveryIssues stopVerdict stopConfidence stoppedSeconds stopReasons heldFixes").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters sharingRest liveSharingHoldsLocation wakeCheckSeconds restoresThisHour automaticRecordingState automaticSuppressedBy recordingOwner manualPausedPreserved reducedAccuracyRest restStage backgroundRecovery backgroundRecoveryIssues stopVerdict stopConfidence stoppedSeconds stopReasons heldFixes activityRef").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {

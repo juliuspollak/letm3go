@@ -30,3 +30,15 @@ it('keeps a place private unless the owner switches on showing its name to frien
  fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
  await waitFor(()=>expect(run).toHaveBeenLastCalledWith('savePlace',expect.objectContaining({shareWithFriends:true})));
 });
+it('sets Home recognition independently from the saved arrival radius',async()=>{
+ const run=vi.fn().mockResolvedValue({});
+ render(<Places places={[{id:'home',name:'Home',kind:'home',latitude:1,longitude:2,radius:250}]} run={run}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Edit Home'}));
+ const homeRadius=screen.getByRole('slider',{name:/Home recognition radius/});
+ expect(homeRadius).toHaveValue('30');
+ expect(homeRadius).toHaveAttribute('min','15');
+ expect(homeRadius).toHaveAttribute('max','150');
+ fireEvent.change(homeRadius,{target:{value:'125'}});
+ fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:'home',radius:250,homeRecognitionRadius:125})));
+});

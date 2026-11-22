@@ -125,8 +125,12 @@ export function activitySummary(trip,{unit='km'}={}){
  // Includes estimates for GPS gaps: read as approximate, with the recorded part beside it.
  if(usesGPS(trip)&&distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
   ...(trip?.distanceEstimate?{detail:`${distanceText(trip.distanceEstimate.recordedMeters/1000,unit)} recorded`}:{})});
- const movingSeconds=[trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds].find(value=>finite(value)&&value>0);
- const elapsedSeconds=finite(trip?.durationSeconds)?trip.durationSeconds:Number.isFinite(trip?.minutes)?trip.minutes*60:null;
+ const automaticWalk=trip?.recordingMode==='automatic'&&['Walking','Hiking','Running'].includes(trip?.activity);
+ const completedWalk=automaticWalk&&finite(trip.startedAt)&&finite(trip.endedAt)&&trip.endedAt>=trip.startedAt;
+ const movingSeconds=automaticWalk&&finite(trip.movingSeconds)?trip.movingSeconds:
+  [trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds,completedWalk?trip.durationSeconds:null].find(value=>finite(value)&&value>0);
+ const elapsedSeconds=automaticWalk&&finite(trip.elapsedSeconds)?trip.elapsedSeconds:completedWalk?trip.endedAt-trip.startedAt:
+  finite(trip?.durationSeconds)?trip.durationSeconds:finite(trip?.minutes)?trip.minutes*60:null;
  // Rope skipping reads jumps first, then time and cadence; GPS figures do not apply.
  const rope=ropeSummary(trip);
  if(rope)entries.push({id:'jumps',label:'Jumps',value:jumpsText(rope.jumps)});

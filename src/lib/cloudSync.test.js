@@ -587,3 +587,20 @@ describe('an activity saved before updatedAt existed',()=>{
   expect(second.uploaded).toBe(1);
  });
 });
+
+it('retries a failed finished automatic walk independently of another finished activity',async()=>{
+ const api=client();
+ const walk={...trip,id:'walk',recordingMode:'automatic',points:[{latitude:1,longitude:2,timestamp:100,accuracy:5}]};
+ const drive={...trip,id:'drive',activity:'Driving',startedAt:300,endedAt:400};
+ const local={...state,trips:[walk,drive]};
+ api.rpc.mockImplementation(async (_name,{p_payload})=>p_payload.id==='walk'
+  ?{data:null,error:{code:'PGRST503',message:'Temporarily unavailable'}}:{data:1,error:null});
+ const failed=await run(api,local,{}, {now:1000,throwOnFailure:false});
+ expect(failed.receipts.drive.revision).toBe(1);
+ expect(failed.receipts.walk).toBeUndefined();
+ expect(local.trips[0].points).toEqual(walk.points);
+ api.rpc.mockResolvedValue({data:1,error:null});
+ const recovered=await run(api,local,failed.receipts,{now:62000});
+ expect(recovered.receipts.walk.revision).toBe(1);
+ expect(recovered.receipts['backup-failure:walk'].cleared).toBe(true);
+});

@@ -10,13 +10,19 @@ extension LocationRecorder {
         guard UUID(uuidString:place.id) != nil, !place.name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
               ["home","work","favourite"].contains(place.kind), abs(place.latitude) <= 90, abs(place.longitude) <= 180,
               place.radius >= 50, place.radius <= 2000 else { throw failure("Choose a name, valid coordinates and a radius from 50–2000 m.") }
+        if let radius = place.homeRecognitionRadius,
+           !SavedPlace.homeRadiusRange.contains(radius) { throw failure("Choose a Home recognition radius from 15–150 m.") }
         var updated = places.filter { $0.id != place.id && (place.kind == "favourite" || $0.kind != place.kind) }
         updated.append(place)
         guard updated.count <= 50 else { throw failure("Up to 50 saved places are supported.") }
         let data = try JSONEncoder().encode(updated)
         guard let storage = storage else { throw failure("Place storage is unavailable.") }
         try storage.writeData(data,name:"places.data"); places = updated
-        if automaticAvailable { configurePlaceRegions() }
+        if place.kind == "home" {
+            homeRest.reset()
+            if dwell?.placeKind == "home" { setDwell(nil, reason:"Home settings changed") }
+        }
+        if automaticAvailable { configurePlaceRegions(); reconcileAutomaticSampling() }
     }
     func updateActivity(id: String, title: String, activity: String, description: String, notes: String, tags: [String], collection: String, vehicle: String?, vehicleID: String? = nil) throws {
         guard let index = trips.firstIndex(where: { $0.id == id }), let storage = storage else { throw failure("Activity not found.") }
@@ -490,7 +496,17 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     } }
     @objc func savePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
-        do { try LocationRecorder.shared.savePlace(SavedPlace(id:call.getString("id") ?? UUID().uuidString,name:call.getString("name") ?? "",kind:call.getString("kind") ?? "favourite",latitude:call.getDouble("latitude") ?? 999,longitude:call.getDouble("longitude") ?? 999,radius:call.getDouble("radius") ?? 150,shareWithFriends:call.getBool("shareWithFriends") ?? LocationRecorder.shared.places.first(where:{ $0.id == call.getString("id") })?.shareWithFriends)); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+        let recorder = LocationRecorder.shared
+        let id = call.getString("id") ?? UUID().uuidString
+        let existing = recorder.places.first { $0.id == id }
+        let kind = call.getString("kind") ?? "favourite"
+        let place = SavedPlace(id:id, name:call.getString("name") ?? "", kind:kind,
+            latitude:call.getDouble("latitude") ?? 999, longitude:call.getDouble("longitude") ?? 999,
+            radius:call.getDouble("radius") ?? existing?.radius ?? 150,
+            shareWithFriends:call.getBool("shareWithFriends") ?? existing?.shareWithFriends,
+            homeRecognitionRadius:kind == "home" ? call.getDouble("homeRecognitionRadius") ?? existing?.homeRecognitionRadius : nil)
+        do { try recorder.savePlace(place); call.resolve(recorder.snapshot()) }
+        catch { call.reject(error.localizedDescription) }
     } }
     @objc func removePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

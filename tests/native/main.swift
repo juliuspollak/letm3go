@@ -158,10 +158,10 @@ check(transition.candidates.isEmpty,"5 m/s without automotive motion is never bu
 // Cycling recording or fall through to Driving at e-bike speeds.
 transition.reset()
 let eBike=MotionEvidence(types:["Cycling"],confidence:"high",timestamp:800)
-check(transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800,from:.onFoot) == nil,"fresh cycling motion is ignored for automatic transitions")
+check(transition.observe(drivingFix(-33,800,speed:8),motion:eBike,now:800,from:.onFoot) == nil,"one cycling fix does not close a walk")
 check(transition.observe(drivingFix(-32.9988,812,speed:8),motion:eBike,now:812,from:.onFoot) == nil,"two e-bike fixes cannot split walking")
-check(transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826,from:.onFoot) == nil,"an e-bike cannot create an automatic Cycling or Driving transition")
-check(transition.candidates.isEmpty,"cycling motion is never buffered as an automatic transition")
+check(transition.observe(drivingFix(-32.9976,826,speed:8),motion:eBike,now:826,from:.onFoot) == .cycling,"a confirmed e-bike transition can close a walk")
+check(!AutomaticActivityPolicy.allows(.cycling),"cycling stays manual-only")
 check(AutomaticDetector.cyclingMotion(eBike,now:801),"fresh cycling motion is credible")
 var detector = AutomaticDetector()
 check(detector.observe(point(-33,100),motion:motion,manualActive:false,now:100) == nil,"departure candidate")
@@ -258,7 +258,7 @@ check(stopPolicy.shouldArrive(now:560,activity:"Walking"),"a fresh fix after an 
 check(JourneyContinuation.canResume(stoppedAt:1000,now:1600,distance:40,family:.onFoot,movement:.onFoot),"a walk continues after a shop visit")
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1000+JourneyContinuation.window+1,distance:40,family:.onFoot,movement:.onFoot),"a continuation expires after the window")
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:JourneyContinuation.radius+1,family:.onFoot,movement:.onFoot),"a continuation must begin near the stop")
-check(JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving),"walking into a car continues the journey so the drive can be split out")
+check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving),"vehicle movement cannot resume a stopped walk")
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.onFoot),"walking away from a parked car starts a new activity")
 check(JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.driving,movement:.driving),"a drive continues after a break")
 check(!JourneyContinuation.canResume(stoppedAt:1000,now:1100,distance:50,family:.cycling,movement:.driving),"a bicycle is not continued by a drive")
@@ -271,7 +271,7 @@ check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.dri
 check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:JourneyContinuation.radius+1,family:.driving,movement:.onFoot) == .finish(reason:"Stopped journey ended: movement resumed away from the stop"),"walking away from the stop ends the drive")
 check(JourneyContinuation.decide(stoppedAt:1000,now:1000+JourneyContinuation.vehiclePauseWindow+1,distance:50,family:.driving,movement:.driving,window:JourneyContinuation.vehiclePauseWindow) == .finish(reason:"Journey completed after the continuation window"),"an abandoned drive completes when its window ends")
 check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.cycling,movement:.driving) == .waiting,"a bicycle is not continued by a drive but its stop stays open")
-check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving) == .resume,"walking into a car continues the walk so the drive can be split out")
+check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:50,family:.onFoot,movement:.driving) == .waiting,"unconfirmed driving does not extend the walk")
 // A stop is separated from a continuation by context, not by elapsed time alone.
 // The window still absorbs congestion and lights; whether a quick shop is a
 // destination is now the stop classifier's decision (below), not the window's.
@@ -1899,49 +1899,7 @@ func walkPath(_ waypoints: [(Double,Double)], start: Double, speed: Double = 1.3
     }
     return fixes
 }
-func isGenuine(_ verdict: LocalWalk.Verdict) -> Bool { if case .genuine = verdict { return true }; return false }
-func isPending(_ verdict: LocalWalk.Verdict) -> Bool { if case .pending = verdict { return true }; return false }
-func isLocal(_ verdict: LocalWalk.Verdict) -> Bool { if case .local = verdict { return true }; return false }
-let savedHome = DwellArea.saved(SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:50),now:0)
 let carPark = DwellArea.arrival(at:placeFix(0,0,0,speed:0))
-check(savedHome.departureDistance == 150 && carPark.radius == 60 && carPark.departureDistance == 410,"a saved Home has a known boundary; an arrival may be a venue of unknown size")
-
-// 1-2. Home: rooms and the garden are local movement.
-let rooms = walkPath([(0,0),(10,5),(15,-5),(5,8),(0,0),(12,12)],start:0,speed:0.8,every:4,pauses:[0,60,60,60,60,60])
-check(isLocal(LocalWalk.assess(rooms,from:savedHome,ending:true)),"moving between rooms never becomes a walk")
-let garden = walkPath([(0,0),(40,0),(40,30),(0,30),(0,0)],start:0,speed:1.0)
-check(isLocal(LocalWalk.assess(garden,from:savedHome,ending:true)),"a lap of the garden never becomes a walk")
-// 3. Home to a café 400 m away is a journey once it clearly leaves, from its first fix.
-let cafe = walkPath([(0,0),(400,0)],start:0)
-check(LocalWalk.assess(cafe.filter{ $0.latitude < -33 + 100/111_320 },from:savedHome,ending:false) == .pending,"100 m down the street is still being checked")
-check(isGenuine(LocalWalk.assess(cafe,from:savedHome,ending:false)),"walking to a café is confirmed while it is happening")
-check(cafe.first?.timestamp == 0,"the confirmed walk keeps its real first fix")
-// 4. A 45-minute shopping visit: walking between shops with long stops is local, however it is split.
-let shopping = walkPath([(0,0),(80,20),(150,-30),(220,40),(120,100),(60,-20),(0,0)],start:0,speed:1.1,pauses:[0,300,300,300,300,300,300])
-check(isLocal(LocalWalk.assess(shopping,from:carPark,ending:true)),"a shopping visit is not recorded as walking")
-let shoppingMetrics = LocalWalk.metrics(shopping,from:carPark)
-check(shoppingMetrics.stoppedFraction > 0.6 && shoppingMetrics.duration >= 1800,"shopping is mostly stopped time")
-var grownCarPark = carPark
-grownCarPark.absorb(shopping)
-check(grownCarPark.radius > carPark.radius && grownCarPark.radius <= DwellArea.maximumRadius,"suppressed local walking widens the place, within its cap")
-var hugeWalk = carPark
-hugeWalk.absorb(walkPath([(0,0),(3000,0)],start:0))
-check(hugeWalk.radius == DwellArea.maximumRadius,"an area can never grow to cover a neighbourhood")
-var keptHome = savedHome
-keptHome.absorb(garden + cafe)
-check(keptHome.radius == 50,"a saved place keeps the boundary the person chose")
-// 5. 300-500 m of walking inside a large venue is not a journey.
-let venue = walkPath([(0,0),(300,0),(250,60),(150,40)],start:0,speed:0.9,pauses:[0,90,90,0],accuracy:30)
-check(LocalWalk.metrics(venue,from:carPark).path >= 250,"the indoor venue walk covers several hundred metres")
-check(isLocal(LocalWalk.assess(venue,from:carPark,ending:true)),"crossing a large venue does not count as leaving it")
-// 6. Walking through the venue on to a station is a journey, from its start.
-let station = walkPath([(0,0),(300,0),(900,0)],start:0)
-check(isGenuine(LocalWalk.assess(station,from:carPark,ending:false)),"walking through a venue towards another destination is a journey")
-// 7. Drive to school, walk the grounds, drive away: two drives and no walk.
-check(JourneyContinuation.decide(stoppedAt:1000,now:1100,distance:80,family:.driving,movement:.onFoot,change:.onFoot) == .finish(reason:JourneyContinuation.changeReason(from:.driving,to:.onFoot)),"walking away from the parked car ends the incoming drive")
-let schoolGrounds = walkPath([(0,0),(100,50),(150,0),(50,-50),(0,0)],start:1100,speed:1.0,pauses:[0,120,120,120,0])
-check(isLocal(LocalWalk.assess(schoolGrounds,from:carPark,ending:true)),"walking around the school is not recorded")
-check(LocalWalk.vehicleDeparture([drivingFix(-33,3000),drivingFix(-33.0005,3005),drivingFix(-33.001,3010)],motion:carMotion(3010),now:3010),"the departing drive is never held back")
 // 8. A five-minute stop with the car is one journey, and the stop is not a GPS gap.
 var errand = RecordedActivity(activity:"Driving",startedAt:0,resumedAt:0,title:"Drive")
 errand.recordingMode = "automatic"
@@ -1960,29 +1918,6 @@ check(errandQuality.stopCount == 1 && errandQuality.gapCount == 1 && errandQuali
 // 9. A destination stop is never merged across its window.
 check(JourneyContinuation.decide(stoppedAt:1000,now:1000+JourneyContinuation.savedPlaceWindow+1,distance:20,family:.driving,movement:.driving,window:JourneyContinuation.savedPlaceWindow) == .finish(reason:"Journey completed after the continuation window"),"a drive home after a stop at a saved place is a new drive")
 check(JourneyContinuation.decide(stoppedAt:1000,now:1000+45*60,distance:20,family:.driving,movement:.driving,window:JourneyContinuation.vehiclePauseWindow) == .finish(reason:"Journey completed after the continuation window"),"a 45-minute shopping visit separates the two drives")
-// 10. A walk around the neighbourhood that returns home is a walk.
-let neighbourhood = walkPath([(0,0),(300,0),(300,300),(0,300),(0,0)],start:0)
-check(isGenuine(LocalWalk.assess(neighbourhood,from:savedHome,ending:true)),"a circular neighbourhood walk that ends at home is recorded")
-// 11. A loop in a park that never leaves the arrival area is still recognised.
-var loop:[(Double,Double)] = []
-for _ in 0..<2 { for k in 0..<24 { let a = Double(k)/24*2*Double.pi; loop.append((150-120*cos(a),120*sin(a))) } }
-loop.append((30,0))
-let parkWalk = walkPath(loop,start:0)
-check(LocalWalk.metrics(parkWalk,from:carPark).farthest < carPark.departureDistance,"the park loop stays inside the arrival area")
-check(LocalWalk.assess(parkWalk,from:carPark,ending:true) == .genuine("Sustained walk within the arrival area"),"a sustained walking loop in a park is recorded")
-check(LocalWalk.assess(walkPath(loop,start:0,speed:2.8),from:carPark,ending:true) == .genuine("Sustained run within the arrival area"),"a running loop is recorded")
-check(LocalWalk.assess(Array(parkWalk.prefix(30)),from:carPark,ending:false) == .pending,"the loop is pending until it is clearly sustained")
-// 12. Stationary drift produces no journey.
-var drift:[GPSPoint] = []
-for i in 0..<120 { drift.append(placeFix(Double((i*7)%31)-15,Double((i*11)%29)-14,Double(i)*10,speed:Double(i%3),accuracy:25)) }
-check(LocalWalk.metrics(drift,from:carPark).path == 0,"jitter inside its own uncertainty adds no path")
-check(isLocal(LocalWalk.assess(drift,from:carPark,ending:true)) && isLocal(LocalWalk.assess(drift,from:savedHome,ending:true)),"twenty minutes of drift is never a walk")
-// 13. Low-accuracy fixes cannot fake a departure.
-let coarseFar = [placeFix(800,0,0,accuracy:120),placeFix(810,0,10,accuracy:120),placeFix(820,0,20,accuracy:120)]
-check(LocalWalk.metrics(coarseFar,from:carPark).fixesBeyond == 0 && !carPark.clearlyLeft(placeFix(800,0,0,accuracy:120)),"fixes too coarse to place someone cannot prove they left")
-let borderline = [placeFix(430,0,0,accuracy:65),placeFix(432,0,10,accuracy:65)]
-check(LocalWalk.metrics(borderline,from:carPark).fixesBeyond == 0,"a coarse fix is never taken as further away than it can be shown to be")
-check(LocalWalk.assess([placeFix(0,0,0),placeFix(500,0,30)],from:carPark,ending:false) == .pending,"one far fix alone is not a departure")
 // 14-15. Leaving an inferred place or Home upgrades to precise GPS.
 var inference = DwellInference()
 check(inference.observe(placeFix(0,0,1000),now:1000) == nil,"the first quiet fix starts the clock")
@@ -1997,7 +1932,6 @@ check(inference.observe(placeFix(0,0,1000),now:1300) == nil,"a stale fix is igno
 var departing = AutomaticSampling()
 departing.requestProbe(now:5000,movementBegan:true)
 check(departing.locationMode(available:true,manualActive:false,automaticRecording:false,now:5001,resting:true) == .precise,"GPS evidence of leaving any place switches straight to precise GPS")
-check(isGenuine(LocalWalk.assess(walkPath([(0,0),(600,0)],start:5000),from:inferred!,ending:false)),"walking out of an inferred place is a journey")
 // 16. Indoor movement does not keep re-enabling precise GPS; departures still work hours later.
 var gate = MotionProbeGate()
 check(gate.allows(onFootOnly:true,dwellSettled:true,now:100),"the first walking movement in a place may check for a departure")
@@ -2008,9 +1942,6 @@ check(gate.allows(onFootOnly:true,dwellSettled:false,now:400),"before a place is
 check(gate.allows(onFootOnly:true,dwellSettled:true,now:100+4*3600),"after hours with the phone locked the next movement checks immediately")
 check(BackgroundSessionPolicy.wanted(automaticAvailable:true,manualRecording:false) && !BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:true,manualRecording:false),"staying at any place never ends the background session")
 // 18. Walking <-> driving transitions.
-check(!LocalWalk.vehicleDeparture([placeFix(0,0,0),placeFix(6,0,5),placeFix(12,0,10)],motion:footMotion(10),now:10),"a walk is checked against the place")
-check(LocalWalk.vehicleDeparture([drivingFix(-33,0),drivingFix(-33.0005,5),drivingFix(-33.001,10)],motion:MotionEvidence(),now:10),"sustained vehicle speed is a drive even without Core Motion")
-check(LocalWalk.vehicleDeparture([placeFix(0,0,0),placeFix(6,0,5)],motion:MotionEvidence(types:["Cycling"],confidence:"high",timestamp:5,continuous:true),now:5),"cycling is never held back")
 var walkToCar=MovementTransition()
 _ = walkToCar.observe(metreFix(0,2000,speed:9),motion:carMotion(2000),now:2000,from:.onFoot)
 _ = walkToCar.observe(metreFix(90,2010,speed:9),motion:carMotion(2010),now:2010,from:.onFoot)
@@ -2029,21 +1960,6 @@ check(carPark.summary["placeRadiusMeters"] == "60" && carPark.summary.values.all
 let mallInside = walkPath([(0,0),(60,20),(100,30)],start:0,speed:1.0,pauses:[0,120,120],accuracy:35)
 let toStation = Array(walkPath([(100,30),(120,0),(370,0)],start:mallInside.last!.timestamp,speed:1.3,accuracy:6).dropFirst())
 let mallToStation = mallInside + toStation
-check(LocalWalk.metrics(mallToStation,from:carPark).fixesBeyond == 0,"the station lies inside the venue-sized margin, so distance alone would have suppressed it")
-check(isGenuine(LocalWalk.assess(mallToStation,from:carPark,ending:true)),"leaving a shopping centre on foot for a station 250 m away is a journey")
-check(isGenuine(LocalWalk.assess(mallToStation.filter { $0.latitude <= -33 + 330/111_320 },from:carPark,ending:false)),"it is confirmed while walking, before reaching the station")
-check(mallToStation.first?.timestamp == 0,"its record keeps the walk's real first fix")
-let desk = DwellArea.arrival(at:placeFix(0,0,0,speed:0),source:.inferred)
-let officeIndoors = walkPath([(0,0),(25,10)],start:0,speed:1.0,accuracy:30)
-let officeToCafe = officeIndoors + Array(walkPath([(25,10),(40,40),(300,60)],start:officeIndoors.last!.timestamp,speed:1.3,accuracy:5).dropFirst())
-check(isGenuine(LocalWalk.assess(officeToCafe,from:desk,ending:true)),"walking from the office to a café 300 m away is a journey")
-let promenade = walkPath([(0,0),(100,0),(200,0),(300,0)],start:0,speed:1.1,pauses:[0,120,120,120],accuracy:8)
-check(isLocal(LocalWalk.assess(promenade,from:carPark,ending:true)),"an outdoor shopping strip, stopping at shop after shop, stays local")
-let toClassroom = walkPath([(0,0),(200,0)],start:0,speed:1.2,pauses:[0,600],accuracy:6)
-check(isLocal(LocalWalk.assess(toClassroom,from:carPark,ending:true)) && LocalWalk.assess(Array(toClassroom.prefix(40)),from:carPark,ending:false) == .pending,"walking 200 m from the car park to a classroom stays local")
-check(isLocal(LocalWalk.assess(walkPath([(0,0),(150,0)],start:0,accuracy:6),from:desk,ending:true)),"documented limit: a 150 m walk from an inferred place is not recorded")
-check(LocalWalk.assess(neighbourhood,from:savedHome,ending:true) == .genuine("Walk left the saved area") && LocalWalk.assess(parkWalk,from:carPark,ending:true) == .genuine("Sustained walk within the arrival area"),"circular walks and exercise loops are unchanged")
-
 // A pending walk survives a restart in the account's own storage: within the
 // recovery window it resumes with its fixes and origin; later, its saved fixes
 // decide, and nothing is added for the time the app was not running.
@@ -2056,13 +1972,7 @@ let restoredWalk = try! JSONDecoder().decode(RecordedActivity.self,from:JSONEnco
 let pendingLastFix = restoredWalk.points.last!.timestamp
 check(restoredWalk.details?.localWalkOrigin == carPark && restoredWalk.points.count == pendingWalk.points.count && restoredWalk.points.first?.timestamp == 0,"a pending walk is stored with its origin and every saved fix")
 check(AutomaticRecovery.plan([restoredWalk],now:pendingLastFix+600) == AutomaticRecovery.Plan(tripID:restoredWalk.id,action:.resume,otherFinished:[]),"a relaunch within 30 minutes resumes the pending walk")
-check(AutomaticRecovery.plan([restoredWalk],now:pendingLastFix+3600).action != .resume,"after a longer stop the walk is closed at its last saved fix")
-check(isGenuine(LocalWalk.assess(restoredWalk.points,from:carPark,ending:true)),"a walk whose saved fixes already prove a departure is kept after a long restart")
-var interruptedLocal = RecordedActivity(activity:"Walking",startedAt:0,resumedAt:0,title:"Walking")
-interruptedLocal.recordingMode = "automatic"
-for fix in promenade { _ = interruptedLocal.accept(fix,now:fix.timestamp) }
-check(isLocal(LocalWalk.assess(interruptedLocal.points,from:carPark,ending:true)),"local walking interrupted by a restart is still not published")
-
+check(AutomaticRecovery.plan([restoredWalk],now:pendingLastFix+3600).action == .resume,"a walking draft can recover after an hour")
 // Leaving on foot is not held back by the walking-motion cooldown.
 check(carPark.steppedOut(placeFix(100,0,0,accuracy:10)),"an accurate fix beyond the occupied area starts a departure check")
 check(!carPark.steppedOut(placeFix(100,0,0,accuracy:40)) && !carPark.steppedOut(placeFix(50,0,0,accuracy:10)),"coarse indoor fixes and movement inside the area do not")
@@ -5923,129 +5833,143 @@ do {
 }
 
 
-// MARK: Local walking that adds up to a walk
+// MARK: Walking confidence, Home recognition, and continuation
 do {
-    // A walk along the water in three pieces, with the numbers from a real one: 263 m over 521 s, 209 m over 596 s, 490 m over 1046 s.
-    func stretch(startNorth: Double, east: Double, metres: Double, seconds: Double, from t0: Double) -> [GPSPoint] {
-        let count = Int(seconds / 10)
-        return (0...count).map { i in
-            let along = metres * Double(i) / Double(count)
-            return GPSPoint(latitude: -33 + (startNorth + along) / 111_320, longitude: 151 + east / 93_000, timestamp: t0 + Double(i) * 10, accuracy: 8, altitude: 0, speed: 0.6)
-        }
+    let home = SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:150)
+    let legacy = try! JSONDecoder().decode(SavedPlace.self,from:JSONEncoder().encode(home))
+    check(legacy.recognitionRadius == 30 && DwellArea.saved(legacy,now:0).radius == 30,"legacy Home defaults to 30 metres")
+    var property = home
+    property.homeRecognitionRadius = 150
+    check(property.recognitionRadius == 150 && DwellArea.saved(property,now:0).radius == 150,"large Home uses the configured radius")
+    let nearby = placeFix(70,0,0)
+    check(home.contains(nearby) && !home.recognitionPlace.contains(nearby) &&
+          property.contains(nearby) && property.recognitionPlace.contains(nearby),
+          "editing Home recognition does not change driving arrival and endpoint matching")
+
+    // Both routes stay within their configured Home radius, including a loop
+    // that begins and ends at the same fix.
+    let loop = walkPath([(-20,0),(0,20),(20,0),(0,-20),(-20,0)],start:1000,every:5,accuracy:4)
+    let grounds = walkPath([(-90,0),(0,90),(90,0),(0,-90),(-90,0)],start:1000,accuracy:8)
+    check(loop.allSatisfy(home.recognitionPlace.contains) && WalkingConfidence(loop).confirms(motionSupported:true),"a circular walk wholly inside default Home qualifies")
+    var detector = AutomaticDetector()
+    let detectedLoop = loop.contains { detector.observe($0,motion:footMotion($0.timestamp),manualActive:false,now:$0.timestamp) == "depart" }
+    check(detectedLoop,"a loop can start without needing to move away from Home")
+    check(grounds.allSatisfy(property.recognitionPlace.contains) && WalkingConfidence(grounds).confirms(motionSupported:false),"a loop on a large property qualifies from GPS alone")
+
+    let drift = (0..<120).map { i in
+        let north = Double((i*7)%31)-15
+        let east = Double((i*11)%29)-14
+        return placeFix(north,east,Double(i)*10,speed:0.9,accuracy:25)
     }
-    let t0 = 1_000_000.0
-    // A real stroll is stop-start: 30 s of walking, 30 s standing about, over and over.
-    func strollingStretch(metres: Double, seconds: Double, from t0: Double) -> [GPSPoint] {
-        let count = Int(seconds / 10)
-        let movingFixes = (0...count).filter { ($0 / 3) % 2 == 0 }.count
-        let perFix = metres / Double(max(1, movingFixes))
-        var along = 0.0
-        return (0...count).map { i in
-            if (i / 3) % 2 == 0 { along += perFix }
-            return GPSPoint(latitude: -33 + along / 111_320, longitude: 151, timestamp: t0 + Double(i) * 10, accuracy: 8, altitude: 0, speed: ((i / 3) % 2 == 0) ? 1.0 : 0.1)
-        }
+    check(!WalkingConfidence(drift).confirms(motionSupported:true),"stationary drift cannot be promoted by a walking label alone")
+    let coarse = walkPath([(0,0),(650,0)],start:1000,every:10,accuracy:55)
+    check(WalkingConfidence(coarse).confirms(motionSupported:true),"sustained walking with entirely coarse GPS can be confirmed")
+    check(!WalkingConfidence(Array(coarse.prefix(10))).confirms(motionSupported:true),"weak initial evidence stays unconfirmed")
+
+    var dense = RecordedActivity(activity:"Unknown",startedAt:1000,resumedAt:1000,title:"Journey")
+    dense.recordingMode = "automatic"
+    dense.updateDetails { $0.localWalkOrigin = DwellArea.saved(home,now:1000) }
+    dense.noteWalkingMotion(footMotion(1000),now:1000)
+    for fix in walkPath([(0,0),(650,0)],start:1000,every:5,accuracy:55) { _ = dense.accept(fix,now:fix.timestamp) }
+    check(dense.distanceMeters < 25 && dense.confirmPendingWalk() && dense.measuredDistance > 500,
+          "frequent coarse fixes preserve proven walking distance even when each fix is below the jitter floor")
+
+    let out = walkPath([(0,0),(260,0)],start:1000)
+    var walk = RecordedActivity(activity:"Unknown",startedAt:1000,resumedAt:1000,title:"Journey")
+    walk.recordingMode = "automatic"
+    walk.details = ActivityDetails()
+    walk.details?.localWalkOrigin = DwellArea.saved(home,now:1000)
+    walk.noteWalkingMotion(footMotion(1000),now:1000)
+    for point in out.prefix(7) { _ = walk.accept(point,now:point.timestamp) }
+    check(!walk.confirmPendingWalk() && walk.isAutomaticWalk,"the early route remains a walking candidate")
+    for point in out.dropFirst(7) { _ = walk.accept(point,now:point.timestamp) }
+    check(walk.confirmPendingWalk() && walk.activity == "Walking","additional evidence promotes the same draft")
+    let id = walk.id
+    let cafeWindow = JourneyContinuation.window(for:StopContext(family:.onFoot,placeKind:"favourite",placeName:"Café"))
+    let firstStop = out.last!.timestamp
+    walk.publishStop(at:firstStop,continuationEndsAt:firstStop+cafeWindow)
+    walk = try! JSONDecoder().decode(RecordedActivity.self,from:JSONEncoder().encode(walk))
+    let leave = firstStop + 90 * 60
+    check(ProvisionalRecovery.plan([walk],now:leave).resumed == id,"the saved walk restores after a 90-minute café stop")
+    check(JourneyContinuation.decide(stoppedAt:firstStop,now:leave,distance:40,family:.onFoot,movement:.onFoot,window:cafeWindow) == .resume,"walking after a saved café stop continues the outing")
+    check(walk.continueAfterStop(at:leave),"the first stop resumes")
+    let back = walkPath([(260,0),(130,0)],start:leave)
+    for point in back { _ = walk.accept(point,now:point.timestamp) }
+    let secondStop = back.last!.timestamp
+    walk.publishStop(at:secondStop,continuationEndsAt:secondStop+cafeWindow)
+    check(walk.continueAfterStop(at:secondStop+300),"a second stop resumes the same walk")
+    for point in walkPath([(130,0),(0,0)],start:secondStop+300) { _ = walk.accept(point,now:point.timestamp) }
+    let end = walk.points.last!.timestamp
+    walk.finish(at:end)
+    check(walk.id == id && walk.details?.stops?.count == 2 && Set(walk.points.map(\.segment)).count == 3,"repeated stops retain one ID and three route segments")
+    check(abs(end-walk.startedAt-6100) < 1 && (350...400).contains(walk.automaticWalkMovingSeconds ?? 0),"elapsed includes both stops and moving time excludes them")
+    check(JourneyContinuation.decide(stoppedAt:end,now:end+7201,distance:40,family:.onFoot,movement:.onFoot,window:cafeWindow) != .resume,"a stop after two hours starts a fresh outing")
+
+    var bicycle = MovementTransition()
+    let changes = [0.0,50,100].enumerated().compactMap { index, metres -> JourneyFamily? in
+        let at = end + Double(index) * 10
+        return bicycle.observe(placeFix(metres,0,at,speed:5),motion:MotionEvidence(types:["Cycling"],confidence:"high",timestamp:at),now:at,from:.onFoot)
     }
-    let a = stretch(startNorth: 0, east: 0, metres: 263, seconds: 521, from: t0)
-    let b = stretch(startNorth: 40, east: 30, metres: 209, seconds: 596, from: t0 + 700)
-    let c = strollingStretch(metres: 490, seconds: 1046, from: t0 + 1500)
-    check(LocalWalk.pathLength(a) > 200 && LocalWalk.pathLength(a) <= 270, "path length follows the walked distance")
-    var ledger = LocalWalkLedger()
-    ledger.add(a, now: t0 + 600)
-    check(ledger.combinedWalk(now: t0 + 600) == nil, "one stretch alone is still local walking")
-    ledger.add(b, now: t0 + 1400)
-    let early = ledger.combinedWalk(now: t0 + 1400)
-    check(early != nil && early!.count == a.count + b.count, "two outdoor stretches (472 m over 18 min) already add up to a walk")
-    ledger.add(c, now: t0 + 2600)
-    let walk = ledger.combinedWalk(now: t0 + 2600)
-    check(walk != nil, "the three stretches together (about 960 m over 36 min) are a walk")
-    check(walk.map { $0.count == a.count + b.count + c.count } ?? false, "every fix of every stretch is in it")
-    // The same stretches with poor, indoor-quality fixes never add up.
-    var indoor = LocalWalkLedger()
-    for (i, piece) in [a, b, c].enumerated() { indoor.add(piece.map { var q = $0; q.accuracy = 45; return q }, now: t0 + 600 + Double(i) * 800) }
-    check(indoor.combinedWalk(now: t0 + 2600) == nil, "stretches of indoor-quality fixes never add up to a walk")
-    // The place you arrived at, as the recorder grows it: about 200 m across.
-    func bigArea(_ p: GPSPoint) -> DwellArea { DwellArea(source: .arrival, placeKind: nil, latitude: p.latitude, longitude: p.longitude, radius: 200, since: p.timestamp) }
-    // One long outdoor stretch is a walk by itself, even inside the area you arrived at.
-    let area = bigArea(c.first!)
-    if case .genuine = LocalWalk.assess(c, from: area, ending: true) { check(true, "17 minutes of outdoor walking from where you parked is a walk") } else { check(false, "17 minutes of outdoor walking from where you parked is a walk") }
-    if case .local = LocalWalk.assess(a, from: bigArea(a.first!), ending: true) { check(true, "a short stretch (263 m, 8.7 min) alone is still local walking") } else { check(false, "a short stretch (263 m, 8.7 min) alone is still local walking") }
-    if case .local = LocalWalk.assess(c.map { var q = $0; q.accuracy = 45; return q }, from: bigArea(c.first!), ending: true) { check(true, "the same 17 minutes with indoor-quality fixes is local milling") } else { check(false, "the same 17 minutes with indoor-quality fixes is local milling") }
-    let slow = stretch(startNorth: 0, east: 0, metres: 120, seconds: 1200, from: t0)
-    if case .local = LocalWalk.assess(slow, from: bigArea(slow.first!), ending: true) { check(true, "20 minutes of milling that covers 120 m of ground is local walking") } else { check(false, "20 minutes of milling that covers 120 m of ground is local walking") }
-    check(walk.map { zip($0, $0.dropFirst()).allSatisfy { $0.timestamp <= $1.timestamp } } ?? false, "in time order")
-    check(ledger.pieces.count == 3, "the pieces are kept until something uses them")
-    ledger.clear()
-    check(ledger.pieces.isEmpty && ledger.combinedWalk(now: t0 + 2600) == nil, "clearing empties it")
+    check(changes == [.cycling] && !AutomaticActivityPolicy.allows(.cycling),"confirmed cycling closes a walk without automatically recording a bike ride")
+    for family in [JourneyFamily.driving,.cycling] {
+        check(JourneyContinuation.decide(stoppedAt:end,now:end+30,distance:400,family:.onFoot,movement:family,change:family,window:cafeWindow) == .finish(reason:JourneyContinuation.changeReason(from:.onFoot,to:family)),"confirmed transport closes a stopped walk before the new fixes are appended")
+    }
 
-    // Stretches near each other only: a walk elsewhere, an hour later and a kilometre away, never joins in.
-    var spread = LocalWalkLedger()
-    spread.add(a, now: t0 + 600)
-    let farA = stretch(startNorth: 3000, east: 3000, metres: 250, seconds: 500, from: t0 + 800)
-    let farB = stretch(startNorth: 3000, east: 3000, metres: 100, seconds: 300, from: t0 + 2000)
-    spread.add(farA, now: t0 + 1400)
-    spread.add(farB, now: t0 + 2400)
-    check(spread.combinedWalk(now: t0 + 2400) == nil, "pieces that began far from the latest one are not counted with it (and the two near ones alone are too little)")
-    let farC = stretch(startNorth: 3000, east: 3000, metres: 300, seconds: 600, from: t0 + 2600)
-    spread.add(farC, now: t0 + 3300)
-    let farWalk = spread.combinedWalk(now: t0 + 3300)
-    check(farWalk != nil && farWalk!.count == farA.count + farB.count + farC.count, "once the latest three add up they make a walk, without the stretch a kilometre away")
-
-    var old = LocalWalkLedger()
-    old.add(a, now: t0 + 600)
-    old.add(b, now: t0 + 1400)
-    old.add(c, now: t0 + 1400 + LocalWalkLedger.maximumAge + 100)
-    check(old.pieces.count == 1 && old.combinedWalk(now: t0 + 1400 + LocalWalkLedger.maximumAge + 100) == nil, "pieces older than two hours are dropped when the next one arrives")
-
-    var junk = LocalWalkLedger()
-    junk.add([GPSPoint(latitude: -33, longitude: 151, timestamp: t0, accuracy: 8, altitude: 0, speed: 0)], now: t0)
-    junk.add(a.map { var p = $0; p.accuracy = 120; return p }, now: t0)
-    check(junk.pieces.isEmpty, "a stretch with fewer than three usable fixes is not kept")
-
-    var many = LocalWalkLedger()
-    for i in 0..<40 { many.add(stretch(startNorth: 0, east: 0, metres: 30, seconds: 120, from: t0 + Double(i) * 200), now: t0 + Double(i) * 200 + 130) }
-    check(many.pieces.count <= LocalWalkLedger.maximumPieces, "the ledger is bounded")
-    let encoded = try! JSONEncoder().encode(ledger)
-    check((try? JSONDecoder().decode(LocalWalkLedger.self, from: encoded)) == ledger, "it survives being saved and loaded")
-    var shop = LocalWalkLedger()
-    shop.add(stretch(startNorth: 0, east: 0, metres: 150, seconds: 400, from: t0), now: t0 + 420)
-    shop.add(stretch(startNorth: 20, east: 10, metres: 150, seconds: 400, from: t0 + 900), now: t0 + 1320)
-    check(shop.combinedWalk(now: t0 + 1320) == nil, "two short wanders round a shop never turn into a walk")
+    var stoppedDetector = AutomaticDetector()
+    stoppedDetector.phase = "recording"; stoppedDetector.lastValidFixAt = end
+    check(!stoppedDetector.walkingStopWithoutFreshGPS(now:end+240),"GPS silence alone is not a stop")
+    stoppedDetector.noteMotion(MotionEvidence(types:["Stationary"],confidence:"high",timestamp:end+20),now:end+20)
+    check(stoppedDetector.walkingStopWithoutFreshGPS(now:end+150),"stationary motion can settle a walk while GPS is quiet")
 }
 
-
-// MARK: Walking rules: Home circle, outdoors, indoors, stops
+// Shell Cove feedback #42. The diagnostic reported three discarded stretches:
+// 263 m in 521 s, 209 m in 596 s, and 490 m in 1046 s. Synthetic fixes model
+// those distances and pauses without storing the customer's GPS coordinates.
 do {
-    let home = DwellArea.saved(SavedPlace(id: "home", name: "Home", kind: "home", latitude: -33, longitude: 151, radius: 150), now: 0)
-    let zone = LocalWalk.homeZone(home)
-    check(zone != nil && zone!.radius == 100 && zone!.departureDistance == 100, "Home is a 100 m circle, and leaving it is the departure")
-    check(LocalWalk.homeZone(DwellArea.saved(SavedPlace(id: "w", name: "Gym", kind: "favourite", latitude: -33, longitude: 151, radius: 150), now: 0)) == nil, "another saved place does not hold a walk back")
-    check(LocalWalk.homeZone(DwellArea.arrival(at: placeFix(0, 0, 0, speed: 0))) == nil, "the place a car stopped at does not hold a walk back")
-    check(LocalWalk.homeZone(DwellArea.visit(latitude: -33, longitude: 151, accuracy: 50, at: 0)) == nil && LocalWalk.homeZone(nil) == nil, "neither does a visit or no place at all")
-    let smallHome = DwellArea.saved(SavedPlace(id: "home", name: "Home", kind: "home", latitude: -33, longitude: 151, radius: 60), now: 0)
-    check(LocalWalk.homeZone(smallHome)!.radius == 60, "a Home smaller than 100 m keeps its own size")
+    let legs: [(Double,Double,Double)] = [(263,521,0),(209,596,180),(490,1046,860)]
+    var walk = RecordedActivity(activity:"Unknown",startedAt:1000,resumedAt:1000,title:"Journey")
+    walk.recordingMode = "automatic"
+    walk.details = ActivityDetails()
+    walk.details?.localWalkOrigin = DwellArea(source:.arrival,latitude:-33,longitude:151,radius:250,since:1000)
+    let id = walk.id
+    var north = 0.0, end = 1000.0
+    for (index, leg) in legs.enumerated() {
+        let start = end + leg.2
+        if index > 0 {
+            walk.publishStop(at:end,continuationEndsAt:end+7200)
+            check(JourneyContinuation.decide(stoppedAt:end,now:start,distance:40,family:.onFoot,movement:.onFoot,window:7200) == .resume,"Shell Cove leg \(index+1) continues")
+            check(walk.continueAfterStop(at:start),"Shell Cove keeps the same recording open")
+        }
+        let fixes = walkPath([(north,0),(north+leg.0,0)],start:start,speed:leg.0/leg.1,every:10,accuracy:8)
+        walk.noteWalkingMotion(footMotion(start),now:start)
+        for point in fixes { _ = walk.accept(point,now:point.timestamp) }
+        north += leg.0; end = fixes.last!.timestamp
+        walk.confirmPendingWalk()
+    }
+    walk.finish(at:end)
+    check(walk.id == id && walk.activity == "Walking" && walk.details?.stops?.count == 2,"Shell Cove is one walk with two stops")
+    let expectedElapsed = legs.reduce(0.0) { $0 + $1.1 + $1.2 }
+    check(abs(end-walk.startedAt-expectedElapsed)<1,"Shell Cove elapsed time includes both stops")
+}
 
-    // Walking round the house is ignored; walking away from it is a walk that keeps its first fixes.
-    let around = walkPath([(0, 0), (40, 0), (40, 60), (0, 60), (0, 0), (60, 30)], start: 0, speed: 1.2, every: 5)
-    check(isLocal(LocalWalk.assess(around, from: zone!, ending: true)), "100 m round the house is not an activity")
-    let away = walkPath([(0, 0), (260, 0)], start: 0, speed: 1.3, every: 5)
-    check(isGenuine(LocalWalk.assess(away, from: zone!, ending: false)), "walking out of the circle is confirmed while it is happening")
-    check(away.first?.timestamp == 0, "and the walk keeps every fix from where it began")
-    check(isPending(LocalWalk.assess(away.filter { $0.latitude < -33 + 60 / 111_320 }, from: zone!, ending: false)), "still inside the circle it is only being watched")
-
-    // Outdoors means accurate fixes.
-    let open = (0..<10).map { placeFix(Double($0) * 8, 0, Double($0) * 6, speed: 1.3, accuracy: 6) }
-    let mall = (0..<10).map { placeFix(Double($0) * 8, 0, Double($0) * 6, speed: 1.0, accuracy: 55) }
-    check(LocalWalk.walkingOutdoors(open), "accurate fixes are a walk outdoors")
-    check(!LocalWalk.walkingOutdoors(mall), "poor fixes are a walk indoors, which is ignored")
-    check(LocalWalk.walkingOutdoors(Array(open.prefix(6)) + Array(mall.prefix(4))), "mostly accurate is still outdoors")
-    check(!LocalWalk.walkingOutdoors(Array(open.prefix(5)) + Array(mall.prefix(5))), "half poor is indoors")
-    check(!LocalWalk.walkingOutdoors([]), "no fixes is not outdoors")
-
-    // A stop of any ordinary length does not end a walk.
-    check(JourneyContinuation.window(for: StopContext(family: .onFoot)) == 2 * 3600, "a walker's stop is waited out for two hours")
-    check(JourneyContinuation.window(for: StopContext(family: .driving)) == JourneyContinuation.vehiclePauseWindow, "a driver's stop is unchanged")
-    check(JourneyContinuation.window(for: StopContext(family: .onFoot, placeKind: "home", placeName: "Home")) == JourneyContinuation.savedPlaceWindow, "arriving at Home still ends the walk")
-    check(LocalWalk.trivialWalkMeters == 150, "under 150 m of walking is not an activity")
+// Encrypted unconfirmed evidence survives closing a draft without re-entering
+// recovery or creating a cloud deletion. Retention is enforced on write and open.
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:directory) }
+    let storage = try! RecordingStorage(directory:directory,encryptionKey:Data(repeating:7,count:32))
+    var draft = RecordedActivity(activity:"Unknown",startedAt:1000,resumedAt:1000,title:"Journey")
+    draft.recordingMode = "automatic"
+    draft.updateDetails { $0.localWalkOrigin = DwellArea.arrival(at:placeFix(0,0,1000)) }
+    for point in walkPath([(0,0),(30,0)],start:1000) { _ = draft.accept(point,now:point.timestamp) }
+    check(!draft.confirmPendingWalk(),"the sparse route has yet to prove a walk")
+    try! storage.retainUnconfirmedWalk(draft)
+    let retainedFile = "\(draft.id).unconfirmed-walk"
+    let evidence = try! JSONDecoder().decode(RecordedActivity.self,from:storage.readData(name:retainedFile))
+    check(evidence.points == draft.points && evidence.id == draft.id,"unconfirmed route retains all saved samples in encrypted storage")
+    check((try! storage.load()).isEmpty && (try! storage.deletedIDs()).isEmpty,"retained evidence is outside recording recovery and cloud deletion")
+    try! storage.pruneUnconfirmedWalks(now:Date().addingTimeInterval(8*86_400))
+    check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedFile).path),"unconfirmed route expires within the retention budget")
 }
 
 print("Final native assertion count including automatic account recovery: \(assertions)")

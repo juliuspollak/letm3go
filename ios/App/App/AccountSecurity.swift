@@ -114,7 +114,7 @@ extension LocationRecorder {
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         loadHomeWiFi()
-        loadLocalWalkLedger()
+        try? storage!.pruneUnconfirmedWalks()
         var records = try storage!.load()
         for index in records.indices where records[index].isFinalisedButUnmarked {
             records[index].repairFinalisedState()
@@ -163,15 +163,9 @@ extension LocationRecorder {
                     recoveryMessage = "Restored the automatic journey that was still recording when the recorder last stopped. Its unobserved gap is excluded from distance."
                     recordDiagnostic("recovery","Interrupted automatic journey restored",details:["savedFixes":String(record.points.count),"gapSeconds":String(Int(max(0,openedAt-lastFix)))])
                 } else {
-                    // A walk that was still being checked when the app stopped is
-                    // decided on its saved fixes; local movement is not published.
-                    if let origin = record.details?.localWalkOrigin {
-                        if case .local(let reason) = LocalWalk.assess(record.points, from: origin, ending: true) {
-                            try storage!.delete(record.id)
-                            recordDiagnostic("place","Local walking not recorded",details:["reason":reason,"savedFixes":String(record.points.count),"trigger":"relaunch"])
-                            continue
-                        }
-                        record.updateDetails { $0.localWalkOrigin = nil }
+                    if !record.confirmPendingWalk() {
+                        try retainWalkingEvidence(record,reason:"interrupted candidate expired before relaunch")
+                        continue
                     }
                     let fixes = record.points.count
                     let reason = (record.id == recovery.tripID ? recovery.action?.reason : nil)

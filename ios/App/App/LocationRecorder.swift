@@ -96,7 +96,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     var movementTransition = MovementTransition()
     var departureBackfill = DepartureBackfill()
-    var localWalkLedger = LocalWalkLedger()
+    var walkingResumption = WalkingResumption()
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
     var locationMode: AutomaticLocationMode = .off
@@ -206,7 +206,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Low-power resting applies at the current dwell area, or at a saved Home
     // when no area is known yet.
     var restPlace: SavedPlace? {
-        dwell.map { SavedPlace(id:"dwell-\(Int($0.since))",name:"Current place",kind:$0.placeKind ?? $0.source.rawValue,latitude:$0.latitude,longitude:$0.longitude,radius:$0.radius) } ?? homePlace
+        if let home = homePlace, dwell == nil || dwell?.placeKind == "home" { return home.recognitionPlace }
+        return dwell.map { SavedPlace(id:"dwell-\(Int($0.since))",name:"Current place",kind:$0.placeKind ?? $0.source.rawValue,latitude:$0.latitude,longitude:$0.longitude,radius:$0.radius) }
     }
     // No journey, published stop or departure check is open.
     var automaticIdle: Bool { automaticTrip == nil && settledTripID == nil && (automaticSampling.probeUntil ?? 0) <= Date().timeIntervalSince1970 }
@@ -753,7 +754,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             guard !manualOwnsRecording else { return }
             self.checkDwellInference(now:now)
             if self.settledAt != nil { self.finishExpiredContinuation(now:now); return }
-            guard self.automaticTrip != nil, self.detector.shouldArrive(now:now,activity:self.automaticTrip?.activity ?? "Driving") else { return }
+            guard let trip = self.automaticTrip,
+                  self.detector.shouldArrive(now:now,activity:trip.activity) ||
+                    (trip.isAutomaticWalk && self.detector.walkingStopWithoutFreshGPS(now:now)) else { return }
             self.settleAutomatic(trigger:"arrivalTimer",event:"the arrival timer confirmed the stop")
         }
     }
@@ -1498,6 +1501,10 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             }
         }
         dict["durationSeconds"] = trip.duration(at: Date().timeIntervalSince1970)
+        if let moving = trip.automaticWalkMovingSeconds {
+            dict["elapsedSeconds"] = max(0, (trip.endedAt ?? Date().timeIntervalSince1970) - trip.startedAt)
+            dict["movingSeconds"] = moving
+        }
         return dict
     }
     func snapshot(historyToken supplied: String? = nil, omitTrips: Bool = false) -> [String: Any] {
@@ -1550,9 +1557,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "motionTypes": motion.types, "motionConfidence": motion.confidence, "motionTimestamp": motion.timestamp,
                 "passiveRest":passiveSnapshot,
                 "recordingHealth":recordingHealthSnapshot,
-                "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius,"shareWithFriends":p.shareWithFriends ?? false] as [String:Any] },
+                "places": places.map { p in ["id":p.id,"name":p.name,"kind":p.kind,"latitude":p.latitude,"longitude":p.longitude,"radius":p.radius,"homeRecognitionRadius":p.recognitionRadius,"shareWithFriends":p.shareWithFriends ?? false] as [String:Any] },
                 "deletedIDs": (try? storage?.deletedIDs().sorted()) ?? [],
-                "active": active.map(dictionary) as Any? ?? NSNull(), "trips": unchanged || omitTrips ? [] : trips.map(dictionary),
+                "active": active.map(dictionary) as Any? ?? NSNull(), "trips": unchanged || omitTrips ? [] : trips.filter { $0.details?.localWalkOrigin == nil }.map(dictionary),
                 "historyToken": token, "historyUnchanged": unchanged,
                 "permission": permission, "precise": manager.accuracyAuthorization == .fullAccuracy,
                 "locationServices": locationServicesAvailable,
@@ -1647,7 +1654,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
             if call.getBool("omitTrips") == true || snapshot["historyToken"] == nil || snapshot["historyUnchanged"] as? Bool == true {
                 call.resolve(snapshot); return
             }
-            let trips = recorder.trips, owner = recorder.ownerID, hasStorage = recorder.storage != nil
+            let trips = recorder.trips.filter { $0.details?.localWalkOrigin == nil }, owner = recorder.ownerID, hasStorage = recorder.storage != nil
             DispatchQueue.global(qos: .userInitiated).async {
                 snapshot["trips"] = trips.map { LocationRecorder.dictionary($0, owner: owner, hasStorage: hasStorage) }
                 call.resolve(snapshot)

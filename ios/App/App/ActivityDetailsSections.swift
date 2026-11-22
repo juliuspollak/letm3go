@@ -72,7 +72,7 @@ struct ActivitySummarySection: View {
     let items: [ActivityPresentation.Readout]
     private var headline: [ActivityPresentation.Readout] {
         // Rope skipping leads with its jumps; every other activity keeps distance, time and climb.
-        let keys = items.contains { $0.label.lowercased() == "jumps" } ? ["jumps", "time", "avg cadence"] : ["distance", "time", "duration", "elevation gain"]
+        let keys = items.contains { $0.label.lowercased() == "jumps" } ? ["jumps", "time", "avg cadence"] : ["distance", "moving time", "elapsed time", "time", "duration", "elevation gain"]
         return keys.compactMap { key in
             items.first { $0.label.lowercased() == key }
         }.prefix(3).map { $0 }
@@ -112,7 +112,7 @@ struct ActivitySummarySection: View {
         case "jumps": return UIImage(systemName: "figure.jumprope") != nil ? "figure.jumprope" : "arrow.up.and.down"
         case "avg cadence": return "speedometer"
         case "elevation gain": return "arrow.up.right"
-        case "duration": return "timer"
+        case "duration", "moving time", "elapsed time": return "timer"
         default: return "clock"
         }
     }
