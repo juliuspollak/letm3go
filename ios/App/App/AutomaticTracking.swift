@@ -771,7 +771,8 @@ extension LocationRecorder {
                         "GPS candidate samples: \(detector.candidate.count)",
                         "Motion: \(motion.types.joined(separator:", ")) (\(motion.confidence))"
                     ]
-                    trip.details?.startPlace = places.first { $0.contains(trip.points.first ?? begin) }?.name
+                    // Named like the end of the trip (SavedPlace.names): Home outranks a favourite that overlaps it, whatever the saved order.
+                    trip.details?.startPlace = places.naming(trip.points.first ?? begin)?.name
                     let vehicle = WalkingConfidence.vehicleDeparture(detector.candidate,motion:motion,now:observedAt)
                     if !vehicle {
                         trip.details?.localWalkOrigin = walkingOrigin(at: startFix)
@@ -1163,17 +1164,18 @@ extension LocationRecorder {
         recognizedPlace(at:point).map { DwellArea.saved($0,now:point.timestamp) } ?? dwell ?? DwellArea.arrival(at:point)
     }
     // Reuse Home and other saved places: a stop inside one is a destination, not
-    // a traffic pause. The tightest containing place wins so a small saved place
-    // is not overridden by a wide one.
+    // a traffic pause. Home and Work outrank a favourite on top of them; otherwise
+    // the tightest containing place wins so a small saved place is not overridden
+    // by a wide one (SavedPlace.names).
     func stopContext(for trip: RecordedActivity, family: JourneyFamily) -> StopContext {
         guard let last = trip.points.last else { return StopContext(family:family) }
-        let place = places.filter { $0.contains(last) }.min { $0.radius < $1.radius }
+        let place = places.naming(last)
         return StopContext(family:family,placeKind:place?.kind,placeName:place?.name)
     }
     // Endpoint names come only from saved places; no place is invented here.
     func nameEndpoints(_ trip: inout RecordedActivity) {
         if trip.isAutomaticWalk { trip.updateDetails { $0.endPlace = nil } }
-        if let last = trip.points.last, let place = places.filter({ $0.contains(last) }).min(by:{ $0.radius < $1.radius }) {
+        if let last = trip.points.last, let place = places.naming(last) {
             trip.updateDetails { $0.endPlace = place.name }
         }
         if let from = trip.details?.startPlace, let to = trip.details?.endPlace {

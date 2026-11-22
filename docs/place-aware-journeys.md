@@ -66,6 +66,22 @@ Driving, cycling (by motion or three fixes faster than 3.5 m/s) and manual activ
 - The background session is untouched: no place, stop or rest ever ends it.
 - A pending walk keeps precise GPS until it stops, because stop detection needs live fixes. This costs battery during long indoor walking bouts.
 
+## Which saved place names a point
+
+A point is often inside more than one saved place: a favourite saved on top of Home (a park across the road, a destination remembered
+from a drive home) covers every drive that starts or ends there. One rule decides, in the recorder (`SavedPlace.names`, used through
+`naming(_:)`) and in the app (`namingPlace` in `rememberedPlace.js`, used by `geo()` in `journeyGrouping.js`):
+
+1. **Home and Work first.** A favourite on top of them is not where the person is. The order places were saved or edited in never decides it.
+2. Then the **tighter** place, so a small saved place is not overridden by a wide one.
+3. Then the **nearer** one. The place id only makes an exact tie repeatable.
+
+The recorder applies it to a trip's start place, its end place, the stop context and a cached place lookup. Before it, the start place and
+the lookup took the *first* saved place in list order, which `savePlace` re-appends on every edit, so editing Home could push it behind a
+favourite and name drives from home after the park ("Morley Park → Plus Fitness", feedback #45). The app also repairs the *display* of a
+title the recorder stored before the rule: an automatic trip whose title is still exactly the generated "<start> → <end>" shows Home or Work
+where the trip really started or ended. A title the person edited is never touched.
+
 ## Known limits
 
 - A walk shorter than about 200 m from an unsaved place (for example 150 m to a shop) is not recorded. An outdoor walk of 200 m or more that goes steadily away from a car park, such as across open school grounds, can be recorded.

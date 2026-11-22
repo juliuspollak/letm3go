@@ -6178,4 +6178,32 @@ do {
     check(try! store.pruneUnconfirmedWalks(now:now.addingTimeInterval(8*86_400)).count == 1,"aged evidence expires on a later prune")
 }
 
+// Overlapping saved places: Home and Work name a point before a favourite on top of them, whatever order they were saved in
+// (feedback 45: a favourite "Morley Park" beside the house titled drives from home "Morley Park → …").
+do {
+    func spot(_ metresNorth: Double, accuracy: Double = 10) -> GPSPoint {
+        GPSPoint(latitude:-33 + metresNorth / 111_195, longitude:151, timestamp:100, accuracy:accuracy, altitude:20, speed:1)
+    }
+    let house = SavedPlace(id:"b-home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:100)
+    let park = SavedPlace(id:"a-park",name:"Morley Park",kind:"favourite",latitude:-33 + 60 / 111_195,longitude:151,radius:200)
+    let gym = SavedPlace(id:"c-gym",name:"Gym",kind:"favourite",latitude:-33 + 400 / 111_195,longitude:151,radius:40)
+    let office = SavedPlace(id:"d-work",name:"Work",kind:"work",latitude:-33 + 1_000 / 111_195,longitude:151,radius:150)
+    let start = spot(30)
+    check([house,park].naming(start)?.name == "Home","Home names its own start before an overlapping favourite")
+    check([park,house].naming(start)?.name == "Home","the order the places were saved in never decides the name")
+    check([park,house].naming(spot(150))?.name == "Morley Park","outside Home the favourite names the point")
+    check([house,park,gym].naming(spot(400))?.name == "Gym","away from Home the tightest favourite wins")
+    let wide = SavedPlace(id:"e-wide",name:"Beach",kind:"favourite",latitude:-33 + 400 / 111_195,longitude:151,radius:500)
+    check([wide,gym].naming(spot(400))?.name == "Gym","a small saved place is not overridden by a wide one")
+    let tightFavourite = SavedPlace(id:"f-cafe",name:"Cafe",kind:"favourite",latitude:-33 + 20 / 111_195,longitude:151,radius:50)
+    check([tightFavourite,house].naming(spot(20))?.name == "Home","Home outranks even a tighter favourite inside it")
+    check([park,office].naming(spot(1_000))?.name == "Work","Work is named like Home")
+    check([house,park].naming(spot(30, accuracy:250)) == nil,"a fix poorer than every radius names nothing")
+    check([house,park].naming(spot(30, accuracy:150))?.name == "Morley Park","a fix too coarse for Home's radius still fits the wider place")
+    let twin = SavedPlace(id:"a-twin",name:"Twin",kind:"favourite",latitude:-33,longitude:151,radius:100)
+    let other = SavedPlace(id:"z-other",name:"Other",kind:"favourite",latitude:-33,longitude:151,radius:100)
+    check([other,twin].naming(spot(10))?.id == "a-twin" && [twin,other].naming(spot(10))?.id == "a-twin","an exact tie is decided the same way every time")
+    check([SavedPlace]().naming(start) == nil,"no saved places name nothing")
+}
+
 print("Final native assertion count including automatic account recovery: \(assertions)")
