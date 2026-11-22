@@ -45,8 +45,8 @@ export const recorder = {
  requestPermission:always=>native.requestPermission({always}),
  // `trail` is optional and only used when starting a mountain-bike ride from a
  // community trail, so the link survives offline and is saved with the activity.
- // `anyway` is the rider's own decision to record here while another device is recording.
- start:(activity,vehicle,vehicleID,trail,anyway,precision)=>native.start({activity:activityCode(activity),vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(anyway?{anyway:true}:{}),...(precision?{precision}:{})}),
+ // While the Apple Watch is recording, the iPhone refuses to start a second activity (the native side holds the line; nothing here can override it).
+ start:(activity,vehicle,vehicleID,trail,precision)=>native.start({activity:activityCode(activity),vehicle:vehicle||undefined,vehicleID:vehicleID||undefined,...trailLinkPayload(trail),...(precision?{precision}:{})}),
  transition:action=>native.transition({action}),
  openSettings:()=>native.openSettings(),
  requestMotionPermission:()=>native.requestMotionPermission(),
