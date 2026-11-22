@@ -894,7 +894,14 @@ extension LocationRecorder {
                 draft.points = current.points.filter { $0.timestamp < first.timestamp }
                 draft.distanceMeters = draft.measuredDistance
                 try retainWalkingEvidence(draft,reason:"transport changed before the walk was confirmed")
-            } else { try storage.delete(current.id) }
+            } else {
+                // Too short to publish is a classification outcome, not a reason to
+                // destroy fixes: keep them as unpublished evidence.
+                var draft = current
+                draft.points = current.points.filter { $0.timestamp < first.timestamp }
+                draft.distanceMeters = draft.measuredDistance
+                try retainWalkingEvidence(draft,reason:"movement changed before the journey was long enough to publish")
+            }
             automaticTrip = nil
             settleStateReset()
             try startAutomaticJourney(family, from: confirmed,
@@ -1213,6 +1220,9 @@ extension LocationRecorder {
         try storage.retainUnconfirmedWalk(trip)
         recordDiagnostic("recovery","Unconfirmed walking evidence retained locally",
             details:["activityRef":String(trip.id.prefix(8)),"reason":reason,"savedFixes":String(trip.points.count)])
+        for eviction in storage.lastEvictions {
+            recordDiagnostic("recovery","Retained evidence expired",details:["file":String(eviction.name.prefix(8)),"reason":eviction.reason])
+        }
     }
     func walkingOrigin(at point: GPSPoint) -> DwellArea {
         recognizedPlace(at:point).map { DwellArea.saved($0,now:point.timestamp) } ?? dwell ?? DwellArea.arrival(at:point)
@@ -1561,7 +1571,9 @@ extension LocationRecorder {
         if !trip.confirmPendingWalk() || (force && (trip.points.count < 2 || trip.distanceMeters < 25)) {
             if trip.details?.localWalkOrigin != nil {
                 try retainWalkingEvidence(trip,reason:reason ?? "unconfirmed recording ended")
-            } else { try storage.delete(trip.id) }
+            } else {
+                try retainWalkingEvidence(trip,reason:reason ?? "automatic journey too short to publish")
+            }
             automaticTrip = nil; settleStateReset(); detector.reset(); movementTransition.reset(); departureEvidence.reset()
             automaticSampling.stop(now:Date().timeIntervalSince1970)
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil

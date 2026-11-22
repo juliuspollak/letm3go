@@ -759,9 +759,15 @@ final class RecordingStorage {
         } else {
             try FileManager.default.moveItem(at:active, to:retained)
         }
-        try? pruneUnconfirmedWalks()
+        lastEvictions = (try? pruneUnconfirmedWalks(protecting:retained.lastPathComponent)) ?? []
     }
-    func pruneUnconfirmedWalks(now: Date = Date()) throws {
+    // Evictions made by the most recent retain, each with the reason, so the
+    // recorder can log why evidence was dropped. Policy: keep at most 8 files,
+    // 12 MB and 7 days; the file just written is never evicted; confirmed
+    // activities (.json) are never touched.
+    private(set) var lastEvictions: [(name: String, reason: String)] = []
+    @discardableResult
+    func pruneUnconfirmedWalks(now: Date = Date(), protecting: String? = nil) throws -> [(name: String, reason: String)] {
         let fm = FileManager.default
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
         let files = try fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:Array(keys))
@@ -769,13 +775,16 @@ final class RecordingStorage {
             .map { (url: $0, values: try $0.resourceValues(forKeys:keys)) }
             .sorted { ($0.values.contentModificationDate ?? .distantPast) > ($1.values.contentModificationDate ?? .distantPast) }
         var bytes = 0
+        var evicted: [(name: String, reason: String)] = []
         for (index,file) in files.enumerated() {
             bytes += file.values.fileSize ?? 0
-            if index >= 8 || bytes > 12 * 1024 * 1024 ||
-               now.timeIntervalSince(file.values.contentModificationDate ?? .distantPast) > 7 * 86_400 {
-                try fm.removeItem(at:file.url)
-            }
+            if file.url.lastPathComponent == protecting { continue }
+            let reason: String? = index >= 8 ? "more than 8 unconfirmed walks retained"
+                : bytes > 12 * 1024 * 1024 ? "unconfirmed walks exceeded 12 MB"
+                : now.timeIntervalSince(file.values.contentModificationDate ?? .distantPast) > 7 * 86_400 ? "unconfirmed walk older than 7 days" : nil
+            if let reason { try fm.removeItem(at:file.url); evicted.append((file.url.lastPathComponent,reason)) }
         }
+        return evicted
     }
     func prepareWalkingHandoff(_ handoff: WalkingTransportHandoff) throws {
         try writeData(encoder.encode(handoff),name:WalkingTransportHandoff.fileName)
@@ -783,7 +792,14 @@ final class RecordingStorage {
     func replayWalkingHandoff() throws {
         let url = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
         guard FileManager.default.fileExists(atPath:url.path) else { return }
-        let handoff = try decoder.decode(WalkingTransportHandoff.self,from:readData(name:WalkingTransportHandoff.fileName))
+        let handoff: WalkingTransportHandoff
+        do { handoff = try decoder.decode(WalkingTransportHandoff.self,from:readData(name:WalkingTransportHandoff.fileName)) }
+        catch {
+            // An unreadable journal must not wedge every load. Keep it for inspection.
+            let aside = directory.appendingPathComponent(WalkingTransportHandoff.fileName + ".corrupt-\(Int(Date().timeIntervalSince1970))")
+            try FileManager.default.moveItem(at:url,to:aside)
+            return
+        }
         if try !isDeleted(handoff.walk.id) {
             if handoff.retainUnconfirmedWalk { try retainUnconfirmedWalk(handoff.walk) }
             else { try save(handoff.walk) }

@@ -1501,7 +1501,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 return item
             }
         }
-        dict["durationSeconds"] = trip.details?.walkingMovingSeconds ?? trip.duration(at: Date().timeIntervalSince1970)
+        dict["durationSeconds"] = (JourneyFamily.of(trip.activity) == .onFoot ? trip.details?.walkingMovingSeconds : nil) ?? trip.duration(at: Date().timeIntervalSince1970)
         if trip.state != "finished", let moving = trip.automaticWalkMovingSeconds {
             dict["elapsedSeconds"] = max(0, (trip.endedAt ?? Date().timeIntervalSince1970) - trip.startedAt)
             dict["movingSeconds"] = moving

@@ -5968,6 +5968,23 @@ do {
     let evidence = try! JSONDecoder().decode(RecordedActivity.self,from:storage.readData(name:retainedFile))
     check(evidence.points == draft.points && evidence.id == draft.id,"unconfirmed route retains all saved samples in encrypted storage")
     check((try! storage.load()).isEmpty && (try! storage.deletedIDs()).isEmpty,"retained evidence is outside recording recovery and cloud deletion")
+    // Ticket #42 / AC11: the newest evidence is never evicted by its own write,
+    // pruning explains itself, and confirmed activities are never touched.
+    var confirmed = RecordedActivity(activity:"Walking",startedAt:500,resumedAt:500,title:"Walk")
+    for point in walkPath([(0,0),(30,0)],start:500) { _ = confirmed.accept(point,now:point.timestamp) }
+    try! storage.save(confirmed)
+    for index in 0..<10 {
+        var extra = draft; extra.id = UUID().uuidString
+        try! storage.retainUnconfirmedWalk(extra)
+        check(FileManager.default.fileExists(atPath:directory.appendingPathComponent("\(extra.id).unconfirmed-walk").path),"newest retained evidence survives its own prune (\(index))")
+    }
+    let kept = try! FileManager.default.contentsOfDirectory(atPath:directory.path).filter { $0.hasSuffix(".unconfirmed-walk") }
+    check(kept.count == 8,"retention is bounded to 8 files")
+    check(try! storage.load().contains { $0.id == confirmed.id },"pruning never removes a confirmed activity")
+    check(!storage.lastEvictions.isEmpty && storage.lastEvictions.allSatisfy { !$0.reason.isEmpty },"evictions carry a reason")
+    try! Data("garbage".utf8).write(to:directory.appendingPathComponent(WalkingTransportHandoff.fileName))
+    check((try? storage.load()) != nil,"corrupt handoff journal does not block loading")
+    check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(WalkingTransportHandoff.fileName).path),"corrupt journal moved aside")
     try! storage.pruneUnconfirmedWalks(now:Date().addingTimeInterval(8*86_400))
     check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedFile).path),"unconfirmed route expires within the retention budget")
 }

@@ -165,7 +165,10 @@ extension LocationRecorder {
                     recordDiagnostic("recovery","Interrupted automatic journey restored",details:["savedFixes":String(record.points.count),"gapSeconds":String(Int(max(0,openedAt-lastFix)))])
                 } else {
                     if !record.confirmPendingWalk() {
-                        try retainWalkingEvidence(record,reason:"interrupted candidate expired before relaunch")
+                        // One unreadable or unwritable record must not block unlock or
+                        // its siblings. The original .json stays on disk and retries.
+                        do { try retainWalkingEvidence(record,reason:"interrupted candidate expired before relaunch") }
+                        catch { recordDiagnostic("recovery","Could not retain interrupted candidate; left on disk for next launch",details:["activityRef":String(record.id.prefix(8)),"error":error.localizedDescription]) }
                         continue
                     }
                     let fixes = record.points.count
