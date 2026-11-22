@@ -6034,7 +6034,10 @@ do {
         let at = end+30+Double(index)*10
         _ = transport.accept(placeFix(300+Double(index)*100,0,at,speed:10),now:at)
     }
-    let handoff = WalkingTransportHandoff(walk:walk,transport:transport,retainUnconfirmedWalk:false)
+    var handoff = WalkingTransportHandoff(walk:walk,transport:transport,retainUnconfirmedWalk:false)
+    var gap = RecordedActivity(activity:"Unknown",startedAt:end+10,resumedAt:nil,title:"Journey")
+    gap.points = [placeFix(302,0,end+10,speed:0)]
+    handoff.unassignedEvidence = gap
     try! store.prepareWalkingHandoff(handoff)
     let journal = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
     let transportPath = directory.appendingPathComponent("\(transport.id).json")
@@ -6059,6 +6062,104 @@ do {
     check(replayed.count == 2 && Set(replayed.flatMap(\.points).map(\.timestamp)).count == walk.points.count+transport.points.count,
           "replaying an unacknowledged handoff cannot duplicate activities or route fixes")
     check((try! reopened.load()).count == 2 && !FileManager.default.fileExists(atPath:journal.path),"repeated recovery is safe")
+    let evidence = try! JSONDecoder().decode(RecordedActivity.self,from:reopened.readData(name:"\(gap.id).unconfirmed-walk"))
+    check(evidence.points == gap.points,"handoff preserves unassigned fixes privately through repeated replay")
+    try! reopened.delete(transport.id)
+    try! FileManager.default.removeItem(at:directory.appendingPathComponent("\(gap.id).unconfirmed-walk"))
+    try! reopened.prepareWalkingHandoff(handoff)
+    check((try! reopened.load()).map(\.id) == [walk.id],"handoff replay honours a transport tombstone")
+    let recoveredGap = try! JSONDecoder().decode(RecordedActivity.self,from:reopened.readData(name:"\(gap.id).unconfirmed-walk"))
+    check(recoveredGap.points == gap.points,"deleting the transport cannot discard independently retained fixes")
+}
+
+// Evidence is published privately before removing its exact source draft.
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:directory) }
+    let storage = try! RecordingStorage(directory:directory,encryptionKey:Data(repeating:3,count:32))
+    var draft = RecordedActivity(activity:"Walking",startedAt:1000,resumedAt:1000,title:"Walk")
+    draft.recordingMode = "automatic"
+    draft.points = walkPath([(0,0),(60,0)],start:1000)
+    draft.publishStop(at:draft.points.last!.timestamp,continuationEndsAt:9000)
+    let active = "\(draft.id).json", retained = "\(draft.id).unconfirmed-walk"
+    try! storage.save(draft)
+    let original = try! storage.readData(name:active)
+    let destination = directory.appendingPathComponent(retained)
+    try! FileManager.default.createDirectory(at:destination,withIntermediateDirectories:false)
+    do { try storage.retainUnconfirmedWalk(draft); check(false,"evidence write must fail at a blocked destination") }
+    catch { check(try! storage.readData(name:active) == original,"failure before evidence publication leaves the source intact") }
+    try! FileManager.default.removeItem(at:destination)
+    try! storage.retainUnconfirmedWalk(draft)
+    try! storage.writeData(original,name:active) // crash after evidence write, before cleanup
+    check((try! storage.load()).isEmpty && (try! storage.load()).isEmpty,"reload consumes the shadowed draft once, before History")
+    let saved = try! JSONDecoder().decode(RecordedActivity.self,from:storage.readData(name:retained))
+    check(saved.points == draft.points,"interrupted archival preserves all GPS evidence")
+    draft.completeProvisional()
+    try! storage.save(draft)
+    try! storage.retainUnconfirmedWalk(draft)
+    check((try! storage.load()).first?.state == "finished","archival cannot replace or remove a finished record")
+    try! storage.retainAutomaticTail(draft,from:draft.points[1].timestamp)
+    try! storage.retainAutomaticTail(draft,from:draft.points[1].timestamp)
+    let privateFiles = try! FileManager.default.contentsOfDirectory(atPath:directory.path).filter { $0.hasSuffix(".unconfirmed-walk") }
+    check(privateFiles.count == 2 && (try! storage.load()).count == 1,
+          "repeated manual overlap retention leaves one private fragment and the original History record")
+}
+
+// Simulate one successful migrated piece followed by a failed destination write.
+do {
+    struct Ledger: Codable { struct Piece: Codable { let points: [GPSPoint]; let endedAt: Double }; let pieces: [Piece] }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:root) }
+    let probe = try! RecordingStorage(directory:root.appendingPathComponent("probe"))
+    let store = try! RecordingStorage(directory:root.appendingPathComponent("retry"))
+    let pieces = (0..<3).map { index -> Ledger.Piece in
+        let points = walkPath([(0,0),(50,0)],start:1000+Double(index)*100)
+        return .init(points:points,endedAt:points.last!.timestamp)
+    }
+    let bytes = try! JSONEncoder().encode(Ledger(pieces:pieces))
+    try! probe.writeData(bytes,name:"local-walks.data")
+    check(try! probe.migrateLegacyWalkLedger() == 3,"reference migration retains all pieces")
+    let names = try! FileManager.default.contentsOfDirectory(atPath:probe.directory.path)
+    let blocked = names.first { name in
+        let evidence = try! JSONDecoder().decode(RecordedActivity.self,from:probe.readData(name:name))
+        return evidence.points == pieces[1].points
+    }!
+    let blocker = store.directory.appendingPathComponent(blocked)
+    try! FileManager.default.createDirectory(at:blocker,withIntermediateDirectories:false)
+    try! store.writeData(bytes,name:"local-walks.data")
+    do { _ = try store.migrateLegacyWalkLedger(); check(false,"second migration write must fail") }
+    catch {
+        check((try! store.pruneUnconfirmedWalks(now:Date().addingTimeInterval(8*86_400))).isEmpty,"quota stays deferred while the ledger is outstanding")
+        check((try! store.readData(name:"local-walks.data")) == bytes,"migration failure leaves the original ledger available")
+    }
+    try! FileManager.default.removeItem(at:blocker)
+    check(try! store.migrateLegacyWalkLedger() == 2,"retry resumes with the two missing pieces")
+    check(try! store.migrateLegacyWalkLedger() == 0,"migration acknowledgement is idempotent")
+    check(Set(try! FileManager.default.contentsOfDirectory(atPath:store.directory.path)) == Set(names),
+          "successful and interrupted migrations produce identical IDs with no duplicates")
+    for name in names {
+        let source = try! JSONDecoder().decode(RecordedActivity.self,from:probe.readData(name:name))
+        let result = try! JSONDecoder().decode(RecordedActivity.self,from:store.readData(name:name))
+        check(source.id == result.id && source.points == result.points,"replayed ledger preserves the exact GPS fixes")
+    }
+}
+
+// Verify newest-first byte eviction and the intentional newly-written exemption.
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:directory) }
+    let store = try! RecordingStorage(directory:directory)
+    let now = Date()
+    for (index,name) in ["older.unconfirmed-walk","newer.unconfirmed-walk"].enumerated() {
+        try! store.writeData(Data(repeating:0,count:7*1024*1024),name:name)
+        try! FileManager.default.setAttributes([.modificationDate:now.addingTimeInterval(Double(index)-10)],
+            ofItemAtPath:directory.appendingPathComponent(name).path)
+    }
+    let evicted = try! store.pruneUnconfirmedWalks(now:now)
+    check(evicted.map(\.name) == ["older.unconfirmed-walk"],"byte quota keeps the newest evidence")
+    check(try! store.pruneUnconfirmedWalks(now:now.addingTimeInterval(8*86_400),protecting:"newer.unconfirmed-walk").isEmpty,
+          "the protected write survives pruning")
+    check(try! store.pruneUnconfirmedWalks(now:now.addingTimeInterval(8*86_400)).count == 1,"aged evidence expires on a later prune")
 }
 
 print("Final native assertion count including automatic account recovery: \(assertions)")

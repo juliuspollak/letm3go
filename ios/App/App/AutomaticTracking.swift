@@ -438,7 +438,7 @@ extension LocationRecorder {
         guard !reconcilingManualExclusion else { return manualExclusion.current != nil }
         if pendingWalkingHandoff != nil {
             do { try completeWalkingHandoff() }
-            catch { lastError = "Walking handoff could not be saved: \(error.localizedDescription)"; return true }
+            catch { lastError = "Automatic handoff could not be saved: \(error.localizedDescription)"; return true }
         }
         reconcilingManualExclusion = true
         let now = Date().timeIntervalSince1970
@@ -498,10 +498,14 @@ extension LocationRecorder {
         }
     }
     // Ends whatever automatic recording is open at the manual recording's actual
-    // start. Every genuine fix before it is kept, and nothing after it survives.
+    // start. Overlapping fixes are retained privately before trimming History.
     func closeAutomatic(before start: Double, reason: String, trigger: String, event: String) throws {
         if let original = automaticTrip {
-            automaticTrip = ManualDraftClosure.truncated(original, before: start)
+            var clipped = ManualDraftClosure.truncated(original,before:start)
+            if clipped.points.count >= 2, clipped.distanceMeters >= 25, clipped.confirmPendingWalk() {
+                try storage?.retainAutomaticTail(original,from:start)
+            }
+            automaticTrip = clipped
             do { try finishAutomatic(force: true, reason: reason, trigger: trigger, event: event) }
             catch { automaticTrip = original; throw error }
         }
@@ -863,113 +867,53 @@ extension LocationRecorder {
     // the change, so no point is recorded twice and no distance is invented.
     func transitionTo(_ family: JourneyFamily) throws {
         guard !reconcileManualExclusion() else { return }
-        guard let current = automaticTrip, let storage = storage,
-              let first = movementTransition.candidates.first,
-              let last = movementTransition.candidates.last,
-              last.timestamp > first.timestamp else { return }
-        let confirmed = movementTransition.candidates
+        guard let current = automaticTrip, let first = movementTransition.candidates.first else { return }
         let previous = current.isAutomaticWalk ? .onFoot : JourneyFamily.detected(current)
         guard previous != .other, previous != family else { return }
-        if previous == .onFoot, family == .driving || family == .cycling {
-            var walk = current
-            walk.points = current.points.filter { $0.timestamp < first.timestamp }
-            walk.distanceMeters = walk.measuredDistance
-            walk.finish(at:walk.points.last?.timestamp ?? walk.startedAt)
-            try beginWalkingHandoff(walk, to:family, confirmed:confirmed)
-            return
+
+        // Motion can identify the end of a drive before the GPS chain confirms
+        // walking. Preserve fixes in that interval without assigning them a mode.
+        let cutoff = previous == .driving && family == .onFoot
+            ? detector.walkingArrivalEndAt.map { min($0,first.timestamp.nextDown) }
+            : nil
+        var ended = current
+        ended.points = current.points.filter { point in
+            cutoff.map { point.timestamp <= $0 } ?? (point.timestamp < first.timestamp)
         }
-        let recordsNext = AutomaticActivityPolicy.allows(family)
-        guard recordsNext || previous == .onFoot else { return }
-        // A journey too short to publish is dropped instead of being split into an
-        // empty record; its fixes belong to the new journey.
-        // A motion-confirmed walk may precede the first GPS transition candidate.
-        // Remove those earlier walking fixes as well, not just the candidate fixes.
-        let walkingCutoff = previous == .driving && family == .onFoot
-            ? detector.walkingArrivalEndAt : nil
-        let transitionCutoff = walkingCutoff.map { min($0, first.timestamp - 0.000001) }
-        guard var ended = transitionCutoff.flatMap({ JourneySplit.drivingEnd(current, atOrBefore: $0) })
-            ?? (walkingCutoff == nil ? JourneySplit.kept(current, before: first.timestamp) : nil) else {
-            if current.details?.localWalkOrigin != nil {
-                var draft = current
-                draft.points = current.points.filter { $0.timestamp < first.timestamp }
-                draft.distanceMeters = draft.measuredDistance
-                try retainWalkingEvidence(draft,reason:"transport changed before the walk was confirmed")
-            } else {
-                // Too short to publish is a classification outcome, not a reason to
-                // destroy fixes: keep them as unpublished evidence.
-                var draft = current
-                draft.points = current.points.filter { $0.timestamp < first.timestamp }
-                draft.distanceMeters = draft.measuredDistance
-                try retainWalkingEvidence(draft,reason:"movement changed before the journey was long enough to publish")
-            }
-            automaticTrip = nil
-            settleStateReset()
-            try startAutomaticJourney(family, from: confirmed,
-                note: "Movement change ended an activity too short to publish")
-            return
-        }
-        if !ended.confirmPendingWalk() {
-            try retainWalkingEvidence(ended,reason:"transport changed before the walk was confirmed")
-            automaticTrip = nil
-            settleStateReset(); detector.reset(); movementTransition.reset()
-            try startAutomaticJourney(family, from: confirmed, note: "Movement changed after an unconfirmed walk")
-            reconcileAutomaticSampling()
-            return
-        }
-        // Preserve hiking, running or an MTB subtype rather than flattening it, and
-        // never rename a journey that Core Motion could not classify: an "Unknown"
-        // journey stays Unknown even though its speed profile proved the change.
-        let previousName = activityName(JourneyFamily.of(ended.activity), preserving: ended.activity)
-        ended.activity = previousName
-        if let last = ended.points.last { ended.finish(at:last.timestamp) }
-        ended.completeProvisional()
-        ended.updateDetails { metadata in
-            metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [
-                JourneyContinuation.changeReason(from: previous, to: family)
-            ]).suffix(24))
-        }
-        ended.updatedAt = Date().timeIntervalSince1970
-        ended.title = previousName
-        if previous == .onFoot { nameEndpoints(&ended) }
-        let endedQuality = ended.routeQualitySummary()
-        ended.updateDetails { $0.routeQuality = endedQuality }
-        if !recordsNext {
-            try storage.save(ended)
-            trips.insert(ended,at:0)
-            automaticTrip = nil
-            settleStateReset(); detector.reset(); movementTransition.reset(); departureEvidence.reset()
-            automaticSampling.stop(now:last.timestamp)
-            notifyJourneyChange()
-            reconcileAutomaticSampling()
-            return
-        }
-        guard var next = makeAutomaticJourney(family, from: confirmed) else { movementTransition.reset(); return }
-        next.details?.trackingNotes = [
-            "\(previousName) to \(next.activity) transition confirmed using sustained GPS, speed and motion evidence",
-            "Movement change samples: \(confirmed.count)"
-        ]
-        // Save the new journey first; the old one is only replaced once it exists.
-        try storage.save(next)
-        do { try storage.save(ended) } catch {
-            try? storage.delete(next.id)
-            throw error
-        }
-        trips.insert(ended,at:0)
-        recordDiagnostic("detection","Journey ended at a confirmed movement change",details:["from":previous.rawValue,"to":family.rawValue])
-        beginRecordingAutomaticJourney(next,at:last)
+        ended.distanceMeters = ended.measuredDistance
+        ended.finish(at:ended.points.last?.timestamp ?? ended.startedAt)
+        let prefix = cutoff.map { end in current.points.filter { $0.timestamp > end && $0.timestamp < first.timestamp } } ?? []
+        let tail = current.points.filter { $0.timestamp >= first.timestamp }
+        try beginAutomaticHandoff(ended,from:previous,to:family,confirmed:movementTransition.candidates,captured:prefix + tail)
     }
-    func beginWalkingHandoff(_ previous: RecordedActivity, to family: JourneyFamily, confirmed: [GPSPoint]) throws {
-        guard var next = makeAutomaticJourney(family,from:confirmed,fromWalkingHandoff:true) else { return }
-        var walk = previous
-        let retained = !walk.confirmPendingWalk()
-        walk.completeProvisional()
-        let note = JourneyContinuation.changeReason(from:.onFoot,to:family)
-        walk.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
-        if !retained { nameEndpoints(&walk) }
-        let quality = walk.routeQualitySummary()
-        walk.updateDetails { $0.routeQuality = quality }
+
+    func beginAutomaticHandoff(_ previous: RecordedActivity, from source: JourneyFamily, to family: JourneyFamily,
+                               confirmed: [GPSPoint], captured: [GPSPoint] = []) throws {
+        guard var next = makeAutomaticJourney(family,from:confirmed,fromWalkingHandoff:source == .onFoot) else { return }
+        var ended = previous
+        let retained = !ended.confirmPendingWalk() || ended.points.count < 2 ||
+            (source != .onFoot && ended.distanceMeters < 25)
+        ended.completeProvisional()
+        let note = JourneyContinuation.changeReason(from:source,to:family)
+        ended.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
+        if !retained { nameEndpoints(&ended) }
+        let quality = ended.routeQualitySummary()
+        ended.updateDetails { $0.routeQuality = quality }
         next.details?.trackingNotes = [note]
-        pendingWalkingHandoff = WalkingTransportHandoff(walk:walk,transport:next,retainUnconfirmedWalk:retained)
+        // Keep fixes that cannot safely be assigned to either route in the
+        // same journal. They remain available privately without mixing modes.
+        var assigned = Set((ended.points + next.points).map(\.timestamp))
+        let remaining = (confirmed + captured).filter { assigned.insert($0.timestamp).inserted }
+            .sorted { $0.timestamp < $1.timestamp }
+        var handoff = WalkingTransportHandoff(walk:ended,transport:next,retainUnconfirmedWalk:retained)
+        if let first = remaining.first {
+            var evidence = RecordedActivity(activity:"Unknown",startedAt:first.timestamp,resumedAt:nil,title:"Journey")
+            evidence.recordingMode = "automatic"
+            evidence.points = remaining
+            evidence.distanceMeters = evidence.measuredDistance
+            handoff.unassignedEvidence = evidence
+        }
+        pendingWalkingHandoff = handoff
         try completeWalkingHandoff()
     }
 
@@ -985,20 +929,6 @@ extension LocationRecorder {
         beginRecordingAutomaticJourney(handoff.transport,at:last)
     }
 
-    // A journey that starts from already-confirmed movement of one type. Used after
-    // a movement-type change so the new journey keeps its real beginning.
-    func startAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint], note: String) throws {
-        guard !reconcileManualExclusion() else { return }
-        guard let storage = storage, let last = points.last,
-              var trip = makeAutomaticJourney(family, from: points) else { return }
-        trip.details?.trackingNotes = [
-            note,
-            "Journey started after a confirmed \(JourneyContinuation.label(family)) movement change",
-            "Movement change samples: \(points.count)"
-        ]
-        try storage.save(trip)
-        beginRecordingAutomaticJourney(trip,at:last)
-    }
     func makeAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint], fromWalkingHandoff: Bool = false) -> RecordedActivity? {
         guard AutomaticActivityPolicy.allows(family) || (fromWalkingHandoff && family == .cycling), let first = points.first, let last = points.last, last.timestamp > first.timestamp else { return nil }
         let name = activityName(family, preserving: "")
@@ -1078,6 +1008,8 @@ extension LocationRecorder {
         // made the final decision much later.
         let preTrimFixes = trip.points.count
         if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:end) {
+            do { try storage.retainAutomaticTail(trip,from:end.nextUp) }
+            catch { lastError = "Driving arrival evidence could not be saved: \(error.localizedDescription)"; return }
             trip = trimmed
         } else {
             trip.points = trip.points.filter { $0.timestamp <= end }
@@ -1389,20 +1321,15 @@ extension LocationRecorder {
         guard now >= endsAt else { return }
         do { try finalizeSettledAutomatic(trigger:"finishExpiredContinuation",event:"the continuation window ended") } catch { lastError = error.localizedDescription }
     }
-    // A published stop ends when sustained movement proves a different activity.
-    // The journey is finalised first (its route never changes), then the next one
-    // starts from the same sustained fixes so no distance is invented between them.
+    // A stopped activity uses the same durable journal as an active split.
     func endSettledJourney(_ reason: String, starting family: JourneyFamily) throws {
-        let confirmed = movementTransition.candidates
-        if let id = settledTripID, let walk = trips.first(where: { $0.id == id }), walk.isAutomaticWalk,
-           family == .driving || family == .cycling {
-            try beginWalkingHandoff(walk,to:family,confirmed:confirmed)
-            return
+        guard let id = settledTripID, let previous = trips.first(where: { $0.id == id }) else { return }
+        let source = previous.isAutomaticWalk ? .onFoot : JourneyFamily.detected(previous)
+        if AutomaticActivityPolicy.allows(family) || (source == .onFoot && family == .cycling) {
+            try beginAutomaticHandoff(previous,from:source,to:family,confirmed:movementTransition.candidates)
+        } else {
+            try finalizeSettledAutomatic(reason:reason,trigger:"endSettledJourney",event:"sustained movement proved a different activity")
         }
-        try finalizeSettledAutomatic(reason: reason,trigger:"endSettledJourney",event:"sustained movement proved a different activity")
-        guard AutomaticActivityPolicy.allows(family) else { return }
-        recordDiagnostic("detection","Stopped journey ended at a confirmed movement change",details:["to":family.rawValue])
-        try startAutomaticJourney(family, from: confirmed, note: reason)
     }
     // Clear the continuation marker on the published journey in place. Its record,
     // route and position in history do not change, so nothing is duplicated.
@@ -1414,7 +1341,7 @@ extension LocationRecorder {
         // A stop still open for continuation is a draft, not history: a late Watch
         // start can land inside it. A stop that is all manual time has no route left.
         if let manualStart, (trip.endedAt ?? trip.points.last?.timestamp ?? trip.startedAt) > manualStart {
-            guard let kept = JourneySplit.kept(trip, before: manualStart) else {
+            guard var kept = JourneySplit.kept(trip, before: manualStart) else {
                 // Kept as unpublished evidence rather than destroyed: the manual
                 // recording owns this time in history, but the fixes are retained.
                 try retainWalkingEvidence(trip,reason:"stop lay entirely inside a manual recording")
@@ -1424,6 +1351,7 @@ extension LocationRecorder {
                 trackingEvent("Stopped journey not published: it was entirely inside a manual recording (fixes retained)")
                 return
             }
+            if kept.confirmPendingWalk() { try storage.retainAutomaticTail(trip,from:manualStart) }
             trip = kept
             let quality = trip.routeQualitySummary()
             trip.updateDetails { $0.routeQuality = quality }
@@ -1553,6 +1481,7 @@ extension LocationRecorder {
         let lastMovement = (walkingArrival ? detector.walkingArrivalEndAt : nil) ??
             detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
         if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:lastMovement) {
+            try storage.retainAutomaticTail(trip,from:lastMovement.nextUp)
             trip = trimmed
         }
         let approach = force ? nil : trip.points.last(where: { point in

@@ -130,13 +130,18 @@ enum RecorderHarness {
     }
 
     static func walkingHandoffRecovery() {
-        for family in [JourneyFamily.driving,.cycling] {
+        let cases: [(JourneyFamily,JourneyFamily,Bool)] = [
+            (.onFoot,.driving,true), (.onFoot,.cycling,false),
+            (.driving,.onFoot,false), (.driving,.onFoot,true), (.cycling,.driving,false)
+        ]
+        for (source,family,stopped) in cases {
             let (directory,key,owner) = freshStore()
             defer { try? FileManager.default.removeItem(at:directory) }
             do {
                 let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
                 let stop = Date().timeIntervalSince1970-600
-                var walk = RecordedActivity(activity:"Walking",startedAt:stop-180,resumedAt:stop-180,title:"Walking")
+                let previousActivity = r.activityName(source,preserving:"")
+                var walk = RecordedActivity(activity:previousActivity,startedAt:stop-180,resumedAt:stop-180,title:previousActivity)
                 walk.recordingMode = "automatic"
                 for index in 0...18 {
                     let point = GPSPoint(latitude:home.latitude+Double(index)*10/111_320,longitude:home.longitude,
@@ -145,27 +150,27 @@ enum RecorderHarness {
                 }
                 r.automaticTrip = walk
                 try r.storage?.save(walk)
-                if family == .driving {
+                if stopped {
                     r.detector.lastMovementAt = stop
                     r.settleAutomatic()
                 }
                 let departure = stop+40
-                let speed = family == .driving ? 10.0 : 5.0
-                let activity = family == .driving ? "Driving" : "Cycling"
+                let speed = family == .driving ? 10.0 : family == .cycling ? 5.0 : 1.3
+                let activity = r.activityName(family,preserving:"")
                 var change: JourneyFamily?
                 for index in 0...4 {
                     let at = departure+Double(index)*10
                     let fix = GPSPoint(latitude:home.latitude+(180+Double(index)*10*speed)/111_320,
                         longitude:home.longitude,timestamp:at,accuracy:5,altitude:0,speed:speed)
                     change = r.movementTransition.observe(fix,
-                        motion:MotionEvidence(types:[activity],confidence:"high",timestamp:at),now:at,from:.onFoot)
+                        motion:MotionEvidence(types:[activity],confidence:"high",timestamp:at),now:at,from:source)
                     if change != nil { break }
                 }
                 check(change == family,"\(activity) transition has sustained movement")
                 let journal = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
                 try FileManager.default.createDirectory(at:journal,withIntermediateDirectories:false)
                 do {
-                    if family == .driving { try r.endSettledJourney("Test handoff",starting:family) }
+                    if stopped { try r.endSettledJourney("Test handoff",starting:family) }
                     else { try r.transitionTo(family) }
                     check(false,"handoff should fail before activity writes")
                 } catch {
@@ -177,7 +182,7 @@ enum RecorderHarness {
                 let reopened = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
                 let closed = reopened.trips.filter { $0.id == walk.id }
                 check(closed.count == 1 && closed.first?.points == walk.points && closed.first?.state == "finished",
-                    "\(activity) handoff preserves the finished walk exactly once")
+                    "\(previousActivity) to \(activity) preserves the earlier activity exactly once")
                 check(transport != nil && reopened.automaticTrip?.id == transport?.id &&
                     reopened.automaticTrip?.points == transport?.points &&
                     reopened.automaticTrip?.points.allSatisfy { $0.timestamp >= departure } == true,

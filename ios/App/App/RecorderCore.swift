@@ -52,6 +52,7 @@ enum ActivityTypes {
 }
 
 struct RecordedActivity: Codable {
+    var retainedSourceDigest: String?
     var id = UUID().uuidString
     var activity: String
     var vehicle: String?
@@ -695,6 +696,7 @@ struct WalkingTransportHandoff: Codable {
     let walk: RecordedActivity
     let transport: RecordedActivity
     let retainUnconfirmedWalk: Bool
+    var unassignedEvidence: RecordedActivity?
 
     static let fileName = "walking-transport-handoff.data"
 }
@@ -748,18 +750,76 @@ final class RecordingStorage {
         let data = try encoder.encode(trip)
         try writeData(data,name:"\(trip.id).json")
     }
-    // Move unpublished evidence out of the active journal atomically. These
-    // encrypted files are invisible to history, recovery, and cloud sync.
-    func retainUnconfirmedWalk(_ trip: RecordedActivity) throws {
-        try save(trip)
-        let active = directory.appendingPathComponent("\(trip.id).json")
-        let retained = directory.appendingPathComponent("\(trip.id).unconfirmed-walk")
-        if FileManager.default.fileExists(atPath:retained.path) {
-            _ = try FileManager.default.replaceItemAt(retained, withItemAt:active)
-        } else {
-            try FileManager.default.moveItem(at:active, to:retained)
+    private func digest(_ bytes: Data) -> String {
+        SHA256.hash(data:bytes).map { String(format:"%02x",$0) }.joined()
+    }
+
+    private func evidenceID(_ key: String) -> String {
+        let hash = Array(SHA256.hash(data:Data(key.utf8)))
+        return UUID(uuid:(hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7],
+            hash[8],hash[9],hash[10],hash[11],hash[12],hash[13],hash[14],hash[15])).uuidString
+    }
+
+    func retainAutomaticTail(_ trip: RecordedActivity, from start: Double) throws {
+        let points = trip.points.filter { $0.timestamp >= start }
+        guard let first = points.first else { return }
+        var evidence = trip
+        evidence.id = evidenceID("automatic-tail:\(trip.id):\(first.timestamp)")
+        evidence.startedAt = first.timestamp
+        evidence.points = points
+        evidence.distanceMeters = evidence.measuredDistance
+        try retainUnconfirmedWalk(evidence)
+    }
+
+    // Publish the encrypted evidence directly. An interrupted cleanup can be
+    // retried using the digest of the exact draft, never a newer activity.
+    func retainUnconfirmedWalk(_ trip: RecordedActivity, preserveSourcePoints: Bool = true) throws {
+        guard UUID(uuidString:trip.id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
+        let activeName = "\(trip.id).json"
+        let retainedName = "\(trip.id).unconfirmed-walk"
+        var evidence = trip
+        evidence.retainedSourceDigest = nil
+        if FileManager.default.fileExists(atPath:directory.appendingPathComponent(activeName).path) {
+            let bytes = try readData(name:activeName)
+            let active = try decoder.decode(RecordedActivity.self,from:bytes)
+            if active.state != "finished" || active.isProvisional {
+                evidence.retainedSourceDigest = digest(bytes)
+                if preserveSourcePoints {
+                    let timestamps = Set(evidence.points.map(\.timestamp))
+                    evidence.points.append(contentsOf:active.points.filter { !timestamps.contains($0.timestamp) })
+                    evidence.points.sort { $0.timestamp < $1.timestamp }
+                    evidence.distanceMeters = evidence.measuredDistance
+                }
+            }
         }
-        lastEvictions = (try? pruneUnconfirmedWalks(protecting:retained.lastPathComponent)) ?? []
+        if FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedName).path) {
+            let saved = try decoder.decode(RecordedActivity.self,from:readData(name:retainedName))
+            guard saved.points == evidence.points else { throw CocoaError(.fileWriteFileExists) }
+            if evidence.retainedSourceDigest == nil || evidence.retainedSourceDigest == saved.retainedSourceDigest {
+                try removeRetainedSource(saved)
+                return
+            }
+        }
+        try writeData(encoder.encode(evidence),name:retainedName)
+        try removeRetainedSource(evidence)
+        lastEvictions = (try? pruneUnconfirmedWalks(protecting:retainedName)) ?? []
+    }
+
+    private func removeRetainedSource(_ evidence: RecordedActivity) throws {
+        guard let expected = evidence.retainedSourceDigest, UUID(uuidString:evidence.id) != nil else { return }
+        let name = "\(evidence.id).json"
+        let url = directory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath:url.path), digest(try readData(name:name)) == expected else { return }
+        try FileManager.default.removeItem(at:url)
+    }
+    private func reconcileRetainedSources() throws {
+        for url in try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)
+            where url.pathExtension == "unconfirmed-walk" {
+            // Older evidence and test fixtures may not have a cleanup marker.
+            let bytes = try readData(name:url.lastPathComponent)
+            guard let evidence = try? decoder.decode(RecordedActivity.self,from:bytes) else { continue }
+            try removeRetainedSource(evidence)
+        }
     }
     // Evictions made by the most recent retain, each with the reason, so the
     // recorder can log why evidence was dropped. Policy: keep at most 8 files,
@@ -769,6 +829,10 @@ final class RecordingStorage {
     @discardableResult
     func pruneUnconfirmedWalks(now: Date = Date(), protecting: String? = nil) throws -> [(name: String, reason: String)] {
         let fm = FileManager.default
+        // An unfinished legacy batch still owns its originals. Apply quotas
+        // only once every piece is durable and the source has been acknowledged.
+        guard !fm.fileExists(atPath:directory.appendingPathComponent("local-walks.data").path) else { return [] }
+        try reconcileRetainedSources()
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
         let files = try fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:Array(keys))
             .filter { $0.pathExtension == "unconfirmed-walk" }
@@ -797,21 +861,31 @@ final class RecordingStorage {
     func migrateLegacyWalkLedger() throws -> Int {
         let name = "local-walks.data"
         guard FileManager.default.fileExists(atPath:directory.appendingPathComponent(name).path) else { return 0 }
-        guard let ledger = try? decoder.decode(LegacyWalkLedger.self,from:readData(name:name)) else {
+        let bytes = try readData(name:name)
+        guard let ledger = try? decoder.decode(LegacyWalkLedger.self,from:bytes) else {
             try FileManager.default.moveItem(at:directory.appendingPathComponent(name),
-                to:directory.appendingPathComponent(name + ".corrupt-\(Int(Date().timeIntervalSince1970))"))
+                to:directory.appendingPathComponent(name + ".corrupt-" + UUID().uuidString))
             return 0
         }
+        let ledgerDigest = digest(bytes)
         var moved = 0
-        for piece in ledger.pieces where !piece.points.isEmpty {
+        for (index,piece) in ledger.pieces.enumerated() where !piece.points.isEmpty {
             var record = RecordedActivity(activity:"Unknown",startedAt:piece.points[0].timestamp,resumedAt:piece.points[0].timestamp,title:"Journey")
+            record.id = evidenceID("\(ledgerDigest):\(index)")
             record.recordingMode = "automatic"
             record.points = piece.points
             record.distanceMeters = record.measuredDistance
-            try retainUnconfirmedWalk(record)
-            moved += 1
+            let destination = "\(record.id).unconfirmed-walk"
+            if FileManager.default.fileExists(atPath:directory.appendingPathComponent(destination).path) {
+                let existing = try decoder.decode(RecordedActivity.self,from:readData(name:destination))
+                guard existing.id == record.id, existing.points == record.points else { throw CocoaError(.fileWriteFileExists) }
+            } else {
+                try retainUnconfirmedWalk(record)
+                moved += 1
+            }
         }
         try FileManager.default.removeItem(at:directory.appendingPathComponent(name))
+        lastEvictions = (try? pruneUnconfirmedWalks()) ?? []
         return moved
     }
     func prepareWalkingHandoff(_ handoff: WalkingTransportHandoff) throws {
@@ -821,22 +895,27 @@ final class RecordingStorage {
         let url = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
         guard FileManager.default.fileExists(atPath:url.path) else { return }
         let handoff: WalkingTransportHandoff
-        do { handoff = try decoder.decode(WalkingTransportHandoff.self,from:readData(name:WalkingTransportHandoff.fileName)) }
-        catch {
+        let payload = try Data(contentsOf:url)
+        do {
+            let bytes = try encryptionKey.map { try AES.GCM.open(AES.GCM.SealedBox(combined:payload),using:SymmetricKey(data:$0)) } ?? payload
+            handoff = try decoder.decode(WalkingTransportHandoff.self,from:bytes)
+        } catch {
             // An unreadable journal must not wedge every load. Keep it for inspection.
-            let aside = directory.appendingPathComponent(WalkingTransportHandoff.fileName + ".corrupt-\(Int(Date().timeIntervalSince1970))")
+            let aside = directory.appendingPathComponent(WalkingTransportHandoff.fileName + ".corrupt-" + UUID().uuidString)
             try FileManager.default.moveItem(at:url,to:aside)
             return
         }
         if try !isDeleted(handoff.walk.id) {
-            if handoff.retainUnconfirmedWalk { try retainUnconfirmedWalk(handoff.walk) }
+            if handoff.retainUnconfirmedWalk { try retainUnconfirmedWalk(handoff.walk,preserveSourcePoints:false) }
             else { try save(handoff.walk) }
         }
         if try !isDeleted(handoff.transport.id) { try save(handoff.transport) }
+        if let evidence = handoff.unassignedEvidence { try retainUnconfirmedWalk(evidence) }
         try FileManager.default.removeItem(at:url)
     }
     func load() throws -> [RecordedActivity] {
         try replayWalkingHandoff()
+        try reconcileRetainedSources()
         let deleted = try deletedIDs()
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil }
