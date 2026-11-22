@@ -554,7 +554,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             // This reads no private native recording and never starts GPS.
             p=GPSPoint(latitude:lat,longitude:lon,timestamp:0,accuracy:65,altitude:0,speed:0)
         }else{call.reject("Recorded place not found.");return}
-        if let saved=r.places.first(where:{$0.contains(p)}) {call.resolve(["locality":saved.name,"nearbyName":"","possibleCharging":false,"source":"saved-place"]);return}
+        if let saved=r.places.naming(p) {call.resolve(["locality":saved.name,"nearbyName":"","possibleCharging":false,"source":"saved-place"]);return}
         let location=CLLocation(latitude:p.latitude,longitude:p.longitude),lookup=CLGeocoder()
         lookup.reverseGeocodeLocation(location){ results,error in
             _ = lookup // Keep this independent lookup alive until its callback.

@@ -97,3 +97,85 @@ it('still names a saved destination that is nowhere near Home',()=>{
  const [journey]=buildJourneys([t],{owner,metadata:emptyGrouping(owner),vehicles,places}).journeys;
  expect(journey.generatedTitle).toMatch(/PlusFitness/);
 });
+it('an edited title wins over a cached presentation saved before the edit',()=>{
+ const t=drive('edit',locations.sydney,locations.kew);t.geometryLoaded=false;t.updatedAt=5;
+ const saved=(updatedAt)=>({updatedAt,pointCount:t.points?.length??0,distanceMeters:t.distanceMeters??0,visibleRouteStart:t.visibleRouteStart??null,visibleRouteEnd:t.visibleRouteEnd??null,summary:{gaps:[]},presentation:{title:'Old cached title',tags:[],recognisedStops:[]}});
+ const meta=(updatedAt)=>({...emptyGrouping(owner),distanceSummaries:{edit:saved(updatedAt)}});
+ expect(build([t],meta(5)).journeys[0].title).toBe('Old cached title');
+ const edited={...t,title:'My new title',updatedAt:6,details:{...t.details,titleEdited:true}};
+ expect(build([edited],meta(5)).journeys[0].title).toBe('My new title');
+});
+// Feedback 45: a favourite saved on top of Home ("Morley Park", about ten metres away, 200 m radius) named every drive that STARTED at
+// Home. The end of a trip was already guarded; the start (and a place lookup) took whichever overlapping place was saved first.
+const houseSpot=p(-34.546189,150.853836),gymSpot=p(-34.5509,150.8601);
+const overlapping=[{id:'home',name:'Home',kind:'home',latitude:houseSpot.latitude,longitude:houseSpot.longitude,radius:100},
+ {id:'morley',name:'Morley Park',kind:'favourite',latitude:-34.546285,longitude:150.853784,radius:200},
+ {id:'gym',name:'Plus Fitness',kind:'favourite',latitude:gymSpot.latitude,longitude:gymSpot.longitude,radius:150}];
+function nativeDrive(title,details={}){
+ return recordedJourney({id:'from-home',source:'device',ownerID:owner,state:'finished',recordingMode:'automatic',activity:'Driving',title,vehicle:'Kia',startedAt:10000,endedAt:10300,durationSeconds:300,distanceMeters:2100,
+  points:[{...p(-34.54625,150.85380),timestamp:10000},{...p(-34.549,150.857),timestamp:10150},{...gymSpot,timestamp:10300}],
+  details:{tags:[],startPlace:'Morley Park',endPlace:'Plus Fitness',...details}});
+}
+it('names where a drive started after Home, whatever order the overlapping places were saved in',()=>{
+ for(const places of [overlapping,[...overlapping].reverse()]){
+  const [journey]=buildJourneys([nativeDrive('Driving')],{owner,metadata:emptyGrouping(owner),vehicles,places}).journeys;
+  expect(journey.location).toBe('Home → Plus Fitness');
+ }
+});
+it('shows Home instead of a favourite on top of it in a title the recorder stored before the overlap rule',()=>{
+ const t=nativeDrive('Morley Park → Plus Fitness');
+ for(const places of [overlapping,[...overlapping].reverse()]){
+  const [journey]=buildJourneys([t],{owner,metadata:emptyGrouping(owner),vehicles,places}).journeys;
+  expect(journey.title).toBe('Home → Plus Fitness');
+  expect(journey.location).toBe('Home → Plus Fitness');
+ }
+ // The round trip suffix survives, and the end is repaired the same way.
+ const round=nativeDrive('Morley Park → Morley Park · stopped 8 min',{endPlace:'Morley Park'});
+ round.points=[{...p(-34.54625,150.85380),timestamp:10000},{...gymSpot,timestamp:10150},{...p(-34.54626,150.85381),timestamp:10300}];
+ expect(buildJourneys([round],{owner,metadata:emptyGrouping(owner),vehicles,places:overlapping}).journeys[0].title).toBe('Home → Home · stopped 8 min');
+});
+it('repairs that title even when the activity was enriched and cached with the old one',()=>{
+ const t=nativeDrive('Morley Park → Plus Fitness');t.updatedAt=7;
+ const meta={...emptyGrouping(owner),distanceSummaries:{[t.id]:{updatedAt:7,pointCount:t.points.length,distanceMeters:t.distanceMeters??0,visibleRouteStart:t.visibleRouteStart,visibleRouteEnd:t.visibleRouteEnd,summary:{gaps:[]},
+  presentation:{title:'Morley Park → Plus Fitness',location:'Morley Park → Plus Fitness',tags:[],recognisedStops:[]}}}};
+ const [journey]=buildJourneys([t],{owner,metadata:meta,vehicles,places:overlapping}).journeys;
+ expect(journey.title).toBe('Home → Plus Fitness');
+ expect(journey.location).toBe('Home → Plus Fitness');
+});
+it('leaves a title alone that the person wrote, or that the recorder did not generate from its start and end places',()=>{
+ const places=overlapping,meta=emptyGrouping(owner);
+ const title=activity=>buildJourneys([activity],{owner,metadata:meta,vehicles,places}).journeys[0].title;
+ expect(title(nativeDrive('Morley Park → Plus Fitness',{titleEdited:true,userCorrected:true}))).toBe('Morley Park → Plus Fitness');
+ expect(title(nativeDrive('Dropping the car at Morley Park'))).toBe('Dropping the car at Morley Park');
+ expect(title({...nativeDrive('Morley Park → Plus Fitness'),recordingMode:'manual'})).toBe('Morley Park → Plus Fitness');
+ // A rename kept in the journey metadata wins as it always did.
+ expect(buildJourneys([nativeDrive('Morley Park → Plus Fitness')],{owner,metadata:{...meta,titles:{'from-home':'My commute'}},vehicles,places}).journeys[0].title).toBe('My commute');
+ // Away from Home the favourite still names the start.
+ const elsewhere=nativeDrive('Morley Park → Plus Fitness');elsewhere.points=[{...p(-34.5505,150.8590),timestamp:10000},{...gymSpot,timestamp:10300}];
+ expect(title(elsewhere)).toBe('Morley Park → Plus Fitness');
+});
+// A list row (a cloud activity whose route is not loaded) has no points to count, so its cached presentation can only be judged by when
+// the activity was last updated; the saved point count describes the full route and can never match.
+const listRow=(over={})=>{
+ const t=drive('list-row',locations.sydney,locations.kew);
+ return {...t,geometryLoaded:false,points:[],updatedAt:5,...over};
+};
+const cachedFor=(updatedAt)=>({...emptyGrouping(owner),distanceSummaries:{'list-row':{updatedAt,pointCount:177,distanceMeters:100000,visibleRouteStart:0,visibleRouteEnd:176,summary:{gaps:[]},presentation:{title:'Home → Gym',location:'Home → Gym',tags:['Gym'],recognisedStops:[]}}}});
+it('still shows the cached presentation of a list row that has no route loaded',()=>{
+ const [journey]=build([listRow()],cachedFor(5)).journeys;
+ expect(journey.title).toBe('Home → Gym');
+ expect(journey.location).toBe('Home → Gym');
+ expect(journey.tags).toContain('Gym');
+});
+it('ignores the cached presentation of a list row that was updated after it was saved',()=>{
+ const edited=listRow({title:'My renamed drive',updatedAt:6,details:{...drive('x',locations.sydney,locations.kew).details,titleEdited:true}});
+ const [journey]=build([edited],cachedFor(5)).journeys;
+ expect(journey.title).toBe('My renamed drive');
+});
+it('keeps a title worked out from a stop on a Home round trip, which the repair of the recorder\'s start and end names must not replace',()=>{
+ const t=recordedJourney({id:'round-trip',source:'device',ownerID:owner,state:'finished',recordingMode:'automatic',activity:'Driving',title:'Home → Home · stopped 8 min',vehicle:'Kia',startedAt:10000,endedAt:10900,durationSeconds:900,distanceMeters:4200,
+  points:[{...p(-34.54625,150.85380),timestamp:10000},{...gymSpot,timestamp:10300},{...gymSpot,timestamp:10800,segment:1},{...p(-34.54626,150.85381),timestamp:10900,segment:1}],
+  details:{tags:[],startPlace:'Home',endPlace:'Home',stops:[{start:10400,end:10780,verdict:'ambiguous',confidence:'low',reasons:[]}]}});
+ const [journey]=buildJourneys([t],{owner,metadata:emptyGrouping(owner),vehicles,places:overlapping}).journeys;
+ expect(journey.title).toBe('Home → Plus Fitness → Home');
+});

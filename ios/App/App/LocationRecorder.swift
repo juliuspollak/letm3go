@@ -1897,10 +1897,11 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func start(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard self.requireAccount(call) else { return }
-            // A current recording on the Watch holds a start until the rider confirms.
-            if call.getBool("anyway") != true, case .blocked(let other) = CrossDeviceRecording.start(remote: WatchSessionManager.shared.watchRecording, ownerID: LocationRecorder.shared.ownerID, now: Date().timeIntervalSince1970) {
+            // A current recording on the Watch refuses a start here: one activity at a time. (The Watch's report goes quiet after a
+            // couple of minutes without word from it, so a Watch that died never holds the iPhone back for long.)
+            if case .blocked(let other) = CrossDeviceRecording.start(remote: WatchSessionManager.shared.watchRecording, ownerID: LocationRecorder.shared.ownerID, now: Date().timeIntervalSince1970) {
                 LocationRecorder.shared.recordDiagnostic("watch", "iPhone start held: recording on Apple Watch")
-                call.reject(other.label + ". Finish it there, or choose Start Anyway.", "RECORDING_ELSEWHERE")
+                call.reject(other.label + ". Finish it there before starting an activity on this iPhone.", "RECORDING_ELSEWHERE")
                 return
             }
             do { try LocationRecorder.shared.start(activity: call.getString("activity") ?? "", vehicle: call.getString("vehicle"), vehicleID: call.getString("vehicleID"), trailID: call.getString("trailID"), trailName: call.getString("trailName"), trailSegmentID: call.getString("trailSegmentID"), trailDistanceMeters: call.getDouble("trailDistanceMeters"), precision: call.getString("precision")); call.resolve(LocationRecorder.shared.snapshot()) }

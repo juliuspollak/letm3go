@@ -21,6 +21,21 @@ export const savedPlaceRadius=place=>Math.max(50,Math.min(2000,Number(place?.rad
 export const PERSONAL_PLACE_KINDS=['home','work'];
 export const personalPlace=place=>PERSONAL_PLACE_KINDS.includes(String(place?.kind||'').toLocaleLowerCase());
 
+// The saved place a point is named after when several contain it. The order is the recorder's, which titles a trip from it
+// (SavedPlace.names in RecorderCore.swift): Home and Work first, because a favourite saved on top of Home (a park across the road, a
+// destination remembered from a drive home) is not where the person is and the order places were saved or edited in must never
+// decide it; then the tighter place, so a small saved place is not overridden by a wide one; then the nearer; the id only makes a
+// tie repeatable. Containment is the saved fence alone (a place without a usable radius counts as 150 m, as it always has here): the
+// recorder also ignores a fix too coarse for the fence, and this side has no fix accuracy to apply. A place without a name names nothing.
+export function namingPlace(places,point){
+ if(!Number.isFinite(point?.latitude)||!Number.isFinite(point?.longitude))return null;
+ return listOf(places)
+  .filter(place=>typeof place?.name==='string'&&place.name.trim())
+  .map(place=>({place,radius:Math.min(place?.radius||150,2000),away:Number.isFinite(place?.latitude)&&Number.isFinite(place?.longitude)?metres(place,point):Infinity}))
+  .filter(candidate=>candidate.away<=candidate.radius)
+  .sort((a,b)=>Number(personalPlace(b.place))-Number(personalPlace(a.place))||a.radius-b.radius||a.away-b.away||String(a.place.id).localeCompare(String(b.place.id)))[0]?.place||null;
+}
+
 // The saved place that already covers a point, nearest first. This is the same
 // question the tags section asks, so the answer never disagrees with recognition.
 // `includePersonal` is for callers that really do want Home/Work; the destination

@@ -974,6 +974,25 @@ struct SavedPlace: Codable {
         point.accuracy >= 0 && point.accuracy <= radius &&
         point.distance(to: GPSPoint(latitude: latitude, longitude: longitude, timestamp: 0, accuracy: 0, altitude: 0, speed: 0)) <= radius
     }
+    // Which of two saved places that both contain a point gives it its name. Home and Work come first: a favourite saved on top of
+    // Home (a park across the road, a destination remembered from a drive home) is not where the person started or arrived, and the
+    // order the places were saved or edited in must never decide it. Then the tighter place, so a small saved place is not overridden
+    // by a wide one, then the nearer one; the id only makes a tie repeatable.
+    static func names(_ a: SavedPlace, before b: SavedPlace, at point: GPSPoint) -> Bool {
+        if a.sensitive != b.sensitive { return a.sensitive }
+        if a.radius != b.radius { return a.radius < b.radius }
+        let nearA = point.distance(to: GPSPoint(latitude: a.latitude, longitude: a.longitude, timestamp: 0, accuracy: 0, altitude: 0, speed: 0))
+        let nearB = point.distance(to: GPSPoint(latitude: b.latitude, longitude: b.longitude, timestamp: 0, accuracy: 0, altitude: 0, speed: 0))
+        if nearA != nearB { return nearA < nearB }
+        return a.id < b.id
+    }
+}
+extension Sequence where Element == SavedPlace {
+    // The saved place a trip's start, end or a place lookup is named after (see SavedPlace.names). One rule for every caller, so a
+    // trip's title, its stop context and a cached place lookup cannot disagree about which of two overlapping places they are in.
+    func naming(_ point: GPSPoint) -> SavedPlace? {
+        filter { $0.contains(point) }.min { SavedPlace.names($0, before: $1, at: point) }
+    }
 }
 struct Classification: Codable {
     var predicted: String

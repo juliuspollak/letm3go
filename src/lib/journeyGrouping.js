@@ -3,7 +3,7 @@ export {metres} from './journeyGeometry.js';
 import {assessRoutePlaces,destinationTitle,destinationVisits} from './journeyRecognition.js';
 import {activityCode} from './activityNames.js';
 import {ACTIVITY_TYPES} from './activityTypes.js';
-import {personalPlace} from './rememberedPlace.js';
+import {personalPlace,namingPlace} from './rememberedPlace.js';
 import {rankPlaceCandidates,placeTagPolicy} from './placeTagPolicy.js';
 import {automaticTitle, contextualJourneyTitle} from './activityTitle.js';
 import {recognisedStopVenue} from './stopVenueRecognition.js';
@@ -72,9 +72,24 @@ function activityPlaceTags(activity,from,to,stops=[]){
 }
 function geo(p,places,metadata){
  if(!point(p))return {name:'Unknown location',tags:[]};
- const saved=[...places].filter(s=>metres(s,p)<=Math.min(s.radius||150,2000)).sort((a,b)=>metres(a,p)-metres(b,p))[0];
+ // Home and Work name a point before a favourite on top of them, then the tightest place (the rule the recorder titles trips with).
+ const saved=namingPlace(places,p);
  const found=metadata.places[placeKey(p)]||{};
  return {name:saved?.name||found.nearbyName||found.locality||'Unnamed stop',locality:found.locality||'',nearbyName:saved?.name||found.nearbyName||'',kind:saved?.kind||'',tags:[...new Set([saved?.name,found.locality,found.region,found.nearbyName,...(found.categories||[])].filter(Boolean))],possibleCharging:found.possibleCharging===true,latitude:p.latitude,longitude:p.longitude};
+}
+// The recorder titles an automatic trip "<start place> → <end place>" from the saved places it began and ended in. Builds before the
+// recorder's overlap rule (SavedPlace.names) took whichever of two overlapping places was saved first, so a favourite beside the house
+// turned "Home → Plus Fitness" into "Morley Park → Plus Fitness" and the title was stored that way. A title that is still exactly that
+// generated text is shown with Home or Work where the trip really started or ended; anything the person edited is left alone.
+function nativeEndpointTitle(s,from,to){
+ const details=s.details||{},start=details.startPlace,end=details.endPlace;
+ if(s.recordingMode!=='automatic'||details.titleEdited||details.userCorrected||s.corrected||typeof start!=='string'||typeof end!=='string')return null;
+ const title=s.title||'',generated=`${start} → ${end}`;
+ // The recorder may add " · stopped N min" to a round trip that kept a possible destination.
+ if(!title.startsWith(generated)||!/^( · stopped \d+ min)?$/.test(title.slice(generated.length)))return null;
+ const named=(place,recorded)=>personalPlace(place)&&place.name?place.name:recorded;
+ const repaired=`${named(from,start)} → ${named(to,end)}`;
+ return repaired===generated?null:repaired+title.slice(generated.length);
 }
 function charging(stop,telemetry,owner,vehicleID){
  // Only verified provider evidence for this owner AND exact vehicle can confirm it.
@@ -188,7 +203,12 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
    // manual titles remain authoritative.
    const generatedNativeStopTitle=!!stopTitle&&nativeStopTitle;
    const journey={...s,recordedTitle:s.recordedTitle??s.title,recognition,generatedTitle,title:metadata.titles[s.id]||((automaticTitle(s)||s.titleIsAutomatic||generatedNativeStopTitle)?generatedTitle||s.title:s.title),location:from.name==='Unknown location'||from.name==='Unnamed stop'?s.location:`${from.name} → ${to.name}`,tags:visibleTags([...(s.tags||[]),...(metadata.manualTags?.[s.id]||[]),...activityPlaceTags(s,from,toTag,stops),...routeTags(s,metadata),...recognition.visited.map(p=>p.name)],[s],metadata),recognisedStops:stops};
-   const presentation=saved?.presentation;
+   // A cached presentation describes the activity as it was saved. Once the activity
+   // changes (a title edit bumps updatedAt) it is stale and must not override it. A list row
+   // has no route loaded, so the point counts saved with the full route can never match:
+   // only when it was last updated says whether the cache still describes it.
+   const presentationCurrent=s.geometryLoaded===false?saved?.updatedAt===(s.updatedAt??null):snapshotCurrent(s,saved);
+   const presentation=presentationCurrent?saved?.presentation:undefined;
    if(presentation&&s.geometryLoaded!==true){
     journey.title=metadata.titles[s.id]||presentation.title||journey.title;
     journey.location=presentation.location||journey.location;
@@ -197,6 +217,13 @@ export function buildJourneys(activities,{owner,metadata=emptyGrouping(owner),pl
      const edit=metadata.stopEdits[stop.id];if(edit?.ignored)return [];
      return [{...stop,...(edit?.name?{name:edit.name}:{}),tags:edit?.replaceTags?edit.tags||[]:[...new Set([...(stop.tags||[]),...(edit?.tags||[])])]}];
     });
+   }
+   // Last, so a title or location cached with the activity (saved when it was enriched) cannot bring the wrong start place back. Only
+   // while the title shown is still the recorder's own text: a title worked out from the places and stops (generatedTitle) is not.
+   const repairedTitle=metadata.titles[s.id]||![s.title,presentation?.title].includes(journey.title)?null:nativeEndpointTitle(s,from,to);
+   if(repairedTitle){
+    journey.title=repairedTitle;
+    if(from.name!=='Unknown location'&&from.name!=='Unnamed stop')journey.location=`${from.name} → ${to.name}`;
    }
    withEstimate(journey,savedDistance(s,metadata),metadata);
    projectionCache?.set(cacheID,{source:s,keys,gaps,recordKey,edits,places,vehicles,telemetry,journey});return journey;
