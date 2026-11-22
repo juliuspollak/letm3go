@@ -10,12 +10,14 @@ import {frameMatches,geometryKey,surfaceGeometry} from '../lib/mapViewport.js';
 // sent to the native map once per key and the payload names only the key.
 // `controls` (lib/mapToolbar.mapControls) adds the Map page's controls, drawn
 // natively once the map is embedded; their actions come back to `onControl`.
-export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,onLocate,locating=false,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null,onRegion=null,onSegment=null,onStep=null,dynamic=false,resumeFullscreen=0,onResumeFullscreen=null}){
+// `pickable` is the saved-place editor's map: live like any other (pan, zoom, circles that follow the sliders through update()),
+// and a tap on the bare map is reported to `onPick`. `picker` is the older still picture that opens a full-screen chooser.
+export default function AppleMap({payload:basePayload,onResult,large=false,picker=false,pickable=false,onPick=null,onLocate,locating=false,embeddedEnabled=true,viewportKey=null,onCamera=null,overview=null,controls=null,onControl=null,onRegion=null,onSegment=null,onStep=null,dynamic=false,resumeFullscreen=0,onResumeFullscreen=null}){
  // The payload is derived from props on every render; memoising it keeps the
  // derived serialisation below stable so a re-render that did not change the map
  // content (for example a photo pin selection or an unrelated parent update)
  // does not re-serialise the whole route.
- const payload=useMemo(()=>({...basePayload,locate:Boolean(onLocate),locating,...(controls?{layers:{active:controls.active,controls},mapStyle:controls.style}:{})}),[basePayload,onLocate,locating,controls]);
+ const payload=useMemo(()=>({...basePayload,locate:Boolean(onLocate),locating,...(pickable?{pickable:true}:{}),...(controls?{layers:{active:controls.active,controls},mapStyle:controls.style}:{})}),[basePayload,onLocate,locating,controls,pickable]);
  const overviewData=useRef(overview);
  useEffect(()=>{overviewData.current=overview;},[overview]);
  const overviewKey=overview?.key||null;
@@ -69,6 +71,16 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // unless a diagnostics screen asks for it.
  useEffect(()=>installMapDiagnostics(mapDiagnosticsSnapshot),[]);
  const latest=useRef(onResult);useEffect(()=>{latest.current=onResult;},[onResult]);
+ // Where the person tapped on a pickable map (or chose in its full-screen view). The pin and circles then move through update().
+ const pickHandler=useRef(onPick);useEffect(()=>{pickHandler.current=onPick;},[onPick]);
+ useEffect(()=>{
+  if(!appleMapsAvailable()||!pickable)return;
+  let disposed=false;let listener;
+  void appleMaps.addListener('locationPicked',event=>{
+   if(!disposed&&event?.mapID===mapID&&Number.isFinite(event.latitude)&&Number.isFinite(event.longitude))pickHandler.current?.({latitude:event.latitude,longitude:event.longitude});
+  }).then(handle=>{if(disposed)void handle.remove();else listener=handle;}).catch(()=>{});
+  return()=>{disposed=true;void listener?.remove();};
+ },[mapID,pickable]);
  // The people map reports its own camera changes (a gesture, an edge avatar, its
  // Show everyone button) so the requested mode survives a remount.
  const cameraHandler=useRef(onCamera);useEffect(()=>{cameraHandler.current=onCamera;},[onCamera]);
@@ -133,8 +145,10 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
  // re-embed; only `fitKey` asks the native map to bring a new day into view.
  // Community segment lines and pins (the Map's Segments layer) change as the map
  // moves; they go through update(), never a re-embed.
- const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>dynamic&&['routes','gaps','estimated','live','pins','fitKey','focus','styled','selectedActivity','scope','camera','activityPreview','status'].includes(key)?undefined:key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'&&pin.kind!=='people'&&!pin.segmentID):key==='styled'&&Array.isArray(value)?value.filter(line=>!line.community):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent,dynamic]);
- const snapshotKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','speed','fit'].includes(key)?undefined:value),[latestContent]);
+ const structureKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>dynamic&&['routes','gaps','estimated','live','pins','fitKey','focus','styled','selectedActivity','scope','camera','activityPreview','status'].includes(key)?undefined:key==='pins'&&Array.isArray(value)?value.filter(pin=>pin.kind!=='photo'&&pin.kind!=='people'&&!pin.segmentID):key==='styled'&&Array.isArray(value)?value.filter(line=>!line.community):['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','arrivalRadius','speed','fit'].includes(key)?undefined:value),[latestContent,dynamic]);
+ // A place's picture is its pin and circles, so for a pickable map they count: the still image is the fallback while the live map
+ // is not up, and it must not show a place the person has since moved or resized.
+ const snapshotKey=useMemo(()=>JSON.stringify(latestContent,(key,value)=>(pickable?['selected','label','title','subtitle','accuracy']:['selected','point','label','title','subtitle','members','secondsAtPlace','activity','state','accuracy','radius','arrivalRadius','speed','fit']).includes(key)?undefined:value),[latestContent,pickable]);
  // A geometry change immediately withholds its old screenshot while the new one loads.
  const preview=previewState?.key===snapshotKey?previewState.image:'';
  useEffect(()=>{
@@ -275,7 +289,10 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   document.addEventListener('visibilitychange',resized);
   return()=>{active=false;cancelAnimationFrame(frame);if(sampleFrame)cancelAnimationFrame(sampleFrame);mutations.disconnect();observer.disconnect();window.removeEventListener('resize',resized);window.removeEventListener('orientationchange',resized);window.removeEventListener('pageshow',resized);viewport?.removeEventListener?.('resize',resized);document.removeEventListener('transitionend',queued,true);document.removeEventListener('animationend',queued,true);cancelAnimationFrame(queuedFrame);window.removeEventListener('scroll',scrolled,true);document.removeEventListener('visibilitychange',resized);};
  },[structureKey,mapID,picker,embeddedEnabled,reopenVersion,themeVersion,viewportKey,overviewKey,overviewAttempt,hasLayers]);
- useEffect(()=>{let alive=true;if(!appleMapsAvailable()||embedded)return;(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...contentRef.current,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{recordMapEvent('snapshot');if(alive){setPreview({key:snapshotKey,image:result.image});setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});return()=>{alive=false;};},[snapshotKey,large,themeVersion,overviewKey,overviewAttempt,embedded]);
+ useEffect(()=>{let alive=true,timer=null;if(!appleMapsAvailable()||embedded)return;const capture=()=>(overviewKey?sendOverview(overviewData.current).then(()=>true,()=>false):Promise.resolve(true)).then(arrived=>{const request={...contentRef.current,width:700,height:large?600:350};if(!arrived)delete request.overview;return appleMaps.snapshot(request);}).then(result=>{recordMapEvent('snapshot');if(alive){setPreview({key:snapshotKey,image:result.image});setError('');}}).catch(()=>{if(alive)setError('Map preview unavailable. Tap to open Apple Maps.');});
+  // A place's picture follows its sliders, so it waits for them to settle; every other map asks at once.
+  if(pickable)timer=setTimeout(capture,300);else capture();
+  return()=>{alive=false;clearTimeout(timer);};},[snapshotKey,large,themeVersion,overviewKey,overviewAttempt,embedded,pickable]);
  async function open(){
   if(busy)return;
   setBusy(true);setError('');
@@ -285,7 +302,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
    // hides the map, opens on the same view, and resumes it on close. This fallback
    // path (picker/web) never destroys the map, so the camera survives open/close.
    const arrived=overviewKey?await sendOverview(overviewData.current).then(()=>true,()=>false):true;
-   const request={...JSON.parse(interactiveData),picker,mapID};
+   const request={...JSON.parse(interactiveData),picker:picker||pickable,mapID};
    if(!arrived){delete request.overview;setOverviewFailed(overviewKey);}
    const result=await appleMaps.open(request);
    if(result?.mapAction)controlHandler.current?.(result.mapAction);
@@ -304,7 +321,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picke
   if(!resumeFullscreen||!embedded||reopen.current===resumeFullscreen)return;
   reopen.current=resumeFullscreen;onResumeFullscreen?.();void openHandler.current?.();
  },[resumeFullscreen,embedded,onResumeFullscreen]);
- return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker?'place-picker':'journey-map'} ${large?'large':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{!embedded&&preview&&<img src={preview} alt="Apple map preview"/>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&(!dynamic||frozen.content===latestContent)&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{!embedded&&basePayload.activityPreview&&<section className="map-activity-bubble" aria-label="Selected activity"><div><strong>{basePayload.activityPreview.title}</strong><small>{basePayload.activityPreview.detail}</small></div><button type="button" onClick={()=>onControl?.('pday:open:'+basePayload.activityPreview.activityID)}>Open activity</button><button type="button" aria-label="Close activity preview" onClick={()=>onControl?.('pday:clear:'+basePayload.activityPreview.activityID)}>×</button></section>}{controls&&!embedded&&<MapControls controls={controls} onAction={onControl}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&!embedded&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" aria-pressed={locating||(basePayload.camera?.mode==='person'&&basePayload.camera?.personId==='self')} disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{!embedded&&!appleMapsAvailable()&&<PeopleActivityFallback pins={latestContent.pins}/>} {error&&<p role="status" className="notice">{error}</p>}</div>;
+ return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`${picker||pickable?'place-picker':'journey-map'} ${large?'large':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label={picker||pickable?'Choose saved place in Apple Maps':'Open interactive Apple journey map'} disabled={busy||!appleMapsAvailable()} onClick={open}>{!embedded&&preview&&<img src={preview} alt="Apple map preview"/>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':picker||pickable?'Choose location':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&(!dynamic||frozen.content===latestContent)&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{!embedded&&basePayload.activityPreview&&<section className="map-activity-bubble" aria-label="Selected activity"><div><strong>{basePayload.activityPreview.title}</strong><small>{basePayload.activityPreview.detail}</small></div><button type="button" onClick={()=>onControl?.('pday:open:'+basePayload.activityPreview.activityID)}>Open activity</button><button type="button" aria-label="Close activity preview" onClick={()=>onControl?.('pday:clear:'+basePayload.activityPreview.activityID)}>×</button></section>}{controls&&!embedded&&<MapControls controls={controls} onAction={onControl}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&!embedded&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" aria-pressed={locating||(basePayload.camera?.mode==='person'&&basePayload.camera?.personId==='self')} disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{!embedded&&!appleMapsAvailable()&&<PeopleActivityFallback pins={latestContent.pins}/>} {error&&<p role="status" className="notice">{error}</p>}</div>;
 }
 
 function PeopleActivityFallback({pins=[]}){

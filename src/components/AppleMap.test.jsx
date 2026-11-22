@@ -578,3 +578,57 @@ it('forwards the scoped fullscreen Open action from the existing native map resu
  fireEvent.click(within(document.body).getByRole('button',{name:'Open interactive Apple journey map'}));
  await waitFor(()=>expect(onControl).toHaveBeenCalledWith('pday:open-fullscreen:a'));
 });
+
+describe('the saved-place map (pickable)',()=>{
+ const place={routes:[],pins:[{point:[-34.5462,150.8538],title:'Saved place',kind:'place',radius:30,arrivalRadius:100}]};
+ it('is a live map that reports where the person tapped, only for itself',async()=>{
+  const handlers={};mocks.addListener.mockImplementation((name,callback)=>{handlers[name]=callback;return Promise.resolve({remove:vi.fn()});});
+  const onPick=vi.fn();
+  const {container}=render(<AppleMap pickable payload={place} onPick={onPick}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({pickable:true})));
+  const mapID=mocks.embed.mock.calls.at(-1)[0].mapID;
+  await waitFor(()=>expect(handlers.locationPicked).toBeDefined());
+  handlers.locationPicked({mapID:'other',latitude:1,longitude:2});expect(onPick).not.toHaveBeenCalled();
+  handlers.locationPicked({mapID,latitude:'x',longitude:2});expect(onPick).not.toHaveBeenCalled();
+  handlers.locationPicked({mapID,latitude:-34.547,longitude:150.854});
+  expect(onPick).toHaveBeenCalledWith({latitude:-34.547,longitude:150.854});
+  // Embedded, no still picture and no "Choose location" pill stand in front of it.
+  await waitFor(()=>expect(container.querySelector('.apple-map-open')).toBeNull());
+ });
+ it('moves its circles through update() as the sliders move, never by re-embedding the map',async()=>{
+  const {rerender}=render(<AppleMap pickable payload={place}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  await waitFor(()=>expect(mocks.update).toHaveBeenCalled());
+  mocks.embed.mockClear();mocks.update.mockClear();mocks.unembed.mockClear();
+  const pin=value=>({routes:[],pins:[{...place.pins[0],...value}]});
+  rerender(<AppleMap pickable payload={pin({radius:90})}/>);
+  rerender(<AppleMap pickable payload={pin({radius:90,arrivalRadius:350})}/>);
+  rerender(<AppleMap pickable payload={pin({radius:90,arrivalRadius:350,point:[-34.55,150.86]})}/>);
+  await waitFor(()=>expect(mocks.update).toHaveBeenLastCalledWith(expect.objectContaining({pins:[expect.objectContaining({radius:90,arrivalRadius:350,point:[-34.55,150.86]})]})));
+  expect(mocks.embed).not.toHaveBeenCalled();expect(mocks.unembed).not.toHaveBeenCalled();
+ });
+ it('falls back to a still picture that opens the full-screen chooser, which answers through the same handler',async()=>{
+  const onResult=vi.fn();mocks.open.mockResolvedValue({latitude:-34.5,longitude:150.8});
+  render(<AppleMap pickable embeddedEnabled={false} payload={place} onResult={onResult}/>);
+  fireEvent.click(within(document.body).getByRole('button',{name:'Choose saved place in Apple Maps'}));
+  await waitFor(()=>expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({picker:true,pickable:true})));
+  await waitFor(()=>expect(onResult).toHaveBeenCalledWith({latitude:-34.5,longitude:150.8}));
+ });
+ it('refreshes the still picture when the pin or a circle changes, once the sliders settle',async()=>{
+  vi.useFakeTimers();
+  try{
+   const {rerender}=render(<AppleMap pickable embeddedEnabled={false} payload={place}/>);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(400);});
+   expect(mocks.snapshot).toHaveBeenCalledTimes(1);
+   const moved={routes:[],pins:[{...place.pins[0],radius:60}]};
+   rerender(<AppleMap pickable embeddedEnabled={false} payload={moved}/>);
+   rerender(<AppleMap pickable embeddedEnabled={false} payload={{routes:[],pins:[{...moved.pins[0],radius:80}]}}/>);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
+   expect(mocks.snapshot).toHaveBeenCalledTimes(1);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(400);});
+   // Two slider moves in quick succession ask for one new picture, of the latest circle.
+   expect(mocks.snapshot).toHaveBeenCalledTimes(2);
+   expect(mocks.snapshot.mock.calls.at(-1)[0].pins[0]).toMatchObject({radius:80});
+  }finally{vi.useRealTimers();}
+ });
+});

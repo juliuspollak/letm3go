@@ -1295,3 +1295,8 @@ main:has(.home-day) .topbar{margin-bottom:10px}
 .watch-recording-banner.is-long{background:color-mix(in srgb,#f29927 16%,var(--surface));border-color:color-mix(in srgb,#f29927 55%,var(--line))}
 .watch-recording-dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--record);animation:record-breathe 1.6s ease-in-out infinite}
 .watch-recording-text{flex:1;display:grid;gap:2px;min-width:0}.watch-recording-text small{color:var(--muted)}
+/* Place editor: the sliders sit under the map they resize; the swatch beside each radius shows which circle it sets (solid = recognition,
+   dashed = arrival and place names). */
+.place-radius-control{margin-top:16px}
+.ring-key{display:inline-block;width:12px;height:12px;margin-right:8px;border-radius:50%;border:2px solid #0a84ff;background:color-mix(in srgb,#0a84ff 14%,transparent);vertical-align:-1px}
+.ring-key--arrival{border-style:dashed;background:transparent;opacity:.75}
