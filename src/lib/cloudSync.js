@@ -1,3 +1,4 @@
+import {walkingDuration} from './walkingDuration.js';
 import {perfSpan} from './perfMonitor.js';
 import {activityReceiptKey,normalizeActivityReceipts} from './activityReceiptKeys.js';
 import {SEGMENT_PUBLICATION_VERSION,segmentFingerprint,segmentReceipt} from './segmentSyncState.js';
@@ -376,7 +377,10 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
   if(held&&held.backupVersion===PRIVATE_BACKUP_VERSION&&held.nextAt>now&&!retryFailed&&held.updatedAt===trip.updatedAt){failedNow.add(trip.id);failures.push({id:trip.id,message:held.message,attempts:held.attempts,held:true,nextAt:held.nextAt});continue;}
   if(processed>=maxActivities){pending=true;break;}processed++;
   const details=trip.details||{};
-  const row={id:activityReceiptKey(trip.id),title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
+  const moving=walkingDuration({...trip,movingSeconds:undefined})?.moving;
+  // Quantise down to match the precision of started_at and ended_at.
+  const walkingMovingSeconds=moving==null?undefined:Math.floor(moving*1000)/1000;
+  const row={id:activityReceiptKey(trip.id),title:trip.title,activity:trip.activity,recording_mode:cloudRecordingMode(trip),started_at:new Date(trip.startedAt*1000).toISOString(),ended_at:new Date(trip.endedAt*1000).toISOString(),duration_seconds:walkingMovingSeconds??trip.durationSeconds,distance_meters:trip.distanceMeters,vehicle:trip.vehicle||null,description:details.description||'',notes:details.notes||'',tags:details.tags||[],collection:details.collection||'',equipment:(trip.equipment||[]).map(ref=>({id:String(ref.id).slice(0,100),name:String(ref.name||'').slice(0,100)})),view_metadata:viewMetadata(details),classification:backupClassification({...details,walkingMovingSeconds,sourceUpdatedAt:trip.updatedAt},trip.startedAt,trip.endedAt),user_corrected:!!details.userCorrected,route_points:trip.points};
   hashedTrips++;
   const fingerprint=await hash(stableCopy(row));
   // Already backed up by an earlier build: remember updatedAt so it is not hashed again.

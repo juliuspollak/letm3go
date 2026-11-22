@@ -58,7 +58,7 @@ export default function HomeDailySummary({date,today,journeys,unit,onDateChange,
   <button type="button" className="home-daily-open" aria-label={`View activities for ${label}`} onClick={guarded(()=>onOpen(date))}>
    <span className="home-daily-stat"><strong>{totals.estimated?'~':''}{distanceValue(distance,unit)} <small>{distanceUnitLabel(unit)}</small></strong></span>
    <span className="home-daily-stat"><strong>{totals.count}</strong> <small>{totals.count===1?'activity':'activities'}</small></span>
-   <span className="home-daily-stat"><strong>{minutes}</strong> <small>min</small></span>
+   <span className="home-daily-stat"><strong>{minutes}</strong> <small>min recorded</small></span>
    {totals.estimated&&<span className="sr-only">Distance includes estimated GPS gaps</span>}
    <ChevronRight className="home-daily-chevron" size={16} aria-hidden="true"/>
   </button>

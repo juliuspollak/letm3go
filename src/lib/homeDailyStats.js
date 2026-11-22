@@ -1,3 +1,4 @@
+import {walkingDuration} from './walkingDuration.js';
 import {chosenDay,matchesDate} from './activityFilters.js';
 import {shiftMapDay} from './mapLayers.js';
 
@@ -23,7 +24,7 @@ export function dailyJourneyTotals(journeys,selection,today){
   const parts=journey.segments?.length?journey.segments:[journey];
   for(const part of parts){
    const distance=Math.max(0,Number(part.distanceMeters)||0);
-   const duration=Math.max(0,Number(part.durationSeconds)||0);
+   const duration=walkingDuration(part)?.moving??Math.max(0,Number(part.durationSeconds)||0);
    const from=part.startedAt,to=part.endedAt;
    if(Number.isFinite(from)&&Number.isFinite(to)&&to>from){
     const overlap=Math.max(0,Math.min(to,end)-Math.max(from,start));

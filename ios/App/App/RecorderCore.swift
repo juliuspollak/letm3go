@@ -309,7 +309,7 @@ struct RecordedActivity: Codable {
         }
         // Publishing only paused it. Without this a relaunch sees an interrupted
         // journey and can reopen one that is over.
-        if endedAt != nil { state = "finished" }
+        if endedAt != nil { state = "finished"; saveWalkingDuration() }
         updatedAt = Date().timeIntervalSince1970
     }
     // Finalised by a build that left it paused. It has an end and no continuation,
@@ -691,6 +691,14 @@ enum PhotoSuggestionSkips {
     }
 }
 
+struct WalkingTransportHandoff: Codable {
+    let walk: RecordedActivity
+    let transport: RecordedActivity
+    let retainUnconfirmedWalk: Bool
+
+    static let fileName = "walking-transport-handoff.data"
+}
+
 final class RecordingStorage {
     let directory: URL
     private let encoder = JSONEncoder()
@@ -769,7 +777,22 @@ final class RecordingStorage {
             }
         }
     }
+    func prepareWalkingHandoff(_ handoff: WalkingTransportHandoff) throws {
+        try writeData(encoder.encode(handoff),name:WalkingTransportHandoff.fileName)
+    }
+    func replayWalkingHandoff() throws {
+        let url = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
+        guard FileManager.default.fileExists(atPath:url.path) else { return }
+        let handoff = try decoder.decode(WalkingTransportHandoff.self,from:readData(name:WalkingTransportHandoff.fileName))
+        if try !isDeleted(handoff.walk.id) {
+            if handoff.retainUnconfirmedWalk { try retainUnconfirmedWalk(handoff.walk) }
+            else { try save(handoff.walk) }
+        }
+        if try !isDeleted(handoff.transport.id) { try save(handoff.transport) }
+        try FileManager.default.removeItem(at:url)
+    }
     func load() throws -> [RecordedActivity] {
+        try replayWalkingHandoff()
         let deleted = try deletedIDs()
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil }
@@ -1069,6 +1092,7 @@ struct ActivityDetails: Codable {
     // to be a journey. It is kept in the recorder across stops and relaunches.
     var localWalkOrigin: DwellArea?
     var walkingMotionSupported: Bool?
+    var walkingMovingSeconds: Double?
     // Optional MTB trail linkage. A ride can be recorded without a trail and
     // linked later, so every one of these keys stays optional.
     var mtbTrailID: String?
@@ -2829,6 +2853,13 @@ extension RecordedActivity {
         }
         updateDetails { $0.localWalkOrigin = nil }
         return true
+    }
+
+    mutating func saveWalkingDuration() {
+        guard details?.localWalkOrigin == nil, let end = endedAt,
+              let moving = automaticWalkMovingSeconds else { return }
+        let seconds = min(max(0,end-startedAt),moving)
+        updateDetails { $0.walkingMovingSeconds = seconds }
     }
 
     var automaticWalkMovingSeconds: Double? {

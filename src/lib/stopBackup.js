@@ -5,6 +5,7 @@
 const KEY='journeyStops',PRIVATE='privateActivity';
 const PRIVATE_FIELDS=['heartRate','energy','wholeWorkoutEnergy','energyBinding','indoor','mtbTrailID','mtbTrailName','mtbSegmentID','mtbTrailDistanceMeters','routeQuality','titleEdited','trackingNotes','classificationDistances','recordingPrecision','sourceUpdatedAt'];
 const MAX_STOPS=1024;
+const validWalkingTime=(seconds,start,end)=>Number.isFinite(seconds)&&seconds>=0&&Math.round(seconds*1000)<=Math.round((end-start)*1000);
 const verdicts=new Set(['temporaryPause','meaningfulDestination','ambiguous']);
 const confidences=new Set(['low','medium','high']);
 const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
@@ -30,6 +31,7 @@ export function backupClassification(details,start,end){
  const classification=object(details?.classification)?{...details.classification}:{predicted:'Unknown',confidence:'low',evidence:[]};
  delete classification[KEY];delete classification[PRIVATE];
  const privateFields=Object.fromEntries(PRIVATE_FIELDS.filter(key=>details?.[key]!==undefined).map(key=>[key,details[key]]));
+ if(validWalkingTime(details?.walkingMovingSeconds,start,end))privateFields.walkingMovingSeconds=details.walkingMovingSeconds;
  if(Object.keys(privateFields).length)classification[PRIVATE]={version:1,...privateFields};
  const stops=annotations(details,start,end);
  if(Object.keys(stops).length)classification[KEY]={version:1,...stops};
@@ -39,6 +41,7 @@ export function restoreClassification(raw,start,end){
  const classification=object(raw)?{...raw}:{predicted:'Unknown',confidence:'low',evidence:[]};
  const envelope=classification[KEY],stored=classification[PRIVATE];
  const privateFields=stored?.version===1?Object.fromEntries(PRIVATE_FIELDS.filter(key=>stored[key]!==undefined).map(key=>[key,stored[key]])):{};
+ if(stored?.version===1&&validWalkingTime(stored.walkingMovingSeconds,start,end))privateFields.walkingMovingSeconds=stored.walkingMovingSeconds;
  delete classification[KEY];delete classification[PRIVATE];
  return {classification,...privateFields,...(object(envelope)&&envelope.version===1?annotations(envelope,start,end):{})};
 }

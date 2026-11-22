@@ -45,6 +45,8 @@ enum RecorderHarness {
                 check(false, "the simulator app has Always location access (status \(status.rawValue)); grant it with simctl privacy")
             } else {
                 walkingOuting()
+                walkingHandoffRecovery()
+                walkingReturnNearBoundary()
                 shellCoveOuting()
                 homeWalkingAndDrift()
                 await destinationSplit()
@@ -125,6 +127,91 @@ enum RecorderHarness {
                     "elapsed includes the 90-minute pause and moving time follows the two walking legs")
             }
         } catch { check(false,"walking outing harness: \(error.localizedDescription)") }
+    }
+
+    static func walkingHandoffRecovery() {
+        for family in [JourneyFamily.driving,.cycling] {
+            let (directory,key,owner) = freshStore()
+            defer { try? FileManager.default.removeItem(at:directory) }
+            do {
+                let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+                let stop = Date().timeIntervalSince1970-600
+                var walk = RecordedActivity(activity:"Walking",startedAt:stop-180,resumedAt:stop-180,title:"Walking")
+                walk.recordingMode = "automatic"
+                for index in 0...18 {
+                    let point = GPSPoint(latitude:home.latitude+Double(index)*10/111_320,longitude:home.longitude,
+                        timestamp:stop-180+Double(index)*10,accuracy:5,altitude:0,speed:1)
+                    _ = walk.accept(point,now:point.timestamp)
+                }
+                r.automaticTrip = walk
+                try r.storage?.save(walk)
+                if family == .driving {
+                    r.detector.lastMovementAt = stop
+                    r.settleAutomatic()
+                }
+                let departure = stop+40
+                let speed = family == .driving ? 10.0 : 5.0
+                let activity = family == .driving ? "Driving" : "Cycling"
+                var change: JourneyFamily?
+                for index in 0...4 {
+                    let at = departure+Double(index)*10
+                    let fix = GPSPoint(latitude:home.latitude+(180+Double(index)*10*speed)/111_320,
+                        longitude:home.longitude,timestamp:at,accuracy:5,altitude:0,speed:speed)
+                    change = r.movementTransition.observe(fix,
+                        motion:MotionEvidence(types:[activity],confidence:"high",timestamp:at),now:at,from:.onFoot)
+                    if change != nil { break }
+                }
+                check(change == family,"\(activity) transition has sustained movement")
+                let journal = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
+                try FileManager.default.createDirectory(at:journal,withIntermediateDirectories:false)
+                do {
+                    if family == .driving { try r.endSettledJourney("Test handoff",starting:family) }
+                    else { try r.transitionTo(family) }
+                    check(false,"handoff should fail before activity writes")
+                } catch {
+                    check(r.pendingWalkingHandoff?.walk.id == walk.id,"failed journal write holds the original pair for retry")
+                }
+                let transport = r.pendingWalkingHandoff?.transport
+                try FileManager.default.removeItem(at:journal)
+                try r.completeWalkingHandoff()
+                let reopened = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+                let closed = reopened.trips.filter { $0.id == walk.id }
+                check(closed.count == 1 && closed.first?.points == walk.points && closed.first?.state == "finished",
+                    "\(activity) handoff preserves the finished walk exactly once")
+                check(transport != nil && reopened.automaticTrip?.id == transport?.id &&
+                    reopened.automaticTrip?.points == transport?.points &&
+                    reopened.automaticTrip?.points.allSatisfy { $0.timestamp >= departure } == true,
+                    "\(activity) handoff recovers the separate transport ID and route")
+            } catch { check(false,"walking handoff harness: \(error.localizedDescription)") }
+        }
+    }
+
+    static func walkingReturnNearBoundary() {
+        let (directory,key,owner) = freshStore()
+        defer { try? FileManager.default.removeItem(at:directory) }
+        do {
+            let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+            let stop = Date().timeIntervalSince1970-300
+            var walk = RecordedActivity(activity:"Walking",startedAt:stop-120,resumedAt:stop-120,title:"Walking")
+            walk.recordingMode = "automatic"
+            for index in 0...12 {
+                let at = stop-120+Double(index)*10
+                let point = GPSPoint(latitude:home.latitude+Double(index-12)*10/111_320,longitude:home.longitude,
+                    timestamp:at,accuracy:5,altitude:0,speed:1)
+                _ = walk.accept(point,now:at)
+            }
+            r.automaticTrip = walk
+            r.detector.lastMovementAt = stop
+            r.settleAutomatic()
+            for (index,metres) in [290.0,300,310].enumerated() {
+                let at = stop+60+Double(index)*10
+                let point = GPSPoint(latitude:home.latitude+metres/111_320,longitude:home.longitude,
+                    timestamp:at,accuracy:5,altitude:0,speed:1)
+                _ = try r.continueSettledAutomatic(sample:point,now:at)
+            }
+            check(r.automaticTrip?.id == walk.id && r.automaticTrip?.points.last?.segment != walk.points.last?.segment,
+                "a credible return starting inside 300 m resumes even if the confirming fix is outside")
+        } catch { check(false,"walking return boundary harness: \(error.localizedDescription)") }
     }
 
     static func shellCoveOuting() {

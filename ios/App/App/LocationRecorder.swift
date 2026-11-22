@@ -97,6 +97,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var movementTransition = MovementTransition()
     var departureBackfill = DepartureBackfill()
     var walkingResumption = WalkingResumption()
+    var pendingWalkingHandoff: WalkingTransportHandoff?
     var automaticSampling = AutomaticSampling()
     var homeRest = HomeRest()
     var locationMode: AutomaticLocationMode = .off
@@ -1500,8 +1501,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 return item
             }
         }
-        dict["durationSeconds"] = trip.duration(at: Date().timeIntervalSince1970)
-        if let moving = trip.automaticWalkMovingSeconds {
+        dict["durationSeconds"] = trip.details?.walkingMovingSeconds ?? trip.duration(at: Date().timeIntervalSince1970)
+        if trip.state != "finished", let moving = trip.automaticWalkMovingSeconds {
             dict["elapsedSeconds"] = max(0, (trip.endedAt ?? Date().timeIntervalSince1970) - trip.startedAt)
             dict["movingSeconds"] = moving
         }

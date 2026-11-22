@@ -120,5 +120,5 @@ it('shows Gym time, heart rate and calories without route metrics',()=>{
 it('shows automatic walking movement and the full outing time independently',()=>{
  const trip={activity:'Walking',recordingMode:'automatic',startedAt:1000,endedAt:7000,durationSeconds:600,movingSeconds:540};
  expect(activitySummary(trip).map(entry=>[entry.label,entry.value])).toEqual([['Moving time','9 min'],['Elapsed time','1 h 40 min']]);
- expect(activitySummary({...trip,movingSeconds:undefined})[0].value).toBe('10 min');
+ expect(activitySummary({...trip,movingSeconds:undefined}).map(({label,value})=>[label,value])).toEqual([['Elapsed time','1 h 40 min'],['Recorded time','10 min']]);
 });

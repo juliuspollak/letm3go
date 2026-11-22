@@ -1,3 +1,4 @@
+import {rawActivityFromCloudRow} from './cloudActivity.js';
 import { webcrypto } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { PRIVATE_BACKUP_VERSION,syncPrivateActivities } from './cloudSync.js';
@@ -603,4 +604,17 @@ it('retries a failed finished automatic walk independently of another finished a
  const recovered=await run(api,local,failed.receipts,{now:62000});
  expect(recovered.receipts.walk.revision).toBe(1);
  expect(recovered.receipts['backup-failure:walk'].cleared).toBe(true);
+});
+
+it('backs up explicit walking time for summary and detail and preserves a legacy stored duration',async()=>{
+ const api=client();
+ const walk={...trip,id:'cafe',recordingMode:'automatic',endedAt:6700,durationSeconds:1300,details:{walkingMovingSeconds:1200}};
+ const legacy={...walk,id:'legacy-walk',details:{},durationSeconds:1325};
+ await run(api,{...state,trips:[walk,legacy]});
+ const rows=api.rpc.mock.calls.filter(([name])=>name==='backup_private_activity').map(([,args])=>args.p_payload);
+ expect(rows.map(row=>row.duration_seconds)).toEqual([1200,1325]);
+ const restored=rawActivityFromCloudRow(rows[0]);
+ expect(restored.details.walkingMovingSeconds).toBe(1200);
+ expect(restored.endedAt-restored.startedAt).toBe(6600);
+ expect(rawActivityFromCloudRow(rows[1]).details.walkingMovingSeconds).toBeUndefined();
 });

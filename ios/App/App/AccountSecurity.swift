@@ -125,6 +125,7 @@ extension LocationRecorder {
         // restored as a journey that may still be continued.
         trips = records.filter { $0.state == "finished" || $0.isProvisional }
         manualExclusion = ManualExclusionGate()
+        pendingWalkingHandoff = nil
         active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil
         detector.reset();departureEvidence.reset();movementTransition.reset()
         dwellInference.reset();motionProbeGate.reset();lastPlaceDecision=""
@@ -171,6 +172,7 @@ extension LocationRecorder {
                     let reason = (record.id == recovery.tripID ? recovery.action?.reason : nil)
                         ?? "Journey ended: more than one unfinished automatic journey was found, so only the newest was kept open"
                     record.finish(at:lastFix)
+                    record.saveWalkingDuration()
                     record.updateDetails { metadata in
                         metadata.trackingNotes = Array(((metadata.trackingNotes ?? []) + [reason,"Recorded fixes: \(fixes)"]).suffix(24))
                     }
@@ -235,6 +237,7 @@ extension LocationRecorder {
         }
         try AccountKeychain.set("active-account",data:nil)
         diagnosticWriter.flush()
+        pendingWalkingHandoff = nil
         uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
         // Rides that could not be attributed to this account must not be handed to
         // the next one. The inbox is emptied first, then the watch is told that no

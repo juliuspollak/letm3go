@@ -1,3 +1,4 @@
+import {walkingDuration} from './walkingDuration.js';
 import {distanceText} from './distanceUnits.js';
 import {ropeSummary,clockText,jumpsText} from './ropeSkipping.js';
 import {usesGPS} from './activityCapabilities.js';
@@ -125,17 +126,17 @@ export function activitySummary(trip,{unit='km'}={}){
  // Includes estimates for GPS gaps: read as approximate, with the recorded part beside it.
  if(usesGPS(trip)&&distanceKm!=null)entries.push({id:'distance',label:trip?.distanceEstimate?'Estimated distance':'Distance',value:`${trip?.distanceEstimate?'~':''}${distanceText(distanceKm,unit)}`,
   ...(trip?.distanceEstimate?{detail:`${distanceText(trip.distanceEstimate.recordedMeters/1000,unit)} recorded`}:{})});
- const automaticWalk=trip?.recordingMode==='automatic'&&['Walking','Hiking','Running'].includes(trip?.activity);
- const completedWalk=automaticWalk&&finite(trip.startedAt)&&finite(trip.endedAt)&&trip.endedAt>=trip.startedAt;
- const movingSeconds=automaticWalk&&finite(trip.movingSeconds)?trip.movingSeconds:
-  [trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds,completedWalk?trip.durationSeconds:null].find(value=>finite(value)&&value>0);
- const elapsedSeconds=automaticWalk&&finite(trip.elapsedSeconds)?trip.elapsedSeconds:completedWalk?trip.endedAt-trip.startedAt:
-  finite(trip?.durationSeconds)?trip.durationSeconds:finite(trip?.minutes)?trip.minutes*60:null;
+ const walk=walkingDuration(trip);
+ const recordedSeconds=finite(trip?.durationSeconds)?trip.durationSeconds:finite(trip?.minutes)?trip.minutes*60:null;
+ const movingSeconds=walk?walk.moving:
+  [trip?.details?.movingSeconds,trip?.details?.movingTimeSeconds].find(value=>finite(value)&&value>0);
+ const elapsedSeconds=walk?walk.elapsed:recordedSeconds;
  // Rope skipping reads jumps first, then time and cadence; GPS figures do not apply.
  const rope=ropeSummary(trip);
  if(rope)entries.push({id:'jumps',label:'Jumps',value:jumpsText(rope.jumps)});
  if(movingSeconds!=null)entries.push({id:'moving',label:'Moving time',value:durationText(movingSeconds)});
- if(elapsedSeconds!=null)entries.push({id:'elapsed',label:movingSeconds!=null?'Elapsed time':'Time',value:rope?clockText(rope.totalSeconds):durationText(elapsedSeconds)});
+ if(elapsedSeconds!=null)entries.push({id:'elapsed',label:walk||movingSeconds!=null?'Elapsed time':'Time',value:rope?clockText(rope.totalSeconds):durationText(elapsedSeconds)});
+ if(walk&&movingSeconds==null&&recordedSeconds!=null)entries.push({id:'recorded-time',label:'Recorded time',value:durationText(recordedSeconds)});
  if(rope){
   if(rope.averageCadence>0)entries.push({id:'cadence',label:'Avg cadence',value:`${Math.round(rope.averageCadence)} /min`,detail:'Jumps per minute of skipping'});
   entries.push({id:'active-skipping',label:'Active skipping',value:clockText(rope.activeSeconds)},{id:'rest',label:'Rest',value:clockText(rope.restSeconds)},{id:'intervals',label:'Skipping intervals',value:String(rope.intervalCount)});

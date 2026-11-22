@@ -5972,4 +5972,52 @@ do {
     check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedFile).path),"unconfirmed route expires within the retention budget")
 }
 
+// A journal written before either activity is sufficient to recover a handoff.
+do {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:directory) }
+    let key = Data(repeating:9,count:32)
+    let store = try! RecordingStorage(directory:directory,encryptionKey:key)
+    var walk = RecordedActivity(activity:"Walking",startedAt:1000,resumedAt:1000,title:"Walk")
+    walk.recordingMode = "automatic"
+    for point in walkPath([(0,0),(300,0)],start:1000) { _ = walk.accept(point,now:point.timestamp) }
+    try! store.save(walk)
+    let end = walk.points.last!.timestamp
+    walk.publishStop(at:end,continuationEndsAt:end+7200)
+    walk.completeProvisional()
+    check(walk.endedAt == end && walk.details?.walkingMovingSeconds == walk.automaticWalkMovingSeconds,
+          "expiry saves explicit movement without adding the terminal wait")
+    var transport = RecordedActivity(activity:"Driving",startedAt:end+30,resumedAt:end+30,title:"Drive")
+    transport.recordingMode = "automatic"
+    for index in 0...3 {
+        let at = end+30+Double(index)*10
+        _ = transport.accept(placeFix(300+Double(index)*100,0,at,speed:10),now:at)
+    }
+    let handoff = WalkingTransportHandoff(walk:walk,transport:transport,retainUnconfirmedWalk:false)
+    try! store.prepareWalkingHandoff(handoff)
+    let journal = directory.appendingPathComponent(WalkingTransportHandoff.fileName)
+    let transportPath = directory.appendingPathComponent("\(transport.id).json")
+    // Force a write error after the walk is saved. The encrypted journal stays.
+    try! FileManager.default.createDirectory(at:transportPath,withIntermediateDirectories:false)
+    do {
+        try store.replayWalkingHandoff()
+        check(false,"transport write should fail")
+    } catch {
+        check(FileManager.default.fileExists(atPath:journal.path),"failed persistence keeps both legs durable")
+        let savedWalk = try! JSONDecoder().decode(RecordedActivity.self,from:store.readData(name:"\(walk.id).json"))
+        check(savedWalk.state == "finished" && savedWalk.points == walk.points,"walk already saved with the original ID and complete route")
+    }
+    try! FileManager.default.removeItem(at:transportPath)
+    let reopened = try! RecordingStorage(directory:directory,encryptionKey:key)
+    let recovered = try! reopened.load()
+    check(recovered.count == 2 && recovered.first(where:{$0.id == transport.id})?.points == transport.points,
+          "restart repairs the missing next activity under its original ID")
+    // Both activity files are already present, but the acknowledgement was lost.
+    try! reopened.prepareWalkingHandoff(handoff)
+    let replayed = try! reopened.load()
+    check(replayed.count == 2 && Set(replayed.flatMap(\.points).map(\.timestamp)).count == walk.points.count+transport.points.count,
+          "replaying an unacknowledged handoff cannot duplicate activities or route fixes")
+    check((try! reopened.load()).count == 2 && !FileManager.default.fileExists(atPath:journal.path),"repeated recovery is safe")
+}
+
 print("Final native assertion count including automatic account recovery: \(assertions)")

@@ -436,6 +436,10 @@ extension LocationRecorder {
     @discardableResult
     func reconcileManualExclusion(refreshing: Bool = false) -> Bool {
         guard !reconcilingManualExclusion else { return manualExclusion.current != nil }
+        if pendingWalkingHandoff != nil {
+            do { try completeWalkingHandoff() }
+            catch { lastError = "Walking handoff could not be saved: \(error.localizedDescription)"; return true }
+        }
         reconcilingManualExclusion = true
         let now = Date().timeIntervalSince1970
         // Only a recording that uses GPS holds off automatic detection; a Gym workout on either device does not.
@@ -563,7 +567,7 @@ extension LocationRecorder {
         // save immediately from the in-memory journey.
         var unsavedTripID: String?
         defer {
-            if let id = unsavedTripID, let trip = automaticTrip, trip.id == id {
+            if pendingWalkingHandoff == nil, let id = unsavedTripID, let trip = automaticTrip, trip.id == id {
                 do { try storage.save(trip); clearCommittedHeldStopFixes() } catch {
                     recordDiagnostic("error","Automatic activity could not be saved",details:["code":String((error as NSError).code)])
                     lastError = "Automatic tracking could not save: \(error.localizedDescription)"
@@ -659,6 +663,7 @@ extension LocationRecorder {
                     }
                 } catch {
                     lastError = "Stopped journey could not continue: \(error.localizedDescription)"
+                    if pendingWalkingHandoff != nil { return }
                     continue
                 }
             }
@@ -711,6 +716,7 @@ extension LocationRecorder {
                         continue
                     } catch {
                         lastError = "Movement change could not be saved: \(error.localizedDescription)"
+                        if pendingWalkingHandoff != nil { return }
                         movementTransition.reset()
                     }
                 }
@@ -864,6 +870,14 @@ extension LocationRecorder {
         let confirmed = movementTransition.candidates
         let previous = current.isAutomaticWalk ? .onFoot : JourneyFamily.detected(current)
         guard previous != .other, previous != family else { return }
+        if previous == .onFoot, family == .driving || family == .cycling {
+            var walk = current
+            walk.points = current.points.filter { $0.timestamp < first.timestamp }
+            walk.distanceMeters = walk.measuredDistance
+            walk.finish(at:walk.points.last?.timestamp ?? walk.startedAt)
+            try beginWalkingHandoff(walk, to:family, confirmed:confirmed)
+            return
+        }
         let recordsNext = AutomaticActivityPolicy.allows(family)
         guard recordsNext || previous == .onFoot else { return }
         // A journey too short to publish is dropped instead of being split into an
@@ -937,6 +951,33 @@ extension LocationRecorder {
         recordDiagnostic("detection","Journey ended at a confirmed movement change",details:["from":previous.rawValue,"to":family.rawValue])
         beginRecordingAutomaticJourney(next,at:last)
     }
+    func beginWalkingHandoff(_ previous: RecordedActivity, to family: JourneyFamily, confirmed: [GPSPoint]) throws {
+        guard var next = makeAutomaticJourney(family,from:confirmed,fromWalkingHandoff:true) else { return }
+        var walk = previous
+        let retained = !walk.confirmPendingWalk()
+        walk.completeProvisional()
+        let note = JourneyContinuation.changeReason(from:.onFoot,to:family)
+        walk.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
+        if !retained { nameEndpoints(&walk) }
+        let quality = walk.routeQualitySummary()
+        walk.updateDetails { $0.routeQuality = quality }
+        next.details?.trackingNotes = [note]
+        pendingWalkingHandoff = WalkingTransportHandoff(walk:walk,transport:next,retainUnconfirmedWalk:retained)
+        try completeWalkingHandoff()
+    }
+
+    func completeWalkingHandoff() throws {
+        guard let handoff = pendingWalkingHandoff, let storage, let last = handoff.transport.points.last else { return }
+        // Persist intent before touching either record. On failure keep this exact
+        // pair, including its IDs, for retry. Relaunch replays the journal first.
+        try storage.prepareWalkingHandoff(handoff)
+        try storage.replayWalkingHandoff()
+        pendingWalkingHandoff = nil
+        trips.removeAll { $0.id == handoff.walk.id }
+        if !handoff.retainUnconfirmedWalk { trips.insert(handoff.walk,at:0) }
+        beginRecordingAutomaticJourney(handoff.transport,at:last)
+    }
+
     // A journey that starts from already-confirmed movement of one type. Used after
     // a movement-type change so the new journey keeps its real beginning.
     func startAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint], note: String) throws {
@@ -951,8 +992,8 @@ extension LocationRecorder {
         try storage.save(trip)
         beginRecordingAutomaticJourney(trip,at:last)
     }
-    func makeAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint]) -> RecordedActivity? {
-        guard AutomaticActivityPolicy.allows(family), let first = points.first, let last = points.last, last.timestamp > first.timestamp else { return nil }
+    func makeAutomaticJourney(_ family: JourneyFamily, from points: [GPSPoint], fromWalkingHandoff: Bool = false) -> RecordedActivity? {
+        guard AutomaticActivityPolicy.allows(family) || (fromWalkingHandoff && family == .cycling), let first = points.first, let last = points.last, last.timestamp > first.timestamp else { return nil }
         let name = activityName(family, preserving: "")
         var trip = RecordedActivity(activity:name,startedAt:first.timestamp,resumedAt:first.timestamp,title:name)
         trip.recordingMode = "automatic"
@@ -1214,7 +1255,6 @@ extension LocationRecorder {
             return .finish(reason: "Stopped journey could not be continued")
         }
         let family = trip.isAutomaticWalk ? .onFoot : JourneyFamily.detected(trip)
-        let distance = last.distance(to: sample)
         let decisionTime = family == .onFoot ? sample.timestamp : now
         let change = movementTransition.observe(sample, motion: motion, now: decisionTime, from: family)
         var movement = AutomaticActivityPolicy.continuationMovement(motion,speed:sample.speed,now:decisionTime,from:family)
@@ -1228,6 +1268,10 @@ extension LocationRecorder {
                 movement = nil
             }
         }
+        // Use the beginning of a corroborated return leg. Its last fix may
+        // already be outside the proximity limit by the time walking confirms.
+        let returnStart = family == .onFoot && movement == .onFoot ? walkingResumption.points.first : nil
+        let distance = last.distance(to:returnStart ?? sample)
         let decision = JourneyContinuation.decide(
             stoppedAt: settled, now: decisionTime, distance: distance,
             family: family, movement: movement, change: change,
@@ -1330,7 +1374,7 @@ extension LocationRecorder {
     }
     func finishExpiredContinuation(now: Double) {
         // A held deciding fix is judged at its receipt time when the wait ends.
-        guard settledTripID != nil, stopHistoryPending == nil, heldReplayChecked else { return }
+        guard pendingWalkingHandoff == nil, settledTripID != nil, stopHistoryPending == nil, heldReplayChecked else { return }
         guard let endsAt = continuationEndsAt ?? settledAt.map({ $0 + JourneyContinuation.window }) else { return }
         guard now >= endsAt else { return }
         do { try finalizeSettledAutomatic(trigger:"finishExpiredContinuation",event:"the continuation window ended") } catch { lastError = error.localizedDescription }
@@ -1340,6 +1384,11 @@ extension LocationRecorder {
     // starts from the same sustained fixes so no distance is invented between them.
     func endSettledJourney(_ reason: String, starting family: JourneyFamily) throws {
         let confirmed = movementTransition.candidates
+        if let id = settledTripID, let walk = trips.first(where: { $0.id == id }), walk.isAutomaticWalk,
+           family == .driving || family == .cycling {
+            try beginWalkingHandoff(walk,to:family,confirmed:confirmed)
+            return
+        }
         try finalizeSettledAutomatic(reason: reason,trigger:"endSettledJourney",event:"sustained movement proved a different activity")
         guard AutomaticActivityPolicy.allows(family) else { return }
         recordDiagnostic("detection","Stopped journey ended at a confirmed movement change",details:["to":family.rawValue])
@@ -1478,6 +1527,7 @@ extension LocationRecorder {
     }
     static let continuationRegionID = "letm3go-place-continuation"
     func finishAutomatic(force: Bool = false, reason: String? = nil, trigger: String = "finishAutomatic", event: String = "the automatic journey was ended") throws {
+        try completeWalkingHandoff()
         // A published stop is finalised in place; its geometry is already recorded.
         guard var trip = automaticTrip, let storage = storage else {
             if settledTripID != nil { try finalizeSettledAutomatic(force:force,reason:reason,trigger:trigger,event:event) }

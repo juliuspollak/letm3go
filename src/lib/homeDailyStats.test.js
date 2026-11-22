@@ -58,3 +58,11 @@ describe('Daily recorded totals',()=>{
   expect(dailyJourneyTotals([journey],'2026-11-04',today)).toEqual({count:1,distanceMeters:0,durationSeconds:0,estimated:false});
  });
 });
+
+it('uses explicit walking movement alongside unchanged cycling, driving and legacy durations',()=>{
+ const walk={activity:'Walking',recordingMode:'automatic',startedAt:at('2026-11-03','09:00'),endedAt:at('2026-11-03','10:50'),durationSeconds:1500,details:{walkingMovingSeconds:1200}};
+ const drive={...walk,activity:'Driving',durationSeconds:600};
+ const cycle={...walk,activity:'Cycling',durationSeconds:900};
+ const legacy={...walk,details:{},durationSeconds:300};
+ expect(dailyJourneyTotals([walk,drive,cycle,legacy],'2026-11-03',today).durationSeconds).toBe(3000);
+});
