@@ -6239,7 +6239,7 @@ do {
     check((row?["route_points"] as? [[String: Any]])?.count == 2, "the route is the trip's own points")
     check(Set((row?["route_points"] as? [[String: Any]])?.first?.keys.map { $0 } ?? []) == ["latitude", "longitude", "timestamp", "accuracy", "altitude", "speed", "segment"], "each point has the app's fields")
     check((row?["distance_meters"] as? Double ?? -1) > 100 && (row?["duration_seconds"] as? Double ?? -1) >= 0, "distance and duration are carried")
-    check(FinishedUpload.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_live_location")!)?.lastPathComponent == "upload_finished_activity", "the endpoint sits beside the position endpoint")
+    check(FinishedUpload.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_live_location")!)?.lastPathComponent == "upload_finished_activity_v2", "the endpoint sits beside the position endpoint")
     check(FinishedUpload.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/something_else")!) == nil, "and only beside a position endpoint")
     // Oldest first, and a sent or given-up activity is not offered again.
     let older = finishedTrip(start: 900_000), newer = finishedTrip(start: 1_000_000)
@@ -6247,13 +6247,25 @@ do {
     check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == older.id, "a backlog drains oldest first")
     ledger.sent(older)
     check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a sent activity is not sent again")
-    for _ in 0..<(FinishedUpload.giveUpAfter - 1) { ledger.refused(newer.id.uppercased()) }
-    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a refusal is retried")
-    ledger.refused(newer.id)
-    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now) == nil, "after repeated refusals it is left to the app's backup")
+    let legacy = Data(#"{"sentThrough":{},"attempts":{"\#(newer.id.lowercased())":5}}"#.utf8)
+    let migrated = try JSONDecoder().decode(FinishedUploadLedger.self, from: legacy)
+    check(migrated.ready(newer, now: now), "old refusal counts no longer abandon a recording")
+    for retry in 0..<7 {
+        let at = now + Double(retry * 60)
+        ledger.deferRetry(newer, now: at)
+        check(!ledger.ready(newer, now: at + 59), "server retry observes per-activity cooldown")
+        check(ledger.ready(newer, now: at + 60), "even after five refusals the next try is available")
+    }
     let restored = try JSONDecoder().decode(FinishedUploadLedger.self, from: JSONEncoder().encode(ledger))
-    check(restored == ledger && restored.settled(older) && restored.settled(newer), "the ledger survives a restart")
-    // A refused older activity does not hold up a newer one once it is given up on, and a journey that resumes after it was sent is sent again.
+    check(restored == ledger && restored.settled(older) && !restored.settled(newer), "temporary failures survive a restart as pending")
+    check(FinishedUploadOutcome.response(status: 0, data: nil, transportFailed: true) == .unavailable, "offline is retryable")
+    check(FinishedUploadOutcome.response(status: 503, data: nil, transportFailed: false) == .unavailable, "server errors are retryable")
+    check(FinishedUploadOutcome.response(status: 200, data: Data(#""credential_required""#.utf8), transportFailed: false) == .credentialRequired, "expired credentials are retryable")
+    check(FinishedUploadOutcome.response(status: 200, data: Data(#""rejected""#.utf8), transportFailed: false) == .rejected, "explicit rejection is terminal")
+    check(FinishedUploadOutcome.response(status: 200, data: Data(#""accepted""#.utf8), transportFailed: false) == .accepted, "a repaired server acknowledges the retry")
+    ledger.sent(newer)
+    check(ledger.settled(newer), "the recovered upload is checkpointed")
+    // An unchanged acknowledgement settles only the version it covers.
     var resumed = older; resumed.endedAt = (older.endedAt ?? 0) + 900
     var again = FinishedUploadLedger(); again.sent(older)
     check(!again.settled(older) == false && !again.settled(resumed), "a journey that ended later than what was sent is sent again")

@@ -783,7 +783,7 @@ extension LocationRecorder {
         // An activity the owner has just made private is not sent until the server has been told (that is what the live trail's own
         // "private" notice does), and never afterwards: what the server receives it shares.
         if liveTrailHiddenRef != nil && !liveTrailHideConfirmed { return }
-        let ledgerKey = "letm3go.finishedUpload." + owner
+        let ledgerKey = "letm3go.finishedUpload.v2." + owner
         let ledger = UserDefaults.standard.data(forKey: ledgerKey).flatMap { try? JSONDecoder().decode(FinishedUploadLedger.self, from: $0) } ?? FinishedUploadLedger()
         guard let trip = FinishedUpload.next(trips: trips, ledger: ledger, now: now, hiddenRef: liveTrailHiddenRef), let row = FinishedUpload.payload(trip),
               let body = try? JSONSerialization.data(withJSONObject: ["p_token": credential.token, "p_payload": row]) else { return }
@@ -797,7 +797,6 @@ extension LocationRecorder {
         background = UIApplication.shared.beginBackgroundTask(withName: "letm3go.finished-upload") {
             UIApplication.shared.endBackgroundTask(background); background = .invalid
         }
-        let points = trip.points.count, id = trip.id
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid } }
@@ -806,26 +805,29 @@ extension LocationRecorder {
                 // Another account is signed in now: nothing here is theirs to record.
                 guard self.ownerID == owner else { return }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                let ok = error == nil && (200...299).contains(status)
-                let accepted = ok && String(decoding: data ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+                let outcome = FinishedUploadOutcome.response(status: status, data: data, transportFailed: error != nil)
+                let now = Date().timeIntervalSince1970
                 var updated = ledger
-                if accepted {
+                switch outcome {
+                case .accepted:
                     updated.sent(trip)
-                    self.finishedUploadBackoffUntil = 0
-                    self.recordDiagnostic("sharing", "Finished activity sent to the server", details: ["points": String(points)])
-                } else if status == 404 {
-                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 3600 // the server has not been updated yet
-                } else if ok {
-                    // The credential or this activity was not accepted. Short, so the next activity is not held up behind it; the same
-                    // one is given up on after a few tries (FinishedUpload.giveUpAfter) and left to the app's backup.
-                    updated.refused(id)
-                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 30
-                    self.recordDiagnostic("sharing", "Finished activity not accepted by the server", details: ["attempts": String(updated.attempts[id.lowercased()] ?? 0)])
-                } else {
-                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 60    // offline or the network failed: just try again
+                    self.recordDiagnostic("sharing", "Finished activity sent to the server", details: ["points": String(trip.points.count)])
+                case .backupRequired:
+                    updated.sent(trip)
+                    self.recordDiagnostic("sharing", "Finished activity needs authenticated backup")
+                case .deleted, .rejected:
+                    updated.sent(trip)
+                    self.recordDiagnostic("sharing", "Finished activity declined by the server", details: ["result": outcome.rawValue])
+                case .retry:
+                    updated.deferRetry(trip, now: now)
+                    self.recordDiagnostic("sharing", "Finished activity upload will retry")
+                case .credentialRequired, .unavailable:
+                    self.finishedUploadBackoffUntil = now + 60
                 }
                 if updated != ledger, let data = try? JSONEncoder().encode(updated) { UserDefaults.standard.set(data, forKey: ledgerKey) }
-                if accepted || ok { self.uploadFinishedActivities(force: true) }
+                if outcome != .credentialRequired && outcome != .unavailable {
+                    self.uploadFinishedActivities(force: true)
+                }
             }
         }.resume()
     }

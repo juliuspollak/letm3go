@@ -1,3 +1,5 @@
+import {webcrypto} from 'node:crypto';
+import {syncPrivateActivities} from '../../src/lib/cloudSync.js';
 import {PGlite} from '@electric-sql/pglite';
 import {readFile,readdir} from 'node:fs/promises';
 import {beforeAll,afterAll,describe,expect,it} from 'vitest';
@@ -14,7 +16,7 @@ const iso=minutesAgo=>new Date(t0-minutesAgo*60000).toISOString();
 const route=[{latitude:-34.5,longitude:150.8,timestamp:1,accuracy:5,altitude:1,speed:8,segment:0},{latitude:-34.51,longitude:150.81,timestamp:60,accuracy:5,altitude:1,speed:9,segment:0}];
 const payload=(id,over={})=>({id,title:'Home → Plus Fitness',activity:'Driving',recording_mode:'automatic',started_at:iso(40),ended_at:iso(30),duration_seconds:600,distance_meters:2100,vehicle:null,route_points:route,...over});
 const upload=(token,body)=>as('anon','',`select public.upload_finished_activity('${token}',$j$${JSON.stringify(body)}$j$::jsonb) as ok`).then(r=>r.rows[0].ok);
-const row=async id=>(await as('authenticated',owner,`select title,recording_mode,visibility,revision,sync_fingerprint,classification,jsonb_array_length(route_points) n,distance_meters from public.activities where id='${id}'`)).rows[0];
+const row=async id=>(await as('authenticated',owner,`select title,recording_mode,visibility,revision,sync_fingerprint,classification,jsonb_array_length(route_points) n,route_points,distance_meters from public.activities where id='${id}'`)).rows[0];
 const ids=n=>`aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12,'0')}`;
 let token;
 beforeAll(async()=>{
@@ -126,7 +128,7 @@ describe('upload_finished_activity hardening',()=>{
   expect(await row(ids(24))).toMatchObject({n:3,distance_meters:3000});
   // Once the app has backed it up in full the recorder's word is no longer taken.
   await as('authenticated',owner,`select public.backup_private_activity('${owner}',$j$${JSON.stringify(payload(ids(24),{started_at:iso(90),ended_at:iso(20),distance_meters:3000,route_points:longer,title:'Full'}))}$j$::jsonb,'${'f'.repeat(64)}',null,null)`);
-  expect(await upload(token,payload(ids(24),{started_at:iso(90),ended_at:iso(5),distance_meters:7000}))).toBe(true);
+  expect(await upload(token,payload(ids(24),{started_at:iso(90),ended_at:iso(5),distance_meters:7000}))).toBe(false);
   expect(await row(ids(24))).toMatchObject({title:'Full',n:3,distance_meters:3000});
  });
  it('counts only recent provisional copies towards the cap',async()=>{
@@ -160,5 +162,128 @@ describe('the app\'s full backup after the recorder\'s upload',()=>{
   const result=await backup(payload(ids(12)),fp('e'));
   expect(Number.isInteger(result.revision)).toBe(true);
   expect((await row(ids(12))).sync_fingerprint).toBe(fp('e'));
+ });
+});
+
+describe('finished upload reconciliation',()=>{
+ const uploadV2=(credential,body)=>as('anon','',`select public.upload_finished_activity_v2('${credential}',$j$${JSON.stringify(body)}$j$::jsonb) as outcome`).then(r=>r.rows[0].outcome);
+ const shareSnapshot=async id=>(await as('service_role','',`select token,snapshot from public.shared_journeys where activity_id='${id}'`)).rows[0];
+ const shareCount=async id=>(await as('service_role','',`select count(*)::int n from public.shared_journeys where activity_id='${id}'`)).rows[0].n;
+ const backup=async(body,c,receipt)=> (await as('authenticated',owner,`select public.backup_private_activity('${owner}',$j$${JSON.stringify(body)}$j$::jsonb,'${c.repeat(64)}',${receipt?.revision??'null'},${receipt?`'${receipt.base_fingerprint}'`:'null'}) as receipt`)).rows[0].receipt;
+ const extension=[...route,{...route[1],latitude:-34.52,timestamp:120}];
+
+ it('rolls back both first storage and a provisional extension when this publication fails',async()=>{
+  const first=ids(30),resumed=ids(31);
+  expect(await uploadV2(token,payload(resumed))).toBe('accepted');
+  const original=await row(resumed);
+  const originalShare=await shareSnapshot(resumed);
+  expect(originalShare).toBeDefined();
+  const extend=payload(resumed,{ended_at:iso(20),route_points:extension});
+  await db.exec(`reset role; create function public.test_fail_native_projection() returns trigger language plpgsql as $$
+   begin raise exception 'test-only publication failure'; end $$;
+   create trigger test_fail_native_projection before insert on public.shared_journeys
+    for each row when (new.activity_id in ('${first}','${resumed}')) execute function public.test_fail_native_projection();`);
+  try{
+   for(let attempt=0;attempt<6;attempt++)expect(await uploadV2(token,payload(first))).toBe('retry');
+   expect(await row(first)).toBeUndefined();
+   expect(await shareCount(first)).toBe(0);
+   expect(await uploadV2(token,extend)).toBe('retry');
+   expect(await row(resumed)).toEqual(original);
+   expect(await shareSnapshot(resumed)).toEqual(originalShare);
+  }finally{
+   await db.exec('reset role;drop trigger test_fail_native_projection on public.shared_journeys;drop function public.test_fail_native_projection();');
+  }
+  expect(await uploadV2(token,payload(first))).toBe('accepted');
+  expect(await shareCount(first)).toBe(1);
+  expect(await uploadV2(token,extend)).toBe('accepted');
+  const saved=await row(resumed);
+  expect(saved.route_points).toEqual(extension);
+  expect(await uploadV2(token,extend)).toBe('accepted');
+  expect(await uploadV2(token,payload(resumed))).toBe('accepted');
+  expect(await row(resumed)).toEqual(saved);
+  expect(await shareCount(resumed)).toBe(1);
+ });
+
+ it('retries revoked credentials and keeps terminal privacy and deletion decisions',async()=>{
+  const id=ids(32);
+  expect(await uploadV2('0'.repeat(64),payload(id))).toBe('credential_required');
+  expect(await row(id)).toBeUndefined();
+  expect(await uploadV2(token,payload(id))).toBe('accepted');
+  await as('authenticated',owner,`select public.end_live_trail(upper('${id}'),true)`);
+  expect(await shareCount(id)).toBe(0);
+  expect(await uploadV2(token,payload(id,{ended_at:iso(20),route_points:extension}))).toBe('rejected');
+  expect((await row(id)).n).toBe(2);
+  await as('authenticated',owner,`delete from public.activities where id='${id}'`);
+  await expect(backup(payload(id),'a')).rejects.toThrow(/deleted/i);
+  expect(await uploadV2(token,payload(id))).toBe('rejected');
+  expect(await row(id)).toBeUndefined();
+ });
+
+ it('reconciles a resumed full backup through its authenticated receipt and refuses a later edit conflict',async()=>{
+  const id=ids(33);
+  const first=payload(id,{title:'My title',description:'My description'});
+  const receipt=await backup(first,'a');
+  const resumed={...first,ended_at:iso(20),route_points:extension};
+  expect(await uploadV2(token,{...resumed,title:'Recorder title'})).toBe('backup_required');
+  expect(await row(id)).toMatchObject({title:'My title',n:2,revision:receipt.revision});
+  const reconciled=await backup(resumed,'b',receipt);
+  expect(await row(id)).toMatchObject({title:'My title',n:3,revision:reconciled.revision});
+  expect(await backup(resumed,'b',receipt)).toEqual(reconciled);
+  await as('authenticated',owner,`update public.activities set title='Newer edit' where id='${id}'`);
+  const later={...resumed,ended_at:iso(10),route_points:[...extension,{...extension[2],timestamp:180}]};
+  expect(await uploadV2(token,later)).toBe('backup_required');
+  await expect(backup(later,'c',reconciled)).rejects.toThrow(/conflict/i);
+  expect(await row(id)).toMatchObject({title:'Newer edit',n:3});
+ });
+
+ it('backs up the actual resumed recorder snapshot after a failed offline pass',async()=>{
+  const id=ids(36);
+  const first={id,title:'My title',activity:'Driving',source:'device',recordingMode:'automatic',state:'finished',
+   startedAt:Date.parse(iso(40))/1000,endedAt:Date.parse(iso(30))/1000,updatedAt:t0/1000,
+   durationSeconds:600,distanceMeters:2100,points:route,details:{notes:'Kept'}};
+  let online=true;
+  const client={auth:{getUser:async()=>({data:{user:{id:owner}}})},
+   rpc:async(_name,args)=>{
+    if(!online)throw new Error('Failed to fetch');
+    const {p_payload:body,p_fingerprint:fp,p_expected_revision:rev,p_base_fingerprint:base}=args;
+    const data=(await as('authenticated',owner,`select public.backup_private_activity('${owner}',$j$${JSON.stringify(body)}$j$::jsonb,'${fp}',${rev??'null'},${base?`'${base}'`:'null'}) as receipt`)).rows[0].receipt;
+    return {data};
+   }};
+  const sync=(trip,receipts)=>syncPrivateActivities(client,{ownerID:owner,trips:[trip]},receipts,{cryptoImpl:webcrypto,publishSegments:false,throwOnFailure:false});
+  const original=await sync(first);
+  expect(original.uploaded).toBe(1);
+  const resumed={...first,endedAt:Date.parse(iso(20))/1000,updatedAt:first.updatedAt+1,points:extension};
+  const localRoute=structuredClone(resumed.points);
+  expect(await uploadV2(token,payload(id,{ended_at:iso(20),route_points:extension}))).toBe('backup_required');
+  online=false;
+  const offline=await sync(resumed,original.receipts);
+  expect(offline.uploaded).toBe(0);
+  expect(offline.receipts[id]).toEqual(original.receipts[id]);
+  expect(resumed.points).toEqual(localRoute);
+  online=true;
+  const recovered=await sync(resumed,offline.receipts);
+  expect(recovered.uploaded).toBe(1);
+  expect(await row(id)).toMatchObject({title:'My title',route_points:localRoute,revision:recovered.receipts[id].revision});
+  expect((await sync(resumed,recovered.receipts)).uploaded).toBe(0);
+ });
+
+ it('does not automatically promote a provisional row after a cloud edit',async()=>{
+  const id=ids(34);
+  expect(await uploadV2(token,payload(id))).toBe('accepted');
+  await as('authenticated',owner,`update public.activities set title='Newer edit' where id='${id}'`);
+  const next=payload(id,{ended_at:iso(20),route_points:extension});
+  expect(await uploadV2(token,next)).toBe('backup_required');
+  await expect(backup(next,'d')).rejects.toThrow(/conflict/i);
+  expect(await row(id)).toMatchObject({title:'Newer edit',classification:{},n:2});
+ });
+
+ it('repairs an unpublished prior acknowledgement without bumping the activity revision',async()=>{
+  const id=ids(35);
+  expect(await uploadV2(token,payload(id))).toBe('accepted');
+  const saved=await row(id);
+  await as('service_role','',`delete from public.shared_journeys where activity_id='${id}'`);
+  expect(await uploadV2(token,payload(id))).toBe('accepted');
+  expect(await shareCount(id)).toBe(1);
+  expect(await row(id)).toEqual(saved);
  });
 });

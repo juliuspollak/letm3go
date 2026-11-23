@@ -66,6 +66,84 @@ try{
  sql(auth+`select * from public.create_household('Concurrency');select public.set_auto_share(true);select public.set_my_live_location(true,-34.9,151,5,10,now(),'driving');`);
  token=sql(auth+'select publish_token from public.issue_my_live_location_token();').split('\n').at(-1);
  await test('real PostgreSQL person-day concurrency',{timeout:120000},async t=>{
+  const finishedBody=(id,n)=>`jsonb_build_object('id','${id}','title','Drive','activity','Driving',
+   'recording_mode','automatic','started_at',date_trunc('minute',now())-interval '2 hours',
+   'ended_at',date_trunc('minute',now())-interval '${40-n} minutes','duration_seconds',60,'distance_meters',100,
+   'route_points',(select jsonb_agg(jsonb_build_object('latitude',g,'longitude',150) order by g) from generate_series(1,${n}) g))`;
+  const finish=(id,n)=>`select public.upload_finished_activity_v2('${token}',${finishedBody(id,n)});`;
+  const fullBackup=(id,n)=>auth+`select public.backup_private_activity('${owner}',${finishedBody(id,n)},repeat('f',64),null,null);`;
+  const savedRoute=id=>sql(`select jsonb_array_length(route_points) from public.activities where id='${id}'`);
+  await t.test('stale full backup waits for native extension and cannot truncate it',async()=>{
+   const id='abababab-0000-4000-8000-000000000001';
+   sql(finish(id,2));
+   const a=new Session('native-extension'),b=new Session('stale-full-backup');
+   try{
+    assert.equal(await a.run('begin;'+finish(id,4)),'accepted');
+    const waiting=b.run(fullBackup(id,2));waiting.catch(()=>{});
+    await blocked('stale-full-backup');await a.run('commit;');
+    await assert.rejects(waiting,/recorder has a newer or different route/);
+    assert.equal(savedRoute(id),'4');
+    assert.equal(JSON.parse(sql(fullBackup(id,4)).split('\n').at(-1)).revision>0,true);
+    assert.equal(savedRoute(id),'4');
+   }finally{a.close();b.close();}
+  });
+  await t.test('a first full backup racing a new native row cannot replace its longer route',async()=>{
+   const id='abababab-0000-4000-8000-000000000006',a=new Session('native-new-row'),b=new Session('full-new-row');
+   try{
+    assert.equal(await a.run('begin;'+finish(id,4)),'accepted');
+    const waiting=b.run(fullBackup(id,2));waiting.catch(()=>{});
+    await blocked('full-new-row');await a.run('commit;');
+    await assert.rejects(waiting,/duplicate key|recorder has a newer or different route/);
+    assert.equal(savedRoute(id),'4');
+   }finally{a.close();b.close();}
+  });
+  await t.test('native insert racing the first full backup retries and defers to authenticated reconciliation',async()=>{
+   const id='abababab-0000-4000-8000-000000000007',a=new Session('full-first-new-row'),b=new Session('native-after-full-row');
+   try{
+    await a.run('begin;'+fullBackup(id,2));
+    const waiting=b.run(finish(id,4));
+    await blocked('native-after-full-row');await a.run('commit;');
+    assert.equal(await waiting,'retry');
+    assert.equal(sql(finish(id,4)),'backup_required');
+    assert.equal(savedRoute(id),'2');
+   }finally{a.close();b.close();}
+  });
+  await t.test('duplicate native inserts serialize and keep one revision and projection',async()=>{
+   const id='abababab-0000-4000-8000-000000000002',a=new Session('native-first'),b=new Session('native-duplicate');
+   sql("update public.activity_auto_share set since=now()-interval '1 day'");
+   try{
+    assert.equal(await a.run('begin;'+finish(id,3)),'accepted');
+    const waiting=b.run(finish(id,3));
+    await blocked('native-duplicate');await a.run('commit;');
+    assert.equal(await waiting,'accepted');
+    assert.equal(sql(`select count(*),max(revision) from public.activities where id='${id}'`),'1|1');
+    assert.equal(sql(`select count(*) from public.shared_journeys where activity_id='${id}'`),'1');
+   }finally{a.close();b.close();}
+  });
+  for(const hideFirst of [true,false])await t.test(`finished upload and device hide serialize (hide first: ${hideFirst})`,async()=>{
+   const id=`abababab-0000-4000-8000-00000000000${hideFirst?3:4}`;
+   const hide=`select public.append_live_trail('${token}',upper('${id}'),-2,'[]');`;
+   const a=new Session('finish-privacy-first'),b=new Session('finish-privacy-second');
+   try{
+    assert.equal(await a.run('begin;'+(hideFirst?hide:finish(id,3))),hideFirst?'t':'accepted');
+    const waiting=b.run(hideFirst?finish(id,3):hide);
+    await blocked('finish-privacy-second');await a.run('commit;');
+    assert.equal(await waiting,hideFirst?'rejected':'t');
+    assert.equal(sql(`select count(*) from public.shared_journeys where activity_id='${id}'`),'0');
+    assert.equal(savedRoute(id),hideFirst?'':'3');
+   }finally{a.close();b.close();}
+  });
+  await t.test('a native extension waiting for deletion cannot recreate the activity',async()=>{
+   const id='abababab-0000-4000-8000-000000000005',a=new Session('delete-finished'),b=new Session('native-after-delete');
+   sql(finish(id,2));
+   try{
+    await a.run(`begin;delete from public.activities where id='${id}';`);
+    const waiting=b.run(finish(id,3));
+    await blocked('native-after-delete');await a.run('commit;');
+    assert.equal(await waiting,'deleted');
+    assert.equal(savedRoute(id),'');
+   }finally{a.close();b.close();}
+  });
   for(const existing of [false,true])await t.test(`private hide precedes waiting upload (existing row: ${existing})`,async()=>{
    const ref=activity();sql('delete from public.live_trails');if(existing)sql(append(ref));
    const a=new Session('hide'),b=new Session('upload');

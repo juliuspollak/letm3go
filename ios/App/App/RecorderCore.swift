@@ -3539,13 +3539,11 @@ enum FinishedUpload {
     static let maximumAge: Double = 3 * 86_400
     static let maximumPoints = 50_000
     static let minimumPoints = 2
-    // A refusal that keeps coming back is the activity's, not the network's: after this many the app's backup is left to deal with it.
-    static let giveUpAfter = 5
     // The upload endpoint sits beside the position endpoint it shares its credential with.
     static func endpoint(from position: URL) -> URL? {
         let last = position.lastPathComponent
         guard last == "publish_live_location" || last == "publish_friend_location" else { return nil }
-        return position.deletingLastPathComponent().appendingPathComponent("upload_finished_activity")
+        return position.deletingLastPathComponent().appendingPathComponent("upload_finished_activity_v2")
     }
     // Only a finished, settled, phone-recorded GPS activity with a route to show, from the last few days.
     static func eligible(_ trip: RecordedActivity, now: Double) -> Bool {
@@ -3565,7 +3563,7 @@ enum FinishedUpload {
     // private (`hiddenRef`) is never offered: the server may not have been told yet, and what it receives it shares.
     static func next(trips: [RecordedActivity], ledger: FinishedUploadLedger, now: Double, hiddenRef: String? = nil) -> RecordedActivity? {
         trips.filter { trip in
-            eligible(trip, now: now) && !ledger.settled(trip) && hiddenRef.map { trip.id.caseInsensitiveCompare($0) != .orderedSame } ?? true
+            eligible(trip, now: now) && ledger.ready(trip, now: now) && hiddenRef.map { trip.id.caseInsensitiveCompare($0) != .orderedSame } ?? true
         }.min { $0.startedAt < $1.startedAt }
     }
     // The row the app's backup also builds (same column names, the route as the trip's own points). Only what the server needs to show
@@ -3593,27 +3591,46 @@ enum FinishedUpload {
         return row
     }
 }
-// What has been sent, per account, so a restart never repeats it and a stubborn refusal does not repeat for ever.
+// Only the RPC's explicit outcomes settle an activity. An HTTP or transport
+// failure leaves the local recording available for the next attempt.
+enum FinishedUploadOutcome: String, Decodable {
+    case accepted, deleted, rejected, retry
+    case backupRequired = "backup_required"
+    case credentialRequired = "credential_required"
+    case unavailable
+
+    static func response(status: Int, data: Data?, transportFailed: Bool) -> Self {
+        guard !transportFailed, (200...299).contains(status), let data else { return .unavailable }
+        return (try? JSONDecoder().decode(Self.self, from: data)) ?? .unavailable
+    }
+}
+
 struct FinishedUploadLedger: Codable, Equatable {
-    // Activity id -> the end time that was sent. A journey that resumes after it was sent ends later, so it is sent again and the
-    // server replaces the earlier, shorter provisional copy.
+    // The most recent end handled for each activity. The next finish of a
+    // resumed activity is a new snapshot. Old refusal counts are ignored.
     var sentThrough: [String: Double] = [:]
-    var attempts: [String: Int] = [:]
+    var retryAfter: [String: Double]?
+
     func settled(_ trip: RecordedActivity) -> Bool {
-        let key = trip.id.lowercased()
-        if (attempts[key] ?? 0) >= FinishedUpload.giveUpAfter { return true }
-        guard let sent = sentThrough[key], let end = trip.endedAt else { return false }
-        return sent >= end - 0.5
+        guard let sent = sentThrough[trip.id.lowercased()], let end = trip.endedAt else { return false }
+        return sent >= end
+    }
+    func ready(_ trip: RecordedActivity, now: Double) -> Bool {
+        !settled(trip) && now >= (retryAfter?[trip.id.lowercased()] ?? 0)
     }
     mutating func sent(_ trip: RecordedActivity) {
         let key = trip.id.lowercased()
-        sentThrough[key] = trip.endedAt ?? 0
-        attempts[key] = nil
-        // Bounded: the oldest ids age out long after the three days an activity can be sent in.
-        if sentThrough.count > 300 { for old in sentThrough.sorted(by: { $0.value < $1.value }).prefix(sentThrough.count - 300) { sentThrough[old.key] = nil } }
+        sentThrough[key] = max(sentThrough[key] ?? 0, trip.endedAt ?? 0)
+        retryAfter?[key] = nil
+        if sentThrough.count > 300 {
+            for old in sentThrough.sorted(by: { $0.value < $1.value }).prefix(sentThrough.count - 300) {
+                sentThrough[old.key] = nil
+            }
+        }
     }
-    mutating func refused(_ id: String) {
-        attempts[id.lowercased(), default: 0] += 1
-        if attempts.count > 300 { attempts = attempts.filter { $0.value >= FinishedUpload.giveUpAfter } }
+    mutating func deferRetry(_ trip: RecordedActivity, now: Double) {
+        var pending = (retryAfter ?? [:]).filter { $0.value > now }
+        pending[trip.id.lowercased()] = now + 60
+        retryAfter = pending
     }
 }
