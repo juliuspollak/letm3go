@@ -765,24 +765,32 @@ enum ActivityWeatherLookup {
 }
 
 extension LocationRecorder {
+    // The credential the live position and live trail are published with: a household member's, else a friend share's.
+    func liveSharingCredential(now: Double) -> (token: String, base: URL, apiKey: String)? {
+        if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { return (t, e, k) }
+        if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { return (t, e, k) }
+        return nil
+    }
     // Sends the oldest finished activity this phone has not yet sent (see FinishedUpload), then the next, with the credential the live
     // position and live trail are published with. Nothing here needs the web view, a signed-in session or the app on screen.
-    func uploadFinishedActivities() {
+    func uploadFinishedActivities(force: Bool = false) {
         guard storeOpened, let owner = ownerID, !accountSuspended, !accountDeleting, !finishedUploadInFlight else { return }
         let now = Date().timeIntervalSince1970
-        guard now >= finishedUploadBackoffUntil else { return }
-        var token: String?, base: URL?, apiKey: String?
-        if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
-        else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
-        guard let token = token, let base = base, let apiKey = apiKey, let endpoint = FinishedUpload.endpoint(from: base) else { return }
+        guard now >= finishedUploadBackoffUntil, force || now - finishedUploadCheckedAt >= 20 else { return }
+        // The live trail asks every few seconds while sharing; looking through the history that often is for nothing.
+        finishedUploadCheckedAt = now
+        guard let credential = liveSharingCredential(now: now), let endpoint = FinishedUpload.endpoint(from: credential.base) else { return }
+        // An activity the owner has just made private is not sent until the server has been told (that is what the live trail's own
+        // "private" notice does), and never afterwards: what the server receives it shares.
+        if liveTrailHiddenRef != nil && !liveTrailHideConfirmed { return }
         let ledgerKey = "letm3go.finishedUpload." + owner
         let ledger = UserDefaults.standard.data(forKey: ledgerKey).flatMap { try? JSONDecoder().decode(FinishedUploadLedger.self, from: $0) } ?? FinishedUploadLedger()
-        guard let trip = FinishedUpload.next(trips: trips, ledger: ledger, now: now), let row = FinishedUpload.payload(trip),
-              let body = try? JSONSerialization.data(withJSONObject: ["p_token": token, "p_payload": row]) else { return }
+        guard let trip = FinishedUpload.next(trips: trips, ledger: ledger, now: now, hiddenRef: liveTrailHiddenRef), let row = FinishedUpload.payload(trip),
+              let body = try? JSONSerialization.data(withJSONObject: ["p_token": credential.token, "p_payload": row]) else { return }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        request.setValue(credential.apiKey, forHTTPHeaderField: "apikey")
         finishedUploadInFlight = true
         // The phone may be going back to sleep: ask iOS for the minute the reply needs.
         var background = UIBackgroundTaskIdentifier.invalid
@@ -802,20 +810,22 @@ extension LocationRecorder {
                 let accepted = ok && String(decoding: data ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
                 var updated = ledger
                 if accepted {
-                    updated.sent(id)
+                    updated.sent(trip)
                     self.finishedUploadBackoffUntil = 0
                     self.recordDiagnostic("sharing", "Finished activity sent to the server", details: ["points": String(points)])
                 } else if status == 404 {
                     self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 3600 // the server has not been updated yet
                 } else if ok {
-                    updated.refused(id)                                                    // the credential or the activity was not accepted
-                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 300
+                    // The credential or this activity was not accepted. Short, so the next activity is not held up behind it; the same
+                    // one is given up on after a few tries (FinishedUpload.giveUpAfter) and left to the app's backup.
+                    updated.refused(id)
+                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 30
                     self.recordDiagnostic("sharing", "Finished activity not accepted by the server", details: ["attempts": String(updated.attempts[id.lowercased()] ?? 0)])
                 } else {
                     self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 60    // offline or the network failed: just try again
                 }
                 if updated != ledger, let data = try? JSONEncoder().encode(updated) { UserDefaults.standard.set(data, forKey: ledgerKey) }
-                if accepted { self.uploadFinishedActivities() }
+                if accepted || ok { self.uploadFinishedActivities(force: true) }
             }
         }.resume()
     }

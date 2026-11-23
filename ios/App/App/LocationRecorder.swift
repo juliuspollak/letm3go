@@ -242,6 +242,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Finished activities the recorder sends itself (see FinishedUpload and uploadFinishedActivities).
     var finishedUploadInFlight = false
     var finishedUploadBackoffUntil: Double = 0
+    var finishedUploadCheckedAt: Double = 0
     var liveShareToken: String? { didSet { if liveShareToken != oldValue { sharingRestInputChanged("household credential changed") } } }
     var liveShareEndpoint: URL?
     var liveShareApiKey: String?
@@ -991,9 +992,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         // app's own backup only runs while it is on screen.
         uploadFinishedActivities()
         let now = Date().timeIntervalSince1970
-        var token: String?, base: URL?, apiKey: String?
-        if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
-        else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        let credential = liveSharingCredential(now: now)
+        let token = credential?.token, base = credential?.base, apiKey = credential?.apiKey
         // Consent: nothing recorded before sharing was switched on is ever published, however long
         // the activity has been running. (After a relaunch the moment is the relaunch, which can
         // only withhold more, never less.)
