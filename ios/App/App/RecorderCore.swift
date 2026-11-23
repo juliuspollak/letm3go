@@ -3525,3 +3525,88 @@ enum LiveTrail {
         return position.deletingLastPathComponent().appendingPathComponent("append_live_trail")
     }
 }
+
+// A finished activity sent to the server by the recorder itself.
+//
+// The app's own backup runs in JavaScript, and only while letm3go is on screen. An activity that finished while the app was closed (the
+// normal case for automatic recording) therefore waited hours, and everyone it is shared with saw its live trail vanish with nothing
+// in its place. The recorder already holds a device credential for publishing the live position and live trail, so it sends the
+// finished activity with the same one (upload_finished_activity, migration 20261216000000). The server keeps it as a provisional copy
+// and shares it with the household at once; the app's later full backup of the same id replaces it. Pure rules live here; the network
+// is in LocationRecorder.
+enum FinishedUpload {
+    // The server refuses anything older, and the app's own backup is the way for an older backlog.
+    static let maximumAge: Double = 3 * 86_400
+    static let maximumPoints = 50_000
+    static let minimumPoints = 2
+    // A refusal that keeps coming back is the activity's, not the network's: after this many the app's backup is left to deal with it.
+    static let giveUpAfter = 5
+    // The upload endpoint sits beside the position endpoint it shares its credential with.
+    static func endpoint(from position: URL) -> URL? {
+        let last = position.lastPathComponent
+        guard last == "publish_live_location" || last == "publish_friend_location" else { return nil }
+        return position.deletingLastPathComponent().appendingPathComponent("upload_finished_activity")
+    }
+    // Only a finished, settled, phone-recorded GPS activity with a route to show, from the last few days.
+    static func eligible(_ trip: RecordedActivity, now: Double) -> Bool {
+        guard trip.state == "finished", let endedAt = trip.endedAt, endedAt <= now + 300, now - endedAt <= maximumAge,
+              trip.details?.provisional != true, trip.source == "device", trip.requiresGPS,
+              trip.recordingMode == "automatic" || trip.recordingMode == "manual",
+              trip.points.count >= minimumPoints, trip.points.count <= maximumPoints,
+              UUID(uuidString: trip.id) != nil, trip.startedAt <= endedAt,
+              trip.distanceMeters.isFinite, trip.distanceMeters >= 0 else { return false }
+        // Every fix was checked when it was captured; the ends are enough here, and this runs on every location update while sharing.
+        return [trip.points.first, trip.points.last].allSatisfy { point in
+            guard let point = point else { return false }
+            return point.latitude.isFinite && point.longitude.isFinite && abs(point.latitude) <= 90 && abs(point.longitude) <= 180
+        }
+    }
+    // The oldest eligible activity not yet sent (or given up on), so a backlog drains in order.
+    static func next(trips: [RecordedActivity], ledger: FinishedUploadLedger, now: Double) -> RecordedActivity? {
+        trips.filter { eligible($0, now: now) && !ledger.settled($0.id) }.min { $0.startedAt < $1.startedAt }
+    }
+    // The row the app's backup also builds (same column names, the route as the trip's own points). Only what the server needs to show
+    // the activity; everything else (title edits, notes, equipment, stops) still arrives with the app's full backup.
+    static func payload(_ trip: RecordedActivity) -> [String: Any]? {
+        guard let endedAt = trip.endedAt else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let title = trip.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var row: [String: Any] = [
+            "id": trip.id.lowercased(),
+            "title": String((title.isEmpty ? trip.activity : title).prefix(150)),
+            "activity": trip.activity,
+            "recording_mode": trip.recordingMode ?? "automatic",
+            "started_at": formatter.string(from: Date(timeIntervalSince1970: trip.startedAt)),
+            "ended_at": formatter.string(from: Date(timeIntervalSince1970: endedAt)),
+            "duration_seconds": min(604_800, max(0, trip.duration(at: endedAt))),
+            "distance_meters": min(2_000_000, max(0, trip.distanceMeters)),
+            "route_points": trip.points.map { point -> [String: Any] in
+                ["latitude": point.latitude, "longitude": point.longitude, "timestamp": point.timestamp,
+                 "accuracy": point.accuracy, "altitude": point.altitude, "speed": point.speed, "segment": point.segment]
+            }
+        ]
+        if let vehicle = trip.vehicle, !vehicle.isEmpty { row["vehicle"] = String(vehicle.prefix(100)) }
+        return row
+    }
+}
+// What has been sent, per account, so a restart never repeats it and a stubborn refusal does not repeat for ever.
+struct FinishedUploadLedger: Codable, Equatable {
+    var done: [String] = []
+    var attempts: [String: Int] = [:]
+    func settled(_ id: String) -> Bool {
+        let key = id.lowercased()
+        return done.contains(key) || (attempts[key] ?? 0) >= FinishedUpload.giveUpAfter
+    }
+    mutating func sent(_ id: String) {
+        let key = id.lowercased()
+        if !done.contains(key) { done.append(key) }
+        attempts[key] = nil
+        // Bounded: the oldest ids age out long after the three days an activity can be sent in.
+        if done.count > 300 { done.removeFirst(done.count - 300) }
+    }
+    mutating func refused(_ id: String) {
+        attempts[id.lowercased(), default: 0] += 1
+        if attempts.count > 300 { attempts = attempts.filter { $0.value >= FinishedUpload.giveUpAfter } }
+    }
+}

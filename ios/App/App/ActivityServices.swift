@@ -763,3 +763,60 @@ enum ActivityWeatherLookup {
         }
     }
 }
+
+extension LocationRecorder {
+    // Sends the oldest finished activity this phone has not yet sent (see FinishedUpload), then the next, with the credential the live
+    // position and live trail are published with. Nothing here needs the web view, a signed-in session or the app on screen.
+    func uploadFinishedActivities() {
+        guard storeOpened, let owner = ownerID, !accountSuspended, !accountDeleting, !finishedUploadInFlight else { return }
+        let now = Date().timeIntervalSince1970
+        guard now >= finishedUploadBackoffUntil else { return }
+        var token: String?, base: URL?, apiKey: String?
+        if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        else if friendShareMode == "device", let t = friendShareToken, let e = friendShareEndpoint, let k = friendShareApiKey, now < friendShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
+        guard let token = token, let base = base, let apiKey = apiKey, let endpoint = FinishedUpload.endpoint(from: base) else { return }
+        let ledgerKey = "letm3go.finishedUpload." + owner
+        let ledger = UserDefaults.standard.data(forKey: ledgerKey).flatMap { try? JSONDecoder().decode(FinishedUploadLedger.self, from: $0) } ?? FinishedUploadLedger()
+        guard let trip = FinishedUpload.next(trips: trips, ledger: ledger, now: now), let row = FinishedUpload.payload(trip),
+              let body = try? JSONSerialization.data(withJSONObject: ["p_token": token, "p_payload": row]) else { return }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"; request.httpBody = body; request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        finishedUploadInFlight = true
+        // The phone may be going back to sleep: ask iOS for the minute the reply needs.
+        var background = UIBackgroundTaskIdentifier.invalid
+        background = UIApplication.shared.beginBackgroundTask(withName: "letm3go.finished-upload") {
+            UIApplication.shared.endBackgroundTask(background); background = .invalid
+        }
+        let points = trip.points.count, id = trip.id
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid } }
+                guard let self = self else { return }
+                self.finishedUploadInFlight = false
+                // Another account is signed in now: nothing here is theirs to record.
+                guard self.ownerID == owner else { return }
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let ok = error == nil && (200...299).contains(status)
+                let accepted = ok && String(decoding: data ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+                var updated = ledger
+                if accepted {
+                    updated.sent(id)
+                    self.finishedUploadBackoffUntil = 0
+                    self.recordDiagnostic("sharing", "Finished activity sent to the server", details: ["points": String(points)])
+                } else if status == 404 {
+                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 3600 // the server has not been updated yet
+                } else if ok {
+                    updated.refused(id)                                                    // the credential or the activity was not accepted
+                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 300
+                    self.recordDiagnostic("sharing", "Finished activity not accepted by the server", details: ["attempts": String(updated.attempts[id.lowercased()] ?? 0)])
+                } else {
+                    self.finishedUploadBackoffUntil = Date().timeIntervalSince1970 + 60    // offline or the network failed: just try again
+                }
+                if updated != ledger, let data = try? JSONEncoder().encode(updated) { UserDefaults.standard.set(data, forKey: ledgerKey) }
+                if accepted { self.uploadFinishedActivities() }
+            }
+        }.resume()
+    }
+}

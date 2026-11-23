@@ -91,11 +91,21 @@ Three different things reach another person's map, by three different routes, an
 |---|---|---|
 | Position bubble (photo, Driving, speed) | the native recorder, in the background | no |
 | Live trail while recording (and its end) | the native recorder, in the background | no |
-| The finished activity | the app's backup (`AutoCloudSync`), then household publication | **yes: it runs only while letm3go is in the foreground** |
+| The finished activity, first copy | the native recorder, in the background (`upload_finished_activity`, 20261216000000) | no |
+| The finished activity, full record | the app's backup (`AutoCloudSync`), then household publication | yes: it runs only while letm3go is in the foreground |
 
-When a drive ends the live trail is cleared on purpose, and the finished activity replaces it once the owner's phone has
-backed it up. Until the owner opens the app, others see the bubble but no route for that drive, and nothing in the database
-can supply it. A map for someone else's empty day says so (it does not suggest they chose not to share).
+When a drive ends the live trail is cleared on purpose and the finished activity replaces it. Until 20261216000000 that replacement
+came only from the app's backup, which runs only while letm3go is on screen, so on a phone whose app stays closed (the normal case for
+automatic recording) a drive reached other people hours late (one household member's median was 124 minutes, the longest ten hours).
+
+Now the recorder sends the finished activity itself, with the device credential it already publishes the live position and trail with
+(`FinishedUpload` in `RecorderCore.swift`, `uploadFinishedActivities` in `ActivityServices.swift`, run from `flushLiveTrail`). The server
+stores it as a **provisional copy** (id, times, distance and route; `classification.nativeUpload`, no sync fingerprint) and shares it
+with the household at once, under the same rules as any automatic sharing (a private decision, and anything from before sharing began,
+still win). The app's later full backup of the same id replaces the provisional copy (`backup_private_activity` treats it as the phone's
+own first copy, never a conflict), so title edits, notes, equipment and stops still arrive the normal way and nothing is duplicated.
+Only automatic and manual phone recordings from the last three days are sent; each is retried until accepted (a refusal that repeats five
+times is left to the app's backup). It needs the household or friend live-sharing credential; a phone without one still relies on the app.
 
 `publish_household_history` records an activity it cannot publish in `household_history_failures` (SQLSTATE and a short
 reason, never a coordinate) and raises a WARNING; a later run publishes it and clears the record.
