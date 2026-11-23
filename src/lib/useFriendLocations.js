@@ -20,7 +20,7 @@ export function useFriendLocations(owner,online){
  // never treats the sharing setting alone as live delivery. Display only.
  const [lastSentAt,setLastSentAt]=useState(0);
  const refreshSequence=useRef({latest:0});
- const refresh=useCallback(async()=>{
+ const refresh=useCallback(async({reportFailure=false}={})=>{
   if(!owner||!online||!supabase)return;
   const sequence=++refreshSequence.current.latest;
   try{
@@ -28,7 +28,12 @@ export function useFriendLocations(owner,online){
    if(sequence!==refreshSequence.current.latest)return;
    if(setting.error||locations.error)throw Error('Friend locations are unavailable until the database migration is applied.');
    setEnabled(setting.data===true&&!hasPendingRevoke(owner));setPeople(keepIfSame(locations.data||[]));setError('');setReady(true);
-  }catch(e){if(sequence===refreshSequence.current.latest){setError(e.message);setPeople(keepIfSame([]));}}
+  }catch(e){
+   if(sequence!==refreshSequence.current.latest)return;
+   setError(e.message);
+   if(reportFailure)throw e;
+   setPeople(keepIfSame([]));
+  }
  },[owner,online]);
  useEffect(()=>{if(!online)return;const sequence=refreshSequence.current;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{sequence.latest++;clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
  const send=useCallback(async()=>{

@@ -64,3 +64,14 @@ it('keeps manually refreshed locations when an earlier read finishes late',async
  await act(async()=>{finishOlder({data:[{user_id:'older'}],error:null});await older;});
  expect(result.current.people).toEqual([{user_id:'newer'}]);
 });
+
+it('reports a failed manual refresh and keeps the last received locations',async()=>{
+ const people=[{user_id:'friend'}];
+ const original=mock.rpc.getMockImplementation();
+ mock.rpc.mockImplementation(name=>name==='my_friend_locations'?Promise.resolve({data:people,error:null}):original(name));
+ const {result}=renderHook(()=>useFriendLocations('me',true));
+ await waitFor(()=>expect(result.current.people).toEqual(people));
+ mock.rpc.mockImplementation(name=>name==='my_friend_locations'?Promise.resolve({data:null,error:new Error('offline')}):original(name));
+ await act(async()=>{await expect(result.current.refresh({reportFailure:true})).rejects.toThrow();});
+ expect(result.current.people).toEqual(people);
+});

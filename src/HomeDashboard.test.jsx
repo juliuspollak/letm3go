@@ -1,9 +1,9 @@
-import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import App from './App.jsx';
 import {emptyRecorder} from './lib/recorder.js';
 // The compact Home: header (with the recording status), one Today card with the first and last activities of the day shown, Friends.
-const {identity,recorderHook,mapLocationHook,friends}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),friends:{people:[]}}));
+const {identity,recorderHook,mapLocationHook,friends}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),friends:{people:[],refresh:vi.fn()}}));
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
@@ -11,7 +11,7 @@ vi.mock('./lib/useCloudJourneyPage.js',()=>({useCloudJourneyPage:()=>({ids:[],lo
 vi.mock('./lib/useJourneyScope.js',()=>({useJourneyScope:()=>({loading:false,error:''})}));
 vi.mock('./lib/useMapLocation.js',()=>({useMapLocation:mapLocationHook}));
 vi.mock('./lib/useRecorder.js',()=>({useRecorder:recorderHook}));
-vi.mock('./lib/useFriendLocations.js',()=>({useFriendLocations:()=>({people:friends.people,enabled:true,error:'',ready:true,lastSentAt:0,setEnabled:()=>{},refresh:()=>{}})}));
+vi.mock('./lib/useFriendLocations.js',()=>({useFriendLocations:()=>({people:friends.people,enabled:true,error:'',ready:true,lastSentAt:0,setEnabled:()=>{},refresh:friends.refresh})}));
 vi.mock('./components/JourneyMap.jsx',()=>({default:()=><div aria-label="Interactive journey route map"/>}));
 
 const at=(daysAgo,hour,minute=0)=>{const d=new Date();d.setDate(d.getDate()-daysAgo);d.setHours(hour,minute,0,0);return d.getTime()/1000;};
@@ -24,6 +24,44 @@ const setup=(trips,over={})=>{
 beforeEach(()=>{mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:vi.fn()});friends.people=[];});
 afterEach(()=>{cleanup();localStorage.clear();});
 const card=()=>screen.getByRole('region',{name:'Daily activity summary'});
+
+it('refreshes shared locations when pulling down from the top of Home',async()=>{
+ setup([]);
+ friends.refresh.mockClear();
+ const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
+ const pull=target=>{
+  fireEvent.touchStart(target,{touches:[{clientX:30,clientY:120}]});
+  fireEvent.touchEnd(target,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
+ };
+ pull(heading);
+ expect(friends.refresh).toHaveBeenCalledOnce();
+ expect(screen.queryByRole('button',{name:'Refresh locations'})).toBeNull();
+ await waitFor(()=>expect(screen.queryByText('Refreshing locations…')).toBeNull());
+ fireEvent.click(within(screen.getByRole('navigation',{name:'Sections'})).getByRole('button',{name:'Social'}));
+ expect(screen.queryByRole('button',{name:'Refresh locations'})).toBeNull();
+ pull(screen.getByRole('heading',{name:'Your people.'}));
+ expect(friends.refresh).toHaveBeenCalledOnce();
+});
+
+it('updates a friend with a fresh shared position and preserves another friend’s age',async()=>{
+ const old=new Date(Date.now()-22*60*1000).toISOString();
+ const point={latitude:-34.5,longitude:150.9,updated_at:old};
+ friends.people=[{...point,user_id:'ann',display_name:'Ann'},{...point,user_id:'kim',display_name:'Kim'}];
+ friends.refresh.mockImplementationOnce(async()=>{
+  friends.people=[{...friends.people[0],updated_at:new Date().toISOString()},friends.people[1]];
+ });
+ const {rerender}=setup([]);
+ const tile=name=>screen.getByLabelText(new RegExp(`Show ${name} on the Map`));
+ const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
+ expect(tile('Ann')).toHaveTextContent('22m ago');
+ expect(tile('Kim')).toHaveTextContent('22m ago');
+ fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
+ fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
+ await waitFor(()=>expect(screen.queryByText('Refreshing locations…')).toBeNull());
+ rerender(<App/>);
+ expect(tile('Ann')).toHaveTextContent('just now');
+ expect(tile('Kim')).toHaveTextContent('22m ago');
+});
 
 it('toggles the theme and keeps the theme button pressed state in sync',()=>{
  setup([]);

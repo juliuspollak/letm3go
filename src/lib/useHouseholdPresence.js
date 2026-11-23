@@ -52,10 +52,15 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  const liveBusy=useRef(false),liveConsent=useRef(false);
  // Last confirmed in-app send; the native uploader reports its own separately.
  const [lastPublishedAt,setLastPublishedAt]=useState(0);
- const refresh=useCallback(async()=>{
+ const refresh=useCallback(async({reportFailure=false}={})=>{
   if(!owner||!online||!supabase)return;
   const [mine,others]=await Promise.all([supabase.rpc('my_presence_settings'),supabase.rpc('my_household_presence')]);
-  if(mine.error||others.error){setError('Social presence is unavailable. The database migration may not be deployed.');return;}
+  if(mine.error||others.error){
+   const message='Social presence is unavailable. The database migration may not be deployed.';
+   setError(message);
+   if(reportFailure)throw new Error(message);
+   return;
+  }
   setSelf(keepIfSame(mine.data?.[0]||{sharing_enabled:false}));setPeople(keepIfSame(others.data||[]));setError('');
  },[owner,online]);
  useEffect(()=>{if(!online)return;const load=()=>{if(document.visibilityState==='visible')void refresh();};const initial=setTimeout(load,0);const timer=setInterval(load,15000);document.addEventListener('visibilitychange',load);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',load);};},[refresh,online]);
@@ -122,7 +127,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   void recorder.noteHouseholdDelivery?.({...latencySummary(latencies.current),transport:signalled.current?'push':'polling',signalsReceived:signals.current,refreshMedianMs:latencySummary(refreshTimes.current)?.latencyMedianMs??0,viewerLastPositionAgeSeconds:ages.length?Math.min(...ages):-1,realtimeReconnects:reconnects.current});
   latencies.current=[];signals.current=0;refreshTimes.current=[];
  },[]);
- const refreshLive=useCallback(async()=>{
+ const refreshLive=useCallback(async({reportFailure=false}={})=>{
   if(!owner||!online||!supabase)return;
   const request=++positionRequest.current,settingsToken=++settingsRequest.current;
   try{
@@ -136,7 +141,11 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
     setLiveEnabled(enabled);setSelfArrival(enabled?arrival:null);setLiveError('');setLiveReady(true);
    }
    if(request===positionRequest.current){setLiveMembers(members.map(row=>({...row,receivedAtMs:Date.now()})));noteDelivery(members);}
-  }catch(err){if(settingsToken===settingsRequest.current)setLiveError(err.message||'Location sharing could not be loaded.');}
+  }catch(err){
+   if(settingsToken!==settingsRequest.current)return;
+   setLiveError(err.message||'Location sharing could not be loaded.');
+   if(reportFailure)throw err;
+  }
  },[owner,online,noteDelivery]);
  // A signal only needs the positions: this one read, not the settings and arrival too.
  const refreshPositions=useCallback(async()=>{
