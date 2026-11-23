@@ -168,8 +168,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var restPlaceAccuracy: Double?
     var keepAliveGeneration = 0
     var keepAliveEndedAt: Double = 0
-    // Device test: live sharing may join passive rest (SharingRest). Off by default.
-    var sharingRestEnabled = false
+    // Eligible live sharing can join passive rest unless the user opts out.
+    var sharingRestEnabled = SharingRest.enabled(preference: nil)
     var sharingRestAllowed = false
     var sharingRestReason = "not evaluated"
     // What the decision was made from; it holds only while that is unchanged.
@@ -293,6 +293,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // signed-in access token, used only until the database is migrated.
     var liveShareMode = "session"
     var lastShareFix: CLLocation?
+    var lastPublisherObservation: CLLocation?
     var liveShareLastOkAt: Double = 0
     var liveShareStatus = ""
     var friendShareToken: String? { didSet { if friendShareToken != oldValue { sharingRestInputChanged("friend credential changed") } } }
@@ -327,7 +328,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var locationServicesKnown: Bool { locationServicesCheck.known }
     private var foregroundLocationObserver: NSObjectProtocol?
     // What the person and iOS allow, whatever is recording now.
-    var automaticPermitted: Bool { ownerID != nil && !accountDeleting && !accountSuspended && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
+    var automaticPermitted: Bool { ownerID != nil && !accountDeleting && !accountSuspended && storage?.evidenceRecoveryBlocked != true && automaticEnabled && manager.authorizationStatus == .authorizedAlways && locationServicesAvailable }
     // Whether the automatic engine may run. Every automatic path checks this, so
     // a manual recording suspends them all without a check of its own.
     var automaticAvailable: Bool { automaticPermitted && manualExclusion.current == nil }
@@ -638,7 +639,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     func rejoinBackgroundSessionAtLaunch() {
         let previouslyHeld = UserDefaults.standard.bool(forKey: Self.backgroundSessionKey)
         // A session is never revived once location access has been withdrawn.
-        guard authorized, BackgroundSessionPolicy.onLaunch(previouslyHeld: previouslyHeld, supported: backgroundSessionSupported) == .rejoin else {
+        guard authorized, BackgroundSessionPolicy.onLaunch(previouslyHeld: previouslyHeld, supported: backgroundSessionSupported,
+            background: UIApplication.shared.applicationState == .background) == .rejoin else {
             backgroundSessionState = backgroundSessionSupported ? "none" : "unsupported"; return
         }
         if #available(iOS 17.0, *) { backgroundActivitySession = CLBackgroundActivitySession() }
@@ -652,7 +654,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let held = backgroundActivitySession != nil
         let action = BackgroundSessionPolicy.decide(wanted: wanted, held: held,
             foreground: UIApplication.shared.applicationState == .active,
-            previouslyHeld: UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported,
+            previouslyHeld: UIApplication.shared.applicationState == .background && UserDefaults.standard.bool(forKey: Self.backgroundSessionKey), supported: backgroundSessionSupported,
             rejoinedOnly: backgroundSessionRejoinedOnly)
         switch action {
         case .start, .rejoin:
@@ -1083,34 +1085,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         GPSPoint(latitude:location.coordinate.latitude,longitude:location.coordinate.longitude,timestamp:location.timestamp.timeIntervalSince1970,
                  accuracy:location.horizontalAccuracy,altitude:location.altitude,speed:max(0,location.speed))
     }
-    // A phone that is not moving produces no Core Location callbacks, so it would
-    // otherwise stop publishing and look absent. While the continuous location
-    // service has run without interruption since the last fix, no callback means
-    // the phone is still within its distance filter (5 m recording, 25 m standby,
-    // 50 m resting at Home),
-    // so that fix is re-confirmed every 5 minutes. After any suspension the next
-    // real fix is required first. Called from the existing 30-second timer.
-    // In the adaptive engine's low-power standby there is no continuous service;
-    // the fix is re-confirmed only while Core Location itself reports that the
-    // phone has not moved since it was taken (and the app is running). Otherwise
-    // the household sees the honest last-updated time.
+    // Flush pending trails and send a changed activity status when a recent
+    // captured fix is available. A quiet location service is not a new fix.
     func confirmHouseholdLocation() {
         flushLiveTrail()
-        // Passive rest runs no location service, so nothing vouches for the last fix
-        // being current: viewers keep its real time, never a re-stamped one.
-        guard let fix=lastShareFix, locationMode != .passive else {return}
-        // Stopping sends no fix, so the status cannot wait for one. The position is
-        // only what it was recently: an old one is not presented as current.
-        if shareActivityChanged, fix.timestamp.timeIntervalSince1970 >= passiveEndedAt,
-           Date().timeIntervalSince1970-fix.timestamp.timeIntervalSince1970<=HouseholdPublisher.confirmationInterval {
-            sendHouseholdLocation(fix,confirmation:true);return
-        }
-        let continuous=HouseholdPublisher.canConfirm(continuousRunning:continuousLocationRequested && !locationUpdatesPaused,
-              resuming:heartbeat.resuming, fixAt:fix.timestamp.timeIntervalSince1970, executingSince:executingSince,
-              continuousSince:passiveEndedAt)
-        let stationary=adaptive.lowPowerRunning && !heartbeat.resuming && liveGate.confirms(sharePoint(fix))
-        guard continuous || stationary else {return}
-        sendHouseholdLocation(fix,confirmation:true)
+        guard let fix = lastShareFix, locationMode != .passive, shareActivityChanged else { return }
+        let capturedAt = fix.timestamp.timeIntervalSince1970
+        guard HouseholdPublisher.statusFixIsUsable(capturedAt: capturedAt, passiveEndedAt: passiveEndedAt,
+            now: Date().timeIntervalSince1970) else { return }
+        sendHouseholdLocation(fix, confirmation: true)
     }
     func sendHouseholdLocation(_ location: CLLocation, confirmation: Bool) {
         let now=Date().timeIntervalSince1970
@@ -1133,15 +1116,11 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         var payload:[String:Any]=["p_latitude":location.coordinate.latitude,"p_longitude":location.coordinate.longitude,
                                   "p_accuracy":location.horizontalAccuracy,"p_speed":speedValue]
         if device { payload["p_token"]=token } else { payload["p_enabled"]=true }
-        // A confirmation is observed now, not at its eventual server arrival.
-        // Timestamp it here so a delayed pre-finish confirmation cannot overwrite
-        // a newer activity update from the other publishing path.
-        // Session mode sends it too where supported. Migration 13 refuses to
-        // re-enable sharing from any position-bearing call; a capture time only
-        // orders positions and keeps their true age. An older server returns 404
-        // for the field and the existing fallback retries without it.
+        // Status-only resends use the original fix time too. Skip them when
+        // running against a legacy endpoint that would stamp them at receipt.
         let sentCaptureTime=liveShareSendsCaptureTime
-        if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:confirmation ? Date(timeIntervalSince1970:now) : location.timestamp) }
+        guard sentCaptureTime || (!confirmation && now - location.timestamp.timeIntervalSince1970 <= HouseholdPublisher.stopConfirmSeconds) else { return }
+        if sentCaptureTime { payload["p_captured_at"]=Self.shareTimeFormat.string(from:location.timestamp) }
         let sendsActivity=liveShareSendsActivity
         let sentActivity=sendsActivity ? activity : nil
         // A nil value is sent deliberately: it clears an activity whose evidence
@@ -1448,6 +1427,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "newestAgeSeconds":String(Int(diagnosticLastDeliveryAt-(locations.map{$0.timestamp.timeIntervalSince1970}.max() ?? oldest)))])
         }
         guard !accountSuspended else { return }
+        if let accepted = locations.filter({ location in
+            location.timestamp.timeIntervalSince1970 >= trackingBoundary &&
+            PublisherFixPolicy.usable(timestamp: location.timestamp.timeIntervalSince1970,
+                accuracy: location.horizontalAccuracy, now: Date().timeIntervalSince1970, maxAge: 20)
+        }).max(by: { $0.timestamp < $1.timestamp }),
+           lastPublisherObservation.map({ accepted.timestamp > $0.timestamp }) ?? true {
+            lastPublisherObservation = accepted
+        }
         if let last=locations.last {publishLivePosition(last)}
         // Apply the precision change on the fix that proves movement, not only on
         // the next 30-second reconcile.
@@ -1548,7 +1535,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "trackingServices": ["continuousGPSRequested":continuousLocationRequested,"pausedByIOS":locationUpdatesPaused,"automaticPauseEnabled":manager.pausesLocationUpdatesAutomatically,"lastExecutionGapSeconds":lastExecutionGapSeconds,"backgroundSession":backgroundSessionState,"significantChangesRequested":significantLocationRequested,"visitsRequested":visitMonitoringRequested,"motionRequested":motionUpdatesRequested,"registeredRegions":manager.monitoredRegions.count],
                 "trackingUsage":["continuousSeconds":continuousSeconds + (trackingStartedAt.map { max(0,Date().timeIntervalSince1970-$0) } ?? 0),"continuousStarts":gpsStartCount,"sinceAppLaunch":ProcessInfo.processInfo.systemUptime,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"batteryLevel":UIDevice.current.isBatteryMonitoringEnabled ? Double(UIDevice.current.batteryLevel) : -1],
                 "recordingElsewhere":CrossDeviceRecording.active(WatchSessionManager.shared.watchRecording,ownerID:ownerID,now:Date().timeIntervalSince1970).map{["label":$0.label,"activity":$0.activity,"state":$0.state,"startedAt":$0.startedAt,"sessionID":$0.sessionID] as [String:Any]} as Any? ?? NSNull(),
-                "nativeFamilySharing":["armed":liveSharingArmed,"householdArmed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"friendArmed":friendShareToken != nil && Date().timeIntervalSince1970 < friendShareTokenExpiresAt-60,"friendMode":friendShareMode,"friendTokenExpiresAt":friendShareTokenExpiresAt,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"status":liveShareStatus,"uploadInFlight":liveShareInFlight,"trackingActive":continuousLocationRequested,"sendActivity":liveShareSendsActivity,"sendCaptureTime":liveShareSendsCaptureTime],
+                "nativeFamilySharing":["armed":liveSharingArmed,"householdArmed":liveShareToken != nil && Date().timeIntervalSince1970 < liveShareTokenExpiresAt-60,"friendArmed":friendShareToken != nil && Date().timeIntervalSince1970 < friendShareTokenExpiresAt-60,"friendMode":friendShareMode,"friendTokenExpiresAt":friendShareTokenExpiresAt,"mode":liveShareMode,"tokenExpiresAt":liveShareTokenExpiresAt,"lastUploadAttemptAt":liveShareLastSentAt,"lastUploadOkAt":liveShareLastOkAt,"lastPublishedCaptureAt":liveShareSentPoint?.timestamp as Any? ?? NSNull(),"status":liveShareStatus,"uploadInFlight":liveShareInFlight,"trackingActive":continuousLocationRequested,"sendActivity":liveShareSendsActivity,"sendCaptureTime":liveShareSendsCaptureTime],
                 "locationManagerID":"LocationRecorder.shared.manager","commit":Self.commit,"backgroundSession":backgroundSessionState,
                 "gpsReason":gpsReason,"indicatorRequested":manager.showsBackgroundLocationIndicator,
                 "continuousStartedAt":continuousStartedAt as Any? ?? NSNull(),"continuousStoppedAt":continuousStoppedAt as Any? ?? NSNull(),
@@ -1588,6 +1575,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
     var photoTripID: String?
     var photoOwnerID: String?
     var diagnosticShareOpen=false
+    var evidenceShareOpen=false
     public let identifier = "ManualRecorderPlugin"
     public let jsName = "ManualRecorder"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -1627,6 +1615,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "restorePhoto", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trackingReport", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "diagnosticLogArchive", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "recoverMovementEvidence", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "exportJourneyDiagnostics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermission", returnType: CAPPluginReturnPromise),
@@ -1819,6 +1808,35 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
                 "storageError":r.diagnosticStorageError,"retentionDays":7,"eventLimit":RecorderDiagnosticJournal.limit,
                 "limitations":"A log gap means no diagnostic events were persisted. It cannot prove force-quit, suspension, crash, or the actual time movement began. No coordinates, routes, names, account identifiers, or credentials are included."])
         }catch{call.reject("The tracking report could not be prepared.")}
+    }}
+    @objc func recoverMovementEvidence(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call), let storage = LocationRecorder.shared.storage else { return }
+        do {
+            guard let id = call.getString("id") else {
+                call.resolve(["ids": try storage.retainedEvidenceIDs()]); return
+            }
+            guard !self.evidenceShareOpen, let root = self.bridge?.viewController, root.viewIfLoaded?.window != nil else {
+                call.reject("The export screen is unavailable."); return
+            }
+            let evidence = try storage.readRetainedEvidence(id:id)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MovementEvidenceExport")
+            if FileManager.default.fileExists(atPath:directory.path) { try FileManager.default.removeItem(at:directory) }
+            try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            let file = directory.appendingPathComponent("movement-\(evidence.id).json")
+            try JSONEncoder().encode(evidence).write(to:file,options:[.atomic,.completeFileProtection])
+            let sheet = UIActivityViewController(activityItems:[file],applicationActivities:nil)
+            self.evidenceShareOpen = true
+            sheet.popoverPresentationController?.sourceView = root.view
+            sheet.popoverPresentationController?.sourceRect = CGRect(x:root.view.bounds.midX,y:root.view.bounds.midY,width:0,height:0)
+            sheet.completionWithItemsHandler = { _, completed, _, error in
+                self.evidenceShareOpen = false
+                do { try FileManager.default.removeItem(at:directory) }
+                catch { LocationRecorder.shared.recordDiagnostic("error","Temporary evidence export could not be removed") }
+                if let error { call.reject(error.localizedDescription) }
+                else { call.resolve(["exported":completed]) }
+            }
+            root.present(sheet,animated:true)
+        } catch { call.reject("Movement evidence could not be recovered. The saved copy was kept.") }
     }}
     // The only way the location log leaves the device: returned to the app, which
     // sends it with a feedback ticket (owner and admins only). Only the snapshot

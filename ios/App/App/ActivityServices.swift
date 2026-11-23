@@ -426,37 +426,83 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     static var activeRequests=Set<UUID>()
     let requestID=UUID()
     let manager = CLLocationManager()
-    let call: CAPPluginCall
+    private var callers: [(call: CAPPluginCall, publisher: String?, maxAge: Double)]
     let owner = LocationRecorder.shared.ownerID
-    var outcome="completed"
-    var finished = false {didSet{if finished {
-        Self.activeRequests.remove(requestID)
-        if owner==LocationRecorder.shared.ownerID {LocationRecorder.shared.recordDiagnostic("sampling","One-shot location request ended",details:["component":"PositionRequest","reason":outcome])}
-    }}}
-    deinit {Self.activeRequests.remove(requestID)}
-    init(call: CAPPluginCall) { self.call = call; super.init(); manager.delegate = self; manager.desiredAccuracy = kCLLocationAccuracyBest }
+    var finished = false
+    init(call: CAPPluginCall, publisher: String?, maxAge: Double) {
+        callers = [(call, publisher, maxAge)]
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
     var requesting = false
+    func join(_ call: CAPPluginCall, publisher: String?, maxAge: Double) -> Bool {
+        guard !finished, owner == LocationRecorder.shared.ownerID else { return false }
+        callers.append((call, publisher, maxAge))
+        return true
+    }
     func begin() {
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
         else { requestFix() }
     }
+    private func end(error: String? = nil, location: CLLocation? = nil) {
+        guard !finished else { return }
+        finished = true
+        Self.activeRequests.remove(requestID)
+        let recorder = LocationRecorder.shared
+        for (call, publisher, maxAge) in callers {
+            if owner == recorder.ownerID, recorder.uiUnlocked, let location,
+               publisher == nil || PublisherFixPolicy.usable(timestamp: location.timestamp.timeIntervalSince1970,
+                   accuracy: location.horizontalAccuracy, now: Date().timeIntervalSince1970, maxAge: maxAge) {
+                Self.deliver(location, to: call, publisher: publisher, reason: "new requested fix")
+            } else {
+                call.reject(error ?? "No suitable location fix for this request.")
+            }
+        }
+        callers.removeAll()
+    }
+    deinit { Self.activeRequests.remove(requestID) }
     func requestFix() {
         guard !finished, !requesting else { return }
-        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { outcome="location permission unavailable";finished=true;call.reject("Location permission was declined. Use address search, select the map, or enable access in iOS Settings.");return }
-        requesting=true;Self.activeRequests.insert(requestID)
-        LocationRecorder.shared.recordDiagnostic("sampling","One-shot precise location requested",details:["component":"PositionRequest","reason":"foreground caller requested a current fix"])
+        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else {
+            end(error: "Location permission was declined. Use address search, select the map, or enable access in iOS Settings.")
+            return
+        }
+        requesting = true
+        Self.activeRequests.insert(requestID)
+        LocationRecorder.shared.recordDiagnostic("sampling","One-shot precise location requested",
+            details:["component":"PositionRequest","reason":"No suitable cached fix for foreground request",
+                     "publisher":callers.first?.publisher ?? "interactive"])
         manager.requestLocation()
-        DispatchQueue.main.asyncAfter(deadline:.now()+20) { if !self.finished { self.outcome="timed out without a recent fix";self.finished=true;self.call.reject("No recent location fix. Try outdoors or select a point on the map.") } }
+        DispatchQueue.main.asyncAfter(deadline: .now()+20) { self.end(error: "No recent location fix. Try outdoors or select a point on the map.") }
+    }
+    static func deliver(_ location: CLLocation, to call: CAPPluginCall, publisher: String?, reason: String) {
+        let recorder = LocationRecorder.shared
+        let captured = location.timestamp.timeIntervalSince1970
+        recorder.recordDiagnostic("sampling", "Foreground location delivered", details:[
+            "reason":reason,"publisher":publisher ?? "interactive","lastObservedFixAt":String(captured),
+            "lastObservedFixAgeSeconds":String(Date().timeIntervalSince1970-captured),
+            "lastObservedAccuracyMeters":String(location.horizontalAccuracy)])
+        let devicePublisherOwnsFix = publisher == "friend" && recorder.friendShareMode == "device" &&
+            recorder.friendShareToken != nil && recorder.friendShareTokenExpiresAt > Date().timeIntervalSince1970 + 60
+        if devicePublisherOwnsFix { recorder.publishFriendPosition(location) }
+        call.resolve(["sharedActivity":recorder.sharedActivity as Any? ?? NSNull(),"latitude":location.coordinate.latitude,
+            "longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy,"devicePublisherOwnsFix":devicePublisherOwnsFix,
+            "speed":location.speed >= 0 ? location.speed : NSNull(),"timestamp":captured])
     }
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus != .notDetermined { requestFix() }
     }
     func locationManager(_ manager: CLLocationManager,didUpdateLocations locations: [CLLocation]) {
-        guard !finished, let location = locations.last, location.horizontalAccuracy >= 0, abs(location.timestamp.timeIntervalSinceNow) < 30 else { return }
-        guard owner == LocationRecorder.shared.ownerID, LocationRecorder.shared.uiUnlocked else { finished=true; call.reject("Account changed."); return }
-        finished = true; call.resolve(["sharedActivity":LocationRecorder.shared.sharedActivity as Any? ?? NSNull(),"latitude":location.coordinate.latitude,"longitude":location.coordinate.longitude,"accuracy":location.horizontalAccuracy,"speed":location.speed >= 0 ? location.speed : NSNull(),"timestamp":location.timestamp.timeIntervalSince1970])
+        guard let location = locations.last, location.horizontalAccuracy >= 0, abs(location.timestamp.timeIntervalSinceNow) < 30 else { return }
+        end(location: location)
     }
-    func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) { guard !finished else { return }; outcome="Core Location error code \((error as NSError).code)";finished = true; call.reject(error.localizedDescription) }
+    func locationManager(_ manager: CLLocationManager,didFailWithError error: Error) {
+        if owner == LocationRecorder.shared.ownerID {
+            LocationRecorder.shared.recordDiagnostic("sampling","One-shot location request failed",details:["code":String((error as NSError).code)])
+        }
+        end(error: error.localizedDescription)
+    }
 }
 
 extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
@@ -530,7 +576,20 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         if call.getBool("allowStationary") == true, recorder.locationMode == .passive, recorder.restDecision.confirmed, let since = recorder.passiveSince {
             call.resolve(["stationary": true, "stationarySince": since, "source": "passiveRest"]); return
         }
-        let request = PositionRequest(call:call); self.positionRequest = request; request.begin()
+        let publisher = call.getString("publisher").flatMap { ["household", "friend", "presence"].contains($0) ? $0 : nil }
+        let maxAge = min(20, max(1, call.getDouble("maxAge") ?? 20))
+        if let publisher, recorder.authorized, recorder.locationServicesAvailable,
+           let fix = recorder.lastPublisherObservation,
+           fix.timestamp.timeIntervalSince1970 >= recorder.passiveEndedAt,
+           PublisherFixPolicy.usable(timestamp: fix.timestamp.timeIntervalSince1970, accuracy: fix.horizontalAccuracy,
+                                     now: Date().timeIntervalSince1970, maxAge: maxAge) {
+            PositionRequest.deliver(fix, to: call, publisher: publisher, reason: "reused recorder fix")
+            return
+        }
+        if self.positionRequest?.join(call, publisher: publisher, maxAge: maxAge) == true { return }
+        let request = PositionRequest(call: call, publisher: publisher, maxAge: maxAge)
+        self.positionRequest = request
+        request.begin()
     } }
     @objc func searchAddress(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

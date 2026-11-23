@@ -53,6 +53,7 @@ enum ActivityTypes {
 
 struct RecordedActivity: Codable {
     var retainedSourceDigest: String?
+    var retainedParentID: String?
     var id = UUID().uuidString
     var activity: String
     var vehicle: String?
@@ -763,7 +764,10 @@ final class RecordingStorage {
     func retainAutomaticTail(_ trip: RecordedActivity, from start: Double) throws {
         let points = trip.points.filter { $0.timestamp >= start }
         guard let first = points.first else { return }
+        if let before = trip.points.last(where: { $0.timestamp < start }),
+           EvidenceQuality.classify([before] + points) == .stationaryNoise { return }
         var evidence = trip
+        evidence.retainedParentID = trip.id
         evidence.id = evidenceID("automatic-tail:\(trip.id):\(first.timestamp)")
         evidence.startedAt = first.timestamp
         evidence.points = points
@@ -775,7 +779,7 @@ final class RecordingStorage {
     // retried using the digest of the exact draft, never a newer activity.
     func retainUnconfirmedWalk(_ trip: RecordedActivity, preserveSourcePoints: Bool = true) throws {
         guard UUID(uuidString:trip.id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
-        lastEvictions = []
+        maintainRetainedEvidence(protecting: "\(trip.id).unconfirmed-walk")
         let activeName = "\(trip.id).json"
         let retainedName = "\(trip.id).unconfirmed-walk"
         var evidence = trip
@@ -802,9 +806,9 @@ final class RecordingStorage {
                 evidence.points.append(contentsOf:saved.points.filter { !known.contains($0.timestamp) })
                 evidence.points.sort { $0.timestamp < $1.timestamp }
                 evidence.distanceMeters = evidence.measuredDistance
-                try writeData(encoder.encode(evidence),name:retainedName)
+                try writeRetainedEvidence(evidence, name: retainedName)
                 try removeRetainedSource(evidence)
-                lastEvictions = (try? pruneUnconfirmedWalks(protecting:retainedName)) ?? []
+
                 return
             }
             if evidence.retainedSourceDigest == nil || evidence.retainedSourceDigest == saved.retainedSourceDigest {
@@ -812,9 +816,9 @@ final class RecordingStorage {
                 return
             }
         }
-        try writeData(encoder.encode(evidence),name:retainedName)
+        try writeRetainedEvidence(evidence, name: retainedName)
         try removeRetainedSource(evidence)
-        lastEvictions = (try? pruneUnconfirmedWalks(protecting:retainedName)) ?? []
+
     }
 
     private func removeRetainedSource(_ evidence: RecordedActivity) throws {
@@ -832,44 +836,107 @@ final class RecordingStorage {
             guard FileManager.default.fileExists(atPath:directory.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".json").path) else { continue }
             // Older evidence and test fixtures may not have a cleanup marker.
             // One unreadable evidence file must not break loading or pruning.
-            guard let bytes = try? readData(name:url.lastPathComponent),
-                  let evidence = try? decoder.decode(RecordedActivity.self,from:bytes) else { continue }
-            try removeRetainedSource(evidence)
+            do {
+                let evidence = try decoder.decode(RecordedActivity.self, from: readData(name: url.lastPathComponent))
+                try removeRetainedSource(evidence)
+            } catch { evidenceIssues.append("Source reconciliation deferred: \(error.localizedDescription)") }
         }
     }
-    // Evictions made by the most recent retain, each with the reason, so the
-    // recorder can log why evidence was dropped. Policy: keep at most 8 files,
-    // 12 MB and 7 days; the file just written is never evicted; confirmed
-    // activities (.json) are never touched.
+    enum EvidenceQuality {
+        case credible, uncertain, stationaryNoise
+
+        static func classify(_ points: [GPSPoint]) -> Self {
+            if points.isEmpty { return .stationaryNoise }
+            guard let first = points.first else { return .uncertain }
+            if points.count >= 2, points.allSatisfy({
+                $0.latitude == first.latitude && $0.longitude == first.longitude &&
+                $0.speed == 0 && $0.accuracy >= 0 && $0.accuracy <= 65
+            }) { return .stationaryNoise }
+            if points.contains(where: {
+                $0.accuracy >= 0 && first.accuracy >= 0 &&
+                first.distance(to: $0) > max(30, first.accuracy + $0.accuracy)
+            }) { return .credible }
+            return .uncertain
+        }
+    }
+
+    static let evidenceByteLimit = 48 * 1024 * 1024
     private(set) var lastEvictions: [(name: String, reason: String)] = []
+    private(set) var evidenceIssues: [String] = []
+    private(set) var evidenceRecoveryBlocked = false
+
+    func takeEvidenceMaintenance() -> (evictions: [(name: String, reason: String)], issues: [String]) {
+        defer { lastEvictions.removeAll(); evidenceIssues.removeAll() }
+        return (lastEvictions, evidenceIssues)
+    }
+
+    // Private recovery uses the same encrypted file and stable ID. Reading does
+    // not promote the activity, upload it, or remove its only durable copy.
+    func retainedEvidenceIDs() throws -> [String] {
+        let deleted = try deletedIDs()
+        return try evidenceFiles().compactMap { url in
+            let id = url.deletingPathExtension().lastPathComponent
+            guard UUID(uuidString:id) != nil, !deleted.contains(ActivityIdentity.canonical(id)) else { return nil }
+            return id
+        }.sorted()
+    }
+
+    func readRetainedEvidence(id: String) throws -> RecordedActivity {
+        guard UUID(uuidString: id) != nil, try !isDeleted(id) else { throw CocoaError(.fileReadNoSuchFile) }
+        let evidence = try decoder.decode(RecordedActivity.self, from: readData(name: "\(id).unconfirmed-walk"))
+        if let parent = evidence.retainedParentID, try isDeleted(parent) { throw CocoaError(.fileReadNoSuchFile) }
+        return evidence
+    }
+
+    private func evidenceFiles() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
+            .filter { $0.pathExtension == "unconfirmed-walk" }
+    }
+
+    private func writeRetainedEvidence(_ evidence: RecordedActivity, name: String) throws {
+        let data = try encoder.encode(evidence)
+        let others = try evidenceFiles().filter { $0.lastPathComponent != name }
+        let occupied = try others.reduce(0) { total, file in
+            total + (try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+        }
+        let existing = (try? directory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let incoming = data.count + (encryptionKey == nil ? 0 : 28)
+        guard incoming <= existing || occupied + incoming <= Self.evidenceByteLimit else {
+            throw CocoaError(.fileWriteOutOfSpace, userInfo: [NSLocalizedDescriptionKey:
+                "Private movement evidence storage is full. Saved routes were kept. Export retained routes from Tracking & Permissions. New evidence cannot be stored until space is available."])
+        }
+        try writeData(data, name: name)
+    }
+
     @discardableResult
     func pruneUnconfirmedWalks(now: Date = Date(), protecting: String? = nil) throws -> [(name: String, reason: String)] {
         let fm = FileManager.default
-        // An unfinished legacy batch still owns its originals. Apply quotas
-        // only once every piece is durable and the source has been acknowledged.
-        let migrating = fm.fileExists(atPath:directory.appendingPathComponent("local-walks.data").path)
         try reconcileRetainedSources()
-        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
-        let files = try fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:Array(keys))
-            .filter { $0.pathExtension == "unconfirmed-walk" }
-            .map { (url: $0, values: try $0.resourceValues(forKeys:keys)) }
-            .sorted { ($0.values.contentModificationDate ?? .distantPast) > ($1.values.contentModificationDate ?? .distantPast) }
-        var bytes = 0
+        guard !fm.fileExists(atPath: directory.appendingPathComponent("local-walks.data").path) else { return [] }
         var evicted: [(name: String, reason: String)] = []
-        for (index,file) in files.enumerated() {
-            bytes += file.values.fileSize ?? 0
-            if file.url.lastPathComponent == protecting { continue }
-            // While a legacy migration is unfinished its originals are still on disk,
-            // so only a generous hard cap applies; this keeps storage bounded even if
-            // the migration keeps failing.
-            let reason: String? = migrating
-                ? (index >= 32 || bytes > 48 * 1024 * 1024 ? "unconfirmed walks exceeded the migration hard cap" : nil)
-                : index >= 8 ? "more than 8 unconfirmed walks retained"
-                : bytes > 12 * 1024 * 1024 ? "unconfirmed walks exceeded 12 MB"
-                : now.timeIntervalSince(file.values.contentModificationDate ?? .distantPast) > 7 * 86_400 ? "unconfirmed walk older than 7 days" : nil
-            if let reason { try fm.removeItem(at:file.url); evicted.append((file.url.lastPathComponent,reason)) }
+        for file in try evidenceFiles() where file.lastPathComponent != protecting {
+            do {
+                let info = try file.resourceValues(forKeys: [.contentModificationDateKey])
+                guard let changed = info.contentModificationDate, now.timeIntervalSince(changed) > 7 * 86_400 else { continue }
+                let evidence = try decoder.decode(RecordedActivity.self, from: readData(name: file.lastPathComponent))
+                guard EvidenceQuality.classify(evidence.points) == .stationaryNoise else { continue }
+                // Leave both sides available when source reconciliation could not
+                // remove an interrupted draft or its digest no longer matches.
+                let source = directory.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".json")
+                guard !fm.fileExists(atPath: source.path) else { continue }
+                try fm.removeItem(at: file)
+                evicted.append((file.lastPathComponent, "Stationary evidence older than seven days"))
+            } catch {
+                evidenceIssues.append("Retained evidence cleanup deferred: \(error.localizedDescription)")
+            }
         }
+        lastEvictions.append(contentsOf: evicted)
         return evicted
+    }
+
+    func maintainRetainedEvidence(protecting: String? = nil) {
+        do { try pruneUnconfirmedWalks(protecting: protecting) }
+        catch { evidenceIssues.append("Retained evidence maintenance deferred: \(error.localizedDescription)") }
     }
     // bbc97d7 kept short walking stretches in local-walks.data. Move any left on
     // disk into unpublished evidence so they are not orphaned. The legacy file is
@@ -906,10 +973,17 @@ final class RecordingStorage {
             }
         }
         try FileManager.default.removeItem(at:directory.appendingPathComponent(name))
-        lastEvictions = (try? pruneUnconfirmedWalks()) ?? []
+
         return moved
     }
     func prepareWalkingHandoff(_ handoff: WalkingTransportHandoff) throws {
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent(WalkingTransportHandoff.fileName).path) {
+            let pending = try decoder.decode(WalkingTransportHandoff.self, from: readData(name: WalkingTransportHandoff.fileName))
+            guard pending.walk.id == handoff.walk.id, pending.transport.id == handoff.transport.id else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            return
+        }
         try writeData(encoder.encode(handoff),name:WalkingTransportHandoff.fileName)
     }
     func replayWalkingHandoff() throws {
@@ -935,7 +1009,13 @@ final class RecordingStorage {
         try FileManager.default.removeItem(at:url)
     }
     func load() throws -> [RecordedActivity] {
-        try replayWalkingHandoff()
+        do {
+            try replayWalkingHandoff()
+            evidenceRecoveryBlocked = false
+        } catch {
+            evidenceRecoveryBlocked = true
+            evidenceIssues.append("Walking handoff recovery deferred: \(error.localizedDescription)")
+        }
         try reconcileRetainedSources()
         let deleted = try deletedIDs()
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -2134,6 +2214,13 @@ struct LiveGpsEvidence: Equatable {
 // interruption since that fix: with a distance filter active, no callback then
 // means the phone has not moved beyond it. After any suspension a new real fix is
 // required before anything is confirmed again.
+enum PublisherFixPolicy {
+    static func usable(timestamp: Double, accuracy: Double, now: Double, maxAge: Double) -> Bool {
+        let age = now - timestamp
+        return accuracy >= 0 && accuracy <= 100 && age >= -5 && age <= maxAge
+    }
+}
+
 enum HouseholdPublisher {
     // A phone with no evidence of movement is deliberately slow: writes while
     // parked add battery cost and Realtime traffic but no visible movement.
@@ -2267,14 +2354,11 @@ enum HouseholdPublisher {
         guard !confirmation, let moved else { return true }
         return moved >= minimumMove || sinceLast >= stationaryInterval
     }
-    // `continuousSince`: when the running stream last started. A fix from before a
-    // stop of the stream (passive rest, low-power standby) says nothing about now.
-    static func canConfirm(continuousRunning: Bool, resuming: Bool, fixAt: Double, executingSince: Double, continuousSince: Double = 0) -> Bool {
-        continuousRunning && !resuming && fixAt >= executingSince && fixAt >= continuousSince
+    static func statusFixIsUsable(capturedAt: Double, passiveEndedAt: Double, now: Double) -> Bool {
+        let age = now - capturedAt
+        return capturedAt >= passiveEndedAt && age >= -5 && age <= maximumFixAge
     }
-    // A coarser fix consistent with the last shared one adds no information, so
-    // the precise position keeps being shared (and confirmed) instead of being
-    // replaced by a Wi-Fi estimate while resting at Home.
+    // Keep the precise position when a coarser fix is consistent with it.
     static func keepsPrevious(_ previous: GPSPoint?, candidate: GPSPoint, executingSince: Double) -> Bool {
         guard let previous = previous, previous.timestamp >= executingSince,
               previous.accuracy >= 0, candidate.accuracy > previous.accuracy else { return false }
@@ -2315,8 +2399,8 @@ enum BackgroundSessionPolicy {
     }
     // Launch: rejoin immediately when a session was held before termination, before
     // any location service is restarted.
-    static func onLaunch(previouslyHeld: Bool, supported: Bool) -> Action {
-        supported && previouslyHeld ? .rejoin : .none
+    static func onLaunch(previouslyHeld: Bool, supported: Bool, background: Bool) -> Action {
+        supported && previouslyHeld && background ? .rejoin : .none
     }
     // `rejoinedOnly`: the held session was rejoined after a background launch, not
     // started in this process. The foreground replaces it with a new one.
@@ -3208,7 +3292,7 @@ final class RecorderDiagnosticWriter {
 // Defense in depth for the copy/paste report. Known recorder fields are the only
 // context exported; network errors are codes, never request bodies or endpoints.
 enum LocationDiagnosticPrivacy {
-    static let keys:Set<String>=Set(("publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters sharingRest liveSharingHoldsLocation wakeCheckSeconds restoresThisHour automaticRecordingState automaticSuppressedBy recordingOwner manualPausedPreserved reducedAccuracyRest restStage backgroundRecovery backgroundRecoveryIssues stopVerdict stopConfidence stoppedSeconds stopReasons heldFixes activityRef").split(separator:" ").map(String.init))
+    static let keys:Set<String>=Set(("publisher publishAttempts publishSuccesses publishFailures publishIntervalMedianMs publishIntervalMaxMs captureToAckMedianMs captureToAckMaxMs sharedActivity signalsReceived refreshMedianMs vehicleOnsetToEvidenceSeconds watchAt heartRateHeld watchRecording heartRateSamples heartRateGaps overlaps reason points workoutSaved indoor activity transport latencySamples latencyMedianMs latencyMaxMs recordingServicesBefore lastMonitoringFailure monitoringFailuresTotal recordingServices changeObserved changeWindowStart monitoringFailure regionKind recordingHealth recordingHealthBefore permissionsHealth warningAction recordingIssue recordingIssues permissionChanged wakeSource granted fromPassive blockedBy lastPresenceAt wakeToFirstFixSeconds firstFixAt firstFixAccuracyMeters placeAccuracyMeters homeWiFiStatus wifiFailure backgroundSessionHeld lastObservedFixAt lastObservedFixAgeSeconds lastObservedAccuracyMeters lastObservedSource placeKind placeRadiusMeters engine evidenceToFirstFixSeconds evidenceToConfirmationSeconds at locationManagerID activeLocationManagers automaticJourneyState continuationOpen automaticLocationMode process uptimeSeconds version build iOS appState automaticEnabled automaticAvailable accountSuspended locationPermission preciseLocation locationServices motionPermission motionTypes motionConfidence motionAgeSeconds detectorPhase candidateElapsedSeconds candidateMinimumDistance candidateMinimumSeconds candidateFixes candidateDistanceMeters automaticRecording manualState continuousLocationRequested pausedByIOS automaticPauseEnabled executingSince lastExecutionGapSeconds backgroundSession commit desiredAccuracyMeters distanceFilterMeters probeUntil retryAfter lastSampleAt lastCallbackReceivedAt predictedActivity lastValidAutomaticFixAt lastAutomaticDeliveryAt stalledGPSRestartAt lowPowerMode backgroundRefreshStatus adaptiveEnabled adaptiveState lowPowerStandby locationMode component reason timezone utcOffsetSeconds backgroundPermission backgroundUpdatesAllowed homeRestSince homeRestConfirmed stationarySeconds placeType placeSource placeSettled significantChangesRequested visitsRequested registeredRegions oneShotRequests liveUpdatesRunning householdArmed householdStatus householdLastSuccessAt householdLastAttemptAt householdLastSuccessAgeSeconds liveSharingArmed liveSharingPublisher liveSharingTracking liveSharingSendActivity liveSharingSendCaptureTime lastShareFixAgeSeconds lastPublishSuccessAgeSeconds viewerLastPositionAgeSeconds realtimeReconnects friendSharingArmed friendLastSuccessAt batteryLevel batteryState batteryMonitoringAvailable lastSampleAgeSeconds lastSampleAccuracyMeters indicatorExpected indicatorReason wifiPresence gpsDelivered routeFixesSaved maxDeliveryDelaySeconds worstAccuracyMeters sharingAttempts sharingSuccesses sharingFailures silentSeconds silentWhileExecutingSeconds notExecutingSeconds wakeCause journeyOpen code configuration continuousRunning beforeConfiguration modeBefore modeAfter stopKind batchFixes oldestAgeSeconds savedFixes bufferedFixes confirmationDelaySeconds predicted finalisedBy finalisationReason gapSeconds gapMeters incidentStart incidentEnd expectedActivity reason state mode kind source radiusMeters minutes settled launchState status confirmation retainedCount capacityEvictions homeWiFiConfigured wifiMatch wifiObservedAt wifiSource wifiAccessPointKnown wifiOnPath accessPoints alwaysDenied restConfirmed restReason restPlace restStillSeconds restRequiredSeconds passiveRestEnabled passiveRest passiveSince passiveSeconds sessionRetainedReason sessionReleasedAt serviceSession serviceSessionInsufficient standardLocationUpdatesActive keepAliveRunning lastPreciseReason modeSeconds cause motionOnsetToEvidenceSeconds motionOnsetToFirstFixSeconds startGapMeters sharingRest liveSharingHoldsLocation wakeCheckSeconds restoresThisHour automaticRecordingState automaticSuppressedBy recordingOwner manualPausedPreserved reducedAccuracyRest restStage backgroundRecovery backgroundRecoveryIssues stopVerdict stopConfidence stoppedSeconds stopReasons heldFixes activityRef").split(separator:" ").map(String.init))
     static func text(_ value:String)->String {
         var result=value
         for pattern in ["(?i)bearer\\s+[^\\s]+", "https?://[^\\s]+", "[A-Za-z0-9_-]{64,}", "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "[-+]?\\d{1,3}\\.\\d{3,}\\s*,\\s*[-+]?\\d{1,3}\\.\\d{3,}"] {

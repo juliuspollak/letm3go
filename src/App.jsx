@@ -26,7 +26,7 @@ import {useMySharing} from './lib/useMySharing.js';
 import {sharedActivityRow,filterActivityScope} from './lib/sharedActivityRows.js';
 import HouseholdTrips from './components/HouseholdTrips.jsx';
 import {useHouseholdPresence} from './lib/useHouseholdPresence.js';
-import {LIVE_SECONDS,atHome,memberLocationState,peoplePins,memberActivities} from './lib/householdLocation.js';
+import {LIVE_SECONDS,atHome,memberLocationState,peoplePins,memberActivities,freshnessNow,freshnessVisibility,lastKnownActivity} from './lib/householdLocation.js';
 import {useHomePresence} from './lib/useHomePresence.js';
 import {cameraIntent,cameraReducer,initialCamera,shouldFocusSelf} from './lib/mapCamera.js';
 import {secondsAtPlace} from './lib/peopleMap.js';
@@ -45,6 +45,7 @@ import AutoCloudSync from './components/AutoCloudSync.jsx';
 import WatchSegmentSync from './components/WatchSegmentSync.jsx';
 import {distanceText} from './lib/distanceUnits.js';
 import { setNativeAppearance } from './lib/appleMaps.js';
+import {App as NativeApp} from '@capacitor/app';
 import TrackingPermissions from './components/TrackingPermissions.jsx';
 import {RecordingHealthChip,RecordingHealthDetail,RecordingWarning} from './components/RecordingHealth.jsx';
 import {useRecordingWarning} from './lib/useRecordingWarning.js';
@@ -129,12 +130,18 @@ function PrivateApp(){
  const unit=auth.preferences.distanceUnit||'km';
  const saved=useMemo(()=>auth.preferences.bookmarks||[],[auth.preferences.bookmarks]);
  const recording=useRecorder(session.user.id,auth.rebindRecorder);
- const [motionClock,setMotionClock]=useState(()=>Date.now());
+ const [clock,setClock]=useState(()=>({wall:Date.now(),freshness:freshnessNow()}));
+ const {wall:motionClock,freshness:freshnessClock}=clock;
  useEffect(()=>{
-  const updateClock=()=>setMotionClock(Date.now());
+  const updateClock=()=>setClock({wall:Date.now(),freshness:freshnessNow()});
+  const onVisibility=()=>{freshnessVisibility(document.visibilityState==='hidden');updateClock();};
   const interval=setInterval(updateClock,15000);
-  document.addEventListener('visibilitychange',updateClock);
-  return()=>{clearInterval(interval);document.removeEventListener('visibilitychange',updateClock);};
+  document.addEventListener('visibilitychange',onVisibility);
+  let mounted=true,listener;
+  if(recorderAvailable())void NativeApp.addListener('appStateChange',({isActive})=>{
+   freshnessVisibility(!isActive);updateClock();
+  }).then(handle=>{if(mounted)listener=handle;else void handle.remove();}).catch(()=>{});
+  return()=>{mounted=false;clearInterval(interval);document.removeEventListener('visibilitychange',onVisibility);void listener?.remove();};
  },[]);
  const automaticPresenceActivity=householdActivity(recording.state,motionClock/1000);
  const presence=useHouseholdPresence(session.user.id,auth.status==='authenticated',automaticPresenceActivity,recording.state.places||NO_PLACES,recording.state.nativeFamilySharing?.lastUploadOkAt||0);
@@ -344,25 +351,26 @@ function PrivateApp(){
  },[mapHasSelf,camera]);
  // People on the map and in Household: one state per person from one policy.
  const homePlace=useMemo(()=>projectionPlaces.find(p=>p.kind==='home')||null,[projectionPlaces]);
- const householdMembers=useMemo(()=>presence.liveMembers.map(row=>({...row,...memberLocationState(row),source:'household'})),[presence.liveMembers]);
+ const householdMembers=useMemo(()=>presence.liveMembers.map(row=>({...row,...memberLocationState(row,motionClock,freshnessClock),source:'household'})),[presence.liveMembers,motionClock,freshnessClock]);
  // A member who joins (or first appears) after photos loaded gets their photo
  // without waiting for the app to return to the foreground.
  const householdMemberKey=householdMembers.map(m=>m.user_id).sort().join(',');
  useEffect(()=>{if(householdMemberKey)refreshAvatars();},[householdMemberKey,refreshAvatars]);
  const friendMembers=useMemo(()=>friendsLocation.people.filter(p=>!presence.liveMembers.some(m=>m.user_id===p.user_id))
-  .map(p=>({...p,sharing_enabled:true,location_at:p.updated_at,server_now:new Date(motionClock).toISOString(),source:'friend'}))
-  .map(row=>({...row,...memberLocationState(row)})),[friendsLocation.people,presence.liveMembers,motionClock]);
+  .map(p=>({...p,sharing_enabled:true,location_at:p.updated_at,source:'friend'}))
+  .map(row=>({...row,...memberLocationState(row,motionClock,freshnessClock)})),[friendsLocation.people,presence.liveMembers,motionClock,freshnessClock]);
  // Home is the saved Home place; only a live position can place someone there.
  const homeFlags=useHomePresence([
   {id:'self',eligible:Boolean(mapLocation.position),point:mapLocation.position},
   ...householdMembers.map(m=>({id:m.user_id,eligible:m.state==='live',point:m.position}))
  ],homePlace);
  // Coarse statuses members already share (Driving, Walking...), for the person model only.
- const sharedActivities=useMemo(()=>memberActivities(presence.people,presence.liveMembers),[presence.people,presence.liveMembers]);
+ const sharedActivities=useMemo(()=>memberActivities(presence.people,presence.liveMembers,motionClock,freshnessClock),[presence.people,presence.liveMembers,motionClock,freshnessClock]);
  // Your own time at a place, as your household sees it, and only while your
  // shared position is current, so it never outlives what was actually published.
  const selfArrival=presence.selfArrival;
- const selfSeconds=presence.liveEnabled&&selfArrival?.location_at&&Date.parse(selfArrival.server_now)-Date.parse(selfArrival.location_at)<=LIVE_SECONDS*1000?secondsAtPlace({...selfArrival,state:'live'}):null;
+ const selfArrivalAge=memberLocationState({...selfArrival,sharing_enabled:true},motionClock,freshnessClock).ageSeconds;
+ const selfSeconds=presence.liveEnabled&&selfArrivalAge!=null&&selfArrivalAge<=LIVE_SECONDS?secondsAtPlace({...selfArrival,state:'live'}):null;
  const savedPlaces=recording.state.places;
  const mapPeople=useMemo(()=>peoplePins({
   self:mapLocation.position?{latitude:mapLocation.position.latitude,longitude:mapLocation.position.longitude,accuracy:mapLocation.position.accuracy,name:auth.preferences.displayName||'You',home:homeFlags.self===true,seconds:selfSeconds,activity:automaticPresenceActivity}:null,
@@ -370,23 +378,24 @@ function PrivateApp(){
   photos:peopleAvatars.photos,selfId:session.user.id,selfAvatar:auth.preferences.avatar,places:savedPlaces||[],activities:sharedActivities,nowMs:motionClock
  }),[mapView.people,mapLocation.position,householdMembers,friendMembers,homeFlags,peopleAvatars.photos,session.user.id,auth.preferences.avatar,auth.preferences.displayName,selfSeconds,automaticPresenceActivity,savedPlaces,sharedActivities,motionClock]);
  // What the household sees of you: confirmed sends, not just the switch.
- const selfSharedAt=Math.max(presence.lastPublishedAt||0,(recording.state.nativeFamilySharing?.lastUploadOkAt||0)*1000);
+ const selfSharedAt=Math.max(presence.lastPublishedAt||0,(recording.state.nativeFamilySharing?.lastPublishedCaptureAt||0)*1000);
+ const ownSharedLocation=householdMembers.find(member=>member.user_id===session.user.id);
  const selfLocationState=!presence.liveEnabled?{state:'off',ageSeconds:null}:
-  selfSharedAt?{state:motionClock-selfSharedAt<=LIVE_SECONDS*1000?'live':'stale',ageSeconds:Math.max(0,Math.round((motionClock-selfSharedAt)/1000))}:{state:'waiting',ageSeconds:null};
+  ownSharedLocation?.ageSeconds!=null?ownSharedLocation:selfSharedAt?{state:motionClock-selfSharedAt<=LIVE_SECONDS*1000?'live':'stale',ageSeconds:Math.max(0,Math.round((motionClock-selfSharedAt)/1000))}:{state:'waiting',ageSeconds:null};
  // You are "At home" in Social only with a current position of your own (the map
  // keeps its last fix after you leave the Map tab, which may be old).
  const selfFix=mapLocation.position;
  const selfAtHome=homeFlags.self===true&&Boolean(selfFix)&&Number.isFinite(selfFix.timestamp)&&motionClock/1000-selfFix.timestamp<=LIVE_SECONDS;
  const householdLocationProps=useMemo(()=>({
-  memberLocations:Object.fromEntries(householdMembers.map(m=>[m.user_id,{state:m.state,ageSeconds:m.ageSeconds,position:m.position,home:homeFlags[m.user_id]===true&&m.state==='live',verifiedHome:m.state==='stale'&&atHome(false,m.position,homePlace),activity:sharedActivities[m.user_id]||null}])),
+  memberLocations:Object.fromEntries(householdMembers.map(m=>[m.user_id,{state:m.state,ageSeconds:m.ageSeconds,position:m.position,home:homeFlags[m.user_id]===true&&m.state==='live',verifiedHome:m.state==='stale'&&atHome(false,m.position,homePlace),activity:sharedActivities[m.user_id]||null,lastKnownActivity:sharedActivities[m.user_id]?null:lastKnownActivity(m)}])),
   selfLocation:{state:selfLocationState.state,ageSeconds:selfLocationState.ageSeconds,home:selfLocationState.state==='live'&&selfAtHome,activity:presence.self?.activity_label||null}
  }),[householdMembers,homeFlags,homePlace,sharedActivities,selfLocationState.state,selfLocationState.ageSeconds,selfAtHome,presence.self?.activity_label]);
  // Friends' positions in the same states as the map. A friend without a row has
  // no recent position, which is not the same as sharing turned off.
  const friendLocations=useMemo(()=>Object.fromEntries(friendsLocation.people.map(p=>{
-  const state=memberLocationState({...p,sharing_enabled:true,location_at:p.updated_at,server_now:new Date(motionClock).toISOString()});
+  const state=memberLocationState({...p,sharing_enabled:true,location_at:p.updated_at},motionClock,freshnessClock);
   return [p.user_id,{state:state.state,ageSeconds:state.ageSeconds,position:state.position,placeName:p.place_name||null,placeSince:p.place_since||null}];
- })),[friendsLocation.people,motionClock]);
+ })),[friendsLocation.people,motionClock,freshnessClock]);
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
  // Tapping a person on Home opens the Map tab on that person; poking is a separate action (the tile's ••• menu and the person bar).

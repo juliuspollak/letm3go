@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const m = vi.hoisted(() => ({ platform: 'ios', getState: vi.fn() }));
+const m = vi.hoisted(() => ({ platform: 'ios', getState: vi.fn(), currentPosition: vi.fn() }));
 vi.mock('@capacitor/core', () => ({
   Capacitor: { getPlatform: () => m.platform, isNativePlatform: () => m.platform === 'ios' },
   registerPlugin: () => m,
@@ -39,4 +39,11 @@ it('reports an unavailable, unready recorder on the web build', async () => {
   expect(state).toBe(emptyRecorder);
   expect(state).toMatchObject({ trips: [], active: null, permission: 'unavailable', storageReady: false, build: 'web' });
   expect(m.getState).not.toHaveBeenCalled();
+});
+
+it('forwards publisher intent and its freshness bound to native fix selection', async () => {
+  const fix={latitude:-33.8,longitude:151.2,accuracy:12,timestamp:123};
+  m.currentPosition.mockResolvedValue(fix);
+  expect(await recorder.currentPosition({publisher:'household',allowStationary:true,maxAge:3})).toBe(fix);
+  expect(m.currentPosition).toHaveBeenLastCalledWith({publisher:'household',allowStationary:true,maxAge:3});
 });

@@ -62,7 +62,7 @@ it('keeps manually refreshed locations when an earlier read finishes late',async
  mock.rpc.mockImplementationOnce(original).mockResolvedValueOnce({data:[{user_id:'newer'}],error:null});
  await act(()=>result.current.refresh());
  await act(async()=>{finishOlder({data:[{user_id:'older'}],error:null});await older;});
- expect(result.current.people).toEqual([{user_id:'newer'}]);
+ expect(result.current.people).toEqual([expect.objectContaining({user_id:'newer'})]);
 });
 
 it('reports a failed manual refresh and keeps the last received locations',async()=>{
@@ -70,8 +70,9 @@ it('reports a failed manual refresh and keeps the last received locations',async
  const original=mock.rpc.getMockImplementation();
  mock.rpc.mockImplementation(name=>name==='my_friend_locations'?Promise.resolve({data:people,error:null}):original(name));
  const {result}=renderHook(()=>useFriendLocations('me',true));
- await waitFor(()=>expect(result.current.people).toEqual(people));
+ await waitFor(()=>expect(result.current.people).toEqual([expect.objectContaining(people[0])]));
+ const cached=result.current.people;
  mock.rpc.mockImplementation(name=>name==='my_friend_locations'?Promise.resolve({data:null,error:new Error('offline')}):original(name));
  await act(async()=>{await expect(result.current.refresh({reportFailure:true})).rejects.toThrow();});
- expect(result.current.people).toEqual(people);
+ expect(result.current.people).toBe(cached);
 });

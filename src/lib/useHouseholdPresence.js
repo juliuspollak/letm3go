@@ -1,3 +1,4 @@
+import {stampPosition} from './householdLocation.js';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {keepIfSame} from './sameData.js';
@@ -89,7 +90,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    if(!alive||document.visibilityState==='hidden'||locationBusy.current||automaticActivity)return;
    locationBusy.current=true;
    try {
-    const point=await recorder.currentPosition({allowStationary:true});
+    const point=await recorder.currentPosition({allowStationary:true,publisher:'presence'});
     // Still where the last check found the phone: nothing to update.
     if(point?.stationary)return;
     if(!alive||!point||!Number.isFinite(point.latitude)||!Number.isFinite(point.longitude)||point.accuracy>100)return;
@@ -138,9 +139,9 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    if(settingsToken===settingsRequest.current){
     const enabled=settings.data?.[0]?.enabled===true&&!revokePending(owner);
     liveConsent.current=enabled;
-    setLiveEnabled(enabled);setSelfArrival(enabled?arrival:null);setLiveError('');setLiveReady(true);
+    setLiveEnabled(enabled);setSelfArrival(enabled&&arrival?stampPosition(arrival):null);setLiveError('');setLiveReady(true);
    }
-   if(request===positionRequest.current){setLiveMembers(members.map(row=>({...row,receivedAtMs:Date.now()})));noteDelivery(members);}
+   if(request===positionRequest.current){setLiveMembers(members.map(row=>stampPosition(row)));noteDelivery(members);}
   }catch(err){
    if(settingsToken!==settingsRequest.current)return;
    setLiveError(err.message||'Location sharing could not be loaded.');
@@ -156,7 +157,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    const members=await loadHouseholdLocations();
    if(request!==positionRequest.current)return;
    refreshTimes.current.push(Date.now()-started);
-   setLiveMembers(members.map(row=>({...row,receivedAtMs:Date.now()})));setLiveError('');
+   setLiveMembers(members.map(row=>stampPosition(row)));setLiveError('');
    noteDelivery(members);
   }catch{/* The next poll reports it; a missed signal must not raise an error. */}
  },[owner,online,noteDelivery]);
@@ -306,7 +307,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    setLiveError('Location sharing is on, but the first position could not be sent.');
    return;
   }
-  setLastPublishedAt(Date.now());
+  setLastPublishedAt(fix.timestamp*1000);
   setLiveError('');
  };
  // Offline shutdown leaves a marker. Retry only while the local intent is still
@@ -334,7 +335,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
    if(Date.now()/1000-nativeUpload.current<10)return;
    liveBusy.current=true;
    try{
-    const position=await recorder.currentPosition({allowStationary:true,maxAge:delay<publishDelay(null)?3:undefined});
+    const position=await recorder.currentPosition({allowStationary:true,publisher:'household',maxAge:delay<publishDelay(null)?3:undefined});
     // Core Location reports the phone has not moved: the native publisher
     // re-confirms the shared position, so no precise fix is requested here.
     if(position?.stationary)return;
@@ -348,7 +349,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
     if(!liveConsent.current)return;
     const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(position,Object.hasOwn(position,'sharedActivity')?position.sharedActivity:selectedActivity.current));
     if(failure&&alive){setLiveError('Unable to update live location.');delay=publishDelay(null);}
-    if(!failure&&alive)setLastPublishedAt(Date.now());
+    if(!failure&&alive)setLastPublishedAt(position.timestamp*1000);
    }catch{/* Never replace the last confirmed location with a guess. */}
    finally{liveBusy.current=false;}
   };

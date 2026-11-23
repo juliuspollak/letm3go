@@ -8,6 +8,7 @@ vi.mock('./supabase.js',()=>({supabase:{rpc:mock.rpc,auth:{getSession:mock.getSe
 vi.mock('./config.js',()=>({config:{url:'https://example.supabase.co',key:'sb_publishable_test'}}));
 vi.mock('@capacitor/app',()=>({App:{addListener:mock.addListener}}));
 vi.mock('./recorder.js',()=>({recorderAvailable:()=>true,recorder:{configureLiveSharing:mock.configure,getState:mock.getState,currentPosition:mock.currentPosition}}));
+import {memberActivities,memberLocationState} from './householdLocation.js';
 import {loadHouseholdLocations,useHouseholdPresence} from './useHouseholdPresence.js';
 
 const anna={user_id:'anna',display_name:'Anna',sharing_enabled:true,latitude:-33.87,longitude:151.21,accuracy_m:12,location_at:'2026-11-04T07:58:00Z',server_now:'2026-11-04T08:00:00Z'};
@@ -54,10 +55,15 @@ it('falls back to the earlier RPC until the database migration is applied',async
 it('survives a temporary network failure without blanking the map, then recovers on the next foreground',async()=>{
  const {result}=renderHook(()=>useHouseholdPresence('julius',true));
  await waitFor(()=>expect(result.current.livePeople).toHaveLength(1));
+ const received=result.current.livePeople[0];
  respond('my_household_location_status',new Error('Failed to fetch'));
  await act(async()=>{await result.current.refreshLive();});
  expect(result.current.liveError).not.toBe('');
  expect(result.current.livePeople).toEqual([expect.objectContaining({...anna,receivedAtMs:expect.any(Number)})]);
+ expect(result.current.livePeople[0]).toBe(received);
+ const clock=received.receivedMonotonicMs+9*60000;
+ expect(memberLocationState(received,Date.parse(anna.server_now),clock)).toMatchObject({state:'stale',ageSeconds:660});
+ expect(memberActivities([],[{...received,activity:'driving'}],Date.parse(anna.server_now),clock)).toEqual({});
  // A missed update: the next foreground fetch restores the current state.
  const moved={...anna,latitude:-33.9,location_at:'2026-11-04T08:05:00Z',server_now:'2026-11-04T08:05:10Z'};
  respond('my_household_location_status',{data:[moved]});

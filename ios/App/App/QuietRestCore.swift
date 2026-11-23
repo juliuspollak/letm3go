@@ -101,19 +101,19 @@ struct RestDecision: Equatable {
 }
 
 enum RestConfirmation {
-    static let homeWithWiFiSeconds: Double = 900
-    static let homeSeconds: Double = 1200
+    static let homeWithWiFiSeconds: Double = 360
+    static let homeSeconds: Double = 480
     static let placeSeconds: Double = 1200
     static let maximumPlaceAccuracy: Double = 100
     static let motionSettleSeconds: Double = 60
     static func motionUnsettled(lastMotionChangeAt: Double, stationary: Bool, now: Double) -> Bool {
         !stationary && now >= lastMotionChangeAt && now - lastMotionChangeAt < motionSettleSeconds
     }
-    static func decide(_ i: RestInputs) -> RestDecision {
+    static func decide(_ i: RestInputs, preservingConfirmedHome: Bool = false) -> RestDecision {
         let start = max(i.placeSince ?? i.now, i.lastDisturbanceAt ?? 0)
         let still = max(0, i.now - start)
         let wifi = i.place == .home && i.wifi == .matched
-        let required = i.place == .home ? (wifi ? homeWithWiFiSeconds : homeSeconds) : placeSeconds
+        let required = i.place == .home ? (wifi || preservingConfirmedHome ? homeWithWiFiSeconds : homeSeconds) : placeSeconds
         func no(_ code: String, _ reason: String) -> RestDecision {
             RestDecision(confirmed: false, code: code, reason: reason, stillSeconds: still, requiredSeconds: required, wifiCorroborated: wifi)
         }
@@ -204,7 +204,7 @@ struct SharedPosition: Equatable {
 }
 
 struct SharingRestInputs: Equatable {
-    var enabled: Bool               // the device-test preference
+    var enabled: Bool               // explicit opt-out is preserved
     var liveSharing: Bool
     var friendSharing: Bool         // friend sharing is armed
     var automaticAvailable: Bool
@@ -218,9 +218,11 @@ struct SharingRestInputs: Equatable {
 }
 
 enum SharingRest {
+    static func enabled(preference: Bool?) -> Bool { preference ?? true }
+
     static func decide(_ i: SharingRestInputs) -> (allowed: Bool, reason: String) {
         guard i.liveSharing else { return (false, "sharing is off") }
-        guard i.enabled else { return (false, "keeps continuous location: releasing it while sharing is a device test that is off") }
+        guard i.enabled else { return (false, "keeps continuous location: releasing it while sharing is switched off") }
         guard !i.friendSharing else { return (false, "keeps continuous location: friend sharing is on, and friends stop seeing a position 30 minutes after it reaches the server") }
         guard i.automaticAvailable else { return (false, "keeps continuous location: Automatic Tracking is off, so no departure wake-up would follow") }
         guard i.passiveOtherwiseAllowed else { return (false, "passive rest is not allowed yet") }

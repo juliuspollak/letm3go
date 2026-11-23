@@ -1,3 +1,4 @@
+import {stampPosition} from './householdLocation.js';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {supabase} from './supabase.js';
 import {keepIfSame} from './sameData.js';
@@ -27,24 +28,27 @@ export function useFriendLocations(owner,online){
    const [setting,locations]=await Promise.all([supabase.rpc('my_friend_location_setting'),supabase.rpc('my_friend_locations')]);
    if(sequence!==refreshSequence.current.latest)return;
    if(setting.error||locations.error)throw Error('Friend locations are unavailable until the database migration is applied.');
-   setEnabled(setting.data===true&&!hasPendingRevoke(owner));setPeople(keepIfSame(locations.data||[]));setError('');setReady(true);
+   setEnabled(setting.data===true&&!hasPendingRevoke(owner));setPeople(previous=>keepIfSame((locations.data||[]).map(row=>{
+    const cached=previous.find(old=>old.user_id===row.user_id&&old.updated_at===row.updated_at);
+    return cached?{...cached,...row}:stampPosition(row);
+   }))(previous));setError('');setReady(true);
   }catch(e){
    if(sequence!==refreshSequence.current.latest)return;
    setError(e.message);
    if(reportFailure)throw e;
-   setPeople(keepIfSame([]));
   }
  },[owner,online]);
  useEffect(()=>{if(!online)return;const sequence=refreshSequence.current;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{sequence.latest++;clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
  const send=useCallback(async()=>{
   if(!enabled||!online||!recorderAvailable()||!supabase)return;
   try{
-   const fix=await recorder.currentPosition();
+   const fix=await recorder.currentPosition({allowStationary:true,publisher:'friend'});
    if(!Number.isFinite(fix?.latitude)||!Number.isFinite(fix?.longitude)||!Number.isFinite(fix?.accuracy)||fix.accuracy>100||Math.abs(Date.now()/1000-fix.timestamp)>30)return;
+   if(fix.devicePublisherOwnsFix||!enabledRef.current||hasPendingRevoke(owner))return;
    const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy});
    if(e)throw e;setError('');setLastSentAt(Date.now());
   }catch{setError('Could not update friend location. Check location permission and connection.');}
- },[enabled,online]);
+ },[enabled,online,owner]);
  useEffect(()=>{if(!enabled||!online)return;const initial=setTimeout(()=>void send(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void send();},30000);const visible=()=>{if(document.visibilityState==='visible')void send();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[enabled,online,send]);
  useEffect(()=>{
   if(!owner||!recorderAvailable())return;

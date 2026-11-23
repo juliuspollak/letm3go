@@ -62,6 +62,7 @@ enum RecorderHarness {
                 await manualDuringWait()
                 await overflowDuringWait()
                 await otherAccountReplay()
+                homeRestLifecycle()
                 await sharingPassiveRest()
                 await pausedManualAutomatic()
                 await sharingRestStageA()
@@ -754,6 +755,73 @@ enum RecorderHarness {
         r.stopContinuousLocation()
     }
 
+    static func homeRestLifecycle() {
+        let (directory, key, owner) = freshStore()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "Home lifecycle: recorder opened")
+        }
+        let now = Date().timeIntervalSince1970
+        r.homeWiFi = HomeWiFiProfile(network: "harness", accessPoints: [], designatedAt: now - 1000)
+        r.wifiObservation = WiFiObservation(network: "harness", accessPoint: nil, at: now - 890, source: "harness")
+        r.wifiFetchInFlight = true // Supply observations ourselves, without asking iOS for Wi-Fi.
+        deliver(r, location(home.latitude, home.longitude, now - 420, speed: 0))
+        deliver(r, location(home.latitude, home.longitude, now - 1, speed: 0))
+        r.reconcileAutomaticSampling()
+        guard r.locationMode == .passive, let passiveSince = r.passiveSince, let dwell = r.dwell else {
+            return check(false, "Home lifecycle: Wi-Fi corroborated rest starts at seven minutes")
+        }
+        let lastStop = r.continuousStoppedAt
+        let releases = r.sessionReleases
+        let disturbance = r.restDisturbedAt
+        r.wifiObservation = WiFiObservation(network: "harness", accessPoint: nil, at: now - 901, source: "harness")
+        for second in [0.0, 10.0, 30.0] {
+            // Backgrounding and locking record lifecycle diagnostics only. Exercise
+            // the foreground reconciliation and the passive check on each return.
+            r.refreshAutomaticMonitoring()
+            r.noteForegroundReturn(now: now + second)
+        }
+        check(r.locationMode == .passive && !r.continuousLocationRequested && r.continuousStoppedAt == lastStop &&
+              r.backgroundActivitySession == nil && r.sessionReleases == releases,
+              "Home lifecycle: repeated opens with expired Wi-Fi evidence start neither continuous GPS nor a session")
+        check(r.passiveSince == passiveSince && r.dwell == dwell && r.restDisturbedAt == disturbance,
+              "Home lifecycle: repeated opens leave the original rest confirmation intact")
+        check(r.significantLocationRequested && r.visitMonitoringRequested && r.registeredPlaceRegion != nil,
+              "Home lifecycle: repeated opens keep significant-change, visit and exit-region monitoring armed")
+        check(r.passiveFixRequest?.at == now,
+              "Home lifecycle: repeated opens request only one verification fix")
+        r.processAutomatic([location(home.latitude, home.longitude, now - 160, speed: 0)], source: .standard, receivedAt: now)
+        check(r.restPlaceFixAt == now - 1, "Home lifecycle: a stale callback cannot verify Home again")
+
+        // Restore the encrypted place into a fresh recorder, as account opening does.
+        guard let relaunched = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "Home lifecycle: recorder relaunched")
+        }
+        relaunched.restoreDwell()
+        relaunched.refreshAutomaticMonitoring()
+        check(relaunched.dwell == dwell && relaunched.locationMode != .passive && relaunched.restPlaceFixAt == nil,
+              "Home lifecycle: relaunch does not trust a Home fix from a terminated process")
+        // An older settled place can be verified with one current fix.
+        relaunched.setDwell(.saved(relaunched.places[0], now: now - 600), reason: "harness restored Home")
+        deliver(relaunched, location(home.latitude, home.longitude, now - 1, speed: 0))
+        check(relaunched.locationMode == .passive && !relaunched.continuousLocationRequested,
+              "Home lifecycle: one fresh Home fix restores a settled rest after relaunch")
+        relaunched.stopContinuousLocation()
+
+        // A significant-change fix can be the first observation after relaunch and
+        // carry no speed. The persisted Home area still demonstrates departure.
+        guard let away = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "Home lifecycle: background recorder relaunched")
+        }
+        away.restoreDwell()
+        away.refreshAutomaticMonitoring()
+        let departureAt = Date().timeIntervalSince1970
+        deliver(away, location(home.latitude + 600 / 111_320, home.longitude, departureAt - 1, speed: 0))
+        check(away.locationMode == .precise && away.automaticSampling.locationWake,
+              "Home lifecycle: first accurate outside fix after relaunch starts a protected departure probe")
+        away.stopContinuousLocation()
+        r.stopContinuousLocation()
+    }
+
     static func sharingPassiveRest() async {
         let (directory, key, owner) = freshStore(), motion = HarnessMotion()
         guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "sharing: recorder opened") }
@@ -762,8 +830,8 @@ enum RecorderHarness {
         r.liveShareTokenExpiresAt = now + 3600; r.liveShareMode = "device"
         r.passiveRestEnabled = true
         r.reconcileServiceSession("harness")
-        // 25 still minutes at Home, the household holding the latest position.
-        for i in 0..<26 { deliver(r, location(home.latitude, home.longitude, now - 1500 + Double(i) * 60, speed: 0)) }
+        // Nine still minutes at Home, the household holding the latest position.
+        for i in 0..<10 { deliver(r, location(home.latitude, home.longitude, now - 540 + Double(i) * 60, speed: 0)) }
         r.liveShareSentPoint = GPSPoint(latitude: home.latitude, longitude: home.longitude, timestamp: now - 60, accuracy: 5, altitude: 20, speed: 0)
         r.sharingRestEnabled = false
         r.reconcileAutomaticSampling()
@@ -776,6 +844,15 @@ enum RecorderHarness {
         }
         check(!r.liveSharingHoldsLocation && r.backgroundActivitySession == nil, "sharing: sharing rests and the background session is released")
         check(!r.continuousLocationRequested, "sharing: no standard location runs in passive rest")
+        check(!r.locationIndicator.expected, "sharing: diagnostics expect no persistent indicator")
+        r.refreshAutomaticMonitoring()
+        check(r.locationMode == .passive && r.backgroundActivitySession == nil && !r.continuousLocationRequested,
+              "sharing: reopening at the same confirmed rest holds neither a session nor standard location")
+        r.friendShareMode = "device"
+        r.friendShareToken = "harness-friend"; r.friendShareTokenExpiresAt = now + 3600
+        r.friendShareSentPoint = r.liveShareSentPoint
+        r.reconcileAutomaticSampling()
+        check(r.locationMode == .passive && !r.liveSharingHoldsLocation, "sharing: a device friend credential can rest too")
         // Leaving Home wakes the departure check; sharing holds location again.
         let away = location(home.latitude + 600 / 111_320, home.longitude, Date().timeIntervalSince1970 - 2, speed: 10, accuracy: 10)
         r.processAutomatic([away], source: .standard)
@@ -786,6 +863,7 @@ enum RecorderHarness {
         r.sharingRestEnabled = false
         r.reconcileAutomaticSampling()
         check(r.keepAliveTask != nil || r.locationMode == .precise, "sharing: switching the test off leaves the established precise departure check running")
+        r.disableFriendLiveSharing()
         r.disableHouseholdLiveSharing(forget: false)
     }
 

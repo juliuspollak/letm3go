@@ -90,7 +90,7 @@ extension LocationRecorder {
     func openAccount(_ id: String) throws {
         diagnosticWriter.flush()
         disableLiveSharing()
-        lastLocationUpdateAt=nil;lastLocationAccuracy=nil
+        lastLocationUpdateAt=nil;lastLocationAccuracy=nil;lastPublisherObservation=nil
         storeOpened = false
         guard UUID(uuidString:id) != nil else { throw failure("Invalid account identifier.") }
         let root = try applicationSupport().appendingPathComponent("Letm3goAccounts",isDirectory:true)
@@ -107,17 +107,20 @@ extension LocationRecorder {
         automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(ownerID!)")
         adaptiveEnabled = UserDefaults.standard.bool(forKey:Self.adaptiveKey(ownerID!))
         passiveRestEnabled = !UserDefaults.standard.bool(forKey:Self.passiveRestKey(ownerID!))
-        sharingRestEnabled = UserDefaults.standard.bool(forKey:Self.sharingRestKey(ownerID!))
+        sharingRestEnabled = SharingRest.enabled(preference: UserDefaults.standard.object(forKey:Self.sharingRestKey(ownerID!)) as? Bool)
         restoreAdaptiveRecovery()
         preferences = AccountPreferences()
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
         loadHomeWiFi()
+        loadRecorderDiagnostics()
         do { let moved = try storage!.migrateLegacyWalkLedger(); if moved > 0 { recordDiagnostic("recovery","Legacy walking stretches kept as evidence",details:["stretches":String(moved)]) } }
         catch { recordDiagnostic("error","Legacy walking stretches could not be migrated",details:["error":error.localizedDescription]) }
-        try? storage!.pruneUnconfirmedWalks()
+        storage!.maintainRetainedEvidence()
+        defer { reportEvidenceMaintenance() }
         var records = try storage!.load()
+        if storage!.evidenceRecoveryBlocked { lastError = "Automatic recording is waiting for movement recovery. Saved routes were kept. Check storage and reopen the app." }
         for index in records.indices where records[index].isFinalisedButUnmarked {
             records[index].repairFinalisedState()
             // Corrected in memory either way; a failed save repeats next launch.
@@ -136,8 +139,6 @@ extension LocationRecorder {
         // once automatic tracking is available again.
         heldReplayChecked = false
         let openedAt = Date().timeIntervalSince1970
-        // Load the journal before the recovery step so its decisions are recorded.
-        loadRecorderDiagnostics()
         // A journey that was still recording when the recorder stopped is
         // recovered, not finalised: it keeps its identity, its saved fixes and its
         // start time, and the unobserved gap stays a segment break. Only one
@@ -147,6 +148,7 @@ extension LocationRecorder {
         for var record in records where record.state != "finished" && !record.isProvisional {
             let lastFix = record.points.last?.timestamp ?? record.startedAt
             if record.recordingMode == "automatic" {
+                if storage!.evidenceRecoveryBlocked { continue }
                 if record.id == recovery.tripID, recovery.action == .resume {
                     record.recoverAfterInterruption()
                     record.updateDetails { metadata in
@@ -170,7 +172,7 @@ extension LocationRecorder {
                         // One unreadable or unwritable record must not block unlock or
                         // its siblings. The original .json stays on disk and retries.
                         do { try retainWalkingEvidence(record,reason:"interrupted candidate expired before relaunch") }
-                        catch { recordDiagnostic("recovery","Could not retain interrupted candidate; left on disk for next launch",details:["activityRef":String(record.id.prefix(8)),"error":error.localizedDescription]) }
+                        catch { lastError = error.localizedDescription; recordDiagnostic("recovery","Could not retain interrupted candidate; left on disk for next launch",details:["activityRef":String(record.id.prefix(8)),"error":error.localizedDescription]) }
                         continue
                     }
                     let fixes = record.points.count
@@ -211,7 +213,7 @@ extension LocationRecorder {
         WatchSessionManager.shared.updateOwner(ownerID)
         // Restore a stop that is still inside its continuation window, and close
         // any provisional journey that can no longer be continued.
-        restoreSettledAutomaticJourney()
+        if !storage!.evidenceRecoveryBlocked { restoreSettledAutomaticJourney() }
     }
     static func boundSinceKey(_ id: String) -> String { "letm3go-bound-since-\(id)" }
     func stopAccount() throws {
@@ -393,7 +395,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
-                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.sharingRestEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.sharingRestKey(id)); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring()
+                    r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.adaptiveEnabled = UserDefaults.standard.bool(forKey:LocationRecorder.adaptiveKey(id)); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.sharingRestEnabled = SharingRest.enabled(preference: UserDefaults.standard.object(forKey:LocationRecorder.sharingRestKey(id)) as? Bool); r.restoreAdaptiveRecovery(); r.refreshAutomaticMonitoring()
                     // The caller reads only the owner, readiness and preferences. A full snapshot here
                     // encoded every recorded GPS fix on the main thread on each launch and each
                     // return to the app (~1.3 s and 32 MB for a month of history).

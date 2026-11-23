@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {atHome,formatAge,groupPeople,locationStatusText,memberActivities,memberLocationState,peoplePins,validPoint} from './householdLocation.js';
+import {atHome,formatAge,groupPeople,locationStatusText,memberActivities,memberLocationState,peoplePins,validPoint,stampPosition,freshnessNow,freshnessVisibility,lastKnownActivity} from './householdLocation.js';
 import {mapPayload} from './appleMaps.js';
 
 const server='2026-11-04T08:00:00.000Z';
@@ -118,9 +118,10 @@ it('uses the status published by the phone, which works while it is locked',()=>
  expect(memberActivities([],[row('driving')])).toEqual({a:'Driving'});
  expect(memberActivities([{user_id:'a',activity_label:'Driving'}],[row('stationary')])).toEqual({});
  expect(memberActivities([{user_id:'a',activity_label:'Walking'}],[row(null)])).toEqual({});
- expect(memberActivities([{user_id:'a',activity_label:'Walking'}],[{user_id:'a'}])).toEqual({a:'Walking'});
+ expect(memberActivities([{user_id:'a',activity_label:'Walking'}],[row(undefined)])).toEqual({a:'Walking'});
  expect(memberActivities([{user_id:'a',activity_label:'Walking'}],[row('driving',121)])).toEqual({});
  expect(memberActivities([{user_id:'a',activity_label:'At home'}],[])).toEqual({a:'At home'});
+ expect(memberActivities([{user_id:'a',activity_label:'Driving'}],[])).toEqual({});
 });
 it('gives a live driver the driving marker, and a stale one nothing',()=>{
  const member=state=>({user_id:'a',state,position:{latitude:-33.8,longitude:151.2},name:'Sam'});
@@ -162,4 +163,21 @@ describe('shared speed in people bubbles',()=>{
   expect(bubble.subtitle).toContain('Anna: Sharing location · updated just now · 68 km/h');
   expect(bubble.subtitle).toContain('Bob: Sharing location · updated just now · 42 km/h');
  });
+});
+
+it('ages an unchanged server response past Driving and Live during a failed refresh or wall-clock change',()=>{
+ const wall=Date.parse(server);
+ const row=stampPosition({...anna,location_at:ago(60),activity:'driving'},wall,1000);
+ expect(memberActivities([],[row],wall,1000)).toEqual({anna:'Driving'});
+ expect(memberActivities([],[row],wall-3600000,62000)).toEqual({});
+ expect(memberLocationState(row,wall+86400000,601000)).toMatchObject({state:'stale',ageSeconds:660,position:expect.any(Object)});
+ expect(lastKnownActivity(row)).toBe('Driving');
+ expect(row.location_at).toBe(ago(60));
+});
+it('counts locked-screen elapsed time when the monotonic clock paused',()=>{
+ const wall=Date.parse(server),start=performance.now();
+ const row=stampPosition({...anna,location_at:ago(60)},wall,freshnessNow());
+ freshnessVisibility(true,wall,start);
+ freshnessVisibility(false,wall+600000,start+1000);
+ expect(memberLocationState(row,wall+600000,freshnessNow()+1000).state).toBe('stale');
 });

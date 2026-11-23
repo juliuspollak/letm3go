@@ -153,11 +153,10 @@ extension LocationRecorder {
         defer { if !heldReplayChecked { DispatchQueue.main.async { [weak self] in self?.replayHeldStopFixes() } } }
         updateIndicatorPolicy()
         guard storage != nil else { adaptive.shutdown(reason:"recording storage unavailable");stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
-        // Start the background session while the app is in the foreground; once
-        // held, it covers departures that begin with the phone locked.
-        // Ownership first, so nothing below starts a service it would have to stop.
+        // Evaluate recording ownership and rest before creating an activity
+        // session. A foreground return can already be eligible for passive rest.
         reconcileManualExclusion(refreshing:true)
-        reconcileBackgroundSession("monitoring refresh")
+        defer { reconcileBackgroundSession("monitoring refresh") }
         reconcileServiceSession("monitoring refresh")
         if manualExclusion.current != nil { suspendAutomaticEngine(); return }
         if !automaticAvailable && liveSharingArmed {
@@ -500,6 +499,7 @@ extension LocationRecorder {
     // Ends whatever automatic recording is open at the manual recording's actual
     // start. Overlapping fixes are retained privately before trimming History.
     func closeAutomatic(before start: Double, reason: String, trigger: String, event: String) throws {
+        defer { reportEvidenceMaintenance() }
         if let original = automaticTrip {
             var clipped = ManualDraftClosure.truncated(original,before:start)
             if clipped.points.count >= 2, clipped.distanceMeters >= 25, clipped.confirmPendingWalk() {
@@ -608,6 +608,8 @@ extension LocationRecorder {
                 .compactMap({ $0.points.last?.timestamp }).max(),
                sample.timestamp <= committedThrough { continue }
             homeRest.observe(sample,home:restPlace,now:now)
+            // A precise outside fix can clear dwell before the wake check uses it.
+            let restBeforeFix = passiveWake ? dwell : nil
             if automaticTrip == nil, settledTripID == nil { observePlace(sample,now:now) }
             if noteRestPlaceFix(sample,now:now) {restPlaceNewlyVerified=true}
             notePlaceObservation(sample,now:now)
@@ -674,7 +676,7 @@ extension LocationRecorder {
             // Promote GPS before applying the stricter route-accuracy filter.
             // Otherwise a coarse background wake can be thrown away without
             // starting the precise observations needed to confirm departure.
-            if let place=dwell,passiveWake,automaticIdle,RestWake.definitelyLeft(sample,place:place,now:now) {
+            if let place=restBeforeFix,automaticIdle,RestWake.definitelyLeft(sample,place:place,now:now) {
                 beginAutomaticProbe(movementBegan:true,cause:wakeCause,locationWake:true)
             }
             if automaticTrip == nil,departureEvidence.observe(sample,now:now) {
@@ -1011,9 +1013,10 @@ extension LocationRecorder {
         // GPS arrival must also respect confirmed walking evidence, even if a timer
         // made the final decision much later.
         let preTrimFixes = trip.points.count
+        defer { reportEvidenceMaintenance() }
+        do { try storage.retainAutomaticTail(trip,from:end.nextUp) }
+        catch { lastError = "Arrival evidence could not be saved: \(error.localizedDescription)"; return }
         if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:end) {
-            do { try storage.retainAutomaticTail(trip,from:end.nextUp) }
-            catch { lastError = "Driving arrival evidence could not be saved: \(error.localizedDescription)"; return }
             trip = trimmed
         } else {
             trip.points = trip.points.filter { $0.timestamp <= end }
@@ -1153,11 +1156,18 @@ extension LocationRecorder {
     }
     func retainWalkingEvidence(_ trip: RecordedActivity, reason: String) throws {
         guard let storage else { return }
+        defer { reportEvidenceMaintenance() }
         try storage.retainUnconfirmedWalk(trip)
         recordDiagnostic("recovery","Unconfirmed walking evidence retained locally",
             details:["activityRef":String(trip.id.prefix(8)),"reason":reason,"savedFixes":String(trip.points.count)])
-        for eviction in storage.lastEvictions {
-            recordDiagnostic("recovery","Retained evidence expired",details:["file":String(eviction.name.prefix(8)),"reason":eviction.reason])
+    }
+    func reportEvidenceMaintenance() {
+        guard let result = storage?.takeEvidenceMaintenance() else { return }
+        for eviction in result.evictions {
+            recordDiagnostic("recovery","Retained evidence expired",details:["activityRef":String(eviction.name.prefix(8)),"reason":eviction.reason])
+        }
+        for issue in result.issues {
+            recordDiagnostic("error","Retained evidence maintenance needs attention",details:["reason":issue])
         }
     }
     func walkingOrigin(at point: GPSPoint) -> DwellArea {
@@ -1350,6 +1360,7 @@ extension LocationRecorder {
     // Clear the continuation marker on the published journey in place. Its record,
     // route and position in history do not change, so nothing is duplicated.
     func finalizeSettledAutomatic(force: Bool = false, before manualStart: Double? = nil, reason: String? = nil, trigger: String = "finalizeSettledAutomatic", event: String = "the journey was already published as stopped") throws {
+        defer { reportEvidenceMaintenance() }
         guard let id = settledTripID, let storage = storage,
               var trip = trips.first(where: { $0.id == id }) else {
             settleStateReset(); cleanupContinuationRegion(); return
@@ -1490,6 +1501,7 @@ extension LocationRecorder {
             else { detector.reset() }
             return
         }
+        defer { reportEvidenceMaintenance() }
         // Include a genuine accurate final approach fix near the last movement.
         // Do not extend the journey across the arrival dwell or a GPS outage.
         let walkingArrival = JourneyFamily.detected(trip) == .driving &&
@@ -1511,6 +1523,7 @@ extension LocationRecorder {
             ? max(trip.startedAt,min(Date().timeIntervalSince1970,trip.points.last?.timestamp ?? Date().timeIntervalSince1970))
             : max(trip.startedAt,min(Date().timeIntervalSince1970,
                 min(approach?.timestamp ?? lastMovement,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
+        try storage.retainAutomaticTail(trip,from:end.nextUp)
         trip.points = trip.points.filter { $0.timestamp <= end }
         trip.distanceMeters = trip.measuredDistance
         // A user-forced finish on a journey without genuine movement must not
@@ -1526,7 +1539,7 @@ extension LocationRecorder {
             automaticProbeTimer?.invalidate();automaticProbeTimer=nil
             cleanupContinuationRegion()
             refreshAutomaticMonitoring()
-            trackingEvent("Empty automatic journey discarded")
+            trackingEvent("Unconfirmed automatic journey kept as private evidence")
             return
         }
         let previousArrivalNotes=trip.details?.trackingNotes ?? []

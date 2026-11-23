@@ -1678,8 +1678,9 @@ check(BackgroundSessionPolicy.decide(wanted:false,held:true,foreground:true,prev
 check(BackgroundSessionPolicy.keepsAppRunning(held:true,startedThisProcess:true),"a session started in the foreground of this process keeps the app running")
 check(!BackgroundSessionPolicy.keepsAppRunning(held:true,startedThisProcess:false),"a rejoined session is not relied on to keep the app running")
 check(!BackgroundSessionPolicy.keepsAppRunning(held:false,startedThisProcess:true),"no session keeps nothing running")
-check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true) == .rejoin,"a relaunch rejoins before location services restart")
-check(BackgroundSessionPolicy.onLaunch(previouslyHeld:false,supported:true) == .none,"a relaunch without a held session creates nothing from the background")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true,background:true) == .rejoin,"a relaunch rejoins before location services restart")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:false,supported:true,background:true) == .none,"a relaunch without a held session creates nothing from the background")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true,background:false) == .none,"a foreground launch does not recreate an activity session before checking rest")
 check(BackgroundSessionPolicy.wanted(automaticAvailable:false,manualRecording:true),"manual recording also wants a background session")
 check(BackgroundSessionPolicy.wanted(automaticAvailable:false,manualRecording:false,liveSharing:true),"live sharing wants a background session without automatic recording")
 check(!BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false,liveSharing:true),"turning automatic history off does not release a session needed by live sharing")
@@ -1795,14 +1796,10 @@ check(!HouseholdPublisher.validEndpoint(URL(string:"http://example.supabase.co/r
 check(!HouseholdPublisher.validEndpoint(URL(string:"https://example.supabase.co/rest/v1/rpc/set_my_live_location")!),"a credential is never sent to another RPC")
 // A stationary phone keeps its household position current only while its
 // location service has demonstrably run since the last real fix.
-check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:500),"a phone parked at Home re-confirms its last fix while location keeps running")
-check(!HouseholdPublisher.canConfirm(continuousRunning:false,resuming:false,fixAt:1000,executingSince:500),"no confirmation without continuous location")
-check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:1200),"after a suspension a new real fix is required before anything is confirmed")
-check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:1000,executingSince:500,continuousSince:3400),"a fix from before passive rest is never re-confirmed once the stream restarts")
-check(HouseholdPublisher.canConfirm(continuousRunning:true,resuming:false,fixAt:3500,executingSince:500,continuousSince:3400),"a fix taken by the restarted stream can be confirmed")
-check(!HouseholdPublisher.canConfirm(continuousRunning:true,resuming:true,fixAt:1000,executingSince:500),"no confirmation while a wake is still being attributed")
-check(HouseholdPublisher.stationaryInterval == 60 && HouseholdPublisher.confirmationInterval == 300,"parked phones publish once a minute and confirm every 5 minutes")
-check(HouseholdPublisher.confirmationInterval*2 <= 600,"a missed confirmation still keeps a present member inside the 10-minute live window")
+check(HouseholdPublisher.statusFixIsUsable(capturedAt: 1000, passiveEndedAt: 900, now: 1100), "a recent captured fix can carry an activity status change")
+check(!HouseholdPublisher.statusFixIsUsable(capturedAt: 1000, passiveEndedAt: 1050, now: 1100), "status publishing cannot reuse a fix from before passive rest")
+check(!HouseholdPublisher.statusFixIsUsable(capturedAt: 1000, passiveEndedAt: 0, now: 1901), "status publishing requires a fresh capture")
+check(!HouseholdPublisher.statusFixIsUsable(capturedAt: 1010, passiveEndedAt: 0, now: 1000), "status publishing rejects a future capture")
 
 // Arriving Home and resting there. 0.0001° of latitude is about 11 m.
 let restHome=SavedPlace(id:"home",name:"Home",kind:"home",latitude:-33,longitude:151,radius:100)
@@ -1852,7 +1849,7 @@ check(restSampling.locationMode(available:true,manualActive:true,automaticRecord
 // Resting never touches the background session.
 check(!BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:true,manualRecording:false),"arriving Home never ends the background session")
 check(BackgroundSessionPolicy.wanted(automaticAvailable:true,manualRecording:false),"the session stays wanted while resting at Home")
-check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true) == .rejoin,"after an overnight termination the held session is rejoined at launch")
+check(BackgroundSessionPolicy.onLaunch(previouslyHeld:true,supported:true,background:true) == .rejoin,"after an overnight termination the held session is rejoined at launch")
 check(HomeRest().insideSince == nil,"a relaunched recorder starts in standby until a fresh fix proves it is Home")
 check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:true,alwaysAuthorized:false,manualRecording:false),"removing Always permission releases the session")
 check(BackgroundSessionPolicy.shouldRelease(accountKnown:true,automaticEnabled:false,alwaysAuthorized:true,manualRecording:false),"switching automatic tracking off releases the session")
@@ -2672,24 +2669,28 @@ do {
 
     // Rest confirmation.
     func rest(_ place: RestPlaceKind = .home, since: Double? = 0, disturbed: Double? = nil, accuracy: Double? = 10, verified: Bool = true,
-              idle: Bool = true, movement: Bool = false, motion: Bool = false, wifi: WiFiMatch = .unknown, now: Double) -> RestDecision {
+              idle: Bool = true, movement: Bool = false, motion: Bool = false, wifi: WiFiMatch = .unknown, preservingConfirmedHome: Bool = false, now: Double) -> RestDecision {
         RestConfirmation.decide(RestInputs(place: place, placeSince: since, lastDisturbanceAt: disturbed, placeAccuracy: accuracy, placeVerified: verified,
-                                           idle: idle, recentMovement: movement, motionMoving: motion, wifi: wifi, now: now))
+                                           idle: idle, recentMovement: movement, motionMoving: motion, wifi: wifi, now: now), preservingConfirmedHome: preservingConfirmedHome)
     }
-    check(!rest(now: 1199).confirmed && rest(now: 1200).confirmed, "Home without Wi-Fi confirms after 20 still minutes")
-    check(!rest(wifi: .matched, now: 899).confirmed && rest(wifi: .matched, now: 900).confirmed, "Home Wi-Fi shortens Home confirmation to 15 minutes")
+    check(!rest(now: 479).confirmed && rest(now: 480).confirmed, "Home without Wi-Fi confirms after eight still minutes")
+    check(!rest(wifi: .matched, now: 359).confirmed && rest(wifi: .matched, now: 360).confirmed, "Home Wi-Fi shortens Home confirmation to six minutes")
     check(rest(wifi: .matched, now: 900).wifiCorroborated && rest(wifi: .matched, now: 900).reason.contains("Home Wi-Fi"), "the reason names Wi-Fi corroboration")
-    check(!rest(wifi: .notMatched, now: 1000).confirmed && rest(wifi: .notMatched, now: 1200).confirmed, "another network neither blocks nor shortens rest at Home")
-    check(!rest(wifi: .unavailable, now: 1000).confirmed && rest(wifi: .unavailable, now: 1200).confirmed, "unavailable Wi-Fi is treated as no evidence")
+    check(!rest(wifi: .notMatched, now: 479).confirmed && rest(wifi: .notMatched, now: 480).confirmed, "another network neither blocks nor shortens rest at Home")
+    check(!rest(wifi: .unavailable, now: 479).confirmed && rest(wifi: .unavailable, now: 480).confirmed, "unavailable Wi-Fi is treated as no evidence")
     check(!rest(.inferredPlace, wifi: .matched, now: 1000).confirmed && rest(.inferredPlace, now: 1200).confirmed, "Home Wi-Fi never counts at another place")
     check(rest(.savedPlace, now: 1200).code == "savedPlace", "a saved place rests without any Wi-Fi")
     check(!rest(.none, now: 9999).confirmed && !rest(since: nil, now: 9999).confirmed, "no place, no rest")
     check(!rest(idle: false, now: 9999).confirmed, "an open journey, stop or check is never rest")
     check(!rest(movement: true, wifi: .matched, now: 9999).confirmed, "movement wins over a Home Wi-Fi connection")
     check(!rest(motion: true, wifi: .matched, now: 9999).confirmed, "Core Motion movement wins over a Home Wi-Fi connection")
-    check(!rest(disturbed: 9000, now: 9999).confirmed && rest(disturbed: 9000, now: 10200).confirmed, "a disturbance restarts the still time")
+    check(!rest(disturbed: 9000, now: 9479).confirmed && rest(disturbed: 9000, now: 9480).confirmed, "a disturbance restarts the still time")
     check(rest(verified: false, wifi: .matched, now: 99999).code == "unverified", "a place restored after relaunch needs a fix before rest")
     check(rest(accuracy: 150, now: 9999).code == "coarsePlace", "a coarse place fix does not confirm rest")
+
+    check(rest(preservingConfirmedHome: true, now: 420).confirmed, "expired Wi-Fi does not undo a confirmed Home rest")
+    check(!rest(verified: false, preservingConfirmedHome: true, now: 420).confirmed, "an unverified Home still needs a fresh fix")
+    check(!rest(movement: true, preservingConfirmedHome: true, now: 420).confirmed, "movement invalidates even a confirmed Home rest")
 
     // Passive rest policy: every guard, in order.
     func passive(_ decision: RestDecision, enabled: Bool = true, always: Bool = true, precise: Bool = true, service: Bool = true,
@@ -2724,6 +2725,7 @@ do {
             accuracy: accuracy, inside: inside, since: since, activity: activity, pending: pending, household: household))
     }
     check(sharingRest().allowed, "sharing may rest once the shared position is the verified resting place")
+    check(SharingRest.enabled(preference: nil) && SharingRest.enabled(preference: true) && !SharingRest.enabled(preference: false), "eligible sharing rests by default and preserves an explicit opt-out")
     check(!sharingRest(enabled: false).allowed, "stationary sharing keeps continuous location unless the device test is on")
     check(!sharingRest(automatic: false).allowed && sharingRest(automatic: false).reason.contains("Automatic Tracking is off"), "sharing with Automatic Tracking off keeps the established continuous stream")
     check(!sharingRest(otherwise: false).allowed, "sharing never rests where passive rest itself is not allowed (iOS 17, no service session, unconfirmed rest)")
@@ -2864,7 +2866,7 @@ do {
     let switchedOff = sharingRestInputs(enabled: false)
     check(!SharingRest.stillAllowed(restingDecision, allowed: true, current: switchedOff) && !SharingRest.decide(switchedOff).allowed,
           "switch off while passive: sharing holds location again")
-    check(!HouseholdPublisher.canConfirm(continuousRunning: true, resuming: false, fixAt: 1000, executingSince: 0, continuousSince: 6000),
+    check(!HouseholdPublisher.statusFixIsUsable(capturedAt: 1000, passiveEndedAt: 6000, now: 6001),
           "switch off while passive: the fix from before the rest is not confirmed as current")
 
     // Stage A: background recovery says what is armed, never that it worked.
@@ -2950,16 +2952,16 @@ do {
     check(DepartureOnset.firstMovement(history, after: 2000, before: 3000) == nil, "history outside the rest is ignored")
 
     // Scenarios, as sequences of policy decisions.
-    // A. Twenty minutes at Home on Home Wi-Fi: passive after 15 minutes.
-    check(passive(rest(wifi: .matched, now: 899)) != nil && passive(rest(wifi: .matched, now: 900)) == nil, "scenario A: Home Wi-Fi rest goes passive at 15 minutes")
+    // A. At Home with corroborating Wi-Fi: passive after six minutes.
+    check(passive(rest(wifi: .matched, now: 359)) != nil && passive(rest(wifi: .matched, now: 360)) == nil, "scenario A: Home Wi-Fi rest goes passive at six minutes")
     // C. Wi-Fi switched off at Home: rest continues; nothing starts.
     check(rest(wifi: .unavailable, now: 3600).confirmed, "scenario C: losing Wi-Fi at Home does not end rest or start a journey")
     // D. Walking outside still connected: movement ends rest despite Wi-Fi.
     check(!rest(movement: true, wifi: .matched, now: 3600).confirmed && passive(rest(movement: true, wifi: .matched, now: 3600)) != nil, "scenario D: a walk on Home Wi-Fi leaves passive rest")
     // False geofence exit: the check finds nothing; rest must be earned again.
-    check(!rest(disturbed: 3600, wifi: .matched, now: 3700).confirmed && rest(disturbed: 3600, wifi: .matched, now: 4500).confirmed, "a false exit costs one check and 15 minutes of standby")
+    check(!rest(disturbed: 3600, wifi: .matched, now: 3700).confirmed && rest(disturbed: 3600, wifi: .matched, now: 3960).confirmed, "a false exit costs one check and six minutes of standby")
     // Late background callback: a stale Wi-Fi reading says nothing about now.
-    check(rest(wifi: HomeWiFi.match(profile, seen("net-home", at: 0), now: 3600), now: 1100).confirmed == false, "a late Wi-Fi reading does not shorten rest")
+    check(rest(wifi: HomeWiFi.match(profile, seen("net-home", at: 0), now: 3600), now: 420).confirmed == false, "a late Wi-Fi reading does not shorten rest")
     // Process relaunch: the restored place waits for a fix, whatever Wi-Fi says.
     check(passive(rest(verified: false, wifi: .matched, now: 99999)) != nil, "a relaunch stays in standby until a fix confirms the place")
     // Changing access points during rest keep matching.
@@ -3258,7 +3260,7 @@ do {
     }
 
     // 1. Home without configured Wi-Fi rests after the full wait, with no shortcut.
-    check(!decide(1199).confirmed && decide(1200).confirmed && retain(decide(1200)) == nil, "scenario 1: Home without Wi-Fi reaches passive rest at 20 minutes")
+    check(!decide(479).confirmed && decide(480).confirmed && retain(decide(480)) == nil, "scenario 1: Home without Wi-Fi reaches passive rest at eight minutes")
     check(HomeWiFi.match(nil, WiFiObservation(network: "home", accessPoint: nil, at: 100, source: "test"), now: 100) == .unknown, "scenario 1: an unconfigured network never matches")
     // 2. A matching network shortens the wait only where location says Home.
     check(decide(900, wifi: .matched).confirmed && !decide(900, wifi: .matched, verified: false).confirmed, "scenario 2: matching Wi-Fi shortens rest only at a verified Home")
@@ -3272,7 +3274,7 @@ do {
     check(sampling.requestProbe(now: 2000, movementBegan: true, locationWake: true), "scenario 5: a region exit starts a check")
     check(mode(sampling, passive: true, now: 2001) == .precise, "scenario 5: the check overrides passive rest")
     check(mode(sampling, passive: false, now: 2121) == .standby, "scenario 5: the check ends by itself")
-    check(!decide(2000 + 1199, disturbed: 2000).confirmed && decide(2000 + 1200, disturbed: 2000).confirmed, "scenario 5: the rest wait restarts after a false exit")
+    check(!decide(2000 + 479, disturbed: 2000).confirmed && decide(2000 + 480, disturbed: 2000).confirmed, "scenario 5: the rest wait restarts after a false exit")
     // 6. A departure with the app in the background: the check began, the app was
     // suspended past its end, and the next wake-up must still start a check.
     sampling = AutomaticSampling()
@@ -3302,7 +3304,7 @@ do {
     check(!RestWake.definitelyLeft(fix(3000, at: 100, accuracy: 50), place: homeArea, now: 300), "scenario 7: an old fix proves nothing")
     // 8. A relaunch at Home is not trusted until a fix confirms the place.
     check(decide(9999, verified: false).code == "unverified" && retain(decide(9999, verified: false)) != nil, "scenario 8: a relaunch cannot go passive on memory alone")
-    check(decide(9999, verified: true).confirmed, "scenario 8: one fix at Home restores rest without a new 20-minute wait")
+    check(decide(9999, verified: true).confirmed, "scenario 8: one fix at Home restores rest without a new stillness wait")
     // 9. A relaunch during a journey keeps it, its fixes and precise GPS.
     var restarted = RecordedActivity(activity: "Driving", startedAt: 100, resumedAt: 100, title: "Restarted")
     restarted.recordingMode = "automatic"
@@ -3314,7 +3316,7 @@ do {
     check(sampling.requestProbe(now: 100, movementBegan: true, locationWake: true), "scenario 10: the first callback starts a check")
     check(!sampling.requestProbe(now: 101, movementBegan: true, locationWake: true) && !sampling.requestProbe(now: 102, movementBegan: true) && sampling.probeUntil == 220, "scenario 10: duplicate callbacks neither restart nor extend it")
     // 11. Returning needs a new rest, and drift at Home is not a departure.
-    check(!decide(9000 + 1199, disturbed: 9000).confirmed && retain(decide(9000 + 1200, disturbed: 9000)) == nil, "scenario 11: passive rest resumes only after a new still period")
+    check(!decide(9000 + 479, disturbed: 9000).confirmed && retain(decide(9000 + 480, disturbed: 9000)) == nil, "scenario 11: passive rest resumes only after a new still period")
     var drift = DepartureEvidence()
     _ = drift.observe(fix(0, at: 100, accuracy: 30), now: 100)
     check(!drift.observe(fix(25, at: 130, accuracy: 30), now: 130), "scenario 11: GPS drift at Home is not movement")
@@ -5122,7 +5124,7 @@ do {
     check(!leaving.confirmed && !sharing(leaving, testOn: true), "combined: a departure makes sharing hold location again")
     check(KeepAlivePolicy.wanted(automaticAvailable: true, manualRecording: false, precise: true, stopOpen: false, sessionHeld: false, serviceSessionHeld: true),
           "combined: the drive started without a session is kept resumable")
-    check(!HouseholdPublisher.canConfirm(continuousRunning: true, resuming: false, fixAt: 600, executingSince: 0, continuousSince: 5000),
+    check(!HouseholdPublisher.statusFixIsUsable(capturedAt: 600, passiveEndedAt: 5000, now: 5001),
           "combined: the old Home fix is never re-sent as current once passive rest ended")
     // 6. Drive to the shop and park: a provisional stop.
     var outbound = RecordedActivity(activity: "Driving", startedAt: 5010, resumedAt: 5010, title: "Drive")
@@ -5979,14 +5981,14 @@ do {
         check(FileManager.default.fileExists(atPath:directory.appendingPathComponent("\(extra.id).unconfirmed-walk").path),"newest retained evidence survives its own prune (\(index))")
     }
     let kept = try! FileManager.default.contentsOfDirectory(atPath:directory.path).filter { $0.hasSuffix(".unconfirmed-walk") }
-    check(kept.count == 8,"retention is bounded to 8 files")
+    check(kept.count == 11,"the evidence count cannot evict the only durable sparse routes")
     check(try! storage.load().contains { $0.id == confirmed.id },"pruning never removes a confirmed activity")
-    check(!storage.lastEvictions.isEmpty && storage.lastEvictions.allSatisfy { !$0.reason.isEmpty },"evictions carry a reason")
+    check(storage.lastEvictions.isEmpty,"meaningful sparse routes cannot be evicted for count")
     try! Data("garbage".utf8).write(to:directory.appendingPathComponent(WalkingTransportHandoff.fileName))
     check((try? storage.load()) != nil,"corrupt handoff journal does not block loading")
     check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(WalkingTransportHandoff.fileName).path),"corrupt journal moved aside")
     try! storage.pruneUnconfirmedWalks(now:Date().addingTimeInterval(8*86_400))
-    check(!FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedFile).path),"unconfirmed route expires within the retention budget")
+    check(try! storage.readRetainedEvidence(id:draft.id).points == draft.points,"an ageing sparse route remains privately recoverable")
 }
 
 // AC11 review: a retry with more fixes merges instead of throwing; a corrupt evidence file never breaks load.
@@ -6160,23 +6162,52 @@ do {
     }
 }
 
-// Verify newest-first byte eviction and the intentional newly-written exemption.
+// Pressure refuses new evidence without sacrificing existing files or the source.
 do {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at:directory) }
     let store = try! RecordingStorage(directory:directory)
     let now = Date()
-    for (index,name) in ["older.unconfirmed-walk","newer.unconfirmed-walk"].enumerated() {
-        try! store.writeData(Data(repeating:0,count:7*1024*1024),name:name)
-        try! FileManager.default.setAttributes([.modificationDate:now.addingTimeInterval(Double(index)-10)],
-            ofItemAtPath:directory.appendingPathComponent(name).path)
+    var draft = RecordedActivity(activity:"Unknown", startedAt:1000, resumedAt:1000, title:"Journey")
+    draft.points = walkPath([(0,0),(35,0)],start:1000)
+    try! store.save(draft)
+    let pressureName = "unreadable.unconfirmed-walk"
+    let pressure = directory.appendingPathComponent(pressureName)
+    FileManager.default.createFile(atPath:pressure.path,contents:nil)
+    let file = try! FileHandle(forWritingTo:pressure)
+    try! file.truncate(atOffset:UInt64(RecordingStorage.evidenceByteLimit))
+    try! file.close()
+    do {
+        try store.retainUnconfirmedWalk(draft)
+        check(false,"pressure must refuse new evidence")
+    } catch {
+        check((error as NSError).code == CocoaError.fileWriteOutOfSpace.rawValue,"pressure reports storage explicitly")
+        check((try! store.load()).first?.points == draft.points,"pressure leaves the durable draft unchanged")
     }
-    let evicted = try! store.pruneUnconfirmedWalks(now:now)
-    check(evicted.map(\.name) == ["older.unconfirmed-walk"],"byte quota keeps the newest evidence")
-    check(try! store.pruneUnconfirmedWalks(now:now.addingTimeInterval(8*86_400),protecting:"newer.unconfirmed-walk").isEmpty,
-          "the protected write survives pruning")
-    check(try! store.pruneUnconfirmedWalks(now:now.addingTimeInterval(8*86_400)).count == 1,"aged evidence expires on a later prune")
+    try! FileManager.default.setAttributes([.modificationDate:now.addingTimeInterval(-8*86_400)],ofItemAtPath:pressure.path)
+    check(try! store.pruneUnconfirmedWalks(now:now).isEmpty,"unreadable evidence is never assumed to be noise")
+    check(!store.takeEvidenceMaintenance().issues.isEmpty,"cleanup failures are available to startup diagnostics")
+    try! FileManager.default.removeItem(at:pressure)
+    try! store.retainUnconfirmedWalk(draft)
+    check(try! store.readRetainedEvidence(id:draft.id).points == draft.points,"retry keeps the original ID and route")
+    var noise = RecordedActivity(activity:"Unknown", startedAt:1000, resumedAt:1000, title:"Stationary")
+    noise.points = [placeFix(0,0,1000,speed:0),placeFix(0,0,1010,speed:0)]
+    try! store.retainUnconfirmedWalk(noise)
+    let expiry = now.addingTimeInterval(8*86_400)
+    check(try! store.pruneUnconfirmedWalks(now:expiry,protecting:"\(noise.id).unconfirmed-walk").isEmpty,"protected stationary evidence survives maintenance")
+    check(try! store.pruneUnconfirmedWalks(now:expiry).map(\.name) == ["\(noise.id).unconfirmed-walk"],"only proven stationary evidence expires")
+    check(store.takeEvidenceMaintenance().evictions.count == 1,"startup can consume each successful eviction once")
+    try! store.retainUnconfirmedWalk(noise)
+    var newer = noise
+    newer.points = draft.points
+    try! store.save(newer)
+    check(try! store.pruneUnconfirmedWalks(now:expiry).isEmpty,"do not expire evidence while a newer source still exists")
+    check(try! store.readRetainedEvidence(id:noise.id).points == noise.points,"both sides remain recoverable during source reconciliation")
 }
+check(PublisherFixPolicy.usable(timestamp: 90, accuracy: 20, now: 100, maxAge: 20), "publisher can reuse a fresh recorder fix")
+check(!PublisherFixPolicy.usable(timestamp: 90, accuracy: 20, now: 100, maxAge: 3), "moving publisher rejects an old fix")
+check(!PublisherFixPolicy.usable(timestamp: 99, accuracy: 101, now: 100, maxAge: 20), "publisher rejects coarse fixes")
+check(!PublisherFixPolicy.usable(timestamp: 106, accuracy: 10, now: 100, maxAge: 20), "publisher rejects future fixes")
 
 // Overlapping saved places: Home and Work name a point before a favourite on top of them, whatever order they were saved in
 // (feedback 45: a favourite "Morley Park" beside the house titled drives from home "Morley Park → …").

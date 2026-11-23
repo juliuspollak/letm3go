@@ -23,17 +23,45 @@ const NATIVE_ACTIVITY={driving:'Driving',cycling:'Cycling',running:'Running',wal
 // protects viewers from a car that was left behind by an old app or a phone that
 // stopped publishing before it could send an explicit clear.
 export const NATIVE_ACTIVITY_TTL_SECONDS=120;
-export function memberActivities(presence=[],members=[]){
- const shared=Object.fromEntries(presence.filter(p=>p.user_id&&p.activity_label).map(p=>[p.user_id,p.activity_label]));
+export const LAST_KNOWN_SECONDS=24*60*60;
+let foregroundOffset=0;
+let hiddenClock=null;
+export function freshnessNow(){return performance.now()+foregroundOffset;}
+export function freshnessVisibility(hidden,wall=Date.now(),monotonic=performance.now()){
+ if(hidden){hiddenClock??={wall,monotonic};return;}
+ if(!hiddenClock)return;
+ const wallElapsed=wall-hiddenClock.wall,elapsed=Math.max(0,monotonic-hiddenClock.monotonic);
+ // Some runtimes stop the monotonic clock during suspension. A backward
+ // clock change during that gap makes current status unverifiable.
+ if(wallElapsed-elapsed>2000)foregroundOffset+=wallElapsed-elapsed;
+ else if(wallElapsed<0)foregroundOffset+=LIVE_SECONDS*1000+1000;
+ hiddenClock=null;
+}
+export function stampPosition(row,receivedAtMs=Date.now(),receivedMonotonicMs=freshnessNow()){
+ return {...row,receivedAtMs,receivedMonotonicMs};
+}
+function captureAge(row,nowMs,monotonicMs){
+ const captured=Date.parse(row.location_at);
+ const reference=row.server_now?Date.parse(row.server_now):row.receivedAtMs??nowMs;
+ if(!Number.isFinite(captured)||!Number.isFinite(reference))return null;
+ const elapsed=Number.isFinite(row.receivedMonotonicMs)&&Number.isFinite(monotonicMs)?
+  Math.max(0,monotonicMs-row.receivedMonotonicMs):0;
+ if(captured>reference+5000)return null;
+ return Math.max(0,(reference-captured+elapsed)/1000);
+}
+export function memberActivities(presence=[],members=[],nowMs=Date.now(),monotonicMs){
+ const legacy=new Map(presence.filter(p=>p.user_id&&p.activity_label).map(p=>[p.user_id,p.activity_label]));
+ const shared=Object.fromEntries([...legacy].filter(([,label])=>!Object.values(NATIVE_ACTIVITY).includes(label)));
  for(const member of members){
-  // `undefined` means the deployed RPC predates the activity column: keep the
-  // older household-presence fallback. `null` is the server explicitly saying no
-  // activity, so it clears that fallback.
-  if(member.activity===undefined)continue;
-  if(member.activity===null){delete shared[member.user_id];continue;}
-  const at=Date.parse(member.location_at),now=Date.parse(member.server_now);
-  const fresh=Number.isFinite(at)&&Number.isFinite(now)&&now-at<=NATIVE_ACTIVITY_TTL_SECONDS*1000;
-  if(fresh&&NATIVE_ACTIVITY[member.activity])shared[member.user_id]=NATIVE_ACTIVITY[member.activity];
+  const age=captureAge(member,nowMs,monotonicMs);
+  if(!member.sharing_enabled&&member.sharing_enabled!==undefined){delete shared[member.user_id];continue;}
+  if(age==null||age>NATIVE_ACTIVITY_TTL_SECONDS){delete shared[member.user_id];continue;}
+  if(member.activity===undefined){
+   const label=legacy.get(member.user_id);
+   if(label)shared[member.user_id]=label;
+   continue;
+  }
+  if(NATIVE_ACTIVITY[member.activity])shared[member.user_id]=NATIVE_ACTIVITY[member.activity];
   else delete shared[member.user_id];
  }
  return shared;
@@ -51,14 +79,16 @@ export function distanceMetres(a,b){
 
 // Age is measured against the server clock returned with the rows, so a phone
 // with a wrong clock cannot make an old position look live.
-export function memberLocationState(row,nowMs=Date.now()){
+export function memberLocationState(row,nowMs=Date.now(),monotonicMs){
  if(!row?.sharing_enabled)return {state:'off',ageSeconds:null,position:null};
- const at=row.location_at?Date.parse(row.location_at):NaN;
- const reference=row.server_now?Date.parse(row.server_now):nowMs;
- const ageSeconds=Number.isFinite(at)?Math.max(0,Math.round(((Number.isFinite(reference)?reference:nowMs)-at)/1000)):null;
+ const age=captureAge(row,nowMs,monotonicMs);
+ const ageSeconds=age==null?null:Math.floor(age);
  const position=validPoint(row.latitude,row.longitude)?{latitude:row.latitude,longitude:row.longitude,accuracy:finite(row.accuracy_m)?row.accuracy_m:null}:null;
- if(!position)return {state:ageSeconds==null?'waiting':'unavailable',ageSeconds,position:null};
- return {state:ageSeconds!=null&&ageSeconds<=LIVE_SECONDS?'live':'stale',ageSeconds,position};
+ if(!position||age>LAST_KNOWN_SECONDS)return {state:age==null?'waiting':'unavailable',ageSeconds,position:null};
+ return {state:age!=null&&age<=LIVE_SECONDS?'live':'stale',ageSeconds,position};
+}
+export function lastKnownActivity(row){
+ return NATIVE_ACTIVITY[row?.activity]??null;
 }
 
 export function formatAge(seconds){
@@ -129,7 +159,7 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
   people.push({id:member.user_id,userId:member.user_id,name:personName(member),named:Boolean(member.display_name?.trim()),latitude:member.position.latitude,longitude:member.position.longitude,
    accuracy:member.position.accuracy,state:member.state,ageSeconds:member.ageSeconds,home:member.home&&member.state==='live',source:member.source||'household',
    seconds:secondsAtPlace(member),activity:activities[member.user_id]??null,
-   speedKmh:member.speed_kmh,speedAge:member.ageSeconds==null?null:member.ageSeconds+(Number.isFinite(member.receivedAtMs)?Math.max(0,(nowMs-member.receivedAtMs)/1000):0)});
+   speedKmh:member.speed_kmh,speedAge:member.ageSeconds==null?null:member.ageSeconds+(!Number.isFinite(member.receivedMonotonicMs)&&Number.isFinite(member.receivedAtMs)?Math.max(0,(nowMs-member.receivedAtMs)/1000):0)});
  for(const p of people){
   const place=p.home||p.state!=='live'?null:savedPlaceName(p,places);
   p.label=personLabel({state:p.state,ageSeconds:p.isSelf?null:p.ageSeconds,home:p.home,place,seconds:p.seconds});

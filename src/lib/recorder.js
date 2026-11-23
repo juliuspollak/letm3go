@@ -16,7 +16,14 @@ let pendingPosition=null,lastPosition=null,positionGeneration=0;
 // changed may get {stationary:true} (no coordinates) while the adaptive engine
 // holds Core Location's stationary report, instead of waking precise GPS.
 // `maxAge` narrows that reuse for a moving publisher, which needs a current fix.
-export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false,maxAge=POSITION_REUSE_SECONDS}={}){
+export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false,maxAge=POSITION_REUSE_SECONDS,publisher}={}){
+ if(publisher){
+  const generation=positionGeneration;
+  return native.currentPosition({allowStationary,maxAge,publisher}).then(result=>{
+   if(generation!==positionGeneration)throw new Error('Location request belongs to a previous account session.');
+   return result;
+  });
+ }
  if(lastPosition&&Number.isFinite(lastPosition.timestamp)&&nowSeconds-lastPosition.timestamp<=maxAge&&nowSeconds-lastPosition.timestamp>=-5)return Promise.resolve(lastPosition);
  if(pendingPosition)return pendingPosition.then(result=>result?.stationary&&!allowStationary?sharedCurrentPosition():result);
  const generation=positionGeneration;
@@ -33,6 +40,7 @@ export function forgetSharedPosition(){positionGeneration+=1;lastPosition=null;p
 export const emptyRecorder = { active:null, trips:[], permission:'unavailable', automaticEnabled:false, automaticAvailable:false, automaticState:'idle', automaticSettledTripID:null, places:[], deletedIDs:[], backgroundEnabled:false, accuracy:null, version:'1.0', build:'web', error:'', recovery:'', storageReady:false };
 export const recorder = {
  forgetPosition:forgetSharedPosition,
+ recoverMovementEvidence:options=>native.recoverMovementEvidence(options),
  trackingReport:params=>native.trackingReport(params),
   diagnosticLogArchive:()=>native.diagnosticLogArchive(),
   exportJourneyDiagnostics:journeyID=>native.exportJourneyDiagnostics({journeyID}),

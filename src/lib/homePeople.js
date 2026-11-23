@@ -1,7 +1,7 @@
 import {metersBetween} from './activityPrivacy.js';
 import {distanceText} from './distanceUnits.js';
 import {personStatus} from './personStatus.js';
-import {atHome} from './householdLocation.js';
+import {atHome,lastKnownActivity} from './householdLocation.js';
 
 // Everyone on the Home screen: household and friends, one person once, with the same
 // words as Social. Distance is a straight line between two known positions, so it is
@@ -42,7 +42,7 @@ export function compactStatus({state,ageSeconds,home,verifiedHome,placeName,acti
  const age=shortAge(ageSeconds);
  if(state==='live'||state==='stale'){
   if(verifiedHome)return age?`Last at home · ${age}`:'Last at home';
-  if(placeName)return state==='stale'&&age?`At ${placeName} · ${age}`:`At ${placeName}`;
+  if(placeName)return state==='stale'&&age?`Last at ${placeName} · ${age}`:`At ${placeName}`;
   if(home&&state==='live')return 'At home';
   if(state==='live'&&MOVING.includes(activity))return distance?`${activity} · ${distance}`:activity;
   const parts=[distance,age].filter(Boolean);
@@ -63,7 +63,7 @@ export function homePeople({household=[],friends=[],selfID,selfPosition=null,hom
   const home=homeFlags[member.user_id]===true;
   // Home is shared by the household only; a friend's old position is never placed there.
   const verifiedHome=member.source==='household'&&member.state==='stale'&&atHome(false,member.position,homePlace);
-  const status=personStatus({state:member.state,ageSeconds:member.ageSeconds,home,activity:activities[member.user_id],verifiedHome,placeName:member.place_name,placeSince:member.place_since});
+  const status=personStatus({state:member.state,ageSeconds:member.ageSeconds,home,activity:activities[member.user_id],lastKnownActivity:activities[member.user_id]?null:lastKnownActivity(member),verifiedHome,placeName:member.place_name,placeSince:member.place_since});
   const away=member.state==='live'||member.state==='stale'?distanceAway(selfPosition,member.position,unit):null;
   const live=member.state==='live'||member.state==='stale';
   people.push({id:member.user_id,userId:member.user_id,name:member.display_name||'Member',position:usable(member.position)?member.position:null,state:member.state,

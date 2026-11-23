@@ -16,10 +16,10 @@ import UIKit
 // a CLLocationUpdate.liveUpdates keep-alive, which Core Location resumes the app
 // for while an Always CLServiceSession (iOS 18), started in the foreground,
 // asserts the app's interest (WWDC24 "What's new in location authorization").
-// Opening the app restores the activity session until the next confirmed rest.
+// A foreground return can verify the place without reopening an activity session.
 extension LocationRecorder {
     static func passiveRestKey(_ owner: String) -> String { "letm3go-passive-rest-off-\(owner)" }
-    // Stored as "on": sharing joining passive rest is a device test, off by default.
+    // Keep the existing key so an explicit choice survives upgrading.
     static func sharingRestKey(_ owner: String) -> String { "letm3go-sharing-rest-on-\(owner)" }
     static let serviceSessionKey = "letm3go-service-session-held"
     // When passive rest began, kept across termination so a wake-up that
@@ -52,11 +52,11 @@ extension LocationRecorder {
     func setSharingRest(_ enabled: Bool) throws {
         guard let owner = ownerID, storage != nil else { throw failure("Recording storage is unavailable.") }
         sharingRestEnabled = enabled
-        // Switching the test off leaves nothing of it behind: no pending false-wake
+        // Switching sharing rest off leaves nothing of it behind: no pending false-wake
         // restore; the keep-alive cases end at the reconcile below.
         if !enabled { falseWakeCandidate = nil; if passiveSince != nil { passiveEndedAt = Date().timeIntervalSince1970 } }
         UserDefaults.standard.set(enabled, forKey: Self.sharingRestKey(owner))
-        recordDiagnostic("preference", enabled ? "Release location while resting with sharing on: device test enabled" : "Release location while resting with sharing on: device test disabled")
+        recordDiagnostic("preference", enabled ? "Release location while resting with sharing on: enabled" : "Release location while resting with sharing on: disabled")
         reconcileAutomaticSampling()
     }
     // Whether live sharing is what keeps continuous location and the activity
@@ -107,11 +107,18 @@ extension LocationRecorder {
         let unsettled = RestConfirmation.motionUnsettled(lastMotionChangeAt: diagnosticLastMotionAt, stationary: AutomaticDetector.freshStationary(motion, now: now), now: now)
         refreshWiFiIfDue(now: now)
         wifiMatchState = HomeWiFi.match(homeWiFi, wifiObservation, now: now)
+        // Only a new rest needs current Wi-Fi to earn the shorter Home wait.
+        // Losing that corroboration does not undo the same uninterrupted rest.
+        let preservingConfirmedHome = passiveSince.map { since in
+            locationMode == .passive && restDecision.confirmed &&
+                restDecision.requiredSeconds == RestConfirmation.homeWithWiFiSeconds &&
+                (dwell?.since ?? now) <= since && (restDisturbedAt ?? 0) <= since
+        } ?? false
         let decision = RestConfirmation.decide(RestInputs(
             place: kind, placeSince: dwell?.since, lastDisturbanceAt: restDisturbedAt, placeAccuracy: restPlaceAccuracy,
             placeVerified: restPlaceFixAt.map { fix in dwell.map { fix >= $0.since - 120 } ?? false } ?? false,
             idle: automaticAvailable && !manualRecordingLive && automaticIdle, recentMovement: recent, motionMoving: moving || unsettled,
-            wifi: kind == .home ? wifiMatchState : .unknown, now: now))
+            wifi: kind == .home ? wifiMatchState : .unknown, now: now), preservingConfirmedHome: preservingConfirmedHome)
         if decision.code == "settling", restDecision.code != "settling" {
             recordDiagnostic("rest", "Rest confirmation started", details: ["restPlace": kind.rawValue, "restRequiredSeconds": String(Int(decision.requiredSeconds)), "wifiMatch": wifiMatchState.rawValue])
         }
@@ -217,7 +224,7 @@ extension LocationRecorder {
         lastLocationCheckinAt = now
         recordDiagnostic("sharing", "Location check-in requested by the server", details: ["locationMode": locationMode.rawValue])
         if continuousLocationRequested {
-            // Fixes are already arriving; re-confirm the last one if it is still current.
+            // Keep the running stream intact and publish its next real fix.
             confirmHouseholdLocation()
         } else {
             requestPassiveLocationCheck(cause: "server check-in", now: now)
