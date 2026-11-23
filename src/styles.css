@@ -1408,3 +1408,14 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .place-radius-control{margin-top:16px}
 .ring-key{display:inline-block;width:12px;height:12px;margin-right:8px;border-radius:50%;border:2px solid #0a84ff;background:color-mix(in srgb,#0a84ff 14%,transparent);vertical-align:-1px}
 .ring-key--arrival{border-style:dashed;background:transparent;opacity:.75}
+
+/* Developer-only location experiment (Tracking & Permissions). */
+.tracking-experiment{margin:14px 0;padding:12px;border:1px dashed var(--border,#8884);border-radius:12px;display:grid;gap:10px}
+.tracking-experiment h3{margin:0;font-size:1rem}
+.experiment-modes{display:grid;gap:8px}
+.experiment-mode{display:grid;gap:4px}
+.experiment-mode button{justify-content:flex-start;text-align:left}
+.experiment-observation{display:grid;gap:8px}
+.experiment-observation input{width:100%;min-height:44px;box-sizing:border-box}
+.experiment-observation-buttons{display:flex;flex-wrap:wrap;gap:8px}
+.experiment-observation-buttons button{flex:1 1 30%;min-height:44px}

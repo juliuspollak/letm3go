@@ -71,6 +71,10 @@ export const recorder = {
  currentPosition:(options={})=>sharedCurrentPosition(Date.now()/1000,options),
  // Internal: the adaptive location engine, for controlled evaluation.
  setAdaptiveLocation:enabled=>native.setAdaptiveLocation({enabled}),
+ // Developer-only location experiment (Mode A unless unlocked and selected). Observations are a person's, never the app's prediction.
+ setLocationExperimentUnlocked:enabled=>native.setLocationExperimentUnlocked({enabled}),
+ setLocationExperimentMode:mode=>native.setLocationExperimentMode({mode}),
+ recordIndicatorObservation:(observed,note)=>native.recordIndicatorObservation({observed,note:String(note||'')}),
  // Passive rest: release location and the background session while settled.
  setPassiveRest:enabled=>native.setPassiveRest({enabled}),
  // Device test: live sharing may rest with the phone. Off by default.

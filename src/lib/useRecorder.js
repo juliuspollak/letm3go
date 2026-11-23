@@ -53,7 +53,11 @@ export function snapshotKey(data,historyCache){
  // Passive rest and Home Wi-Fi; stillness at minute resolution.
  data.passiveRest?.enabled,data.passiveRest?.active,data.passiveRest?.restConfirmed,data.passiveRest?.retainReason,data.passiveRest?.serviceSession,
  data.passiveRest?.keepAliveRunning,data.passiveRest?.sessionReleases,data.passiveRest?.lastPreciseReason,Math.floor((data.passiveRest?.stillSeconds||0)/60),
- data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt
+ data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt,
+ // Developer-only location experiment.
+ data.experiment?.available,data.experiment?.unlocked,data.experiment?.mode,data.experiment?.sessionOwnership,data.experiment?.keepAliveRunning,data.experiment?.runningAPIs,
+ data.experiment?.predicted?.pill,data.experiment?.confounders,Object.values(data.experiment?.blocked||{}).join('/'),
+ (data.experiment?.observations||[]).map(item=>item.at).join(',')
  ].join('~');
 }
 // Preserve immutable history across live-status polls. This also supports older
