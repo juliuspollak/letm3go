@@ -6206,4 +6206,56 @@ do {
     check([SavedPlace]().naming(start) == nil,"no saved places name nothing")
 }
 
+// A finished activity the recorder sends itself, so it reaches the household without the app being open (feedback 48).
+do {
+    func finishedTrip(_ id: String = UUID().uuidString, start: Double = 1_000_000, mode: String = "automatic") -> RecordedActivity {
+        var t = RecordedActivity(activity: "Driving", startedAt: start, resumedAt: start, title: "Home → Plus Fitness")
+        t.id = id; t.recordingMode = mode
+        _ = t.accept(GPSPoint(latitude: -34.5, longitude: 150.8, timestamp: start, accuracy: 5, altitude: 1, speed: 8), now: start)
+        _ = t.accept(GPSPoint(latitude: -34.501, longitude: 150.8, timestamp: start + 10, accuracy: 5, altitude: 1, speed: 8), now: start + 10)
+        t.finish(at: start + 600)
+        return t
+    }
+    let now = 1_000_000.0 + 700
+    let trip = finishedTrip()
+    check(FinishedUpload.eligible(trip, now: now), "a finished phone-recorded drive with a route is sent")
+    var live = trip; live.state = "recording"; live.endedAt = nil
+    check(!FinishedUpload.eligible(live, now: now), "an activity still recording is not")
+    var settling = trip; settling.details = ActivityDetails(); settling.details?.provisional = true
+    check(!FinishedUpload.eligible(settling, now: now), "a stop kept open for a continuation is not sent yet")
+    var simulated = trip; simulated.source = "simulator"
+    check(!FinishedUpload.eligible(simulated, now: now), "a simulator recording is not")
+    var watch = trip; watch.recordingMode = "watch"
+    check(!FinishedUpload.eligible(watch, now: now), "only automatic and manual recordings are")
+    var short = trip; short.points = Array(trip.points.prefix(1))
+    check(!FinishedUpload.eligible(short, now: now), "a route needs two fixes")
+    check(!FinishedUpload.eligible(trip, now: now + 4 * 86_400), "nothing older than three days: the app's backup is for the backlog")
+    var odd = trip; odd.id = "not-a-uuid"
+    check(!FinishedUpload.eligible(odd, now: now), "an id the server could not store is not sent")
+    let row = FinishedUpload.payload(trip)
+    check(row?["id"] as? String == trip.id.lowercased(), "the id is the lower-case spelling the app's backup uses")
+    check(row?["recording_mode"] as? String == "automatic" && row?["activity"] as? String == "Driving", "the mode and type go as they are")
+    check((row?["started_at"] as? String)?.hasSuffix("Z") == true && (row?["started_at"] as? String)?.contains(".") == true, "times are ISO-8601 with milliseconds, like the app's")
+    check((row?["route_points"] as? [[String: Any]])?.count == 2, "the route is the trip's own points")
+    check(Set((row?["route_points"] as? [[String: Any]])?.first?.keys.map { $0 } ?? []) == ["latitude", "longitude", "timestamp", "accuracy", "altitude", "speed", "segment"], "each point has the app's fields")
+    check((row?["distance_meters"] as? Double ?? -1) > 100 && (row?["duration_seconds"] as? Double ?? -1) >= 0, "distance and duration are carried")
+    check(FinishedUpload.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/publish_live_location")!)?.lastPathComponent == "upload_finished_activity", "the endpoint sits beside the position endpoint")
+    check(FinishedUpload.endpoint(from: URL(string: "https://x.supabase.co/rest/v1/rpc/something_else")!) == nil, "and only beside a position endpoint")
+    // Oldest first, and a sent or given-up activity is not offered again.
+    let older = finishedTrip(start: 900_000), newer = finishedTrip(start: 1_000_000)
+    var ledger = FinishedUploadLedger()
+    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == older.id, "a backlog drains oldest first")
+    ledger.sent(older.id.uppercased())
+    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a sent activity is not sent again, in whichever case its id is written")
+    for _ in 0..<(FinishedUpload.giveUpAfter - 1) { ledger.refused(newer.id) }
+    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a refusal is retried")
+    ledger.refused(newer.id)
+    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now) == nil, "after repeated refusals it is left to the app's backup")
+    let restored = try JSONDecoder().decode(FinishedUploadLedger.self, from: JSONEncoder().encode(ledger))
+    check(restored == ledger && restored.settled(older.id) && restored.settled(newer.id), "the ledger survives a restart")
+    var long = FinishedUploadLedger()
+    for index in 0..<350 { long.sent("00000000-0000-4000-8000-\(String(format: "%012d", index))") }
+    check(long.done.count == 300 && long.settled("00000000-0000-4000-8000-000000000349") && !long.settled("00000000-0000-4000-8000-000000000000"), "the ledger is bounded, keeping the newest")
+}
+
 print("Final native assertion count including automatic account recovery: \(assertions)")

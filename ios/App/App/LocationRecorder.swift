@@ -239,6 +239,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var liveTrailLastFlushAt: Double = 0
     var liveTrailInFlight = false
     var liveTrailBackoffUntil: Double = 0
+    // Finished activities the recorder sends itself (see FinishedUpload and uploadFinishedActivities).
+    var finishedUploadInFlight = false
+    var finishedUploadBackoffUntil: Double = 0
     var liveShareToken: String? { didSet { if liveShareToken != oldValue { sharingRestInputChanged("household credential changed") } } }
     var liveShareEndpoint: URL?
     var liveShareApiKey: String?
@@ -984,6 +987,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // lost or delayed batch is sent again and the server merges by time.
     func flushLiveTrail() {
         guard storeOpened, ownerID != nil, !accountSuspended, !accountDeleting else { return }
+        // Wherever the live trail is kept up to date (the recorder drives this from the background), a finished activity goes up too: the
+        // app's own backup only runs while it is on screen.
+        uploadFinishedActivities()
         let now = Date().timeIntervalSince1970
         var token: String?, base: URL?, apiKey: String?
         if liveShareMode == "device", let t = liveShareToken, let e = liveShareEndpoint, let k = liveShareApiKey, now < liveShareTokenExpiresAt - 60 { token = t; base = e; apiKey = k }
