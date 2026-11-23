@@ -592,8 +592,10 @@ describe('the saved-place map (pickable)',()=>{
   handlers.locationPicked({mapID,latitude:'x',longitude:2});expect(onPick).not.toHaveBeenCalled();
   handlers.locationPicked({mapID,latitude:-34.547,longitude:150.854});
   expect(onPick).toHaveBeenCalledWith({latitude:-34.547,longitude:150.854});
-  // Embedded, no still picture and no "Choose location" pill stand in front of it.
-  await waitFor(()=>expect(container.querySelector('.apple-map-open')).toBeNull());
+  // The live map stands where the placeholder is; nothing else is offered in front of it.
+  await waitFor(()=>expect(container.querySelector('.place-picker')).toHaveClass('native-embedded'));
+  expect(container.querySelector('button')).toBeNull();
+  expect(container.querySelector('img')).toBeNull();
  });
  it('moves its circles through update() as the sliders move, never by re-embedding the map',async()=>{
   const {rerender}=render(<AppleMap pickable payload={place}/>);
@@ -607,28 +609,23 @@ describe('the saved-place map (pickable)',()=>{
   await waitFor(()=>expect(mocks.update).toHaveBeenLastCalledWith(expect.objectContaining({pins:[expect.objectContaining({radius:90,arrivalRadius:350,point:[-34.55,150.86]})]})));
   expect(mocks.embed).not.toHaveBeenCalled();expect(mocks.unembed).not.toHaveBeenCalled();
  });
- it('falls back to a still picture that opens the full-screen chooser, which answers through the same handler',async()=>{
-  const onResult=vi.fn();mocks.open.mockResolvedValue({latitude:-34.5,longitude:150.8});
-  render(<AppleMap pickable embeddedEnabled={false} payload={place} onResult={onResult}/>);
-  fireEvent.click(within(document.body).getByRole('button',{name:'Choose saved place in Apple Maps'}));
-  await waitFor(()=>expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({picker:true,pickable:true})));
-  await waitFor(()=>expect(onResult).toHaveBeenCalledWith({latitude:-34.5,longitude:150.8}));
+ it('has no still picture and no full-screen chooser behind it, even while the live map is still coming up', async()=>{
+  // The embed never answers: the place must not be drawn as a picture in the meantime, and nothing opens a chooser.
+  mocks.embed.mockReturnValue(new Promise(()=>{}));
+  const {container}=render(<AppleMap pickable payload={place}/>);
+  await waitFor(()=>expect(mocks.embed).toHaveBeenCalled());
+  expect(mocks.snapshot).not.toHaveBeenCalled();
+  expect(container.querySelector('img')).toBeNull();
+  expect(container.querySelector('button')).toBeNull();
+  expect(mocks.open).not.toHaveBeenCalled();
  });
- it('refreshes the still picture when the pin or a circle changes, once the sliders settle',async()=>{
-  vi.useFakeTimers();
-  try{
-   const {rerender}=render(<AppleMap pickable embeddedEnabled={false} payload={place}/>);
-   await act(async()=>{await vi.advanceTimersByTimeAsync(400);});
-   expect(mocks.snapshot).toHaveBeenCalledTimes(1);
-   const moved={routes:[],pins:[{...place.pins[0],radius:60}]};
-   rerender(<AppleMap pickable embeddedEnabled={false} payload={moved}/>);
-   rerender(<AppleMap pickable embeddedEnabled={false} payload={{routes:[],pins:[{...moved.pins[0],radius:80}]}}/>);
-   await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
-   expect(mocks.snapshot).toHaveBeenCalledTimes(1);
-   await act(async()=>{await vi.advanceTimersByTimeAsync(400);});
-   // Two slider moves in quick succession ask for one new picture, of the latest circle.
-   expect(mocks.snapshot).toHaveBeenCalledTimes(2);
-   expect(mocks.snapshot.mock.calls.at(-1)[0].pins[0]).toMatchObject({radius:80});
-  }finally{vi.useRealTimers();}
+ it('says so when the live map cannot be shown, instead of showing something else',async()=>{
+  mocks.embed.mockRejectedValue(new Error('Map layout unavailable'));
+  const {container}=render(<AppleMap pickable payload={place}/>);
+  const alert=await within(container).findByRole('alert');
+  expect(alert).toHaveTextContent('The map could not be shown.');
+  expect(mocks.snapshot).not.toHaveBeenCalled();
+  expect(container.querySelector('img')).toBeNull();
+  expect(container.querySelector('button')).toBeNull();
  });
 });

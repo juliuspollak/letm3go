@@ -1705,7 +1705,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     @objc private func pickedPlace(_ recognizer:UITapGestureRecognizer) {
         guard recognizer.state == .ended,let map=map else {return}
         let point=recognizer.location(in:map)
-        // The compass, the full-screen button, the pin (and its callout) and MapKit's own attribution are not the bare map: look up the view
+        // The compass, the pin (and its callout) and MapKit's own attribution are not the bare map: look up the view
         // chain from whatever was touched.
         var touched=map.hitTest(point,with:nil)
         while let view=touched,view !== map {
@@ -2025,27 +2025,22 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         UIColor.white.setStroke();path.lineWidth=7;path.lineJoinStyle = .round;path.lineCapStyle = .round;path.stroke()
                         estimatedColor.setStroke();path.lineWidth=3.5;path.stroke()
                     }
-                    // The place radius is rendered on previews as well as the fullscreen picker. A Home's arrival circle first, dashed.
-                    for arrival in [true,false] {
-                        for pin in content.pins {
-                            guard let center=coordinate(pin["point"]),let radius=pin[arrival ? "arrivalRadius" : "radius"] as? Double,radius.isFinite,radius>0 else {continue}
-                            let circle=MKCircle(center:center,radius:min(radius,100000))
-                            let bounds=circle.boundingMapRect
-                            let top=MKMapPoint(x:bounds.midX,y:bounds.minY).coordinate
-                            let bottom=MKMapPoint(x:bounds.midX,y:bounds.maxY).coordinate
-                            let p1=snapshot.point(for:top),p2=snapshot.point(for:bottom),centerPoint=snapshot.point(for:center)
-                            let screenRadius=abs(p2.y-p1.y)/2
-                            if screenRadius.isFinite && screenRadius>0 && screenRadius<10000 {
-                                let rect=CGRect(x:centerPoint.x-screenRadius,y:centerPoint.y-screenRadius,width:screenRadius*2,height:screenRadius*2)
-                                ctx.saveGState()
-                                ctx.setFillColor(UIColor.systemBlue.withAlphaComponent(arrival ? 0.06 : 0.13).cgColor)
-                                ctx.fillEllipse(in:rect)
-                                ctx.setStrokeColor(UIColor.systemBlue.withAlphaComponent(arrival ? 0.55 : 0.85).cgColor)
-                                ctx.setLineWidth(arrival ? 2 : 2.5)
-                                if arrival {ctx.setLineDash(phase:0,lengths:[8,6])}
-                                ctx.strokeEllipse(in:rect)
-                                ctx.restoreGState()
-                            }
+                    // The place radius is rendered on previews (a position's accuracy).
+                    for pin in content.pins {
+                        guard let center=coordinate(pin["point"]),let radius=pin["radius"] as? Double,radius.isFinite,radius>0 else {continue}
+                        let circle=MKCircle(center:center,radius:min(radius,100000))
+                        let bounds=circle.boundingMapRect
+                        let top=MKMapPoint(x:bounds.midX,y:bounds.minY).coordinate
+                        let bottom=MKMapPoint(x:bounds.midX,y:bounds.maxY).coordinate
+                        let p1=snapshot.point(for:top),p2=snapshot.point(for:bottom),centerPoint=snapshot.point(for:center)
+                        let screenRadius=abs(p2.y-p1.y)/2
+                        if screenRadius.isFinite && screenRadius>0 && screenRadius<10000 {
+                            let rect=CGRect(x:centerPoint.x-screenRadius,y:centerPoint.y-screenRadius,width:screenRadius*2,height:screenRadius*2)
+                            ctx.setFillColor(UIColor.systemBlue.withAlphaComponent(0.13).cgColor)
+                            ctx.fillEllipse(in:rect)
+                            ctx.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.85).cgColor)
+                            ctx.setLineWidth(2.5)
+                            ctx.strokeEllipse(in:rect)
                         }
                     }
                     // Draw normal pins first; full-size photo thumbnails must sit above them.
@@ -2166,7 +2161,8 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                 scroll.bringSubviewToFront(map)
                 self.embeddedMaps[id]=map
             }
-            if isNew {
+            // A place map is only ever the live map: no full-screen view to open from it.
+            if isNew && !content.pickable {
                 let button=UIButton(type:.system)
                 button.setImage(UIImage(systemName:"arrow.up.left.and.arrow.down.right"),for:.normal)
                 button.backgroundColor=UIColor.secondarySystemBackground.withAlphaComponent(0.96)
@@ -2184,8 +2180,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                     let embedded=self.coordinators[id]
                     embedded?.remember()
                     map.isHidden=true
-                    let shown=self.embeddedContent[id] ?? content
-                    let controller=AppleMapController(content:shown,picker:shown.pickable)
+                    let controller=AppleMapController(content:self.embeddedContent[id] ?? content)
                     controller.onCamera={ [weak self] mode,command in self?.reportCamera(id,mode,command) }
                     controller.onSelectActivity={ [weak self] activityID in self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID]) }
                 controller.onToolbar={ [weak self] action in self?.notifyListeners("layersTapped",data:["mapID":id,"action":action]) }
@@ -2200,7 +2195,6 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
                         if self?.presentedID==id {self?.presentedID=nil}
                         if let action=result["mapAction"] as? String {self?.notifyListeners("layersTapped",data:["mapID":id,"action":action])}
                         if let activityID=result["activityID"] as? String {self?.notifyListeners("stepSelected",data:["mapID":id,"activityID":activityID])}
-                        if let latitude=result["latitude"] as? Double,let longitude=result["longitude"] as? Double {self?.notifyListeners("locationPicked",data:["mapID":id,"latitude":latitude,"longitude":longitude])}
                         if let photoID=result["photoID"] as? String,let journeyID=result["journeyID"] as? String {
                             self?.notifyListeners("photoSelected",data:["mapID":id,"photoID":photoID,"journeyID":journeyID,"action":result["action"] as? String ?? "photo"])
                         }
@@ -2326,7 +2320,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func open(_ call:CAPPluginCall) {
         DispatchQueue.main.async {
             guard let parent=self.bridge?.viewController,parent.presentedViewController==nil else {call.reject("Close the current screen first");return}
-            let controller=AppleMapController(content:MapContent(call.options),picker:call.getBool("picker") ?? false)
+            let controller=AppleMapController(content:MapContent(call.options))
             let mapID=call.getString("mapID")
             if let mapID=mapID {
                 controller.onCamera={ [weak self] mode,command in self?.reportCamera(mapID,mode,command) }
@@ -2362,9 +2356,7 @@ private class JourneyPin:MKPointAnnotation {
 }
 private class AppleMapController:UIViewController,MKMapViewDelegate {
     let content:MapContent
-    let picker:Bool
     let map=MKMapView()
-    var selected:CLLocationCoordinate2D?
     var completion:(([String:Any])->Void)?
     var onCamera:((FollowMode,Int)->Void)?
     // Where the embedded map was, so the full-screen overview opens on the same view.
@@ -2375,7 +2367,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     var onStyle:((String)->Void)?
     var onToolbar:((String)->Void)?
     var onSelectActivity:((String)->Void)?
-    init(content:MapContent,picker:Bool){self.content=content;self.picker=picker;super.init(nibName:nil,bundle:nil)}
+    init(content:MapContent){self.content=content;super.init(nibName:nil,bundle:nil)}
     // New positions while the full-screen people map is open.
     func update(_ next:MapContent) {if isViewLoaded {coordinator?.apply(next)}}
     override func viewDidLayoutSubviews() {
@@ -2384,7 +2376,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     }
     required init?(coder:NSCoder){fatalError("init(coder:) unavailable")}
     override func viewDidLoad(){
-        super.viewDidLoad();title=picker ? "Choose location" : "Your journey"
+        super.viewDidLoad();title="Your journey"
         view.backgroundColor = .systemBackground
         map.delegate=self;map.translatesAutoresizingMaskIntoConstraints=false
         if #available(iOS 16.0, *) {map.preferredConfiguration=MKStandardMapConfiguration(elevationStyle:.realistic)} else {map.mapType = .standard}
@@ -2394,17 +2386,11 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         view.addSubview(map)
         NSLayoutConstraint.activate([map.leadingAnchor.constraint(equalTo:view.leadingAnchor),map.trailingAnchor.constraint(equalTo:view.trailingAnchor),map.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor),map.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor)])
         navigationItem.leftBarButtonItem=UIBarButtonItem(barButtonSystemItem:.close,target:self,action:#selector(close))
-        if picker {navigationItem.rightBarButtonItem=UIBarButtonItem(title:"Use location",style:.done,target:self,action:#selector(confirm));navigationItem.rightBarButtonItem?.isEnabled=false}
         let styles=UISegmentedControl(items:["Map","Satellite"]);styles.selectedSegmentIndex=content.mapStyle=="satellite" ? 1 : 0;if let style=content.mapStyle {applyMapStyle(map,style)};styles.addTarget(self,action:#selector(styleChanged(_:)),for:.valueChanged);styles.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(styles)
         styles.backgroundColor = .secondarySystemBackground
         self.styles=styles;styles.isHidden=content.controls != nil
         NSLayoutConstraint.activate([styles.centerXAnchor.constraint(equalTo:view.centerXAnchor),styles.topAnchor.constraint(equalTo:map.topAnchor,constant:16),styles.widthAnchor.constraint(equalToConstant:220),styles.heightAnchor.constraint(equalToConstant:36)])
-        if picker {
-            let tap=UITapGestureRecognizer(target:self,action:#selector(pick(_:)));tap.numberOfTapsRequired=1;map.addGestureRecognizer(tap)
-            let hint=UILabel();hint.text="Tap the map to place your pin";hint.font = .preferredFont(forTextStyle:.subheadline);hint.textAlignment = .center;hint.backgroundColor = .secondarySystemBackground;hint.layer.cornerRadius=14;hint.clipsToBounds=true;hint.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(hint)
-            NSLayoutConstraint.activate([hint.centerXAnchor.constraint(equalTo:view.centerXAnchor),hint.bottomAnchor.constraint(equalTo:map.bottomAnchor,constant:-24),hint.widthAnchor.constraint(equalToConstant:280),hint.heightAnchor.constraint(equalToConstant:40)])
-        }
-        if !picker && (content.camera != nil || content.overview != nil) {
+        if content.camera != nil || content.overview != nil {
             // The people map and the route overview: same annotations, density,
             // photos, camera, edge avatars and controls as the embedded map,
             // continuing from its camera and mode.
@@ -2435,8 +2421,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         for metadata in content.pins {
             guard let c=coordinate(metadata["point"]) else {continue}
             let pin=JourneyPin();pin.coordinate=c;pin.title=metadata["title"] as? String;pin.subtitle=metadata["subtitle"] as? String;pin.metadata=metadata;map.addAnnotation(pin)
-            addPlaceCircles(metadata,at:c)
-            if picker {selected=c;navigationItem.rightBarButtonItem?.isEnabled=true}
+            if let r=metadata["radius"] as? Double,r.isFinite,r>0 {map.addOverlay(MKCircle(center:c,radius:min(r,100000)))}
         }
         if let camera=initialCamera {map.setCamera(camera,animated:false)}
         else if !content.coordinates.isEmpty {map.setVisibleMapRect(content.rect,edgePadding:UIEdgeInsets(top:80,left:35,bottom:80,right:35),animated:false)}
@@ -2447,29 +2432,9 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
     func mapView(_ mapView:MKMapView,regionDidChangeAnimated animated:Bool) {coordinator?.regionDidChange()}
     func mapViewDidChangeVisibleRegion(_ mapView:MKMapView) {coordinator?.layoutIndicators()}
     @objc func close(){finish(["cancelled":true])}
-    @objc func confirm(){if let c=selected {finish(["latitude":c.latitude,"longitude":c.longitude])}}
     @objc func styleChanged(_ sender:UISegmentedControl){
         let style=sender.selectedSegmentIndex==0 ? "standard" : "satellite"
         applyMapStyle(map,style);onStyle?(style)
-    }
-    @objc func pick(_ sender:UITapGestureRecognizer){
-        let p=sender.location(in:map)
-        // Ignore controls and annotation taps; only bare-map taps reposition a place.
-        if let touched=map.hitTest(p,with:nil),touched is UIControl{return}
-        selected=map.convert(p,toCoordinateFrom:map)
-        map.removeAnnotations(map.annotations);map.removeOverlays(map.overlays)
-        if let c=selected {
-            let pin=JourneyPin();pin.coordinate=c;pin.title="Selected location";map.addAnnotation(pin)
-            if let pin=content.pins.first {addPlaceCircles(pin,at:c)}
-        }
-        navigationItem.rightBarButtonItem?.isEnabled=true
-    }
-    // The place's circles: a Home's arrival circle first (dashed), then the radius itself.
-    private func addPlaceCircles(_ metadata:[String:Any],at c:CLLocationCoordinate2D) {
-        if let arrival=metadata["arrivalRadius"] as? Double,arrival.isFinite,arrival>0 {
-            let circle=MKCircle(center:c,radius:min(arrival,100000));circle.title="arrival";map.addOverlay(circle,level:.aboveRoads)
-        }
-        if let r=metadata["radius"] as? Double,r.isFinite,r>0 {map.addOverlay(MKCircle(center:c,radius:min(r,100000)))}
     }
     func mapView(_ mapView:MKMapView,rendererFor overlay:MKOverlay)->MKOverlayRenderer {
         if let lines=overlay as? DensityLines {return densityRenderer(lines,dimmed:coordinator?.densityDimmed ?? false)}
@@ -2479,12 +2444,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if let live=overlay as? LivePolyline {let renderer=MKPolylineRenderer(polyline:live);renderer.strokeColor=brandAccent;renderer.lineWidth=6;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
         if let line=overlay as? StyledLine {return styledRenderer(line)}
         if let line=overlay as? MKPolyline {let renderer=MKPolylineRenderer(polyline:line);renderer.strokeColor=routeColor;renderer.lineWidth=5;renderer.lineCap = .round;renderer.lineJoin = .round;return renderer}
-        if let circle=overlay as? MKCircle {
-            let renderer=MKCircleRenderer(circle:circle)
-            if circle.title=="arrival" {renderer.strokeColor=UIColor.systemBlue.withAlphaComponent(0.55);renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.05);renderer.lineWidth=1.5;renderer.lineDashPattern=[7,5]}
-            else {renderer.strokeColor = .systemBlue;renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.12);renderer.lineWidth=1}
-            return renderer
-        }
+        if let circle=overlay as? MKCircle {let renderer=MKCircleRenderer(circle:circle);renderer.strokeColor = .systemBlue;renderer.fillColor=UIColor.systemBlue.withAlphaComponent(0.12);renderer.lineWidth=1;return renderer}
         return MKOverlayRenderer(overlay:overlay)
     }
     func mapView(_ mapView:MKMapView,viewFor annotation:MKAnnotation)->MKAnnotationView? {
@@ -2543,7 +2503,7 @@ private class AppleMapController:UIViewController,MKMapViewDelegate {
         if let annotation=view.annotation,coordinator?.activateActivity(annotation) == true {return}
         if let cluster=view.annotation as? MKClusterAnnotation {coordinator?.open(cluster:cluster);return}
         if let pin=view.annotation as? JourneyPin,pin.isOverviewPhoto {coordinator?.select(photo:pin);return}
-        guard !picker,let pin=view.annotation as? JourneyPin,
+        guard let pin=view.annotation as? JourneyPin,
               (pin.metadata["kind"] as? String)=="photo",
               let photo=pin.metadata["photoID"] as? String,
               let journey=pin.metadata["journeyID"] as? String else{return}
@@ -2649,6 +2609,11 @@ extension AppleMapsPlugin: MKMapViewDelegate {
             view.centerOffset=CGPoint(x:0,y:-18)
             view.canShowCallout=true
             return view
+        } else if kind=="place" {
+            // The pin of the saved-place map: the circles say what it is, so no label under it and nothing to open.
+            marker.markerTintColor = .systemBlue
+            marker.titleVisibility = .hidden
+            marker.canShowCallout=false
         } else {
             marker.markerTintColor = .systemBlue
         }

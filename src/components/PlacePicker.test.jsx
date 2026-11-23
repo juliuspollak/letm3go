@@ -23,12 +23,10 @@ it('keeps the same payload while nothing about the place changed, so the map is 
  rerender(<PlacePicker point={{latitude:-34.5,longitude:150.8}} radius={31} onPick={()=>{}}/>);
  expect(seen.props.payload).not.toBe(first);
 });
-it('reports a tap or a full-screen choice as a point, and nothing else',()=>{
+it('hands the live map a tap straight to the editor, and offers no other way to choose',()=>{
  const onPick=vi.fn();
  render(<PlacePicker point={null} radius={150} onPick={onPick}/>);
- seen.props.onPick({latitude:1,longitude:2,extra:true});
- seen.props.onResult({latitude:3,longitude:4});
- seen.props.onResult({cancelled:true});
- seen.props.onPick(undefined);
- expect(onPick.mock.calls).toEqual([[{latitude:1,longitude:2}],[{latitude:3,longitude:4}]]);
+ expect(seen.props.onPick).toBe(onPick);
+ expect(seen.props.onResult).toBeUndefined();
+ expect(seen.props.picker).toBeUndefined();
 });
