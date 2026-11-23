@@ -226,6 +226,7 @@ enum RecorderHarness {
         defer { try? FileManager.default.removeItem(at:directory) }
         do {
             let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+            try fillEvidenceQuota(directory)
             let start = Date().timeIntervalSince1970 - 4000
             let park = home.latitude + 900 / 111_320
             var drive = RecordedActivity(activity:"Driving",startedAt:start-100,resumedAt:start-100,title:"Driving")
@@ -276,6 +277,7 @@ enum RecorderHarness {
         defer { try? FileManager.default.removeItem(at:directory) }
         do {
             let r = try makeRecorder(directory:directory,owner:owner,key:key,motion:HarnessMotion())
+            try fillEvidenceQuota(directory)
             let start = Date().timeIntervalSince1970 - 1600
             r.beginAutomaticProbe(movementBegan:true)
             for index in 0...30 {
@@ -385,6 +387,14 @@ enum RecorderHarness {
         r.refreshAutomaticMonitoring()
         return r
     }
+    static func fillEvidenceQuota(_ directory: URL) throws {
+        let file = directory.appendingPathComponent("quota-fixture.unconfirmed-walk")
+        _ = FileManager.default.createFile(atPath:file.path,contents:nil)
+        let handle = try FileHandle(forWritingTo:file)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: UInt64(RecordingStorage.evidenceByteLimit))
+    }
+
     static func freshStore() -> (URL, Data, String) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("harness-\(UUID().uuidString)")
         var key = Data(count: 32); for i in 0..<32 { key[i] = UInt8.random(in: 0...255) }
@@ -600,6 +610,8 @@ enum RecorderHarness {
     static func watchDuringWait() async {
         let (directory, key, owner) = freshStore(), motion = HarnessMotion()
         guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "watch: opened") }
+        do { try fillEvidenceQuota(directory) }
+        catch { return check(false, "evidence quota fixture failed: \(error.localizedDescription)") }
         r.uiUnlocked = true // Exercise the signed-in UI snapshot, not its locked payload.
         let returnAt = Date().timeIntervalSince1970 - 90
         guard let (_, shop) = toPublishedStop(r, name: "watch", returnAt: returnAt, stopSeconds: 900) else { return }
@@ -617,6 +629,26 @@ enum RecorderHarness {
         r.refreshAutomaticMonitoring()
         check(r.manualExclusion.current == nil, "watch: explicit workout finish releases automatic ownership")
         check(r.snapshot()["automaticAvailable"] as? Bool == true, "snapshot: watch: explicit workout finish releases automatic ownership")
+        let start = now - 3600
+        let points = [0, 1, 2].map { index in
+            WatchPoint(latitude:home.latitude + Double(index) * 0.0004, longitude:home.longitude,
+                       timestamp:start + Double(index) * 20, accuracy:8, altitude:0, speed:1.5)
+        }
+        var overlapping = RecordedActivity(activity:"Walking",startedAt:start,resumedAt:start,title:"Phone walk")
+        overlapping.recordingMode = "automatic"
+        overlapping.points = points.map { point in
+            GPSPoint(latitude:point.latitude,longitude:point.longitude + 0.001,timestamp:point.timestamp,
+                     accuracy:point.accuracy,altitude:point.altitude,speed:point.speed)
+        }
+        overlapping.finish(at:start+40)
+        do { try r.storage?.save(overlapping); r.trips.append(overlapping) }
+        catch { return check(false, "watch quota: could not save comparison route") }
+        let transfer = WatchActivityTransfer(id:UUID().uuidString,ownerID:owner,activity:"Walking",startedAt:start,
+                                             endedAt:start+40,activeSeconds:40,points:points)
+        check(r.importWatchActivity(transfer) == .imported && r.importWatchActivity(transfer) == .duplicate,
+              "watch quota: import and duplicate acknowledgement work with full ordinary evidence quota")
+        check(r.trips.contains { $0.id == overlapping.id && $0.points == overlapping.points },
+              "watch quota: time overlap never deletes distinct phone geometry")
     }
 
     static func temporaryPause() async {
@@ -705,6 +737,8 @@ enum RecorderHarness {
     static func pausedManualAutomatic() async {
         let (directory, key, owner) = freshStore(), motion = HarnessMotion()
         guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "paused: recorder opened") }
+        do { try fillEvidenceQuota(directory) }
+        catch { return check(false, "evidence quota fixture failed: \(error.localizedDescription)") }
         r.uiUnlocked = true // Exercise the signed-in UI snapshot, not its locked payload.
         r.refreshAutomaticMonitoring()
         check(r.automaticAvailable && r.automaticRecordingState == .available, "paused: no manual journey, automatic recording available")

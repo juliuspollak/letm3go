@@ -31,7 +31,13 @@ check(RouteTrimming.trimmed(trip,start:2,end:1) == nil,"inverted trimming is rej
 check(RouteTrimming.trimmed(trip,start:0,end:999) == nil,"out of bounds trimming is rejected")
 var mergeA=trip; mergeA.id=UUID().uuidString; mergeA.details=ActivityDetails(); mergeA.details?.tags=["road"]
 var mergeB=trip; mergeB.id=UUID().uuidString; mergeB.startedAt=trip.startedAt+1000; mergeB.endedAt=(trip.endedAt ?? trip.startedAt)+1000; mergeB.details=ActivityDetails(); mergeB.details?.tags=["road","coffee"]
+let firstPrivateFix = point(-32.1,260)
+let secondPrivateFix = point(-32.2,260)
+mergeA.preservePrivateRoute([firstPrivateFix])
+mergeB.preservePrivateRoute([secondPrivateFix])
 let mergedTrip=ActivityMerging.merged([mergeB,mergeA])
+check(Set(mergedTrip?.privateRoutePoints ?? []) == Set([firstPrivateFix, secondPrivateFix]),
+      "merge keeps both private tails even when fixes share a timestamp")
 check(mergedTrip != nil,"two finished recordings merge")
 check(mergedTrip?.points.count == mergeA.points.count+mergeB.points.count,"merge keeps every fix")
 check(mergedTrip?.startedAt == mergeA.startedAt && mergedTrip?.endedAt == mergeB.endedAt,"merge spans both recordings")
@@ -6116,11 +6122,13 @@ do {
     try! storage.save(draft)
     try! storage.retainUnconfirmedWalk(draft)
     check((try! storage.load()).first?.state == "finished","archival cannot replace or remove a finished record")
-    try! storage.retainAutomaticTail(draft,from:draft.points[1].timestamp)
-    try! storage.retainAutomaticTail(draft,from:draft.points[1].timestamp)
-    let privateFiles = try! FileManager.default.contentsOfDirectory(atPath:directory.path).filter { $0.hasSuffix(".unconfirmed-walk") }
-    check(privateFiles.count == 2 && (try! storage.load()).count == 1,
-          "repeated manual overlap retention leaves one private fragment and the original History record")
+    let tail = Array(draft.points.suffix(1))
+    draft.preservePrivateRoute(tail)
+    draft.preservePrivateRoute(tail)
+    try! storage.save(draft)
+    let recovered = try! storage.load().first!
+    check(recovered.privateRoutePoints == tail && recovered.points == draft.points,
+          "repeated tail retention commits one private copy with the original History record")
 }
 
 // Simulate one successful migrated piece followed by a failed destination write.
@@ -6181,12 +6189,55 @@ do {
         try store.retainUnconfirmedWalk(draft)
         check(false,"pressure must refuse new evidence")
     } catch {
-        check((error as NSError).code == CocoaError.fileWriteOutOfSpace.rawValue,"pressure reports storage explicitly")
+        check(error is RecordingStorage.EvidenceQuotaFull,"pressure reports storage explicitly")
         check((try! store.load()).first?.points == draft.points,"pressure leaves the durable draft unchanged")
     }
     try! FileManager.default.setAttributes([.modificationDate:now.addingTimeInterval(-8*86_400)],ofItemAtPath:pressure.path)
     check(try! store.pruneUnconfirmedWalks(now:now).isEmpty,"unreadable evidence is never assumed to be noise")
     check(!store.takeEvidenceMaintenance().issues.isEmpty,"cleanup failures are available to startup diagnostics")
+    let finishAt = Date().timeIntervalSince1970 - 10
+    var drive = RecordedActivity(activity:"Driving",startedAt:finishAt-60,resumedAt:finishAt-60,title:"Drive")
+    drive.recordingMode = "automatic"
+    drive.points = walkPath([(0,0),(150,0)],start:finishAt-60)
+    drive.finish(at:finishAt)
+    drive.preservePrivateRoute([placeFix(151,0,finishAt+1,speed:1)])
+    try! store.save(drive)
+    let reloaded = try! store.load().first { $0.id == drive.id }!
+    check(reloaded.points == drive.points && reloaded.privateRoutePoints == drive.privateRoutePoints,
+          "evidence quota leaves confirmed route commits and private tails available")
+    let payload = FinishedUpload.payload(reloaded)
+    check(FinishedUpload.eligible(reloaded,now:finishAt+1) &&
+          (payload?["route_points"] as? [[String:Any]])?.count == drive.points.count && payload?["privateRoutePoints"] == nil,
+          "evidence quota leaves confirmed native upload eligible with only its public route")
+    var handoff = WalkingTransportHandoff(walk:draft,transport:drive,retainUnconfirmedWalk:true)
+    var gap = draft
+    gap.id = UUID().uuidString
+    handoff.unassignedEvidence = gap
+    try! store.prepareWalkingHandoff(handoff)
+    let recovered = try! store.load()
+    check(!store.evidenceRecoveryBlocked && recovered.contains { $0.id == drive.id },
+          "full ordinary evidence quota cannot block handoff replay while recovery reserve is available")
+    check(try! store.readRetainedEvidence(id:draft.id).points == draft.points &&
+          store.readRetainedEvidence(id:gap.id).points == gap.points,
+          "handoff uses the reserve and preserves independently recoverable evidence")
+    try! store.prepareWalkingHandoff(handoff)
+    check((try! store.load()).filter { $0.id == drive.id }.count == 1,"reserve-assisted replay preserves stable IDs")
+    let fullReserve = directory.appendingPathComponent("overflow.recovery-evidence")
+    _ = FileManager.default.createFile(atPath:fullReserve.path,contents:nil)
+    let reserveFile = try! FileHandle(forWritingTo:fullReserve)
+    try! reserveFile.truncate(atOffset:UInt64(RecordingStorage.recoveryEvidenceByteLimit))
+    try! reserveFile.close()
+    gap.id = UUID().uuidString
+    handoff.unassignedEvidence = gap
+    try! store.prepareWalkingHandoff(handoff)
+    let blockedRecovery = try! store.load()
+    check(store.evidenceRecoveryBlocked && blockedRecovery.contains { $0.id == drive.id },
+          "both evidence pools full preserve the confirmed record even when replay pauses")
+    check(FileManager.default.fileExists(atPath:directory.appendingPathComponent(WalkingTransportHandoff.fileName).path),
+          "both evidence pools full leave the unresolved handoff journal intact")
+    try! FileManager.default.removeItem(at:fullReserve)
+    check((try! store.load()).contains { $0.id == drive.id } && !store.evidenceRecoveryBlocked,
+          "replay recovers after reserve capacity is available without changing the confirmed ID")
     try! FileManager.default.removeItem(at:pressure)
     try! store.retainUnconfirmedWalk(draft)
     check(try! store.readRetainedEvidence(id:draft.id).points == draft.points,"retry keeps the original ID and route")
@@ -6197,6 +6248,11 @@ do {
     check(try! store.pruneUnconfirmedWalks(now:expiry,protecting:"\(noise.id).unconfirmed-walk").isEmpty,"protected stationary evidence survives maintenance")
     check(try! store.pruneUnconfirmedWalks(now:expiry).map(\.name) == ["\(noise.id).unconfirmed-walk"],"only proven stationary evidence expires")
     check(store.takeEvidenceMaintenance().evictions.count == 1,"startup can consume each successful eviction once")
+    var withPrivateMovement = noise
+    withPrivateMovement.id = UUID().uuidString
+    withPrivateMovement.preservePrivateRoute([placeFix(25,0,1020,speed:1)])
+    try! store.retainUnconfirmedWalk(withPrivateMovement)
+    check(try! store.pruneUnconfirmedWalks(now:expiry).isEmpty,"stationary visible geometry cannot expire an independently moving private tail")
     try! store.retainUnconfirmedWalk(noise)
     var newer = noise
     newer.points = draft.points

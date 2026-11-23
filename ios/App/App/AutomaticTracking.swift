@@ -503,7 +503,7 @@ extension LocationRecorder {
         if let original = automaticTrip {
             var clipped = ManualDraftClosure.truncated(original,before:start)
             if clipped.points.count >= 2, clipped.distanceMeters >= 25, clipped.confirmPendingWalk() {
-                try storage?.retainAutomaticTail(original,from:start)
+                clipped.preservePrivateRoute(original.points.filter { $0.timestamp >= start })
             }
             automaticTrip = clipped
             do { try finishAutomatic(force: true, reason: reason, trigger: trigger, event: event) }
@@ -927,6 +927,7 @@ extension LocationRecorder {
         guard let handoff = pendingWalkingHandoff, let storage, let last = handoff.transport.points.last else { return }
         // Persist intent before touching either record. On failure keep this exact
         // pair, including its IDs, for retry. Relaunch replays the journal first.
+        defer { reportEvidenceMaintenance() }
         try storage.prepareWalkingHandoff(handoff)
         try storage.replayWalkingHandoff()
         pendingWalkingHandoff = nil
@@ -1014,8 +1015,7 @@ extension LocationRecorder {
         // made the final decision much later.
         let preTrimFixes = trip.points.count
         defer { reportEvidenceMaintenance() }
-        do { try storage.retainAutomaticTail(trip,from:end.nextUp) }
-        catch { lastError = "Arrival evidence could not be saved: \(error.localizedDescription)"; return }
+        trip.preservePrivateRoute(trip.points.filter { $0.timestamp > end })
         if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:end) {
             trip = trimmed
         } else {
@@ -1157,7 +1157,7 @@ extension LocationRecorder {
     func retainWalkingEvidence(_ trip: RecordedActivity, reason: String) throws {
         guard let storage else { return }
         defer { reportEvidenceMaintenance() }
-        try storage.retainUnconfirmedWalk(trip)
+        try storage.retainUnconfirmedWalk(trip,allowRecoveryReserve:true)
         recordDiagnostic("recovery","Unconfirmed walking evidence retained locally",
             details:["activityRef":String(trip.id.prefix(8)),"reason":reason,"savedFixes":String(trip.points.count)])
     }
@@ -1378,7 +1378,7 @@ extension LocationRecorder {
                 trackingEvent("Stopped journey not published: it was entirely inside a manual recording (fixes retained)")
                 return
             }
-            if kept.confirmPendingWalk() { try storage.retainAutomaticTail(trip,from:manualStart) }
+            if kept.confirmPendingWalk() { kept.preservePrivateRoute(trip.points.filter { $0.timestamp >= manualStart }) }
             trip = kept
             let quality = trip.routeQualitySummary()
             trip.updateDetails { $0.routeQuality = quality }
@@ -1508,8 +1508,8 @@ extension LocationRecorder {
             detector.walkingArrivalConfirmed(now:Date().timeIntervalSince1970)
         let lastMovement = (walkingArrival ? detector.walkingArrivalEndAt : nil) ??
             detector.lastMovementAt ?? trip.points.last?.timestamp ?? trip.startedAt
-        if walkingArrival, let trimmed = JourneySplit.drivingEnd(trip,atOrBefore:lastMovement) {
-            try storage.retainAutomaticTail(trip,from:lastMovement.nextUp)
+        if walkingArrival, var trimmed = JourneySplit.drivingEnd(trip,atOrBefore:lastMovement) {
+            trimmed.preservePrivateRoute(trip.points.filter { $0.timestamp > lastMovement })
             trip = trimmed
         }
         let approach = force ? nil : trip.points.last(where: { point in
@@ -1523,7 +1523,7 @@ extension LocationRecorder {
             ? max(trip.startedAt,min(Date().timeIntervalSince1970,trip.points.last?.timestamp ?? Date().timeIntervalSince1970))
             : max(trip.startedAt,min(Date().timeIntervalSince1970,
                 min(approach?.timestamp ?? lastMovement,detector.stationarySince ?? Double.greatestFiniteMagnitude)))
-        try storage.retainAutomaticTail(trip,from:end.nextUp)
+        trip.preservePrivateRoute(trip.points.filter { $0.timestamp > end })
         trip.points = trip.points.filter { $0.timestamp <= end }
         trip.distanceMeters = trip.measuredDistance
         // A user-forced finish on a journey without genuine movement must not

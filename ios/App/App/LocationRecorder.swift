@@ -1489,7 +1489,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     // Pure, so a long history can be turned into JSON off the main thread.
     static func dictionary(_ trip: RecordedActivity, owner: String?, hasStorage: Bool) -> [String: Any] {
-        guard let data = try? JSONEncoder().encode(trip), var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [:] }
+        var publicTrip = trip
+        publicTrip.privateRoutePoints = nil
+        guard let data = try? JSONEncoder().encode(publicTrip), var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [:] }
         if hasStorage, let photos = trip.details?.photos {
             dict["localPhotos"] = photos.map { photo -> [String:Any] in
                 var item = (try? JSONSerialization.jsonObject(with:JSONEncoder().encode(photo))) as? [String:Any] ?? [:]

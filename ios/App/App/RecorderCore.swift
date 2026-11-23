@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 import SQLite3
 
-struct GPSPoint: Codable, Equatable {
+struct GPSPoint: Codable, Hashable {
     var latitude: Double
     var longitude: Double
     var timestamp: Double
@@ -54,6 +54,17 @@ enum ActivityTypes {
 struct RecordedActivity: Codable {
     var retainedSourceDigest: String?
     var retainedParentID: String?
+    // Points excluded from the public geometry, committed with the recording.
+    // This field stays out of snapshots, live trails and cloud uploads.
+    var privateRoutePoints: [GPSPoint]?
+
+    mutating func preservePrivateRoute(_ points: [GPSPoint]) {
+        guard !points.isEmpty, RecordingStorage.EvidenceQuality.classify(points) != .stationaryNoise else { return }
+        var merged = privateRoutePoints ?? []
+        var seen = Set(merged)
+        merged.append(contentsOf: points.filter { seen.insert($0).inserted })
+        privateRoutePoints = merged.sorted { $0.timestamp < $1.timestamp }
+    }
     var id = UUID().uuidString
     var activity: String
     var vehicle: String?
@@ -619,6 +630,7 @@ enum ActivityMerging {
         var pauses: [WatchPausePeriod] = []
         var allHeartRate = true
         for part in parts {
+            merged.preservePrivateRoute(part.privateRoutePoints ?? [])
             let base = points.count
             let top = part.points.map { $0.segment }.max() ?? 0
             points += part.points.map { var point = $0; point.segment += offset; return point }
@@ -761,27 +773,14 @@ final class RecordingStorage {
             hash[8],hash[9],hash[10],hash[11],hash[12],hash[13],hash[14],hash[15])).uuidString
     }
 
-    func retainAutomaticTail(_ trip: RecordedActivity, from start: Double) throws {
-        let points = trip.points.filter { $0.timestamp >= start }
-        guard let first = points.first else { return }
-        if let before = trip.points.last(where: { $0.timestamp < start }),
-           EvidenceQuality.classify([before] + points) == .stationaryNoise { return }
-        var evidence = trip
-        evidence.retainedParentID = trip.id
-        evidence.id = evidenceID("automatic-tail:\(trip.id):\(first.timestamp)")
-        evidence.startedAt = first.timestamp
-        evidence.points = points
-        evidence.distanceMeters = evidence.measuredDistance
-        try retainUnconfirmedWalk(evidence)
-    }
-
     // Publish the encrypted evidence directly. An interrupted cleanup can be
     // retried using the digest of the exact draft, never a newer activity.
-    func retainUnconfirmedWalk(_ trip: RecordedActivity, preserveSourcePoints: Bool = true) throws {
+    func retainUnconfirmedWalk(_ trip: RecordedActivity, preserveSourcePoints: Bool = true, allowRecoveryReserve: Bool = false) throws {
         guard UUID(uuidString:trip.id) != nil else { throw CocoaError(.fileWriteInvalidFileName) }
-        maintainRetainedEvidence(protecting: "\(trip.id).unconfirmed-walk")
         let activeName = "\(trip.id).json"
-        let retainedName = "\(trip.id).unconfirmed-walk"
+        let normalName = "\(trip.id).unconfirmed-walk"
+        let reserveName = "\(trip.id).recovery-evidence"
+        let retainedName = FileManager.default.fileExists(atPath: directory.appendingPathComponent(reserveName).path) ? reserveName : normalName
         var evidence = trip
         evidence.retainedSourceDigest = nil
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent(activeName).path) {
@@ -789,6 +788,7 @@ final class RecordingStorage {
             let active = try decoder.decode(RecordedActivity.self,from:bytes)
             if active.state != "finished" || active.isProvisional {
                 evidence.retainedSourceDigest = digest(bytes)
+                evidence.preservePrivateRoute(active.privateRoutePoints ?? [])
                 if preserveSourcePoints {
                     let timestamps = Set(evidence.points.map(\.timestamp))
                     evidence.points.append(contentsOf:active.points.filter { !timestamps.contains($0.timestamp) })
@@ -799,14 +799,15 @@ final class RecordingStorage {
         }
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent(retainedName).path) {
             let saved = try decoder.decode(RecordedActivity.self,from:readData(name:retainedName))
-            if saved.points != evidence.points {
+            if saved.points != evidence.points || saved.privateRoutePoints != evidence.privateRoutePoints {
+                evidence.preservePrivateRoute(saved.privateRoutePoints ?? [])
                 // A retry can carry more fixes than the first write. Merge, never
                 // throw: a permanent failure here would wedge finishing the journey.
                 let known = Set(evidence.points.map(\.timestamp))
                 evidence.points.append(contentsOf:saved.points.filter { !known.contains($0.timestamp) })
                 evidence.points.sort { $0.timestamp < $1.timestamp }
                 evidence.distanceMeters = evidence.measuredDistance
-                try writeRetainedEvidence(evidence, name: retainedName)
+                try writeRetainedEvidence(evidence, name: retainedName, allowRecoveryReserve: allowRecoveryReserve)
                 try removeRetainedSource(evidence)
 
                 return
@@ -816,7 +817,7 @@ final class RecordingStorage {
                 return
             }
         }
-        try writeRetainedEvidence(evidence, name: retainedName)
+        try writeRetainedEvidence(evidence, name: retainedName, allowRecoveryReserve: allowRecoveryReserve)
         try removeRetainedSource(evidence)
 
     }
@@ -830,7 +831,7 @@ final class RecordingStorage {
     }
     private func reconcileRetainedSources() throws {
         for url in try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)
-            where url.pathExtension == "unconfirmed-walk" {
+            where ["unconfirmed-walk", "recovery-evidence"].contains(url.pathExtension) {
             // Only evidence whose source is still on disk can need cleanup; skip
             // decrypting and decoding the rest.
             guard FileManager.default.fileExists(atPath:directory.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".json").path) else { continue }
@@ -861,6 +862,13 @@ final class RecordingStorage {
     }
 
     static let evidenceByteLimit = 48 * 1024 * 1024
+    static let recoveryEvidenceByteLimit = 8 * 1024 * 1024
+    static let recordingDiskHeadroom = 16 * 1024 * 1024
+    struct EvidenceQuotaFull: LocalizedError {
+        var errorDescription: String? {
+            "Private evidence capacity is full. The existing draft or recovery journal was kept."
+        }
+    }
     private(set) var lastEvictions: [(name: String, reason: String)] = []
     private(set) var evidenceIssues: [String] = []
     private(set) var evidenceRecoveryBlocked = false
@@ -872,40 +880,87 @@ final class RecordingStorage {
 
     // Private recovery uses the same encrypted file and stable ID. Reading does
     // not promote the activity, upload it, or remove its only durable copy.
+    private func activityFiles() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" && UUID(uuidString:$0.deletingPathExtension().lastPathComponent) != nil }
+    }
+
+    private func privateTail(_ file: URL, deleted: Set<String>) -> RecordedActivity? {
+        let id = file.deletingPathExtension().lastPathComponent
+        guard !deleted.contains(ActivityIdentity.canonical(id)),
+              var trip = try? decoder.decode(RecordedActivity.self, from: readData(name:file.lastPathComponent)),
+              let points = trip.privateRoutePoints, let first = points.first else { return nil }
+        trip.retainedParentID = trip.id
+        trip.id = evidenceID("private-route:\(trip.id)")
+        trip.points = points
+        trip.startedAt = first.timestamp
+        trip.endedAt = points.last?.timestamp
+        trip.distanceMeters = trip.measuredDistance
+        trip.privateRoutePoints = nil
+        return trip
+    }
+
     func retainedEvidenceIDs() throws -> [String] {
         let deleted = try deletedIDs()
-        return try evidenceFiles().compactMap { url in
+        let detached = try evidenceFiles().compactMap { url -> String? in
             let id = url.deletingPathExtension().lastPathComponent
             guard UUID(uuidString:id) != nil, !deleted.contains(ActivityIdentity.canonical(id)) else { return nil }
             return id
-        }.sorted()
+        }
+        let tails = try activityFiles().compactMap { privateTail($0, deleted:deleted)?.id }
+        return Set(detached + tails).sorted()
     }
 
     func readRetainedEvidence(id: String) throws -> RecordedActivity {
         guard UUID(uuidString: id) != nil, try !isDeleted(id) else { throw CocoaError(.fileReadNoSuchFile) }
-        let evidence = try decoder.decode(RecordedActivity.self, from: readData(name: "\(id).unconfirmed-walk"))
-        if let parent = evidence.retainedParentID, try isDeleted(parent) { throw CocoaError(.fileReadNoSuchFile) }
-        return evidence
+        for suffix in ["recovery-evidence", "unconfirmed-walk"] {
+            let name = "\(id).\(suffix)"
+            guard FileManager.default.fileExists(atPath:directory.appendingPathComponent(name).path) else { continue }
+            let evidence = try decoder.decode(RecordedActivity.self, from: readData(name:name))
+            if let parent = evidence.retainedParentID, try isDeleted(parent) { throw CocoaError(.fileReadNoSuchFile) }
+            return evidence
+        }
+        let deleted = try deletedIDs()
+        let files = try activityFiles()
+        if let file = files.first(where: {
+            ActivityIdentity.matches(evidenceID("private-route:\($0.deletingPathExtension().lastPathComponent)"), id)
+        }), let tail = privateTail(file, deleted:deleted) { return tail }
+        throw CocoaError(.fileReadNoSuchFile)
     }
 
     private func evidenceFiles() throws -> [URL] {
         try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
-            .filter { $0.pathExtension == "unconfirmed-walk" }
+            .filter { ["unconfirmed-walk", "recovery-evidence"].contains($0.pathExtension) }
     }
 
-    private func writeRetainedEvidence(_ evidence: RecordedActivity, name: String) throws {
+    private func writeRetainedEvidence(_ evidence: RecordedActivity, name: String, allowRecoveryReserve: Bool) throws {
         let data = try encoder.encode(evidence)
-        let others = try evidenceFiles().filter { $0.lastPathComponent != name }
-        let occupied = try others.reduce(0) { total, file in
-            total + (try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-        }
-        let existing = (try? directory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         let incoming = data.count + (encryptionKey == nil ? 0 : 28)
-        guard incoming <= existing || occupied + incoming <= Self.evidenceByteLimit else {
-            throw CocoaError(.fileWriteOutOfSpace, userInfo: [NSLocalizedDescriptionKey:
-                "Private movement evidence storage is full. Saved routes were kept. Export retained routes from Tracking & Permissions. New evidence cannot be stored until space is available."])
+        let files = try evidenceFiles()
+        func admit(_ destination: String, suffix: String, limit: Int) throws {
+            let occupied = try files.filter { $0.pathExtension == suffix && $0.lastPathComponent != destination }
+                .reduce(0) { $0 + (try $1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
+            let existing = (try? directory.appendingPathComponent(destination).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard incoming <= existing || occupied + incoming <= limit else { throw EvidenceQuotaFull() }
+            // Atomic replacement needs room for the new payload alongside the old
+            // one. Only private archival is declined at this advisory floor.
+            if let available = try? directory.resourceValues(forKeys:[.volumeAvailableCapacityKey]).volumeAvailableCapacity,
+               available < incoming + Self.recordingDiskHeadroom {
+                throw CocoaError(.fileWriteOutOfSpace, userInfo:[NSLocalizedDescriptionKey:
+                    "iPhone storage is low. Private evidence was deferred and the source was kept."])
+            }
+            try writeData(data, name:destination)
         }
-        try writeData(data, name: name)
+        if name.hasSuffix(".recovery-evidence") {
+            try admit(name, suffix:"recovery-evidence", limit:Self.recoveryEvidenceByteLimit)
+            return
+        }
+        do {
+            try admit(name, suffix:"unconfirmed-walk", limit:Self.evidenceByteLimit)
+        } catch is EvidenceQuotaFull where allowRecoveryReserve {
+            try admit("\(evidence.id).recovery-evidence", suffix:"recovery-evidence", limit:Self.recoveryEvidenceByteLimit)
+            evidenceIssues.append("Private evidence quota reached; used isolated recovery reserve")
+        }
     }
 
     @discardableResult
@@ -919,7 +974,7 @@ final class RecordingStorage {
                 let info = try file.resourceValues(forKeys: [.contentModificationDateKey])
                 guard let changed = info.contentModificationDate, now.timeIntervalSince(changed) > 7 * 86_400 else { continue }
                 let evidence = try decoder.decode(RecordedActivity.self, from: readData(name: file.lastPathComponent))
-                guard EvidenceQuality.classify(evidence.points) == .stationaryNoise else { continue }
+                guard EvidenceQuality.classify(evidence.points + (evidence.privateRoutePoints ?? [])) == .stationaryNoise else { continue }
                 // Leave both sides available when source reconciliation could not
                 // remove an interrupted draft or its digest no longer matches.
                 let source = directory.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".json")
@@ -998,14 +1053,16 @@ final class RecordingStorage {
             // An unreadable journal must not wedge every load. Keep it for inspection.
             let aside = directory.appendingPathComponent(WalkingTransportHandoff.fileName + ".corrupt-" + UUID().uuidString)
             try FileManager.default.moveItem(at:url,to:aside)
+            evidenceIssues.append("Unreadable handoff journal was preserved for recovery")
             return
         }
-        if try !isDeleted(handoff.walk.id) {
-            if handoff.retainUnconfirmedWalk { try retainUnconfirmedWalk(handoff.walk,preserveSourcePoints:false) }
-            else { try save(handoff.walk) }
-        }
+        let walkExists = try !isDeleted(handoff.walk.id)
+        if walkExists && !handoff.retainUnconfirmedWalk { try save(handoff.walk) }
         if try !isDeleted(handoff.transport.id) { try save(handoff.transport) }
-        if let evidence = handoff.unassignedEvidence { try retainUnconfirmedWalk(evidence) }
+        if walkExists && handoff.retainUnconfirmedWalk {
+            try retainUnconfirmedWalk(handoff.walk,preserveSourcePoints:false,allowRecoveryReserve:true)
+        }
+        if let evidence = handoff.unassignedEvidence { try retainUnconfirmedWalk(evidence,allowRecoveryReserve:true) }
         try FileManager.default.removeItem(at:url)
     }
     func load() throws -> [RecordedActivity] {
