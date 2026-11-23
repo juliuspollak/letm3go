@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="2600" version="1.7">
+   <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"/>
+   <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO">
+      <Testables>
+         <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="AD4000000000000000000005" BuildableName="AppUITests.xctest" BlueprintName="AppUITests" ReferencedContainer="container:App.xcodeproj"/>
+         </TestableReference>
+      </Testables>
+   </TestAction>
+</Scheme>

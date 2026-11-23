@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AD4000000000000000000001 /* ActivityDetailsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4000000000000000000002; };
+		AD400000000000000000000C /* PlaceEditorUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD400000000000000000000D; };
 		AD2000000000000000000001 /* ActivityDetailsCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1000000000000000000001; };
 		AD2000000000000000000002 /* ActivityPhotoServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1000000000000000000002; };
 		AD2000000000000000000003 /* ActivityDetailsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1000000000000000000003; };
@@ -109,6 +110,7 @@
 
 /* Begin PBXFileReference section */
 		AD4000000000000000000002 /* ActivityDetailsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityDetailsUITests.swift; sourceTree = "<group>"; };
+		AD400000000000000000000D /* PlaceEditorUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceEditorUITests.swift; sourceTree = "<group>"; };
 		AD4000000000000000000003 /* AppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD1000000000000000000001 /* ActivityDetailsCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityDetailsCore.swift; sourceTree = "<group>"; };
 		AD1000000000000000000002 /* ActivityPhotoServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityPhotoServices.swift; sourceTree = "<group>"; };
@@ -296,6 +298,7 @@
 			isa = PBXGroup;
 			children = (
 				AD4000000000000000000002 /* ActivityDetailsUITests.swift */,
+				AD400000000000000000000D /* PlaceEditorUITests.swift */,
 			);
 			path = AppUITests;
 			sourceTree = "<group>";
@@ -505,6 +508,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AD4000000000000000000001 /* ActivityDetailsUITests.swift in Sources */,
+				AD400000000000000000000C /* PlaceEditorUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
