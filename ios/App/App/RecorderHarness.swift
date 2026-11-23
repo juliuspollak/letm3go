@@ -62,6 +62,7 @@ enum RecorderHarness {
                 await manualDuringWait()
                 await overflowDuringWait()
                 await otherAccountReplay()
+                publisherObservationReuse()
                 homeRestLifecycle()
                 await sharingPassiveRest()
                 await pausedManualAutomatic()
@@ -753,6 +754,22 @@ enum RecorderHarness {
         relaunched?.refreshAutomaticMonitoring()
         check(relaunched?.automaticAvailable == true && relaunched?.manualExclusion.current == nil, "paused: after a relaunch a paused manual journey does not block automatic recording")
         r.stopContinuousLocation()
+    }
+
+    static func publisherObservationReuse() {
+        let (directory, key, owner) = freshStore()
+        guard let recorder = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "publisher reuse: recorder opened")
+        }
+        let now = Date().timeIntervalSince1970
+        let first = location(home.latitude, home.longitude, now - 1, speed: 0)
+        recorder.rememberPublisherObservation([first], now: now)
+        check(recorder.lastPublisherObservation === first, "publisher reuse: a one-shot fix can seed the shared cache")
+        let coarse = location(home.latitude, home.longitude, now, speed: 0, accuracy: 150)
+        let older = location(home.latitude, home.longitude, now - 2, speed: 0)
+        recorder.rememberPublisherObservation([older, coarse], now: now)
+        check(recorder.lastPublisherObservation === first, "publisher reuse: older and inaccurate fixes leave the accepted fix intact")
+        recorder.stopContinuousLocation()
     }
 
     static func homeRestLifecycle() {

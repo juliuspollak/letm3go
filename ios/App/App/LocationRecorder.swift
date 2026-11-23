@@ -968,6 +968,16 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         recordDiagnostic("sharing","Household publishing summary",details:publishStats.details(activity:sharedActivity))
         publishStats.startWindow()
     }
+    func rememberPublisherObservation(_ locations: [CLLocation], now: Double = Date().timeIntervalSince1970) {
+        guard storeOpened, !accountSuspended, !accountDeleting,
+              let accepted = locations.filter({ location in
+                  location.timestamp.timeIntervalSince1970 >= max(trackingBoundary, passiveEndedAt) &&
+                  PublisherFixPolicy.usable(timestamp: location.timestamp.timeIntervalSince1970,
+                      accuracy: location.horizontalAccuracy, now: now, maxAge: 20)
+              }).max(by: { $0.timestamp < $1.timestamp }),
+              lastPublisherObservation.map({ accepted.timestamp > $0.timestamp }) ?? true else { return }
+        lastPublisherObservation = accepted
+    }
     func publishLivePosition(_ location: CLLocation) {
         publishFriendPosition(location)
         let age=Date().timeIntervalSince1970-location.timestamp.timeIntervalSince1970
@@ -1427,14 +1437,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "newestAgeSeconds":String(Int(diagnosticLastDeliveryAt-(locations.map{$0.timestamp.timeIntervalSince1970}.max() ?? oldest)))])
         }
         guard !accountSuspended else { return }
-        if let accepted = locations.filter({ location in
-            location.timestamp.timeIntervalSince1970 >= trackingBoundary &&
-            PublisherFixPolicy.usable(timestamp: location.timestamp.timeIntervalSince1970,
-                accuracy: location.horizontalAccuracy, now: Date().timeIntervalSince1970, maxAge: 20)
-        }).max(by: { $0.timestamp < $1.timestamp }),
-           lastPublisherObservation.map({ accepted.timestamp > $0.timestamp }) ?? true {
-            lastPublisherObservation = accepted
-        }
+        rememberPublisherObservation(locations)
         if let last=locations.last {publishLivePosition(last)}
         // Apply the precision change on the fix that proves movement, not only on
         // the next 30-second reconcile.

@@ -479,6 +479,7 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     static func deliver(_ location: CLLocation, to call: CAPPluginCall, publisher: String?, reason: String) {
         let recorder = LocationRecorder.shared
         let captured = location.timestamp.timeIntervalSince1970
+        recorder.rememberPublisherObservation([location])
         recorder.recordDiagnostic("sampling", "Foreground location delivered", details:[
             "reason":reason,"publisher":publisher ?? "interactive","lastObservedFixAt":String(captured),
             "lastObservedFixAgeSeconds":String(Date().timeIntervalSince1970-captured),

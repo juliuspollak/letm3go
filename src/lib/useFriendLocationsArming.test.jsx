@@ -1,18 +1,19 @@
-import {cleanup,renderHook,waitFor} from '@testing-library/react';
+import {act,cleanup,renderHook,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 
 // Friend sharing must keep publishing from a closed or relaunched phone, so the
 // native uploader is armed with a device credential, and is never disarmed just
 // because the server setting has not loaded yet.
-const mock=vi.hoisted(()=>({rpc:vi.fn(),configure:vi.fn(),getState:vi.fn(),responses:{}}));
+const mock=vi.hoisted(()=>({rpc:vi.fn(),configure:vi.fn(),getState:vi.fn(),currentPosition:vi.fn(),responses:{}}));
 vi.mock('./supabase.js',()=>({supabase:{rpc:mock.rpc,auth:{getSession:async()=>({data:{session:{user:{id:'julia'},access_token:'t'.repeat(120),expires_at:Date.now()/1000+3600}}})}}}));
 vi.mock('./config.js',()=>({config:{url:'https://example.supabase.co',key:'sb_publishable_test'}}));
-vi.mock('./recorder.js',()=>({recorderAvailable:()=>true,recorder:{configureLiveSharing:mock.configure,getState:mock.getState,currentPosition:vi.fn()}}));
+vi.mock('./recorder.js',()=>({recorderAvailable:()=>true,recorder:{configureLiveSharing:mock.configure,getState:mock.getState,currentPosition:mock.currentPosition}}));
 vi.mock('./sharedPosition.js',()=>({sharedPosition:vi.fn()}));
 import {useFriendLocations} from './useFriendLocations.js';
 
 const token='b'.repeat(64);
 beforeEach(()=>{
+ mock.currentPosition.mockReset();
  mock.responses={my_friend_location_setting:{data:true},my_friend_locations:{data:[]},
   issue_my_friend_location_token:{data:[{publish_token:token,valid_until:'2026-12-11T08:00:00Z'}]}};
  mock.rpc.mockImplementation(async name=>mock.responses[name]||{data:null,error:null});
@@ -48,4 +49,15 @@ it('disarms once the server says sharing is off',async()=>{
  mock.responses.my_friend_location_setting={data:false};
  renderHook(()=>useFriendLocations('julia',true));
  await waitFor(()=>expect(mock.configure).toHaveBeenCalledWith({enabled:false,channel:'friends'}));
+});
+
+it('coalesces foreground friend sends and rejects a fix without a capture time',async()=>{
+ let finish;
+ mock.currentPosition.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+ renderHook(()=>useFriendLocations('julia',true));
+ await waitFor(()=>expect(mock.currentPosition).toHaveBeenCalledTimes(1));
+ await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
+ expect(mock.currentPosition).toHaveBeenCalledTimes(1);
+ await act(async()=>{finish({latitude:1,longitude:2,accuracy:10});});
+ expect(mock.rpc).not.toHaveBeenCalledWith('set_friend_location',expect.anything());
 });

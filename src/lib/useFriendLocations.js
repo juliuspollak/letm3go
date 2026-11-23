@@ -39,15 +39,18 @@ export function useFriendLocations(owner,online){
   }
  },[owner,online]);
  useEffect(()=>{if(!online)return;const sequence=refreshSequence.current;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{sequence.latest++;clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
+ const sendInFlight=useRef(false);
  const send=useCallback(async()=>{
-  if(!enabled||!online||!recorderAvailable()||!supabase)return;
+  if(!enabled||!online||!recorderAvailable()||!supabase||sendInFlight.current)return;
+  sendInFlight.current=true;
   try{
    const fix=await recorder.currentPosition({allowStationary:true,publisher:'friend'});
-   if(!Number.isFinite(fix?.latitude)||!Number.isFinite(fix?.longitude)||!Number.isFinite(fix?.accuracy)||fix.accuracy>100||Math.abs(Date.now()/1000-fix.timestamp)>30)return;
+   if(!Number.isFinite(fix?.latitude)||!Number.isFinite(fix?.longitude)||!Number.isFinite(fix?.accuracy)||fix.accuracy<0||fix.accuracy>100||!Number.isFinite(fix.timestamp)||Math.abs(Date.now()/1000-fix.timestamp)>30)return;
    if(fix.devicePublisherOwnsFix||!enabledRef.current||hasPendingRevoke(owner))return;
    const {error:e}=await supabase.rpc('set_friend_location',{p_enabled:true,p_latitude:fix.latitude,p_longitude:fix.longitude,p_accuracy:fix.accuracy});
    if(e)throw e;setError('');setLastSentAt(Date.now());
   }catch{setError('Could not update friend location. Check location permission and connection.');}
+  finally{sendInFlight.current=false;}
  },[enabled,online,owner]);
  useEffect(()=>{if(!enabled||!online)return;const initial=setTimeout(()=>void send(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void send();},30000);const visible=()=>{if(document.visibilityState==='visible')void send();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[enabled,online,send]);
  useEffect(()=>{
