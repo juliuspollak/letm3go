@@ -2,7 +2,7 @@ import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import App from './App.jsx';
 import {emptyRecorder} from './lib/recorder.js';
-// The compact Home: header (with the recording status), one Today card with the latest activity OF THE DAY SHOWN, Friends.
+// The compact Home: header (with the recording status), one Today card with the first and last activities of the day shown, Friends.
 const {identity,recorderHook,mapLocationHook,friends}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),friends:{people:[]}}));
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
@@ -24,6 +24,20 @@ const setup=(trips,over={})=>{
 beforeEach(()=>{mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:vi.fn()});friends.people=[];});
 afterEach(()=>{cleanup();localStorage.clear();});
 const card=()=>screen.getByRole('region',{name:'Daily activity summary'});
+
+it('toggles the theme and keeps the theme button pressed state in sync',()=>{
+ setup([]);
+ const toggle=screen.getByRole('button',{name:'Toggle dark theme',pressed:false});
+ fireEvent.click(toggle);
+ expect(toggle).toHaveAttribute('aria-pressed','true');
+ const burst=toggle.querySelector('.theme-toggle-burst');
+ expect(burst).toBeInTheDocument();
+ expect(document.documentElement).toHaveAttribute('data-theme','dark');
+ fireEvent.click(toggle);
+ expect(toggle).toHaveAttribute('aria-pressed','false');
+ expect(toggle.querySelector('.theme-toggle-burst')).not.toBe(burst);
+ expect(document.documentElement).toHaveAttribute('data-theme','light');
+});
 
 it('keeps the heading and subheading, with no separate Last activity card and no duplicated activity', ()=>{
  setup([trip('a','Morning walk',at(0,8,15))]);
@@ -48,18 +62,24 @@ it('keeps the recording status reachable in the header and opens the existing he
  fireEvent.click(pill);
  expect(screen.getByRole('dialog',{name:'Recording health'})).toBeTruthy();
 });
-it('shows the totals compactly and the latest activity of the day shown', ()=>{
- setup([trip('early','Early walk',at(0,6,0)),trip('late','Evening ride',at(0,18,30),{activity:'Cycling',distanceMeters:12000})]);
+it('shows the totals and connects the first and last activities of the selected day', ()=>{
+ setup([trip('late','Evening ride',at(0,18,30),{activity:'Cycling',distanceMeters:12000}),trip('mid','Lunchtime walk',at(0,12,0)),trip('early','Early walk',at(0,6,0))]);
  const summary=within(card()).getByRole('button',{name:'View activities for Today'});
- expect(summary).toHaveTextContent('16');
- expect(within(summary).getByText('2')).toBeTruthy();
+ expect(summary).toHaveTextContent('20');
+ expect(within(summary).getByText('3')).toBeTruthy();
  expect(summary).toHaveTextContent('activities');
- const latest=within(card()).getByRole('button',{name:/Evening ride/});
- expect(latest).toHaveTextContent('Cycling');
- expect(within(card()).queryByText('Early walk')).toBeNull();
+ const timeline=within(card()).getByRole('list',{name:'Activity timeline'});
+ const [first,last]=within(timeline).getAllByRole('button');
+ expect(first).toHaveTextContent(/First activity.*Early walk/);
+ expect(last).toHaveTextContent(/Last activity.*Evening ride.*Cycling/);
+ expect(within(timeline).getByText('12h 30m between starts')).toBeTruthy();
+ expect(within(timeline).getByText('1 activity between')).toBeTruthy();
+ expect(timeline.querySelector('.home-day-span-scale span')).toHaveStyle({left:'48%'});
+ expect(within(card()).queryByText('Lunchtime walk')).toBeNull();
 });
-it('the latest-activity row follows the selected day, and an empty day says so instead of showing another day\'s activity', ()=>{
+it('the activity timeline follows the selected day, and an empty day says so instead of showing another day\'s activity', ()=>{
  setup([trip('t','Today walk',at(0,9)),trip('y','Yesterday run',at(1,7),{activity:'Running'})]);
+ expect(within(within(card()).getByRole('list',{name:'Activity timeline'})).getAllByRole('button')).toHaveLength(1);
  expect(within(card()).getByRole('button',{name:/Today walk/})).toBeTruthy();
  fireEvent.click(within(card()).getByRole('button',{name:'Previous day'}));
  expect(within(card()).getByRole('button',{name:/Yesterday run/})).toBeTruthy();
@@ -85,6 +105,16 @@ it('the activity row opens that activity, and the summary opens the day: separat
  fireEvent.click(within(card()).getByRole('button',{name:'View activities for Today'}));
  expect(screen.getByRole('button',{name:'Open Morning walk'})).toBeTruthy(); // the Activities list, not the details
 });
+it('returns from an activity to the same day on Home',()=>{
+ setup([trip('t','Today walk',at(0,9)),trip('y','Yesterday run',at(1,7))]);
+ fireEvent.click(within(card()).getByRole('button',{name:'Previous day'}));
+ fireEvent.click(within(card()).getByRole('button',{name:/Yesterday run/}));
+ fireEvent.click(screen.getByRole('button',{name:'Back to Home'}));
+ expect(within(card()).getByText('Yesterday')).toBeInTheDocument();
+ expect(within(card()).getByRole('button',{name:/Yesterday run/})).toBeInTheDocument();
+ expect(within(card()).queryByText('Today walk')).toBeNull();
+});
+
 it('a swipe changes the day and does not also open anything', ()=>{
  setup([trip('t','Today walk',at(0,9)),trip('y','Yesterday run',at(1,7))]);
  const section=card();

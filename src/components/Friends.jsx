@@ -7,21 +7,19 @@ import LocationSharingRow from './LocationSharingRow.jsx';
 import PeopleGrid from './PeopleGrid.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
-import {personStatus,selfStatus} from '../lib/personStatus.js';
+import {personStatus} from '../lib/personStatus.js';
 import {connectedPeople} from '../lib/people.js';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
-import {House,UserMinus,UserPlus,X} from 'lucide-react';
+import {UserMinus,UserPlus,X} from 'lucide-react';
 
 // Friends: my location for friends, the people, then Add friend. Invitations and
 // managing friends open only when asked for.
 //
 // `locations` maps a friend's user id to their location state (from the friend
 // location rows). A friend without a row has no recent position; that is never
-// shown as "sharing off", because this viewer cannot know it. `self.state` is
-// what friends actually received from you (live, stale or waiting), never just
-// the sharing setting.
-export default function Friends({personPhotos={},selfId=null,selfAvatar=null,self=null,onHouseholdJoined=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onSetHome=null,hasHome=false,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
+// shown as "sharing off", because this viewer cannot know it.
+export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onHouseholdJoined=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  // Opened before: show the last list at once and refresh it quietly. Only a first visit shows the spinner.
  const cacheKey='friends:'+(selfId||'');
@@ -51,12 +49,11 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,sel
  });
  return <section className="social-screen social-friends" aria-label="Friends">
   {sharing&&<LocationSharingRow audience="friends" enabled={sharing.enabled} ready={sharing.ready!==false} error={sharing.error} onChange={sharing.onChange} permission={permission} precise={precise}/>}
-  {sharing?.enabled&&<p className="social-hint">Your location: {selfStatus({enabled:true,state:self?.state,ageSeconds:self?.ageSeconds,home:self?.home,activity:self?.activity,permission,precise}).text}</p>}
   <div className="social-heading"><h2>Friends</h2>{people.length>0&&<span className="social-count">{people.length}</span>}</div>
   {!loaded&&<LoadingMark label="Loading friends"/>}
   <PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Friends"/>
   {loaded&&!people.length&&<p className="social-empty">No friends yet. Add someone to see each other on the map.</p>}
-  <SocialActions label="Friend actions" actions={[{id:'add',label:'Add friend',icon:UserPlus,onClick:()=>setAdding(true),expanded:adding},onSetHome&&{id:'home',label:hasHome?'Home':'Set Home',icon:House,onClick:onSetHome}]}/>
+  <SocialActions label="Friend actions" actions={[{id:'add',label:'Add friend',icon:UserPlus,onClick:()=>setAdding(true),expanded:adding}]}/>
   {inviteAccepted&&<InviteSharingPrompt kind="friend" busy={shareBusy} error={shareError} onClose={()=>{setInviteAccepted(false);setShareError('');}} onEnable={async()=>{setShareBusy(true);setShareError('');try{if(!onShareLive)throw new Error('Location sharing is unavailable.');await onShareLive();setInviteAccepted(false);setFeedback('Live location sharing is on.');}catch(e){setShareError(e.message||'Could not enable sharing.');}finally{setShareBusy(false);}}}/>}
   {feedback&&!adding&&<p role="status" className="notice">{feedback}</p>}
   {error&&!adding&&<p role="alert" className="error">{error}</p>}

@@ -1,8 +1,17 @@
 const GLYPHS={
  Home:<>
-  <path className="glyph-roof" d="M4 10.7 12 4.3l8 6.4"/>
-  <path className="glyph-wall" d="M6.2 9.6v9.7h11.6V9.6"/>
-  <path className="glyph-door" d="M9.8 19.3v-4.7h4.4v4.7"/>
+  <g className="glyph-house-smoke" stroke="none">
+   <circle className="glyph-smoke-left" cx="5.5" cy="16.2" r="3.4"/>
+   <circle className="glyph-smoke-centre" cx="11.8" cy="15.4" r="4.1"/>
+   <circle className="glyph-smoke-right" cx="18.5" cy="16.2" r="3.4"/>
+  </g>
+  <path className="glyph-impact glyph-house-impact" d="m3 17-1-1m3 3-2 .5m17-2 1.5-1m-2.5 3 2 .5m-16-7 .5-.6m12 .5 .5.6"/>
+  <path className="glyph-roof glyph-roof-left" d="M4 10.7 12 4.3"/>
+  <path className="glyph-roof glyph-roof-right" d="M12 4.3 20 10.7"/>
+  <path className="glyph-wall glyph-wall-left" d="M6.2 9.6v9.7"/>
+  <path className="glyph-wall glyph-wall-right" d="M17.8 9.6v9.7"/>
+  <path className="glyph-foundation" d="M6.2 19.3h11.6"/>
+  <path className="glyph-door" pathLength="1" d="M9.8 19.3v-4.7h4.4v4.7"/>
  </>,
  Map:<>
   <path className="glyph-ground" d="M7.9 17.1c-2.5.5-4.1 1.4-4.1 2.4 0 1.4 3.7 2.5 8.2 2.5s8.2-1.1 8.2-2.5c0-1-1.6-1.9-4.1-2.4"/>
@@ -10,7 +19,8 @@ const GLYPHS={
   <circle className="glyph-pin-dot" cx="12" cy="9.4" r="2.1"/>
  </>,
  Trips:<>
-  <path className="glyph-route" d="M4.8 19.2c0-4.4 3.2-6.4 7.2-7.4s7.2-2.8 7.2-7.2"/>
+  <path className="glyph-impact glyph-trips-impact" d="M4 22.8h5m6 0h5"/>
+  <path className="glyph-route" pathLength="1" d="M4.8 19.2c0-4.4 3.2-6.4 7.2-7.4s7.2-2.8 7.2-7.2"/>
   <circle className="glyph-start" cx="4.8" cy="19.2" r="1.8"/>
   <circle className="glyph-marker" cx="19.2" cy="4.6" r="1.9"/>
  </>,

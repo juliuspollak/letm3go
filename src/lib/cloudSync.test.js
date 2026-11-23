@@ -618,3 +618,11 @@ it('backs up explicit walking time for summary and detail and preserves a legacy
  expect(restored.endedAt-restored.startedAt).toBe(6600);
  expect(rawActivityFromCloudRow(rows[1]).details.walkingMovingSeconds).toBeUndefined();
 });
+
+it('keeps the hosted privacy radius at 50 m for a tighter local Home',async()=>{
+ const api=client();
+ const home={id:'home',name:'Home',kind:'home',latitude:1,longitude:2,radius:25};
+ await run(api,{...state,trips:[],places:[home]});
+ expect(api.chain.upsert).toHaveBeenCalledWith(expect.objectContaining({kind:'home',radius:50}));
+ expect(home.radius).toBe(25);
+});

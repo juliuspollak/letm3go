@@ -6,7 +6,7 @@
 // changes (a sheet detent, rotation, keyboard) reposition the map.
 export const MAP_MIN_EXTENT=80;
 
-export function surfaceGeometry(surface,win=typeof window==='undefined'?null:window){
+export function surfaceGeometry(surface,win=typeof window==='undefined'?null:window,{clipToSheet=false}={}){
  if(!surface?.getBoundingClientRect||!win)return null;
  const box=surface.getBoundingClientRect();
  const document=win.document;
@@ -14,7 +14,13 @@ export function surfaceGeometry(surface,win=typeof window==='undefined'?null:win
  let navTop=win.innerHeight??box.bottom;
  if(nav&&win.getComputedStyle&&win.getComputedStyle(nav).display!=='none')navTop=nav.getBoundingClientRect().top;
  // The bottom navigation must never cover the map, so the embed stops above it.
- const height=Math.min(box.height,Math.max(0,navTop-box.top-8));
+ const sheet=clipToSheet?surface.closest?.('.sheet'):null;
+ const sheetBounds=sheet?.getBoundingClientRect();
+ const height=sheetBounds?box.height:Math.min(box.height,Math.max(0,navTop-box.top-8));
+ const clip=sheetBounds?{
+  top:Math.round(Math.min(height,Math.max(0,Math.max(0,sheetBounds.top)-box.top))*10)/10,
+  bottom:Math.round(Math.min(height,Math.max(0,box.bottom-Math.min(win.innerHeight??box.bottom,sheetBounds.bottom)))*10)/10,
+ }:null;
  const scrollY=win.scrollY??win.pageYOffset??0,scrollX=win.scrollX??win.pageXOffset??0;
  return {
   x:Math.round(box.x*10)/10,
@@ -30,6 +36,7 @@ export function surfaceGeometry(surface,win=typeof window==='undefined'?null:win
   navTop:Math.round(navTop*10)/10,
   viewportHeight:win.innerHeight??null,
   scrollY:Math.round(scrollY*10)/10,
+  ...(clip?{clip}:{}),
   visible:box.width>MAP_MIN_EXTENT&&height>MAP_MIN_EXTENT,
  };
 }
@@ -38,7 +45,7 @@ export function surfaceGeometry(surface,win=typeof window==='undefined'?null:win
 // changes what the person sees, so the native frame must follow.
 export function geometryKey(geometry){
  if(!geometry)return '';
- return [geometry.pageX??geometry.x,geometry.pageY,geometry.width,geometry.height].join(':');
+ return [geometry.pageX??geometry.x,geometry.pageY,geometry.width,geometry.height,geometry.clip?.top,geometry.clip?.bottom].join(':');
 }
 export function sameGeometry(a,b){return Boolean(a)&&Boolean(b)&&geometryKey(a)===geometryKey(b);}
 // Same place and width, different visible height: a sheet detent or a keyboard,

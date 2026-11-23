@@ -50,3 +50,17 @@ it('does not ask for a position when location is unavailable, and stays off',asy
  expect(mock.rpc).not.toHaveBeenCalledWith('set_friend_location',expect.anything());
  expect(result.current.enabled).toBe(false);
 });
+
+it('keeps manually refreshed locations when an earlier read finishes late',async()=>{
+ const {result}=renderHook(()=>useFriendLocations('me',true));
+ await waitFor(()=>expect(result.current.ready).toBe(true));
+ let finishOlder;
+ const original=mock.rpc.getMockImplementation();
+ mock.rpc.mockImplementationOnce(original).mockImplementationOnce(()=>new Promise(resolve=>{finishOlder=resolve;}));
+ let older;
+ act(()=>{older=result.current.refresh();});
+ mock.rpc.mockImplementationOnce(original).mockResolvedValueOnce({data:[{user_id:'newer'}],error:null});
+ await act(()=>result.current.refresh());
+ await act(async()=>{finishOlder({data:[{user_id:'older'}],error:null});await older;});
+ expect(result.current.people).toEqual([{user_id:'newer'}]);
+});

@@ -798,6 +798,36 @@ private struct CameraIntent {
         includeRoutes=options["includeRoutes"] as? Bool == true
     }
 }
+// The native map sits above WebKit. Mirror the place editor's scroll clipping
+// without changing the map bounds, so scrolling preserves the camera and pins.
+private final class PlaceEditorMapView: MKMapView {
+    private var visibleBounds: CGRect?
+    private let scrollMask = CAShapeLayer()
+
+    func applyScrollClip(_ clip: [String: Any]?) {
+        guard let clip, let top = clip["top"] as? Double, let bottom = clip["bottom"] as? Double,
+              top > 0 || bottom > 0 else {
+            visibleBounds = nil
+            layer.mask = nil
+            accessibilityElementsHidden = false
+            return
+        }
+        let visible = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top - bottom))
+        visibleBounds = visible
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        scrollMask.frame = bounds
+        scrollMask.path = UIBezierPath(rect: visible).cgPath
+        layer.mask = scrollMask
+        CATransaction.commit()
+        accessibilityElementsHidden = visible.isEmpty
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        (visibleBounds?.contains(point) ?? true) && super.point(inside: point, with: event)
+    }
+}
+
 private struct MapContent {
     let routes: [[CLLocationCoordinate2D]]
     let gaps: [[CLLocationCoordinate2D]]
@@ -2140,7 +2170,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             if content.overview==nil,let key=requestedOverview,let kept=previousContent?.overview,kept.key==key {content.overview=kept}
             let missingOverview=requestedOverview != nil && content.overview==nil
             self.embeddedContent[id]=content
-            let map=self.embeddedMaps[id] ?? MKMapView(frame:.zero)
+            let map=self.embeddedMaps[id] ?? (content.pickable ? PlaceEditorMapView(frame:.zero) : MKMapView(frame:.zero))
             let isNew=self.embeddedMaps[id] == nil
             // Maps stay in the scroll view, placed from the page's document coordinates (see MapFrame),
             // so they scroll with the page and never depend on the offset at this later moment.
@@ -2150,6 +2180,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             if self.embeddedMaps[id]==nil {self.frameSequence.removeValue(forKey:id)}
             if MapFrame.accepts(sequence:sequence,lastApplied:self.frameSequence[id]) {
                 map.frame=frame
+                (map as? PlaceEditorMapView)?.applyScrollClip(call.getObject("clip"))
                 if let sequence=sequence {self.frameSequence[id]=sequence}
             }
             map.layer.cornerRadius=16;map.clipsToBounds=true
@@ -2276,6 +2307,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             if let sequence=sequence {self.frameSequence[id]=sequence}
             if map.frame != frame { map.frame=frame }
+            (map as? PlaceEditorMapView)?.applyScrollClip(call.getObject("clip"))
             map.setNeedsLayout()
             if self.presentedID==id {self.presentedMap?.view.setNeedsLayout()}
             call.resolve(["resized":true,"frame":Self.frameReport(map.frame)])

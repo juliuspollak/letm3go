@@ -249,29 +249,20 @@ final class PlaceEditorUITests: XCTestCase {
         openEditor()
         guard let small = circleBounds() else { return XCTFail("the circles are drawn") }
         shot("06-circles-small")
-        setSlider("Home recognition radius", range: 15...150, to: 150)
+        setSlider("Home recognition radius", range: 15...100, to: 100)
         Thread.sleep(forTimeInterval: 1.0)
         scrollSheetBack()
         Thread.sleep(forTimeInterval: 0.8)
         shot("07a-after-recognition-slider")
         guard let large = circleBounds() else { return XCTFail("the circles are still drawn") }
-        shot("07-recognition-at-150")
-        XCTAssertGreaterThan(large.width, small.width * 1.8, "a 150 m circle is far wider than a 60 m one (\(small.width) -> \(large.width) pt)")
-        // The arrival radius to its largest: the circle outgrows the view, so the map zooms out to keep it in.
+        shot("07-recognition-at-100")
+        XCTAssertGreaterThan(large.width, small.width * 1.3, "a 100 m circle is wider than a 60 m one (\(small.width) -> \(large.width) pt)")
         let before = metresPerPoint()
-        setSlider("Arrival and place-name radius", range: 50...500, to: 500)
-        Thread.sleep(forTimeInterval: 1.5)
+        setSlider("Home recognition radius", range: 15...100, to: 15)
+        setSlider("Arrival and place-name radius", range: 25...100, to: 25)
         scrollSheetBack()
         Thread.sleep(forTimeInterval: 0.8)
-        let after = metresPerPoint()
-        XCTAssertGreaterThan(after, before * 1.4, "a 500 m circle zooms the map out to keep it in view (\(before) -> \(after) m/pt)")
-        shot("08-arrival-at-500")
-        // Back down to the smallest: the map does not zoom in on it.
-        setSlider("Arrival and place-name radius", range: 50...500, to: 50)
-        Thread.sleep(forTimeInterval: 1.0)
-        scrollSheetBack()
-        let smaller = metresPerPoint()
-        XCTAssertEqual(smaller, after, accuracy: after * 0.25, "a smaller radius never zooms the map back in")
+        XCTAssertEqual(metresPerPoint(), before, accuracy: before * 0.25, "smaller circles keep the current map zoom")
     }
 
     func testUseCurrentLocationBringsTheMapToTheNewPlace() {
@@ -311,7 +302,8 @@ final class PlaceEditorUITests: XCTestCase {
     func testSaveReportsThePlaceThatWasChosenOnTheMap() {
         openEditor()
         let chosen = pick(dx: 50, dy: -30)
-        setSlider("Home recognition radius", range: 15...150, to: 150)
+        setSlider("Home recognition radius", range: 15...100, to: 100)
+        setSlider("Arrival and place-name radius", range: 25...100, to: 25)
         let save = app.buttons["Save private place"]
         reveal(save)
         save.tap()
@@ -324,8 +316,8 @@ final class PlaceEditorUITests: XCTestCase {
         }
         XCTAssertEqual(latitude, chosen.coordinate.latitude, accuracy: 0.00001, "the saved place is where the map was tapped")
         XCTAssertEqual(longitude, chosen.coordinate.longitude, accuracy: 0.00001)
-        XCTAssertEqual(saved["homeRecognitionRadius"] as? Double, 150, "with the radius the slider was set to")
-        XCTAssertEqual(saved["radius"] as? Double, 100)
+        XCTAssertEqual(saved["homeRecognitionRadius"] as? Double, 100, "with the radius the slider was set to")
+        XCTAssertEqual(saved["radius"] as? Double, 25)
         XCTAssertEqual(saved["kind"] as? String, "home")
     }
 

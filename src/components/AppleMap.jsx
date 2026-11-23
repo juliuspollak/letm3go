@@ -169,7 +169,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
   const sendResize=geometry=>{
    const layoutNumber=++layoutSeq.current;
    recordMapEvent('resize',{width:geometry.width,height:geometry.height});
-   void appleMaps.resize({mapID,x:geometry.x,y:geometry.y,pageX:geometry.pageX,pageY:geometry.pageY,layoutSeq:layoutNumber,width:geometry.width,height:geometry.height})
+   void appleMaps.resize({mapID,x:geometry.x,y:geometry.y,pageX:geometry.pageX,pageY:geometry.pageY,layoutSeq:layoutNumber,width:geometry.width,height:geometry.height,clip:geometry.clip})
     .then(result=>{if(result?.missing){previous='';if(active)mount();return;}verify(result?.frame,layoutNumber);})
     .catch(()=>{previous='';if(active)mount();});
   };
@@ -180,7 +180,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
    // An answer to a request that a newer one has replaced says nothing about where the map is going to be:
    // the newer request is checked when it answers.
    if(!active||!frame||!mapSurface.current||answered!==layoutSeq.current)return;
-   const now=surfaceGeometry(mapSurface.current,window);
+   const now=surfaceGeometry(mapSurface.current,window,{clipToSheet:pickable});
    if(now)recordMapLayout({html:{x:now.pageX,y:now.pageY,width:now.width,height:now.height},native:frame,scrollY:now.scrollY,navTop:now.navTop,viewportHeight:now.viewportHeight,seq:layoutSeq.current,matches:frameMatches(frame,now)});
    if(!now?.visible||frameMatches(frame,now))return;
    // Moving the map did not change where the native side says it is: the two measure from different
@@ -210,7 +210,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
     // and re-fits only if the viewport genuinely changed (handled by resize).
     return;
    }
-   const geometry=surfaceGeometry(surface,window);
+   const geometry=surfaceGeometry(surface,window,{clipToSheet:pickable});
    if(!geometry?.visible){if(embeddedOnce.current){previous='';recordMapEvent('unembed',{reason:'not-visible'});void appleMaps.unembed({mapID}).catch(()=>{});embeddedOnce.current=false;setEmbedded(false);}return;}
    const key=geometryKey(geometry);
    if(key===previous){if(origin==='scroll')recordMapEvent('scroll-ignored');return;}
@@ -231,7 +231,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
    void ready.then(arrived=>{
     // A newer payload (filter change, unmount) supersedes this one.
     if(!active)return null;
-    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,pageX:geometry.pageX,pageY:geometry.pageY,layoutSeq:layoutNumber,width:geometry.width,height:geometry.height,preserveViewport};
+    const request={...contentRef.current,mapID,x:geometry.x,y:geometry.y,pageX:geometry.pageX,pageY:geometry.pageY,layoutSeq:layoutNumber,width:geometry.width,height:geometry.height,clip:geometry.clip,preserveViewport};
     if(!arrived)delete request.overview;
     embedSent.current=true;
     return appleMaps.embed(request).then(result=>({arrived,result}));

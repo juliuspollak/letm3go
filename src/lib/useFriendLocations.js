@@ -19,15 +19,18 @@ export function useFriendLocations(owner,online){
  // When a position was last accepted by the server from this app, so the UI
  // never treats the sharing setting alone as live delivery. Display only.
  const [lastSentAt,setLastSentAt]=useState(0);
+ const refreshSequence=useRef({latest:0});
  const refresh=useCallback(async()=>{
   if(!owner||!online||!supabase)return;
+  const sequence=++refreshSequence.current.latest;
   try{
    const [setting,locations]=await Promise.all([supabase.rpc('my_friend_location_setting'),supabase.rpc('my_friend_locations')]);
+   if(sequence!==refreshSequence.current.latest)return;
    if(setting.error||locations.error)throw Error('Friend locations are unavailable until the database migration is applied.');
    setEnabled(setting.data===true&&!hasPendingRevoke(owner));setPeople(keepIfSame(locations.data||[]));setError('');setReady(true);
-  }catch(e){setError(e.message);setPeople(keepIfSame([]));}
+  }catch(e){if(sequence===refreshSequence.current.latest){setError(e.message);setPeople(keepIfSame([]));}}
  },[owner,online]);
- useEffect(()=>{if(!online)return;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
+ useEffect(()=>{if(!online)return;const sequence=refreshSequence.current;const initial=setTimeout(()=>void refresh(),0);const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},15000);const visible=()=>{if(document.visibilityState==='visible')void refresh();};document.addEventListener('visibilitychange',visible);return()=>{sequence.latest++;clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',visible);};},[online,refresh]);
  const send=useCallback(async()=>{
   if(!enabled||!online||!recorderAvailable()||!supabase)return;
   try{

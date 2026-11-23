@@ -7,9 +7,10 @@ import MapKit
 
 extension LocationRecorder {
     func savePlace(_ place: SavedPlace) throws {
+        let minimumRadius: Double = place.kind == "home" ? 25 : 50
         guard UUID(uuidString:place.id) != nil, !place.name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
               ["home","work","favourite"].contains(place.kind), abs(place.latitude) <= 90, abs(place.longitude) <= 180,
-              place.radius >= 50, place.radius <= 2000 else { throw failure("Choose a name, valid coordinates and a radius from 50–2000 m.") }
+              place.radius >= minimumRadius, place.radius <= 2000 else { throw failure("Choose a name, valid coordinates and a radius from \(Int(minimumRadius))–2000 m.") }
         if let radius = place.homeRecognitionRadius,
            !SavedPlace.homeRadiusRange.contains(radius) { throw failure("Choose a Home recognition radius from 15–150 m.") }
         var updated = places.filter { $0.id != place.id && (place.kind == "favourite" || $0.kind != place.kind) }

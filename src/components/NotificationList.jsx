@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useId,useState} from 'react';
 import {Bell,ChevronRight} from 'lucide-react';
 import {loadRecent,notificationTarget} from '../lib/notifications.js';
 
@@ -7,7 +7,17 @@ import {loadRecent,notificationTarget} from '../lib/notifications.js';
 // notifications are allowed. Opening one marks just that one read and goes to
 // where it belongs (a segment, Feedback & Support, Home).
 export default function NotificationList({items,onOpen,onRead}){
- const [earlier,setEarlier]=useState(null),[error,setError]=useState('');
+ const earlierID=useId();
+ const [earlier,setEarlier]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState('');
+ const expanded=earlier!==null;
+ async function toggleEarlier(){
+  if(expanded){setEarlier(null);return;}
+  setError('');
+  setLoading(true);
+  try{setEarlier(await loadRecent());}
+  catch{setError('Earlier notifications could not be loaded.');}
+  finally{setLoading(false);}
+ }
  const open=item=>{
   void onRead(item.id);
   const target=notificationTarget(item.route);
@@ -20,9 +30,11 @@ export default function NotificationList({items,onOpen,onRead}){
   {!items.length&&<p className="muted small-copy">No new notifications.</p>}
   <ul>
    {items.map(item=><li key={item.id}><Row item={item} unread onOpen={open}/></li>)}
-   {older.map(item=><li key={item.id}><Row item={item} onOpen={open}/></li>)}
   </ul>
-  {earlier===null&&<button type="button" className="text-button" onClick={()=>loadRecent().then(setEarlier).catch(()=>setError('Earlier notifications could not be loaded.'))}>Show earlier</button>}
+  <div id={earlierID} hidden={!expanded}>
+   {older.length?<ul>{older.map(item=><li key={item.id}><Row item={item} onOpen={open}/></li>)}</ul>:<p className="muted small-copy">No earlier notifications.</p>}
+  </div>
+  <button type="button" className="text-button" aria-expanded={expanded} aria-controls={earlierID} disabled={loading} onClick={toggleEarlier}>{expanded?'Hide earlier':loading?'Loading earlier…':'Show earlier'}</button>
   {error&&<p role="alert" className="error">{error}</p>}
  </section>;
 }

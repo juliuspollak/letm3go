@@ -84,7 +84,7 @@ export function locationStatusText({state,ageSeconds}){
 // Home uses the existing saved Home place and the same radius bounds as presence.
 // Hysteresis stops the tag flickering at the boundary: entering needs the fix
 // (and half its uncertainty) inside the radius; leaving needs it clearly outside.
-export function homeRadius(home){return Math.max(50,Math.min(2000,Number(home?.radius)||150));}
+export function homeRadius(home){return Math.max(25,Math.min(2000,Number(home?.radius)||150));}
 export function atHome(previous,point,home){
  if(!home||!point||!validPoint(home.latitude,home.longitude)||!validPoint(point.latitude,point.longitude))return false;
  const radius=homeRadius(home),uncertainty=Math.min(100,Math.max(0,Number(point.accuracy)||0))/2;

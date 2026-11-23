@@ -2,6 +2,8 @@ import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import HeaderAvatar from './HeaderAvatar.jsx';
 import NotificationList from './NotificationList.jsx';
+import {loadRecent} from '../lib/notifications.js';
+vi.mock('../lib/notifications.js',async importOriginal=>({...await importOriginal(),loadRecent:vi.fn()}));
 vi.mock('../lib/supabase.js',()=>({supabase:null}));
 
 let animate,reduce=false;
@@ -56,4 +58,25 @@ it('opens a notification where it belongs and marks only that one read',()=>{
 it('says when there is nothing new',()=>{
  render(<NotificationList items={[]} onOpen={()=>{}} onRead={()=>{}}/>);
  expect(screen.getByText('No new notifications.')).toBeInTheDocument();
+});
+
+it('shows and hides earlier notifications while keeping new notifications visible',async()=>{
+ const unread={id:1,title:'New message',created_at:'2026-11-10T00:00:00Z'};
+ loadRecent.mockResolvedValue([unread,{id:2,title:'Older message',created_at:'2026-11-09T00:00:00Z'}]);
+ render(<NotificationList items={[unread]} onOpen={()=>{}} onRead={()=>{}}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Show earlier'}));
+ expect(await screen.findByRole('button',{name:/Older message/})).toBeInTheDocument();
+ expect(screen.getAllByRole('button',{name:/New message/})).toHaveLength(1);
+ fireEvent.click(screen.getByRole('button',{name:'Hide earlier',expanded:true}));
+ expect(screen.queryByRole('button',{name:/Older message/})).toBeNull();
+ expect(screen.getByRole('button',{name:/New message/})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Show earlier',expanded:false})).toBeInTheDocument();
+});
+
+it('explains when there are no earlier notifications',async()=>{
+ loadRecent.mockResolvedValue([]);
+ render(<NotificationList items={[]} onOpen={()=>{}} onRead={()=>{}}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Show earlier'}));
+ expect(await screen.findByRole('button',{name:'Hide earlier'})).toBeInTheDocument();
+ expect(screen.getByText('No earlier notifications.')).toBeVisible();
 });

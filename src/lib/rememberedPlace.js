@@ -10,7 +10,7 @@ const listOf=places=>Array.isArray(places)?places:Object.values(places||{});
 // One rule for how big a saved place is, wherever it is read: the tags section,
 // this module and recognition all measure the same fence, so the section can never
 // promise a place that recognition does not see (or the other way round).
-export const savedPlaceRadius=place=>Math.max(50,Math.min(2000,Number(place?.radius)||REMEMBER_RADIUS));
+export const savedPlaceRadius=place=>Math.max(place?.kind==='home'?25:50,Math.min(2000,Number(place?.radius)||REMEMBER_RADIUS));
 
 // Home and Work are where a person lives and works, not a destination they chose
 // to name. Recognition never titles a trip with them and destination messages are

@@ -345,7 +345,8 @@ export async function syncPrivateActivities(client,state,receipts={}, {checkpoin
  // account switch even if the SDK has already switched its Authorization header.
  // Never infer cloud deletions from a missing local place on a new device.
  for(const place of state.places||[]){
-  const key=`place:${place.id}`,row={id:place.id,owner_id:owner,name:place.name,kind:place.kind,latitude:place.latitude,longitude:place.longitude,radius:place.radius,share_with_friends:place.shareWithFriends===true};
+  // Hosted privacy masks use the backed-up radius, so keep their 50 m floor.
+  const key=`place:${place.id}`,row={id:place.id,owner_id:owner,name:place.name,kind:place.kind,latitude:place.latitude,longitude:place.longitude,radius:place.kind==='home'?Math.max(50,place.radius):place.radius,share_with_friends:place.shareWithFriends===true};
   const fingerprint=await hash(row),receipt=updated[key];
   if(receipt&&receipt.owner!==owner)throw new Error('Place backup belongs to another account.');
   if(receipt?.fingerprint===fingerprint)continue;

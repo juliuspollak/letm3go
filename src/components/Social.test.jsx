@@ -190,34 +190,24 @@ describe('a household invitation',()=>{
  });
 });
 
-describe('sharing setting versus delivery',()=>{
+describe('friend sharing controls',()=>{
  const friends=(props)=><Friends selfId="me" sharing={{enabled:true,ready:true,onChange:vi.fn()}} {...props}/>;
- it('does not call the setting alone "Sharing": it needs a position friends received',async()=>{
-  const {rerender}=render(friends({self:{state:'waiting'}}));
-  expect(screen.getByText('Your location: Sharing · waiting to send')).toBeInTheDocument();
-  rerender(friends({self:{state:'live',ageSeconds:20}}));
-  expect(screen.getByText('Your location: Sharing')).toBeInTheDocument();
-  rerender(friends({self:{state:'stale',ageSeconds:1500}}));
-  expect(screen.getByText('Your location: Last sent 25 min ago')).toBeInTheDocument();
-  rerender(friends({self:{state:'live',ageSeconds:20},sharing:{enabled:false,ready:true,onChange:vi.fn()}}));
+ it('shows the sharing switch without a separate self-location line',async()=>{
+  render(friends());
   expect(screen.queryByText(/^Your location:/)).toBeNull();
-  // The switch itself still shows the confirmed setting.
-  expect(screen.getByRole('switch',{name:'Share my location with friends'})).toHaveAttribute('aria-checked','false');
+  expect(screen.getByRole('switch',{name:'Share my location with friends'})).toHaveAttribute('aria-checked','true');
   await screen.findByText(/No friends yet/);
  });
  it('flags denied or imprecise location while sharing is on, and clears it once iOS settings change',async()=>{
-  const {rerender}=render(friends({self:{state:'live'},permission:'denied'}));
+  const {rerender}=render(friends({permission:'denied'}));
   // The friends list loads first; its spinner is also a status, so wait for it to finish.
   await waitFor(()=>expect(screen.queryByRole('status',{name:'Loading friends'})).toBeNull());
-  expect(screen.getByText('Your location: Location access needed')).toBeInTheDocument();
   expect(screen.getByRole('status')).toHaveTextContent('Turn on Location and Precise Location');
-  rerender(friends({self:{state:'live'},permission:'always',precise:false}));
-  expect(screen.getByText('Your location: Location access needed')).toBeInTheDocument();
+  rerender(friends({permission:'always',precise:false}));
   // Returning from iOS Settings with access restored (the recorder state refreshes on resume).
-  rerender(friends({self:{state:'live'},permission:'always',precise:true}));
+  rerender(friends({permission:'always',precise:true}));
   expect(screen.queryByRole('status')).toBeNull();
-  expect(screen.getByText('Your location: Sharing')).toBeInTheDocument();
-  rerender(friends({self:{state:'live'},permission:'whenInUse',precise:true}));
+  rerender(friends({permission:'whenInUse',precise:true}));
   expect(screen.getByRole('status')).toHaveTextContent('Set Location to Always');
   await screen.findByText(/No friends yet/);
  });

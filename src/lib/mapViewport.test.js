@@ -72,3 +72,15 @@ describe('document coordinates and the frame check',()=>{
   expect(frameMatches(undefined,g)).toBe(true);expect(frameMatches({x:1,y:1,width:1,height:1},null)).toBe(true);
  });
 });
+
+it('clips a place map to its scrolling sheet without resizing its camera frame',()=>{
+ const box={x:25,y:20,top:20,bottom:260,width:350,height:240};
+ const sheet={getBoundingClientRect:()=>({top:80,bottom:750})};
+ const clipped=rect=>surfaceGeometry({...surface(rect),closest:()=>sheet},win({navTop:680}),{clipToSheet:true});
+ const partial=clipped(box);
+ expect(partial).toMatchObject({height:240,clip:{top:60,bottom:0},visible:true});
+ const hidden=clipped({...box,y:-170,top:-170,bottom:70});
+ expect(hidden).toMatchObject({height:240,clip:{top:240,bottom:0},visible:true});
+ expect(geometryKey(partial)).not.toEqual(geometryKey({...partial,clip:{top:240,bottom:0}}));
+ expect(clipped({...box,y:580,top:580,bottom:820})).toMatchObject({height:240,clip:{top:0,bottom:70}});
+});

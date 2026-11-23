@@ -37,10 +37,13 @@ it('sets Home recognition independently from the saved arrival radius',async()=>
  const homeRadius=screen.getByRole('slider',{name:/Home recognition radius/});
  expect(homeRadius).toHaveValue('30');
  expect(homeRadius).toHaveAttribute('min','15');
- expect(homeRadius).toHaveAttribute('max','150');
- fireEvent.change(homeRadius,{target:{value:'125'}});
+ expect(homeRadius).toHaveAttribute('max','100');
+ const arrival=screen.getByRole('slider',{name:/Arrival and place-name radius/});
+ expect(arrival).toHaveAttribute('max','100');
+ expect(arrival).toHaveValue('100');
+ fireEvent.change(homeRadius,{target:{value:'80'}});
  fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
- await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:'home',radius:250,homeRecognitionRadius:125})));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:'home',radius:100,homeRecognitionRadius:80})));
 });
 it('keeps the radius sliders to a range a house or a gym can actually be set in',()=>{
  render(<Places places={[]} run={vi.fn()}/>);
@@ -67,16 +70,47 @@ it('shows both of a Home\'s circles on the map and moves them with the sliders',
  fireEvent.click(screen.getByRole('button',{name:'Edit Home'}));
  const map=screen.getByRole('button',{name:'Choose map point'});
  // The recognition circle is the one that is solid; the arrival and place-name circle is the second ring.
- expect(map).toHaveAttribute('data-radius','150');
+ expect(map).toHaveAttribute('data-radius','100');
  expect(map).toHaveAttribute('data-arrival','100');
  fireEvent.change(screen.getByRole('slider',{name:/Home recognition radius/}),{target:{value:'60'}});
- fireEvent.change(screen.getByRole('slider',{name:/Arrival and place-name radius/}),{target:{value:'300'}});
+ fireEvent.change(screen.getByRole('slider',{name:/Arrival and place-name radius/}),{target:{value:'85'}});
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-radius','60');
- expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-arrival','300');
+ expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-arrival','85');
 });
 it('draws only the one circle for a place that is not Home',()=>{
  render(<Places places={[{id:'gym',name:'Gym',kind:'favourite',latitude:1,longitude:2,radius:120}]} run={vi.fn()}/>);
  fireEvent.click(screen.getByRole('button',{name:'Edit Gym'}));
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-radius','120');
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-arrival','');
+});
+it('opens the existing Home directly from the Home shortcut',async()=>{
+ const run=vi.fn().mockResolvedValue({}),onClose=vi.fn();
+ render(<Places homeOnly places={[{id:'home',name:'Home',kind:'home',latitude:1,longitude:2,radius:25,homeRecognitionRadius:32}]} run={run} onClose={onClose}/>);
+ expect(screen.getByRole('heading',{name:'Edit Home'})).toBeInTheDocument();
+ expect(screen.getByRole('slider',{name:/Home recognition radius/})).toHaveValue('32');
+ fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
+ await waitFor(()=>expect(onClose).toHaveBeenCalledOnce());
+ expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:'home',kind:'home',radius:25,homeRecognitionRadius:32}));
+});
+it('opens a new Home directly with the two defaults when no Home is saved',()=>{
+ const onClose=vi.fn();
+ render(<Places homeOnly places={[]} run={vi.fn()} onClose={onClose}/>);
+ expect(screen.getByRole('heading',{name:'Set Home'})).toBeInTheDocument();
+ expect(screen.getByRole('slider',{name:/Arrival and place-name radius/})).toHaveValue('30');
+ expect(screen.getByRole('slider',{name:/Home recognition radius/})).toHaveValue('30');
+ fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+ expect(onClose).toHaveBeenCalledOnce();
+});
+it('saves a valid radius when switching a new Home draft to a favourite',async()=>{
+ const run=vi.fn().mockResolvedValue({});
+ render(<Places places={[]} run={run}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Add a private place'}));
+ fireEvent.change(screen.getByLabelText('Type'),{target:{value:'home'}});
+ expect(screen.getByRole('slider',{name:/Arrival and place-name radius/})).toHaveValue('30');
+ fireEvent.change(screen.getByLabelText('Type'),{target:{value:'favourite'}});
+ expect(screen.getByRole('slider',{name:/Recognition radius/})).toHaveValue('50');
+ fireEvent.change(screen.getByLabelText('Place name'),{target:{value:'Cafe'}});
+ fireEvent.click(screen.getByRole('button',{name:'Choose map point'}));
+ fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({kind:'favourite',radius:50})));
 });
