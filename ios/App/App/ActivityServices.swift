@@ -512,6 +512,22 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setAdaptive(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
     } }
+    // Developer-only location experiment (docs/background-location-architecture-review.md). Mode A unless unlocked and selected.
+    @objc func setLocationExperimentUnlocked(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        do { try LocationRecorder.shared.setExperimentUnlocked(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func setLocationExperimentMode(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let mode = LocationExperimentMode(rawValue: call.getString("mode") ?? "") else { return call.reject("Unknown experiment mode.") }
+        do { try LocationRecorder.shared.selectExperiment(mode); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    // A person's physical observation of the iOS indicator, recorded apart from the application's prediction.
+    @objc func recordIndicatorObservation(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let observed = ObservedIndicator(rawValue: call.getString("observed") ?? "") else { return call.reject("Unknown indicator observation.") }
+        do { try LocationRecorder.shared.recordIndicatorObservation(observed, note: call.getString("note") ?? ""); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
     // Passive rest: release location and the background session while settled.
     @objc func setPassiveRest(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

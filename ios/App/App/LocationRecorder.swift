@@ -136,6 +136,13 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // without a background activity session (after a passive-rest wake-up).
     var keepAliveTask: Task<Void, Never>?
     var keepAliveUpdates = 0
+    // Developer-only location experiment (LocationExperimentCore.swift). Mode A unless the selector was unlocked and a mode chosen.
+    var experimentUnlocked = LocationExperimentStore.loadUnlocked()
+    var experimentSelection = LocationExperimentStore.loadSelection()
+    var experimentWindow = ExperimentWindow(now: Date().timeIntervalSince1970)
+    var experimentObservations: [IndicatorObservation] = []
+    var experimentSampledAt: Double = 0
+    var experimentEnabledBatteryMonitoring = false
     var modeClock = ModeClock(mode: "off", now: Date().timeIntervalSince1970)
     var lastPreciseReason = "none yet"
     var lastProbeCause = "movement"
@@ -456,7 +463,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             // pausedByIOS=false carries no evidence while this is false.
             "automaticPauseEnabled":String(manager.pausesLocationUpdatesAutomatically),
             "executingSince":String(executingSince),"lastExecutionGapSeconds":String(Int(lastExecutionGapSeconds)),
-            "backgroundSession":backgroundSessionState,"commit":Self.commit,
+            "backgroundSession":backgroundSessionState,"experimentMode":effectiveExperiment.rawValue,"commit":Self.commit,
             "desiredAccuracyMeters":String(manager.desiredAccuracy),"distanceFilterMeters":String(manager.distanceFilter),
             "probeUntil":String(automaticSampling.probeUntil ?? 0),"retryAfter":String(automaticSampling.retryAfter),
             "lastSampleAt":String(lastLocationUpdateAt ?? 0),"lastCallbackReceivedAt":String(diagnosticLastDeliveryAt),"predictedActivity":automaticTrip?.activity ?? "none","lastValidAutomaticFixAt":String(lastAutomaticFixAt ?? 0),"lastAutomaticDeliveryAt":String(lastAutomaticDeliveryAt ?? 0),"stalledGPSRestartAt":String(automaticGPSRecoveryAt),
@@ -543,7 +550,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     static let fullContextKinds:Set<String>=["lifecycle","session","rest","journey","preference","error","invariant","recovery","account","detection"]
     static let compactContextKeys:Set<String>=["process","component","appState","locationMode","automaticLocationMode","backgroundSession","continuousLocationRequested",
-        "standardLocationUpdatesActive","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","restStage","passiveRest","backgroundRecovery","wifiMatch","reason","commit","build","adaptiveState",
+        "standardLocationUpdatesActive","experimentMode","detectorPhase","automaticRecording","manualState","placeType","restConfirmed","restStage","passiveRest","backgroundRecovery","wifiMatch","reason","commit","build","adaptiveState",
         "liveSharingArmed","liveSharingHoldsLocation","liveSharingTracking","liveSharingPublisher","liveSharingSendActivity","householdLastSuccessAgeSeconds",
         // Read back from the journal when it is reopened.
         "householdLastSuccessAt","friendLastSuccessAt","automaticRecordingState","automaticSuppressedBy","recordingOwner","manualPausedPreserved"]
@@ -593,6 +600,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
         liveShareLastOkAt=diagnosticJournal.events.compactMap{Double($0.context["householdLastSuccessAt"] ?? "")}.max() ?? 0
         friendShareLastOkAt=diagnosticJournal.events.compactMap{Double($0.context["friendLastSuccessAt"] ?? "")}.max() ?? 0
+        restoreExperimentObservations()
         recordDiagnostic("lifecycle","Private recorder opened; process or account binding started")
     }
     func diagnosticSummary(force:Bool=false){
@@ -622,6 +630,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // on resume regardless of what woke the app.
     func noteExecution(_ cause:String){
         guard let wake=heartbeat.note(cause,now:Date().timeIntervalSince1970) else {return}
+        experimentWindow.noteWake(gapSeconds:wake.gapSeconds,cause:wake.cause)
         recordDiagnostic("lifecycle","Recorder was not executing for \(Int(wake.gapSeconds))s",details:[
             "notExecutingSeconds":String(Int(wake.gapSeconds)),"wakeCause":wake.cause,
             "journeyOpen":String(automaticTrip != nil || manualWorkoutLive)])
@@ -649,8 +658,15 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // Start the session when tracking needs it and the app is in the foreground,
     // the only state in which iOS lets a new session begin.
     func reconcileBackgroundSession(_ reason: String) {
-        let wanted = BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: manualRecordingLive,
-            passiveRest: locationMode == .passive, liveSharing: liveSharingHoldsLocation)
+        let wanted = LocationExperiment.sessionWanted(
+            base: BackgroundSessionPolicy.wanted(automaticAvailable: automaticPermitted, manualRecording: manualRecordingLive,
+                passiveRest: locationMode == .passive, liveSharing: liveSharingHoldsLocation),
+            mode: effectiveExperiment, alwaysAuthorized: alwaysAuthorizedForExperiment, manualRecording: manualRecordingLive)
+        // Experiment Mode B or C: a session held from before (or rejoined at launch) is released here, at the one place that decides.
+        if LocationExperiment.mustReleaseSession(mode: effectiveExperiment, alwaysAuthorized: alwaysAuthorizedForExperiment,
+            manualRecording: manualRecordingLive, held: backgroundActivitySession != nil) {
+            endBackgroundSession("location experiment Mode \(effectiveExperiment.rawValue.uppercased()): no activity session for Always access")
+        }
         let held = backgroundActivitySession != nil
         let action = BackgroundSessionPolicy.decide(wanted: wanted, held: held,
             foreground: UIApplication.shared.applicationState == .active,
@@ -752,6 +768,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             self.noteExecution("timer")
             if !self.recordingHealthLooked {self.noteRecordingHealth()}
             self.diagnosticSummary()
+            self.experimentTick()
             let manualOwnsRecording = self.reconcileManualExclusion()
             self.reconcileAutomaticSampling()
             if !manualOwnsRecording { self.recoverStalledAutomaticGPS() }
@@ -1251,12 +1268,12 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     }
     func startContinuousLocation(){
         updateIndicatorPolicy()
-        if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;trackingStartedAt=continuousStartedAt;gpsStartCount += 1;trackingEvent(gpsReason)}
+        if !continuousLocationRequested || locationUpdatesPaused {manager.startUpdatingLocation();continuousLocationRequested=true;locationUpdatesPaused=false;continuousStartedAt=Date().timeIntervalSince1970;experimentWindow.standardStarted(at:continuousStartedAt ?? Date().timeIntervalSince1970);trackingStartedAt=continuousStartedAt;gpsStartCount += 1;trackingEvent(gpsReason)}
     }
     func stopContinuousLocation(reason:String = "Continuous GPS stopped"){
         let wasRunning=continuousLocationRequested
         if wasRunning {manager.stopUpdatingLocation();continuousStoppedAt=Date().timeIntervalSince1970;if let start=trackingStartedAt {continuousSeconds += max(0,continuousStoppedAt!-start)};trackingStartedAt=nil}
-        continuousLocationRequested=false;locationUpdatesPaused=false;updateIndicatorPolicy()
+        continuousLocationRequested=false;locationUpdatesPaused=false;updateIndicatorPolicy();experimentWindow.standardStopped(at:Date().timeIntervalSince1970)
         if wasRunning {recordDiagnostic("service",reason,details:["stopKind":"intentional service stop; not a GPS delivery gap"])}
     }
     func startSignificantMonitoring(){guard !significantLocationRequested else{return};manager.startMonitoringSignificantLocationChanges();significantLocationRequested=true;recordDiagnostic("service","Significant-change monitoring started")}
@@ -1416,6 +1433,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
             lastLowPowerFixAt = locations.last?.timestamp.timeIntervalSince1970
         } else {
             noteExecution("location")
+            experimentWindow.noteFix(at: Date().timeIntervalSince1970, count: locations.count, standardRequested: continuousLocationRequested)
         }
         if let last=locations.last {
             diagnosticLastObservedAt=last.timestamp.timeIntervalSince1970
@@ -1523,7 +1541,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
                 "automaticVerified": automaticAvailable && !manualRecordingLive && (lastAutomaticFixAt.map { Date().timeIntervalSince1970-$0<300 } ?? false),
                 "automaticState": automaticStateName,
                 "automaticSampling": !automaticPermitted ? "off" : manualExclusion.current != nil ? "manual" : automaticActivelyRecording ? "recording" : (automaticSampling.probeUntil ?? 0)>Date().timeIntervalSince1970 ? "checkingDeparture" : locationMode == .stationary ? "lowPowerStandby" : locationMode == .passive ? "passiveRest" : locationMode == .resting ? "restingAtHome" : "locationStandby",
-                "adaptive":adaptiveSnapshot,
+                "adaptive":adaptiveSnapshot,"experiment":experimentSnapshot,
                 "locationMode":locationMode.rawValue,"homeRestSince":homeRest.insideSince as Any? ?? NSNull(),
                 "locationIndicator":["expected":locationIndicator.expected,"reason":locationIndicator.reason],
                 "automaticSettledAt": settledAt as Any? ?? NSNull(),
@@ -1588,6 +1606,9 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "hideLiveTrail", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutomatic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAdaptiveLocation", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setLocationExperimentUnlocked", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setLocationExperimentMode", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "recordIndicatorObservation", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPassiveRest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSharingRest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveNamedSegment", returnType: CAPPluginReturnPromise),

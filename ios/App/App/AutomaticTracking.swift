@@ -808,6 +808,7 @@ extension LocationRecorder {
                                 activitySession:backgroundSessionKeepsAppRunning,keepAlive:keepAliveTask != nil,
                                 sessionRejoined:backgroundSessionRejoinedOnly)
                             trip.updateDetails { $0.trackingNotes = Array((($0.trackingNotes ?? []) + [note]).suffix(24)) }
+                            experimentWindow.noteRouteGap(seconds:seconds,meters:last.distance(to:added))
                             recordDiagnostic("gap","Automatic route segment break",details:["gapSeconds":String(Int(seconds)),"gapMeters":String(Int(last.distance(to:added))),
                                 "suspendedSeconds":String(Int(suspended)),"lowPowerMode":String(lowPower),"backgroundSession":backgroundSessionState,
                                 "serviceSession":serviceSessionState,"keepAliveRunning":String(keepAliveTask != nil),

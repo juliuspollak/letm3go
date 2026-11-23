@@ -18,6 +18,7 @@ extension LocationRecorder: AdaptiveHost {
 
     func setAdaptive(_ enabled: Bool) throws {
         guard let owner = ownerID, storage != nil else { throw failure("Recording storage is unavailable.") }
+        if enabled, effectiveExperiment != .a { throw failure("The adaptive engine cannot run during Mode B or C of the location experiment: its liveUpdates stream would confound the comparison.") }
         adaptiveEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.adaptiveKey(owner))
         recordDiagnostic("preference", enabled ? "Adaptive location engine enabled" : "Adaptive location engine disabled",
@@ -31,7 +32,7 @@ extension LocationRecorder: AdaptiveHost {
     }
 
     func adaptiveInputs(now: Double) -> AdaptiveInputs {
-        AdaptiveInputs(enabled: adaptiveEnabled, supported: liveUpdatesSupported, automaticAvailable: automaticAvailable,
+        AdaptiveInputs(enabled: adaptiveEnabled && effectiveExperiment == .a, supported: liveUpdatesSupported, automaticAvailable: automaticAvailable,
                        manualRecording: manualRecordingLive, journeyRecording: automaticActivelyRecording,
                        probing: (automaticSampling.probeUntil ?? 0) > now,
                        continuationOpen: settledTripID != nil || (automaticTrip != nil && !automaticActivelyRecording),
@@ -168,7 +169,7 @@ extension LocationRecorder: AdaptiveHost {
 
     // MARK: Invariants (what is actually held), logged once per kind, no coordinates
     func checkAdaptiveInvariants() {
-        let observed = AdaptiveObservedServices(state: adaptiveState, adaptiveEnabled: adaptiveEnabled, locationMode: locationMode,
+        let observed = AdaptiveObservedServices(state: adaptiveState, adaptiveEnabled: adaptiveEnabled && effectiveExperiment == .a, locationMode: locationMode,
             continuousRunning: continuousLocationRequested, lowPowerRunning: adaptive.lowPowerRunning,
             lowPowerWanted: locationMode == .stationary,
             placeRegionRegistered: registeredPlaceRegion != nil,

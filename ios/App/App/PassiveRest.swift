@@ -439,7 +439,11 @@ extension LocationRecorder {
     }
     func reconcileServiceSession(_ reason: String) {
         guard #available(iOS 18.0, *) else { serviceSessionState = "unsupported"; return }
-        let wanted = automaticPermitted && passiveRestEnabled && manager.authorizationStatus == .authorizedAlways
+        let always = manager.authorizationStatus == .authorizedAlways
+        let wanted = LocationExperiment.serviceSessionWanted(base: automaticPermitted && passiveRestEnabled && always, mode: effectiveExperiment,
+            sharingArmed: liveSharingArmed, alwaysAuthorized: always)
+        // Mode B only: sharing with Automatic Tracking off still needs it, because no activity session is held for sharing.
+        let sharingWantsIt = effectiveExperiment == .b && liveSharingArmed && always
         let foreground = UIApplication.shared.applicationState == .active
         if wanted {
             // A session created in the background (or reported insufficiently in
@@ -460,7 +464,7 @@ extension LocationRecorder {
                   // Like the activity session, only an explicit end of the need
                   // releases it: a transient state at a background launch must not
                   // discard what only the foreground can start.
-                  storeOpened, ownerID != nil, !automaticEnabled || !passiveRestEnabled || manager.authorizationStatus != .authorizedAlways {
+                  storeOpened, ownerID != nil, !sharingWantsIt, !automaticEnabled || !passiveRestEnabled || manager.authorizationStatus != .authorizedAlways {
             endServiceSession(reason)
         }
     }
@@ -493,13 +497,18 @@ extension LocationRecorder {
 
     // MARK: Keep-alive for precise GPS without an activity session
     var keepAliveWanted: Bool {
-        KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: manualRecordingLive,
+        let base = KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: manualRecordingLive,
             // The open-stop case is part of the device test until it is measured.
             precise: locationMode == .precise, stopOpen: sharingRestEnabled && settledTripID != nil && locationMode != .passive,
             // A rejoined session does not keep the app running, so the keep-alive stays on.
             sessionHeld: backgroundSessionKeepsAppRunning, serviceSessionHeld: serviceSession != nil,
             sharingWithoutSession: sharingRestEnabled && liveSharingHoldsLocation && locationMode != .passive,
             lowPowerRunning: adaptive.lowPowerRunning)
+        // Mode A returns `base` unchanged; Mode B widens it to what the session used to cover; Mode C never runs it.
+        return LocationExperiment.keepAliveWanted(base: base, mode: effectiveExperiment, automaticAvailable: automaticAvailable,
+            manualRecording: manualRecordingLive, precise: locationMode == .precise, stopOpen: settledTripID != nil,
+            sessionHeld: backgroundSessionKeepsAppRunning, serviceSessionHeld: serviceSession != nil,
+            sharingHoldsLocation: liveSharingHoldsLocation, passive: locationMode == .passive, lowPowerRunning: adaptive.lowPowerRunning)
     }
     func reconcileKeepAlive(now: Double) {
         defer { noteBackgroundRecovery() }

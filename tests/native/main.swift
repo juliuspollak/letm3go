@@ -6371,3 +6371,164 @@ do {
 }
 
 print("Final native assertion count including automatic account recovery: \(assertions)")
+
+// MARK: Location experiment (developer-only; Mode A is the shipped behaviour)
+do {
+    let t0: Double = 1_000_000
+    // Selection and defaults: anything but an unlocked selection is Mode A.
+    check(LocationExperiment.effective(selection: nil, unlocked: false) == .a, "experiment: no selection is Mode A")
+    check(LocationExperiment.effective(selection: LocationExperimentSelection(mode: .b, selectedAt: t0), unlocked: false) == .a, "experiment: a locked selector is Mode A whatever was stored")
+    check(LocationExperiment.effective(selection: LocationExperimentSelection(mode: .c, selectedAt: t0), unlocked: true) == .c, "experiment: an unlocked selection is honoured")
+    let chosen = LocationExperimentSelection(mode: .b, selectedAt: t0)
+    check(!LocationExperiment.expired(chosen, now: t0 + LocationExperiment.lifetime - 1) && LocationExperiment.expired(chosen, now: t0 + LocationExperiment.lifetime), "experiment: a selection lasts exactly 48 hours")
+    check(LocationExperiment.expired(chosen, now: t0 - 10), "experiment: a selection dated in the future (clock change) expires")
+    check(!LocationExperiment.expired(nil, now: t0), "experiment: nothing selected never expires")
+    // Expiry is not applied by `effective`, so the mode never changes by itself in the middle of a journey.
+    check(LocationExperiment.effective(selection: chosen, unlocked: true) == .b, "experiment: effective ignores the clock; only an idle change applies expiry")
+
+    // Switching is refused during a journey or unresolved recovery, and always allowed to the mode already in effect.
+    func inputs(_ edit: (inout ExperimentSwitchInputs) -> Void) -> ExperimentSwitchInputs { var i = ExperimentSwitchInputs(); edit(&i); return i }
+    check(LocationExperiment.switchBlock(ExperimentSwitchInputs(), from: .a, to: .b) == nil, "experiment: an idle recorder may switch")
+    let blockers: [(String, (inout ExperimentSwitchInputs) -> Void)] = [
+        ("signed out", { $0.signedIn = false }), ("storage", { $0.storageReady = false }), ("manual", { $0.manualRecording = true }),
+        ("watch", { $0.watchOwnsRecording = true }), ("journey", { $0.automaticJourneyOpen = true }), ("stop window", { $0.stopWindowOpen = true }),
+        ("departure check", { $0.departureCheck = true }), ("recovery", { $0.recoveryPending = true })]
+    for (name, edit) in blockers {
+        for target in [LocationExperimentMode.a, .b, .c] where target != .b {
+            check(LocationExperiment.switchBlock(inputs(edit), from: .b, to: target) != nil, "experiment: switching is refused while \(name) (B to \(target.rawValue))")
+        }
+        check(LocationExperiment.switchBlock(inputs(edit), from: .a, to: .b) != nil, "experiment: switching is refused while \(name) (A to B)")
+        check(LocationExperiment.switchBlock(inputs(edit), from: .b, to: .b) == nil, "experiment: re-selecting the current mode is allowed while \(name)")
+    }
+    check(LocationExperiment.switchBlock(inputs { $0.adaptiveEngineOn = true }, from: .a, to: .b) != nil && LocationExperiment.switchBlock(inputs { $0.adaptiveEngineOn = true }, from: .a, to: .c) != nil,
+          "experiment: the adaptive engine blocks B and C, which it would confound")
+    check(LocationExperiment.switchBlock(inputs { $0.adaptiveEngineOn = true }, from: .b, to: .a) == nil, "experiment: leaving for Mode A is never blocked by the adaptive engine")
+
+    // The activity session: exactly the base decision in Mode A; only a manual recording holds it in B and C for an Always user.
+    for base in [true, false] {
+        for always in [true, false] { for manual in [true, false] {
+            check(LocationExperiment.sessionWanted(base: base, mode: .a, alwaysAuthorized: always, manualRecording: manual) == base, "experiment: Mode A leaves the session decision untouched")
+        } }
+    }
+    for mode in [LocationExperimentMode.b, .c] {
+        check(!LocationExperiment.sessionWanted(base: true, mode: mode, alwaysAuthorized: true, manualRecording: false), "experiment: Mode \(mode.rawValue) holds no session for Always automatic tracking or sharing")
+        check(LocationExperiment.sessionWanted(base: true, mode: mode, alwaysAuthorized: true, manualRecording: true), "experiment: a manual recording keeps its session in Mode \(mode.rawValue)")
+        check(LocationExperiment.sessionWanted(base: true, mode: mode, alwaysAuthorized: false, manualRecording: false), "experiment: When In Use access keeps today's session in Mode \(mode.rawValue)")
+        check(LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: true, manualRecording: false, held: true), "experiment: a held session is released in Mode \(mode.rawValue)")
+        check(!LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: true, manualRecording: true, held: true), "experiment: a manual recording's session is not released")
+        check(!LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: true, manualRecording: false, held: false), "experiment: nothing to release when none is held")
+        check(!LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: false, manualRecording: false, held: true), "experiment: When In Use access never has its session released")
+    }
+    check(!LocationExperiment.mustReleaseSession(mode: .a, alwaysAuthorized: true, manualRecording: false, held: true), "experiment: Mode A never releases a session on the experiment's account")
+
+    // The keep-alive: A is the shipped policy; B keeps it and widens it; C never runs it.
+    func keep(_ mode: LocationExperimentMode, base: Bool = false, auto: Bool = true, manual: Bool = false, precise: Bool = false, stop: Bool = false,
+              session: Bool = false, service: Bool = true, sharing: Bool = false, passive: Bool = false, low: Bool = false) -> Bool {
+        LocationExperiment.keepAliveWanted(base: base, mode: mode, automaticAvailable: auto, manualRecording: manual, precise: precise, stopOpen: stop,
+                                           sessionHeld: session, serviceSessionHeld: service, sharingHoldsLocation: sharing, passive: passive, lowPowerRunning: low)
+    }
+    check(keep(.a, base: true) && !keep(.a, base: false, precise: true), "experiment: Mode A returns the shipped keep-alive decision whatever else is true")
+    check(!keep(.c, base: true, precise: true, stop: true, sharing: true), "experiment: Mode C never runs the keep-alive")
+    check(keep(.b, precise: true), "experiment: Mode B runs the keep-alive for precise GPS")
+    check(keep(.b, stop: true) && !keep(.b, stop: true, passive: true), "experiment: Mode B covers an open stop, but not in passive rest")
+    check(keep(.b, auto: false, sharing: true) && !keep(.b, auto: false, sharing: true, passive: true), "experiment: Mode B covers sharing without a session, but not in passive rest")
+    check(!keep(.b, precise: true, session: true), "experiment: no keep-alive beside a session that keeps the app running")
+    check(!keep(.b, manual: true, precise: true), "experiment: no keep-alive during a manual recording")
+    check(!keep(.b, precise: true, service: false), "experiment: no keep-alive without the Always service session")
+    check(!keep(.b, precise: true, low: true), "experiment: never a second liveUpdates stream beside the low-power one")
+    check(!keep(.b, auto: false, precise: true), "experiment: precise GPS alone does not start it when automatic tracking is off")
+    check(LocationExperiment.serviceSessionWanted(base: false, mode: .a, sharingArmed: true, alwaysAuthorized: true) == false, "experiment: Mode A never adds a service session for sharing")
+    check(LocationExperiment.serviceSessionWanted(base: false, mode: .c, sharingArmed: true, alwaysAuthorized: true) == false, "experiment: Mode C holds the service session exactly as Mode A does")
+    check(LocationExperiment.serviceSessionWanted(base: false, mode: .b, sharingArmed: true, alwaysAuthorized: true), "experiment: Mode B holds the service session for sharing alone")
+    check(!LocationExperiment.serviceSessionWanted(base: false, mode: .b, sharingArmed: true, alwaysAuthorized: false) && LocationExperiment.serviceSessionWanted(base: true, mode: .b, sharingArmed: false, alwaysAuthorized: true),
+          "experiment: Mode B needs Always access, and keeps the shipped reasons")
+
+    // Predicted indicator (an application prediction) versus a person's observation.
+    func predict(session: Bool = false, flag: Bool = false, always: Bool = true, standard: Bool = false, keepAlive: Bool = false, low: Bool = false) -> IndicatorPrediction {
+        LocationExperiment.predict(sessionHeld: session, indicatorFlag: flag, alwaysAuthorized: always, standardLocation: standard, keepAlive: keepAlive, lowPowerStream: low)
+    }
+    check(predict(session: true, standard: true).pill == .yes && predict(session: true).arrow, "experiment: a held activity session predicts the pill")
+    check(predict(flag: true, standard: true).pill == .yes, "experiment: the manual-recording flag predicts the pill")
+    check(predict(always: false, standard: true).pill == .yes, "experiment: When In Use access predicts the pill")
+    check(predict(standard: true).pill == .no && predict(standard: true).arrow, "experiment: Always access with no session predicts an arrow and no pill")
+    check(predict(standard: true, keepAlive: true).pill == .untested && predict(low: true).pill == .untested, "experiment: a liveUpdates stream without a session is untested, not assumed")
+    check(predict().pill == .no && !predict().arrow, "experiment: nothing running predicts nothing")
+    let untested = predict(keepAlive: true)
+    check(untested.basis.contains("Apple does not document"), "experiment: an untested prediction says why")
+    for observed in ObservedIndicator.allCases {
+        check(LocationExperiment.agreement(prediction: untested, observed: observed) == .untested, "experiment: an untested prediction never agrees or disagrees (\(observed.rawValue))")
+    }
+    let predictedPill = predict(session: true), predictedNoPill = predict(standard: true)
+    check(LocationExperiment.agreement(prediction: predictedPill, observed: .pill) == .agrees && LocationExperiment.agreement(prediction: predictedPill, observed: .arrow) == .disagrees
+          && LocationExperiment.agreement(prediction: predictedPill, observed: .none) == .disagrees, "experiment: a pill prediction agrees only with a seen pill")
+    check(LocationExperiment.agreement(prediction: predictedNoPill, observed: .pill) == .disagrees && LocationExperiment.agreement(prediction: predictedNoPill, observed: .arrow) == .agrees
+          && LocationExperiment.agreement(prediction: predictedNoPill, observed: .none) == .agrees, "experiment: a no-pill prediction is contradicted only by a seen pill")
+    let seen = LocationExperiment.observation(at: t0, observed: .pill, prediction: predictedNoPill, mode: .b)
+    check(seen.observed == .pill && seen.predictedPill == "no" && seen.agreement == "disagrees" && seen.mode == "b", "experiment: an observation keeps what was seen apart from what was predicted")
+    var kept: [IndicatorObservation] = []
+    for index in 0..<(LocationExperiment.observationLimit + 5) { kept = LocationExperiment.appended(kept, LocationExperiment.observation(at: Double(index), observed: .none, prediction: predictedNoPill, mode: .a)) }
+    check(kept.count == LocationExperiment.observationLimit && kept.last?.at == Double(LocationExperiment.observationLimit + 4), "experiment: observations are bounded, keeping the newest")
+
+    // The measurement window.
+    var window = ExperimentWindow(now: t0)
+    window.noteFix(at: t0 + 5, count: 1, standardRequested: true)
+    window.noteFix(at: t0 + 10, count: 2, standardRequested: true)
+    window.noteFix(at: t0 + 100, count: 1, standardRequested: true)
+    check(window.fixes == 4 && window.maxFixGap == 90 && window.fixGapsOverLimit == 1, "experiment: fixes and a lost-fix gap over a minute are counted")
+    window.standardStopped(at: t0 + 101)
+    window.noteFix(at: t0 + 5000, count: 1, standardRequested: true)
+    check(window.fixGapsOverLimit == 1 && window.maxFixGap == 90, "experiment: a deliberate stop is never reported as a lost fix")
+    window.noteFix(at: t0 + 5100, count: 1, standardRequested: false)
+    window.noteFix(at: t0 + 9000, count: 1, standardRequested: true)
+    check(window.fixGapsOverLimit == 1, "experiment: a gap is measured only while the standard service was requested across it")
+    window.noteWake(gapSeconds: 440, cause: "region")
+    window.noteWake(gapSeconds: 30, cause: "location")
+    window.noteWake(gapSeconds: 800, cause: "unknown: no location, region, visit or foreground event within 10s")
+    check(window.executionGaps == 2 && window.maxExecutionGap == 800 && window.wakeSummary == "location=1,region=1,unknown=1", "experiment: execution gaps and wake sources are counted by cause")
+    window.noteRouteGap(seconds: 120, meters: 900)
+    window.noteRouteGap(seconds: 30, meters: 100)
+    let details = window.details(now: t0 + 600)
+    check(details["routeGaps"] == "2" && details["routeGapSeconds"] == "150" && details["routeGapMeters"] == "1000" && details["fixesDelivered"] == "7"
+          && details["windowSeconds"] == "600" && details["wakeSources"] == "location=1,region=1,unknown=1", "experiment: the sample reports route gaps, fix rate and wake sources")
+    check(ExperimentWindow(now: t0).details(now: t0 + 60)["wakeSources"] == "none" && ExperimentWindow(now: t0).details(now: t0 + 60)["fixRatePerMinute"] == "none", "experiment: an empty window says so, with no rate")
+    // The fix rate is per minute the standard service was requested, so a window that mostly rested is not a slow one.
+    var resting = ExperimentWindow(now: t0, standardRunning: true)
+    for second in stride(from: 6.0, through: 300.0, by: 6.0) { resting.noteFix(at: t0 + second, count: 1, standardRequested: true) }
+    resting.standardStopped(at: t0 + 300)
+    let restingDetails = resting.details(now: t0 + 1800)
+    check(restingDetails["standardSeconds"] == "300" && restingDetails["fixRatePerMinute"] == "10.0" && restingDetails["windowSeconds"] == "1800", "experiment: 25 minutes of rest do not dilute the fix rate")
+    resting.standardStarted(at: t0 + 1500)
+    check(resting.standardTime(now: t0 + 1800) == 600 && resting.next(now: t0 + 1800).standardSince == t0 + 1800, "experiment: a restarted service adds to the time, and a following window knows it is still running")
+    let following = window.next(now: t0 + 600)
+    check(following.fixes == 0 && following.routeGaps == 0 && following.lastFixAt == window.lastFixAt, "experiment: the next window starts clean but a fix gap across the boundary is still measured")
+    check(!details.keys.contains { $0.lowercased().contains("latitude") || $0.lowercased().contains("longitude") }, "experiment: a sample carries no coordinate")
+
+    // The persisted choice survives a restart, defaults to locked, and a corrupt value is ignored.
+    let suite = "letm3go-experiment-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    check(!LocationExperimentStore.loadUnlocked(defaults) && LocationExperimentStore.loadSelection(defaults) == nil, "experiment: a fresh device is locked with nothing selected")
+    LocationExperimentStore.save(unlocked: true, defaults); LocationExperimentStore.save(selection: chosen, defaults)
+    check(LocationExperimentStore.loadUnlocked(defaults) && LocationExperimentStore.loadSelection(defaults) == chosen, "experiment: the selection survives a restart")
+    LocationExperimentStore.save(selection: nil, defaults)
+    check(LocationExperimentStore.loadSelection(defaults) == nil, "experiment: clearing the selection returns to Mode A")
+    defaults.set(Data("not json".utf8), forKey: LocationExperimentStore.selectionKey)
+    check(LocationExperimentStore.loadSelection(defaults) == nil, "experiment: a corrupt stored selection is ignored")
+    defaults.removePersistentDomain(forName: suite)
+    check(LocationExperimentMode.allCases.map { $0.rawValue } == ["a", "b", "c"] && LocationExperimentMode.a.holdsActivitySessionForAutomaticAndSharing && LocationExperimentMode.b.runsKeepAlive && !LocationExperimentMode.c.runsKeepAlive,
+          "experiment: A holds the session, B keeps the keep-alive, C has neither")
+    // Review: the experiment exists only in debug and sandbox-receipt (Xcode, TestFlight) builds, never the App Store.
+    check(LocationExperiment.buildAllows(debug: true, receiptName: "receipt") && LocationExperiment.buildAllows(debug: false, receiptName: "sandboxReceipt"), "experiment: debug and TestFlight builds allow it")
+    check(!LocationExperiment.buildAllows(debug: false, receiptName: "receipt") && !LocationExperiment.buildAllows(debug: false, receiptName: nil), "experiment: an App Store build, or one with no receipt, never does")
+    // Review: Mode B without its Always service session would silently be Mode C, so it cannot be chosen.
+    check(LocationExperiment.switchBlock(inputs { $0.keepAliveCapable = false }, from: .a, to: .b)?.contains("iOS 18") == true, "experiment: Mode B is refused when its keep-alive cannot exist")
+    check(LocationExperiment.switchBlock(inputs { $0.keepAliveCapable = false }, from: .a, to: .c) == nil && LocationExperiment.switchBlock(inputs { $0.keepAliveCapable = false }, from: .b, to: .a) == nil,
+          "experiment: Mode C and the return to Mode A do not need a keep-alive")
+    // Review: the arrow is checked too, so a missing expected arrow is not reported as agreement.
+    let arrowExpected = predict(standard: true), nothingRunning = predict()
+    check(LocationExperiment.arrowAgreement(prediction: arrowExpected, observed: .none) == .disagrees && LocationExperiment.arrowAgreement(prediction: arrowExpected, observed: .arrow) == .agrees
+          && LocationExperiment.arrowAgreement(prediction: arrowExpected, observed: .pill) == .untested, "experiment: an expected arrow that is not there is a disagreement")
+    check(LocationExperiment.arrowAgreement(prediction: nothingRunning, observed: .none) == .agrees && LocationExperiment.arrowAgreement(prediction: nothingRunning, observed: .arrow) == .disagrees, "experiment: an arrow where none was expected is a disagreement")
+    let missingArrow = LocationExperiment.observation(at: t0, observed: .none, prediction: arrowExpected, mode: .c)
+    check(missingArrow.agreement == "agrees" && missingArrow.arrowAgreement == "disagrees", "experiment: a no-pill prediction can agree while the arrow prediction is contradicted")
+}
+print("Final native assertion count including the location experiment: \(assertions)")
