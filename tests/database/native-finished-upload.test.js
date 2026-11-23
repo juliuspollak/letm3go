@@ -9,7 +9,8 @@ const as=async(role,user,sql)=>{
  await db.exec(`reset role;set role ${role};select set_config('request.jwt.claim.sub','${user}',false);select set_config('request.jwt.claims','{}',false);`);
  return db.query(sql);
 };
-const iso=minutesAgo=>new Date(Date.now()-minutesAgo*60000).toISOString();
+const t0=Date.now();
+const iso=minutesAgo=>new Date(t0-minutesAgo*60000).toISOString();
 const route=[{latitude:-34.5,longitude:150.8,timestamp:1,accuracy:5,altitude:1,speed:8,segment:0},{latitude:-34.51,longitude:150.81,timestamp:60,accuracy:5,altitude:1,speed:9,segment:0}];
 const payload=(id,over={})=>({id,title:'Home → Plus Fitness',activity:'Driving',recording_mode:'automatic',started_at:iso(40),ended_at:iso(30),duration_seconds:600,distance_meters:2100,vehicle:null,route_points:route,...over});
 const upload=(token,body)=>as('anon','',`select public.upload_finished_activity('${token}',$j$${JSON.stringify(body)}$j$::jsonb) as ok`).then(r=>r.rows[0].ok);
@@ -88,6 +89,50 @@ describe('upload_finished_activity',()=>{
   await as('authenticated',owner,'select public.set_my_live_location(true)');
   token=(await as('authenticated',owner,'select * from public.issue_my_live_location_token()')).rows[0].publish_token;
   expect(await upload(token,payload(ids(6)))).toBe(true);
+ });
+});
+
+describe('upload_finished_activity hardening',()=>{
+ it('validates every route point and bounds the payload',async()=>{
+  const bad=[...route,{latitude:'x',longitude:1},...route.slice(0,1)];
+  expect(await upload(token,payload(ids(20),{route_points:[route[0],{latitude:95,longitude:1},route[1]]}))).toBe(false);
+  expect(await upload(token,payload(ids(20),{route_points:[route[0],{latitude:1,longitude:200},route[1]]}))).toBe(false);
+  expect(await upload(token,payload(ids(20),{route_points:bad}))).toBe(false);
+  expect(await upload(token,payload(ids(20),{route_points:[route[0],5,route[1]]}))).toBe(false);
+  expect(await upload(token,payload(ids(20),{started_at:iso(60*24*11),ended_at:iso(30)}))).toBe(false);
+  expect(await row(ids(20))).toBeUndefined();
+ });
+ it('does not reveal or touch somebody else\'s activity',async()=>{
+  await as('service_role','',`insert into public.activities(id,owner_id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points)
+   values('${ids(21)}','${mate}','Theirs','Driving','manual',now()-interval '2 hours',now()-interval '1 hour',60,100,'[]')`);
+  expect(await upload(token,payload(ids(21),{title:'Mine now'}))).toBe(false);
+  const theirs=(await as('service_role','',`select title,owner_id from public.activities where id='${ids(21)}'`)).rows[0];
+  expect(theirs).toEqual({title:'Theirs',owner_id:mate});
+  await as('service_role','',`insert into public.activity_tombstones(id,owner_id) values('${ids(22)}','${mate}')`);
+  expect(await upload(token,payload(ids(22)))).toBe(false);
+  await as('service_role','',`insert into public.activity_tombstones(id,owner_id) values('${ids(23)}','${owner}')`);
+  expect(await upload(token,payload(ids(23)))).toBe(true);
+  expect(await row(ids(23))).toBeUndefined();
+ });
+ it('brings a still-provisional copy up to date when the journey resumed, and only then',async()=>{
+  expect(await upload(token,payload(ids(24),{started_at:iso(90),ended_at:iso(60),distance_meters:1000}))).toBe(true);
+  const first=await row(ids(24));
+  // Same end (a retry): nothing changes.
+  expect(await upload(token,payload(ids(24),{started_at:iso(90),ended_at:iso(60),distance_meters:9}))).toBe(true);
+  expect((await row(ids(24))).revision).toBe(first.revision);
+  // The journey resumed and ended later, with more route.
+  const longer=[...route,{latitude:-34.52,longitude:150.82,timestamp:120,accuracy:5,altitude:1,speed:9,segment:0}];
+  expect(await upload(token,payload(ids(24),{started_at:iso(90),ended_at:iso(20),distance_meters:3000,route_points:longer}))).toBe(true);
+  expect(await row(ids(24))).toMatchObject({n:3,distance_meters:3000});
+  // Once the app has backed it up in full the recorder's word is no longer taken.
+  await as('authenticated',owner,`select public.backup_private_activity('${owner}',$j$${JSON.stringify(payload(ids(24),{started_at:iso(90),ended_at:iso(20),distance_meters:3000,route_points:longer,title:'Full'}))}$j$::jsonb,'${'f'.repeat(64)}',null,null)`);
+  expect(await upload(token,payload(ids(24),{started_at:iso(90),ended_at:iso(5),distance_meters:7000}))).toBe(true);
+  expect(await row(ids(24))).toMatchObject({title:'Full',n:3,distance_meters:3000});
+ });
+ it('counts only recent provisional copies towards the cap',async()=>{
+  await as('service_role','',`insert into public.activities(id,owner_id,title,activity,recording_mode,started_at,ended_at,duration_seconds,distance_meters,route_points,classification)
+   select ('bbbbbbbb-bbbb-4bbb-8bbb-'||lpad(g::text,12,'0'))::uuid,'${owner}','Old','Driving','automatic',now()-interval '30 days',now()-interval '29 days',60,100,'[]','{"nativeUpload":1}' from generate_series(1,205) g`);
+  expect(await upload(token,payload(ids(25)))).toBe(true);
  });
 });
 

@@ -6245,17 +6245,30 @@ do {
     let older = finishedTrip(start: 900_000), newer = finishedTrip(start: 1_000_000)
     var ledger = FinishedUploadLedger()
     check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == older.id, "a backlog drains oldest first")
-    ledger.sent(older.id.uppercased())
-    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a sent activity is not sent again, in whichever case its id is written")
-    for _ in 0..<(FinishedUpload.giveUpAfter - 1) { ledger.refused(newer.id) }
+    ledger.sent(older)
+    check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a sent activity is not sent again")
+    for _ in 0..<(FinishedUpload.giveUpAfter - 1) { ledger.refused(newer.id.uppercased()) }
     check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now)?.id == newer.id, "a refusal is retried")
     ledger.refused(newer.id)
     check(FinishedUpload.next(trips: [newer, older], ledger: ledger, now: now) == nil, "after repeated refusals it is left to the app's backup")
     let restored = try JSONDecoder().decode(FinishedUploadLedger.self, from: JSONEncoder().encode(ledger))
-    check(restored == ledger && restored.settled(older.id) && restored.settled(newer.id), "the ledger survives a restart")
+    check(restored == ledger && restored.settled(older) && restored.settled(newer), "the ledger survives a restart")
+    // A refused older activity does not hold up a newer one once it is given up on, and a journey that resumes after it was sent is sent again.
+    var resumed = older; resumed.endedAt = (older.endedAt ?? 0) + 900
+    var again = FinishedUploadLedger(); again.sent(older)
+    check(!again.settled(older) == false && !again.settled(resumed), "a journey that ended later than what was sent is sent again")
+    again.sent(resumed)
+    check(again.settled(resumed) && again.settled(older), "and then it is settled")
+    // Private: an activity its owner has just hidden is never offered, whichever way its id is written.
+    check(FinishedUpload.next(trips: [older], ledger: FinishedUploadLedger(), now: now, hiddenRef: older.id.uppercased()) == nil, "an activity made private is never sent")
+    check(FinishedUpload.next(trips: [newer, older], ledger: FinishedUploadLedger(), now: now, hiddenRef: older.id)?.id == newer.id, "and does not hold up the others")
     var long = FinishedUploadLedger()
-    for index in 0..<350 { long.sent("00000000-0000-4000-8000-\(String(format: "%012d", index))") }
-    check(long.done.count == 300 && long.settled("00000000-0000-4000-8000-000000000349") && !long.settled("00000000-0000-4000-8000-000000000000"), "the ledger is bounded, keeping the newest")
+    for index in 0..<350 {
+        var t = finishedTrip("00000000-0000-4000-8000-\(String(format: "%012d", index))", start: 1_000_000 + Double(index))
+        t.endedAt = 1_000_000 + Double(index)
+        long.sent(t)
+    }
+    check(long.sentThrough.count == 300 && long.sentThrough["00000000-0000-4000-8000-000000000349"] != nil && long.sentThrough["00000000-0000-4000-8000-000000000000"] == nil, "the ledger is bounded, keeping the newest")
 }
 
 print("Final native assertion count including automatic account recovery: \(assertions)")

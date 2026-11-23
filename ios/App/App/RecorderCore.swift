@@ -3561,9 +3561,12 @@ enum FinishedUpload {
             return point.latitude.isFinite && point.longitude.isFinite && abs(point.latitude) <= 90 && abs(point.longitude) <= 180
         }
     }
-    // The oldest eligible activity not yet sent (or given up on), so a backlog drains in order.
-    static func next(trips: [RecordedActivity], ledger: FinishedUploadLedger, now: Double) -> RecordedActivity? {
-        trips.filter { eligible($0, now: now) && !ledger.settled($0.id) }.min { $0.startedAt < $1.startedAt }
+    // The oldest eligible activity not yet sent (or given up on), so a backlog drains in order. An activity its owner has just made
+    // private (`hiddenRef`) is never offered: the server may not have been told yet, and what it receives it shares.
+    static func next(trips: [RecordedActivity], ledger: FinishedUploadLedger, now: Double, hiddenRef: String? = nil) -> RecordedActivity? {
+        trips.filter { trip in
+            eligible(trip, now: now) && !ledger.settled(trip) && hiddenRef.map { trip.id.caseInsensitiveCompare($0) != .orderedSame } ?? true
+        }.min { $0.startedAt < $1.startedAt }
     }
     // The row the app's backup also builds (same column names, the route as the trip's own points). Only what the server needs to show
     // the activity; everything else (title edits, notes, equipment, stops) still arrives with the app's full backup.
@@ -3592,18 +3595,22 @@ enum FinishedUpload {
 }
 // What has been sent, per account, so a restart never repeats it and a stubborn refusal does not repeat for ever.
 struct FinishedUploadLedger: Codable, Equatable {
-    var done: [String] = []
+    // Activity id -> the end time that was sent. A journey that resumes after it was sent ends later, so it is sent again and the
+    // server replaces the earlier, shorter provisional copy.
+    var sentThrough: [String: Double] = [:]
     var attempts: [String: Int] = [:]
-    func settled(_ id: String) -> Bool {
-        let key = id.lowercased()
-        return done.contains(key) || (attempts[key] ?? 0) >= FinishedUpload.giveUpAfter
+    func settled(_ trip: RecordedActivity) -> Bool {
+        let key = trip.id.lowercased()
+        if (attempts[key] ?? 0) >= FinishedUpload.giveUpAfter { return true }
+        guard let sent = sentThrough[key], let end = trip.endedAt else { return false }
+        return sent >= end - 0.5
     }
-    mutating func sent(_ id: String) {
-        let key = id.lowercased()
-        if !done.contains(key) { done.append(key) }
+    mutating func sent(_ trip: RecordedActivity) {
+        let key = trip.id.lowercased()
+        sentThrough[key] = trip.endedAt ?? 0
         attempts[key] = nil
         // Bounded: the oldest ids age out long after the three days an activity can be sent in.
-        if done.count > 300 { done.removeFirst(done.count - 300) }
+        if sentThrough.count > 300 { for old in sentThrough.sorted(by: { $0.value < $1.value }).prefix(sentThrough.count - 300) { sentThrough[old.key] = nil } }
     }
     mutating func refused(_ id: String) {
         attempts[id.lowercased(), default: 0] += 1
