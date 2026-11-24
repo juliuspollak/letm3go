@@ -1182,6 +1182,16 @@ enum RecorderHarness {
         ad.adaptiveEnabled = true
         check(!ad.adaptiveInputs(now: Date().timeIntervalSince1970).enabled && ad.experimentConfounders.contains("adaptiveEngineSuppressedByExperiment"), "experiment: an account's adaptive preference is suppressed inside Mode B and reported")
         finishExperiment(ad)
+        // A finished Watch workout leaves an idle presence behind; it must not block a mode change (only a live one does).
+        guard let w = experimentRecorder("experiment watch idle", mode: nil) else { return }
+        try? w.setExperimentUnlocked(true)
+        let nowW = Date().timeIntervalSince1970
+        w.harnessWatchRecording = RecordingPresence(device: RecordingPresence.watch, ownerID: nil, sessionID: "done", activity: "Gym", state: "idle", startedAt: nowW - 900, updatedAt: nowW - 60)
+        check(!w.experimentSwitchInputs.watchOwnsRecording && (try? w.selectExperiment(.b)) != nil || w.effectiveExperiment == .b, "experiment: a finished Watch workout does not block a mode change")
+        w.harnessWatchRecording = RecordingPresence(device: RecordingPresence.watch, ownerID: nil, sessionID: "live", activity: "Gym", state: "recording", startedAt: nowW - 900, updatedAt: nowW - 5)
+        check(w.experimentSwitchInputs.watchOwnsRecording, "experiment: a Watch recording that is running does block it")
+        w.harnessWatchRecording = nil
+        finishExperiment(w)
         // Review: Mode B without its keep-alive's Always service session would silently be Mode C, so it cannot be chosen.
         guard let capability = experimentRecorder("experiment capability") else { return }
         capability.passiveRestEnabled = false

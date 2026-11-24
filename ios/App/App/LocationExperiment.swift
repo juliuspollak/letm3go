@@ -37,7 +37,8 @@ extension LocationRecorder {
             departureCheck: (automaticSampling.probeUntil ?? 0) > now,
             recoveryPending: !heldReplayChecked || drainingHeldStopFixes || heldJournalNeedsCommit || stopHistoryPending != nil
                 || pendingWalkingHandoff != nil || storage?.evidenceRecoveryBlocked == true,
-            watchOwnsRecording: manualExclusion.current != nil || currentWatchRecording != nil,
+            // An idle presence is only the record of a finished workout; only a recording or paused one owns the iPhone.
+            watchOwnsRecording: manualExclusion.current != nil || currentWatchRecording?.isActive == true,
             adaptiveEngineOn: adaptiveEnabled, keepAliveCapable: experimentKeepAliveCapable)
     }
     func experimentBlock(to mode: LocationExperimentMode) -> String? {

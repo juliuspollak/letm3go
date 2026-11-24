@@ -357,6 +357,15 @@ enum CrossDeviceRecording {
         remote.leaseHeldUntil = now + leaseConfirmation
         return remote
     }
+    // A ride the iPhone has already saved proves its session ended, whatever heartbeat arrives afterwards. The ride can reach the
+    // iPhone before the Watch's heartbeats do, and a Watch whose finish failed keeps sending them; without this such a heartbeat
+    // would own the iPhone for the whole 12 hour lease although the activity is already in History.
+    static func endedByReceipt(_ remote: RecordingPresence?, receiptIDs: Set<String>) -> RecordingPresence? {
+        guard var remote, remote.device == RecordingPresence.watch, remote.isActive, !remote.sessionID.isEmpty,
+              receiptIDs.contains(remote.sessionID.lowercased()) else { return nil }
+        remote.state = "idle"; remote.endedAt = remote.endedAt ?? remote.updatedAt; remote.leaseHeldUntil = nil
+        return remote
+    }
     // The finished ride itself proves the recording ended, if its end packet is late.
     // `updatedAt` stays the newest word heard, so a delayed heartbeat stays older; the
     // interval ends at `endedAt` either way. It also corrects an end packet that
