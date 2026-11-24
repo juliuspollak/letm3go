@@ -66,6 +66,10 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
             // The context stays delivered, so a failed commit is retried on the next read.
             if heardWatchRecording != merged { commit(merged) }
         }
+        // Heals a phone that was already holding on to a session whose ride it has saved.
+        if let ended = CrossDeviceRecording.endedByReceipt(heardWatchRecording, receiptIDs: savedRideIDs), commit(ended) {
+            LocationRecorder.shared.recordDiagnostic("watch", "A saved ride ended the Watch recording it belongs to")
+        }
         if let held = CrossDeviceRecording.confirmingExpiry(heardWatchRecording, now: Date().timeIntervalSince1970) {
             heardWatchRecording = held; state.recording = held
             persistInbox()
@@ -177,12 +181,19 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         return true
     }
 
+    // Rides this iPhone has saved or already had (the inbox keeps the latest hundred receipts).
+    private var savedRideIDs: Set<String> {
+        Set((state.acknowledgements ?? []).filter { $0.status == "saved" || $0.status == "duplicate" }.map { $0.id.lowercased() })
+    }
+
     private func receive(presence value: Any?) {
         guard var presence = RecordingPresence(dictionary: value), presence.device == RecordingPresence.watch else { return }
         loadInbox()
         presence.heardAt = Date().timeIntervalSince1970
         let previous = heardWatchRecording
-        let merged = CrossDeviceRecording.merged(previous, presence)
+        var merged = CrossDeviceRecording.merged(previous, presence)
+        // A heartbeat for a ride already saved never owns the iPhone.
+        if let ended = CrossDeviceRecording.endedByReceipt(merged, receiptIDs: savedRideIDs) { merged = ended }
         if previous != merged, !commit(merged) { return }
         LocationRecorder.shared.reconcileManualExclusion()
         LocationRecorder.shared.confirmHouseholdLocation()

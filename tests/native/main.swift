@@ -6531,4 +6531,20 @@ do {
     let missingArrow = LocationExperiment.observation(at: t0, observed: .none, prediction: arrowExpected, mode: .c)
     check(missingArrow.agreement == "agrees" && missingArrow.arrowAgreement == "disagrees", "experiment: a no-pill prediction can agree while the arrow prediction is contradicted")
 }
+do {
+    // A saved Watch ride ends its own session even if its heartbeats arrive later (or never stop).
+    func presence(_ session: String, state: String = "recording", updated: Double = 5000) -> RecordingPresence {
+        RecordingPresence(device: RecordingPresence.watch, ownerID: nil, sessionID: session, activity: "Walking", state: state, startedAt: 4000, updatedAt: updated)
+    }
+    let saved: Set<String> = ["abc-123"]
+    let ended = CrossDeviceRecording.endedByReceipt(presence("ABC-123"), receiptIDs: saved)
+    check(ended?.state == "idle" && ended?.isActive == false && ended?.endedAt == 5000 && ended?.leaseHeldUntil == nil, "watch: a saved ride ends its session, whatever the case of its id")
+    check(CrossDeviceRecording.endedByReceipt(presence("ABC-123", state: "paused"), receiptIDs: saved)?.isActive == false, "watch: a paused session is ended too")
+    check(CrossDeviceRecording.endedByReceipt(presence("other"), receiptIDs: saved) == nil, "watch: another session keeps owning the iPhone")
+    check(CrossDeviceRecording.endedByReceipt(presence("abc-123", state: "idle"), receiptIDs: saved) == nil, "watch: an ended session is not ended twice")
+    check(CrossDeviceRecording.endedByReceipt(presence(""), receiptIDs: [""]) == nil && CrossDeviceRecording.endedByReceipt(nil, receiptIDs: saved) == nil, "watch: nothing to end without a session id")
+    let later = presence("abc-123", updated: 9000)
+    check(CrossDeviceRecording.merged(ended, later).isActive == false, "watch: a later heartbeat cannot restart a session that ended")
+    check(CrossDeviceRecording.automaticOwner(ended, ownerID: nil, now: 6000) == nil, "watch: the ended session no longer suppresses automatic recording")
+}
 print("Final native assertion count including the location experiment: \(assertions)")
