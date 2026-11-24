@@ -151,6 +151,7 @@ extension LocationRecorder {
         defer { recorderReconciledAvailable = automaticAvailable; noteRecordingHealth() }
         // Held stop fixes from the last process wait for tracking to be available.
         defer { if !heldReplayChecked { DispatchQueue.main.async { [weak self] in self?.replayHeldStopFixes() } } }
+        defer { reconcileKeepAlive(now: Date().timeIntervalSince1970) }
         updateIndicatorPolicy()
         guard storage != nil else { removePlaceRegion();stopContinuousLocation();automaticProbeTimer?.invalidate();automaticSampling=AutomaticSampling();homeRest.reset();return }
         // Evaluate recording ownership and rest before creating an activity
@@ -158,7 +159,6 @@ extension LocationRecorder {
         reconcileManualExclusion(refreshing:true)
         defer {
             reconcileBackgroundSession("monitoring refresh")
-            if usesAlwaysBackgroundPolicy { reconcileKeepAlive(now: Date().timeIntervalSince1970) }
         }
         reconcileServiceSession("monitoring refresh")
         if manualExclusion.current != nil { suspendAutomaticEngine(); return }

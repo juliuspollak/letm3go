@@ -472,6 +472,7 @@ extension LocationRecorder {
         serviceSession = nil; serviceSessionTask?.cancel(); serviceSessionTask = nil
         UserDefaults.standard.set(false, forKey: Self.serviceSessionKey)
         serviceSessionState = serviceSessionSupported ? "none" : "unsupported"; serviceSessionInsufficient = false
+        reconcileKeepAlive(now: Date().timeIntervalSince1970)
         if held { recordDiagnostic("session", "Always service session ended", details: ["reason": reason]) }
     }
     @available(iOS 18.0, *)
@@ -495,7 +496,7 @@ extension LocationRecorder {
 
     // MARK: Keep-alive for standard GPS without an activity session
     var keepAliveWanted: Bool {
-        usesAlwaysBackgroundPolicy && backgroundActivitySession == nil &&
+        storage != nil && usesAlwaysBackgroundPolicy && backgroundActivitySession == nil &&
             AlwaysBackgroundLocationPolicy.keepAliveWanted(standardUpdatesActive: continuousLocationRequested,
             automaticAvailable: automaticAvailable, sharingHoldsLocation: liveSharingHoldsLocation, manualRecording: manualRecordingLive,
             passive: locationMode == .passive, serviceSessionHeld: serviceSession != nil)
@@ -503,6 +504,7 @@ extension LocationRecorder {
     func reconcileKeepAlive(now: Double) {
         defer { noteBackgroundRecovery() }
         guard keepAliveWanted else {
+            cancelKeepAliveRetry()
             if keepAliveTask != nil {
                 keepAliveGeneration += 1
                 keepAliveTask?.cancel(); keepAliveTask = nil
@@ -510,8 +512,27 @@ extension LocationRecorder {
             }
             return
         }
-        // A stream that ended by itself is restarted at most once a minute.
-        guard keepAliveTask == nil, now - keepAliveEndedAt >= 60 else { return }
+        guard keepAliveTask == nil else { return }
+        // A held but insufficient session cannot support a new stream. Leave an
+        // existing stream subscribed so it can resume delivery without a restart.
+        guard !serviceSessionInsufficient else { cancelKeepAliveRetry(); return }
+        if let deadline = keepAliveRetryNotBefore {
+            let delay = deadline - ProcessInfo.processInfo.systemUptime
+            if delay > 0 {
+                if keepAliveRetryTimer == nil {
+                    // This timer only runs when iOS gives the process execution.
+                    // Other lifecycle callbacks may reconcile first.
+                    keepAliveRetryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] timer in
+                        guard let self, self.keepAliveRetryTimer === timer else { return }
+                        self.keepAliveRetryTimer = nil
+                        self.reconcileKeepAlive(now: Date().timeIntervalSince1970)
+                    }
+                }
+                return
+            }
+        }
+        cancelKeepAliveRetry()
+        keepAliveRetryNotBefore = nil
         guard #available(iOS 17.0, *) else { return }
         keepAliveGeneration += 1
         let generation = keepAliveGeneration
@@ -526,12 +547,27 @@ extension LocationRecorder {
                     self.keepAliveUpdates += 1
                     self.noteExecution("keepAlive")
                 }
-            } catch {}
-            guard let self = self, self.keepAliveGeneration == generation else { return }
-            self.keepAliveTask = nil; self.keepAliveEndedAt = Date().timeIntervalSince1970
-            self.recordDiagnostic("recovery", "Journey keep-alive live updates ended")
-            self.noteBackgroundRecovery()
+            } catch {
+                self?.keepAliveDidEnd(generation: generation, errorCode: (error as NSError).code)
+                return
+            }
+            self?.keepAliveDidEnd(generation: generation)
         }
+    }
+
+    func keepAliveDidEnd(generation: Int, errorCode: Int? = nil) {
+        guard keepAliveTask != nil, keepAliveGeneration == generation else { return }
+        keepAliveTask = nil
+        keepAliveRetryNotBefore = ProcessInfo.processInfo.systemUptime + 60
+        var details = ["reason": errorCode == nil ? "stream finished" : "stream threw an error"]
+        if let errorCode { details["code"] = String(errorCode) }
+        recordDiagnostic("recovery", "Journey keep-alive live updates ended", details: details)
+        reconcileKeepAlive(now: Date().timeIntervalSince1970)
+    }
+
+    private func cancelKeepAliveRetry() {
+        keepAliveRetryTimer?.invalidate()
+        keepAliveRetryTimer = nil
     }
 
     // MARK: Background recovery

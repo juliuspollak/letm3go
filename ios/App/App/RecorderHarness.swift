@@ -84,6 +84,7 @@ enum RecorderHarness {
                 await passiveSharingChangeCentral(motionChange: true)
                 await wakeCheckOutcomes()
                 automaticBackgroundLocationPolicy()
+                keepAliveRecovery()
                 await locationBackgroundCallbacks()
             }
             print("RECORDER HARNESS: \(passed) passed, \(failed) failed")
@@ -1104,6 +1105,70 @@ enum RecorderHarness {
               "background location: disabling the final tracking feature stops location")
     }
 
+    // Inject stream completion, then drive the actual retry timer callback
+    // without waiting for the wall-clock cooldown in the simulator.
+    static func endKeepAlive(_ r: LocationRecorder, errorCode: Int? = nil) -> Int {
+        let generation = r.keepAliveGeneration
+        r.keepAliveTask?.cancel()
+        r.keepAliveDidEnd(generation: generation, errorCode: errorCode)
+        return generation
+    }
+
+    static func fireKeepAliveRetry(_ r: LocationRecorder) {
+        guard let timer = r.keepAliveRetryTimer else { return check(false, "keep-alive: a retry is scheduled") }
+        r.keepAliveRetryNotBefore = ProcessInfo.processInfo.systemUptime
+        timer.fire()
+    }
+
+    static func keepAliveRecovery() {
+        let (directory, key, owner) = freshStore()
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "keep-alive: recorder opened")
+        }
+        UserDefaults.standard.set(true, forKey: LocationRecorder.backgroundSessionKey)
+        r.rejoinBackgroundSessionAtLaunch()
+        check(!UserDefaults.standard.bool(forKey: LocationRecorder.backgroundSessionKey) &&
+              r.backgroundActivitySession == nil && r.backgroundSessionState == "none",
+              "keep-alive: Always launch clears legacy activity-session intent")
+
+        let ended = endKeepAlive(r, errorCode: 1)
+        let retry = r.keepAliveRetryTimer
+        r.reconcileKeepAlive(now: Date().timeIntervalSince1970 + 3600)
+        check(retry != nil && retry === r.keepAliveRetryTimer && r.keepAliveTask == nil && r.continuousLocationRequested,
+              "keep-alive: standby schedules one retry and wall-clock changes do not bypass cooldown")
+        fireKeepAliveRetry(r)
+        r.keepAliveDidEnd(generation: ended)
+        check(r.keepAliveTask != nil && r.keepAliveGeneration != ended && r.keepAliveRetryTimer == nil,
+              "keep-alive: a stale completion cannot clear the recovered stream")
+
+        let start = Date().timeIntervalSince1970 - 300
+        for index in 0...40 {
+            deliver(r, location(home.latitude + Double(index) * 60 / 111_320, home.longitude,
+                                start + Double(index) * 5, speed: 12, accuracy: 8))
+        }
+        guard let trip = r.automaticTrip, !trip.points.isEmpty else {
+            return check(false, "keep-alive: the fixture confirmed a drive")
+        }
+        _ = endKeepAlive(r)
+        check(r.keepAliveRetryTimer != nil && r.keepAliveTask == nil, "keep-alive: another unexpected end waits for a fresh cooldown")
+        r.serviceSessionInsufficient = true
+        r.reconcileKeepAlive(now: Date().timeIntervalSince1970)
+        check(r.keepAliveRetryTimer == nil && r.continuousLocationRequested, "keep-alive: an insufficient session cancels retry without stopping standard GPS")
+        r.serviceSessionInsufficient = false
+        r.reconcileKeepAlive(now: Date().timeIntervalSince1970)
+        fireKeepAliveRetry(r)
+        let saved = (try? r.storage?.load())?.first { $0.id == trip.id }
+        check(r.keepAliveTask != nil && r.automaticTrip?.id == trip.id && r.automaticTrip?.points == trip.points && saved?.points == trip.points,
+              "keep-alive: recovery preserves the live drive ID and its saved GPS points")
+
+        _ = endKeepAlive(r)
+        let pending = r.keepAliveRetryTimer
+        r.endServiceSession("harness location access lost")
+        pending?.fire()
+        check(pending != nil && r.keepAliveRetryTimer == nil && r.keepAliveTask == nil,
+              "keep-alive: ending authorization interest cancels retry and rejects its delayed callback")
+    }
+
     static func locationBackgroundCallbacks() async {
         let (directory, key, owner) = freshStore()
         guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
@@ -1134,6 +1199,10 @@ enum RecorderHarness {
               "background location: Core Location calls the standard manager delegate in the simulator background")
         check(r.keepAliveUpdates > keepAliveBefore && r.backgroundActivitySession == nil,
               "background location: Core Location yields liveUpdates in the simulator background without an activity session")
+        _ = endKeepAlive(r)
+        fireKeepAliveRetry(r)
+        check(r.keepAliveTask != nil && r.backgroundActivitySession == nil && UIApplication.shared.applicationState == .background,
+              "keep-alive: the retry callback restarts the stream during an executing background location opportunity")
         // The same process was armed in standby. Leave persisted intent in
         // place when the harness exits so the next process can rejoin it.
         check(r.serviceSession != nil && r.keepAliveTask != nil &&
@@ -1176,6 +1245,10 @@ enum RecorderHarness {
         check(restored.liveShareToken != nil && restored.friendShareToken != nil && restored.keepAliveTask != nil &&
               restored.backgroundActivitySession == nil,
               "background location: restored device credentials arm sharing-only standard GPS and liveUpdates")
+        _ = endKeepAlive(restored)
+        fireKeepAliveRetry(restored)
+        check(restored.keepAliveTask != nil && restored.continuousLocationRequested && !restored.automaticEnabled,
+              "keep-alive: sharing alone recovers without Automatic History or an activity session")
         restored.disableHouseholdLiveSharing(forget: true)
         check(restored.friendShareToken != nil && restored.keepAliveTask != nil,
               "background location: revoking household sharing leaves friend sharing running")

@@ -153,7 +153,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var restPlaceFixAt: Double?
     var restPlaceAccuracy: Double?
     var keepAliveGeneration = 0
-    var keepAliveEndedAt: Double = 0
+    var keepAliveRetryTimer: Timer?
+    var keepAliveRetryNotBefore: TimeInterval?
     // Eligible live sharing can join passive rest unless the user opts out.
     var sharingRestEnabled = SharingRest.enabled(preference: nil)
     var sharingRestAllowed = false
@@ -631,7 +632,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let previouslyHeld = UserDefaults.standard.bool(forKey: Self.backgroundSessionKey)
         // A recovered manual GPS draft opens paused, so Always tracking needs no
         // activity session before account recovery. Clear any legacy session.
-        if usesAlwaysBackgroundPolicy && previouslyHeld {
+        if usesAlwaysBackgroundPolicy {
+            backgroundSessionState = "none"
             endBackgroundSession("Always background tracking: clearing previous activity session at launch")
             return
         }
@@ -686,8 +688,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let previouslyHeld = UserDefaults.standard.bool(forKey: Self.backgroundSessionKey)
         guard backgroundActivitySession != nil || previouslyHeld else { return }
         if #available(iOS 17.0, *) {
-            // A session held before a relaunch is released by rejoining and invalidating it.
-            ((backgroundActivitySession as? CLBackgroundActivitySession) ?? CLBackgroundActivitySession()).invalidate()
+            // Invalidate only a session this process holds. Core Location expires
+            // an unclaimed session after launch.
+            (backgroundActivitySession as? CLBackgroundActivitySession)?.invalidate()
             (replacedBackgroundSession as? CLBackgroundActivitySession)?.invalidate()
         }
         backgroundActivitySession = nil; replacedBackgroundSession = nil; backgroundSessionStartedThisProcess = false
@@ -770,6 +773,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         }
     }
     deinit {
+        keepAliveRetryTimer?.invalidate()
+        keepAliveTask?.cancel()
         for observer in diagnosticObservers {NotificationCenter.default.removeObserver(observer)}
         if let foregroundLocationObserver { NotificationCenter.default.removeObserver(foregroundLocationObserver) }
     }
