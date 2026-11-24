@@ -440,31 +440,29 @@ extension LocationRecorder {
     func reconcileServiceSession(_ reason: String) {
         guard #available(iOS 18.0, *) else { serviceSessionState = "unsupported"; return }
         let always = manager.authorizationStatus == .authorizedAlways
-        let wanted = LocationExperiment.serviceSessionWanted(base: automaticPermitted && passiveRestEnabled && always, mode: effectiveExperiment,
-            sharingArmed: liveSharingArmed, alwaysAuthorized: always)
-        // Mode B only: sharing with Automatic Tracking off still needs it, because no activity session is held for sharing.
-        let sharingWantsIt = effectiveExperiment == .b && liveSharingArmed && always
+        let wanted = automaticPermitted || liveSharingArmed
         let foreground = UIApplication.shared.applicationState == .active
         if wanted {
-            // A session created in the background (or reported insufficiently in
+            // A session rejoined at launch (or reported insufficiently in
             // use) is replaced by one started in the foreground; the new one is
             // created before the old one ends, so interest is never dropped.
-            guard serviceSession == nil || (foreground && (serviceSessionState != "held" || serviceSessionInsufficient)) else { return }
+            guard AlwaysBackgroundLocationPolicy.canStartServiceSession(foreground: foreground,
+                held: serviceSession != nil, needsForegroundReplacement: serviceSessionState != "held" || serviceSessionInsufficient) else { return }
             let previous = serviceSession as? CLServiceSession
             let session = CLServiceSession(authorization: .always)
             serviceSession = session
             previous?.invalidate()
             serviceSessionInsufficient = false
             UserDefaults.standard.set(true, forKey: Self.serviceSessionKey)
-            serviceSessionState = foreground ? "held" : "heldFromBackground"
-            let message = foreground ? "Always service session started" : "Always service session created in the background"
-            recordDiagnostic("session", message, details: ["reason": reason, "serviceSession": serviceSessionState])
+            serviceSessionState = "held"
+            recordDiagnostic("session", "Always service session started", details: ["reason": reason, "serviceSession": serviceSessionState])
             watchServiceSession(session)
         } else if serviceSession != nil || UserDefaults.standard.bool(forKey: Self.serviceSessionKey),
                   // Like the activity session, only an explicit end of the need
                   // releases it: a transient state at a background launch must not
                   // discard what only the foreground can start.
-                  storeOpened, ownerID != nil, !sharingWantsIt, !automaticEnabled || !passiveRestEnabled || manager.authorizationStatus != .authorizedAlways {
+                  storeOpened, ownerID != nil,
+                  !always || !automaticEnabled {
             endServiceSession(reason)
         }
     }
@@ -495,20 +493,12 @@ extension LocationRecorder {
         }
     }
 
-    // MARK: Keep-alive for precise GPS without an activity session
+    // MARK: Keep-alive for standard GPS without an activity session
     var keepAliveWanted: Bool {
-        let base = KeepAlivePolicy.wanted(automaticAvailable: automaticAvailable, manualRecording: manualRecordingLive,
-            // The open-stop case is part of the device test until it is measured.
-            precise: locationMode == .precise, stopOpen: sharingRestEnabled && settledTripID != nil && locationMode != .passive,
-            // A rejoined session does not keep the app running, so the keep-alive stays on.
-            sessionHeld: backgroundSessionKeepsAppRunning, serviceSessionHeld: serviceSession != nil,
-            sharingWithoutSession: sharingRestEnabled && liveSharingHoldsLocation && locationMode != .passive,
-            lowPowerRunning: adaptive.lowPowerRunning)
-        // Mode A returns `base` unchanged; Mode B widens it to what the session used to cover; Mode C never runs it.
-        return LocationExperiment.keepAliveWanted(base: base, mode: effectiveExperiment, automaticAvailable: automaticAvailable,
-            manualRecording: manualRecordingLive, precise: locationMode == .precise, stopOpen: settledTripID != nil,
-            sessionHeld: backgroundSessionKeepsAppRunning, serviceSessionHeld: serviceSession != nil,
-            sharingHoldsLocation: liveSharingHoldsLocation, passive: locationMode == .passive, lowPowerRunning: adaptive.lowPowerRunning)
+        usesAlwaysBackgroundPolicy && backgroundActivitySession == nil &&
+            AlwaysBackgroundLocationPolicy.keepAliveWanted(standardUpdatesActive: continuousLocationRequested,
+            automaticAvailable: automaticAvailable, sharingHoldsLocation: liveSharingHoldsLocation, manualRecording: manualRecordingLive,
+            passive: locationMode == .passive, serviceSessionHeld: serviceSession != nil)
     }
     func reconcileKeepAlive(now: Double) {
         defer { noteBackgroundRecovery() }
@@ -525,7 +515,8 @@ extension LocationRecorder {
         guard #available(iOS 17.0, *) else { return }
         keepAliveGeneration += 1
         let generation = keepAliveGeneration
-        recordDiagnostic("service", "Journey keep-alive live updates started", details: ["reason": KeepAlivePolicy.reason(precise: locationMode == .precise, stopOpen: settledTripID != nil)])
+        recordDiagnostic("service", "Journey keep-alive live updates started",
+            details: ["reason": "automatic or sharing standard updates without an activity session"])
         keepAliveTask = Task { @MainActor [weak self] in
             do {
                 for try await _ in CLLocationUpdate.liveUpdates() {
@@ -634,4 +625,87 @@ extension LocationRecorder {
                 "modeSeconds": modeClock.totals(now: now).mapValues { Int($0) },
                 "wifi": wifiSnapshot]
     }
+
+    static let placeRegionID = "letm3go-place-stationary"
+
+    var registeredPlaceRegion: PlaceRegionSpec? {
+        (manager.monitoredRegions.first { $0.identifier == Self.placeRegionID } as? CLCircularRegion).map {
+            PlaceRegionSpec(latitude: $0.center.latitude, longitude: $0.center.longitude, radius: $0.radius)
+        }
+    }
+    func registerPlaceRegion(_ spec: PlaceRegionSpec) {
+        let region = CLCircularRegion(center: CLLocationCoordinate2D(latitude: spec.latitude, longitude: spec.longitude), radius: spec.radius, identifier: Self.placeRegionID)
+        region.notifyOnEntry = false; region.notifyOnExit = true
+        startRegionMonitoring(region)
+    }
+    func removePlaceRegion() {
+        for region in manager.monitoredRegions where region.identifier == Self.placeRegionID { stopRegionMonitoring(region) }
+    }
+    func reconcileRestExitRegion() {
+        guard automaticAvailable, restDecision.confirmed, passiveRestEnabled, serviceSession != nil,
+              let area = dwell, CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
+            removePlaceRegion()
+            return
+        }
+        let radius = min(PlaceRegion.radius(placeRadius: area.radius, anchorAccuracy: 65), manager.maximumRegionMonitoringDistance)
+        let spec = PlaceRegionSpec(latitude: area.latitude, longitude: area.longitude, radius: radius)
+        guard PlaceRegion.valid(latitude: spec.latitude, longitude: spec.longitude, radius: spec.radius) else {
+            removePlaceRegion()
+            return
+        }
+        guard !spec.same(registeredPlaceRegion), !spec.same(failedRestRegion) else { return }
+        removePlaceRegion()
+        requestedRestRegion = spec
+        registerPlaceRegion(spec)
+    }
+    func placeRegionFailed(_ region: CLRegion?) {
+        guard region?.identifier == Self.placeRegionID else { return }
+        failedRestRegion = requestedRestRegion
+        requestedRestRegion = nil
+    }
+
+    // MARK: Departure latency
+    func noteDepartureEvidence(_ cause: String, now: Double) {
+        let restedSince: Double? = passiveSince ?? (departureLatency.evidenceAt == nil ? relaunchedPassiveSince(now: now) : nil)
+        let engine = restedSince != nil ? "passive" : "established"
+        if departureLatency.evidenceAt == nil {
+            // Where the phone rested, kept in memory only, to measure how much of
+            // the departure preceded the first precise fix.
+            departurePlace = dwell
+            departureMotionOnsetAt = nil
+            departureFirstFixLogged = false
+            if let since = restedSince { queryDepartureOnset(since: since, evidenceAt: now); if passiveSince == nil { persistPassiveSince(nil) } }
+        }
+        departureLatency.noteEvidence(cause, engine: engine, now: now)
+    }
+    func noteDepartureConfirmed(firstFixAt: Double, now: Double) {
+        guard let measured = departureLatency.measure(firstFixAt: firstFixAt, confirmedAt: now) else {
+            lastDepartureLatency = ["engine": "established", "cause": "journey began during a departure check or open journey"]
+            return
+        }
+        lastDepartureLatency = ["engine": departureLatency.engine, "cause": departureLatency.cause, "at": String(now),
+            "evidenceToFirstFixSeconds": String(Int(measured.toFirstFix)), "evidenceToConfirmationSeconds": String(Int(measured.toConfirmation))]
+        // From the first observable sign of the departure (Core Motion history,
+        // when it shows one) to the wake-up and to the first precise fix.
+        if let onset = departureMotionOnsetAt, let evidence = departureLatency.evidenceAt {
+            lastDepartureLatency["motionOnsetToEvidenceSeconds"] = String(Int(max(0, evidence - onset)))
+            lastDepartureLatency["motionOnsetToFirstFixSeconds"] = String(Int(firstFixAt - onset))
+        }
+        if let onset = departureVehicleOnsetAt, let evidence = departureLatency.evidenceAt {
+            lastDepartureLatency["vehicleOnsetToEvidenceSeconds"] = String(Int(max(0, evidence - onset)))
+        }
+        // How far beyond the place the first saved fix was: route the journey
+        // could not record. Rounded to 10 m; no coordinates.
+        if let place = departurePlace, let first = automaticTrip?.points.first {
+            lastDepartureLatency["startGapMeters"] = String(Int((max(0, place.centre.distance(to: first) - place.radius) / 10).rounded()) * 10)
+        }
+        recordDiagnostic("detection", "Departure latency", details: lastDepartureLatency)
+        // A confirmed journey is evidence the wake-up brought tracking back.
+        if WakeCheck.needsOutcome(engine: departureLatency.engine, evidenceAt: departureLatency.evidenceAt, firstFixSeen: departureFirstFixLogged, lastOutcomeAt: wakeOutcomeAt) {
+            wakeOutcome = WakeCheckOutcome.preciseFix.rawValue; wakeOutcomeAt = now
+        }
+        departureLatency.reset()
+        departurePlace = nil; departureMotionOnsetAt = nil
+    }
+
 }

@@ -47,17 +47,11 @@ export function snapshotKey(data,historyCache){
   (data.deletedIDs||[]).join(','),
   svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,svc.automaticPauseEnabled,svc.lastExecutionGapSeconds,
   data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight,data.nativeFamilySharing?.mode,data.nativeFamilySharing?.lastUploadOkAt,data.nativeFamilySharing?.status,
- // Adaptive engine status; time in state at minute resolution.
- data.adaptive?.enabled,data.adaptive?.state,data.adaptive?.engine,data.adaptive?.liveUpdatesRunning,data.adaptive?.coreLocationStationary,data.adaptive?.placeRegionMonitored,
- data.adaptive?.standbyWakes,data.adaptive?.liveUpdatesFailures,data.adaptive?.lastDepartureLatency?.at,Math.floor((data.adaptive?.secondsInState||0)/60),
+ data.lastDepartureLatency?.at,
  // Passive rest and Home Wi-Fi; stillness at minute resolution.
  data.passiveRest?.enabled,data.passiveRest?.active,data.passiveRest?.restConfirmed,data.passiveRest?.retainReason,data.passiveRest?.serviceSession,
  data.passiveRest?.keepAliveRunning,data.passiveRest?.sessionReleases,data.passiveRest?.lastPreciseReason,Math.floor((data.passiveRest?.stillSeconds||0)/60),
- data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt,
- // Developer-only location experiment.
- data.experiment?.available,data.experiment?.unlocked,data.experiment?.mode,data.experiment?.sessionOwnership,data.experiment?.keepAliveRunning,data.experiment?.runningAPIs,
- data.experiment?.predicted?.pill,data.experiment?.confounders,Object.values(data.experiment?.blocked||{}).join('/'),
- (data.experiment?.observations||[]).map(item=>item.at).join(',')
+ data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt
  ].join('~');
 }
 // Preserve immutable history across live-status polls. This also supports older

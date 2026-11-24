@@ -10,6 +10,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         window = UIWindow(windowScene: windowScene)
         window?.backgroundColor = UIColor(red:246/255.0,green:247/255.0,blue:251/255.0,alpha:1)
+        #if DEBUG
+        // The harness supplies its own native account fixture. Avoid running
+        // the signed-out web bootstrap against its persisted session intent.
+        if RecorderHarness.enabled {
+            window?.rootViewController = UIViewController()
+            window?.makeKeyAndVisible()
+            return
+        }
+        #endif
         window?.rootViewController = JourneyViewController()
         window?.makeKeyAndVisible()
 

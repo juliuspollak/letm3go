@@ -565,7 +565,6 @@ struct ManualExclusionServices: Equatable {
     let visits = false
     let placeRegions = false
     let departureChecks = false
-    let lowPowerStandby = false
     let passiveRest = false
 
     static func plan(phoneManual: Bool, phoneRecording: Bool, liveSharing: Bool, automaticPermitted: Bool) -> ManualExclusionServices {

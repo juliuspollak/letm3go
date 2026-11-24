@@ -507,27 +507,6 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
 }
 
 extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
-    // Internal: the adaptive location engine for controlled evaluation.
-    @objc func setAdaptiveLocation(_ call: CAPPluginCall) { DispatchQueue.main.async {
-        guard self.requireAccount(call) else { return }
-        do { try LocationRecorder.shared.setAdaptive(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
-    } }
-    // Developer-only location experiment (docs/background-location-architecture-review.md). Mode A unless unlocked and selected.
-    @objc func setLocationExperimentUnlocked(_ call: CAPPluginCall) { DispatchQueue.main.async {
-        guard self.requireAccount(call) else { return }
-        do { try LocationRecorder.shared.setExperimentUnlocked(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
-    } }
-    @objc func setLocationExperimentMode(_ call: CAPPluginCall) { DispatchQueue.main.async {
-        guard self.requireAccount(call) else { return }
-        guard let mode = LocationExperimentMode(rawValue: call.getString("mode") ?? "") else { return call.reject("Unknown experiment mode.") }
-        do { try LocationRecorder.shared.selectExperiment(mode); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
-    } }
-    // A person's physical observation of the iOS indicator, recorded apart from the application's prediction.
-    @objc func recordIndicatorObservation(_ call: CAPPluginCall) { DispatchQueue.main.async {
-        guard self.requireAccount(call) else { return }
-        guard let observed = ObservedIndicator(rawValue: call.getString("observed") ?? "") else { return call.reject("Unknown indicator observation.") }
-        do { try LocationRecorder.shared.recordIndicatorObservation(observed, note: call.getString("note") ?? ""); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
-    } }
     // Passive rest: release location and the background session while settled.
     @objc func setPassiveRest(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
@@ -579,15 +558,7 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     } }
     @objc func currentPosition(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
-        // Periodic refreshes (household publishing, Home presence) may accept
-        // "still stationary" instead of a new precise fix while the adaptive
-        // engine holds Core Location's own stationary report. No coordinates are
-        // returned in that case, so nothing old is presented as new; the native
-        // publisher re-confirms the shared position on that same evidence.
         let recorder = LocationRecorder.shared
-        if call.getBool("allowStationary") == true, recorder.adaptive.lowPowerRunning, let since = recorder.liveGate.stationarySince {
-            call.resolve(["stationary": true, "stationarySince": since]); return
-        }
         // Passive rest is confirmed stillness at a verified place: periodic
         // refreshes do not start precise GPS for it. Nothing is re-published as new.
         if call.getBool("allowStationary") == true, recorder.locationMode == .passive, recorder.restDecision.confirmed, let since = recorder.passiveSince {

@@ -12,6 +12,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // WatchConnectivity must be activated before iOS can deliver a ride the
         // watch finished while this app was not running.
         WatchSessionManager.shared.start()
+        #if DEBUG
+        if RecorderHarness.enabled { RecorderHarness.run() }
+        #endif
         return true
     }
 

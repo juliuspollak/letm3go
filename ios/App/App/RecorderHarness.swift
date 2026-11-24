@@ -39,10 +39,23 @@ enum RecorderHarness {
         started = true
         Task { @MainActor in
             print("HARNESS START")
+            fflush(stdout)
+            if ProcessInfo.processInfo.arguments.contains("-RecorderHarnessRelaunch") {
+                print("RECORDER HARNESS REQUEST FOREGROUND")
+                fflush(stdout)
+            }
+            for _ in 0..<100 {
+                if UIApplication.shared.applicationState == .active { break }
+                await pause(0.2)
+            }
             walkingArrivalDetectorChecks()
             let status = CLLocationManager().authorizationStatus
             if status != .authorizedAlways {
                 check(false, "the simulator app has Always location access (status \(status.rawValue)); grant it with simctl privacy")
+            } else if ProcessInfo.processInfo.arguments.contains("-RecorderHarnessRelaunch") {
+                await locationBackgroundRelaunch()
+            } else if ProcessInfo.processInfo.arguments.contains("-RecorderHarnessCallbacks") {
+                await locationBackgroundCallbacks()
             } else {
                 walkingOuting()
                 walkingHandoffRecovery()
@@ -70,7 +83,8 @@ enum RecorderHarness {
                 await passiveSharingChangeCentral(motionChange: false)
                 await passiveSharingChangeCentral(motionChange: true)
                 await wakeCheckOutcomes()
-                await locationExperimentModes()
+                automaticBackgroundLocationPolicy()
+                await locationBackgroundCallbacks()
             }
             print("RECORDER HARNESS: \(passed) passed, \(failed) failed")
             print("RECORDER HARNESS DONE")
@@ -1067,180 +1081,118 @@ enum RecorderHarness {
         check(r.diagnosticJournal.events.filter { $0.message.hasPrefix("Wake-up check") }.count == outcomes, "wake: an answered wake-up is never reported twice")
     }
 
-    // MARK: Developer-only location experiment (LocationExperimentCore.swift)
-    // A recorder opened as the experiment would run it: Always access, a Home place, a fresh account store.
-    static func experimentRecorder(_ label: String, mode: LocationExperimentMode? = nil, sharing: Bool = false, friendDevice: Bool = false) -> LocationRecorder? {
+    static func automaticBackgroundLocationPolicy() {
         let (directory, key, owner) = freshStore()
-        // Whatever an earlier scenario left in the device-wide choice must not leak into this recorder.
-        LocationExperimentStore.save(unlocked: false); LocationExperimentStore.save(selection: nil)
-        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else { check(false, "\(label): recorder opened"); return nil }
-        let now = Date().timeIntervalSince1970
-        r.passiveRestEnabled = true
-        if sharing {
-            r.liveShareToken = "harness"; r.liveShareEndpoint = URL(string: "https://harness.invalid/rpc"); r.liveShareApiKey = "harness"
-            r.liveShareTokenExpiresAt = now + 3600; r.liveShareMode = "device"
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "background location: recorder opened")
         }
-        if friendDevice {
-            r.friendShareMode = "device"; r.friendShareToken = "harness-friend"; r.friendShareEndpoint = URL(string: "https://harness.invalid/rpc/set_friend_location")
-            r.friendShareApiKey = "harness"; r.friendShareTokenExpiresAt = now + 3600
-        }
-        r.reconcileServiceSession("harness")
+        r.passiveRestEnabled = false
         r.refreshAutomaticMonitoring()
-        if let mode = mode {
-            do { try r.setExperimentUnlocked(true); try r.selectExperiment(mode) } catch { check(false, "\(label): select Mode \(mode.rawValue): \(error.localizedDescription)"); return nil }
-        }
-        return r
-    }
-    static func finishExperiment(_ r: LocationRecorder) {
-        r.disableFriendLiveSharing(); r.disableHouseholdLiveSharing(forget: false)
-        LocationExperimentStore.save(unlocked: false); LocationExperimentStore.save(selection: nil)
-    }
-    static func departure(_ r: LocationRecorder) {
+        check(r.usesAlwaysBackgroundPolicy && r.locationMode == .standby && r.continuousLocationRequested &&
+              r.serviceSession != nil && r.keepAliveTask != nil && r.backgroundActivitySession == nil,
+              "background location: ordinary standby starts standard and liveUpdates with no activity session")
         let away = location(home.latitude + 600 / 111_320, home.longitude, Date().timeIntervalSince1970 - 2, speed: 10, accuracy: 10)
         r.processAutomatic([away], source: .standard)
+        check(r.locationMode == .precise && r.keepAliveTask != nil && r.backgroundActivitySession == nil,
+              "background location: a departure promotes standby GPS without an activity session")
+        let sample = r.locationSampleDetails(now: Date().timeIntervalSince1970)
+        check(sample["sessionOwnership"] == "none" && sample["runningAPIs"]?.contains("keepAlive.liveUpdates") == true,
+              "background location: the delivery journal identifies the running services")
+        r.automaticEnabled = false
+        r.refreshAutomaticMonitoring()
+        check(r.serviceSession == nil && r.keepAliveTask == nil && !r.continuousLocationRequested,
+              "background location: disabling the final tracking feature stops location")
     }
 
-    static func locationExperimentModes() async {
-        // Mode A is the default, and the locked selector cannot change anything.
-        guard let a = experimentRecorder("experiment A") else { return }
-        check(a.effectiveExperiment == .a && !a.experimentUnlocked, "experiment: a fresh recorder is Mode A with the selector locked")
-        check((try? a.selectExperiment(.b)) == nil && a.effectiveExperiment == .a, "experiment: a locked selector refuses to change the mode")
-        let sessionA = a.backgroundActivitySession != nil
-        check(sessionA && a.sessionOwnership == "startedThisProcess", "experiment: Mode A holds the activity session as shipped (\(a.sessionOwnership); app \(UIApplication.shared.applicationState.rawValue))")
-        check(a.indicatorPrediction.pill == .yes && a.experimentSnapshot["mode"] as? String == "a", "experiment: Mode A predicts the pill and reports itself as A")
-        check(a.diagnosticContext()["experimentMode"] == "a", "experiment: every diagnostic event carries the mode (A)")
-
-        // Mode B: no activity session, standard location still delivered, keep-alive when precise.
-        guard let b = experimentRecorder("experiment B", mode: .b) else { return }
-        check(b.effectiveExperiment == .b && b.backgroundActivitySession == nil && b.sessionOwnership == "none", "experiment: Mode B releases the activity session (\(b.sessionOwnership))")
-        check(b.continuousLocationRequested || b.locationMode == .passive, "experiment: Mode B still runs the recorder's location service (mode \(b.locationMode.rawValue))")
-        b.refreshAutomaticMonitoring(); b.reconcileBackgroundSession("harness foreground return")
-        check(b.backgroundActivitySession == nil, "experiment: Mode B does not recreate a session when the app returns to the foreground")
-        check(b.diagnosticJournal.events.contains { $0.kind == "experiment" && $0.message == "Location experiment mode changed" && $0.context["experimentMode"] == "b" }, "experiment: the mode change is recorded")
-        check(b.diagnosticContext()["experimentMode"] == "b", "experiment: every diagnostic event carries the mode (B)")
-        departure(b)
-        check(b.locationMode == .precise && b.continuousLocationRequested, "experiment: Mode B departure runs precise GPS (mode \(b.locationMode.rawValue))")
-        check(b.backgroundActivitySession == nil, "experiment: Mode B holds no session during a departure check")
-        b.reconcileKeepAlive(now: Date().timeIntervalSince1970)
-        check(b.serviceSession != nil && b.keepAliveTask != nil, "experiment: Mode B keeps the keep-alive running for precise GPS (service session \(b.serviceSessionState))")
-        check(b.indicatorPrediction.pill == .untested && b.indicatorPrediction.basis.contains("Apple does not document"), "experiment: Mode B predicts nothing about a liveUpdates stream it has not measured")
-        // Never during a departure check or an open journey.
-        check((try? b.selectExperiment(.a)) == nil && b.effectiveExperiment == .b && b.backgroundActivitySession == nil, "experiment: the mode cannot change during a departure check, and no session appears")
-        check(b.diagnosticJournal.events.contains { $0.message == "Location experiment mode change refused" && $0.context["reason"] == "a departure check is running" }, "experiment: the refusal and its reason are recorded")
-        check((b.experimentSnapshot["blocked"] as? [String: String])?["a"] == "a departure check is running", "experiment: the snapshot reports why the mode is locked")
-        // The sample says what ran, in numbers.
-        b.experimentWindow.noteWake(gapSeconds: 120, cause: "region")
-        b.experimentWindow.noteRouteGap(seconds: 40, meters: 300)
-        let sample = b.experimentSampleDetails(now: Date().timeIntervalSince1970 + 60)
-        check(sample["experimentMode"] == "b" && sample["sessionOwnership"] == "none" && sample["keepAliveRunning"] == "true" && sample["runningAPIs"]?.contains("keepAlive.liveUpdates") == true
-              && sample["wakeSources"] == "region=1" && sample["routeGaps"] == "1" && sample["indicatorEvidence"] == "application prediction; not a physical observation", "experiment: a sample records session ownership, running APIs, wake sources and route gaps")
-        // A physical observation is stored apart from the prediction.
-        try? b.recordIndicatorObservation(.arrow, note: "locked, driving")
-        let seen = b.diagnosticJournal.events.last { $0.message == "Physical indicator observation" }
-        check(seen?.context["observedIndicator"] == "arrow" && seen?.context["predictedPill"] == "untested" && seen?.context["indicatorAgreement"] == "untested"
-              && seen?.context["observationSource"] == "a person looked at the iPhone" && seen?.context["arrowAgreement"] == "agrees",
-              "experiment: a physical observation is recorded apart from the application's prediction, with the arrow assessed separately")
-        check(b.experimentObservations.count == 1 && b.experimentSnapshot["available"] as? Bool == true, "experiment: the observation is listed on screen and the build allows the experiment")
-        b.experimentObservations = []; b.restoreExperimentObservations()
-        check(b.experimentObservations.count == 1 && b.experimentObservations[0].observed == .arrow && b.experimentObservations[0].mode == "b", "experiment: observations come back from the journal after a relaunch")
-        // An expired selection does not end mid-check.
-        b.experimentSelection = LocationExperimentSelection(mode: .b, selectedAt: Date().timeIntervalSince1970 - LocationExperiment.lifetime - 60)
-        b.expireExperimentIfIdle(now: Date().timeIntervalSince1970)
-        check(b.effectiveExperiment == .b, "experiment: expiry waits for an idle moment and never switches during a departure check")
-        finishExperiment(b)
-
-        // Mode B at idle, with expiry at an idle moment returning to Mode A and its session.
-        guard let idle = experimentRecorder("experiment expiry", mode: .b) else { return }
-        idle.experimentSelection = LocationExperimentSelection(mode: .b, selectedAt: Date().timeIntervalSince1970 - LocationExperiment.lifetime - 60)
-        idle.expireExperimentIfIdle(now: Date().timeIntervalSince1970)
-        check(idle.effectiveExperiment == .a && idle.experimentSelection == nil && LocationExperimentStore.loadSelection() == nil, "experiment: an expired selection returns to Mode A at an idle moment")
-        check(idle.backgroundActivitySession != nil, "experiment: expiry restores the shipped session (\(idle.sessionOwnership))")
-        finishExperiment(idle)
-
-        // Mode C: no session and no keep-alive, but the same location service and service session.
-        guard let c = experimentRecorder("experiment C", mode: .c) else { return }
-        check(c.backgroundActivitySession == nil && c.serviceSession != nil, "experiment: Mode C holds no activity session but keeps the Always service session")
-        departure(c)
-        c.reconcileKeepAlive(now: Date().timeIntervalSince1970)
-        check(c.locationMode == .precise && c.continuousLocationRequested && c.keepAliveTask == nil && c.backgroundActivitySession == nil,
-              "experiment: Mode C runs precise GPS with neither a session nor a keep-alive (\(c.runningAPIs))")
-        check(c.indicatorPrediction.pill == .no, "experiment: Mode C predicts no pill (standard updates only, Always access)")
-        finishExperiment(c)
-
-        // The adaptive engine would add a second liveUpdates stream, so it cannot be combined with B or C.
-        guard let adaptive = experimentRecorder("experiment adaptive") else { return }
-        try? adaptive.setExperimentUnlocked(true)
-        try? adaptive.setAdaptive(true)
-        check(adaptive.adaptiveEnabled && (try? adaptive.selectExperiment(.b)) == nil && adaptive.effectiveExperiment == .a, "experiment: B and C are refused while the adaptive engine is on")
-        try? adaptive.setAdaptive(false)
-        try? adaptive.selectExperiment(.b)
-        check((try? adaptive.setAdaptive(true)) == nil && !adaptive.adaptiveEnabled, "experiment: the adaptive engine cannot be switched on during B")
-        finishExperiment(adaptive)
-
-        // Review: the adaptive engine cannot run inside B or C even if an account's own preference is on.
-        guard let ad = experimentRecorder("experiment adaptive account", mode: .b) else { return }
-        ad.adaptiveEnabled = true
-        check(!ad.adaptiveInputs(now: Date().timeIntervalSince1970).enabled && ad.experimentConfounders.contains("adaptiveEngineSuppressedByExperiment"), "experiment: an account's adaptive preference is suppressed inside Mode B and reported")
-        finishExperiment(ad)
-        // A finished Watch workout leaves an idle presence behind; it must not block a mode change (only a live one does).
-        guard let w = experimentRecorder("experiment watch idle", mode: nil) else { return }
-        try? w.setExperimentUnlocked(true)
-        let nowW = Date().timeIntervalSince1970
-        w.harnessWatchRecording = RecordingPresence(device: RecordingPresence.watch, ownerID: nil, sessionID: "done", activity: "Gym", state: "idle", startedAt: nowW - 900, updatedAt: nowW - 60)
-        check(!w.experimentSwitchInputs.watchOwnsRecording && (try? w.selectExperiment(.b)) != nil || w.effectiveExperiment == .b, "experiment: a finished Watch workout does not block a mode change")
-        w.harnessWatchRecording = RecordingPresence(device: RecordingPresence.watch, ownerID: nil, sessionID: "live", activity: "Gym", state: "recording", startedAt: nowW - 900, updatedAt: nowW - 5)
-        check(w.experimentSwitchInputs.watchOwnsRecording, "experiment: a Watch recording that is running does block it")
-        w.harnessWatchRecording = nil
-        finishExperiment(w)
-        // Review: Mode B without its keep-alive's Always service session would silently be Mode C, so it cannot be chosen.
-        guard let capability = experimentRecorder("experiment capability") else { return }
-        capability.passiveRestEnabled = false
-        try? capability.setExperimentUnlocked(true)
-        check((try? capability.selectExperiment(.b)) == nil && capability.effectiveExperiment == .a && (capability.experimentSnapshot["blocked"] as? [String: String])?["b"]?.contains("iOS 18") == true,
-              "experiment: Mode B is refused when no Always service session can be held (passive rest off, no sharing)")
-        try? capability.selectExperiment(.c)
-        check(capability.effectiveExperiment == .c, "experiment: Mode C needs no keep-alive and can still be chosen")
-        finishExperiment(capability)
-        // Sharing: household, device friend credential, and a legacy friend session token.
-        for (label, household, friendDevice) in [("household", true, false), ("device friend", false, true), ("household and friend", true, true)] {
-            guard let a2 = experimentRecorder("experiment sharing A \(label)", sharing: household, friendDevice: friendDevice) else { continue }
-            check(a2.backgroundActivitySession != nil, "experiment: Mode A with \(label) sharing holds the session as shipped (\(a2.sessionOwnership))")
-            finishExperiment(a2)
-            guard let b2 = experimentRecorder("experiment sharing B \(label)", mode: .b, sharing: household, friendDevice: friendDevice) else { continue }
-            check(b2.liveSharingArmed && b2.liveSharingHoldsLocation && b2.backgroundActivitySession == nil, "experiment: Mode B with \(label) sharing holds no session although sharing keeps location (\(b2.sessionOwnership))")
-            check(b2.serviceSession != nil && b2.keepAliveTask != nil, "experiment: Mode B with \(label) sharing keeps the keep-alive instead of the session (\(b2.runningAPIs))")
-            check(b2.continuousLocationRequested, "experiment: Mode B with \(label) sharing still publishes from the standard location stream")
-            finishExperiment(b2)
-            guard let c2 = experimentRecorder("experiment sharing C \(label)", mode: .c, sharing: household, friendDevice: friendDevice) else { continue }
-            check(c2.backgroundActivitySession == nil && c2.keepAliveTask == nil && c2.continuousLocationRequested, "experiment: Mode C with \(label) sharing runs neither session nor keep-alive (\(c2.runningAPIs))")
-            finishExperiment(c2)
-        }
-        // Sharing with Automatic Tracking off: the case with no passive rest at all.
-        guard let off = experimentRecorder("experiment sharing without automatic", sharing: true) else { return }
-        off.automaticEnabled = false; off.refreshAutomaticMonitoring()
-        try? off.setExperimentUnlocked(true); try? off.selectExperiment(.b)
-        check(off.liveSharingArmed && off.backgroundActivitySession == nil && off.serviceSession != nil && off.keepAliveTask != nil,
-              "experiment: Mode B sharing with Automatic Tracking off holds the service session and keep-alive, not the activity session (\(off.runningAPIs))")
-        finishExperiment(off)
-
-        // An open stop window blocks a change, and expiry too.
-        let motion = HarnessMotion()
+    static func locationBackgroundCallbacks() async {
         let (directory, key, owner) = freshStore()
-        LocationExperimentStore.save(unlocked: false); LocationExperimentStore.save(selection: nil)
-        guard let j = try? makeRecorder(directory: directory, owner: owner, key: key, motion: motion) else { return check(false, "experiment journey: recorder opened") }
-        j.passiveRestEnabled = true; j.reconcileServiceSession("harness")
-        try? j.setExperimentUnlocked(true); try? j.selectExperiment(.b)
-        let returnAt = Date().timeIntervalSince1970 - 90
-        guard toPublishedStop(j, name: "experiment journey", returnAt: returnAt, stopSeconds: 900) != nil else { return finishExperiment(j) }
-        check(j.effectiveExperiment == .b && j.backgroundActivitySession == nil, "experiment: a published stop in Mode B holds no activity session")
-        check((try? j.selectExperiment(.a)) == nil && j.effectiveExperiment == .b, "experiment: the mode cannot change while a stopped journey waits to continue")
-        j.experimentSelection = LocationExperimentSelection(mode: .b, selectedAt: Date().timeIntervalSince1970 - LocationExperiment.lifetime - 60)
-        j.expireExperimentIfIdle(now: Date().timeIntervalSince1970)
-        check(j.effectiveExperiment == .b, "experiment: expiry never changes the mode while a journey is open")
-        check(j.trips.contains { $0.id == j.settledTripID } && j.settledTripID != nil, "experiment: the journey and its id are untouched by the experiment")
-        // Locking the selector mid-journey is refused for the same reason, and leaves Mode B as it was.
-        check((try? j.setExperimentUnlocked(false)) == nil && j.experimentUnlocked && j.effectiveExperiment == .b, "experiment: the selector cannot be locked mid-journey either")
-        finishExperiment(j)
+        guard let r = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "background location: callback recorder opened")
+        }
+        print("RECORDER HARNESS REQUEST BACKGROUND")
+        fflush(stdout)
+        for _ in 0..<225 {
+            if UIApplication.shared.applicationState == .background { break }
+            await pause(0.2)
+        }
+        guard UIApplication.shared.applicationState == .background else {
+            r.refreshAutomaticMonitoring()
+            return check(false, "background location: the simulator did not move the app to the background")
+        }
+        let started = Date().timeIntervalSince1970
+        let keepAliveBefore = r.keepAliveUpdates
+        print("RECORDER HARNESS REQUEST SIMULATED LOCATION")
+        fflush(stdout)
+        // Settings remains in front while simctl supplies the location. This
+        // tests callbacks in the background, with no inference about suspension.
+        for _ in 0..<100 {
+            if (r.lastLocationUpdateAt ?? 0) >= started, r.keepAliveUpdates > keepAliveBefore { break }
+            await pause(0.2)
+        }
+        check(UIApplication.shared.applicationState == .background &&
+              (r.lastLocationUpdateAt ?? 0) >= started && r.diagnosticLastObservedSource == "standard manager",
+              "background location: Core Location calls the standard manager delegate in the simulator background")
+        check(r.keepAliveUpdates > keepAliveBefore && r.backgroundActivitySession == nil,
+              "background location: Core Location yields liveUpdates in the simulator background without an activity session")
+        // The same process was armed in standby. Leave persisted intent in
+        // place when the harness exits so the next process can rejoin it.
+        check(r.serviceSession != nil && r.keepAliveTask != nil &&
+              UserDefaults.standard.bool(forKey: LocationRecorder.serviceSessionKey),
+              "background location: standby persists Always service-session intent before process restart")
+        // The harness calls exit immediately instead of letting the app
+        // lifecycle finish, so flush preferences before the controlled launch.
+        UserDefaults.standard.synchronize()
     }
+
+    static func locationBackgroundRelaunch() async {
+        // This is a second simulator process started by the runner. The shared
+        // recorder has already rejoined the persisted session in its initializer.
+        let launched = LocationRecorder.shared
+        check(launched.usesAlwaysBackgroundPolicy && launched.serviceSessionState == "rejoined" &&
+              launched.backgroundActivitySession == nil,
+              "background location: a new process rejoins Always authorization without an activity session (\(launched.serviceSessionState))")
+        let (directory, key, owner) = freshStore()
+        guard let restored = try? makeRecorder(directory: directory, owner: owner, key: key, motion: HarnessMotion()) else {
+            return check(false, "background location: a relaunched standby recorder opened")
+        }
+        check(restored.locationMode == .standby && restored.continuousLocationRequested &&
+              restored.keepAliveTask != nil && restored.backgroundActivitySession == nil,
+              "background location: a new process resumes standard GPS and liveUpdates in ordinary standby")
+        restored.automaticEnabled = false
+        let now = Date().timeIntervalSince1970
+        restored.liveShareToken = String(repeating: "a", count: 64)
+        restored.liveShareEndpoint = URL(string: "https://harness.invalid/rest/v1/rpc/publish_live_location")
+        restored.liveShareApiKey = "harness"; restored.liveShareTokenExpiresAt = now + 3600; restored.liveShareMode = "device"
+        restored.friendShareToken = String(repeating: "b", count: 64)
+        restored.friendShareEndpoint = URL(string: "https://harness.invalid/rest/v1/rpc/publish_friend_location")
+        restored.friendShareApiKey = "harness"; restored.friendShareTokenExpiresAt = now + 3600; restored.friendShareMode = "device"
+        restored.storeHouseholdPublisher()
+        restored.storeFriendPublisher()
+        restored.liveShareToken = nil
+        restored.friendShareToken = nil
+        restored.restoreHouseholdPublisher()
+        restored.restoreFriendPublisher()
+        restored.refreshAutomaticMonitoring()
+        check(restored.liveShareToken != nil && restored.friendShareToken != nil && restored.keepAliveTask != nil &&
+              restored.backgroundActivitySession == nil,
+              "background location: restored device credentials arm sharing-only standard GPS and liveUpdates")
+        restored.disableHouseholdLiveSharing(forget: true)
+        check(restored.friendShareToken != nil && restored.keepAliveTask != nil,
+              "background location: revoking household sharing leaves friend sharing running")
+        restored.disableFriendLiveSharing(forget: true)
+        check(restored.serviceSession == nil && restored.keepAliveTask == nil && !restored.continuousLocationRequested,
+              "background location: revoking the final sharing credential stops location")
+        restored.friendShareToken = String(repeating: "s", count: 128)
+        restored.friendShareEndpoint = URL(string: "https://harness.invalid/rest/v1/rpc/set_friend_location")
+        restored.friendShareApiKey = "harness"; restored.friendShareTokenExpiresAt = now + 3600
+        restored.refreshAutomaticMonitoring()
+        check(restored.liveSharingArmed && restored.keepAliveTask != nil && restored.backgroundActivitySession == nil,
+              "background location: a current legacy friend token can still run sharing")
+        restored.disableFriendLiveSharing(forget: true)
+        restored.restoreFriendPublisher()
+        check(restored.friendShareToken == nil, "background location: native restore requires a device credential")
+
+    }
+
 }
 #endif

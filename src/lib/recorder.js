@@ -13,8 +13,7 @@ export const recorderAvailable = () => Capacitor.getPlatform() === 'ios';
 export const POSITION_REUSE_SECONDS=20;
 let pendingPosition=null,lastPosition=null,positionGeneration=0;
 // `allowStationary`: a periodic refresh that only needs to know whether anything
-// changed may get {stationary:true} (no coordinates) while the adaptive engine
-// holds Core Location's stationary report, instead of waking precise GPS.
+// changed may accept a coordinate-free stationary report during confirmed passive rest.
 // `maxAge` narrows that reuse for a moving publisher, which needs a current fix.
 export function sharedCurrentPosition(nowSeconds=Date.now()/1000,{allowStationary=false,maxAge=POSITION_REUSE_SECONDS,publisher}={}){
  if(publisher){
@@ -69,12 +68,6 @@ export const recorder = {
  savePlace:place=>native.savePlace(place),
  removePlace:id=>native.removePlace({id}),
  currentPosition:(options={})=>sharedCurrentPosition(Date.now()/1000,options),
- // Internal: the adaptive location engine, for controlled evaluation.
- setAdaptiveLocation:enabled=>native.setAdaptiveLocation({enabled}),
- // Developer-only location experiment (Mode A unless unlocked and selected). Observations are a person's, never the app's prediction.
- setLocationExperimentUnlocked:enabled=>native.setLocationExperimentUnlocked({enabled}),
- setLocationExperimentMode:mode=>native.setLocationExperimentMode({mode}),
- recordIndicatorObservation:(observed,note)=>native.recordIndicatorObservation({observed,note:String(note||'')}),
  // Passive rest: release location and the background session while settled.
  setPassiveRest:enabled=>native.setPassiveRest({enabled}),
  // Device test: live sharing may rest with the phone. Off by default.

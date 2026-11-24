@@ -315,26 +315,6 @@ enum FalseWake {
 // Core Location resuming it. Ordinary standby does not: it ends in passive rest
 // or in a wake-up, and a second location stream there would cost battery for
 // nothing. Never during a manual recording or the Watch's ownership.
-enum KeepAlivePolicy {
-    // `sharingWithoutSession`: live sharing holds location after a sharing rest
-    // released the session (only possible with the device test on). Without this,
-    // a locked phone, including one whose Watch owns a workout, could stop
-    // publishing until the app is next opened. Never alongside the low-power
-    // liveUpdates stream, so there is at most one liveUpdates stream.
-    static func wanted(automaticAvailable: Bool, manualRecording: Bool, precise: Bool, stopOpen: Bool,
-                       sessionHeld: Bool, serviceSessionHeld: Bool, sharingWithoutSession: Bool = false, lowPowerRunning: Bool = false) -> Bool {
-        guard !manualRecording, !sessionHeld, serviceSessionHeld, !lowPowerRunning else { return false }
-        return (automaticAvailable && (precise || stopOpen)) || sharingWithoutSession
-    }
-    static func reason(precise: Bool, stopOpen: Bool = true) -> String {
-        // "keeping the app running": a session rejoined after a background launch
-        // does not, so the keep-alive also runs beside one (BackgroundSessionPolicy).
-        precise ? "precise GPS without a background activity session keeping the app running"
-            : stopOpen ? "a published stop is waiting for a continuation without a background activity session"
-            : "live sharing without a background activity session"
-    }
-}
-
 // MARK: Background recovery
 //
 // What can bring location back while no background activity session is held: in

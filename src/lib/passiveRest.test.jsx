@@ -39,7 +39,7 @@ describe('passive rest rows',()=>{
  it('report an active passive rest, Wi-Fi as a match state and the measured departure',()=>{
   const rows=passiveRows({passiveRest:passive({active:true,since:1000,restConfirmed:true,restReason:'at Home, still for 16 min, Home Wi-Fi connected',retainReason:null,
    sessionReleases:1,sessionReleasedAt:1000,modeSeconds:{passive:3600,precise:300},wifi:{configured:true,match:'matched',observedAt:1000,source:'background wake-up'}}),
-   adaptive:{lastDepartureLatency:{engine:'passive',cause:'place region exit',evidenceToFirstFixSeconds:'9',motionOnsetToEvidenceSeconds:'140',startGapMeters:'180'}}});
+   lastDepartureLatency:{engine:'passive',cause:'place region exit',evidenceToFirstFixSeconds:'9',motionOnsetToEvidenceSeconds:'140',startGapMeters:'180'}});
   expect(row(rows,'Confirmed rest (needed for passive rest)')).toBe('Confirmed · at Home, still for 16 min, Home Wi-Fi connected');
   expect(row(rows,'Passive rest')).toMatch(/^Active since .* no location updates, no background session$/);
   expect(row(rows,'Home Wi-Fi')).toBe('Home Wi-Fi detected');

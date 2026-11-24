@@ -2155,448 +2155,6 @@ do {
     check(across.width <= 1000 + 1e-6, "a route just across the 180th meridian is reached by a short pan, not a world-wide zoom")
 }
 
-// MARK: Adaptive location engine: state machine, low-power wake-ups, loops and recovery
-do {
-    func inputs(_ now: Double, enabled: Bool = true, supported: Bool = true, available: Bool = true, manual: Bool = false,
-                journey: Bool = false, probing: Bool = false, continuation: Bool = false, settled: Bool = true,
-                movement: Bool = false, moving: Bool = false) -> AdaptiveInputs {
-        AdaptiveInputs(enabled: enabled, supported: supported, automaticAvailable: available, manualRecording: manual,
-                       journeyRecording: journey, probing: probing, continuationOpen: continuation, placeSettled: settled,
-                       recentMovement: movement, motionMoving: moving, now: now)
-    }
-    // Settled anywhere (Home, an unsaved place, a shopping centre without Wi-Fi,
-    // no saved Home at all) is stationary standby; nothing else is needed.
-    var night = AdaptivePolicy(now: 0)
-    check(night.decide(inputs(0)) == .stationaryStandby, "a settled place goes straight to stationary standby")
-    check(night.plan(inputs(0)) == .lowPower, "stationary standby stops standard updates and uses the low-power stream and a place region")
-    for hour in 1...8 { check(night.decide(inputs(Double(hour) * 3600)) == .stationaryStandby, "an overnight stay at hour \(hour) stays in stationary standby") }
-    check(night.timeInState(now: 8 * 3600)["stationaryStandby"] == 8 * 3600, "eight hours are accounted as stationary standby")
-    var arriving = AdaptivePolicy(now: 0)
-    check(arriving.decide(inputs(0, settled: false)) == .settling, "an unsettled stop keeps the established standby")
-    check(arriving.decide(inputs(700, movement: true)) == .settling, "recent GPS displacement prevents stationary standby")
-    check(arriving.decide(inputs(710, moving: true)) == .settling, "credible walking or driving prevents stationary standby")
-    check(arriving.decide(inputs(720)) == .stationaryStandby, "settled and still enters stationary standby")
-    // Invariant 1: an active journey never enters stationary standby, whatever else is true.
-    var journeyPolicy = AdaptivePolicy(now: 0)
-    for flags in [(true, false), (false, true), (true, true)] {
-        let i = inputs(10, manual: flags.0, journey: flags.1, probing: true, continuation: true, settled: true)
-        check(journeyPolicy.decide(i) == .activeJourney && journeyPolicy.plan(i) == .established, "an open journey is always active on the established engine")
-    }
-    var manual = AdaptivePolicy(now: 0)
-    check(manual.decide(inputs(10, available: false, manual: true)) == .activeJourney, "manual recording continues without automatic tracking")
-    // Invariant 3: a continuation window keeps the established watch.
-    check(manual.decide(inputs(30, continuation: true)) == .settling && manual.plan(inputs(30, continuation: true)) == .established, "a continuation window keeps the established standby")
-    // Invariants 7, 8: tracking off or permission withdrawn.
-    check(manual.decide(inputs(40, available: false)) == .off && manual.plan(inputs(40, available: false)) == .established, "without automatic tracking the engine is off and asks for nothing low-power")
-    var legacy = AdaptivePolicy(now: 0)
-    check(legacy.decide(inputs(0, enabled: false)) == .stationaryStandby && legacy.plan(inputs(0, enabled: false)) == .established, "with the switch off stationary standby stays on the established engine")
-    check(legacy.plan(inputs(0, supported: false)) == .established, "without liveUpdates (iOS 15/16) the established engine is used")
-
-    // Departures and returns.
-    var leave = AdaptivePolicy(now: 0)
-    _ = leave.decide(inputs(0)); leave.noteWake(now: 3600)
-    check(leave.decide(inputs(3600, probing: true)) == .departureProbe && leave.plan(inputs(3600, probing: true)) == .established, "a wake-up runs a departure check on the established engine")
-    check(leave.decide(inputs(3700, journey: true)) == .activeJourney, "a confirmed departure records with precise GPS")
-    leave.noteJourneyStarted()
-    check(leave.recentWakes(3700).isEmpty, "a genuine departure is not counted towards the loop limit")
-    var back = AdaptivePolicy(now: 0)
-    _ = back.decide(inputs(0)); back.noteWake(now: 100)
-    _ = back.decide(inputs(100, probing: true))
-    // Fails under the original ordering, which noted the check's end only after deciding.
-    check(back.decide(inputs(220)) == .settling, "after an unconfirmed check the established standby watches first")
-    check(back.decide(inputs(220 + AdaptivePolicy.settleAfterProbe)) == .stationaryStandby, "then stationary standby resumes")
-    // No indefinite wake-up loops.
-    var loop = AdaptivePolicy(now: 0)
-    var clock: Double = 0
-    for _ in 0..<AdaptivePolicy.wakeLimit {
-        _ = loop.decide(inputs(clock)); loop.noteWake(now: clock)
-        _ = loop.decide(inputs(clock, probing: true)); clock += 400
-    }
-    check(loop.decide(inputs(clock)) == .settling && loop.loopsBlocked >= 1, "repeated unconfirmed wake-ups keep the established standby and are counted")
-    check(loop.decide(inputs(AdaptivePolicy.wakeWindow + 2000)) == .stationaryStandby, "stationary standby returns once the hour has passed")
-    // Recovery (invariant 5).
-    var broken = AdaptivePolicy(now: 0)
-    _ = broken.decide(inputs(0))
-    broken.noteServiceFailure(now: 10); broken.noteServiceFailure(now: 20)
-    check(broken.decide(inputs(30)) == .stationaryStandby, "one or two failures retry the low-power stream")
-    broken.noteServiceFailure(now: 40)
-    check(broken.decide(inputs(41)) == .recovery && broken.plan(inputs(41)) == .established, "the third failure falls back to the established standby at once")
-    check(broken.decide(inputs(40 + AdaptivePolicy.recoveryBackoff + 1)) == .stationaryStandby, "the low-power stream is retried after the back-off")
-    var relaunched = AdaptivePolicy(now: 100)
-    relaunched.restoreRecovery(until: 1000, now: 100)
-    check(relaunched.decide(inputs(100)) == .recovery, "a back-off persisted before a relaunch still applies")
-    var stale = AdaptivePolicy(now: 100)
-    stale.restoreRecovery(until: 50, now: 100); stale.restoreRecovery(until: 100 + AdaptivePolicy.recoveryBackoff * 10, now: 100)
-    check(stale.decide(inputs(100)) == .stationaryStandby, "an expired or implausible persisted back-off is ignored")
-
-    // Stream generations: cancellation is not failure; late callbacks are ignored.
-    var stream = LowPowerStream()
-    let first = stream.start()
-    check(stream.accepts(first), "the running stream's updates are accepted")
-    stream.stop()
-    check(!stream.accepts(first), "a stopped stream's late update is ignored")
-    check(!stream.ended(first), "a cancelled stream ending is not a failure")
-    let second = stream.start()
-    check(!stream.accepts(first) && stream.accepts(second), "only the current generation may act")
-    check(stream.ended(second) && !stream.running, "the current stream ending by itself is a failure")
-    check(!stream.ended(second), "the same ending is counted once")
-    var quiet = LowPowerStream(); quiet.stop()
-    check(quiet.generation == 0, "stopping a stream that is not running changes nothing")
-
-    // Service plan: stop before start, never both at once.
-    check(AdaptiveServices.decide(established: .resting, plan: .lowPower) == AdaptiveServices(standardMode: .stationary, lowPowerStream: true), "settled standby becomes low-power standby")
-    check(AdaptiveServices.decide(established: .standby, plan: .lowPower).lowPowerStream, "standby also becomes low-power standby")
-    check(AdaptiveServices.decide(established: .precise, plan: .lowPower) == AdaptiveServices(standardMode: .precise, lowPowerStream: false), "a departure check or journey is never low-power")
-    check(AdaptiveServices.decide(established: .off, plan: .lowPower) == AdaptiveServices(standardMode: .off, lowPowerStream: false), "manual recording or tracking off never runs the stream")
-    check(AdaptiveServices.decide(established: .resting, plan: .established) == AdaptiveServices(standardMode: .resting, lowPowerStream: false), "the established plan keeps established standby")
-
-    // Invariant detection.
-    let clean = AdaptiveObservedServices(state: .stationaryStandby, adaptiveEnabled: true, locationMode: .stationary, continuousRunning: false,
-        lowPowerRunning: true, lowPowerWanted: true, placeRegionRegistered: true, journeyRecording: false, sessionHeld: true, sessionNeeded: true)
-    check(AdaptiveInvariants.violations(clean).isEmpty, "consistent low-power standby has no violations")
-    var contradiction = clean; contradiction.continuousRunning = true
-    check(Set(AdaptiveInvariants.violations(contradiction)) == ["stationaryWithContinuousGPS", "lowPowerAndContinuousTogether"], "continuous GPS in stationary standby is reported")
-    var orphan = clean; orphan.adaptiveEnabled = false
-    check(AdaptiveInvariants.violations(orphan) == ["adaptiveServicesWhileDisabled"], "adaptive services left running after switching off are reported")
-    var lost = clean; lost.lowPowerRunning = false
-    check(AdaptiveInvariants.violations(lost) == ["noLocationServiceInStandby"], "standby without any location service is reported")
-    var bare = clean; bare.journeyRecording = true; bare.lowPowerRunning = false; bare.lowPowerWanted = false; bare.locationMode = .precise
-    check(AdaptiveInvariants.violations(bare) == ["journeyWithoutPreciseGPS"], "a journey without precise GPS is reported")
-    var session = clean; session.sessionNeeded = false
-    check(AdaptiveInvariants.violations(session) == ["backgroundSessionWithoutOwner"], "a session without an owner is reported")
-
-    // The low-power gate: permission to look, not proof of a departure.
-    let origin = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 1000, accuracy: 10, altitude: 0, speed: 0)
-    func north(_ metres: Double, at t: Double, accuracy: Double = 10, speed: Double = 0) -> GPSPoint {
-        GPSPoint(latitude: -33.86 + metres / 111_195, longitude: 151.2, timestamp: t, accuracy: accuracy, altitude: 0, speed: speed)
-    }
-    var gate = LiveUpdateGate()
-    check(gate.observe(stationary: true, point: origin, outsidePlace: false, now: 1000) == .stationary, "a stationary report arms the gate")
-    // Each of these fails under the original gate, which woke precise GPS for any non-stationary report.
-    check(gate.observe(stationary: false, point: nil, outsidePlace: false, now: 1010) == .ignored("no position"), "a report without a position never starts precise GPS")
-    check(gate.observe(stationary: false, point: north(200, at: 900), outsidePlace: false, now: 1010) == .ignored("stale or imprecise position"), "a stale position never starts precise GPS")
-    check(gate.observe(stationary: false, point: north(200, at: 1010, accuracy: 300), outsidePlace: false, now: 1010) == .ignored("stale or imprecise position"), "an imprecise position never starts precise GPS")
-    check(gate.observe(stationary: false, point: north(8, at: 1011), outsidePlace: false, now: 1011) == .none, "a non-stationary report without displacement is not movement")
-    check(gate.observe(stationary: false, point: north(5000, at: 1012), outsidePlace: false, now: 1012) == .ignored("implausible jump"), "a large GPS jump is not movement")
-    check(gate.observe(stationary: false, point: north(40, at: 1030), outsidePlace: false, now: 1030) == .movement("Core Location reported movement"), "displacement beyond its uncertainty is movement")
-    check(gate.observe(stationary: false, point: north(80, at: 1040), outsidePlace: false, now: 1040) == .none, "the same movement is signalled at most once a minute")
-    check(gate.observe(stationary: false, point: north(140, at: 1100), outsidePlace: false, now: 1100) == .movement("Core Location reported movement"), "a minute later it may signal again")
-    var fresh = LiveUpdateGate()
-    check(fresh.observe(stationary: false, point: origin, outsidePlace: false, now: 1000) == .none, "a new stream's first position is its reference, not movement")
-    check(fresh.observe(stationary: false, point: north(45, at: 1030), outsidePlace: false, now: 1030) == .movement("Core Location reported movement"), "moving away before any stationary report is still movement")
-    var outside = LiveUpdateGate()
-    check(outside.observe(stationary: false, point: origin, outsidePlace: true, now: 1000) == .movement("position outside the current place"), "a position outside the place is movement")
-    var vehicle = LiveUpdateGate()
-    _ = vehicle.observe(stationary: true, point: origin, outsidePlace: false, now: 1000)
-    check(vehicle.observe(stationary: false, point: north(12, at: 1005, speed: 9), outsidePlace: false, now: 1005) == .movement("Core Location reported vehicle speed"), "vehicle speed is movement at once")
-    var attest = LiveUpdateGate()
-    _ = attest.observe(stationary: true, point: origin, outsidePlace: false, now: 1010)
-    check(attest.confirms(origin), "a household fix where Core Location says the phone is still may be re-confirmed")
-    check(!attest.confirms(north(1000, at: 1000)), "a fix elsewhere is never re-confirmed")
-    check(!attest.confirms(north(0, at: 5000)), "a fix taken after the stationary report is not confirmed by it")
-    _ = attest.observe(stationary: false, point: nil, outsidePlace: false, now: 1020)
-    check(!attest.confirms(origin), "any non-stationary report ends the stationary attestation")
-
-    // Indoor jitter for an hour: imprecise positions wandering inside the house never start precise GPS.
-    var indoor = LiveUpdateGate()
-    _ = indoor.observe(stationary: true, point: north(0, at: 0, accuracy: 30), outsidePlace: false, now: 0)
-    var jitterSignals = 0
-    for second in stride(from: 5.0, through: 3600, by: 5) {
-        let wobble = (second.truncatingRemainder(dividingBy: 40)) - 20
-        if case .movement = indoor.observe(stationary: false, point: north(wobble, at: second, accuracy: 30), outsidePlace: false, now: second) { jitterSignals += 1 }
-    }
-    check(jitterSignals == 0, "an hour of indoor jitter never wakes precise GPS")
-
-    // Overnight: eight hours of 30-second reconciles while Core Location reports
-    // stationary. The plan never asks for standard updates, the stream is
-    // requested once and never restarted, and nothing wakes.
-    var overnight = AdaptivePolicy(now: 0)
-    var nightGate = LiveUpdateGate()
-    var streamStarts = 0, wanted = false, standardRequests = 0
-    for tick in stride(from: 0.0, through: 8 * 3600, by: 30) {
-        _ = overnight.decide(inputs(tick))
-        let services = AdaptiveServices.decide(established: .resting, plan: overnight.plan(inputs(tick)))
-        if services.lowPowerStream && !wanted { streamStarts += 1 }
-        wanted = services.lowPowerStream
-        if services.standardMode != .stationary { standardRequests += 1 }
-        if tick.truncatingRemainder(dividingBy: 3600) == 0 {
-            if case .movement = nightGate.observe(stationary: true, point: origin, outsidePlace: false, now: tick) { check(false, "a stationary report is never movement") }
-        }
-    }
-    check(streamStarts == 1 && standardRequests == 0 && overnight.wakesTotal == 0, "a still night requests the stream once, never standard updates, and never wakes")
-
-    // Short journeys: when to start precise GPS, compared with the established
-    // standby (25 m distance filter, 10 m accuracy), assuming Core Location
-    // resumes reports as movement begins (Apple documents resumption, not its
-    // latency, which must be measured on a phone).
-    func lowPowerTrigger(speed: Double, rate: Double = 1) -> (distance: Double, seconds: Double)? {
-        var g = LiveUpdateGate()
-        _ = g.observe(stationary: true, point: north(0, at: 0), outsidePlace: false, now: 0)
-        for second in stride(from: rate, through: 600, by: rate) {
-            let p = north(speed * second, at: second, speed: speed)
-            if case .movement = g.observe(stationary: false, point: p, outsidePlace: false, now: second) { return (speed * second, second) }
-        }
-        return nil
-    }
-    func establishedTrigger(speed: Double) -> (distance: Double, seconds: Double)? {
-        var evidence = DepartureEvidence()
-        _ = evidence.observe(north(0, at: 0), now: 0)
-        var delivered: Double = 0
-        for second in stride(from: 1.0, through: 600, by: 1) {
-            let metres = speed * second
-            guard metres - delivered >= 25 else { continue }   // distance filter
-            delivered = metres
-            if evidence.observe(north(metres, at: second, speed: speed), now: second) { return (metres, second) }
-        }
-        return nil
-    }
-    for (label, speed) in [("walk", 1.4), ("cycle", 5.0), ("drive", 10.0)] {
-        let low = lowPowerTrigger(speed: speed)!, established = establishedTrigger(speed: speed)!
-        check(low.distance <= established.distance + 0.5, "a \(label) starts its departure check no later than with established standby once Core Location reports movement")
-        check(low.distance <= 45, "a \(label) is checked within 45 m of where it began")
-    }
-    // A 200 m walk: from the low-power trigger, the existing detector (unchanged
-    // thresholds) confirms the departure well before the walk ends, and the
-    // journey starts at the triggering fix, not at an invented point.
-    let walk = lowPowerTrigger(speed: 1.4)!
-    var walkDetector = AutomaticDetector()
-    let walking = MotionEvidence(types: ["Walking"], confidence: "high", timestamp: walk.seconds, continuous: true)
-    var departedAt: Double?
-    var firstCandidate: Double?
-    for second in stride(from: walk.seconds, through: walk.seconds + 200, by: 1) {
-        let p = north(1.4 * second, at: second, speed: 1.4)
-        let event = walkDetector.observe(p, motion: MotionEvidence(types: walking.types, confidence: "high", timestamp: second, continuous: true), manualActive: false, now: second, activity: "Walking")
-        if firstCandidate == nil { firstCandidate = 1.4 * second }
-        if event == "depart" { departedAt = 1.4 * second; break }
-    }
-    check(departedAt != nil && departedAt! < 200, "a 200 m walk is confirmed before it ends")
-    check((firstCandidate ?? 999) <= 45 && abs((walkDetector.candidate.first.map { $0.distance(to: north(0, at: 0)) } ?? 999) - walk.distance) < 1, "the walk's route begins at the first real low-power fix")
-    // Delayed or batched reports are never taken as current movement.
-    var late = LiveUpdateGate()
-    _ = late.observe(stationary: true, point: origin, outsidePlace: false, now: 1000)
-    check(late.observe(stationary: false, point: north(300, at: 1000), outsidePlace: false, now: 1200) == .ignored("stale or imprecise position"), "a batched old report does not start precise GPS")
-
-    check(PlaceRegion.radius(placeRadius: 50, anchorAccuracy: 10) == PlaceRegion.minimumRadius, "a small place gets at least a 100 m region")
-    check(PlaceRegion.radius(placeRadius: 80, anchorAccuracy: 90) == 180, "an imprecise indoor anchor widens the region")
-    check(PlaceRegion.radius(placeRadius: 400, anchorAccuracy: 10) == PlaceRegion.maximumRadius, "a large place is capped at 300 m")
-    check(PlaceRegion.radius(placeRadius: .nan, anchorAccuracy: .nan) == 130, "invalid inputs fall back to safe values")
-    check(PlaceRegion.valid(latitude: -33.86, longitude: 151.2, radius: 150), "a real place is a valid region")
-    check(!PlaceRegion.valid(latitude: 0, longitude: 0, radius: 150) && !PlaceRegion.valid(latitude: 95, longitude: 0, radius: 150) && !PlaceRegion.valid(latitude: -33.86, longitude: 151.2, radius: 20),
-          "an invalid coordinate or radius is never registered")
-
-    var latency = DepartureLatency()
-    check(latency.measure(firstFixAt: 10, confirmedAt: 20) == nil, "no latency without departure evidence")
-    latency.noteEvidence("lowPower: Core Location reported movement", engine: "lowPower", now: 100)
-    latency.noteEvidence("later", engine: "established", now: 150)
-    let measured = latency.measure(firstFixAt: 112, confirmedAt: 160)!
-    check(measured.toFirstFix == 12 && measured.toConfirmation == 60 && latency.cause.hasPrefix("lowPower"), "latency is measured from the first evidence")
-
-    check(LocationConfiguration.automatic(.stationary, journeyOpen: false, journeyActivity: nil, drivingMotion: false, currentProfile: .other) == nil, "low-power standby requests no standard continuous updates")
-    check(LocationIndicator.explain(continuous: false, mode: .stationary, manual: false, sessionHeld: true).reason.contains("continuous location stopped"), "the indicator explanation says continuous location is stopped")
-    check(AdaptiveState.allCases.count == 6, "six adaptive states")
-}
-
-// MARK: Adaptive runtime: the production controller driven through a recording host
-final class RecordingHost: AdaptiveHost {
-    var standardRunning = true
-    var registeredPlaceRegion: PlaceRegionSpec?
-    var calls: [String] = []
-    var streams: [Int] = []
-    var observed: [GPSPoint] = []
-    var checks: [String] = []
-    var onObserve: ((GPSPoint) -> Void)?
-    var onCheck: ((String) -> Void)?
-    var refuseRegions = false
-    func runStandard(_ mode: AutomaticLocationMode) {
-        let running = [.precise, .standby, .resting].contains(mode)
-        if running != standardRunning || running { calls.append("standard:\(mode.rawValue)") }
-        standardRunning = running
-    }
-    func startLowPower(generation: Int) { calls.append("lowPower:start:\(generation)"); streams.append(generation) }
-    func cancelLowPower() { calls.append("lowPower:cancel") }
-    func registerPlaceRegion(_ region: PlaceRegionSpec) { calls.append("region:register"); if !refuseRegions { registeredPlaceRegion = region } }
-    func removePlaceRegion() { calls.append("region:remove"); registeredPlaceRegion = nil }
-    func observeLowPower(_ fix: GPSPoint) { observed.append(fix); onObserve?(fix) }
-    func requestDepartureCheck(cause: String) { checks.append(cause); onCheck?(cause) }
-    func adaptiveLog(_ kind: String, _ message: String, _ details: [String: String]) {}
-    func index(_ call: String) -> Int? { calls.firstIndex(of: call) }
-}
-do {
-    func inputs(_ now: Double, enabled: Bool = true, available: Bool = true, manual: Bool = false, journey: Bool = false,
-                probing: Bool = false, settled: Bool = true) -> AdaptiveInputs {
-        AdaptiveInputs(enabled: enabled, supported: true, automaticAvailable: available, manualRecording: manual, journeyRecording: journey,
-                       probing: probing, continuationOpen: false, placeSettled: settled, recentMovement: false, motionMoving: false, now: now)
-    }
-    let regions = RegionCapability(available: true, maximumRadius: 1000)
-    let homeAnchor = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 0, accuracy: 10, altitude: 0, speed: 0)
-    let here = DwellArea.arrival(at: homeAnchor, source: .inferred)
-    func at(_ metres: Double, _ t: Double, accuracy: Double = 10, speed: Double = 0) -> GPSPoint {
-        GPSPoint(latitude: -33.86 + metres / 111_195, longitude: 151.2, timestamp: t, accuracy: accuracy, altitude: 0, speed: speed)
-    }
-
-    // Enter stationary standby: standard updates stop before the one stream starts.
-    let host = RecordingHost()
-    let controller = AdaptiveController(now: 0)
-    controller.host = host
-    controller.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    check(controller.state == .stationaryStandby && !host.standardRunning, "settling stops standard GPS")
-    check(host.index("standard:stationary")! < host.index("lowPower:start:1")!, "standard updates stop before the low-power stream starts")
-    check(host.registeredPlaceRegion != nil, "the current-place region is registered")
-    for t in stride(from: 30.0, through: 3600, by: 30) { controller.reconcile(inputs(t), established: .resting, standardOwned: true, dwell: here, regions: regions) }
-    check(host.streams == [1] && host.calls.filter { $0.hasPrefix("standard:") }.count == 1 && host.calls.filter { $0 == "region:register" }.count == 1,
-          "an hour of reconciles keeps one stream and one region and never restarts standard GPS")
-
-    // Stationary reports, then credible movement: one departure check.
-    controller.lowPowerUpdate(generation: 1, stationary: true, point: at(0, 3600), dwell: here, fallback: nil, now: 3600)
-    controller.lowPowerUpdate(generation: 1, stationary: true, point: at(0, 3700), dwell: here, fallback: nil, now: 3700)
-    check(host.observed.count == 1 && host.checks.isEmpty, "stationary reports are observed once and start nothing")
-    // The recorder answers a departure check by reconciling with the check running.
-    host.onCheck = { _ in controller.reconcile(inputs(7230, probing: true), established: .precise, standardOwned: true, dwell: here, regions: regions) }
-    controller.lowPowerUpdate(generation: 1, stationary: false, point: at(60, 7230, speed: 1.4), dwell: here, fallback: nil, now: 7230)
-    check(host.checks.count == 1 && controller.state == .departureProbe, "credible movement starts one precise departure check")
-    check(host.index("lowPower:cancel")! < host.calls.lastIndex(of: "standard:precise")!, "the stream is cancelled before precise GPS starts")
-    check(host.observed.last.map { $0.timestamp == 7230 } == true, "the moving fix reaches departure detection before the check starts")
-    host.onCheck = nil
-    // A late update from the cancelled stream does nothing.
-    let observedBefore = host.observed.count, checksBefore = host.checks.count
-    controller.lowPowerUpdate(generation: 1, stationary: false, point: at(300, 7240, speed: 10), dwell: here, fallback: nil, now: 7240)
-    check(host.observed.count == observedBefore && host.checks.count == checksBefore, "a late update from a cancelled stream is ignored")
-    check(!controller.lowPowerEnded(generation: 1, error: nil, now: 7241), "a cancelled stream's ending is not a failure")
-
-    // Unexpected failures: restart, then back-off after the third, without repeated GPS churn.
-    let failing = RecordingHost()
-    let recovering = AdaptiveController(now: 0)
-    recovering.host = failing
-    var now: Double = 0
-    recovering.reconcile(inputs(now), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    for attempt in 1...3 {
-        now += 5
-        check(recovering.lowPowerEnded(generation: failing.streams.last!, error: "1", now: now), "failure \(attempt) of the current stream is counted")
-        recovering.reconcile(inputs(now), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    }
-    check(failing.streams == [1, 2, 3] && recovering.state == .recovery && failing.standardRunning, "three failures restart twice, then fall back to established standby")
-    for t in stride(from: now, through: now + 1700, by: 30) { recovering.reconcile(inputs(t), established: .resting, standardOwned: true, dwell: here, regions: regions) }
-    check(failing.streams.count == 3 && failing.calls.filter { $0 == "standard:resting" }.count >= 1, "no stream restarts during the back-off")
-    // Relaunch during the back-off: a new controller restores it.
-    let relaunchHost = RecordingHost()
-    relaunchHost.registeredPlaceRegion = failing.registeredPlaceRegion
-    let relaunched = AdaptiveController(now: now + 60)
-    relaunched.host = relaunchHost
-    relaunched.restoreRecovery(until: recovering.policy.recoveryUntil, now: now + 60)
-    relaunched.reconcile(inputs(now + 60), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    check(relaunched.state == .recovery && relaunchHost.streams.isEmpty && relaunchHost.standardRunning, "a relaunch during the back-off keeps established standby")
-    check(!relaunchHost.calls.contains("region:register"), "a region Core Location kept across the relaunch is not registered again")
-
-    // Disabling adaptive mode during a callback: the stream stops and nothing further happens.
-    let toggling = RecordingHost()
-    let switched = AdaptiveController(now: 0)
-    switched.host = toggling
-    switched.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    toggling.onObserve = { _ in switched.reconcile(inputs(10, enabled: false), established: .resting, standardOwned: true, dwell: here, regions: regions) }
-    switched.lowPowerUpdate(generation: 1, stationary: false, point: at(200, 10, speed: 9), dwell: here, fallback: homeAnchor, now: 10)
-    check(toggling.checks.isEmpty && !switched.lowPowerRunning, "switching off during a callback stops the stream before it can wake precise GPS")
-    check(toggling.standardRunning && toggling.registeredPlaceRegion == nil && toggling.calls.contains("standard:resting"), "the established engine is restored: standard standby, no region")
-
-    // Manual recording during standby: the stream stops and manual owns standard updates.
-    let manualHost = RecordingHost()
-    let manualController = AdaptiveController(now: 0)
-    manualController.host = manualHost
-    manualController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    manualController.stopLowPower(reason: "manual recording")      // beginUpdates
-    manualHost.standardRunning = true                                // manual starts standard updates itself
-    manualHost.calls.removeAll()
-    manualController.reconcile(inputs(5, manual: true), established: .off, standardOwned: false, dwell: here, regions: regions)
-    check(manualController.state == .activeJourney && !manualController.lowPowerRunning, "manual recording is an active journey without the stream")
-    check(!manualHost.calls.contains { $0.hasPrefix("standard:") || $0.hasPrefix("lowPower:start") } && manualHost.standardRunning, "the adaptive engine never touches manual recording's standard updates")
-    check(manualHost.registeredPlaceRegion == nil, "the current-place region is removed for a journey")
-
-    // Permission revoked: everything adaptive stops; established decides off.
-    let revokedHost = RecordingHost()
-    let revoked = AdaptiveController(now: 0)
-    revoked.host = revokedHost
-    revoked.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    revoked.reconcile(inputs(10, available: false), established: .off, standardOwned: true, dwell: here, regions: regions)
-    check(revoked.state == .off && !revoked.lowPowerRunning && revokedHost.registeredPlaceRegion == nil && !revokedHost.standardRunning, "revoking permission stops the stream, the region and standard GPS")
-    revoked.lowPowerUpdate(generation: 1, stationary: false, point: at(400, 20, speed: 10), dwell: here, fallback: nil, now: 20)
-    check(revokedHost.checks.isEmpty, "no callback revives tracking after permission is revoked")
-
-    // Account switch while a stream is active.
-    let accountHost = RecordingHost()
-    let account = AdaptiveController(now: 0)
-    account.host = accountHost
-    account.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    account.noteWake(now: 100)
-    account.reset(now: 200, reason: "account changed")
-    check(!account.lowPowerRunning && account.state == .off && accountHost.registeredPlaceRegion == nil && account.policy.wakesTotal == 0, "an account change stops the stream, removes the region and clears history")
-    account.lowPowerUpdate(generation: 1, stationary: false, point: at(400, 210, speed: 10), dwell: here, fallback: nil, now: 210)
-    check(accountHost.checks.isEmpty && accountHost.observed.isEmpty, "the previous account's stream cannot act after the switch")
-
-    // Region replacement and failures.
-    let regionHost = RecordingHost()
-    let regionController = AdaptiveController(now: 0)
-    regionController.host = regionHost
-    regionController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    let cafe = DwellArea.arrival(at: at(2000, 0), source: .inferred)
-    regionHost.calls.removeAll()
-    regionController.reconcile(inputs(30), established: .resting, standardOwned: true, dwell: cafe, regions: regions)
-    check(regionHost.calls.filter { $0.hasPrefix("region:") } == ["region:remove", "region:register"] && abs(regionHost.registeredPlaceRegion!.latitude - cafe.latitude) < 1e-9,
-          "moving to another unsaved place removes the old region before registering the new one")
-    let saved = DwellArea.saved(SavedPlace(id: "work", name: "Work", kind: "work", latitude: -33.87, longitude: 151.21, radius: 200), now: 60)
-    regionController.reconcile(inputs(60), established: .resting, standardOwned: true, dwell: saved, regions: regions)
-    check(regionHost.registeredPlaceRegion?.radius == 200, "a saved place's region follows its own radius")
-    regionHost.refuseRegions = true; regionHost.registeredPlaceRegion = nil; regionHost.calls.removeAll()
-    regionController.reconcile(inputs(90), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    regionController.regionFailed(AdaptiveRegion.identifier, placeIdentifier: AdaptiveRegion.identifier)
-    for t in stride(from: 120.0, through: 600, by: 30) { regionController.reconcile(inputs(t), established: .resting, standardOwned: true, dwell: here, regions: regions) }
-    check(regionHost.calls.filter { $0 == "region:register" }.count == 1, "a refused registration is not retried for the same place")
-    regionHost.refuseRegions = false
-    regionController.reconcile(inputs(630), established: .resting, standardOwned: true, dwell: cafe, regions: regions)
-    check(regionHost.registeredPlaceRegion != nil, "a new place is tried again after a refusal")
-    regionController.reconcile(inputs(660), established: .resting, standardOwned: true, dwell: cafe, regions: RegionCapability(available: false, maximumRadius: 1000))
-    check(regionHost.registeredPlaceRegion == nil, "region monitoring becoming unavailable removes the region")
-    regionController.reconcile(inputs(690), established: .resting, standardOwned: true, dwell: DwellArea.arrival(at: GPSPoint(latitude: 0, longitude: 0, timestamp: 0, accuracy: 10, altitude: 0, speed: 0)), regions: regions)
-    check(regionHost.registeredPlaceRegion == nil, "an invalid place never registers a region")
-
-    // First movement when the stationary report carried no coordinate: the
-    // recorder's settled position is the reference, so the first moving fix counts.
-    let blindHost = RecordingHost()
-    let blind = AdaptiveController(now: 0)
-    blind.host = blindHost
-    blind.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    blind.lowPowerUpdate(generation: 1, stationary: true, point: nil, dwell: here, fallback: homeAnchor, now: 3600)
-    check(blindHost.observed.isEmpty, "a stationary report without a coordinate has nothing to observe")
-    blind.lowPowerUpdate(generation: 1, stationary: false, point: nil, dwell: here, fallback: homeAnchor, now: 3700)
-    check(blindHost.checks.isEmpty, "a diagnostic report without a coordinate never starts precise GPS")
-    blind.lowPowerUpdate(generation: 1, stationary: false, point: at(50, 3800, speed: 1.4), dwell: here, fallback: homeAnchor, now: 3800)
-    check(blindHost.checks.count == 1, "the first moving fix after a coordinate-less stationary report starts the check")
-    // Without the fallback (the original behaviour) that same fix was only a reference.
-    var noFallback = LiveUpdateGate()
-    _ = noFallback.observe(stationary: true, point: nil, outsidePlace: false, now: 3600)
-    check(noFallback.observe(stationary: false, point: at(50, 3800), outsidePlace: false, now: 3800) == .none, "without a reference the first moving fix cannot be judged")
-    var withFallback = LiveUpdateGate()
-    _ = withFallback.observe(stationary: true, point: nil, outsidePlace: false, now: 3600)
-    check(withFallback.observe(stationary: false, point: at(50, 3800), outsidePlace: false, fallbackReference: homeAnchor, now: 3800) == .movement("Core Location reported movement"),
-          "with the settled position as reference it is movement")
-    check(withFallback.observe(stationary: false, point: at(60, 3810), outsidePlace: false, fallbackReference: homeAnchor, now: 3810) == .none, "and it is signalled once")
-    var jitterFallback = LiveUpdateGate()
-    _ = jitterFallback.observe(stationary: true, point: nil, outsidePlace: false, now: 0)
-    check(jitterFallback.observe(stationary: false, point: at(15, 30, accuracy: 30), outsidePlace: false, fallbackReference: homeAnchor, now: 30) == .none, "jitter near the settled position is still not movement")
-    var coarseFallback = LiveUpdateGate()
-    check(coarseFallback.observe(stationary: false, point: at(80, 30, accuracy: 90), outsidePlace: false, fallbackReference: homeAnchor, now: 30) == .none, "a coarse fix must move beyond its uncertainty")
-    var badFallback = LiveUpdateGate()
-    check(badFallback.observe(stationary: false, point: at(50, 30), outsidePlace: false, fallbackReference: GPSPoint(latitude: .nan, longitude: 0, timestamp: 0, accuracy: 10, altitude: 0, speed: 0), now: 30) == .none,
-          "an invalid fallback is never used")
-    // A first fix clearly outside the place (coarse but well beyond its departure distance).
-    let outsideHost = RecordingHost()
-    let outsideController = AdaptiveController(now: 0)
-    outsideController.host = outsideHost
-    outsideController.reconcile(inputs(0), established: .resting, standardOwned: true, dwell: here, regions: regions)
-    outsideController.lowPowerUpdate(generation: 1, stationary: false, point: at(1500, 10, accuracy: 60), dwell: here, fallback: nil, now: 10)
-    check(outsideHost.checks.count == 1, "a first fix clearly outside the place starts the check")
-}
-
-
-// Full location diagnostics use the existing protected journal without needing a journey.
 do {
     var overnight=RecorderDiagnosticJournal()
     overnight.append(RecorderDiagnosticEvent(at:100,kind:"service",message:"Intentional resting",context:["modeAfter":"resting"]))
@@ -2833,24 +2391,6 @@ do {
           "a newer inside fix after stepping out is a return")
 
     // Keep-alive: precise GPS or an open stop without a session; never standby.
-    func keepAlive(precise: Bool = false, stop: Bool = false, session: Bool = false, service: Bool = true, manual: Bool = false, automatic: Bool = true) -> Bool {
-        KeepAlivePolicy.wanted(automaticAvailable: automatic, manualRecording: manual, precise: precise, stopOpen: stop, sessionHeld: session, serviceSessionHeld: service)
-    }
-    check(keepAlive(precise: true) && keepAlive(stop: true), "precise GPS and a published stop keep the app resumable after the session was released")
-    check(!keepAlive(), "plain standby starts no second location stream")
-    check(!keepAlive(precise: true, session: true), "a held activity session needs no keep-alive")
-    // The recorder passes keepsAppRunning, so a rejoined session leaves sessionHeld false.
-    check(keepAlive(precise: true, session: BackgroundSessionPolicy.keepsAppRunning(held: true, startedThisProcess: false)),
-          "precise GPS in a background-launched process with only a rejoined session runs the keep-alive")
-    check(!keepAlive(precise: true, service: false), "without an Always service session the keep-alive cannot resume the app, so it is not started")
-    check(!keepAlive(precise: true, manual: true) && !keepAlive(stop: true, automatic: false), "manual recordings and Watch ownership never start it")
-    check(KeepAlivePolicy.wanted(automaticAvailable: false, manualRecording: false, precise: false, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, sharingWithoutSession: true),
-          "sharing that holds location after a sharing rest keeps the app resumable, including while the Watch owns a workout")
-    check(!KeepAlivePolicy.wanted(automaticAvailable: true, manualRecording: false, precise: true, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, lowPowerRunning: true),
-          "never a second liveUpdates stream beside the low-power one")
-    check(!KeepAlivePolicy.wanted(automaticAvailable: false, manualRecording: true, precise: false, stopOpen: false, sessionHeld: false, serviceSessionHeld: true, sharingWithoutSession: true),
-          "an iPhone manual recording holds its own session, so no keep-alive")
-    check(KeepAlivePolicy.reason(precise: false, stopOpen: false).contains("live sharing"), "the keep-alive says which case it covers")
 
     // Stage A: false wake-ups with sharing resting. The wake ends the rest, so
     // sharing holds location for the check; a restored rest may rest again only on
@@ -2911,38 +2451,13 @@ do {
     check(BackgroundSessionPolicy.wanted(automaticAvailable: true, manualRecording: false), "outside passive rest automatic tracking keeps it")
     check(!LocationIndicator.explain(continuous: false, mode: .passive, manual: false, sessionHeld: false).expected, "no indicator is expected in passive rest")
     check(LocationIndicator.explain(continuous: false, mode: .passive, manual: false, sessionHeld: true).expected, "a still-held session is reported as an expected indicator")
-    check(AdaptiveServices.decide(established: .passive, plan: .lowPower) == AdaptiveServices(standardMode: .passive, lowPowerStream: false), "passive rest also stops the adaptive low-power stream")
-    let quiet = AdaptiveObservedServices(state: .off, adaptiveEnabled: false, locationMode: .passive, continuousRunning: false, lowPowerRunning: false,
-        lowPowerWanted: false, placeRegionRegistered: true, journeyRecording: false, sessionHeld: false, sessionNeeded: false, restRegionWanted: true)
-    check(AdaptiveInvariants.violations(quiet).isEmpty, "passive rest with its exit region is consistent")
-    var noisy = quiet; noisy.continuousRunning = true; noisy.sessionHeld = true
-    check(Set(AdaptiveInvariants.violations(noisy)).isSuperset(of: ["passiveRestWithLocationUpdates", "passiveRestWithBackgroundSession"]), "location or a session held in passive rest is a contradiction")
-    var stray = quiet; stray.restRegionWanted = false; stray.locationMode = .standby
-    check(AdaptiveInvariants.violations(stray).contains("adaptiveServicesWhileDisabled"), "an exit region nobody wants is a contradiction")
-
-    // The rest exit region is registered with the adaptive engine off.
-    let host = RecordingHost()
-    let controller = AdaptiveController(now: 0)
-    controller.host = host
-    let anchor = GPSPoint(latitude: -33.86, longitude: 151.2, timestamp: 0, accuracy: 10, altitude: 0, speed: 0)
-    let home = DwellArea.arrival(at: anchor, source: .inferred)
-    func restInputs(_ now: Double, region: Bool) -> AdaptiveInputs {
-        AdaptiveInputs(enabled: false, supported: true, automaticAvailable: true, manualRecording: false, journeyRecording: false, probing: false,
-                       continuationOpen: false, placeSettled: true, recentMovement: false, motionMoving: false, now: now, restRegion: region)
-    }
-    let caps = RegionCapability(available: true, maximumRadius: 1000)
-    var sharingPolicy = AdaptivePolicy(now: 0)
-    var sharingInputs = restInputs(0, region: false); sharingInputs.enabled = true; sharingInputs.liveSharing = true
-    check(sharingPolicy.decide(sharingInputs) == .settling, "live sharing keeps the adaptive engine out of stationary standby")
-    check(sharingPolicy.plan(sharingInputs) == .established, "live sharing keeps standard precise updates rather than the low-power stream")
-    controller.reconcile(restInputs(0, region: false), established: .resting, standardOwned: true, dwell: home, regions: caps)
-    check(host.registeredPlaceRegion == nil, "no exit region before rest is confirmed")
-    controller.reconcile(restInputs(1200, region: true), established: .resting, standardOwned: true, dwell: home, regions: caps)
-    check(host.registeredPlaceRegion != nil && host.standardRunning, "a confirmed rest registers the exit region first")
-    controller.reconcile(restInputs(1230, region: true), established: .passive, standardOwned: true, dwell: home, regions: caps)
-    check(!host.standardRunning && host.streams.isEmpty && host.registeredPlaceRegion != nil, "passive rest stops standard location and keeps only the exit region")
-    controller.reconcile(restInputs(4000, region: false), established: .precise, standardOwned: true, dwell: home, regions: caps)
-    check(host.standardRunning && host.registeredPlaceRegion == nil, "a departure check restores precise GPS and drops the rest region")
+    check(PlaceRegion.radius(placeRadius: 50, anchorAccuracy: 10) == PlaceRegion.minimumRadius, "a small place gets at least a 100 m region")
+    check(PlaceRegion.radius(placeRadius: 80, anchorAccuracy: 90) == 180, "an imprecise indoor anchor widens the region")
+    check(PlaceRegion.radius(placeRadius: 400, anchorAccuracy: 10) == PlaceRegion.maximumRadius, "a large place is capped at 300 m")
+    check(PlaceRegion.radius(placeRadius: .nan, anchorAccuracy: .nan) == 130, "invalid inputs fall back to safe values")
+    check(PlaceRegion.valid(latitude: -33.86, longitude: 151.2, radius: 150), "a real place is a valid region")
+    check(!PlaceRegion.valid(latitude: 0, longitude: 0, radius: 150) && !PlaceRegion.valid(latitude: 95, longitude: 0, radius: 150) && !PlaceRegion.valid(latitude: -33.86, longitude: 151.2, radius: 20),
+          "an invalid coordinate or radius is never registered")
 
     // Lifecycle accounting and departure onset.
     var clock = ModeClock(mode: "standby", now: 0)
@@ -4412,7 +3927,7 @@ do {
     let watchOnly = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: false, automaticPermitted: true)
     check(watchOnly.location == .off && !watchOnly.motion, "a Watch recording leaves no GPS or motion running on the iPhone")
     check(watchOnly.significantChange, "significant change stays as the wake that finds the end of a session")
-    check(!watchOnly.visits && !watchOnly.placeRegions && !watchOnly.departureChecks && !watchOnly.lowPowerStandby && !watchOnly.passiveRest, "visits, regions, departure checks, low-power standby and passive rest are all suspended")
+    check(!watchOnly.visits && !watchOnly.placeRegions && !watchOnly.departureChecks && !watchOnly.passiveRest, "visits, regions, departure checks and passive rest are all suspended")
     let watchShared = ManualExclusionServices.plan(phoneManual: false, phoneRecording: false, liveSharing: true, automaticPermitted: true)
     check(watchShared.location == .liveSharing && watchShared.motion && watchShared.significantChange, "live sharing keeps its own location, and motion for its vehicle status")
     check(!watchShared.visits && !watchShared.departureChecks, "sharing brings no detection back with it")
@@ -5128,8 +4643,6 @@ do {
     // 4-5. Leaving Home disturbs the rest: sharing holds location again and the drive is precise.
     let leaving = homeRest(5000, disturbed: 5000)
     check(!leaving.confirmed && !sharing(leaving, testOn: true), "combined: a departure makes sharing hold location again")
-    check(KeepAlivePolicy.wanted(automaticAvailable: true, manualRecording: false, precise: true, stopOpen: false, sessionHeld: false, serviceSessionHeld: true),
-          "combined: the drive started without a session is kept resumable")
     check(!HouseholdPublisher.statusFixIsUsable(capturedAt: 600, passiveEndedAt: 5000, now: 5001),
           "combined: the old Home fix is never re-sent as current once passive rest ended")
     // 6. Drive to the shop and park: a provisional stop.
@@ -6372,164 +5885,71 @@ do {
 
 print("Final native assertion count including automatic account recovery: \(assertions)")
 
-// MARK: Location experiment (developer-only; Mode A is the shipped behaviour)
+// MARK: Always background location
 do {
     let t0: Double = 1_000_000
-    // Selection and defaults: anything but an unlocked selection is Mode A.
-    check(LocationExperiment.effective(selection: nil, unlocked: false) == .a, "experiment: no selection is Mode A")
-    check(LocationExperiment.effective(selection: LocationExperimentSelection(mode: .b, selectedAt: t0), unlocked: false) == .a, "experiment: a locked selector is Mode A whatever was stored")
-    check(LocationExperiment.effective(selection: LocationExperimentSelection(mode: .c, selectedAt: t0), unlocked: true) == .c, "experiment: an unlocked selection is honoured")
-    let chosen = LocationExperimentSelection(mode: .b, selectedAt: t0)
-    check(!LocationExperiment.expired(chosen, now: t0 + LocationExperiment.lifetime - 1) && LocationExperiment.expired(chosen, now: t0 + LocationExperiment.lifetime), "experiment: a selection lasts exactly 48 hours")
-    check(LocationExperiment.expired(chosen, now: t0 - 10), "experiment: a selection dated in the future (clock change) expires")
-    check(!LocationExperiment.expired(nil, now: t0), "experiment: nothing selected never expires")
-    // Expiry is not applied by `effective`, so the mode never changes by itself in the middle of a journey.
-    check(LocationExperiment.effective(selection: chosen, unlocked: true) == .b, "experiment: effective ignores the clock; only an idle change applies expiry")
+    check(AlwaysBackgroundLocationPolicy.applies(serviceSessionSupported: true, alwaysAuthorized: true),
+          "background location: Always on iOS 18+ uses the sessionless automatic policy")
+    check(!AlwaysBackgroundLocationPolicy.applies(serviceSessionSupported: false, alwaysAuthorized: true) &&
+          !AlwaysBackgroundLocationPolicy.applies(serviceSessionSupported: true, alwaysAuthorized: false),
+          "background location: older iOS and When In Use retain their existing capability")
 
-    // Switching is refused during a journey or unresolved recovery, and always allowed to the mode already in effect.
-    func inputs(_ edit: (inout ExperimentSwitchInputs) -> Void) -> ExperimentSwitchInputs { var i = ExperimentSwitchInputs(); edit(&i); return i }
-    check(LocationExperiment.switchBlock(ExperimentSwitchInputs(), from: .a, to: .b) == nil, "experiment: an idle recorder may switch")
-    let blockers: [(String, (inout ExperimentSwitchInputs) -> Void)] = [
-        ("signed out", { $0.signedIn = false }), ("storage", { $0.storageReady = false }), ("manual", { $0.manualRecording = true }),
-        ("watch", { $0.watchOwnsRecording = true }), ("journey", { $0.automaticJourneyOpen = true }), ("stop window", { $0.stopWindowOpen = true }),
-        ("departure check", { $0.departureCheck = true }), ("recovery", { $0.recoveryPending = true })]
-    for (name, edit) in blockers {
-        for target in [LocationExperimentMode.a, .b, .c] where target != .b {
-            check(LocationExperiment.switchBlock(inputs(edit), from: .b, to: target) != nil, "experiment: switching is refused while \(name) (B to \(target.rawValue))")
-        }
-        check(LocationExperiment.switchBlock(inputs(edit), from: .a, to: .b) != nil, "experiment: switching is refused while \(name) (A to B)")
-        check(LocationExperiment.switchBlock(inputs(edit), from: .b, to: .b) == nil, "experiment: re-selecting the current mode is allowed while \(name)")
+    func keep(standard: Bool = true, automatic: Bool = true, sharing: Bool = false, manual: Bool = false,
+              passive: Bool = false, service: Bool = true) -> Bool {
+        AlwaysBackgroundLocationPolicy.keepAliveWanted(standardUpdatesActive: standard, automaticAvailable: automatic,
+            sharingHoldsLocation: sharing, manualRecording: manual, passive: passive, serviceSessionHeld: service)
     }
-    check(LocationExperiment.switchBlock(inputs { $0.adaptiveEngineOn = true }, from: .a, to: .b) != nil && LocationExperiment.switchBlock(inputs { $0.adaptiveEngineOn = true }, from: .a, to: .c) != nil,
-          "experiment: the adaptive engine blocks B and C, which it would confound")
-    check(LocationExperiment.switchBlock(inputs { $0.adaptiveEngineOn = true }, from: .b, to: .a) == nil, "experiment: leaving for Mode A is never blocked by the adaptive engine")
-
-    // The activity session: exactly the base decision in Mode A; only a manual recording holds it in B and C for an Always user.
-    for base in [true, false] {
-        for always in [true, false] { for manual in [true, false] {
-            check(LocationExperiment.sessionWanted(base: base, mode: .a, alwaysAuthorized: always, manualRecording: manual) == base, "experiment: Mode A leaves the session decision untouched")
-        } }
+    check(keep() && !keep(standard: false), "background location: keep-alive follows standard GPS in ordinary standby")
+    check(keep(automatic: false, sharing: true) && !keep(automatic: false), "background location: sharing alone keeps location active")
+    check(!keep(manual: true) && !keep(passive: true) && !keep(service: false),
+          "background location: keep-alive requires an Always session and yields to rest, manual GPS")
+    func start(foreground: Bool, held: Bool = false, replace: Bool = false) -> Bool {
+        AlwaysBackgroundLocationPolicy.canStartServiceSession(foreground: foreground,
+            held: held, needsForegroundReplacement: replace)
     }
-    for mode in [LocationExperimentMode.b, .c] {
-        check(!LocationExperiment.sessionWanted(base: true, mode: mode, alwaysAuthorized: true, manualRecording: false), "experiment: Mode \(mode.rawValue) holds no session for Always automatic tracking or sharing")
-        check(LocationExperiment.sessionWanted(base: true, mode: mode, alwaysAuthorized: true, manualRecording: true), "experiment: a manual recording keeps its session in Mode \(mode.rawValue)")
-        check(LocationExperiment.sessionWanted(base: true, mode: mode, alwaysAuthorized: false, manualRecording: false), "experiment: When In Use access keeps today's session in Mode \(mode.rawValue)")
-        check(LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: true, manualRecording: false, held: true), "experiment: a held session is released in Mode \(mode.rawValue)")
-        check(!LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: true, manualRecording: true, held: true), "experiment: a manual recording's session is not released")
-        check(!LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: true, manualRecording: false, held: false), "experiment: nothing to release when none is held")
-        check(!LocationExperiment.mustReleaseSession(mode: mode, alwaysAuthorized: false, manualRecording: false, held: true), "experiment: When In Use access never has its session released")
-    }
-    check(!LocationExperiment.mustReleaseSession(mode: .a, alwaysAuthorized: true, manualRecording: false, held: true), "experiment: Mode A never releases a session on the experiment's account")
-
-    // The keep-alive: A is the shipped policy; B keeps it and widens it; C never runs it.
-    func keep(_ mode: LocationExperimentMode, base: Bool = false, auto: Bool = true, manual: Bool = false, precise: Bool = false, stop: Bool = false,
-              session: Bool = false, service: Bool = true, sharing: Bool = false, passive: Bool = false, low: Bool = false) -> Bool {
-        LocationExperiment.keepAliveWanted(base: base, mode: mode, automaticAvailable: auto, manualRecording: manual, precise: precise, stopOpen: stop,
-                                           sessionHeld: session, serviceSessionHeld: service, sharingHoldsLocation: sharing, passive: passive, lowPowerRunning: low)
-    }
-    check(keep(.a, base: true) && !keep(.a, base: false, precise: true), "experiment: Mode A returns the shipped keep-alive decision whatever else is true")
-    check(!keep(.c, base: true, precise: true, stop: true, sharing: true), "experiment: Mode C never runs the keep-alive")
-    check(keep(.b, precise: true), "experiment: Mode B runs the keep-alive for precise GPS")
-    check(keep(.b, stop: true) && !keep(.b, stop: true, passive: true), "experiment: Mode B covers an open stop, but not in passive rest")
-    check(keep(.b, auto: false, sharing: true) && !keep(.b, auto: false, sharing: true, passive: true), "experiment: Mode B covers sharing without a session, but not in passive rest")
-    check(!keep(.b, precise: true, session: true), "experiment: no keep-alive beside a session that keeps the app running")
-    check(!keep(.b, manual: true, precise: true), "experiment: no keep-alive during a manual recording")
-    check(!keep(.b, precise: true, service: false), "experiment: no keep-alive without the Always service session")
-    check(!keep(.b, precise: true, low: true), "experiment: never a second liveUpdates stream beside the low-power one")
-    check(!keep(.b, auto: false, precise: true), "experiment: precise GPS alone does not start it when automatic tracking is off")
-    check(LocationExperiment.serviceSessionWanted(base: false, mode: .a, sharingArmed: true, alwaysAuthorized: true) == false, "experiment: Mode A never adds a service session for sharing")
-    check(LocationExperiment.serviceSessionWanted(base: false, mode: .c, sharingArmed: true, alwaysAuthorized: true) == false, "experiment: Mode C holds the service session exactly as Mode A does")
-    check(LocationExperiment.serviceSessionWanted(base: false, mode: .b, sharingArmed: true, alwaysAuthorized: true), "experiment: Mode B holds the service session for sharing alone")
-    check(!LocationExperiment.serviceSessionWanted(base: false, mode: .b, sharingArmed: true, alwaysAuthorized: false) && LocationExperiment.serviceSessionWanted(base: true, mode: .b, sharingArmed: false, alwaysAuthorized: true),
-          "experiment: Mode B needs Always access, and keeps the shipped reasons")
-
-    // Predicted indicator (an application prediction) versus a person's observation.
-    func predict(session: Bool = false, flag: Bool = false, always: Bool = true, standard: Bool = false, keepAlive: Bool = false, low: Bool = false) -> IndicatorPrediction {
-        LocationExperiment.predict(sessionHeld: session, indicatorFlag: flag, alwaysAuthorized: always, standardLocation: standard, keepAlive: keepAlive, lowPowerStream: low)
-    }
-    check(predict(session: true, standard: true).pill == .yes && predict(session: true).arrow, "experiment: a held activity session predicts the pill")
-    check(predict(flag: true, standard: true).pill == .yes, "experiment: the manual-recording flag predicts the pill")
-    check(predict(always: false, standard: true).pill == .yes, "experiment: When In Use access predicts the pill")
-    check(predict(standard: true).pill == .no && predict(standard: true).arrow, "experiment: Always access with no session predicts an arrow and no pill")
-    check(predict(standard: true, keepAlive: true).pill == .untested && predict(low: true).pill == .untested, "experiment: a liveUpdates stream without a session is untested, not assumed")
-    check(predict().pill == .no && !predict().arrow, "experiment: nothing running predicts nothing")
-    let untested = predict(keepAlive: true)
-    check(untested.basis.contains("Apple does not document"), "experiment: an untested prediction says why")
-    for observed in ObservedIndicator.allCases {
-        check(LocationExperiment.agreement(prediction: untested, observed: observed) == .untested, "experiment: an untested prediction never agrees or disagrees (\(observed.rawValue))")
-    }
-    let predictedPill = predict(session: true), predictedNoPill = predict(standard: true)
-    check(LocationExperiment.agreement(prediction: predictedPill, observed: .pill) == .agrees && LocationExperiment.agreement(prediction: predictedPill, observed: .arrow) == .disagrees
-          && LocationExperiment.agreement(prediction: predictedPill, observed: .none) == .disagrees, "experiment: a pill prediction agrees only with a seen pill")
-    check(LocationExperiment.agreement(prediction: predictedNoPill, observed: .pill) == .disagrees && LocationExperiment.agreement(prediction: predictedNoPill, observed: .arrow) == .agrees
-          && LocationExperiment.agreement(prediction: predictedNoPill, observed: .none) == .agrees, "experiment: a no-pill prediction is contradicted only by a seen pill")
-    let seen = LocationExperiment.observation(at: t0, observed: .pill, prediction: predictedNoPill, mode: .b)
-    check(seen.observed == .pill && seen.predictedPill == "no" && seen.agreement == "disagrees" && seen.mode == "b", "experiment: an observation keeps what was seen apart from what was predicted")
-    var kept: [IndicatorObservation] = []
-    for index in 0..<(LocationExperiment.observationLimit + 5) { kept = LocationExperiment.appended(kept, LocationExperiment.observation(at: Double(index), observed: .none, prediction: predictedNoPill, mode: .a)) }
-    check(kept.count == LocationExperiment.observationLimit && kept.last?.at == Double(LocationExperiment.observationLimit + 4), "experiment: observations are bounded, keeping the newest")
+    check(start(foreground: true) && !start(foreground: false), "background location: a new Always session starts in the foreground")
+    check(!start(foreground: true, held: true) && start(foreground: true, held: true, replace: true) &&
+          !start(foreground: false, held: true, replace: true),
+          "background location: replace a rejoined or insufficient session only on foreground return")
+    check(LocationIndicatorPrediction.predict(sessionHeld: false, indicatorFlag: false, alwaysAuthorized: true,
+        standardLocation: true, keepAlive: true).pill == .untested,
+          "background location: service diagnostics report a prediction separately from a device observation")
 
     // The measurement window.
-    var window = ExperimentWindow(now: t0)
+    var window = LocationDeliveryWindow(now: t0)
     window.noteFix(at: t0 + 5, count: 1, standardRequested: true)
     window.noteFix(at: t0 + 10, count: 2, standardRequested: true)
     window.noteFix(at: t0 + 100, count: 1, standardRequested: true)
-    check(window.fixes == 4 && window.maxFixGap == 90 && window.fixGapsOverLimit == 1, "experiment: fixes and a lost-fix gap over a minute are counted")
+    check(window.fixes == 4 && window.maxFixGap == 90 && window.fixGapsOverLimit == 1, "background location: fixes and a lost-fix gap over a minute are counted")
     window.standardStopped(at: t0 + 101)
     window.noteFix(at: t0 + 5000, count: 1, standardRequested: true)
-    check(window.fixGapsOverLimit == 1 && window.maxFixGap == 90, "experiment: a deliberate stop is never reported as a lost fix")
+    check(window.fixGapsOverLimit == 1 && window.maxFixGap == 90, "background location: a deliberate stop is never reported as a lost fix")
     window.noteFix(at: t0 + 5100, count: 1, standardRequested: false)
     window.noteFix(at: t0 + 9000, count: 1, standardRequested: true)
-    check(window.fixGapsOverLimit == 1, "experiment: a gap is measured only while the standard service was requested across it")
+    check(window.fixGapsOverLimit == 1, "background location: a gap is measured only while the standard service was requested across it")
     window.noteWake(gapSeconds: 440, cause: "region")
     window.noteWake(gapSeconds: 30, cause: "location")
     window.noteWake(gapSeconds: 800, cause: "unknown: no location, region, visit or foreground event within 10s")
-    check(window.executionGaps == 2 && window.maxExecutionGap == 800 && window.wakeSummary == "location=1,region=1,unknown=1", "experiment: execution gaps and wake sources are counted by cause")
+    check(window.executionGaps == 2 && window.maxExecutionGap == 800 && window.wakeSummary == "location=1,region=1,unknown=1", "background location: execution gaps and wake sources are counted by cause")
     window.noteRouteGap(seconds: 120, meters: 900)
     window.noteRouteGap(seconds: 30, meters: 100)
     let details = window.details(now: t0 + 600)
     check(details["routeGaps"] == "2" && details["routeGapSeconds"] == "150" && details["routeGapMeters"] == "1000" && details["fixesDelivered"] == "7"
-          && details["windowSeconds"] == "600" && details["wakeSources"] == "location=1,region=1,unknown=1", "experiment: the sample reports route gaps, fix rate and wake sources")
-    check(ExperimentWindow(now: t0).details(now: t0 + 60)["wakeSources"] == "none" && ExperimentWindow(now: t0).details(now: t0 + 60)["fixRatePerMinute"] == "none", "experiment: an empty window says so, with no rate")
+          && details["windowSeconds"] == "600" && details["wakeSources"] == "location=1,region=1,unknown=1", "background location: the sample reports route gaps, fix rate and wake sources")
+    check(LocationDeliveryWindow(now: t0).details(now: t0 + 60)["wakeSources"] == "none" && LocationDeliveryWindow(now: t0).details(now: t0 + 60)["fixRatePerMinute"] == "none", "background location: an empty window says so, with no rate")
     // The fix rate is per minute the standard service was requested, so a window that mostly rested is not a slow one.
-    var resting = ExperimentWindow(now: t0, standardRunning: true)
+    var resting = LocationDeliveryWindow(now: t0, standardRunning: true)
     for second in stride(from: 6.0, through: 300.0, by: 6.0) { resting.noteFix(at: t0 + second, count: 1, standardRequested: true) }
     resting.standardStopped(at: t0 + 300)
     let restingDetails = resting.details(now: t0 + 1800)
-    check(restingDetails["standardSeconds"] == "300" && restingDetails["fixRatePerMinute"] == "10.0" && restingDetails["windowSeconds"] == "1800", "experiment: 25 minutes of rest do not dilute the fix rate")
+    check(restingDetails["standardSeconds"] == "300" && restingDetails["fixRatePerMinute"] == "10.0" && restingDetails["windowSeconds"] == "1800", "background location: 25 minutes of rest do not dilute the fix rate")
     resting.standardStarted(at: t0 + 1500)
-    check(resting.standardTime(now: t0 + 1800) == 600 && resting.next(now: t0 + 1800).standardSince == t0 + 1800, "experiment: a restarted service adds to the time, and a following window knows it is still running")
+    check(resting.standardTime(now: t0 + 1800) == 600 && resting.next(now: t0 + 1800).standardSince == t0 + 1800, "background location: a restarted service adds to the time, and a following window knows it is still running")
     let following = window.next(now: t0 + 600)
-    check(following.fixes == 0 && following.routeGaps == 0 && following.lastFixAt == window.lastFixAt, "experiment: the next window starts clean but a fix gap across the boundary is still measured")
-    check(!details.keys.contains { $0.lowercased().contains("latitude") || $0.lowercased().contains("longitude") }, "experiment: a sample carries no coordinate")
+    check(following.fixes == 0 && following.routeGaps == 0 && following.lastFixAt == window.lastFixAt, "background location: the next window starts clean but a fix gap across the boundary is still measured")
+    check(!details.keys.contains { $0.lowercased().contains("latitude") || $0.lowercased().contains("longitude") }, "background location: a sample carries no coordinate")
 
     // The persisted choice survives a restart, defaults to locked, and a corrupt value is ignored.
-    let suite = "letm3go-experiment-test-\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: suite)!
-    check(!LocationExperimentStore.loadUnlocked(defaults) && LocationExperimentStore.loadSelection(defaults) == nil, "experiment: a fresh device is locked with nothing selected")
-    LocationExperimentStore.save(unlocked: true, defaults); LocationExperimentStore.save(selection: chosen, defaults)
-    check(LocationExperimentStore.loadUnlocked(defaults) && LocationExperimentStore.loadSelection(defaults) == chosen, "experiment: the selection survives a restart")
-    LocationExperimentStore.save(selection: nil, defaults)
-    check(LocationExperimentStore.loadSelection(defaults) == nil, "experiment: clearing the selection returns to Mode A")
-    defaults.set(Data("not json".utf8), forKey: LocationExperimentStore.selectionKey)
-    check(LocationExperimentStore.loadSelection(defaults) == nil, "experiment: a corrupt stored selection is ignored")
-    defaults.removePersistentDomain(forName: suite)
-    check(LocationExperimentMode.allCases.map { $0.rawValue } == ["a", "b", "c"] && LocationExperimentMode.a.holdsActivitySessionForAutomaticAndSharing && LocationExperimentMode.b.runsKeepAlive && !LocationExperimentMode.c.runsKeepAlive,
-          "experiment: A holds the session, B keeps the keep-alive, C has neither")
-    // Review: the experiment exists only in debug and sandbox-receipt (Xcode, TestFlight) builds, never the App Store.
-    check(LocationExperiment.buildAllows(debug: true, receiptName: "receipt") && LocationExperiment.buildAllows(debug: false, receiptName: "sandboxReceipt"), "experiment: debug and TestFlight builds allow it")
-    check(!LocationExperiment.buildAllows(debug: false, receiptName: "receipt") && !LocationExperiment.buildAllows(debug: false, receiptName: nil), "experiment: an App Store build, or one with no receipt, never does")
-    // Review: Mode B without its Always service session would silently be Mode C, so it cannot be chosen.
-    check(LocationExperiment.switchBlock(inputs { $0.keepAliveCapable = false }, from: .a, to: .b)?.contains("iOS 18") == true, "experiment: Mode B is refused when its keep-alive cannot exist")
-    check(LocationExperiment.switchBlock(inputs { $0.keepAliveCapable = false }, from: .a, to: .c) == nil && LocationExperiment.switchBlock(inputs { $0.keepAliveCapable = false }, from: .b, to: .a) == nil,
-          "experiment: Mode C and the return to Mode A do not need a keep-alive")
-    // Review: the arrow is checked too, so a missing expected arrow is not reported as agreement.
-    let arrowExpected = predict(standard: true), nothingRunning = predict()
-    check(LocationExperiment.arrowAgreement(prediction: arrowExpected, observed: .none) == .disagrees && LocationExperiment.arrowAgreement(prediction: arrowExpected, observed: .arrow) == .agrees
-          && LocationExperiment.arrowAgreement(prediction: arrowExpected, observed: .pill) == .untested, "experiment: an expected arrow that is not there is a disagreement")
-    check(LocationExperiment.arrowAgreement(prediction: nothingRunning, observed: .none) == .agrees && LocationExperiment.arrowAgreement(prediction: nothingRunning, observed: .arrow) == .disagrees, "experiment: an arrow where none was expected is a disagreement")
-    let missingArrow = LocationExperiment.observation(at: t0, observed: .none, prediction: arrowExpected, mode: .c)
-    check(missingArrow.agreement == "agrees" && missingArrow.arrowAgreement == "disagrees", "experiment: a no-pill prediction can agree while the arrow prediction is contradicted")
 }
 do {
     // A saved Watch ride ends its own session even if its heartbeats arrive later (or never stop).
@@ -6547,4 +5967,4 @@ do {
     check(CrossDeviceRecording.merged(ended, later).isActive == false, "watch: a later heartbeat cannot restart a session that ended")
     check(CrossDeviceRecording.automaticOwner(ended, ownerID: nil, now: 6000) == nil, "watch: the ended session no longer suppresses automatic recording")
 }
-print("Final native assertion count including the location experiment: \(assertions)")
+print("Final native assertion count including background location: \(assertions)")

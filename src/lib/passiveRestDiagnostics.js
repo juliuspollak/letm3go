@@ -1,6 +1,13 @@
 // Tracking & Permissions rows for passive rest and Home Wi-Fi. States, reasons,
 // times and counts only: never a network name, access point or coordinate.
-import {duration} from './adaptiveDiagnostics.js';
+export function duration(seconds){
+ if(!Number.isFinite(seconds)||seconds<0)return 'Not reported';
+ if(seconds<60)return `${Math.round(seconds)} s`;
+ const minutes=Math.round(seconds/60);
+ if(minutes<60)return `${minutes} min`;
+ const hours=Math.floor(minutes/60);
+ return minutes%60?`${hours} h ${minutes%60} min`:`${hours} h`;
+}
 
 export const WIFI_MATCH_LABELS={
  matched:'Home Wi-Fi detected',
@@ -48,7 +55,7 @@ export function passiveRows(state){
  if(!passive)return [];
  const wifi=passive.wifi||{};
  const modes=passive.modeSeconds||{};
- const latency=state.adaptive?.lastDepartureLatency||{};
+ const latency=state.lastDepartureLatency||{};
  const modeSummary=['precise','standby','resting','passive','stationary'].filter(mode=>modes[mode]>0).map(mode=>`${mode} ${duration(modes[mode])}`).join(' · ');
  return [
   ['Release location while resting',passive.enabled?(passive.supported?'On':'On · needs iOS 18; the background session stays held'):'Off · background session stays held'],
