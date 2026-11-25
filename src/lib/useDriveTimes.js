@@ -28,7 +28,8 @@ export function useDriveTimes({people,from,enabled,transport,scope,lookup=(a,b)=
  // Only who is located matters: a person's status text changing must not repeat the lookups.
  const targets=useMemo(()=>(people||[]).filter(p=>p.userId&&usable(p.position)&&(p.state==='live'||p.state==='stale')).map(p=>({userId:p.userId,latitude:p.position.latitude,longitude:p.position.longitude})),[people]);
  const originKey=origin?cell(origin):'';
- const routeKey=target=>JSON.stringify([scope,transport,target.userId,cell(target),originKey]);
+ const namespace=JSON.stringify([scope,transport]);
+ const routeKey=target=>JSON.stringify([namespace,target.userId,cell(target),originKey]);
  const targetKey=JSON.stringify(targets.map(routeKey));
  useEffect(()=>{
   if(!enabled||!origin||!recorderAvailable()||!targets.length)return undefined;
@@ -37,21 +38,47 @@ export function useDriveTimes({people,from,enabled,transport,scope,lookup=(a,b)=
    for(const target of targets){
     if(!alive)return;
     const key=routeKey(target),hit=cache.current.get(key);
-    let seconds=hit&&Date.now()-hit.at<FRESH_MS?hit.seconds:undefined;
+    let at=hit?.at;
+    let seconds=hit&&Date.now()-at<FRESH_MS?hit.seconds:undefined;
     if(seconds===undefined){
      try{
       const found=await latest.current(origin,target);
       const best=(found?.routes||[]).map(route=>route.expectedSeconds).filter(seconds=>Number.isFinite(seconds)&&seconds>=0).sort((a,b)=>a-b)[0];
       seconds=Number.isFinite(best)?best:null;
-      cache.current.set(key,{seconds,at:Date.now()});
+      at=Date.now();
+      cache.current.set(key,{seconds,at});
      }catch{continue;}
     }
     if(!alive)return;
-    setTimes(current=>current[target.userId]?.key===key&&current[target.userId].seconds===seconds?current:{...current,[target.userId]:{key,seconds}});
+    setTimes(current=>current[target.userId]?.key===key&&current[target.userId].at===at?current:{...current,[target.userId]:{key,namespace,seconds,at}});
    }
   })();
   return()=>{alive=false;};
   // eslint-disable-next-line react-hooks/exhaustive-deps
  },[enabled,originKey,targetKey,scope,transport,recorderAvailable()]);
- return enabled&&origin?Object.fromEntries(targets.filter(target=>times[target.userId]?.key===routeKey(target)).map(target=>[target.userId,times[target.userId].seconds])):{};
+ // Keep the last estimate during recalculation, bounded by the route cache lifetime.
+ useEffect(()=>{
+  if(!enabled||!originKey)return undefined;
+  const pending=targets.flatMap(target=>{
+   const estimate=times[target.userId];
+   return estimate?.namespace===namespace&&estimate.key!==routeKey(target)
+    ?[[target.userId,estimate]]:[];
+  });
+  if(!pending.length)return undefined;
+  const expiresAt=Math.min(...pending.map(([,estimate])=>estimate.at+FRESH_MS));
+  const timer=setTimeout(()=>{
+   const now=Date.now();
+   setTimes(current=>{
+    const next={...current};
+    for(const [id,estimate] of pending){
+     if(current[id]===estimate&&estimate.at+FRESH_MS<=now)delete next[id];
+    }
+    return next;
+   });
+  },Math.max(0,expiresAt-Date.now()));
+  return()=>clearTimeout(timer);
+  // targetKey captures the same route identities used above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[enabled,namespace,originKey,targetKey,times]);
+ return enabled&&origin?Object.fromEntries(targets.filter(target=>times[target.userId]?.namespace===namespace).map(target=>[target.userId,times[target.userId].seconds])):{};
 }

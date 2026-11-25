@@ -94,6 +94,18 @@ describe('person map activity bubble',()=>{
   view.rerender(<PersonMap person={person} personPin={{...selectedPin,members:[...selectedPin.members,{id:'other'}]}} viewer="me" timeZone={Z} renderMap={renderMap}/>);
   control('pday:today');expect(last().pins.some(p=>p.kind==='people')).toBe(false);
  });
+ it('keeps a fresh pin without a confirmed arrival from inheriting the previous trip’s end time',()=>{
+  vi.useFakeTimers();
+  try{
+   vi.setSystemTime(new Date('2026-11-25T00:00:00Z'));
+   const stopped={...selectedPin,label:undefined,members:[{...selectedPin.members[0],activity:'unknown'}]};
+   setup({personPin:stopped});
+   expect(last().pins.find(p=>p.kind==='people')).toBe(stopped);
+   expect(last().styled.length).toBeGreaterThan(0);
+  }finally{
+   vi.useRealTimers();
+  }
+ });
  it('filters only the loaded person day and clears selection without changing camera scope',()=>{
   setup();const scope=last().scope;act(()=>mock.onStep('a'));control('pday:activity:Walking');
   expect(last().activityPreview).toBeNull();expect(last().styled).toEqual([]);expect(last().scope).toBe(scope);

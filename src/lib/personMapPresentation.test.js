@@ -1,7 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {composeDay,linesUntil,positionAt} from './personDay.js';
-import {formatDuration} from './peopleMap.js';
-import {filterPersonDay,personRoutes,personFlags,badgeAnchors,withTimeHere,recordedDistance,PERSON_VERTEX_LIMIT,PERSON_ACTIVITY_LIMIT,boundedPersonLines} from './personMapPresentation.js';
+import {filterPersonDay,personRoutes,personFlags,badgeAnchors,recordedDistance,PERSON_VERTEX_LIMIT,PERSON_ACTIVITY_LIMIT,boundedPersonLines} from './personMapPresentation.js';
 const date='2026-11-10',timeZone='UTC',t=Date.parse(date+'T00:00:00Z')/1000;
 const row=(id,activity,offset)=>({activity_id:id,title:id,activity,started_at:new Date((t+offset)*1000).toISOString(),ended_at:new Date((t+offset+600)*1000).toISOString(),points:[0,60,500,560].map((n,i)=>({t:t+offset+n,latitude:-34+i*0.001,longitude:151,segment:0})),roads:{}});
 const day=()=>composeDay({date,timeZone,rows:[row('drive','Driving',10),row('walk','Walking',30)]});
@@ -115,18 +114,6 @@ describe('numbers sit on their own line',()=>{
  });
 });
 describe('time on the map',()=>{
- const pin=(over={})=>({kind:'people',id:'people:a',members:[{id:'a',state:'live',activity:'stationary'}],...over});
- const lastWalks={activities:[{startedAt:1000,durationSeconds:600},{startedAt:5000,durationSeconds:1000}]};
- it('says how long a stationary person has been here, from the end of their last activity',()=>{
-  const out=withTimeHere(pin(),lastWalks,(6000+25*60)*1000);
-  expect(out.label).toBe(`Here · ${formatDuration(25*60)}`);expect(out.labelKind).toBe('place');
- });
- it('leaves a bubble that already has a label, a moving person or a very short stop alone',()=>{
-  expect(withTimeHere(pin({label:'Home · 2h'}),lastWalks,9e6)).toEqual(pin({label:'Home · 2h'}));
-  expect(withTimeHere(pin({members:[{id:'a',state:'live',activity:'driving'}]}),lastWalks,9e6).label).toBeUndefined();
-  expect(withTimeHere(pin(),lastWalks,6010*1000).label).toBeUndefined();
-  expect(withTimeHere(pin(),{activities:[]},9e6).label).toBeUndefined();
- });
  it('puts each activity\'s start time on its number',()=>{
   const base=day().activities[0];
   const composed={activities:[{...base,id:'a',startedAt:Date.parse('2026-11-21T08:05:00Z')/1000,routes:[],roads:[]}],markers:[{n:1,activityID:'a',title:'1. a',point:base.start}]};

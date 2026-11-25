@@ -1,5 +1,5 @@
 import {describe,expect,it,vi} from 'vitest';
-import {renderHook,waitFor} from '@testing-library/react';
+import {act,renderHook,waitFor} from '@testing-library/react';
 import {recorder} from './recorder.js';
 import {driveTimeText,useDriveTimes} from './useDriveTimes.js';
 
@@ -28,13 +28,39 @@ describe('drive times',()=>{
  });
 });
 
-it('requests walking directions and drops the old estimate when the destination moves',async()=>{
- recorder.roadRoute.mockResolvedValueOnce({routes:[{expectedSeconds:900}]}).mockReturnValueOnce(new Promise(()=>{}));
+it('keeps the walking estimate while a moving person’s new route is calculated',async()=>{
+ let finish;
+ recorder.roadRoute.mockResolvedValueOnce({routes:[{expectedSeconds:900}]}).mockReturnValueOnce(new Promise(resolve=>{finish=resolve;}));
  const origin={latitude:-33.9,longitude:151.1};
  const person={userId:'a',state:'stale',position:{latitude:-33.8,longitude:151.2}};
  const {result,rerender}=renderHook(({people})=>useDriveTimes({people,from:origin,enabled:true,transport:'walking'}),{initialProps:{people:[person]}});
  await waitFor(()=>expect(result.current).toEqual({a:900}));
  expect(recorder.roadRoute).toHaveBeenLastCalledWith(origin,expect.objectContaining(person.position),'walking');
  rerender({people:[{...person,position:{...person.position,latitude:-33.7}}]});
+ expect(result.current).toEqual({a:900});
+ finish({routes:[{expectedSeconds:1200}]});
+ await waitFor(()=>expect(result.current).toEqual({a:1200}));
+ rerender({people:[]});
  expect(result.current).toEqual({});
+});
+
+it('expires the previous estimate if recalculation fails',async()=>{
+ vi.useFakeTimers();
+ try{
+  const origin={latitude:-33.9,longitude:151.1};
+  const lookup=vi.fn().mockResolvedValueOnce({routes:[{expectedSeconds:900}]}).mockRejectedValueOnce(new Error('Directions unavailable'));
+  const {result,rerender}=renderHook(({latitude})=>useDriveTimes({
+   people:[{userId:'a',state:'live',position:{latitude,longitude:151.2}}],
+   from:origin,enabled:true,lookup
+  }),{initialProps:{latitude:-33.8}});
+  await act(async()=>{});
+  expect(result.current).toEqual({a:900});
+  rerender({latitude:-33.7});
+  await act(()=>vi.advanceTimersByTimeAsync(299999));
+  expect(result.current).toEqual({a:900});
+  await act(()=>vi.advanceTimersByTimeAsync(1));
+  expect(result.current).toEqual({});
+ }finally{
+  vi.useRealTimers();
+ }
 });

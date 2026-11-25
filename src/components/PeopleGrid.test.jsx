@@ -114,3 +114,17 @@ it('restores the avatar after two seconds and keeps the refresh result',()=>{
   vi.useRealTimers();
  }
 });
+
+it('keeps the car and one status line as a driving observation ages',()=>{
+ const driver=person({location:{state:'live',ageSeconds:90,activity:'Driving'}});
+ const {container,rerender}=render(<PeopleGrid people={[driver]} label="People"/>);
+ const status=()=>container.querySelector('.person-driving-status');
+ expect(status()).toHaveTextContent(/^Driving$/);
+ expect(status().querySelector('svg')).toBeInTheDocument();
+ rerender(<PeopleGrid people={[{...driver,location:{state:'live',ageSeconds:121,lastKnownActivity:'Driving'}}]} label="People"/>);
+ expect(status()).toHaveTextContent(/^Last seen driving$/);
+ expect(status().querySelector('svg')).toBeInTheDocument();
+ expect(container).not.toHaveTextContent('Location updated');
+ rerender(<PeopleGrid people={[{...driver,location:{state:'live',ageSeconds:5,activity:null}}]} label="People"/>);
+ expect(status()).toBeNull();
+});

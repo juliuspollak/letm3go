@@ -74,11 +74,14 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  const tileStatus=person.location?personTileLocation(person.location):person.status;
  const showRefreshClock=['No new location','Request failed','Couldn’t check'].includes(person.refreshLabel);
  const atHome=tileStatus?.tone==='home';
+ const driving=!atHome&&person.location?.state==='live'
+  ?person.location.activity==='Driving'?'Driving':!person.location.activity&&person.location.lastKnownActivity==='Driving'?'Last seen driving':null
+  :null;
  const travel=atHome?[]:[
   ...travelModes.map(([label,key,Icon])=>({label,Icon,time:travelDuration(person[key])})),
   {label:'snail',Icon:Snail,time:snailDuration(person.walkSeconds)},
  ].filter(mode=>mode.time);
- const location=person.location?[atHome?(tileStatus.lastKnown?'Last verified at home':'At home'):null,tileStatus.text].filter(Boolean).join(' · '):'';
+ const location=person.location?[atHome?(tileStatus.lastKnown?'Last verified at home':'At home'):null,driving||tileStatus.text].filter(Boolean).join(' · '):'';
  const showPoke=person.poke?.state==='received'||person.poke?.state==='failed';
  const shownLine=showPoke?line:tileStatus?.text&&person.location?tileStatus.text:line;
  const avatar=<>
@@ -86,12 +89,12 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
   {tileStatus&&(!atHome||tileStatus.lastKnown)&&<StatusDot tone={tileStatus.lastKnown?'stale':tileStatus.tone}/>}
  </>;
  const body=<>
-  {travel.length>0&&<TravelTimes travel={travel}/>}
+  <span className="person-travel-slot">{travel.length>0&&<TravelTimes travel={travel}/>}</span>
   <span className="person-tile-avatar">
    {showRefreshClock?<RefreshClock>{avatar}</RefreshClock>:avatar}
   </span>
   <span className="person-tile-heading">{atHome&&<House size={13} aria-hidden="true"/>}<span className="person-tile-name">{shown}</span></span>
-  {shownLine&&(!atHome||showPoke||showRefreshClock)&&<span className={`person-tile-status person-tile-status--${person.poke?.state==='received'?'received':person.poke?.state==='failed'?'failed':tileStatus?.tone||'none'}`}>{shownLine}</span>}
+  {driving&&!showPoke?<span className="person-tile-status person-tile-status--live person-driving-status"><CarFront size={16} aria-hidden="true"/>{driving}</span>:shownLine&&(!atHome||showPoke||showRefreshClock)&&<span className={`person-tile-status person-tile-status--${person.poke?.state==='received'?'received':person.poke?.state==='failed'?'failed':tileStatus?.tone||'none'}`}>{shownLine}</span>}
   {person.refreshLabel&&<span className="person-tile-status" role="status">{person.refreshLabel}</span>}
   {person.role&&<span className="person-tile-role">{person.role}</span>}
  </>;

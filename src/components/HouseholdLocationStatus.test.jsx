@@ -26,7 +26,10 @@ it('shows each member as sharing, waiting, stale, at home or not sharing, and gr
  render(<Household selfId="julius" liveEnabled peopleById={peopleById} selfLocation={{state:'live',ageSeconds:20}} onShowMember={vi.fn()}/>);
  const anna=await tile('Anna');
  // A shared activity is kept as the status of a live member.
- expect(within(anna).getByText('Driving · Location updated 1 min ago')).toBeInTheDocument();
+ expect(anna).toHaveAccessibleName(/Driving/);
+ expect(anna.querySelector('.person-tile-status svg')).toBeInTheDocument();
+ expect(anna.querySelector('.person-driving-status')).toHaveTextContent('Driving');
+ expect(anna).not.toHaveTextContent('Location updated');
  expect(anna.querySelector('.person-dot--live')).not.toBeNull();
  expect(anna).toHaveAccessibleName(/8 min drive, 38 min walk/);
  const sam=await tile('Sam');
@@ -42,6 +45,17 @@ it('shows each member as sharing, waiting, stale, at home or not sharing, and gr
  expect(within(you).getByText('You')).toBeInTheDocument();
  expect(within(you).getByText('Sharing')).toBeInTheDocument();
  expect(within(you).getByText('Organiser')).toBeInTheDocument();
+});
+it('shows the car icon for a driving member with a fresh fix',async()=>{
+ const people=new Map(peopleById);
+ const anna=people.get('anna');
+ people.set('anna',{...anna,location:{...anna.location,ageSeconds:5}});
+ render(<Household selfId="julius" peopleById={people}/>);
+ const bubble=await tile('Anna');
+ expect(bubble).toHaveAccessibleName(/Driving/);
+ expect(bubble.querySelector('.person-tile-status svg')).toBeInTheDocument();
+ expect(bubble.querySelector('.person-driving-status')).toHaveTextContent('Driving');
+ expect(bubble).not.toHaveTextContent('Location updated');
 });
 it('locates a member with a position on the map, and offers nothing for one without',async()=>{
  const show=vi.fn();

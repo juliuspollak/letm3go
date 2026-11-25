@@ -6,7 +6,7 @@ import {activityLabel} from '../lib/activityNames.js';
 import {activitySymbol} from '../lib/mapToolbar.js';
 import {formatDuration} from '../lib/peopleMap.js';
 import {distanceText} from '../lib/distanceUnits.js';
-import {filterPersonDay,personRoutes,personFlags,boundedPersonLines,recordedDistance,withTimeHere} from '../lib/personMapPresentation.js';
+import {filterPersonDay,personRoutes,personFlags,boundedPersonLines,recordedDistance} from '../lib/personMapPresentation.js';
 
 // The Map tab's person view: the selected person's latest shared location, the day's
 // movement and selectable saved routes with an on-map activity bubble. There is no second
@@ -15,7 +15,6 @@ import {filterPersonDay,personRoutes,personFlags,boundedPersonLines,recordedDist
 // updates that native map in place. Everything the slider does is computed from data
 // already on the phone.
 const browserZone=()=>{try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';}catch{return 'UTC';}};
-const isTodayForClock=(date,today)=>date===today;
 const dateLabel=(key,today)=>{
  if(key===today)return 'Today';
  if(key===addDays(today,-1))return 'Yesterday';
@@ -47,8 +46,6 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const owner=person?.userId||'';
  const isSelf=owner===viewer;
  const today=useToday(timeZone);
- // Coarse clock for "here for 25 min" on the person's bubble: it moves on every 30 seconds, not every render.
- const [nowMs,setNowMs]=useState(()=>Date.now());
  // The day shown follows the clock until the person picks another: left open past midnight
  // on "Today", it moves on to the new today (live trail and latest location included).
  // Day, selection and notes belong to one person; the parent retains them during detail navigation.
@@ -59,10 +56,6 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
  const update=useCallback(patch=>setView(previous=>({...(previous?.owner===owner?previous:fresh(owner)),...patch})),[owner,setView]);
  const picked=mine.picked,notice=mine.notice;
  const date=picked??today;
- // Only a bubble that can show "here for" needs the clock; every other map must not rebuild its payload every 30 seconds.
- const needsClock=isTodayForClock(date,today)&&Boolean(personPin)&&!personPin.label;
- useEffect(()=>{if(!needsClock)return undefined;const timer=setInterval(()=>setNowMs(Date.now()),30000);return()=>clearInterval(timer);},[needsClock]);
- const clockMs=needsClock?nowMs:0;
  // Locate asks the camera to go somewhere once (a new fit key, and a point when there is one); it belongs
  // to the day it was asked on and never re-centres later.
  const locate=mine.locate&&mine.locate.date===date?mine.locate:null;
@@ -87,7 +80,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   // Reuse the single-person pin from the All people map. The native renderer then
   // shows the same profile photo, live movement/speed label and activity ornament.
   // Never show a current position on a historical day or when its owner is hidden.
-  const shownPin=isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self'))?withTimeHere(personPin,day,clockMs):null;
+  const shownPin=isToday&&personPin?.kind==='people'&&personPin.members?.length===1&&(personPin.members[0].id===owner||(isSelf&&personPin.members[0].id==='self'))?personPin:null;
   if(shownPin)pins.push(shownPin);
   // "Locate" goes to where I am. While looking at someone else that spot has no marker, so it looked like an
   // arbitrary place; mark it as me.
@@ -98,7 +91,7 @@ export default function PersonMap({person,personPin=null,viewer,timeZone=browser
   const focusPoint=locate?.point||(shownPin&&!hasDrawn&&Array.isArray(shownPin.point)?shownPin.point:null);
   // scope changes pause following without reframing; only an explicit Locate focus moves the camera.
   return {routes:[],styled,personDay:true,selectedActivity:selected?.id||null,activityPreview,status,scope:`${owner}|${date}`,gaps:[],estimated:[],live:live.length?thinLine(live.at(-1)):[],pins,...(focusPoint?{focus:focusPoint}:{}),fitKey:`${owner}|${date}${locate?`|locate${locate.n}`:''}`};
- },[day,isToday,isSelf,personPin,selfPin,owner,date,locate,selected,savedRoutes,activityPreview,status,timeZone,clockMs]);
+ },[day,isToday,isSelf,personPin,selfPin,owner,date,locate,selected,savedRoutes,activityPreview,status,timeZone]);
  const openActivity=useCallback((id,options={})=>{
   if(isSelf){
    // My own activity: opened from this phone's copy. One that is only in the cloud (another

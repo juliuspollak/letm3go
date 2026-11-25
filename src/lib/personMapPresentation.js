@@ -1,6 +1,5 @@
 import {thinLine} from './mapContent.js';
 import {distanceMetres} from './householdLocation.js';
-import {formatDuration} from './peopleMap.js';
 
 // Keep composition, access checks and saved geometry in personDay. This projection
 // only changes which authorised activity is visible and how its existing line looks.
@@ -97,22 +96,6 @@ export function badgeAnchors(lines,placed=[]){
 // "08:05" style time for a badge or label, in the viewer's zone.
 export function clockText(seconds,timeZone){
  try{return new Date(seconds*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit',timeZone}).replace(/\s?([AP])M$/i,(m,x)=>x.toLowerCase()+'m').replace(/\s/g,'');}catch{return '';}
-}
-// A person standing somewhere the server did not name ("At a place") still has a "here since": the end of their last
-// recorded activity today is when they arrived. Added to their bubble only when it has no label of its own (a label
-// already says speed, a saved place or Home) and they are not moving.
-export function withTimeHere(pin,day,nowMs){
- if(!pin||pin.label||pin.kind!=='people'||!Array.isArray(pin.members)||pin.members.length!==1)return pin;
- const member=pin.members[0];
- if(member.state!=='live'||!['stationary','unknown'].includes(member.activity))return pin;
- let since=null;
- for(const a of day?.activities||[]){
-  const end=Number.isFinite(a.startedAt)&&Number.isFinite(a.durationSeconds)?a.startedAt+a.durationSeconds:null;
-  if(end!=null&&(since==null||end>since))since=end;
- }
- const seconds=since==null?null:Math.round(nowMs/1000-since);
- if(seconds==null||seconds<60||seconds>86400)return pin;
- return {...pin,label:`Here · ${formatDuration(seconds)}`,labelKind:'place'};
 }
 export function personFlags(day,routes,selected,timeZone){
  const visible=new Set(routes.map(r=>r.activityID));
