@@ -466,8 +466,7 @@ function PrivateApp(){
   const timer=setTimeout(()=>setLocationRefresh(null),30000);
   return()=>clearTimeout(timer);
  },[locationRefresh]);
- const homeFriends=useMemo(()=>homeRoutePeople.map(person=>({...peopleById.get(person.userId),refreshLabel:refreshLabel(person,locationRefresh),poke:pokeStates[person.userId]||(tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null),onSelect:()=>openPersonOnMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Show ${person.name||'them'} on the Map.`})),[homeRoutePeople,peopleById,locationRefresh,pokePerson,pokeStates,incomingPoke,tab,openPersonOnMap]);
- // A poke from someone whose tile is on screen shows there as a quiet line; otherwise as a small bubble by the profile.
+ const homeFriends=useMemo(()=>homeRoutePeople.map(person=>({...peopleById.get(person.userId),refreshLabel:refreshLabel(person,locationRefresh),poke:pokeStates[person.userId],receivedPoke:tab==='Home'&&incomingPoke?.actor_id===person.userId,onSelect:()=>openPersonOnMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Show ${person.name||'them'} on the Map.`})),[homeRoutePeople,peopleById,locationRefresh,pokePerson,pokeStates,incomingPoke,tab,openPersonOnMap]);
  // The selected person keeps their live details when they are in the live-location lists. Completed days do not
  // depend on live sharing, so the Map does not drop the person (or lose their cache) because they stopped sharing
  // a location; what a viewer may still see is decided by the server (signals and revalidation in usePersonDay).
@@ -492,7 +491,8 @@ function PrivateApp(){
   setMapPersonSel(null);setMapViewState(null);setMapResume(null);
  }
  useEffect(()=>()=>{clearPersonDays(session.user.id);forgetLiveRoads();forgetAutoShareFailures();},[session.user.id]);
- const pokeShownOnAvatar=Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.poke?.state==='received');
+ // Show the notification by the profile when the sender is outside the Home grid.
+ const pokeShownOnAvatar=tab==='Home'&&!selected&&!openSocialJourney&&Boolean(incomingPoke?.actor_id)&&homeFriends.some(person=>person.userId===incomingPoke.actor_id&&person.receivedPoke);
  const openPeopleMap=useCallback(()=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera({type:'showAll'});setTab('Map');},[]);
  // Pressing someone's bubble on the all-people map follows them; it now also shows only that person
  // (the same choice as the person bar), so their day replaces everyone else's pins and routes.

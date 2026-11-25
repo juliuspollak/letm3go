@@ -66,7 +66,7 @@ it('the Map is the map first: no permanent notice, no friends row, no list of pe
  expect(screen.queryByText('Kim')).toBeNull();expect(screen.queryByText('Ann')).toBeNull();
  await choose(/Ann/);
  expect(screen.queryByText(/Solid lines/)).toBeNull();
- expect(screen.queryByRole('button',{name:/^Poke/})).toBeNull();
+ expect(screen.queryByRole('button',{name:/^Wave to/})).toBeNull();
  expect(document.querySelector('.person-map-head')).toBeNull();
 });
 it('Friends\' journeys is a Layers option; toggling it does not touch the saved Map settings', ()=>{
@@ -127,13 +127,13 @@ it('Poke is a separate button: one request, the tile does not open the Map, and 
  vi.useFakeTimers({shouldAdvanceTime:true});
  try{
   render(<App/>);
-  const button=screen.getByRole('button',{name:'Poke Ann'});
+  const button=screen.getByRole('button',{name:'Wave to Ann'});
   await act(async()=>{fireEvent.click(button);fireEvent.click(button);});
   expect(pokes.send).toHaveBeenCalledTimes(1);expect(pokes.send).toHaveBeenCalledWith('ann');
   expect(screen.queryByRole('button',{name:/^Showing /})).toBeNull(); // still on Home
-  expect(screen.getByRole('button',{name:'Poked Ann'})).toHaveTextContent('✓ Poked');
+  expect(screen.getByRole('button',{name:'Wave sent to Ann'})).toHaveAttribute('aria-disabled','true');
   await act(async()=>{vi.advanceTimersByTime(2600);});
-  expect(screen.getByRole('button',{name:'Poke Ann'})).toHaveTextContent('👋 Poke');
+  expect(screen.getByRole('button',{name:'Wave to Ann'})).toBeEnabled();
  }finally{vi.useRealTimers();}
 });
 it('a tap on the person does not poke, and a failed poke offers a retry', async()=>{
@@ -143,17 +143,18 @@ it('a tap on the person does not poke, and a failed poke offers a retry', async(
  cleanup();
  pokes.send=vi.fn().mockRejectedValueOnce(new Error('Slow down')).mockResolvedValue({});
  render(<App/>);
- await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Poke Ann'}));});
- const retry=screen.getByRole('button',{name:/failed: Slow down/});
- expect(retry).toHaveTextContent('Retry poke');
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Wave to Ann'}));});
+ const retry=screen.getByRole('button',{name:/failed.*Slow down.*Try again/});
  await act(async()=>{fireEvent.click(retry);});
  expect(pokes.send).toHaveBeenCalledTimes(2);
- expect(screen.getByRole('button',{name:'Poked Ann'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Wave sent to Ann'})).toBeInTheDocument();
 });
-it('shows the compact status line on the tile', ()=>{
+it('shows location in the avatar and keeps the observation age in the Map action description',()=>{
  render(<App/>);
- expect(document.querySelector('.person-tile-status').textContent).toMatch(/just now|\dm ago/);
- expect(document.querySelector('.person-tile-status').textContent).not.toMatch(/Sharing ·|away/);
+ const photo=screen.getByRole('button',{name:/Show Ann on the Map.*Location updated/});
+ expect(photo.closest('.person-tile-avatar')).toHaveAttribute('data-location','current');
+ expect(photo.closest('.person-tile-avatar').querySelector('.person-location-icon')).toBeInTheDocument();
+ expect(photo.closest('.person-tile-avatar').querySelector('.person-freshness')).toBeNull();
 });
 it('leaving the Map returns to All people', ()=>{
  render(<App/>);

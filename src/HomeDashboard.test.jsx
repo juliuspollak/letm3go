@@ -52,22 +52,22 @@ it('updates a friend with a fresh shared position and preserves another friend�
   friends.people=[{...friends.people[0],updated_at:new Date().toISOString()},friends.people[1]];
  });
  const {rerender}=setup([]);
- const tile=name=>screen.getByLabelText(new RegExp(`Show ${name} on the Map`));
+ const tile=name=>screen.getByRole('img',{name:`${name} avatar`}).closest('.person-tile');
  const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
- expect(tile('Ann')).toHaveTextContent('Last location · 22 min ago');
- expect(tile('Kim')).toHaveTextContent('Last location · 22 min ago');
+ expect(tile('Ann')).toHaveTextContent('22m ago');
+ expect(tile('Kim')).toHaveTextContent('22m ago');
  fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
  fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
  expect(requestLocations).toHaveBeenCalledWith(['ann','kim']);
  expect(tile('Ann')).toHaveTextContent('Refreshing…');
  await waitFor(()=>expect(screen.queryByText('Refreshing locations…')).toBeNull());
  rerender(<App/>);
- expect(tile('Ann')).toHaveTextContent('just now');
+ expect(tile('Ann').querySelector('.person-freshness')).toBeNull();
  expect(tile('Ann')).toHaveTextContent('New location');
  expect(tile('Kim')).toHaveTextContent('No new location');
- expect(tile('Kim').querySelector('.person-refresh-clock')).toBeInTheDocument();
- expect(tile('Ann').querySelector('.person-refresh-clock')).toBeNull();
- expect(tile('Kim')).toHaveTextContent('Last location · 22 min ago');
+ expect(within(tile('Kim')).getByRole('img',{name:'Kim avatar'})).toBeInTheDocument();
+ expect(within(tile('Ann')).getByRole('img',{name:'Ann avatar'})).toBeInTheDocument();
+ expect(tile('Kim')).toHaveTextContent('22m ago');
 });
 
 it('shows which tiles were affected when the server rejects the refresh request',async()=>{
@@ -79,8 +79,8 @@ it('shows which tiles were affected when the server rejects the refresh request'
  fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
  fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
  expect(await screen.findByText('Could not send location requests.')).toBeInTheDocument();
- expect(screen.getByLabelText(/Show Ann on the Map.*Request failed/)).toHaveTextContent('Last location · 22 min ago');
- expect(screen.getByLabelText(/Show Kim on the Map.*Request failed/)).toHaveTextContent('Last location · 22 min ago');
+ expect(screen.getByRole('button',{name:/Ann: Request failed/}).closest('.person-tile')).toHaveTextContent('22m ago');
+ expect(screen.getByRole('button',{name:/Kim: Request failed/}).closest('.person-tile')).toHaveTextContent('22m ago');
 });
 
 it('allows a queued check-in time to get a fix before reading back locations',async()=>{
@@ -96,13 +96,37 @@ it('allows a queued check-in time to get a fix before reading back locations',as
   });
   await act(()=>vi.advanceTimersByTimeAsync(20000));
   expect(friends.refresh).not.toHaveBeenCalled();
-  expect(screen.getByLabelText(/Show Ann on the Map/)).toHaveTextContent('Refreshing…');
+  expect(screen.getByLabelText(/Show Ann on the Map/).closest('.person-tile')).toHaveTextContent('Refreshing…');
   await act(()=>vi.advanceTimersByTimeAsync(5000));
   expect(friends.refresh).toHaveBeenCalledOnce();
-  expect(screen.getByLabelText(/Show Ann on the Map/)).toHaveTextContent('No new location');
+  const avatar=screen.getByLabelText(/Show Ann on the Map/).closest('.person-tile-avatar');
+  expect(avatar).toHaveAttribute('data-refresh','unchanged');
+  expect(avatar).toHaveAttribute('data-location','current');
+  expect(avatar.querySelector('.person-freshness')).toBeNull();
  }finally{
   vi.useRealTimers();
  }
+});
+
+it('reconciles a delayed observation after a read failure and starts a fresh baseline on the next pull',async()=>{
+ const point={user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updated_at:new Date(Date.now()-22*60*1000).toISOString()};
+ friends.people=[point];
+ friends.refresh.mockRejectedValueOnce(new Error('Read failed'));
+ const {rerender}=setup([]);
+ const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
+ const pull=()=>{
+  fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
+  fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
+ };
+ pull();
+ expect(await screen.findByRole('button',{name:/Ann: Couldn’t check/})).toBeInTheDocument();
+ friends.people=[{...point,updated_at:new Date().toISOString()}];
+ rerender(<App/>);
+ expect(screen.getByRole('button',{name:/Ann: New location/})).toBeInTheDocument();
+ pull();
+ expect(screen.queryByRole('button',{name:/Ann: New location/})).toBeNull();
+ expect(await screen.findByRole('button',{name:/Ann: No new location/})).toBeInTheDocument();
+ expect(requestLocations).toHaveBeenCalledTimes(2);
 });
 
 it('toggles the theme and keeps the theme button pressed state in sync',()=>{
@@ -210,19 +234,19 @@ it('copes with a long title and long names without hiding anything', ()=>{
  friends.people=[{user_id:'ann',display_name:'Annabelle-Wilhelmina Featherstonehaugh',latitude:-34.5,longitude:150.9,updated_at:new Date().toISOString(),accuracy:10}];
  setup([trip('a',long,at(0,8))]);
  expect(within(card()).getByRole('button',{name:new RegExp(long.slice(0,30))})).toBeTruthy();
- expect(screen.getByRole('button',{name:'Poke Annabelle-Wilhelmina Featherstonehaugh'})).toBeTruthy();
+ expect(screen.getByRole('button',{name:'Wave to Annabelle-Wilhelmina Featherstonehaugh'})).toBeTruthy();
 });
 it('Friends: tapping a person opens the Map on them and Poke only pokes', ()=>{
  friends.people=[{user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updated_at:new Date().toISOString(),accuracy:10}];
  setup([]);
- expect(screen.getByRole('button',{name:'Poke Ann'})).toBeTruthy();
+ expect(screen.getByRole('button',{name:'Wave to Ann'})).toBeTruthy();
  fireEvent.click(screen.getByLabelText(/Show Ann on the Map/));
  expect(screen.getByRole('button',{name:/^Showing Ann/})).toBeTruthy();
 });
 it('handles no friends: the existing empty state, no Poke buttons', ()=>{
  setup([]);
  expect(screen.getByText('No recent shared statuses')).toBeTruthy();
- expect(screen.queryByRole('button',{name:/^Poke/})).toBeNull();
+ expect(screen.queryByRole('button',{name:/^Wave to/})).toBeNull();
 });
 it('an activity that ends on another day shows only when it began', ()=>{
  const start=at(1,23,30);

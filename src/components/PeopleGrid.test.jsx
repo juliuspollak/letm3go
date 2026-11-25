@@ -1,130 +1,164 @@
-import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import PeopleGrid,{PeopleSkeleton} from './PeopleGrid.jsx';
 
-afterEach(cleanup);
-const person=over=>({id:'p',userId:'p',name:'Julia',status:{text:'At school',tone:'live'},...over});
+afterEach(()=>{cleanup();vi.useRealTimers();vi.unstubAllGlobals();});
+const person=over=>({id:'p',userId:'p',name:'Julia',location:{state:'live',ageSeconds:50},...over});
+const grid=person=><PeopleGrid people={[person]} label="People"/>;
+const avatar=()=>screen.getByRole('img',{name:'Julia avatar'}).closest('.person-tile-avatar');
+const travel=()=>screen.getByRole('button',{name:/Next travel estimate/});
+const times={driveSeconds:780,walkSeconds:2280,cycleSeconds:720};
 
-it('tapping a person shows them on the Map and never pokes', ()=>{
+it('keeps Map, Wave and the travel control as independent touch targets',()=>{
  const open=vi.fn(),poke=vi.fn();
- render(<PeopleGrid people={[person({onSelect:open,onPoke:poke,actionLabel:'Show Julia on the Map.'})]} label="People"/>);
- fireEvent.click(screen.getByLabelText(/Show Julia on the Map/));
- expect(open).toHaveBeenCalledTimes(1);expect(poke).not.toHaveBeenCalled();
+ const {container}=render(grid(person({...times,onSelect:open,onPoke:poke})));
+ expect(container.querySelector('button button')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:/Show Julia on the map/}));
+ expect(open).toHaveBeenCalledOnce();
+ expect(poke).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'Wave to Julia'}));
+ fireEvent.click(travel());
+ expect(poke).toHaveBeenCalledOnce();
+ expect(open).toHaveBeenCalledOnce();
+ expect(travel()).toHaveAccessibleName(/Walking/);
 });
-it('Poke is its own button under the status: it pokes once and never opens the Map', ()=>{
- const open=vi.fn(),poke=vi.fn();
- const {container}=render(<PeopleGrid people={[person({onSelect:open,onPoke:poke,actionLabel:'Show Julia on the Map.'})]} label="People"/>);
- const button=screen.getByRole('button',{name:'Poke Julia'});
- expect(button.textContent).toBe('👋 Poke');
- expect(button.closest('button.is-button')).toBeNull(); // not inside the tile's button
- fireEvent.click(button);
- expect(poke).toHaveBeenCalledTimes(1);expect(open).not.toHaveBeenCalled();
- // Order: avatar, name, status, then Poke.
- const wrap=container.querySelector('.person-tile-wrap');
- expect(wrap.lastElementChild).toBe(button);
+
+it.each([
+ [{state:'live',home:true,homeSeconds:4500},'current',null,/At home.*Since 1h 15 min ago/],
+ [{state:'stale',verifiedHome:true,ageSeconds:1260},'last-known','21m ago',/Last verified at home.*21 min ago/],
+])('shows the house inside the photo with freshness for a last known home', (location,ring,age,description)=>{
+ render(grid(person({location,...times})));
+ expect(avatar()).toHaveAttribute('data-location',ring);
+ expect(within(avatar()).getByRole('img',{name:description}).querySelector('.lucide-house')).toBeInTheDocument();
+ expect(avatar().querySelector('.person-freshness')?.textContent??null).toBe(age);
+ expect(avatar().querySelector('.person-travel')).toBeNull();
 });
-it('shows the compact status line, and keeps the full wording for the screen reader', ()=>{
- render(<PeopleGrid people={[person({short:'2.6 km · 8m ago',status:{text:'Sharing · 8 min ago · 2.6 km away',tone:'live'},onSelect:vi.fn()})]} label="People"/>);
- expect(screen.getByText('2.6 km · 8m ago')).toBeTruthy();
- expect(screen.queryByText(/Sharing · 8 min/)).toBeNull();
- expect(screen.getByRole('button',{name:/Sharing · 8 min ago · 2.6 km away/})).toBeTruthy();
+
+it.each([
+ ['waiting','Waiting for location','.lucide-clock-3'],
+ ['unknown','No recent location','.lucide-map-pin-off'],
+ ['off','Not sharing','.lucide-shield-off'],
+])('distinguishes %s even when cached travel times are supplied',(state,label,icon)=>{
+ render(grid(person({location:{state},...times})));
+ expect(avatar()).toHaveAttribute('data-location','unavailable');
+ expect(screen.getByRole('img',{name:label}).querySelector(icon)).toBeInTheDocument();
+ expect(avatar().querySelector('.person-travel')).toBeNull();
 });
-it('Poke: sending is disabled so it cannot double-send, then confirms, and a failure offers a retry', ()=>{
- const poke=vi.fn();
- const view=state=>render(<PeopleGrid people={[person({onSelect:vi.fn(),onPoke:poke,poke:state})]} label="People"/>);
- const sending=view({state:'sending'});
- const busy=screen.getByRole('button',{name:'Poking Julia'});
- expect(busy.disabled).toBe(true);expect(busy.textContent).toBe('Poking…');
- fireEvent.click(busy);expect(poke).not.toHaveBeenCalled();
- sending.unmount();
- const sent=view({state:'sent'});
- const done=screen.getByRole('button',{name:'Poked Julia'});expect(done.textContent).toBe('✓ Poked');
- fireEvent.click(done);expect(poke).not.toHaveBeenCalled(); // not again while it shows Poked
- sent.unmount();
- view({state:'failed',message:'Slow down'});
- const retry=screen.getByRole('button',{name:/Poke Julia failed: Slow down/});
- expect(retry.textContent).toBe('Retry poke');
- expect(screen.getByText('Slow down')).toBeTruthy(); // the reason is visible, not only spoken
- fireEvent.click(retry);expect(poke).toHaveBeenCalledTimes(1);
+
+it('shows a pin when located with no valid estimate and preserves the actual activity in details',()=>{
+ render(grid(person({location:{state:'live',activity:'Driving'},driveSeconds:-1,walkSeconds:NaN,onSelect:vi.fn()})));
+ expect(screen.getByRole('button',{name:/Show Julia on the map.*Driving/})).toBeInTheDocument();
+ expect(screen.getByRole('img',{name:/Driving/}).querySelector('.lucide-map-pin')).toBeInTheDocument();
+ expect(avatar().querySelector('.person-travel')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'Location details for Julia'}));
+ expect(screen.getByRole('dialog',{name:'Julia'})).toHaveTextContent('Driving');
 });
-it('has no ••• menu, hold gesture, bubble or wiggle', ()=>{
- const {container}=render(<PeopleGrid people={[person({onSelect:vi.fn(),onPoke:vi.fn()})]} label="People"/>);
- expect(screen.queryByLabelText(/More actions/)).toBeNull();
- expect(container.querySelector('.poke-bubble,.person-more,.person-tile--poked')).toBeNull();
+
+it('crossfades all four estimates in the same overlay and explains the last known destination',()=>{
+ vi.useFakeTimers();
+ render(grid(person({location:{state:'stale',ageSeconds:1260,lastKnownActivity:'Driving'},...times,onSelect:vi.fn()})));
+ const photo=avatar(),overlay=travel();
+ for(const [mode,text] of [['Driving','13m'],['Walking','38m'],['Cycling','12m'],['Snail','26d']]){
+  expect(avatar()).toBe(photo);
+  expect(travel()).toBe(overlay);
+  expect(overlay).toHaveAccessibleName(new RegExp(mode+'.*last known location'));
+  expect(overlay.querySelector('[data-active="true"]')).toHaveTextContent(text);
+  act(()=>vi.advanceTimersByTime(3000));
+ }
+ expect(within(photo).getByText('21m ago')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Location details for Julia'}));
+ const dialog=screen.getByRole('dialog',{name:'Julia'});
+ expect(dialog).toHaveTextContent('Last activity: Driving');
+ expect(dialog).toHaveTextContent('Estimated travel to last known location');
+ expect(within(dialog).getAllByRole('listitem')).toHaveLength(4);
+ fireEvent.keyDown(dialog,{key:'Escape'});
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(screen.getByRole('button',{name:'Location details for Julia'})).toHaveFocus();
 });
-it('shows an incoming poke as a short line in the status place', ()=>{
- render(<PeopleGrid people={[person({short:'2.6 km · 8m ago',onSelect:vi.fn(),poke:{state:'received'}})]} label="People"/>);
- expect(screen.getByText('Poked you 👋')).toBeTruthy();
+
+it('formats hour-plus travel estimates without adding a mode label',()=>{
+ render(grid(person({driveSeconds:4800})));
+ const estimate=screen.getByRole('img',{name:'Driving: 1 h 20 min to current location'});
+ expect(estimate).toHaveTextContent('1h 20m');
 });
-it('shows no poke control where poking is not offered',()=>{
- render(<PeopleGrid people={[person({onSelect:vi.fn()})]} label="People"/>);
- expect(screen.queryByRole('button',{name:/^Poke/})).toBeNull();
+
+it('draws a refresh arc on the same ring while keeping the photo and estimate',()=>{
+ render(grid(person({...times,refreshLabel:'Refreshing…'})));
+ const ring=avatar().querySelector('.person-ring');
+ const track=ring.querySelector('.person-ring-track');
+ const arc=ring.querySelector('.person-refresh-arc');
+ for(const attribute of ['cx','cy','r'])expect(arc.getAttribute(attribute)).toBe(track.getAttribute(attribute));
+ expect(screen.getByRole('img',{name:'Julia avatar'})).toBeInTheDocument();
+ expect(travel()).toHaveAccessibleName(/Driving/);
 });
-it('identifies home with the same location text and status icon',()=>{
- const {container}=render(<PeopleGrid people={[person({location:{state:'stale',verifiedHome:true,ageSeconds:900}})]} label="People"/>);
- expect(screen.getByRole('group',{name:/last verified at home.*seen 15 min ago/i})).toBeInTheDocument();
- expect(screen.queryByText('Seen 15 min ago')).toBeNull();
- expect(container.querySelector('.person-dot--stale')).not.toBeNull();
+
+it('holds the estimate in reduced motion and still lets the viewer select another mode',()=>{
+ vi.useFakeTimers();
+ vi.stubGlobal('matchMedia',()=>({matches:true,addEventListener:vi.fn(),removeEventListener:vi.fn()}));
+ render(grid(person(times)));
+ act(()=>vi.advanceTimersByTime(12000));
+ expect(travel()).toHaveAccessibleName(/Driving.*current location/);
+ fireEvent.click(travel());
+ expect(travel()).toHaveAccessibleName(/Walking/);
+ act(()=>vi.advanceTimersByTime(12000));
+ expect(travel()).toHaveAccessibleName(/Walking/);
 });
-it('shows a loading placeholder, not a list or an empty claim', ()=>{
+
+it.each([
+ ['New location','new','A newer location was received.'],
+ ['No new location','unchanged','No new location received. Showing the last known location.'],
+ ['Request failed','failed','The location refresh request could not be sent.'],
+ ['Couldn’t check','unchecked','Could not verify whether a newer location was received.'],
+])('keeps the photo and travel during refresh and explains %s',(result,ring,message)=>{
+ const open=vi.fn(),selected=person({...times,location:{state:'stale',ageSeconds:1260},onSelect:open});
+ const {rerender}=render(grid({...selected,refreshLabel:'Refreshing…'}));
+ const photo=screen.getByRole('img',{name:'Julia avatar'});
+ expect(avatar()).toHaveAttribute('data-refresh','refreshing');
+ expect(travel()).toBeInTheDocument();
+ rerender(grid({...selected,refreshLabel:result}));
+ expect(screen.getByRole('img',{name:'Julia avatar'})).toBe(photo);
+ expect(avatar()).toHaveAttribute('data-refresh',ring);
+ expect(screen.getAllByRole('status').some(el=>el.textContent===`Julia: ${result}`)).toBe(true);
+ fireEvent.click(screen.getByRole('button',{name:/Show refresh details/}));
+ expect(screen.getByRole('dialog')).toHaveTextContent(message);
+ expect(open).not.toHaveBeenCalled();
+});
+
+it('renders the refresh title before native dialog focus moves inside',()=>{
+ const {container}=render(grid(person({refreshLabel:'Request failed'})));
+ const dialog=container.querySelector('dialog');
+ dialog.showModal=vi.fn(()=>expect(dialog.querySelector('h2')).toHaveTextContent('Julia’s location refresh'));
+ fireEvent.click(screen.getByRole('button',{name:/Show refresh details/}));
+ expect(dialog.showModal).toHaveBeenCalledOnce();
+});
+
+it('explains a refresh with no new observation when there is no previous location',()=>{
+ render(grid(person({location:{state:'waiting'},refreshLabel:'No new location'})));
+ fireEvent.click(screen.getByRole('button',{name:/Show refresh details/}));
+ expect(screen.getByRole('dialog')).toHaveTextContent('There is no previous location to show.');
+});
+
+it('keeps Wave feedback alongside incoming Wave and refresh, and offers retry after failure',()=>{
+ const onPoke=vi.fn();
+ const view=state=>grid(person({onPoke,receivedPoke:true,poke:{state,message:'Slow down'},refreshLabel:'Request failed'}));
+ const {rerender}=render(view('sending'));
+ for(const [state,label] of [['sending',/Sending wave/],['sent',/Wave sent/]]){
+  rerender(view(state));
+  const wave=screen.getByRole('button',{name:label});
+  expect(wave).toHaveAttribute('aria-disabled','true');
+  expect(wave).toHaveAccessibleName(/Julia waved at you/);
+  fireEvent.click(wave);
+ }
+ expect(onPoke).not.toHaveBeenCalled();
+ rerender(view('failed'));
+ expect(avatar()).toHaveAttribute('data-refresh','failed');
+ fireEvent.click(screen.getByRole('button',{name:/Wave to Julia failed.*Slow down.*Try again/}));
+ expect(onPoke).toHaveBeenCalledOnce();
+});
+
+it('shows one placeholder per loading tile',()=>{
  render(<PeopleSkeleton/>);
  const list=screen.getByRole('status',{name:'Loading friends'});
- expect(list.getAttribute('aria-busy')).toBe('true');
+ expect(list).toHaveAttribute('aria-busy','true');
  expect(list.querySelectorAll('li')).toHaveLength(3);
-});
-
-it('alternates drive and walk in a single label above the Home avatar and labels an old location',()=>{
- const {container}=render(<PeopleGrid people={[person({
-  location:{state:'stale',ageSeconds:18000},short:'2.5 km · 5h ago',
-  driveSeconds:480,walkSeconds:2280,cycleSeconds:720,onSelect:vi.fn()
- })]} label="Friends and household"/>);
- const avatar=container.querySelector('.person-tile');
- expect(avatar.querySelector('.person-travel')).toHaveClass('person-travel--alternating');
- expect(avatar.querySelector('.person-travel-drive')).toHaveTextContent('8 min drive');
- expect(avatar.querySelector('.person-travel-walk')).toHaveTextContent('38 min walk');
- expect(avatar.querySelector('.person-travel-cycle')).toHaveTextContent('12 min cycle');
- expect(avatar.querySelector('.person-travel-snail')).toHaveTextContent(/^26 days$/);
- expect(avatar.querySelector('.person-travel')).toHaveAttribute('data-count','4');
- expect(screen.getByText('Last location · 5 h ago')).toBeInTheDocument();
- expect(screen.queryByText('2.5 km · 5h ago')).not.toBeInTheDocument();
- expect(screen.getByRole('button',{name:/to last known location.*8 min drive, 38 min walk, 12 min cycle, 26 days snail/i})).toBeInTheDocument();
-});
-
-it('shows confirmed time at Home with a house and hides both travel estimates',()=>{
- const {container}=render(<PeopleGrid people={[person({
-  location:{state:'live',home:true,ageSeconds:90,homeSeconds:4500},
-  driveSeconds:480,walkSeconds:2280,cycleSeconds:720,onSelect:vi.fn()
- })]} label="People"/>);
- expect(screen.getByRole('button',{name:/at home.*since 1h 15 min ago/i})).toBeInTheDocument();
- expect(screen.queryByText('Since 1h 15 min ago')).toBeNull();
- expect(container.querySelector('.person-tile-heading svg')).not.toBeNull();
- expect(container.querySelector('.person-travel')).toBeNull();
-});
-
-it('restores the avatar after two seconds and keeps the refresh result',()=>{
- vi.useFakeTimers();
- try{
-  const {container}=render(<PeopleGrid people={[person({refreshLabel:'No new location'})]} label="People"/>);
-  expect(container.querySelector('.person-refresh-clock')).toBeInTheDocument();
-  act(()=>vi.advanceTimersByTime(2000));
-  expect(container.querySelector('.person-refresh-clock')).toBeNull();
-  expect(screen.getByRole('img',{name:'Julia avatar'})).toBeInTheDocument();
-  expect(screen.getByRole('status')).toHaveTextContent('No new location');
- }finally{
-  vi.useRealTimers();
- }
-});
-
-it('keeps the car and one status line as a driving observation ages',()=>{
- const driver=person({location:{state:'live',ageSeconds:90,activity:'Driving'}});
- const {container,rerender}=render(<PeopleGrid people={[driver]} label="People"/>);
- const status=()=>container.querySelector('.person-driving-status');
- expect(status()).toHaveTextContent(/^Driving$/);
- expect(status().querySelector('svg')).toBeInTheDocument();
- rerender(<PeopleGrid people={[{...driver,location:{state:'live',ageSeconds:121,lastKnownActivity:'Driving'}}]} label="People"/>);
- expect(status()).toHaveTextContent(/^Last seen driving$/);
- expect(status().querySelector('svg')).toBeInTheDocument();
- expect(container).not.toHaveTextContent('Location updated');
- rerender(<PeopleGrid people={[{...driver,location:{state:'live',ageSeconds:5,activity:null}}]} label="People"/>);
- expect(status()).toBeNull();
 });

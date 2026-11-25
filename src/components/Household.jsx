@@ -66,7 +66,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
   if(own(m.user_id)){
    const status=selfStatus({enabled:liveEnabled,state:selfLocation?.state,ageSeconds:selfLocation?.ageSeconds,home:selfLocation?.home,activity:selfLocation?.activity,permission,precise});
    return {id:m.user_id,userId:m.user_id,name:m.display_name||'Member',self:true,role:m.role==='owner'?'Organiser':null,
-    status,location:status.text==='At home'?selfLocation:null};
+    status,location:status.tone==='stale'||status.text==='At home'?selfLocation:null};
   }
   const shared=peopleById?.get(m.user_id);
   const location=shared?.location||{state:'off'};

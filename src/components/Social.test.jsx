@@ -83,10 +83,10 @@ describe('statuses',()=>{
   render(<Friends onShowPerson={show} peopleById={new Map([['majka',{location:{state:'live',ageSeconds:60},position:{latitude:1,longitude:2},driveSeconds:480,walkSeconds:2280}],['julia',{location:{state:'stale',ageSeconds:7200},position:{latitude:3,longitude:4}}]])}/>);
   const tile=async name=>(await screen.findByRole('img',{name:`${name} avatar`})).closest('.person-tile');
   expect(within(await tile('Majka')).getByText('Location updated 1 min ago')).toBeInTheDocument();
-  expect(within(await tile('julia')).getByText('Last location · 2 h ago')).toBeInTheDocument();
-  expect(within(await tile('Ola')).getByText('No recent location')).toBeInTheDocument();
+  expect(within(await tile('julia')).getByText('2h ago')).toBeInTheDocument();
+  expect(within(await tile('Ola')).getByRole('img',{name:'No recent location'})).toBeInTheDocument();
   const majka=screen.getByRole('button',{name:/^Show Majka on the map/});
-  expect(majka).toHaveAccessibleName(/8 min drive, 38 min walk/);
+  expect(majka).toHaveAccessibleName(/Driving: 8 min, Walking: 38 min/);
   fireEvent.click(majka);
   expect(show).toHaveBeenCalledWith({latitude:1,longitude:2},'majka');
   expect(screen.queryByRole('button',{name:/^Show Ola on the map/})).toBeNull();
@@ -162,9 +162,11 @@ describe('one list of people',()=>{
  it('shows household members under Friends, marked, and not you',async()=>{
   render(<Friends selfId="me" household={[{user_id:'me',display_name:'Julius'},{user_id:'kim',display_name:'Kim'}]} peopleById={new Map([['kim',{location:{state:'live',ageSeconds:20,home:true}}]])}/>);
   const list=await screen.findByRole('list',{name:'Friends'});
-  expect(within(list).getByText('Kim')).toBeInTheDocument();
-  expect(within(list).getByText('Household')).toBeInTheDocument();
-  expect(within(list).getByRole('group',{name:/kim.*at home.*seen just now/i})).toBeInTheDocument();
+  const details=within(list).getByRole('button',{name:'Location details for Kim'});
+  expect(details).toHaveTextContent('Kim');
+  expect(within(list).getByRole('img',{name:/at home.*seen just now/i})).toBeInTheDocument();
+  fireEvent.click(details);
+  expect(screen.getByRole('dialog',{name:'Kim'})).toHaveTextContent('Household');
   expect(within(list).queryByText('Julius')).toBeNull();
   expect(within(list).queryByText('You')).toBeNull();
  });
@@ -216,7 +218,7 @@ describe('friend sharing controls',()=>{
  it('keeps the household self status on confirmed sends as well',async()=>{
   render(<Household selfId="me" liveEnabled selfLocation={{state:'waiting'}}/>);
   const tile=(await screen.findByRole('img',{name:'Julius avatar'})).closest('.person-tile');
-  expect(within(tile).getByText('Sharing · waiting to send')).toBeInTheDocument();
+  expect(within(tile).getByRole('img',{name:'Sharing · waiting to send'})).toBeInTheDocument();
  });
 });
 

@@ -8,16 +8,16 @@ const person=extra=>({id:'ann',userId:'ann',name:'Ann',status:{text:'Sharing · 
 
 it('shows the result of a poke on the button itself, not as a bubble, wiggle or banner',()=>{
  const {container}=render(<PeopleGrid people={[person({onPoke:()=>{},poke:{state:'sent'}})]} label="Friends"/>);
- expect(screen.getByRole('button',{name:'Poked Ann'})).toHaveTextContent('✓ Poked');
+ expect(screen.getByRole('button',{name:'Wave sent to Ann'})).toHaveAttribute('aria-disabled','true');
  expect(container.querySelector('.poke-bubble,.person-tile--poked,.poke-layer')).toBeNull();
 });
-it('says "Poked you" for an incoming poke in the status place',()=>{
- render(<PeopleGrid people={[person({poke:{state:'received'}})]} label="Friends"/>);
- expect(screen.getByText('Poked you 👋')).toBeTruthy();
+it('announces an incoming wave and shows it on the avatar',()=>{
+ render(<PeopleGrid people={[person({receivedPoke:true})]} label="Friends"/>);
+ expect(screen.getByText('Ann waved at you')).toBeTruthy();
 });
 it('shows nothing extra for a person nobody poked',()=>{
  render(<PeopleGrid people={[person()]} label="Friends"/>);
- expect(screen.queryByRole('status')).toBeNull();
+ expect(screen.getAllByRole('status').every(status=>!status.textContent)).toBe(true);
 });
 it('shows an incoming poke as a bubble by the profile unless the sender\'s avatar already shows it, and always dismisses',()=>{
  vi.useFakeTimers();

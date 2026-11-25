@@ -25,37 +25,21 @@ const tile=async name=>(await screen.findByRole('img',{name:`${name} avatar`},{t
 it('shows each member as sharing, waiting, stale, at home or not sharing, and green only for a received recent position',async()=>{
  render(<Household selfId="julius" liveEnabled peopleById={peopleById} selfLocation={{state:'live',ageSeconds:20}} onShowMember={vi.fn()}/>);
  const anna=await tile('Anna');
- // A shared activity is kept as the status of a live member.
- expect(anna).toHaveAccessibleName(/Driving/);
- expect(anna.querySelector('.person-tile-status svg')).toBeInTheDocument();
- expect(anna.querySelector('.person-driving-status')).toHaveTextContent('Driving');
- expect(anna).not.toHaveTextContent('Location updated');
- expect(anna.querySelector('.person-dot--live')).not.toBeNull();
- expect(anna).toHaveAccessibleName(/8 min drive, 38 min walk/);
+ expect(anna.querySelector('.person-tile-avatar')).toHaveAttribute('data-location','current');
+ expect(within(anna).getByRole('button',{name:/Show Anna on the map.*Driving.*Driving: 8 min, Walking: 38 min/})).toBeInTheDocument();
+ expect(within(anna).getByRole('button',{name:/Next travel estimate/})).toHaveAccessibleName(/8 min to current location/);
  const sam=await tile('Sam');
- expect(within(sam).getByText('Waiting for location')).toBeInTheDocument();
- expect(sam.querySelector('.person-dot--live')).toBeNull();
+ expect(within(sam).getByRole('img',{name:'Waiting for location'})).toBeInTheDocument();
+ expect(sam.querySelector('.person-tile-avatar')).toHaveAttribute('data-location','unavailable');
  const lee=await tile('Lee');
- // Stale is "last seen", never "not sharing".
- expect(within(lee).getByText('Last location · 2 h ago')).toBeInTheDocument();
- expect(lee.querySelector('.person-dot--stale')).not.toBeNull();
- expect(within(await tile('Kim')).getByText('Not sharing')).toBeInTheDocument();
- expect(await tile('Max')).toHaveAccessibleName(/at home.*seen 2 min ago/i);
+ expect(within(lee).getByText('2h ago')).toBeInTheDocument();
+ expect(lee.querySelector('.person-tile-avatar')).toHaveAttribute('data-location','last-known');
+ expect(within(await tile('Kim')).getByRole('img',{name:'Not sharing'})).toBeInTheDocument();
+ expect(within(await tile('Max')).getByRole('img',{name:/at home.*seen 2 min ago/i})).toBeInTheDocument();
  const you=await tile('Julius');
- expect(within(you).getByText('You')).toBeInTheDocument();
- expect(within(you).getByText('Sharing')).toBeInTheDocument();
- expect(within(you).getByText('Organiser')).toBeInTheDocument();
-});
-it('shows the car icon for a driving member with a fresh fix',async()=>{
- const people=new Map(peopleById);
- const anna=people.get('anna');
- people.set('anna',{...anna,location:{...anna.location,ageSeconds:5}});
- render(<Household selfId="julius" peopleById={people}/>);
- const bubble=await tile('Anna');
- expect(bubble).toHaveAccessibleName(/Driving/);
- expect(bubble.querySelector('.person-tile-status svg')).toBeInTheDocument();
- expect(bubble.querySelector('.person-driving-status')).toHaveTextContent('Driving');
- expect(bubble).not.toHaveTextContent('Location updated');
+ fireEvent.click(within(you).getByRole('button',{name:'Location details for You'}));
+ expect(screen.getByRole('dialog',{name:'You'})).toHaveTextContent('Organiser');
+ expect(screen.getByRole('dialog',{name:'You'})).toHaveTextContent('Sharing');
 });
 it('locates a member with a position on the map, and offers nothing for one without',async()=>{
  const show=vi.fn();
@@ -68,11 +52,18 @@ it('locates a member with a position on the map, and offers nothing for one with
 });
 it('treats a member missing from the location rows as not sharing',async()=>{
  render(<Household selfId="julius" selfLocation={null}/>);
- expect(within(await tile('Anna')).getByText('Not sharing')).toBeInTheDocument();
+ expect(within(await tile('Anna')).getByRole('img',{name:'Not sharing'})).toBeInTheDocument();
 });
 it('never says you are at home without a current shared position',async()=>{
  render(<Household selfId="julius" liveEnabled selfLocation={{state:'waiting',home:true}}/>);
  const you=await tile('Julius');
- expect(within(you).queryByText('At home')).toBeNull();
- expect(within(you).getByText('Sharing · waiting to send')).toBeInTheDocument();
+ expect(within(you).queryByRole('img',{name:'At home'})).toBeNull();
+ expect(within(you).getByRole('img',{name:'Sharing · waiting to send'})).toBeInTheDocument();
+});
+it('shows the age of the last self-sharing update in the avatar',async()=>{
+ render(<Household selfId="julius" liveEnabled selfLocation={{state:'stale',ageSeconds:1260}}/>);
+ const you=await tile('Julius');
+ expect(within(you).getByText('21m ago')).toBeInTheDocument();
+ fireEvent.click(within(you).getByRole('button',{name:'Location details for You'}));
+ expect(screen.getByRole('dialog',{name:'You'})).toHaveTextContent('Last sent 21 min ago');
 });
