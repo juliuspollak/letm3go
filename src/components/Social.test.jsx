@@ -80,12 +80,14 @@ describe('statuses',()=>{
  it('shows a friend without a recent position as such, and a sharing friend on the map',async()=>{
   mock.rpc.mockImplementation(async name=>({data:name==='my_friends'?[{user_id:'majka',display_name:'Majka'},{user_id:'julia',display_name:'julia'},{user_id:'ola',display_name:'Ola'}]:null}));
   const show=vi.fn();
-  render(<Friends onShowPerson={show} locations={{majka:{state:'live',ageSeconds:60,position:{latitude:1,longitude:2}},julia:{state:'stale',ageSeconds:7200,position:{latitude:3,longitude:4}}}}/>);
+  render(<Friends onShowPerson={show} peopleById={new Map([['majka',{location:{state:'live',ageSeconds:60},position:{latitude:1,longitude:2},driveSeconds:480,walkSeconds:2280}],['julia',{location:{state:'stale',ageSeconds:7200},position:{latitude:3,longitude:4}}]])}/>);
   const tile=async name=>(await screen.findByRole('img',{name:`${name} avatar`})).closest('.person-tile');
-  expect(within(await tile('Majka')).getByText('Sharing · 1 min ago')).toBeInTheDocument();
-  expect(within(await tile('julia')).getByText('Last seen 2 h ago')).toBeInTheDocument();
+  expect(within(await tile('Majka')).getByText('Location updated 1 min ago')).toBeInTheDocument();
+  expect(within(await tile('julia')).getByText('Last location · 2 h ago')).toBeInTheDocument();
   expect(within(await tile('Ola')).getByText('No recent location')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:/^Show Majka on the map/}));
+  const majka=screen.getByRole('button',{name:/^Show Majka on the map/});
+  expect(majka).toHaveAccessibleName(/8 min drive, 38 min walk/);
+  fireEvent.click(majka);
   expect(show).toHaveBeenCalledWith({latitude:1,longitude:2},'majka');
   expect(screen.queryByRole('button',{name:/^Show Ola on the map/})).toBeNull();
  });
@@ -158,11 +160,11 @@ describe('Household',()=>{
 
 describe('one list of people',()=>{
  it('shows household members under Friends, marked, and not you',async()=>{
-  render(<Friends selfId="me" household={[{user_id:'me',display_name:'Julius'},{user_id:'kim',display_name:'Kim'}]} householdLocations={{kim:{state:'live',ageSeconds:20,home:true}}}/>);
+  render(<Friends selfId="me" household={[{user_id:'me',display_name:'Julius'},{user_id:'kim',display_name:'Kim'}]} peopleById={new Map([['kim',{location:{state:'live',ageSeconds:20,home:true}}]])}/>);
   const list=await screen.findByRole('list',{name:'Friends'});
   expect(within(list).getByText('Kim')).toBeInTheDocument();
   expect(within(list).getByText('Household')).toBeInTheDocument();
-  expect(within(list).getByText('At home')).toBeInTheDocument();
+  expect(within(list).getByRole('group',{name:/kim.*at home.*seen just now/i})).toBeInTheDocument();
   expect(within(list).queryByText('Julius')).toBeNull();
   expect(within(list).queryByText('You')).toBeNull();
  });

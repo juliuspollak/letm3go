@@ -15,9 +15,10 @@ export function formatDuration(seconds){
 }
 
 // Seconds since the confirmed arrival, measured on the server clock. Only for a
-// live position: a stale one says when it was last updated instead.
-export function secondsAtPlace(row){
- if(row?.state!=='live'||!row.arrived_at)return null;
+// live position by default. Home tiles can show a stale confirmed arrival
+// as last-known information.
+export function secondsAtPlace(row,{allowStale=false}={}){
+ if(!row?.arrived_at||(row.state!=='live'&&!(allowStale&&row.state==='stale')))return null;
  const arrived=Date.parse(row.arrived_at),now=Date.parse(row.server_now);
  if(!Number.isFinite(arrived)||!Number.isFinite(now)||arrived>now)return null;
  return Math.round((now-arrived)/1000);

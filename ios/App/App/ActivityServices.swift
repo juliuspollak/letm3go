@@ -426,14 +426,23 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
     static var activeRequests=Set<UUID>()
     let requestID=UUID()
     let manager = CLLocationManager()
-    private var callers: [(call: CAPPluginCall, publisher: String?, maxAge: Double)]
+    private var callers: [(call: CAPPluginCall, publisher: String?, maxAge: Double)] = []
+    private var checkin: ((CLLocation?) -> Void)?
     let owner = LocationRecorder.shared.ownerID
     var finished = false
-    init(call: CAPPluginCall, publisher: String?, maxAge: Double) {
-        callers = [(call, publisher, maxAge)]
+
+    override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
+    convenience init(call: CAPPluginCall, publisher: String?, maxAge: Double) {
+        self.init()
+        callers = [(call, publisher, maxAge)]
+    }
+    convenience init(checkin: @escaping (CLLocation?) -> Void) {
+        self.init()
+        self.checkin = checkin
     }
     var requesting = false
     func join(_ call: CAPPluginCall, publisher: String?, maxAge: Double) -> Bool {
@@ -460,6 +469,9 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
             }
         }
         callers.removeAll()
+        let completed = checkin
+        checkin = nil
+        completed?(owner == recorder.ownerID ? location : nil)
     }
     deinit { Self.activeRequests.remove(requestID) }
     func requestFix() {
@@ -471,8 +483,8 @@ final class PositionRequest: NSObject, CLLocationManagerDelegate {
         requesting = true
         Self.activeRequests.insert(requestID)
         LocationRecorder.shared.recordDiagnostic("sampling","One-shot precise location requested",
-            details:["component":"PositionRequest","reason":"No suitable cached fix for foreground request",
-                     "publisher":callers.first?.publisher ?? "interactive"])
+            details:["component":"PositionRequest","reason":checkin == nil ? "No suitable cached fix for foreground request" : "A viewer requested a fresh shared location",
+                     "publisher":callers.first?.publisher ?? (checkin == nil ? "interactive" : "checkin")])
         manager.requestLocation()
         DispatchQueue.main.asyncAfter(deadline: .now()+20) { self.end(error: "No recent location fix. Try outdoors or select a point on the map.") }
     }
@@ -636,7 +648,11 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: to))
-        request.transportType = .automobile
+        switch call.getString("transport") {
+        case "walking": request.transportType = .walking
+        case "cycling": request.transportType = .cycling
+        default: request.transportType = .automobile
+        }
         request.requestsAlternateRoutes = true
         let directions = MKDirections(request: request)
         directions.calculate { response, error in

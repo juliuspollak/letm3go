@@ -59,10 +59,13 @@ export function createPushHandler(deps) {
     // phone publishes one fresh position. A background push carries no text and
     // is delivered at low priority; iOS may coalesce or drop it, which is why
     // the server asks again every interval.
-    if (body?.mode === 'checkin') {
-      const { data: devices, error } = await admin.rpc('claim_location_checkins');
+    if (body?.mode === 'checkin' || body?.mode === 'requested-checkin') {
+      const requested = body.mode === 'requested-checkin';
+      const { data: devices, error } = requested
+        ? await admin.rpc('requested_location_refresh_devices', { p_viewer: body.viewer, p_owners: body.owners })
+        : await admin.rpc('claim_location_checkins');
       if (error) { log({ event: 'checkin_claim_error', code: error.code || 'unknown' }); return reply({ error: 'Check-in queue unavailable' }, 500); }
-      const result = { ok: true, mode: 'checkin', claimed: devices?.length || 0, sent: 0, failed: 0, invalid: 0 };
+      const result = { ok: true, mode: body.mode, claimed: devices?.length || 0, sent: 0, failed: 0, invalid: 0 };
       if (!result.claimed) return reply(result);
       let token;
       try { token = await providerToken(); } catch (caught) { log({ event: 'apns_provider_error', reason: caught instanceof Error && caught.message === 'ApnsNotConfigured' ? 'ApnsNotConfigured' : 'ApnsKeyUnusable' }); return reply({ ...result, error: 'APNs is not configured' }, 500); }
@@ -76,7 +79,7 @@ export function createPushHandler(deps) {
           const response = await deps.fetch(`${apnsHost(device.environment)}/3/device/${encodeURIComponent(device.apns_token)}`, {
             method: 'POST', signal: AbortSignal.timeout(APNS_TIMEOUT_MS),
             headers: { authorization: `bearer ${token}`, 'apns-topic': BUNDLE_ID, 'apns-push-type': 'background', 'apns-priority': '5', 'apns-collapse-id': 'location-checkin', 'apns-expiration': String(Math.floor(now() / 1000) + 600), 'content-type': 'application/json' },
-            body: JSON.stringify({ aps: { 'content-available': 1 }, kind: 'location_checkin' }),
+            body: JSON.stringify({ aps: { 'content-available': 1 }, kind: 'location_checkin', ...(requested ? { requested: true } : {}) }),
           });
           const answer = await response.json().catch(() => ({}));
           const reason = typeof answer.reason === 'string' ? answer.reason : response.ok ? 'Success' : 'Unknown';
@@ -88,7 +91,7 @@ export function createPushHandler(deps) {
         } catch { result.failed++; released.add(device.owner_id); }
       };
       for (let at = 0; at < devices.length; at += CHECKIN_CONCURRENCY) await Promise.all(devices.slice(at, at + CHECKIN_CONCURRENCY).map(send));
-      if (released.size) await admin.rpc('release_location_checkins', { p_owners: [...released] });
+      if (!requested && released.size) await admin.rpc('release_location_checkins', { p_owners: [...released] });
       // Counts only: never tokens or people.
       log({ event: 'checkin_batch', ...result });
       return reply(result);

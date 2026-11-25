@@ -7,7 +7,6 @@ import LocationSharingRow from './LocationSharingRow.jsx';
 import PeopleGrid from './PeopleGrid.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
-import {personStatus} from '../lib/personStatus.js';
 import {connectedPeople} from '../lib/people.js';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
@@ -16,10 +15,8 @@ import {UserMinus,UserPlus,X} from 'lucide-react';
 // Friends: my location for friends, the people, then Add friend. Invitations and
 // managing friends open only when asked for.
 //
-// `locations` maps a friend's user id to their location state (from the friend
-// location rows). A friend without a row has no recent position; that is never
-// shown as "sharing off", because this viewer cannot know it.
-export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onHouseholdJoined=null,household=[],householdLocations={},sharing=null,permission,precise,locations={},onShowPerson=null,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
+// The app supplies the same location entries used for Home and Household.
+export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onHouseholdJoined=null,household=[],peopleById=null,sharing=null,permission,precise,onShowPerson=null,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  // Opened before: show the last list at once and refresh it quietly. Only a first visit shows the spinner.
  const cacheKey='friends:'+(selfId||'');
@@ -44,8 +41,11 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onH
  // Everyone you are connected to, once: you are not in your own list.
  const everyone=connectedPeople({friends,household,selfID:selfId});
  const people=everyone.map(person=>{
-  const location=person.household?householdLocations[person.id]||null:locations[person.id]||null;
-  return {id:person.id,userId:person.id,name:person.name,role:person.household?'Household':null,status:personStatus(location||{state:'unknown'}),onSelect:location?.position&&onShowPerson?()=>onShowPerson(location.position,person.id):null};
+  const shared=peopleById?.get(person.id);
+  const location=shared?.location||{state:person.household?'off':'unknown'};
+  const position=shared?.position;
+  return {...shared,id:person.id,userId:person.id,name:person.name,location,role:person.household?'Household':null,
+   onSelect:position&&onShowPerson?()=>onShowPerson(position,person.id):null};
  });
  return <section className="social-screen social-friends" aria-label="Friends">
   {sharing&&<LocationSharingRow audience="friends" enabled={sharing.enabled} ready={sharing.ready!==false} error={sharing.error} onChange={sharing.onChange} permission={permission} precise={precise}/>}

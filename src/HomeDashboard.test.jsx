@@ -1,12 +1,13 @@
-import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import App from './App.jsx';
 import {emptyRecorder} from './lib/recorder.js';
 // The compact Home: header (with the recording status), one Today card with the first and last activities of the day shown, Friends.
-const {identity,recorderHook,mapLocationHook,friends}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),friends:{people:[],refresh:vi.fn()}}));
+const {identity,recorderHook,mapLocationHook,friends,requestLocations}=vi.hoisted(()=>({identity:{value:null},recorderHook:vi.fn(),mapLocationHook:vi.fn(),friends:{people:[],refresh:vi.fn()},requestLocations:vi.fn().mockResolvedValue(0)}));
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
+vi.mock('./lib/locationRefresh.js',async importOriginal=>({...await importOriginal(),requestSharedLocations:requestLocations}));
 vi.mock('./lib/useCloudJourneyPage.js',()=>({useCloudJourneyPage:()=>({ids:[],loading:false,error:'',more:false,refresh:()=>{}})}));
 vi.mock('./lib/useJourneyScope.js',()=>({useJourneyScope:()=>({loading:false,error:''})}));
 vi.mock('./lib/useMapLocation.js',()=>({useMapLocation:mapLocationHook}));
@@ -21,7 +22,7 @@ const setup=(trips,over={})=>{
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips,...over},run:vi.fn(),busy:false,error:''});
  return render(<App/>);
 };
-beforeEach(()=>{mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:vi.fn()});friends.people=[];});
+beforeEach(()=>{mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:vi.fn()});friends.people=[];requestLocations.mockClear();friends.refresh.mockClear();});
 afterEach(()=>{cleanup();localStorage.clear();});
 const card=()=>screen.getByRole('region',{name:'Daily activity summary'});
 
@@ -34,7 +35,7 @@ it('refreshes shared locations when pulling down from the top of Home',async()=>
   fireEvent.touchEnd(target,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
  };
  pull(heading);
- expect(friends.refresh).toHaveBeenCalledOnce();
+ await waitFor(()=>expect(friends.refresh).toHaveBeenCalledOnce());
  expect(screen.queryByRole('button',{name:'Refresh locations'})).toBeNull();
  await waitFor(()=>expect(screen.queryByText('Refreshing locations…')).toBeNull());
  fireEvent.click(within(screen.getByRole('navigation',{name:'Sections'})).getByRole('button',{name:'Social'}));
@@ -53,14 +54,55 @@ it('updates a friend with a fresh shared position and preserves another friend�
  const {rerender}=setup([]);
  const tile=name=>screen.getByLabelText(new RegExp(`Show ${name} on the Map`));
  const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
- expect(tile('Ann')).toHaveTextContent('22m ago');
- expect(tile('Kim')).toHaveTextContent('22m ago');
+ expect(tile('Ann')).toHaveTextContent('Last location · 22 min ago');
+ expect(tile('Kim')).toHaveTextContent('Last location · 22 min ago');
  fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
  fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
+ expect(requestLocations).toHaveBeenCalledWith(['ann','kim']);
+ expect(tile('Ann')).toHaveTextContent('Refreshing…');
  await waitFor(()=>expect(screen.queryByText('Refreshing locations…')).toBeNull());
  rerender(<App/>);
  expect(tile('Ann')).toHaveTextContent('just now');
- expect(tile('Kim')).toHaveTextContent('22m ago');
+ expect(tile('Ann')).toHaveTextContent('New location');
+ expect(tile('Kim')).toHaveTextContent('No new location');
+ expect(tile('Kim').querySelector('.person-refresh-clock')).toBeInTheDocument();
+ expect(tile('Ann').querySelector('.person-refresh-clock')).toBeNull();
+ expect(tile('Kim')).toHaveTextContent('Last location · 22 min ago');
+});
+
+it('shows which tiles were affected when the server rejects the refresh request',async()=>{
+ const point={latitude:-34.5,longitude:150.9,updated_at:new Date(Date.now()-22*60*1000).toISOString()};
+ friends.people=[{...point,user_id:'ann',display_name:'Ann'},{...point,user_id:'kim',display_name:'Kim'}];
+ requestLocations.mockRejectedValueOnce(new Error('RPC missing'));
+ setup([]);
+ const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
+ fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
+ fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
+ expect(await screen.findByText('Could not send location requests.')).toBeInTheDocument();
+ expect(screen.getByLabelText(/Show Ann on the Map.*Request failed/)).toHaveTextContent('Last location · 22 min ago');
+ expect(screen.getByLabelText(/Show Kim on the Map.*Request failed/)).toHaveTextContent('Last location · 22 min ago');
+});
+
+it('allows a queued check-in time to get a fix before reading back locations',async()=>{
+ vi.useFakeTimers();
+ try{
+  friends.people=[{user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updated_at:new Date().toISOString()}];
+  requestLocations.mockResolvedValueOnce(1);
+  setup([]);
+  const heading=screen.getByRole('heading',{name:'Your day. Your way.'});
+  await act(async()=>{
+   fireEvent.touchStart(heading,{touches:[{clientX:30,clientY:120}]});
+   fireEvent.touchEnd(heading,{touches:[],changedTouches:[{clientX:33,clientY:210}]});
+  });
+  await act(()=>vi.advanceTimersByTimeAsync(20000));
+  expect(friends.refresh).not.toHaveBeenCalled();
+  expect(screen.getByLabelText(/Show Ann on the Map/)).toHaveTextContent('Refreshing…');
+  await act(()=>vi.advanceTimersByTimeAsync(5000));
+  expect(friends.refresh).toHaveBeenCalledOnce();
+  expect(screen.getByLabelText(/Show Ann on the Map/)).toHaveTextContent('No new location');
+ }finally{
+  vi.useRealTimers();
+ }
 });
 
 it('toggles the theme and keeps the theme button pressed state in sync',()=>{

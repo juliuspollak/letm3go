@@ -1,4 +1,4 @@
-import {cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import PeopleGrid,{PeopleSkeleton} from './PeopleGrid.jsx';
 
@@ -60,17 +60,57 @@ it('shows no poke control where poking is not offered',()=>{
  render(<PeopleGrid people={[person({onSelect:vi.fn()})]} label="People"/>);
  expect(screen.queryByRole('button',{name:/^Poke/})).toBeNull();
 });
-it('shows the house icon instead of the word Home, keeping the words for screen readers', ()=>{
- const {container}=render(<PeopleGrid people={[person({short:'Last at home · 15m ago',atHomeLine:{age:'15m ago'}})]} label="People"/>);
- const line=container.querySelector('.person-tile-status--home');
- expect(line.querySelector('svg')).not.toBeNull();
- expect(line.querySelector('[aria-hidden="true"]:not(svg)').textContent).toBe('15m ago');
- expect(line.querySelector('.sr-only').textContent).toBe('Last at home · 15m ago');
- expect(container.querySelector('.person-tile-status:not(.person-tile-status--home)')).toBeNull();
+it('identifies home with the same location text and status icon',()=>{
+ const {container}=render(<PeopleGrid people={[person({location:{state:'stale',verifiedHome:true,ageSeconds:900}})]} label="People"/>);
+ expect(screen.getByRole('group',{name:/last verified at home.*seen 15 min ago/i})).toBeInTheDocument();
+ expect(screen.queryByText('Seen 15 min ago')).toBeNull();
+ expect(container.querySelector('.person-dot--stale')).not.toBeNull();
 });
 it('shows a loading placeholder, not a list or an empty claim', ()=>{
  render(<PeopleSkeleton/>);
  const list=screen.getByRole('status',{name:'Loading friends'});
  expect(list.getAttribute('aria-busy')).toBe('true');
  expect(list.querySelectorAll('li')).toHaveLength(3);
+});
+
+it('alternates drive and walk in a single label above the Home avatar and labels an old location',()=>{
+ const {container}=render(<PeopleGrid people={[person({
+  location:{state:'stale',ageSeconds:18000},short:'2.5 km · 5h ago',
+  driveSeconds:480,walkSeconds:2280,cycleSeconds:720,onSelect:vi.fn()
+ })]} label="Friends and household"/>);
+ const avatar=container.querySelector('.person-tile');
+ expect(avatar.querySelector('.person-travel')).toHaveClass('person-travel--alternating');
+ expect(avatar.querySelector('.person-travel-drive')).toHaveTextContent('8 min drive');
+ expect(avatar.querySelector('.person-travel-walk')).toHaveTextContent('38 min walk');
+ expect(avatar.querySelector('.person-travel-cycle')).toHaveTextContent('12 min cycle');
+ expect(avatar.querySelector('.person-travel-snail')).toHaveTextContent(/^26 days$/);
+ expect(avatar.querySelector('.person-travel')).toHaveAttribute('data-count','4');
+ expect(screen.getByText('Last location · 5 h ago')).toBeInTheDocument();
+ expect(screen.queryByText('2.5 km · 5h ago')).not.toBeInTheDocument();
+ expect(screen.getByRole('button',{name:/to last known location.*8 min drive, 38 min walk, 12 min cycle, 26 days snail/i})).toBeInTheDocument();
+});
+
+it('shows confirmed time at Home with a house and hides both travel estimates',()=>{
+ const {container}=render(<PeopleGrid people={[person({
+  location:{state:'live',home:true,ageSeconds:90,homeSeconds:4500},
+  driveSeconds:480,walkSeconds:2280,cycleSeconds:720,onSelect:vi.fn()
+ })]} label="People"/>);
+ expect(screen.getByRole('button',{name:/at home.*since 1h 15 min ago/i})).toBeInTheDocument();
+ expect(screen.queryByText('Since 1h 15 min ago')).toBeNull();
+ expect(container.querySelector('.person-tile-heading svg')).not.toBeNull();
+ expect(container.querySelector('.person-travel')).toBeNull();
+});
+
+it('restores the avatar after two seconds and keeps the refresh result',()=>{
+ vi.useFakeTimers();
+ try{
+  const {container}=render(<PeopleGrid people={[person({refreshLabel:'No new location'})]} label="People"/>);
+  expect(container.querySelector('.person-refresh-clock')).toBeInTheDocument();
+  act(()=>vi.advanceTimersByTime(2000));
+  expect(container.querySelector('.person-refresh-clock')).toBeNull();
+  expect(screen.getByRole('img',{name:'Julia avatar'})).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('No new location');
+ }finally{
+  vi.useRealTimers();
+ }
 });

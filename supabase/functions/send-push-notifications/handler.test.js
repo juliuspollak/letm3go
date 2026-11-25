@@ -158,6 +158,16 @@ describe('send-push-notifications', () => {
     expect(JSON.stringify(t.logs)).not.toContain(TOKEN_A);
   });
 
+  it('routes a viewer request through the consent-filtered device lookup', async () => {
+    const t = setup({ responses: [apple(200)] });
+    const body = { mode: 'requested-checkin', viewer: 'viewer', owners: ['friend'] };
+    t.rpc.mockResolvedValueOnce({ data: [{ owner_id: 'friend', apns_token: TOKEN_A, environment: 'production' }] });
+    expect((await t.call('wrong', body)).status).toBe(401);
+    expect(await (await t.call(undefined, body)).json()).toMatchObject({ mode: body.mode, sent: 1 });
+    expect(t.rpc).toHaveBeenCalledExactlyOnceWith('requested_location_refresh_devices', { p_viewer: 'viewer', p_owners: ['friend'] });
+    expect(JSON.parse(t.fetch.mock.calls[0][1].body)).toEqual({ aps: { 'content-available': 1 }, kind: 'location_checkin', requested: true });
+  });
+
   it('logs delivery metadata but never device tokens, message text or key material', async () => {
     const t = setup({ claimed: [delivery(1, TOKEN_A)] });
     await t.wake();

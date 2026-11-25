@@ -26,7 +26,7 @@ import {useMySharing} from './lib/useMySharing.js';
 import {sharedActivityRow,filterActivityScope} from './lib/sharedActivityRows.js';
 import HouseholdTrips from './components/HouseholdTrips.jsx';
 import {useHouseholdPresence} from './lib/useHouseholdPresence.js';
-import {LIVE_SECONDS,atHome,memberLocationState,peoplePins,memberActivities,freshnessNow,freshnessVisibility,lastKnownActivity} from './lib/householdLocation.js';
+import {LIVE_SECONDS,memberLocationState,peoplePins,memberActivities,freshnessNow,freshnessVisibility} from './lib/householdLocation.js';
 import {useHomePresence} from './lib/useHomePresence.js';
 import {cameraIntent,cameraReducer,initialCamera,shouldFocusSelf} from './lib/mapCamera.js';
 import {secondsAtPlace} from './lib/peopleMap.js';
@@ -78,6 +78,7 @@ import HouseholdRequests from './components/HouseholdRequests.jsx';
 import PeopleGrid,{PeopleSkeleton} from './components/PeopleGrid.jsx';
 import HomeDailySummary from './components/HomeDailySummary.jsx';
 import HomeLocationRefresh from './components/HomeLocationRefresh.jsx';
+import {requestSharedLocations,refreshLabel} from './lib/locationRefresh.js';
 import {homeJourneysForDay} from './lib/homeDailyStats.js';
 import {homePeople,friendsStillLoading} from './lib/homePeople.js';
 import ActivityEditor from './components/ActivityEditor.jsx';
@@ -339,7 +340,7 @@ function PrivateApp(){
  // The open Map panel closes with the page, like any other transient control.
  const [panelTab,setPanelTab]=useState(tab);
  if(panelTab!==tab){setPanelTab(tab);setMapPanel(null);}
- const mapLocation=useMapLocation(session.user.id,tab==='Map'||tab==='Home',recording.state.permission);
+ const mapLocation=useMapLocation(session.user.id,tab==='Map'||tab==='Home'||tab==='Social',recording.state.permission);
  // Until the map reports its area (after the first move), start around you.
  const mapSegments=useSegmentMapLayer(tab==='Map'&&mapView.segments,mapArea||areaAround(mapLocation.position,5),undefined,segmentsVersion);
  const focusedSelf=useRef(false);
@@ -362,7 +363,7 @@ function PrivateApp(){
  // Home is the saved Home place; only a live position can place someone there.
  const homeFlags=useHomePresence([
   {id:'self',eligible:Boolean(mapLocation.position),point:mapLocation.position},
-  ...householdMembers.map(m=>({id:m.user_id,eligible:m.state==='live',point:m.position}))
+  ...[...householdMembers,...friendMembers].map(m=>({id:m.user_id,eligible:m.state==='live',point:m.position}))
  ],homePlace);
  // Coarse statuses members already share (Driving, Walking...), for the person model only.
  const sharedActivities=useMemo(()=>memberActivities(presence.people,presence.liveMembers,motionClock,freshnessClock),[presence.people,presence.liveMembers,motionClock,freshnessClock]);
@@ -386,16 +387,7 @@ function PrivateApp(){
  // keeps its last fix after you leave the Map tab, which may be old).
  const selfFix=mapLocation.position;
  const selfAtHome=homeFlags.self===true&&Boolean(selfFix)&&Number.isFinite(selfFix.timestamp)&&motionClock/1000-selfFix.timestamp<=LIVE_SECONDS;
- const householdLocationProps=useMemo(()=>({
-  memberLocations:Object.fromEntries(householdMembers.map(m=>[m.user_id,{state:m.state,ageSeconds:m.ageSeconds,position:m.position,home:homeFlags[m.user_id]===true&&m.state==='live',verifiedHome:m.state==='stale'&&atHome(false,m.position,homePlace),activity:sharedActivities[m.user_id]||null,lastKnownActivity:sharedActivities[m.user_id]?null:lastKnownActivity(m)}])),
-  selfLocation:{state:selfLocationState.state,ageSeconds:selfLocationState.ageSeconds,home:selfLocationState.state==='live'&&selfAtHome,activity:presence.self?.activity_label||null}
- }),[householdMembers,homeFlags,homePlace,sharedActivities,selfLocationState.state,selfLocationState.ageSeconds,selfAtHome,presence.self?.activity_label]);
- // Friends' positions in the same states as the map. A friend without a row has
- // no recent position, which is not the same as sharing turned off.
- const friendLocations=useMemo(()=>Object.fromEntries(friendsLocation.people.map(p=>{
-  const state=memberLocationState({...p,sharing_enabled:true,location_at:p.updated_at},motionClock,freshnessClock);
-  return [p.user_id,{state:state.state,ageSeconds:state.ageSeconds,position:state.position,placeName:p.place_name||null,placeSince:p.place_since||null}];
- })),[friendsLocation.people,motionClock,freshnessClock]);
+ const selfLocation={state:selfLocationState.state,ageSeconds:selfLocationState.ageSeconds,home:selfLocationState.state==='live'&&selfAtHome,homeSeconds:selfSeconds,activity:presence.self?.activity_label||null};
  // Explicit navigation to one member follows that person; the map otherwise shows everyone.
  const showOnMap=useCallback((position,userId)=>{setSheet(null);setSelected(null);setMapView(view=>({...view,content:'routes',people:true}));dispatchCamera(userId?{type:'focus',personId:userId}:{type:'showAll'});setTab('Map');},[]);
  // Tapping a person on Home opens the Map tab on that person; poking is a separate action (the tile's ••• menu and the person bar).
@@ -452,13 +444,29 @@ function PrivateApp(){
  // stays open and whether cached days are kept depends on this whole list.
  const everyone=useMemo(()=>homePeople({household:householdMembers,friends:friendMembers,selfID:session.user.id,selfPosition:mapLocation.position,homeFlags,homePlace,activities:sharedActivities,unit}),[householdMembers,friendMembers,session.user.id,mapLocation.position,homeFlags,homePlace,sharedActivities,unit]);
  useActivityWeather({trips:realJourneys,enabled:auth.status==='authenticated'});
- const driveTimes=useDriveTimes({people:everyone,from:mapLocation.position,enabled:tab==='Map'});
+ const homeRoutePeople=useMemo(()=>everyone.slice(0,HOME_PEOPLE),[everyone]);
+ const visibleRoutePeople=useMemo(()=>{
+  const people=tab==='Home'?homeRoutePeople:everyone;
+  return tab==='Map'?people:people.filter(person=>!person.location.home&&!person.location.verifiedHome);
+ },[tab,homeRoutePeople,everyone]);
+ const tilesVisible=tab==='Home'||tab==='Social';
+ const tileRoutesEnabled=tilesVisible&&['always','whenInUse'].includes(recording.state.permission)&&!mapLocation.error;
+ const driveTimes=useDriveTimes({people:visibleRoutePeople,from:mapLocation.position,enabled:tab==='Map'||tileRoutesEnabled,scope:session.user.id});
+ const walkTimes=useDriveTimes({people:visibleRoutePeople,from:mapLocation.position,enabled:tileRoutesEnabled,transport:'walking',scope:session.user.id});
+ const cycleTimes=useDriveTimes({people:visibleRoutePeople,from:mapLocation.position,enabled:tileRoutesEnabled,transport:'cycling',scope:session.user.id});
+ const peopleById=useMemo(()=>new Map(everyone.map(person=>[person.userId,{...person,driveSeconds:driveTimes[person.userId],walkSeconds:walkTimes[person.userId],cycleSeconds:cycleTimes[person.userId]}])),[everyone,driveTimes,walkTimes,cycleTimes]);
  // Until both lists have answered once, an empty list means "not loaded yet", not "nobody is sharing".
  // A failure, being offline or a slow answer (10 s) ends the wait so it never spins for ever.
  const [friendsWaitOver,setFriendsWaitOver]=useState(false);
  useEffect(()=>{const timer=setTimeout(()=>setFriendsWaitOver(true),10000);return()=>clearTimeout(timer);},[]);
  const friendsLoading=friendsStillLoading({configured:Boolean(supabase),householdReady:presence.liveReady,friendsReady:friendsLocation.ready,householdError:presence.liveError,friendsError:friendsLocation.error,waitOver:friendsWaitOver,online:navigator.onLine});
- const homeFriends=useMemo(()=>everyone.slice(0,HOME_PEOPLE).map(person=>({...person,poke:pokeStates[person.userId]||(tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null),onSelect:()=>openPersonOnMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Show ${person.name||'them'} on the Map.`})),[everyone,pokePerson,pokeStates,incomingPoke,tab,openPersonOnMap]);
+ const [locationRefresh,setLocationRefresh]=useState(null);
+ useEffect(()=>{
+  if(!locationRefresh||locationRefresh.pending)return;
+  const timer=setTimeout(()=>setLocationRefresh(null),30000);
+  return()=>clearTimeout(timer);
+ },[locationRefresh]);
+ const homeFriends=useMemo(()=>homeRoutePeople.map(person=>({...peopleById.get(person.userId),refreshLabel:refreshLabel(person,locationRefresh),poke:pokeStates[person.userId]||(tab==='Home'&&incomingPoke?.actor_id===person.userId?{state:'received'}:null),onSelect:()=>openPersonOnMap(person),onPoke:()=>void pokePerson(person),actionLabel:`Show ${person.name||'them'} on the Map.`})),[homeRoutePeople,peopleById,locationRefresh,pokePerson,pokeStates,incomingPoke,tab,openPersonOnMap]);
  // A poke from someone whose tile is on screen shows there as a quiet line; otherwise as a small bubble by the profile.
  // The selected person keeps their live details when they are in the live-location lists. Completed days do not
  // depend on live sharing, so the Map does not drop the person (or lose their cache) because they stopped sharing
@@ -633,10 +641,22 @@ function PrivateApp(){
  };
   return <><TopProgress active={recorderAvailable()&&!recording.state.storageReady&&!recording.error}/><AutoCloudSync state={recording.state} journeySync={journeySync}/><WatchSegmentSync state={recording.state}/><PokeOverlay poke={incomingPoke} quiet={pokeShownOnAvatar} onDismiss={dismissPoke}/><div className="app-shell"><aside className="desktop-rail"><a className="brand" href="#" onClick={e=>{e.preventDefault();setSelected(null);setTab('Home');}} aria-label="Letm3go Home"><AnimatedWordmark/></a><p className="rail-caption">MAKE ROOM FOR ADVENTURE</p><nav>{NAV_ITEMS.map(({name})=><NavButton key={name} name={name} active={tab===name&&!selected} onSelect={()=>{setTab(name);setSelected(null);}}/>)}</nav><div className="rail-bottom"><div className="private-note"><ShieldCheck size={22}/><strong>Your story. Your choice.</strong><p>Your journeys are private until you choose to share.</p></div><button className="profile-link" onClick={()=>setSheet('profile')}><span className="avatar"><User size={20}/></span><div><strong>{session?'Your account':'Your adventure starts here'}</strong><small>{session?'Manage profile':'Private local activities'}</small></div><ChevronRight size={16}/></button></div></aside>
   <HomeLocationRefresh enabled={tab==='Home'&&!selected&&!openSocialJourney&&!sheet} onRefresh={async()=>{
-   if(auth.status!=='authenticated')throw new Error('Location refresh requires a connection.');
+   const targets=homeRoutePeople.filter(person=>person.state!=='off');
+   const baseline=new Map(targets.map(person=>[person.userId,person]));
+   setLocationRefresh({baseline,pending:true});
+   let requestFailed=false;
+   try{
+    if(auth.status!=='authenticated')throw new Error('Location refresh requires a connection.');
+    const requested=await requestSharedLocations([...baseline.keys()]);
+    // The recipient may spend 20 seconds getting a fix, then publish it.
+    if(requested>0)await new Promise(resolve=>setTimeout(resolve,25000));
+   }catch{
+    requestFailed=true;
+   }
    const options={reportFailure:true};
-   const results=await Promise.allSettled([presence.refreshLive(options),presence.refresh(options),friendsLocation.refresh(options)]);
-   if(results.some(result=>result.status==='rejected'))throw new Error('Some locations could not be refreshed.');
+   const [household,,friend]=await Promise.allSettled([presence.refreshLive(options),presence.refresh(options),friendsLocation.refresh(options)]);
+   setLocationRefresh({baseline,requestFailed,readFailed:{household:household.status==='rejected',friend:friend.status==='rejected'}});
+   if(requestFailed)throw new Error('Could not send location requests.');
   }}><header className="topbar"><span className="mobile-brand"><AnimatedWordmark/></span>{tab==='Home'&&<RecordingHealthChip compact health={recording.state.recordingHealth} onOpen={()=>setSheet('recordingHealth')}/>}<div className="breadcrumb">Your world, a little closer.</div><div className="top-actions"><button type="button" className="icon-button theme-toggle" aria-label="Toggle dark theme" aria-pressed={theme==='dark'} onClick={()=>{setTheme(current=>current==='dark'?'light':'dark');setThemePulse(pulse=>pulse+1);}}><span className="theme-toggle-icons" aria-hidden="true">{themePulse>0&&<span key={themePulse} className="theme-toggle-burst"/>}<Sun className="theme-toggle-sun" size={20}/><Moon className="theme-toggle-moon" size={20}/></span></button><HeaderAvatar count={inbox.count} onOpen={()=>setSheet('profile')}><PersonAvatar name={auth.preferences.displayName||'You'} userId={session.user.id} selfId={session.user.id} selfAvatar={auth.preferences.avatar} photos={peopleAvatars.photos} size="sm"/></HeaderAvatar></div></header>
  {/* Below the header, which carries the safe-area padding: above it these sat under the status bar and Dynamic Island, unreadable, and still pushed the header down. */}
  {tab!=='Record'&&<WatchRecordingBanner elsewhere={recording.state.recordingElsewhere} nowMs={motionClock} onOpen={()=>{setSheet(null);setSelected(null);setOpenSocialJourney(null);setTab('Record');}}/>}{error&&<p role="alert" className="error">{error}</p>}{recording.error&&<p role="alert" className="error">{recording.error}</p>}{auth.status==='offline'&&<p className="notice">Offline · Private recordings stay on this device. Cloud actions require reconnection.</p>}
@@ -667,7 +687,7 @@ function PrivateApp(){
 {filtered.length?<TripsList key={`${filter}|${activitySourceChoice}|${dayFilter}|${favouritesOnly}|${activeEquipmentFilter}|${sort}|${showArchived}|${includeSharedActivities}`} journeys={filtered} sharing={mySharing} photos={peopleAvatars.photos} unit={unit} sort={sort} query={query} favourites={saved} vehicles={vehicles} busy={grouping.busy||recording.busy||scopeState.loading||Boolean(scopeState.error)} showArchived={showArchived} selecting={selectingMerge} selectedIDs={pickedMergeIDs} onOpen={trip=>{if(trip.isShared){setOpenSocialJourney(trip.sharedActivityID);}else setSelected(trip);}} onBookmark={bookmarkRow} onEquipment={openEquipment} onArchive={archiveRow} onDelete={trip=>{setDeleteError('');setDeleteTrip(trip);}} onRestore={restoreRow} onToggleSelect={id=>setMergeIDs(ids=>ids.includes(id)?ids.filter(x=>x!==id):[...ids,id])}/>:cloudJournal.loading||scopeState.loading?<LoadingMark label="Loading saved history"/>:cloudJournal.error||scopeState.error?<p role="alert" className="notice">Saved history is unavailable. Reconnect or retry; cached recordings have been preserved.</p>:<div className="empty"><Search/><h2>{dayFilter==='today'?'No activities today':'No journeys found'}</h2><p>{dayFilter==='today'?'Activities you record today appear here.':'Try a different place, date or activity.'}</p><button className="secondary" onClick={resetTripFilters}>{dayFilter==='today'?'Show all activities':'Clear filters'}</button></div>}</>}
 
  {selectingMerge&&mergeConfirm&&pickedMergeIDs.length>1&&<div className="modal-backdrop" role="presentation"><div className="notice" role="dialog" aria-modal="true" aria-label="Merge journeys" style={{maxWidth:440,margin:'auto',padding:24}}><h2>Merge {pickedMergeIDs.length} activities?</h2><p>The selected activities become one activity with their combined route, time and photos. The originals are replaced.</p><p className="muted small-copy">This cannot be undone. Only activities recorded on this iPhone or Apple Watch can be merged.</p>{mergeError&&<p role="alert" className="error">{mergeError}</p>}<div className="detail-actions"><button className="secondary" onClick={()=>setMergeConfirm(false)}>Back</button><button className="primary" disabled={recording.busy} onClick={confirmMerge}>{recording.busy?'Merging…':'Yes, merge'}</button></div></div></div>}
- {tab==='Social'&&<div className="social-layout social-redesign"><div className="social-sections" role="group" aria-label="Social sections"><button type="button" aria-pressed={socialSection==='friends'} onClick={()=>setSocialSection('friends')}>Friends</button><button type="button" aria-pressed={socialSection==='household'} onClick={()=>setSocialSection('household')}>Household</button></div>{socialSection==='friends'?<><HouseholdRequests onJoined={refreshHousehold}/><Friends personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onHouseholdJoined={()=>{refreshHousehold();if(pendingInvitation?.fromHousehold)setSocialSection('household');}} household={householdMembers} householdLocations={householdLocationProps.memberLocations} sharing={{enabled:friendsLocation.enabled,ready:friendsLocation.ready!==false,error:friendsLocation.error,onChange:friendsLocation.setSharing}} permission={recording.state.permission} precise={recording.state.precise} locations={friendLocations} onShowPerson={showOnMap} invitationCode={pendingInvitation?.kind==='friend'?pendingInvitation.code:null} invitationPreview={pendingInvitation?.fromHousehold?pendingInvitation.preview:null} onInviteConsumed={consumeInvitation} onShareLive={()=>friendsLocation.setSharing(true)}/></>:<><Household onReviewInvitation={(code,preview)=>{setPendingInvitation({kind:'friend',code,preview,fromHousehold:true});setSocialSection('friends');}} invitationCode={pendingInvitation?.kind==='household'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onMembershipChanged={refreshHousehold} onShareLive={()=>presence.setLiveSharing(true)} onStopLive={()=>presence.setLiveSharing(false)} liveEnabled={presence.liveEnabled} liveReady={presence.liveReady} liveError={presence.liveError} onRetrySharing={presence.refreshLive} permission={recording.state.permission} precise={recording.state.precise} {...householdLocationProps} onShowMember={showOnMap} onOpenMap={openPeopleMap} vehicles={vehicles} onSaveVehicles={setVehicles} onSetHome={()=>setSheet('homePlace')} hasHome={Boolean(homePlace)}/><HouseholdTrips activities={grouping.records}/></>}</div>}
+ {tab==='Social'&&<div className="social-layout social-redesign"><div className="social-sections" role="group" aria-label="Social sections"><button type="button" aria-pressed={socialSection==='friends'} onClick={()=>setSocialSection('friends')}>Friends</button><button type="button" aria-pressed={socialSection==='household'} onClick={()=>setSocialSection('household')}>Household</button></div>{socialSection==='friends'?<><HouseholdRequests onJoined={refreshHousehold}/><Friends personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onHouseholdJoined={()=>{refreshHousehold();if(pendingInvitation?.fromHousehold)setSocialSection('household');}} household={householdMembers} peopleById={peopleById} sharing={{enabled:friendsLocation.enabled,ready:friendsLocation.ready!==false,error:friendsLocation.error,onChange:friendsLocation.setSharing}} permission={recording.state.permission} precise={recording.state.precise} onShowPerson={showOnMap} invitationCode={pendingInvitation?.kind==='friend'?pendingInvitation.code:null} invitationPreview={pendingInvitation?.fromHousehold?pendingInvitation.preview:null} onInviteConsumed={consumeInvitation} onShareLive={()=>friendsLocation.setSharing(true)}/></>:<><Household onReviewInvitation={(code,preview)=>{setPendingInvitation({kind:'friend',code,preview,fromHousehold:true});setSocialSection('friends');}} invitationCode={pendingInvitation?.kind==='household'?pendingInvitation.code:null} onInviteConsumed={consumeInvitation} personPhotos={peopleAvatars.photos} selfId={session.user.id} selfAvatar={auth.preferences.avatar} onMembershipChanged={refreshHousehold} onShareLive={()=>presence.setLiveSharing(true)} onStopLive={()=>presence.setLiveSharing(false)} liveEnabled={presence.liveEnabled} liveReady={presence.liveReady} liveError={presence.liveError} onRetrySharing={presence.refreshLive} permission={recording.state.permission} precise={recording.state.precise} peopleById={peopleById} selfLocation={selfLocation} onShowMember={showOnMap} onOpenMap={openPeopleMap} vehicles={vehicles} onSaveVehicles={setVehicles} onSetHome={()=>setSheet('homePlace')} hasHome={Boolean(homePlace)}/><HouseholdTrips activities={grouping.records}/></>}</div>}
 
  {tab==='Map'&&!openSocialJourney&&<>{cloudJournal.more&&<p className="muted small-copy" role="status">Some saved activities are not loaded yet. <button type="button" className="text-button" disabled={cloudJournal.loading} onClick={cloudJournal.loadMore}>Load more</button></p>}{(scopeState.error||cloudJournal.error)&&<p role="alert" className="notice">{scopeState.error||cloudJournal.error}</p>}<div className={`map-explorer map-social-explorer map-page map-page-people`}>
  <h1 className="sr-only">Map</h1>

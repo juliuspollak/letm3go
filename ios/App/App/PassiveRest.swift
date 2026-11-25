@@ -214,7 +214,7 @@ extension LocationRecorder {
     // is armed it takes one location and publishes it through the normal path, so
     // a phone resting at a place shows a fresh position instead of an ageing one.
     // The completion is called after the publish window, never later than iOS allows.
-    func handleLocationCheckin(completion: @escaping (UIBackgroundFetchResult) -> Void) {
+    func handleLocationCheckin(requested: Bool = false, completion: @escaping (UIBackgroundFetchResult) -> Void) {
         noteExecution("locationCheckin")
         let now = Date().timeIntervalSince1970
         guard liveSharingArmed, !reconcileManualExclusion(), now - lastLocationCheckinAt >= 60 else {
@@ -223,6 +223,19 @@ extension LocationRecorder {
         }
         lastLocationCheckinAt = now
         recordDiagnostic("sharing", "Location check-in requested by the server", details: ["locationMode": locationMode.rawValue])
+        if requested && continuousLocationRequested {
+            // A distance-filtered stream may stay quiet at home. Use the
+            // existing one-shot manager without restarting the recorder.
+            let request = PositionRequest(checkin: { [weak self] fix in
+                guard let self, self.liveSharingArmed, let fix,
+                      fix.timestamp.timeIntervalSince1970 >= now else { completion(.noData); return }
+                self.publishLivePosition(fix)
+                // Allow the ordinary publisher a short window to send.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { completion(.newData) }
+            })
+            request.requestFix()
+            return
+        }
         if continuousLocationRequested {
             // Keep the running stream intact and publish its next real fix.
             confirmHouseholdLocation()

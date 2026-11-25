@@ -37,7 +37,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
                      fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         guard (userInfo["kind"] as? String) == "location_checkin" else { completionHandler(.noData); return }
-        LocationRecorder.shared.handleLocationCheckin(completion: completionHandler)
+        LocationRecorder.shared.handleLocationCheckin(requested: userInfo["requested"] as? Bool == true, completion: completionHandler)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {

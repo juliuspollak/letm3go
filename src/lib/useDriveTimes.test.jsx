@@ -1,5 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import {renderHook,waitFor} from '@testing-library/react';
+import {recorder} from './recorder.js';
 import {driveTimeText,useDriveTimes} from './useDriveTimes.js';
 
 vi.mock('./recorder.js',()=>({recorder:{roadRoute:vi.fn()},recorderAvailable:()=>true}));
@@ -25,4 +26,15 @@ describe('drive times',()=>{
   renderHook(()=>useDriveTimes({people:[{userId:'a',state:'live',position:{latitude:1,longitude:1}}],from:{latitude:2,longitude:2},enabled:false,lookup}));
   expect(lookup).not.toHaveBeenCalled();
  });
+});
+
+it('requests walking directions and drops the old estimate when the destination moves',async()=>{
+ recorder.roadRoute.mockResolvedValueOnce({routes:[{expectedSeconds:900}]}).mockReturnValueOnce(new Promise(()=>{}));
+ const origin={latitude:-33.9,longitude:151.1};
+ const person={userId:'a',state:'stale',position:{latitude:-33.8,longitude:151.2}};
+ const {result,rerender}=renderHook(({people})=>useDriveTimes({people,from:origin,enabled:true,transport:'walking'}),{initialProps:{people:[person]}});
+ await waitFor(()=>expect(result.current).toEqual({a:900}));
+ expect(recorder.roadRoute).toHaveBeenLastCalledWith(origin,expect.objectContaining(person.position),'walking');
+ rerender({people:[{...person,position:{...person.position,latitude:-33.7}}]});
+ expect(result.current).toEqual({});
 });

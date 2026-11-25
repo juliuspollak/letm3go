@@ -11,7 +11,7 @@ const downward=(origin,touch)=>{
 
 export default function HomeLocationRefresh({enabled,onRefresh,children}){
  const main=useRef(null),start=useRef(null),inFlight=useRef(false);
- const [distance,setDistance]=useState(0),[refreshing,setRefreshing]=useState(false),[error,setError]=useState(false);
+ const [distance,setDistance]=useState(0),[refreshing,setRefreshing]=useState(false),[error,setError]=useState('');
  useEffect(()=>{
   if(!enabled)return;
   const element=main.current;
@@ -38,9 +38,9 @@ export default function HomeLocationRefresh({enabled,onRefresh,children}){
   if(!enabled||inFlight.current)return;
   inFlight.current=true;
   setRefreshing(true);
-  setError(false);
+  setError('');
   try{await onRefresh();}
-  catch{setError(true);}
+  catch(error){setError(error.message);}
   finally{inFlight.current=false;setRefreshing(false);}
  }
  function beginPull(event){
@@ -79,6 +79,6 @@ export default function HomeLocationRefresh({enabled,onRefresh,children}){
     {spinning&&<span className="sr-only">Refreshing locations…</span>}
    </div>
   </div>}
-  {enabled&&error&&<div className="home-location-refresh-notice" role="alert">Locations could not be refreshed.</div>}
+  {enabled&&error&&<div className="home-location-refresh-notice" role="alert">{error}</div>}
  </>;
 }

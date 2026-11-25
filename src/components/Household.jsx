@@ -10,7 +10,7 @@ import {invitableFriends} from '../lib/people.js';
 import InviteComposer from './InviteComposer.jsx';
 import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
-import {personStatus,selfStatus} from '../lib/personStatus.js';
+import {selfStatus} from '../lib/personStatus.js';
 import { useEffect, useState } from 'react';
 import { Car, ChevronRight, Copy, House, LogOut, Map as MapIcon, Settings, Share2, ShieldCheck, UserPlus, X } from 'lucide-react';
 import { supabase } from '../lib/supabase.js';
@@ -21,10 +21,8 @@ import {invitationLink,parseInvitationLink} from '../lib/invitationLink.js';
 // tiles as Friends), then Family map, Invite and Settings. Shared vehicles,
 // membership and leaving live in the settings sheet.
 //
-// memberLocations: user id → {state, ageSeconds, home, activity, position} from
-// the household location rows. A member missing from them is not sharing (the
-// household rows include everyone's sharing setting).
-export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,onReviewInvitation,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,memberLocations={},selfLocation=null,onShowMember=null,onSetHome=null,hasHome=false}){
+// The app supplies the same location entries used for Home and Friends.
+export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,onReviewInvitation,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,peopleById=null,selfLocation=null,onShowMember=null,onSetHome=null,hasHome=false}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[loadError,setLoadError]=useState(''),[reload,setReload]=useState(0);
  const [membersLoading,setMembersLoading]=useState(false);
  const [sheet,setSheet]=useState(null),[showTransport,setShowTransport]=useState(false);
@@ -65,11 +63,16 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
  const closeSheet=()=>{setSheet(null);setLeaving(false);};
  const own=id=>Boolean(selfId)&&String(id).toLowerCase()===String(selfId).toLowerCase();
  const people=members.map(m=>{
-  if(own(m.user_id))return {id:m.user_id,userId:m.user_id,name:m.display_name||'Member',self:true,role:m.role==='owner'?'Organiser':null,
-   status:selfStatus({enabled:liveEnabled,state:selfLocation?.state,ageSeconds:selfLocation?.ageSeconds,home:selfLocation?.home,activity:selfLocation?.activity,permission,precise})};
-  const location=memberLocations[m.user_id]||{state:'off'};
-  return {id:m.user_id,userId:m.user_id,name:m.display_name||'Member',role:m.role==='owner'?'Organiser':null,status:personStatus(location),
-   onSelect:location.position&&onShowMember?()=>onShowMember(location.position,m.user_id):null};
+  if(own(m.user_id)){
+   const status=selfStatus({enabled:liveEnabled,state:selfLocation?.state,ageSeconds:selfLocation?.ageSeconds,home:selfLocation?.home,activity:selfLocation?.activity,permission,precise});
+   return {id:m.user_id,userId:m.user_id,name:m.display_name||'Member',self:true,role:m.role==='owner'?'Organiser':null,
+    status,location:status.text==='At home'?selfLocation:null};
+  }
+  const shared=peopleById?.get(m.user_id);
+  const location=shared?.location||{state:'off'};
+  const position=shared?.position;
+  return {...shared,id:m.user_id,userId:m.user_id,name:m.display_name||'Member',role:m.role==='owner'?'Organiser':null,location,
+   onSelect:position&&onShowMember?()=>onShowMember(position,m.user_id):null};
  });
  // A household is built from friends, and each one chooses to join.
  async function join(event){
