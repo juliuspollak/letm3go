@@ -111,7 +111,9 @@ extension LocationRecorder {
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("preferences.data").path) { preferences = try JSONDecoder().decode(AccountPreferences.self,from:storage!.readData(name:"preferences.data")) }
         places = []
         if FileManager.default.fileExists(atPath:directory.appendingPathComponent("places.data").path) { places = try JSONDecoder().decode([SavedPlace].self,from:storage!.readData(name:"places.data")) }
-        loadHomeWiFi()
+        socialRestPlaces = (try? JSONDecoder().decode([SavedPlace].self,
+            from: storage!.readData(name:"social-rest-places.data"))) ?? []
+        startWiFiPathMonitor()
         loadRecorderDiagnostics()
         do { let moved = try storage!.migrateLegacyWalkLedger(); if moved > 0 { recordDiagnostic("recovery","Legacy walking stretches kept as evidence",details:["stretches":String(moved)]) } }
         catch { recordDiagnostic("error","Legacy walking stretches could not be migrated",details:["error":error.localizedDescription]) }
@@ -243,7 +245,7 @@ extension LocationRecorder {
         try AccountKeychain.set("active-account",data:nil)
         diagnosticWriter.flush()
         pendingWalkingHandoff = nil
-        uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; automaticEnabled = false
+        uiUnlocked = false; accountDeleting = false; ownerID = nil; storage = nil; active = nil; automaticTrip = nil; settledAt = nil; settledTripID = nil; continuationEndsAt = nil; trips = []; places = []; socialRestPlaces = []; automaticEnabled = false
         // Rides that could not be attributed to this account must not be handed to
         // the next one. The inbox is emptied first, then the watch is told that no
         // account is open; nothing is acknowledged, so the watch keeps its copy and
@@ -469,7 +471,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             try AccountKeychain.set("active-account",data:nil)
             try AccountKeychain.set("account-key-\(id)",data:nil)
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
-            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
+            r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.socialRestPlaces=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             r.diagnosticWriter.flush()
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
             UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.sharingRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.passiveRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()

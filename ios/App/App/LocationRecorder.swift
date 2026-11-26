@@ -130,15 +130,7 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var departurePlace: DwellArea?
     var departureMotionOnsetAt: Double?
     var departureVehicleOnsetAt: Double?
-    var homeWiFi: HomeWiFiProfile?
-    var wifiObservation: WiFiObservation?
-    var wifiMatchState: WiFiMatch = .unknown
-    var wifiFetchInFlight = false
     var wifiCheckRequestedAt: Double = 0
-    var wifiFetchGeneration = 0
-    var wifiFetchWaiters: [(WiFiObservation?) -> Void] = []
-    var homeWiFiStatus = "neverDesignated"
-    var wifiLearnAttemptAt: Double = 0
     var passiveFixRequest: (cause: String, at: Double)?
     var monitoringFailures = MonitoringFailures()
     var recorderReconciledAvailable = false
@@ -182,7 +174,6 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     // When passive rest last ended: no fix from before it is confirmed or kept as
     // the shared position. Zero when passive rest has not run, as before.
     var passiveEndedAt: Double = 0
-    var homePlace: SavedPlace? { places.first { $0.kind == "home" } }
     // Place awareness (see DwellArea). Kept in this account's encrypted storage.
     var dwell: DwellArea?
     var dwellInference = DwellInference()
@@ -190,10 +181,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var leftAreaProbed = false
     var lastPlaceDecision = ""
     var dwellSettled: Bool { dwell.map { Date().timeIntervalSince1970 - $0.since >= DwellInference.settleSeconds } ?? false }
-    // Low-power resting applies at the current dwell area, or at a saved Home
-    // when no area is known yet.
+    // Low-power resting applies at the current dwell area.
     var restPlace: SavedPlace? {
-        if let home = homePlace, dwell == nil || dwell?.placeKind == "home" { return home.recognitionPlace }
         return dwell.map { SavedPlace(id:"dwell-\(Int($0.since))",name:"Current place",kind:$0.placeKind ?? $0.source.rawValue,latitude:$0.latitude,longitude:$0.longitude,radius:$0.radius) }
     }
     // No journey, published stop or departure check is open.
@@ -302,6 +291,9 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
     var trackingBoundary: Double = 0
     var preferences = AccountPreferences()
     var places: [SavedPlace] = []
+    // Social coordinates are cached per account for background recognition.
+    var socialRestPlaces: [SavedPlace] = []
+
     var arrivalTimer: Timer?
     // CLLocationManager.locationServicesEnabled() may block on the main thread.
     // Read it off-main, cache the answer, and refresh when the app becomes active.
@@ -457,16 +449,14 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         let now=Date().timeIntervalSince1970
         let stationarySince=detector.stationarySince
         let battery=UIDevice.current
-        let confirmedHome=homeRest.insideSince != nil && homePlace.map{homeRest.homeKey?.hasPrefix($0.id+"|")==true} == true
         return ["timezone":TimeZone.current.identifier,"utcOffsetSeconds":String(TimeZone.current.secondsFromGMT()),
             "backgroundSessionHeld":String(backgroundActivitySession != nil),"backgroundSessionKeepsAppRunning":String(backgroundSessionKeepsAppRunning),"backgroundPermission":permission == "always" ? "Always" : "not Always", "backgroundUpdatesAllowed":String(manager.allowsBackgroundLocationUpdates),
-            // HomeRest is the reduced-accuracy rest at the current place (or the saved
-            // Home), not the confirmed rest that allows passive rest (restConfirmed).
+            // HomeRest tracks reduced-accuracy rest at the current place.
             // The homeRest* keys keep their names so older reports compare.
             "homeRestSince":String(homeRest.insideSince ?? 0),"homeRestConfirmed":String(!manualRecordingLive && locationMode == .resting),
             "reducedAccuracyRest":String(!manualRecordingLive && locationMode == .resting),
             "stationarySeconds":stationarySince.map{String(Int(max(0,now-$0)))} ?? "unknown",
-            "placeType":dwell?.placeKind ?? dwell?.source.rawValue ?? (confirmedHome ? "home" : "none"),"placeSource":dwell?.source.rawValue ?? (confirmedHome ? "savedHomeConfirmation" : "none"),"placeSettled":String(dwellSettled),
+            "placeType":dwell?.placeKind ?? dwell?.source.rawValue ?? "none","placeSource":dwell?.source.rawValue ?? "none","placeSettled":String(dwellSettled),
             "significantChangesRequested":String(significantLocationRequested),"visitsRequested":String(visitMonitoringRequested),
             "registeredRegions":String(manager.monitoredRegions.count),"locationManagerID":"LocationRecorder.shared.manager",
             "activeLocationManagers":String((continuousLocationRequested || significantLocationRequested || visitMonitoringRequested || !manager.monitoredRegions.isEmpty ? 1 : 0)+PositionRequest.activeRequests.count),"oneShotRequests":String(PositionRequest.activeRequests.count),
@@ -497,14 +487,8 @@ final class LocationRecorder: NSObject, CLLocationManagerDelegate {
         state["monitoringFailure"]=monitoringFailures.summary
         state["lastMonitoringFailure"]=monitoringFailures.last ?? "none"
         state["monitoringFailuresTotal"]=String(monitoringFailures.total)
-        state["homeWiFiConfigured"]=String(homeWiFi != nil)
-        state["homeWiFiStatus"]=homeWiFiStatus
-        state["wifiMatch"]=homeWiFi == nil ? "notConfigured" : wifiMatchState.rawValue
-        state["wifiObservedAt"]=String(wifiObservation?.at ?? 0)
-        state["wifiSource"]=wifiObservation?.source ?? "none"
-        state["wifiAccessPointKnown"]=String(HomeWiFi.accessPointKnown(homeWiFi,wifiObservation))
+        state["wifiMatch"]=wifiMatchState.rawValue
         state["wifiOnPath"]=wifiOnPath.map{String($0)} ?? "unknown"
-        state["wifiPresence"]=homeWiFi == nil ? "Home Wi-Fi not configured" : "supporting evidence at the saved Home only; never proof of rest or departure"
         state["restConfirmed"]=String(restDecision.confirmed)
         state["restStage"]=RestStage.describe(reducedAccuracy:!manualRecordingLive && locationMode == .resting,confirmed:restDecision.confirmed,passive:locationMode == .passive)
         let recovery=BackgroundRecovery.evaluate(backgroundRecoveryInputs)
@@ -1587,7 +1571,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setSharingRest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveNamedSegment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteNamedSegment", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setHomeWiFi", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSocialRestPlaces", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "savePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "currentPosition", returnType: CAPPluginReturnPromise),

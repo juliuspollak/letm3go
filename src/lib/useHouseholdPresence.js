@@ -35,7 +35,7 @@ export async function loadOwnArrival(){
   return row?.arrived_at?{arrived_at:row.arrived_at,location_at:row.location_at,server_now:row.server_now}:null;
  }catch{return null;}
 }
-export function useHouseholdPresence(owner,online,automaticActivity=null,places=[],nativeUploadAt=0){
+export function useHouseholdPresence(owner,online,automaticActivity=null,nativeUploadAt=0){
  const selectedActivity=useRef(null);
  useEffect(()=>{selectedActivity.current=({Driving:'driving',Walking:'walking',Cycling:'cycling',Running:'running'})[automaticActivity]||null;},[automaticActivity]);
  const signalled=useRef(false),positionTimes=useRef(new Map()),latencies=useRef([]),latencyReportedAt=useRef(0),nativeUpload=useRef(0),signals=useRef(0),refreshTimes=useRef([]);
@@ -43,7 +43,7 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  // signal and a poll) can otherwise apply an older response after a newer one.
  const positionRequest=useRef(0),settingsRequest=useRef(0),reconnects=useRef(0);
  useEffect(()=>{nativeUpload.current=nativeUploadAt;},[nativeUploadAt]);
- const lastAutomatic=useRef(undefined), lastPlace=useRef(null), lastPlaceSentAt=useRef(0), locationBusy=useRef(false);
+ const lastAutomatic=useRef(undefined);
  const [people,setPeople]=useState([]),[self,setSelf]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const [liveEnabled,setLiveEnabled]=useState(false),[liveMembers,setLiveMembers]=useState([]),[liveError,setLiveError]=useState(''),[liveReady,setLiveReady]=useState(false);
  // When you arrived where you are, as your household sees it (null when unknown).
@@ -66,11 +66,9 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
  },[owner,online]);
  useEffect(()=>{if(!online)return;const load=()=>{if(document.visibilityState==='visible')void refresh();};const initial=setTimeout(load,0);const timer=setInterval(load,15000);document.addEventListener('visibilitychange',load);return()=>{clearTimeout(initial);clearInterval(timer);document.removeEventListener('visibilitychange',load);};},[refresh,online]);
  useEffect(()=>{
-  if(!owner||!online||!supabase||self?.sharing_enabled!==true){lastAutomatic.current=undefined;lastPlace.current=null;lastPlaceSentAt.current=0;return;}
+  if(!owner||!online||!supabase||self?.sharing_enabled!==true){lastAutomatic.current=undefined;return;}
   if(lastAutomatic.current===automaticActivity)return;
-  if(!automaticActivity&&lastPlace.current==='Home')return;
   lastAutomatic.current=automaticActivity;
-  if(automaticActivity)lastPlace.current=null;
   let cancelled=false;
   const send=async()=>{
    const {error:failure}=await supabase.rpc('set_household_presence',{p_enabled:true,p_activity:automaticActivity,p_place:null});
@@ -80,37 +78,6 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   void send();
   return()=>{cancelled=true;};
  },[owner,online,self?.sharing_enabled,automaticActivity,refresh]);
-
- const home=places.find(p=>p.kind==='home');
- const homeId=home?.id,homeLatitude=home?.latitude,homeLongitude=home?.longitude,homeRadius=home?.radius;
- useEffect(()=>{
-  if(!owner||!online||!supabase||!recorderAvailable()||!homeId||self?.sharing_enabled!==true)return;
-  let alive=true;
-  const check=async()=>{
-   if(!alive||document.visibilityState==='hidden'||locationBusy.current||automaticActivity)return;
-   locationBusy.current=true;
-   try {
-    const point=await recorder.currentPosition({allowStationary:true,publisher:'presence'});
-    // Still where the last check found the phone: nothing to update.
-    if(point?.stationary)return;
-    if(!alive||!point||!Number.isFinite(point.latitude)||!Number.isFinite(point.longitude)||point.accuracy>100)return;
-    const radians=Math.PI/180,dlat=(point.latitude-homeLatitude)*radians,dlon=(point.longitude-homeLongitude)*radians;
-    const a=Math.sin(dlat/2)**2+Math.cos(point.latitude*radians)*Math.cos(homeLatitude*radians)*Math.sin(dlon/2)**2;
-    const within=6371000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=Math.max(50,Math.min(2000,Number(homeRadius)||150));
-    const next=within?'Home':null;
-    if(next===lastPlace.current && (!within || Date.now()-lastPlaceSentAt.current<900000))return;
-    if(!within&&lastPlace.current!=='Home'&&self?.activity_label!=='At home')return;
-    const {error:failure}=await supabase.rpc('set_household_presence',{p_enabled:true,p_activity:within?'At home':null,p_place:next});
-    if(!failure&&alive){lastPlace.current=next;lastPlaceSentAt.current=Date.now();void refresh();}
-   }catch{/* GPS unavailable: never guess household presence. */}
-   finally{locationBusy.current=false;}
-  };
-  void check();
-  const timer=setInterval(()=>void check(),300000);
-  const onVisible=()=>{if(document.visibilityState==='visible')void check();};
-  document.addEventListener('visibilitychange',onVisible);
-  return()=>{alive=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
- },[owner,online,self?.sharing_enabled,self?.activity_label,automaticActivity,homeId,homeLatitude,homeLongitude,homeRadius,refresh]);
 
  // Every household member with their sharing state; coordinates only where the
  // server authorises them. A failed fetch keeps the last rows (with their own
@@ -300,7 +267,6 @@ export function useHouseholdPresence(owner,online,automaticActivity=null,places=
   rememberRevoke(owner,false);
   liveConsent.current=true;
   setLiveEnabled(true);setLiveReady(true);
-  lastPlaceSentAt.current=0;
   const {error:failure}=await publishLiveLocation(supabase,sharedLocationPayload(fix,Object.hasOwn(fix,'sharedActivity')?fix.sharedActivity:selectedActivity.current));
   await refreshLive();
   if(failure){

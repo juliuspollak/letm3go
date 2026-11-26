@@ -1083,7 +1083,7 @@ final class RecordingStorage {
     }
 }
 
-struct SavedPlace: Codable {
+struct SavedPlace: Codable, Equatable {
     var id: String
     var name: String
     var kind: String
@@ -2990,8 +2990,14 @@ struct DwellArea: Codable, Equatable {
     static let exitMargin: Double = 25
     func steppedOut(_ point: GPSPoint) -> Bool { point.accuracy >= 0 && point.accuracy <= 30 && reach(point) > radius + Self.exitMargin }
     static func saved(_ place: SavedPlace, now: Double) -> DwellArea {
-        DwellArea(source: .saved, placeKind: place.kind, latitude: place.latitude, longitude: place.longitude,
-                  radius: place.kind == "home" ? place.recognitionRadius : min(savedMaximumRadius, max(minimumRadius, place.radius)), since: now)
+        let radius: Double
+        switch place.kind {
+        case "home": radius = place.recognitionRadius
+        case "social": radius = place.radius
+        default: radius = min(savedMaximumRadius, max(minimumRadius, place.radius))
+        }
+        return DwellArea(source: .saved, placeKind: place.kind, latitude: place.latitude, longitude: place.longitude,
+                         radius: radius, since: now)
     }
     static func arrival(at point: GPSPoint, source: Source = .arrival) -> DwellArea {
         DwellArea(source: source, placeKind: nil, latitude: point.latitude, longitude: point.longitude,

@@ -65,6 +65,7 @@ export const recorder = {
  // Why the cloud backup failed, for the diagnostic log (the backup itself runs in JavaScript).
  noteBackupFailure:message=>recorderAvailable()?native.noteBackupFailure({message:String(message||'')}).catch(()=>{}):Promise.resolve(),
  setAutomatic:enabled=>native.setAutomatic({enabled}),
+ setSocialRestPlaces:(ownerID,places)=>native.setSocialRestPlaces({ownerID,places}),
  savePlace:place=>native.savePlace(place),
  removePlace:id=>native.removePlace({id}),
  currentPosition:(options={})=>sharedCurrentPosition(Date.now()/1000,options),
@@ -72,9 +73,6 @@ export const recorder = {
  setPassiveRest:enabled=>native.setPassiveRest({enabled}),
  // Device test: live sharing may rest with the phone. Off by default.
  setSharingRest:enabled=>native.setSharingRest({enabled}),
- // Home Wi-Fi: 'designate' the connected network, or 'forget' it. Native code
- // returns only match states, never the network name.
- setHomeWiFi:action=>native.setHomeWiFi({action}),
  searchAddress:query=>native.searchAddress({query}),
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
  roadRoute:(from,to,transport)=>native.roadRoute({fromLatitude:from.latitude,fromLongitude:from.longitude,toLatitude:to.latitude,toLongitude:to.longitude,...(transport?{transport}:{})}),

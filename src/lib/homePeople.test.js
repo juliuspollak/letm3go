@@ -92,3 +92,11 @@ describe('friendsStillLoading',()=>{
   expect(friendsStillLoading({...base,configured:false})).toBe(false);
  });
 });
+
+it('uses the shared saved-place match without making old fixes look current',()=>{
+ const home={...near,id:'home',name:'Home',icon:'home',radius:30};
+ const [current,older]=homePeople({places:[home],friends:[member('Em','live'),member('Julia','stale')]});
+ expect(current.location).toMatchObject({placeName:'Home',savedPlace:{id:'home',icon:'home'}});
+ expect(older.location).toMatchObject({state:'stale',savedPlace:{id:'home',icon:'home'}});
+ expect(older.short).toMatch(/^Last at Home/);
+});

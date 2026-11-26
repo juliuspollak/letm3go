@@ -12,7 +12,7 @@ import PersonAvatar from './PersonAvatar.jsx';
 import SocialActions from './SocialActions.jsx';
 import {selfStatus} from '../lib/personStatus.js';
 import { useEffect, useState } from 'react';
-import { Car, ChevronRight, Copy, House, LogOut, Map as MapIcon, Settings, Share2, ShieldCheck, UserPlus, X } from 'lucide-react';
+import { Car, ChevronRight, Copy, LogOut, MapPin, Map as MapIcon, Settings, Share2, ShieldCheck, UserPlus, X } from 'lucide-react';
 import { supabase } from '../lib/supabase.js';
 import {newUUID} from '../lib/uuid.js';
 import {invitationLink,parseInvitationLink} from '../lib/invitationLink.js';
@@ -22,7 +22,7 @@ import {invitationLink,parseInvitationLink} from '../lib/invitationLink.js';
 // membership and leaving live in the settings sheet.
 //
 // The app supplies the same location entries used for Home and Friends.
-export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,onReviewInvitation,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,peopleById=null,selfLocation=null,onShowMember=null,onSetHome=null,hasHome=false}){
+export default function Household({vehicles=[],onSaveVehicles,personPhotos={},selfId=null,selfAvatar=null,onMembershipChanged,onShareLive,invitationCode=null,onInviteConsumed,onReviewInvitation,liveEnabled=false,liveReady=true,liveError='',onStopLive,onRetrySharing,permission,precise,onOpenMap,onOpenLocations,peopleById=null,selfLocation=null,onShowMember=null}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[loadError,setLoadError]=useState(''),[reload,setReload]=useState(0);
  const [membersLoading,setMembersLoading]=useState(false);
  const [sheet,setSheet]=useState(null),[showTransport,setShowTransport]=useState(false);
@@ -118,13 +118,14 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
   if(failed){setError(failed.message||'That invitation could not be sent.');return;}
   setInvited(current=>[...current,friend.user_id]);
  }
+ const locationsAction=onOpenLocations&&{id:'locations',label:'Locations',icon:MapPin,onClick:onOpenLocations,hasPopup:'dialog'};
  return <section className="social-screen household-screen" aria-label="Household">
   {/* One spinner for the whole screen, not one per request. */}
   {((loading&&!household)||(household&&membersLoading&&!members.length))&&<LoadingMark label="Loading household"/>}
   {loadError&&<div className="notice" role="alert"><p>{loadError}</p><button type="button" className="secondary full" onClick={()=>setReload(value=>value+1)}>Retry household</button></div>}
   {household?<>
    <div className="social-heading household-title"><h2>{household.name}</h2>{!membersLoading&&members.length>0&&<span className="social-count">{members.length}</span>}</div>
-   {inviteAccepted&&<p role="status" className="notice">You joined {household.name}. Turn on My location to appear on the family map.</p>}
+   {inviteAccepted&&<p role="status" className="notice">You joined {household.name}. Turn on Share my location to appear on the family map.</p>}
    <LocationSharingRow audience="household" enabled={liveEnabled} ready={liveReady} error={liveError} permission={permission} precise={precise} onChange={async enabled=>{if(enabled){if(!onShareLive)throw new Error('Update Letm3go to enable household location sharing.');await onShareLive();}else{if(!onStopLive)throw new Error('Location sharing is unavailable.');await onStopLive();}}}/>
    <ActivitySharingRow cacheKey={selfId}/>
    {!liveReady&&onRetrySharing&&<button type="button" className="text-button" onClick={onRetrySharing}>Retry location status</button>}
@@ -132,6 +133,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
    {membersLoading&&!members.length?null:<PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Members"/>}
    {!membersLoading&&!members.length&&<p className="social-empty">No members available. Reopen to retry.</p>}
    <SocialActions label="Household actions" actions={[
+    locationsAction,
     onOpenMap&&{id:'map',label:'Family map',icon:MapIcon,onClick:onOpenMap},
     household.role==='owner'&&{id:'invite',label:'Add friend',icon:UserPlus,onClick:openFriends,disabled:busy||loading},
     {id:'settings',label:'Settings',icon:Settings,onClick:()=>setSheet('settings'),expanded:sheet==='settings'}
@@ -154,7 +156,6 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
       <form onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const data=new FormData(form);const id=await request('add_household_vehicle',{p_name:data.get('vehicle_name'),p_make:'',p_model:''});if(id){const updated=await request('my_household_vehicles');if(updated)setGarage(updated);form.reset();}}}><label>Add a shared vehicle<input name="vehicle_name" required maxLength={100} placeholder="Vehicle name"/></label><button type="submit" className="secondary full" disabled={busy}>Add household vehicle</button></form>
       {garageMessage&&<p role="status" className="notice">{garageMessage}</p>}
      </div>}
-     {onSetHome&&<button type="button" className="grouped-row" onClick={()=>{closeSheet();onSetHome();}}><span className="grouped-row-label"><House size={18} aria-hidden="true"/>{hasHome?'Home place':'Set Home'}</span><ChevronRight size={18} className="grouped-chevron" aria-hidden="true"/></button>}
     </div>
     <h3 className="social-sheet-label">Members</h3>
     <ul className="grouped-list">{members.map(m=><li key={m.user_id} className="grouped-row"><span className="social-manage-person"><PersonAvatar name={m.display_name||'Member'} userId={m.user_id} selfId={selfId} photos={personPhotos} selfAvatar={selfAvatar} size="sm"/>{own(m.user_id)?'You':m.display_name||'Member'}</span><span className="grouped-value">{m.role==='owner'?'Organiser':'Member'}</span></li>)}</ul>
@@ -168,6 +169,7 @@ export default function Household({vehicles=[],onSaveVehicles,personPhotos={},se
   </>:!loading&&!loadError?<>
    <div className="social-heading"><h2>Household</h2></div>
    <p className="social-hint">Share a family map and vehicles with the people you live with.</p>
+   {locationsAction&&<SocialActions label="Household actions" actions={[locationsAction]}/>}
    <form className="social-code-form" onSubmit={async e=>{e.preventDefault();const name=new FormData(e.currentTarget).get('name');const data=await request('create_household',{p_name:name});if(data){setHousehold(data[0]);socialCache.set(cacheKey,{household:data[0],householdLoaded:true,members:[],membersLoaded:false});setReload(value=>value+1);}}}><label>Household name<input name="name" required maxLength={100} placeholder="Our household"/></label><button className="primary full" disabled={busy||loading}>Create household</button></form>
    <form className="social-code-form" onSubmit={join}><label>Have an invitation code?<input key={invitationCode||'manual'} name="invitation" defaultValue={invitationCode||''} required placeholder="Paste the invitation code"/></label><button className="secondary full" disabled={busy||loading}>Join household</button></form>
    <p className="social-hint"><ShieldCheck size={14} aria-hidden="true"/> Membership never shares your location or past activities.</p>

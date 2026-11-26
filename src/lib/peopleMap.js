@@ -24,20 +24,27 @@ export function secondsAtPlace(row,{allowStale=false}={}){
  return Math.round((now-arrived)/1000);
 }
 
-// A name for where someone is, from the viewer's own saved places only (the
-// viewer's labels, never the other person's private ones). Home is decided
-// separately, with hysteresis, by atHome.
-export function savedPlaceName(point,places=[]){
+// Match the closest visible saved place that contains the fix. Home uses its
+// separate hysteresis policy.
+export function matchSavedPlace(point,places=[]){
  if(!point||!validPoint(point.latitude,point.longitude))return null;
  const uncertainty=Math.min(100,Math.max(0,Number(point.accuracy)||0))/2;
  let best=null;
  for(const place of places){
   if(!place||place.kind==='home'||!validPoint(place.latitude,place.longitude)||!place.name?.trim())continue;
-  const radius=Math.max(50,Math.min(2000,Number(place.radius)||150));
+  const radius=Math.max(place.kind==='legacyHome'||place.icon?15:50,Math.min(2000,Number(place.radius)||150));
   const distance=distanceMetres(place,point);
-  if(distance+uncertainty<=radius&&(!best||distance<best.distance))best={name:place.name.trim().slice(0,30),distance};
+  if(distance+uncertainty<=radius&&(!best||distance<best.distance))best={id:place.id,icon:place.icon,name:place.name.trim().slice(0,30),distance};
  }
- return best?.name||null;
+ return best;
+}
+
+export function matchVisibleSavedPlace(state,point,places){
+ return state==='live'||state==='stale'?matchSavedPlace(point,places):null;
+}
+
+export function savedPlaceName(point,places){
+ return matchSavedPlace(point,places)?.name||null;
 }
 
 // Movement status, for the map's person model and later activity artwork. Only
@@ -60,6 +67,7 @@ export function personLabel({state,ageSeconds=null,home=false,place=null,seconds
  const duration=seconds!=null?formatDuration(seconds):'';
  if(state==='stale'){
   const age=formatAge(ageSeconds);
+  if(place)return {text:`Last at ${place} · last updated ${age}`,short:`Last at ${place} · ${age}`,kind:'stale'};
   return {text:`Last updated ${age}`,short:age,kind:'stale'};
  }
  if(state!=='live')return {text:'Location unavailable',short:null,kind:'none'};

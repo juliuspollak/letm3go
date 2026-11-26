@@ -2206,44 +2206,21 @@ do {
 
 // MARK: Home Wi-Fi evidence, rest confirmation and passive rest
 do {
-    let profile = HomeWiFiProfile(network: "net-home", accessPoints: ["ap-1"], designatedAt: 0)
-    func seen(_ network: String?, _ ap: String? = nil, at: Double) -> WiFiObservation { WiFiObservation(network: network, accessPoint: ap, at: at, source: "test") }
-
-    // Match states: unavailable is never "disconnected", stale is unknown.
-    check(HomeWiFi.match(nil, seen("net-home", at: 100), now: 100) == .unknown, "Wi-Fi without a designated network is unknown")
-    check(HomeWiFi.match(profile, nil, now: 100) == .unknown, "Wi-Fi never checked is unknown")
-    check(HomeWiFi.match(profile, seen("net-home", at: 100), now: 100) == .matched, "the designated network matches")
-    check(HomeWiFi.match(profile, seen("net-home", "ap-other", at: 100), now: 100) == .matched, "another access point of the same network (mesh) still matches")
-    check(HomeWiFi.match(profile, seen("net-cafe", at: 100), now: 100) == .notMatched, "another network does not match")
-    check(HomeWiFi.match(profile, seen(nil, at: 100), now: 100) == .unavailable, "no network from iOS is unavailable, not disconnected")
-    check(HomeWiFi.match(profile, seen("net-home", at: 100), now: 100 + HomeWiFi.freshSeconds + 1) == .unknown, "an old reading is unknown")
-    check(HomeWiFi.match(profile, seen("net-home", at: 200), now: 100) == .unknown, "a reading from the future is not trusted")
-
-    // Access points: learned only on the same network while location says Home.
-    check(HomeWiFi.learning(profile, from: seen("net-home", "ap-2", at: 1), atHome: true)?.accessPoints == ["ap-1", "ap-2"], "a mesh access point is learned at Home")
-    check(HomeWiFi.learning(profile, from: seen("net-home", "ap-2", at: 1), atHome: false) == nil, "an access point is not learned away from Home")
-    check(HomeWiFi.learning(profile, from: seen("net-cafe", "ap-2", at: 1), atHome: true) == nil, "another network's access point is never learned")
-    check(HomeWiFi.learning(profile, from: seen("net-home", "ap-1", at: 1), atHome: true) == nil, "a known access point is not added twice")
-    var grown = profile
-    for index in 0..<40 { grown = HomeWiFi.learning(grown, from: seen("net-home", "ap-x\(index)", at: 1), atHome: true) ?? grown }
-    check(grown.accessPoints.count == HomeWiFiProfile.accessPointLimit && grown.accessPoints.last == "ap-x39", "a replaced router's old access points age out")
-    check(HomeWiFi.accessPointKnown(profile, seen("net-home", "ap-1", at: 1)) && !HomeWiFi.accessPointKnown(profile, seen("net-home", "ap-9", at: 1)), "access point familiarity is reported")
-    check(HomeWiFi.leftHome(previous: .matched, current: .notMatched) && HomeWiFi.leftHome(previous: .matched, current: .unavailable), "leaving Home Wi-Fi is noticed")
-    check(!HomeWiFi.leftHome(previous: .matched, current: .unknown) && !HomeWiFi.leftHome(previous: .unknown, current: .notMatched), "an unknown reading is not a change")
-
     // Rest confirmation.
     func rest(_ place: RestPlaceKind = .home, since: Double? = 0, disturbed: Double? = nil, accuracy: Double? = 10, verified: Bool = true,
-              idle: Bool = true, movement: Bool = false, motion: Bool = false, wifi: WiFiMatch = .unknown, preservingConfirmedHome: Bool = false, now: Double) -> RestDecision {
+              idle: Bool = true, movement: Bool = false, motion: Bool = false, wifi: WiFiMatch = .unknown, preservingConfirmedWiFiRest: Bool = false, now: Double) -> RestDecision {
         RestConfirmation.decide(RestInputs(place: place, placeSince: since, lastDisturbanceAt: disturbed, placeAccuracy: accuracy, placeVerified: verified,
-                                           idle: idle, recentMovement: movement, motionMoving: motion, wifi: wifi, now: now), preservingConfirmedHome: preservingConfirmedHome)
+                                           idle: idle, recentMovement: movement, motionMoving: motion, wifi: wifi, now: now), preservingConfirmedWiFiRest: preservingConfirmedWiFiRest)
     }
     check(!rest(now: 479).confirmed && rest(now: 480).confirmed, "Home without Wi-Fi confirms after eight still minutes")
     check(!rest(wifi: .matched, now: 359).confirmed && rest(wifi: .matched, now: 360).confirmed, "Home Wi-Fi shortens Home confirmation to six minutes")
-    check(rest(wifi: .matched, now: 900).wifiCorroborated && rest(wifi: .matched, now: 900).reason.contains("Home Wi-Fi"), "the reason names Wi-Fi corroboration")
-    check(!rest(wifi: .notMatched, now: 479).confirmed && rest(wifi: .notMatched, now: 480).confirmed, "another network neither blocks nor shortens rest at Home")
+    check(rest(wifi: .matched, now: 900).wifiCorroborated && rest(wifi: .matched, now: 900).reason.contains("Wi-Fi"), "the reason names Wi-Fi corroboration")
+    check(!rest(wifi: .unknown, now: 479).confirmed && rest(wifi: .unknown, now: 480).confirmed, "another network neither blocks nor shortens rest at Home")
     check(!rest(wifi: .unavailable, now: 479).confirmed && rest(wifi: .unavailable, now: 480).confirmed, "unavailable Wi-Fi is treated as no evidence")
     check(!rest(.inferredPlace, wifi: .matched, now: 1000).confirmed && rest(.inferredPlace, now: 1200).confirmed, "Home Wi-Fi never counts at another place")
-    check(rest(.savedPlace, now: 1200).code == "savedPlace", "a saved place rests without any Wi-Fi")
+    check(!rest(.savedPlace, now: 479).confirmed && rest(.savedPlace, now: 480).confirmed, "a saved place uses the same eight-minute wait as legacy Home")
+    check(!rest(.savedPlace, wifi: .matched, now: 359).confirmed && rest(.savedPlace, wifi: .matched, now: 360).code == "savedPlace+wifi", "any Wi-Fi connection shortens rest at a saved place")
+    check(!rest(.savedPlace, verified: false, wifi: .matched, now: 1200).confirmed, "Wi-Fi requires a verified fix inside a saved place")
     check(!rest(.none, now: 9999).confirmed && !rest(since: nil, now: 9999).confirmed, "no place, no rest")
     check(!rest(idle: false, now: 9999).confirmed, "an open journey, stop or check is never rest")
     check(!rest(movement: true, wifi: .matched, now: 9999).confirmed, "movement wins over a Home Wi-Fi connection")
@@ -2252,9 +2229,9 @@ do {
     check(rest(verified: false, wifi: .matched, now: 99999).code == "unverified", "a place restored after relaunch needs a fix before rest")
     check(rest(accuracy: 150, now: 9999).code == "coarsePlace", "a coarse place fix does not confirm rest")
 
-    check(rest(preservingConfirmedHome: true, now: 420).confirmed, "expired Wi-Fi does not undo a confirmed Home rest")
-    check(!rest(verified: false, preservingConfirmedHome: true, now: 420).confirmed, "an unverified Home still needs a fresh fix")
-    check(!rest(movement: true, preservingConfirmedHome: true, now: 420).confirmed, "movement invalidates even a confirmed Home rest")
+    check(rest(preservingConfirmedWiFiRest: true, now: 420).confirmed, "expired Wi-Fi does not undo a confirmed Home rest")
+    check(!rest(verified: false, preservingConfirmedWiFiRest: true, now: 420).confirmed, "an unverified Home still needs a fresh fix")
+    check(!rest(movement: true, preservingConfirmedWiFiRest: true, now: 420).confirmed, "movement invalidates even a confirmed Home rest")
 
     // Passive rest policy: every guard, in order.
     func passive(_ decision: RestDecision, enabled: Bool = true, always: Bool = true, precise: Bool = true, service: Bool = true,
@@ -2481,12 +2458,8 @@ do {
     check(!rest(movement: true, wifi: .matched, now: 3600).confirmed && passive(rest(movement: true, wifi: .matched, now: 3600)) != nil, "scenario D: a walk on Home Wi-Fi leaves passive rest")
     // False geofence exit: the check finds nothing; rest must be earned again.
     check(!rest(disturbed: 3600, wifi: .matched, now: 3700).confirmed && rest(disturbed: 3600, wifi: .matched, now: 3960).confirmed, "a false exit costs one check and six minutes of standby")
-    // Late background callback: a stale Wi-Fi reading says nothing about now.
-    check(rest(wifi: HomeWiFi.match(profile, seen("net-home", at: 0), now: 3600), now: 420).confirmed == false, "a late Wi-Fi reading does not shorten rest")
     // Process relaunch: the restored place waits for a fix, whatever Wi-Fi says.
     check(passive(rest(verified: false, wifi: .matched, now: 99999)) != nil, "a relaunch stays in standby until a fix confirms the place")
-    // Changing access points during rest keep matching.
-    check(HomeWiFi.match(grown, seen("net-home", "ap-new", at: 10), now: 10) == .matched, "roaming between access points keeps the match")
 }
 
 
@@ -2782,14 +2755,11 @@ do {
 
     // 1. Home without configured Wi-Fi rests after the full wait, with no shortcut.
     check(!decide(479).confirmed && decide(480).confirmed && retain(decide(480)) == nil, "scenario 1: Home without Wi-Fi reaches passive rest at eight minutes")
-    check(HomeWiFi.match(nil, WiFiObservation(network: "home", accessPoint: nil, at: 100, source: "test"), now: 100) == .unknown, "scenario 1: an unconfigured network never matches")
     // 2. A matching network shortens the wait only where location says Home.
     check(decide(900, wifi: .matched).confirmed && !decide(900, wifi: .matched, verified: false).confirmed, "scenario 2: matching Wi-Fi shortens rest only at a verified Home")
     // 3. Wi-Fi becoming unavailable is no evidence either way.
-    check(!HomeWiFi.leftHome(previous: .unavailable, current: .unavailable) && decide(1200, wifi: .unavailable).confirmed, "scenario 3: unavailable Wi-Fi neither blocks rest nor signals departure")
     // 4. Disconnecting without moving asks one question and starts nothing.
     var sampling = AutomaticSampling()
-    check(HomeWiFi.leftHome(previous: .matched, current: .unavailable), "scenario 4: a Wi-Fi drop is noticed")
     check(!RestWake.definitelyLeft(fix(0, at: 100), place: homeArea, now: 100) && mode(sampling, passive: true, now: 100) == .passive, "scenario 4: a fix at Home after a Wi-Fi drop leaves passive rest in place")
     // 5. A false exit costs one bounded check, then rest must be earned again.
     check(sampling.requestProbe(now: 2000, movementBegan: true, locationWake: true), "scenario 5: a region exit starts a check")
@@ -3500,17 +3470,6 @@ do {
     check(flooded.events.contains{$0.message == "Protected data available"},"motion goes first")
     check(flooded.events.count == RecorderDiagnosticJournal.limit && flooded.capacityEvictions>0,"and the journal stays bounded")
 
-    // Home Wi-Fi: learned once settled at Home, never required, never against a choice.
-    func learn(configured:Bool=false,declined:Bool=false,atHome:Bool=true,rest:Bool=true,precise:Bool=true,inFlight:Bool=false,last:Double=0)->Bool {
-        HomeWiFi.shouldLearn(configured:configured,declined:declined,atHome:atHome,restConfirmed:rest,precise:precise,fetchInFlight:inFlight,lastAttemptAt:last,now:10_000)
-    }
-    check(learn(),"Home Wi-Fi is recognised without setup once rest at Home is confirmed")
-    check(!learn(configured:true) && !learn(declined:true),"a known or forgotten network is left alone")
-    check(!learn(atHome:false) && !learn(rest:false),"never learned away from a confirmed Home")
-    check(!learn(precise:false) && !learn(inFlight:true) && !learn(last:9_000),"no read without Precise Location, no overlap, no polling")
-    let unavailable=RestConfirmation.decide(RestInputs(place:.home,placeSince:rest-3600,lastDisturbanceAt:nil,placeAccuracy:10,placeVerified:true,idle:true,recentMovement:false,motionMoving:false,wifi:.unknown,now:rest))
-    check(unavailable.confirmed,"rest at Home needs no Wi-Fi at all")
-    check(!HomeWiFi.leftHome(previous:.unknown,current:.unavailable),"losing a reading is not leaving Home")
 }
 
 // MARK: Household live tracking
@@ -5362,6 +5321,15 @@ do {
     var property = home
     property.homeRecognitionRadius = 150
     check(property.recognitionRadius == 150 && DwellArea.saved(property,now:0).radius == 150,"large Home uses the configured radius")
+    let school = SavedPlace(id:"school",name:"School",kind:"social",latitude:0,longitude:151,radius:500)
+    let boundaryFix = GPSPoint(latitude:0,longitude:151.004,timestamp:0,accuracy:10,altitude:0,speed:0)
+    let outsideFix = GPSPoint(latitude:0,longitude:151.005,timestamp:0,accuracy:10,altitude:0,speed:0)
+    let schoolArea = DwellArea.saved(school,now:0)
+    check(schoolArea.radius == 500 && schoolArea.contains(boundaryFix) && !schoolArea.contains(outsideFix),
+          "Social place rest uses the entire configured radius")
+    let exitRadius = PlaceRegion.radius(placeRadius:schoolArea.radius,anchorAccuracy:65,cap:500)
+    check(exitRadius == 500 && PlaceRegion.valid(latitude:0,longitude:151,radius:exitRadius,cap:500),
+          "Social place departure monitoring covers the entire resting area")
     let nearby = placeFix(70,0,0)
     check(home.contains(nearby) && !home.recognitionPlace.contains(nearby) &&
           property.contains(nearby) && property.recognitionPlace.contains(nearby),

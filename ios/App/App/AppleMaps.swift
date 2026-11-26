@@ -503,7 +503,16 @@ private func homeMarkerArtwork(size:CGFloat=42)->UIImage? {
     }
 }
 private func labelSymbol(_ kind:String)->String? {
-    switch kind {case "home":return "house.fill";case "place":return "mappin";case "stale":return "clock";default:return nil}
+    switch kind {
+    case "home": return "house.fill"
+    case "place": return "mappin"
+    case "work": return "briefcase.fill"
+    case "school": return "graduationcap.fill"
+    case "shop": return "bag.fill"
+    case "sport": return "sportscourt.fill"
+    case "stale": return "clock"
+    default: return nil
+    }
 }
 private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoint) {
     let members=metadata["members"] as? [[String:Any]] ?? []
@@ -519,9 +528,10 @@ private func peopleMarker(_ metadata:[String:Any])->(image:UIImage,offset:CGPoin
     let pillFont=UIFont.systemFont(ofSize:12,weight:.semibold)
     let ink:UIColor=kind=="stale" ? .darkGray : markerInk
     let attributes:[NSAttributedString.Key:Any]=[.font:pillFont,.foregroundColor:ink]
+    let symbolKind = kind=="place" || kind=="stale" ? (metadata["placeIcon"] as? String ?? kind) : kind
     let symbol:UIImage? = kind=="home"
         ? (UIImage(named:"Letm3goHome") ?? UIImage(systemName:"house.fill"))
-        : labelSymbol(kind).flatMap{UIImage(systemName:$0,withConfiguration:UIImage.SymbolConfiguration(pointSize:10,weight:.bold))?.withTintColor(ink,renderingMode:.alwaysOriginal)}
+        : labelSymbol(symbolKind).flatMap{UIImage(systemName:$0,withConfiguration:UIImage.SymbolConfiguration(pointSize:10,weight:.bold))?.withTintColor(ink,renderingMode:.alwaysOriginal)}
     let textWidth=text.map{($0 as NSString).size(withAttributes:attributes).width} ?? 0
     let pillWidth=text==nil ? 0 : textWidth+(symbol==nil ? 0 : 15)+18
     let width=max(stackWidth,pillWidth)+6
@@ -803,6 +813,7 @@ private struct CameraIntent {
 private final class PlaceEditorMapView: MKMapView {
     private var visibleBounds: CGRect?
     private let scrollMask = CAShapeLayer()
+    var pickerVisibleBounds: CGRect { visibleBounds ?? bounds }
 
     func applyScrollClip(_ clip: [String: Any]?) {
         guard let clip, let top = clip["top"] as? Double, let bottom = clip["bottom"] as? Double,
@@ -854,12 +865,14 @@ private struct MapContent {
     let status:String
     // The saved-place map: tapping the bare map picks a location, and the place's circles frame the view.
     let pickable:Bool
+    let pickerPeopleFit:Int
     init(_ options:[AnyHashable:Any]) {
         let isPersonDay=options["personDay"] as? Bool == true
         personDay=isPersonDay
         status=isPersonDay ? String((options["status"] as? String ?? "").prefix(500)) : ""
         scope=options["scope"] as? String
         pickable=options["pickable"] as? Bool == true
+        pickerPeopleFit=options["pickerPeopleFit"] as? Int ?? 0
         selectedActivity=options["selectedActivity"] as? String
         showsLocate=options["locate"] as? Bool == true
         locating=options["locating"] as? Bool == true
@@ -892,15 +905,14 @@ private struct MapContent {
     var coordinates:[CLLocationCoordinate2D] { routes.flatMap{$0}+estimated.flatMap{$0}+live+styled.flatMap{$0.coordinates}+pins.compactMap { coordinate($0["point"]) }+(overview?.focus ?? [])+ringExtents }
     // A place's circles reach past its pin: the four points just outside the largest one, so framing the content frames the radius.
     private var ringExtents:[CLLocationCoordinate2D] {
-        guard pickable else {return []}
-        return pins.flatMap { pin -> [CLLocationCoordinate2D] in
-            guard let c=coordinate(pin["point"]) else {return []}
-            let reach=max(pin["radius"] as? Double ?? 0,pin["arrivalRadius"] as? Double ?? 0)*1.3
-            guard reach.isFinite,reach>0 else {return []}
-            let north=reach/111_320,east=reach/(111_320*max(0.2,cos(c.latitude * .pi/180)))
-            return [CLLocationCoordinate2D(latitude:min(90,c.latitude+north),longitude:c.longitude),CLLocationCoordinate2D(latitude:max(-90,c.latitude-north),longitude:c.longitude),
-                    CLLocationCoordinate2D(latitude:c.latitude,longitude:c.longitude+east),CLLocationCoordinate2D(latitude:c.latitude,longitude:c.longitude-east)]
-        }
+        guard let pin=placePin,let c=coordinate(pin["point"]) else {return []}
+        let reach=max(pin["radius"] as? Double ?? 0,pin["arrivalRadius"] as? Double ?? 0)*1.3
+        guard reach.isFinite,reach>0 else {return []}
+        let north=reach/111_320,east=reach/(111_320*max(0.2,cos(c.latitude * .pi/180)))
+        return [CLLocationCoordinate2D(latitude:min(90,c.latitude+north),longitude:c.longitude),
+                CLLocationCoordinate2D(latitude:max(-90,c.latitude-north),longitude:c.longitude),
+                CLLocationCoordinate2D(latitude:c.latitude,longitude:c.longitude+east),
+                CLLocationCoordinate2D(latitude:c.latitude,longitude:c.longitude-east)]
     }
     var peoplePins:[[String:Any]] { pins.filter { ($0["kind"] as? String)=="people" } }
     // Everyone on the map, marked with whether the camera should keep them in view
@@ -921,8 +933,11 @@ private struct MapContent {
         }
         return targets
     }
+    var placePin:[String:Any]? { pickable ? pins.first { ($0["kind"] as? String) == "place" } : nil }
     var rect:MKMapRect {
-        let fitting=focus.map{[$0]} ?? coordinates
+        let fitting:[CLLocationCoordinate2D]
+        if let pin=placePin,let point=coordinate(pin["point"]) {fitting=[point]+ringExtents}
+        else {fitting=focus.map{[$0]} ?? coordinates}
         guard !fitting.isEmpty else { return MKMapRect.world }
         var rect=MKMapRect.null
         for c in fitting { let p=MKMapPoint(c);rect=rect.union(MKMapRect(x:p.x,y:p.y,width:1,height:1)) }
@@ -999,6 +1014,11 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     // Picking a place on the saved-place map (see MapContent.pickable).
     var onPick:((CLLocationCoordinate2D)->Void)?
     private var pickRecognizers:[UIGestureRecognizer]=[]
+    private var framedPickerCenter=false
+    private var framedPickerPeople=false
+    private var appliedPickerPeopleFit=0
+    private var lastPickerBubbleTapAt = -Double.infinity
+    private var lastPickerBubbleID:String?
     private var placeCentre:CLLocationCoordinate2D?
     private var placeReach:Double=0
     private var indicators:[String:EdgeAvatarButton]=[:]
@@ -1618,7 +1638,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     }
     private func visibleBox()->MapBox? {
         guard let map=map,map.bounds.width>80,map.bounds.height>80 else {return nil}
-        return box(in:map.bounds.inset(by:fitPadding))
+        return box(in:map.bounds.inset(by:cameraPadding(map)))
     }
     // The map area under a screen rectangle of the map view.
     private func box(in inner:CGRect)->MapBox? {
@@ -1631,7 +1651,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
         return MapBox(minX:topLeft.x,minY:topLeft.y,width:width,height:height)
     }
     func plan() {
-        guard isPeopleMap,let map=map,let visible=visibleBox() else {return}
+        guard isPeopleMap || content.pickable,let map=map,let visible=visibleBox() else {return}
         let before=planner.mode
         if let move=planner.plan(targets:content.cameraTargets,visible:visible,now:CACurrentMediaTime()) {
             // The first camera of a new map is set without an animation from the
@@ -1640,7 +1660,7 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             switch move {
             case .fit(let box,let animated):
                 if map.camera.heading != 0 {let camera=(map.camera.copy() as? MKMapCamera) ?? map.camera;camera.heading=0;map.setCamera(camera,animated:false)}
-                map.setVisibleMapRect(MKMapRect(x:box.minX,y:box.minY,width:box.width,height:box.height),edgePadding:fitPadding,animated:animated && animate)
+                map.setVisibleMapRect(MKMapRect(x:box.minX,y:box.minY,width:box.width,height:box.height),edgePadding:cameraPadding(map),animated:animated && animate)
             case .centre(let point,let width,let animated):
                 let centre=MKMapPoint(x:point.x,y:point.y)
                 if let width=width {
@@ -1662,6 +1682,16 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     func showEveryone() {lastFollowed=nil;planner.showAll();modeChanged();plan()}
     func follow(_ personID:String) {lastFollowed=personID;planner.follow(personID);modeChanged();plan()}
     func selectPerson(_ pin:JourneyPin) {
+        if content.pickable {
+            let now=CACurrentMediaTime()
+            map?.deselectAnnotation(pin,animated:false)
+            guard lastPickerBubbleID != pin.pinID || now-lastPickerBubbleTapAt>=0.45 else {return}
+            lastPickerBubbleID=pin.pinID
+            lastPickerBubbleTapAt=now
+            if let members=pin.metadata["members"] as? [[String:Any]],
+               members.first?["state"] as? String == "live" { onPick?(pin.coordinate) }
+            return
+        }
         guard let id=(pin.metadata["members"] as? [[String:Any]])?.first?["id"] as? String else {return}
         map?.deselectAnnotation(pin,animated:false);follow(id)
     }
@@ -1735,10 +1765,22 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     @objc private func pickedPlace(_ recognizer:UITapGestureRecognizer) {
         guard recognizer.state == .ended,let map=map else {return}
         let point=recognizer.location(in:map)
+        // MapKit and the bare-map recognizer can both receive the same tap.
+        // Annotation hit testing must win even after MapKit deselects the bubble.
+        if let bubble=pins.values.first(where:{ pin in
+            guard pin.metadata["kind"] as? String == "people",let view=map.view(for:pin) else {return false}
+            return view.bounds.insetBy(dx:-4,dy:-4).contains(view.convert(point,from:map))
+        }) {selectPerson(bubble);return}
+        if CACurrentMediaTime()-lastPickerBubbleTapAt<0.45 {return}
         // The compass, the pin (and its callout) and MapKit's own attribution are not the bare map: look up the view
         // chain from whatever was touched.
         var touched=map.hitTest(point,with:nil)
         while let view=touched,view !== map {
+            if let annotationView=view as? MKAnnotationView,let bubble=annotationView.annotation as? JourneyPin,
+               bubble.metadata["kind"] as? String == "people" {
+                selectPerson(bubble)
+                return
+            }
             let kind=NSStringFromClass(type(of:view))
             if view is UIControl || view is UILabel || view is MKAnnotationView || kind.contains("Attribution") || kind.contains("Callout") || kind.contains("Legal") {return}
             touched=view.superview
@@ -1750,9 +1792,30 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
     // A pin that is merely near the edge is followed without changing the zoom.
     // The embed frames a place that is already there when the map opens; this frames one that appears or moves afterwards.
     private func framePlace(_ next:MapContent) {
-        guard let map=map,map.bounds.width>1,let pin=next.pins.first,let centre=coordinate(pin["point"]) else {placeCentre=nil;return}
+        guard let map=map,map.bounds.width>1 else {return}
+        if let picker=map as? PlaceEditorMapView,picker.pickerVisibleBounds.height<=80 { return }
+        let hasPeople = !next.peoplePins.isEmpty
+        if next.pickerPeopleFit != appliedPickerPeopleFit {
+            appliedPickerPeopleFit=next.pickerPeopleFit
+            if hasPeople {
+                showPickerPeople()
+                return
+            }
+        }
+        guard let pin=next.placePin,let centre=coordinate(pin["point"]) else {
+            placeCentre=nil
+            if !framedPickerPeople,hasPeople {
+                showPickerPeople()
+            } else if !framedPickerCenter,let focus=next.focus {
+                framedPickerCenter=true
+                map.setRegion(MKCoordinateRegion(center:focus,latitudinalMeters:5000,longitudinalMeters:5000),animated:false)
+            }
+            return
+        }
+        framedPickerCenter=true
         let reach=max(pin["radius"] as? Double ?? 0,pin["arrivalRadius"] as? Double ?? 0)
         let previousReach=placeReach,previousCentre=placeCentre,first=previousCentre == nil
+        if let previousCentre,previousCentre.latitude==centre.latitude,previousCentre.longitude==centre.longitude,previousReach==reach {return}
         defer {placeCentre=centre;placeReach=reach}
         let visible=map.visibleMapRect
         let across=min(visible.width,visible.height)
@@ -1769,6 +1832,21 @@ private final class MapCoordinator:NSObject,UIGestureRecognizerDelegate {
             // A pin tapped near the edge: follow it, and leave the zoom the person chose.
             map.setCenter(centre,animated:animate)
         }
+    }
+
+    func refreshPickerFrame() {
+        if content.pickable { framePlace(content) }
+    }
+    private func cameraPadding(_ map:MKMapView)->UIEdgeInsets {
+        guard let picker=map as? PlaceEditorMapView else { return fitPadding }
+        let visible=picker.pickerVisibleBounds
+        let margin=min(36,visible.height/4)
+        return UIEdgeInsets(top:visible.minY+margin,left:24,bottom:map.bounds.maxY-visible.maxY+margin,right:24)
+    }
+    private func showPickerPeople() {
+        framedPickerPeople=true
+        framedPickerCenter=true
+        showEveryone()
     }
 
     // MARK: Controls
@@ -2253,7 +2331,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             coordinator.apply(content)
             // The full-screen map opened from this one shows the same people as they move.
             if self.presentedID==id {self.presentedMap?.update(content)}
-            if content.camera == nil {
+            if content.camera == nil && !content.pickable {
                 // The WebView may mount before account/location restoration finishes.
                 // Do not preserve an empty map's default country/world viewport when
                 // the first usable positions or the user's initial focus arrive.
@@ -2308,6 +2386,7 @@ public class AppleMapsPlugin: CAPPlugin, CAPBridgedPlugin {
             if let sequence=sequence {self.frameSequence[id]=sequence}
             if map.frame != frame { map.frame=frame }
             (map as? PlaceEditorMapView)?.applyScrollClip(call.getObject("clip"))
+            self.coordinators[id]?.refreshPickerFrame()
             map.setNeedsLayout()
             if self.presentedID==id {self.presentedMap?.view.setNeedsLayout()}
             call.resolve(["resized":true,"frame":Self.frameReport(map.frame)])

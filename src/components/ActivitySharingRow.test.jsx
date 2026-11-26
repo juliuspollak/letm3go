@@ -16,7 +16,7 @@ it('shows sharing on by default and turns it off, then back on',async()=>{
  expect(toggle.getAttribute('aria-checked')).toBe('true');
  fireEvent.click(toggle);
  await waitFor(()=>expect(c.rpc).toHaveBeenCalledWith('set_auto_share',{p_enabled:false}));
- await waitFor(()=>expect(screen.getByText(/Not shared unless you choose/)).toBeTruthy());
+ await waitFor(()=>expect(toggle).toHaveAttribute('aria-checked','false'));
  fireEvent.click(screen.getByRole('switch',{name:/Share new activities/}));
  await waitFor(()=>expect(c.rpc).toHaveBeenCalledWith('set_auto_share',{p_enabled:true}));
 });
@@ -36,7 +36,7 @@ it('says how many activities are waiting to be sent, instead of failing silently
 it('holds the row\'s place with a Checking row while it first loads, so nothing below it jumps',async()=>{
  let release;const slow={rpc:vi.fn(name=>name==='my_auto_share'?new Promise(resolve=>{release=()=>resolve({data:{enabled:true},error:null});}):Promise.resolve({data:[],error:null}))};
  const {container}=render(<ActivitySharingRow client={slow} cacheKey="me"/>);
- expect(container.textContent).toContain('New activities');
+ expect(container.textContent).toContain('Share new activities');
  expect(container.textContent).toContain('Checking…');
  expect(screen.queryByRole('switch',{name:/Share new activities/})).toBeNull();   // the placeholder is hidden from assistive technology
  await waitFor(()=>expect(release).toBeTypeOf('function'));

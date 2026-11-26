@@ -8,6 +8,7 @@ const {identity,recorderHook,mapProps,mapLocationHook,friends,pokes,dayCalls,loc
 vi.mock('./lib/AuthContext.jsx',()=>({AuthProvider:({children})=>children,useAuth:()=>identity.value}));
 vi.mock('./lib/config.js',()=>({config:{configured:false,appleEnabled:false,pushEnabled:false,teslaEnabled:false}}));
 vi.mock('./lib/supabase.js',()=>({supabase:null}));
+vi.mock('./lib/useHouseholdPlaces.js',()=>({useHouseholdPlaces:()=>({places:friends.places,ready:true,refresh:()=>{}})}));
 vi.mock('./lib/useCloudJourneyPage.js',()=>({useCloudJourneyPage:()=>({ids:[],loading:false,error:'',more:false,refresh:()=>{}})}));
 vi.mock('./lib/useJourneyScope.js',()=>({useJourneyScope:()=>({loading:false,error:''})}));
 vi.mock('./lib/useMapLocation.js',()=>({useMapLocation:mapLocationHook}));
@@ -18,6 +19,7 @@ vi.mock('./lib/usePersonDay.js',async()=>{
  const {dayWindow}=await import('./lib/dayWindow.js');
  return {usePersonDay:args=>{dayCalls.push(args);return {day:composeDay({rows:mapProps.rowIds.map(id=>{const t=dayWindow(args.date,args.timeZone).start+1000;return {activity_id:id,title:'Map walk',activity:'Walking',started_at:new Date(t*1000).toISOString(),ended_at:new Date((t+30)*1000).toISOString(),roads:{},points:[{latitude:-34,longitude:151,t,segment:0},{latitude:-34.001,longitude:151,t:t+30,segment:0}]};}),live:null,timeZone:args.timeZone,date:args.date,now:Date.now()/1000}),loading:false,error:''};}};
 });
+vi.mock('./components/PlacePicker.jsx',()=>({default:({peoplePins})=>{mapProps.pickerPins=peoplePins;return <div>{peoplePins?.map(pin=><p key={pin.id}>{pin.title}: {pin.label}</p>)}</div>;}}));
 vi.mock('./components/JourneyMap.jsx',async()=>{
  const {useEffect}=await import('react');
  function MockJourneyMap(props){mapProps.value=props;useEffect(()=>{mapProps.mounts++;},[]);return <div aria-label="Interactive journey route map"/>;}
@@ -29,8 +31,8 @@ vi.mock('./components/ActivityDetailScreen.jsx',()=>({default:props=><section ar
 vi.mock('./components/SharedActivityDetail.jsx',()=>({default:props=><section aria-label="Shared activity detail"><button onClick={props.onBack}>Back to shared map origin</button></section>}));
 const ann={user_id:'ann',display_name:'Ann',latitude:-34.5,longitude:150.9,updated_at:new Date().toISOString(),accuracy:10};
 beforeEach(()=>{
- mapProps.value=null;mapProps.mounts=0;mapProps.rowIds=[];dayCalls.length=0;
- friends.people=[ann];pokes.send=vi.fn(async()=>({}));
+ mapProps.value=null;mapProps.pickerPins=null;mapProps.mounts=0;mapProps.rowIds=[];dayCalls.length=0;
+ friends.people=[ann];friends.places=[];pokes.send=vi.fn(async()=>({}));
  locateFn.mockReset();locateFn.mockResolvedValue({latitude:-33.8,longitude:151.2});
  mapLocationHook.mockReturnValue({position:null,loading:false,error:'',locate:locateFn});
  identity.value={status:'authenticated',session:{user:{id:'owner',email:'owner@example.com'}},preferences:{displayName:'Me',vehicles:[],onboardingComplete:true},
@@ -225,4 +227,37 @@ it('returns to the same recorded day even if midnight passes while the detail is
   fireEvent.click(screen.getByRole('button',{name:'Back to shared map origin'}));
   expect(mapProps.value.personDay.payload.fitKey).toBe(origin);
  }finally{vi.useRealTimers();}
+});
+
+
+it('shows last-known friend bubbles in the Locations editor and lists only live picks',()=>{
+ friends.people=[{...ann,updated_at:new Date(Date.now()-15*60000).toISOString()}];
+ render(<App/>);
+ fireEvent.click(screen.getAllByRole('button',{name:'Map',exact:true})[0]);
+ const pinsOnMap=mapProps.value.peoplePins;
+ expect(pinsOnMap.some(pin=>pin.title==='Ann')).toBe(true);
+ fireEvent.click(screen.getAllByRole('button',{name:'Social',exact:true})[0]);
+ fireEvent.click(screen.getByRole('button',{name:'Locations'}));
+ const dialog=screen.getByRole('dialog',{name:'Locations'});
+ fireEvent.click(within(dialog).getByRole('button',{name:'Add a location'}));
+ expect(mapProps.pickerPins).toEqual(pinsOnMap);
+ expect(within(dialog).getByText(/Ann: .*15 min/)).toBeInTheDocument();
+ expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument();
+});
+
+it('shows matched Work and Home icons on Home tiles using the same places as Maps',()=>{
+ const home={id:'home',name:'Home',icon:'home',latitude:-34.55,longitude:150.85,radius:50};
+ const work={id:'work',name:'Work',icon:'work',latitude:ann.latitude,longitude:ann.longitude,radius:50};
+ friends.places=[home,work];
+ friends.people=[{...ann,user_id:'majka',display_name:'Majka'},
+  ...['Em','Julia'].map(name=>({...ann,user_id:name,display_name:name,latitude:home.latitude,longitude:home.longitude,updated_at:new Date(Date.now()-11*3600000).toISOString()}))];
+ render(<App/>);
+ const tiles=within(screen.getByRole('list',{name:'Friends and household'})).getAllByRole('listitem');
+ const tile=name=>tiles.find(item=>within(item).queryByRole('button',{name:`Location details for ${name}`}));
+ expect(within(tile('Majka')).getByText('At Work')).toBeVisible();
+ expect(tile('Majka').querySelector('.person-tile-name > svg:first-child')).toHaveClass('lucide-briefcase');
+ for(const name of ['Em','Julia']){
+  expect(within(tile(name)).getByText('Last at Home')).toBeVisible();
+  expect(tile(name).querySelector('.person-tile-name > svg:first-child')).toHaveClass('lucide-house');
+ }
 });

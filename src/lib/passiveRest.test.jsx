@@ -1,26 +1,22 @@
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-const native=vi.hoisted(()=>({currentPosition:vi.fn(),setPassiveRest:vi.fn(),setSharingRest:vi.fn(),setHomeWiFi:vi.fn()}));
+const native=vi.hoisted(()=>({currentPosition:vi.fn(),setPassiveRest:vi.fn(),setSharingRest:vi.fn()}));
 vi.mock('@capacitor/core',()=>({Capacitor:{getPlatform:()=>'ios'},registerPlugin:()=>native}));
 import {recorder} from './recorder.js';
 import {passiveRows} from './passiveRestDiagnostics.js';
 import TrackingPermissions from '../components/TrackingPermissions.jsx';
 
 afterEach(cleanup);
-const home={id:'h',name:'Home',kind:'home',latitude:-33.8,longitude:151.2,radius:120};
 const passive=(overrides={})=>({enabled:true,supported:true,active:false,restConfirmed:false,restReason:'settling: still for 4 of 20 min',
  retainReason:'rest not confirmed: settling: still for 4 of 20 min',serviceSession:'held',keepAliveRunning:false,sessionReleases:0,
- lastPreciseReason:'none yet',modeSeconds:{standby:240},wifi:{configured:false,match:'notConfigured'},...overrides});
+ lastPreciseReason:'none yet',modeSeconds:{standby:240},wifi:{connected:null},...overrides});
 const row=(rows,label)=>rows.find(([name])=>name===label)?.[1];
 
 describe('native bridge',()=>{
- beforeEach(()=>{native.setPassiveRest.mockReset();native.setHomeWiFi.mockReset();});
- it('sends only the switch and the Wi-Fi action, never a network name',async()=>{
+ beforeEach(()=>{native.setPassiveRest.mockReset();});
+ it('sends the passive rest switch',async()=>{
   await recorder.setPassiveRest(false);
-  await recorder.setHomeWiFi('designate');
-  await recorder.setHomeWiFi('forget');
   expect(native.setPassiveRest).toHaveBeenCalledWith({enabled:false});
-  expect(native.setHomeWiFi.mock.calls).toEqual([[{action:'designate'}],[{action:'forget'}]]);
  });
  it('sends only the sharing device-test switch',async()=>{
   await recorder.setSharingRest(true);
@@ -33,16 +29,16 @@ describe('passive rest rows',()=>{
  it('explain why the background session is still held while settling',()=>{
   const rows=passiveRows({passiveRest:passive()});
   expect(row(rows,'Passive rest')).toBe('Not active · rest not confirmed: settling: still for 4 of 20 min');
-  expect(row(rows,'Home Wi-Fi')).toBe('Not configured');
+  expect(row(rows,'Wi-Fi connection')).toBe('Not reported');
   expect(row(rows,'Always service session')).toBe('Held (started with the app open)');
  });
  it('report an active passive rest, Wi-Fi as a match state and the measured departure',()=>{
-  const rows=passiveRows({passiveRest:passive({active:true,since:1000,restConfirmed:true,restReason:'at Home, still for 16 min, Home Wi-Fi connected',retainReason:null,
-   sessionReleases:1,sessionReleasedAt:1000,modeSeconds:{passive:3600,precise:300},wifi:{configured:true,match:'matched',observedAt:1000,source:'background wake-up'}}),
+  const rows=passiveRows({passiveRest:passive({active:true,since:1000,restConfirmed:true,restReason:'at a saved place, still for 16 min, Wi-Fi connected',retainReason:null,
+   sessionReleases:1,sessionReleasedAt:1000,modeSeconds:{passive:3600,precise:300},wifi:{connected:true,observedAt:1000,source:'background wake-up'}}),
    lastDepartureLatency:{engine:'passive',cause:'place region exit',evidenceToFirstFixSeconds:'9',motionOnsetToEvidenceSeconds:'140',startGapMeters:'180'}});
-  expect(row(rows,'Confirmed rest (needed for passive rest)')).toBe('Confirmed · at Home, still for 16 min, Home Wi-Fi connected');
+  expect(row(rows,'Confirmed rest (needed for passive rest)')).toBe('Confirmed · at a saved place, still for 16 min, Wi-Fi connected');
   expect(row(rows,'Passive rest')).toMatch(/^Active since .* no location updates, no background session$/);
-  expect(row(rows,'Home Wi-Fi')).toBe('Home Wi-Fi detected');
+  expect(row(rows,'Wi-Fi connection')).toBe('Connected');
   expect(row(rows,'Time per location mode (since app start)')).toBe('precise 5 min · passive 1 h');
   expect(row(rows,'Departure from rest')).toBe('woken by place region exit · movement began 140 s earlier · first GPS 9 s after waking · route began ~180 m beyond the place');
  });
@@ -78,7 +74,7 @@ describe('passive rest rows',()=>{
   }
  });
  it('treat unavailable Wi-Fi as unavailable, not as disconnected',()=>{
-  expect(row(passiveRows({passiveRest:passive({wifi:{configured:true,match:'unavailable'}})}),'Home Wi-Fi')).toBe('Wi-Fi unavailable');
+  expect(row(passiveRows({passiveRest:passive({wifi:{connected:false}})}),'Wi-Fi connection')).toBe('Unavailable');
  });
 });
 
@@ -95,41 +91,14 @@ describe('Tracking & Permissions controls',()=>{
   rerender(<TrackingPermissions recording={{state:{...state,passiveRest:passive({enabled:false,sharingRest})},run}} onBack={vi.fn()}/>);
   expect(screen.getByRole('switch',{name:'Release location while resting with sharing on'})).toBeDisabled();
  });
- it('switch passive rest and designate Home Wi-Fi only once Home is saved',()=>{
+ it('uses Wi-Fi automatically and keeps the passive rest switch',()=>{
   const run=vi.fn();
-  const state={permission:'always',automaticEnabled:true,storageReady:true,places:[],passiveRest:passive()};
-  const {rerender}=render(<TrackingPermissions recording={{state,run}} onBack={vi.fn()}/>);
-  const toggle=screen.getByRole('switch',{name:'Release location while resting'});
-  expect(toggle).toHaveAttribute('aria-checked','true');
-  fireEvent.click(toggle);
+  const state={permission:'always',automaticEnabled:true,storageReady:true,places:[],passiveRest:passive({wifi:{connected:true}})};
+  render(<TrackingPermissions recording={{state,run}} onBack={vi.fn()}/>);
+  fireEvent.click(screen.getByRole('switch',{name:'Release location while resting'}));
   expect(run).toHaveBeenCalledWith('setPassiveRest',false);
-  expect(screen.getByRole('button',{name:'Use current Wi-Fi'})).toBeDisabled();
-  rerender(<TrackingPermissions recording={{state:{...state,places:[home]},run}} onBack={vi.fn()}/>);
-  fireEvent.click(screen.getByRole('button',{name:'Use current Wi-Fi'}));
-  expect(run).toHaveBeenCalledWith('setHomeWiFi','designate');
-  rerender(<TrackingPermissions recording={{state:{...state,places:[home],passiveRest:passive({wifi:{configured:true,match:'matched'}})},run}} onBack={vi.fn()}/>);
-  fireEvent.click(screen.getByRole('button',{name:'Forget'}));
-  expect(run).toHaveBeenCalledWith('setHomeWiFi','forget');
- });
- it('names every Home Wi-Fi state in plain words',()=>{
-  const labels=['matched','notMatched','unavailable','unknown'].map(match=>row(passiveRows({passiveRest:passive({wifi:{configured:true,match}})}),'Home Wi-Fi'));
-  expect(labels).toEqual(['Home Wi-Fi detected','Connected to another network','Wi-Fi unavailable','Waiting for fresh Wi-Fi evidence']);
- });
- it('shows a failed Home Wi-Fi setup beside the control and offers another try',async()=>{
-  const run=vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({trips:[]});
-  const state={permission:'always',automaticEnabled:true,storageReady:true,places:[home],passiveRest:passive()};
-  const message='iOS did not report a Wi-Fi network. Connect to your Home Wi-Fi, keep Precise Location on, and try again.';
-  render(<TrackingPermissions recording={{state,run,error:message}} onBack={vi.fn()}/>);
-  fireEvent.click(screen.getByRole('button',{name:'Use current Wi-Fi'}));
-  expect(await screen.findByRole('alert')).toHaveTextContent('did not report a Wi-Fi network');
-  fireEvent.click(screen.getByRole('button',{name:'Try again'}));
-  expect(run).toHaveBeenCalledTimes(2);
-  await screen.findByRole('button',{name:'Use current Wi-Fi'});
-  expect(screen.getAllByRole('alert')).toHaveLength(1);
- });
- it('says when a saved Home Wi-Fi could not be read rather than that it was never set',()=>{
-  render(<TrackingPermissions recording={{state:{permission:'always',storageReady:true,places:[home],passiveRest:passive({wifi:{configured:false,status:'unreadable',match:'notConfigured'}})},run:vi.fn()}} onBack={vi.fn()}/>);
-  expect(screen.getByText(/could not be read on this iPhone/)).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Use current Wi-Fi'})).not.toBeInTheDocument();
+  expect(screen.getByText('Wi-Fi connection').nextSibling).toHaveTextContent('Connected');
  });
  it('names passive rest as the native state',()=>{
   render(<TrackingPermissions recording={{state:{permission:'always',automaticEnabled:true,storageReady:true,automaticSampling:'passiveRest',passiveRest:passive({active:true})},run:vi.fn()}} onBack={vi.fn()}/>);

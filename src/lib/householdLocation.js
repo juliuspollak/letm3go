@@ -2,7 +2,7 @@
 // implementation for the Household screen, People on the map and the map pins,
 // so a member can never look "live" in one place and missing in another.
 import {resolveAvatar} from './avatar.js';
-import {cameraFit,personActivity,personLabel,savedPlaceName,secondsAtPlace} from './peopleMap.js';
+import {cameraFit,personActivity,personLabel,matchVisibleSavedPlace,secondsAtPlace} from './peopleMap.js';
 
 // Freshness policy (documented in docs/household-location-sharing.md):
 // - live:        a position confirmed within the last 10 minutes. A phone
@@ -161,8 +161,9 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
    seconds:secondsAtPlace(member),activity:activities[member.user_id]??null,
    speedKmh:member.speed_kmh,speedAge:member.ageSeconds==null?null:member.ageSeconds+(!Number.isFinite(member.receivedMonotonicMs)&&Number.isFinite(member.receivedAtMs)?Math.max(0,(nowMs-member.receivedAtMs)/1000):0)});
  for(const p of people){
-  const place=p.home||p.state!=='live'?null:savedPlaceName(p,places);
-  p.label=personLabel({state:p.state,ageSeconds:p.isSelf?null:p.ageSeconds,home:p.home,place,seconds:p.seconds});
+  p.place=p.home?null:matchVisibleSavedPlace(p.state,p,places);
+  p.label=personLabel({state:p.state,ageSeconds:p.isSelf?null:p.ageSeconds,home:p.home,place:p.place?.name,seconds:p.seconds});
+  if(p.state==='live'&&p.place?.icon==='none')p.label={...p.label,short:p.label.text};
   p.movement=personActivity({state:p.state,home:p.home,seconds:p.seconds,shared:p.activity});
   // Location stays visible longer than speed. Advance the server-measured age
   // locally so failed refreshes cannot leave an old speed looking current.
@@ -170,7 +171,7 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
     Number.isFinite(p.speedKmh)&&p.speedKmh>=0&&p.speedKmh<=250){
    const speed=`${Math.round(p.speedKmh)} km/h`;
    const movement={driving:'Driving',walking:'Walking',running:'Running',cycling:'Cycling'}[p.movement];
-   p.label={...p.label,short:movement?`${movement} · ${speed}`:p.label.short?`${p.label.short} · ${speed}`:speed,
+   p.label={...p.label,short:movement&&!p.place?.icon?`${movement} · ${speed}`:p.label.short?`${p.label.short} · ${speed}`:speed,
     text:`${p.label.text} · ${speed} · speed updated ${Math.floor(p.speedAge)} s ago`};
    p.speedText=`${speed} · speed updated ${Math.floor(p.speedAge)} s ago`;
   }
@@ -180,10 +181,13 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
   const everyoneHome=group.every(p=>p.home);
   const names=group.map(p=>p.isSelf?'You':p.name);
   const self=group.find(p=>p.isSelf);
-  // One person: their own label. Several: "Home" when everyone there is at Home;
-  // each person's own time is in the callout.
-  const label=group.length===1?group[0].label:everyoneHome?{short:'Home',kind:'home'}:{short:null,kind:'none'};
-  const locationStatus=p=>p.isSelf?(p.label.kind==='live'?'your location':p.label.text):
+  const firstPlace=group[0].place;
+  const everyoneAtPlace=firstPlace?.id&&firstPlace.icon&&group.every(p=>p.place?.id===firstPlace.id&&p.state===group[0].state);
+  const lastAtPlace=group[0].state==='stale';
+  const label=group.length===1?group[0].label:everyoneHome?{short:'Home',kind:'home'}:
+   everyoneAtPlace?{short:lastAtPlace?`Last at ${firstPlace.name}`:firstPlace.icon==='none'?`At ${firstPlace.name}`:firstPlace.name,kind:lastAtPlace?'stale':'place'}:{short:null,kind:'none'};
+  const placeIcon=everyoneAtPlace?firstPlace.icon:null;
+  const locationStatus=p=>p.state==='stale'&&p.place?p.label.text:p.isSelf?(p.label.kind==='live'?'your location':p.label.text):
    p.state==='live'&&p.label.kind!=='live'?`${p.label.text} · ${locationStatusText(p).replace('Sharing location · ','')}`:locationStatusText(p);
   const status=p=>[locationStatus(p),p.label.kind==='live'?p.speedText:null].filter(Boolean).join(' · ');
   return {
@@ -194,7 +198,7 @@ export function peoplePins({self=null,members=[],photos={},selfId=null,selfAvata
    subtitle:[everyoneHome?'Home':null,...group.map(p=>`${p.isSelf?'You':p.name}: ${status(p)}`)].filter(Boolean).join(' · '),
    home:everyoneHome,
    fit:group.some(p=>fit[p.id]),
-   ...(label.short?{label:label.short,labelKind:label.kind}:{}),
+   ...(label.short?{label:label.short,labelKind:label.kind,...(placeIcon?{placeIcon}:{})}:{}),
    ...(self&&Number.isFinite(self.accuracy)&&self.accuracy>0?{radius:Math.min(self.accuracy,100)}:{}),
    members:group.map(p=>{
     // The photo comes from the same id-keyed set as Household and Friends. Without

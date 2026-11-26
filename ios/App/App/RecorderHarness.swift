@@ -828,9 +828,8 @@ enum RecorderHarness {
             return check(false, "Home lifecycle: recorder opened")
         }
         let now = Date().timeIntervalSince1970
-        r.homeWiFi = HomeWiFiProfile(network: "harness", accessPoints: [], designatedAt: now - 1000)
-        r.wifiObservation = WiFiObservation(network: "harness", accessPoint: nil, at: now - 890, source: "harness")
-        r.wifiFetchInFlight = true // Supply observations ourselves, without asking iOS for Wi-Fi.
+        r.stopWiFiPathMonitor()
+        r.wifiOnPath = true
         deliver(r, location(home.latitude, home.longitude, now - 420, speed: 0))
         deliver(r, location(home.latitude, home.longitude, now - 1, speed: 0))
         r.reconcileAutomaticSampling()
@@ -840,7 +839,7 @@ enum RecorderHarness {
         let lastStop = r.continuousStoppedAt
         let releases = r.sessionReleases
         let disturbance = r.restDisturbedAt
-        r.wifiObservation = WiFiObservation(network: "harness", accessPoint: nil, at: now - 901, source: "harness")
+        r.wifiOnPath = false
         for second in [0.0, 10.0, 30.0] {
             // Backgrounding and locking record lifecycle diagnostics only. Exercise
             // the foreground reconciliation and the passive check on each return.
@@ -849,7 +848,7 @@ enum RecorderHarness {
         }
         check(r.locationMode == .passive && !r.continuousLocationRequested && r.continuousStoppedAt == lastStop &&
               r.backgroundActivitySession == nil && r.sessionReleases == releases,
-              "Home lifecycle: repeated opens with expired Wi-Fi evidence start neither continuous GPS nor a session")
+              "Home lifecycle: repeated opens with Wi-Fi disconnected start neither continuous GPS nor a session")
         check(r.passiveSince == passiveSince && r.dwell == dwell && r.restDisturbedAt == disturbance,
               "Home lifecycle: repeated opens leave the original rest confirmation intact")
         check(r.significantLocationRequested && r.visitMonitoringRequested && r.registeredPlaceRegion != nil,

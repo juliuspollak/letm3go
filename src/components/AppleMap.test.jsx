@@ -626,6 +626,22 @@ describe('the saved-place map (pickable)',()=>{
   expect(alert).toHaveTextContent('The map could not be shown.');
   expect(mocks.snapshot).not.toHaveBeenCalled();
   expect(container.querySelector('img')).toBeNull();
-  expect(container.querySelector('button')).toBeNull();
+  expect(within(container).getByRole('button',{name:'Retry map'})).toBeInTheDocument();
  });
+});
+
+it('reopens the location map after its native embed fails',async()=>{
+ mocks.embed.mockClear().mockRejectedValue(new Error('Map layout unavailable'));
+ const view=render(<section role="dialog" aria-modal="true"><AppleMap pickable payload={{routes:[],pins:[]}}/></section>);
+ const retry=await view.findByRole('button',{name:'Retry map'});
+ mocks.embed.mockClear().mockResolvedValue({});
+ fireEvent.click(retry);
+ await waitFor(()=>expect(view.getByRole('img',{name:'Map of the place'})).toHaveClass('native-embedded'));
+ expect(mocks.embed).toHaveBeenCalledTimes(1);
+});
+
+it('embeds the picker inside the topmost dialog',async()=>{
+ mocks.embed.mockClear();
+ render(<><section role="dialog" aria-label="Earlier dialog"/><section role="dialog" aria-modal="true"><AppleMap pickable payload={{routes:[],pins:[]}}/></section></>);
+ await waitFor(()=>expect(mocks.embed).toHaveBeenCalledWith(expect.objectContaining({pickable:true})));
 });

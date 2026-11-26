@@ -165,3 +165,30 @@ it('projects native authority for self and preserves a selected walk on older bu
  expect(householdActivity({motionTypes:['Driving'],motionConfidence:'medium',motionTimestamp:100},110)).toBeNull();
  expect(householdActivity({motionTypes:['Driving'],motionConfidence:'high',motionTimestamp:100},200)).toBeNull();
 });
+
+it('uses the school icon for current and last-known positions inside that school',()=>{
+ const school={...gym,id:'school-a',name:'School',icon:'school'};
+ const otherSchool={...school,id:'school-b',longitude:151.3};
+ const pin=(longitude,at=60)=>peoplePins({
+  members:[row('a','Anna',school.latitude,longitude,{at})],places:[school,otherSchool]
+ })[0];
+ expect(pin(school.longitude)).toMatchObject({label:'School',placeIcon:'school'});
+ expect(pin(otherSchool.longitude)).toMatchObject({label:'School',placeIcon:'school'});
+ expect(pin(151.25)).not.toHaveProperty('placeIcon');
+ expect(pin(school.longitude,3600)).toMatchObject({label:'Last at School · 1 h ago',labelKind:'stale',placeIcon:'school'});
+});
+
+it('shows At followed by the saved name when a household place has no icon',()=>{
+ const school={...gym,id:'school',name:'School',icon:'none'};
+ const anna=row('a','Anna',school.latitude,school.longitude);
+ const lee=row('b','Lee',school.latitude,school.longitude);
+ expect(peoplePins({members:[anna],places:[school]})[0]).toMatchObject({label:'At School',placeIcon:'none'});
+ expect(peoplePins({members:[anna,lee],places:[school]})[0]).toMatchObject({label:'At School',placeIcon:'none'});
+});
+
+it('uses a 15 m Social radius without expanding it to the legacy private minimum',()=>{
+ const school={...gym,id:'small-school',name:'School',icon:'none',radius:15};
+ const pin=offset=>peoplePins({members:[row('a','Anna',school.latitude+offset/111195,school.longitude)],places:[school]})[0];
+ expect(pin(0).label).toBe('At School');
+ expect(pin(25)).not.toHaveProperty('placeIcon');
+});

@@ -11,8 +11,14 @@ const HOME={id:'4b2d6a3e-9f8c-4a57-8c1e-0d5a7e6b1c11',name:'Home',kind:'home',la
 // Sydney Opera House: about 80 km from Home, so choosing it must bring the map to it.
 const FAR={latitude:-33.8568,longitude:151.2153};
 const maps=registerPlugin('AppleMaps');
+const FRIEND={id:'people:friend',kind:'people',point:[FAR.latitude,FAR.longitude],title:'Sam',subtitle:'Sharing location',
+ members:[{id:'friend',name:'Sam',initial:'S',state:'live'}]};
+const STALE_FRIEND={id:'people:stale-friend',kind:'people',point:[FAR.latitude+0.006,FAR.longitude],title:'Lee',
+ subtitle:'Last updated 15 min ago',label:'15 min ago',labelKind:'stale',
+ members:[{id:'stale-friend',name:'Lee',initial:'L',state:'stale'}]};
 
 export function Fixture(){
+ const [social,setSocial]=useState(false);
  const [places,setPlaces]=useState([HOME]);
  const [saved,setSaved]=useState('none');
  const [picked,setPicked]=useState({text:'none',count:0});
@@ -56,7 +62,8 @@ export function Fixture(){
      <p style={{margin:0}}>{`rect: ${rect}`}</p>
     </section>
    </div>
-   <Places places={places} run={run} busy={false} error=""/>
+   {!social&&<button type="button" onClick={()=>setSocial(true)}>Social locations</button>}
+   <Places key={String(social)} household={social} mapCenter={social?HOME:undefined} peoplePins={social?[FRIEND,STALE_FRIEND]:undefined} places={social?[]:places} run={run} busy={false} error=""/>
   </DismissibleSheet>
  </div>;
 }

@@ -171,6 +171,22 @@ final class PlaceEditorUITests: XCTestCase {
     }
 
     // MARK: Tests
+    func testNewSocialLocationShowsLiveAndLastKnownBubbles() {
+        app.buttons["Social locations"].tap()
+        app.buttons["Add a location"].tap()
+        XCTAssertTrue(map.waitForExistence(timeout: 20), "a new social location embeds the live map before a pin is selected")
+        XCTAssertFalse(app.buttons["Save location"].isEnabled, "centering must not select a pin")
+        let lastKnown = app.otherElements.matching(NSPredicate(format: "label == %@", "Lee. Last updated 15 min ago")).firstMatch
+        let friend = app.otherElements.matching(NSPredicate(format: "label == %@", "Sam. Sharing location")).firstMatch
+        XCTAssertTrue(lastKnown.waitForExistence(timeout: 10), "older locations still appear with their age")
+        XCTAssertTrue(friend.waitForExistence(timeout: 10), "the live friend bubble is visible")
+        guard let rect = placeholderRect() else { return XCTFail("picker frame is available") }
+        for bubble in [lastKnown,friend] {
+            XCTAssertTrue(rect.insetBy(dx:-1,dy:-1).contains(CGPoint(x:bubble.frame.midX,y:bubble.frame.midY)),
+                          "the bubble is within the picker")
+        }
+    }
+
     func testTheLiveMapStandsWhereItsPlaceholderIs() {
         openEditor()
         shot("01-editor-opened")
@@ -186,7 +202,7 @@ final class PlaceEditorUITests: XCTestCase {
         // The editor's own controls are still there, and still the page's: the map covers only its placeholder.
         XCTAssertTrue(app.buttons["Use current location"].exists)
         XCTAssertTrue(slider("Arrival and place-name radius").exists)
-        XCTAssertTrue(slider("Home recognition radius").exists)
+        XCTAssertTrue(slider("Recognition radius").exists)
         XCTAssertNotNil(circleBounds(), "the Home circles are drawn on the map")
     }
 
@@ -249,7 +265,7 @@ final class PlaceEditorUITests: XCTestCase {
         openEditor()
         guard let small = circleBounds() else { return XCTFail("the circles are drawn") }
         shot("06-circles-small")
-        setSlider("Home recognition radius", range: 15...100, to: 100)
+        setSlider("Recognition radius", range: 15...100, to: 100)
         Thread.sleep(forTimeInterval: 1.0)
         scrollSheetBack()
         Thread.sleep(forTimeInterval: 0.8)
@@ -258,7 +274,7 @@ final class PlaceEditorUITests: XCTestCase {
         shot("07-recognition-at-100")
         XCTAssertGreaterThan(large.width, small.width * 1.3, "a 100 m circle is wider than a 60 m one (\(small.width) -> \(large.width) pt)")
         let before = metresPerPoint()
-        setSlider("Home recognition radius", range: 15...100, to: 15)
+        setSlider("Recognition radius", range: 15...100, to: 15)
         setSlider("Arrival and place-name radius", range: 25...100, to: 25)
         scrollSheetBack()
         Thread.sleep(forTimeInterval: 0.8)
@@ -302,7 +318,7 @@ final class PlaceEditorUITests: XCTestCase {
     func testSaveReportsThePlaceThatWasChosenOnTheMap() {
         openEditor()
         let chosen = pick(dx: 50, dy: -30)
-        setSlider("Home recognition radius", range: 15...100, to: 100)
+        setSlider("Recognition radius", range: 15...100, to: 100)
         setSlider("Arrival and place-name radius", range: 25...100, to: 25)
         let save = app.buttons["Save private place"]
         reveal(save)

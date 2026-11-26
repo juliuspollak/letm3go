@@ -531,23 +531,34 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
     } }
     // Home Wi-Fi: designate the connected network, or forget it. Only match
     // states are ever returned; never a network name or address.
-    @objc func setHomeWiFi(_ call: CAPPluginCall) { DispatchQueue.main.async {
-        guard self.requireAccount(call) else { return }
-        let r = LocationRecorder.shared
-        if call.getString("action") == "forget" {
-            do { try r.forgetHomeWiFi(); call.resolve(r.snapshot()) } catch { call.reject(error.localizedDescription) }
-            return
-        }
-        guard call.getString("action") == "designate" else { call.reject("Unknown Home Wi-Fi action."); return }
-        let owner = r.ownerID
-        r.designateHomeWiFi { error in
-            guard owner == r.ownerID else { call.reject("Account changed."); return }
-            if let error = error { call.reject(error.localizedDescription) } else { call.resolve(r.snapshot()) }
-        }
-    } }
     @objc func setAutomatic(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }
         do { try LocationRecorder.shared.setAutomatic(call.getBool("enabled") ?? false); call.resolve(LocationRecorder.shared.snapshot()) } catch { call.reject(error.localizedDescription) }
+    } }
+    @objc func setSocialRestPlaces(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        let recorder = LocationRecorder.shared
+        guard let owner = call.getString("ownerID"), owner.lowercased() == recorder.ownerID?.lowercased(),
+              let storage = recorder.storage, let rows = call.getArray("places",[String:Any].self) else {
+            call.reject("Account storage unavailable."); return
+        }
+        var ids = Set<String>()
+        let places = rows.compactMap { row -> SavedPlace? in
+            guard let id = row["id"] as? String, UUID(uuidString:id) != nil,
+                  let latitude = row["latitude"] as? Double, abs(latitude) <= 90,
+                  let longitude = row["longitude"] as? Double, abs(longitude) <= 180,
+                  let radius = row["radius"] as? Double, (15...500).contains(radius),
+                  ids.insert(id).inserted else { return nil }
+            return SavedPlace(id:id,name:"",kind:"social",latitude:latitude,longitude:longitude,radius:radius)
+        }.sorted { $0.id < $1.id }
+        guard places != recorder.socialRestPlaces else { call.resolve(); return }
+        do {
+            try storage.writeData(JSONEncoder().encode(places),name:"social-rest-places.data")
+            recorder.socialRestPlaces = places
+            recorder.clearRemovedSocialDwell()
+            if recorder.automaticAvailable { recorder.reconcileAutomaticSampling() }
+            call.resolve()
+        } catch { call.reject(error.localizedDescription) }
     } }
     @objc func savePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
         guard self.requireAccount(call) else { return }

@@ -1,7 +1,7 @@
 import {metersBetween} from './activityPrivacy.js';
 import {distanceText} from './distanceUnits.js';
 import {personStatus} from './personStatus.js';
-import {formatDuration,secondsAtPlace} from './peopleMap.js';
+import {formatDuration,matchVisibleSavedPlace,secondsAtPlace} from './peopleMap.js';
 import {atHome,lastKnownActivity} from './householdLocation.js';
 
 // Everyone on the Home screen: household and friends, one person once, with the same
@@ -54,7 +54,7 @@ export function compactStatus({state,ageSeconds,home,verifiedHome,placeName,acti
  return 'No recent location';
 }
 
-export function homePeople({household=[],friends=[],selfID,selfPosition=null,homeFlags={},homePlace=null,activities={},unit='km'}){
+export function homePeople({household=[],friends=[],selfID,selfPosition=null,homeFlags={},homePlace=null,places=[],activities={},unit='km'}){
  const seen=new Set([selfID]);
  const people=[];
  for(const member of [...household,...friends]){
@@ -63,14 +63,16 @@ export function homePeople({household=[],friends=[],selfID,selfPosition=null,hom
   const home=member.state==='live'&&homeFlags[member.user_id]===true;
   // Home is shared by the household only; a friend's old position is never placed there.
   const verifiedHome=member.source==='household'&&member.state==='stale'&&atHome(false,member.position,homePlace);
-  const location={state:member.state,ageSeconds:member.ageSeconds,home,homeSeconds:home||verifiedHome?secondsAtPlace(member,{allowStale:verifiedHome}):null,activity:activities[member.user_id],lastKnownActivity:activities[member.user_id]?null:lastKnownActivity(member),verifiedHome,placeName:member.place_name,placeSince:member.place_since};
+  const savedPlace=home?null:matchVisibleSavedPlace(member.state,member.position,places);
+  const placeName=savedPlace?.name||member.place_name;
+  const location={savedPlace,state:member.state,ageSeconds:member.ageSeconds,home,homeSeconds:home||verifiedHome?secondsAtPlace(member,{allowStale:verifiedHome}):null,activity:activities[member.user_id],lastKnownActivity:activities[member.user_id]?null:lastKnownActivity(member),verifiedHome,placeName,placeSince:member.place_since};
   const status=personStatus(location);
   const away=member.state==='live'||member.state==='stale'?distanceAway(selfPosition,member.position,unit):null;
   const live=member.state==='live'||member.state==='stale';
   people.push({id:member.user_id,userId:member.user_id,name:member.display_name||'Member',position:usable(member.position)?member.position:null,state:member.state,
    locationAt:live&&usable(member.position)&&member.ageSeconds!=null?Date.parse(member.location_at):null,
    group:member.source==='household'?'household':'friend',
-   short:compactStatus({state:member.state,ageSeconds:member.ageSeconds,home,verifiedHome,placeName:member.place_name,activity:activities[member.user_id],distance:live&&!home&&!verifiedHome?distanceShort(selfPosition,member.position,unit):null}),
+   short:compactStatus({state:member.state,ageSeconds:member.ageSeconds,home,verifiedHome,placeName,activity:activities[member.user_id],distance:live&&!home&&!verifiedHome?distanceShort(selfPosition,member.position,unit):null}),
    ageText:live?shortAge(member.ageSeconds):'',
    distance:home||verifiedHome?null:away,
    location,

@@ -12,7 +12,7 @@ const household=(role='owner')=>async name=>({data:name==='my_household'?[{id:'f
 beforeEach(()=>{socialCache.clear();mock.rpc.mockImplementation(household());});
 afterEach(cleanup);
 
-describe('My location',()=>{
+describe('Share my location',()=>{
  it('keeps friend and household sharing independent',async()=>{
   const friends=vi.fn().mockResolvedValue(),homeShare=vi.fn().mockResolvedValue(),homeStop=vi.fn();
   render(<><Friends sharing={{enabled:false,ready:true,onChange:friends}}/><Household selfId="me" liveEnabled={false} onShareLive={homeShare} onStopLive={homeStop}/></>);
@@ -29,14 +29,13 @@ describe('My location',()=>{
   const {rerender}=render(<LocationSharingRow audience="household" enabled={false} onChange={change}/>);
   const toggle=screen.getByRole('switch',{name:'Share my location with household'});
   expect(toggle).toHaveAttribute('aria-checked','false');
-  expect(screen.getByText('Off')).toBeInTheDocument();
+  expect(screen.getByText('Share my location')).toBeInTheDocument();
   fireEvent.click(toggle);
   expect(await screen.findByRole('alert')).toHaveTextContent('Connect to change location sharing.');
   expect(toggle).toHaveAttribute('aria-checked','false');
   // Only the caller's confirmed state turns it on.
   rerender(<LocationSharingRow audience="household" enabled onChange={change}/>);
   expect(toggle).toHaveAttribute('aria-checked','true');
-  expect(screen.getByText('Shared with household')).toBeInTheDocument();
  });
  it('waits for the server before showing a setting, and shows progress while changing',async()=>{
   let finish;const change=vi.fn(()=>new Promise(resolve=>{finish=resolve;}));
@@ -301,4 +300,14 @@ describe('Household after the person changes it',()=>{
   render(<Household selfId="me"/>);
   expect(screen.queryByRole('heading',{name:'WarillaFamily'})).toBeNull();
  });
+});
+
+it('opens the same Locations action from Friends and Household',async()=>{
+ const onOpenLocations=vi.fn();
+ render(<><Friends onOpenLocations={onOpenLocations}/><Household onOpenLocations={onOpenLocations}/></>);
+ const friends=screen.getByRole('region',{name:'Friends'});
+ const household=screen.getByRole('region',{name:'Household'});
+ fireEvent.click(within(friends).getByRole('button',{name:'Locations'}));
+ fireEvent.click(await within(household).findByRole('button',{name:'Locations'}));
+ expect(onOpenLocations).toHaveBeenCalledTimes(2);
 });

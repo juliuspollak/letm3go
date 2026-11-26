@@ -1,4 +1,4 @@
-// Tracking & Permissions rows for passive rest and Home Wi-Fi. States, reasons,
+// Tracking & Permissions rows for passive rest and Wi-Fi. States, reasons,
 // times and counts only: never a network name, access point or coordinate.
 export function duration(seconds){
  if(!Number.isFinite(seconds)||seconds<0)return 'Not reported';
@@ -9,18 +9,6 @@ export function duration(seconds){
  return minutes%60?`${hours} h ${minutes%60} min`:`${hours} h`;
 }
 
-export const WIFI_MATCH_LABELS={
- matched:'Home Wi-Fi detected',
- notMatched:'Connected to another network',
- unavailable:'Wi-Fi unavailable',
- unknown:'Waiting for fresh Wi-Fi evidence',
- notConfigured:'Not configured'
-};
-export const WIFI_HELP={
- notMatched:'Join your Home network if you are at Home.',
- unavailable:'iOS reported no network: Wi-Fi may be off or disconnected, or Precise Location may be off.',
- unknown:'Reopen the app at Home to read it again.'
-};
 export const SERVICE_SESSION_LABELS={
  held:'Held (started with the app open)',
  rejoined:'Held (rejoined after relaunch)',
@@ -60,7 +48,7 @@ export function passiveRows(state){
  return [
   ['Release location while resting',passive.enabled?(passive.supported?'On':'On · needs iOS 18; the background session stays held'):'Off · background session stays held'],
   ['Confirmed rest (needed for passive rest)',passive.restConfirmed?`Confirmed · ${passive.restReason}`:passive.restReason||'Not confirmed'],
-  ['Reduced-accuracy rest',passive.reducedAccuracyRest?(passive.reducedAccuracyRest.active?`Active at the ${passive.reducedAccuracyRest.place==='savedHome'?'saved Home':'current place'} · 100 m location, background session kept`:'Not active'):'Not reported'],
+  ['Reduced-accuracy rest',passive.reducedAccuracyRest?(passive.reducedAccuracyRest.active?`Active at the current place · 100 m location, background session kept`:'Not active'):'Not reported'],
   ['Passive rest',passive.active?`Active since ${time(passive.since)} · no location updates, no background session`:`Not active · ${passive.retainReason||'waiting'}`],
   ['Always service session',SERVICE_SESSION_LABELS[passive.serviceSession]||passive.serviceSession||'Not reported'],
   ['Sharing while resting',passive.sharingRest?`${passive.sharingRest.enabled?'Device test on':'Off'} · ${passive.sharingRest.sharingHoldsLocation?'sharing keeps continuous location':'sharing does not hold location'} · ${passive.sharingRest.reason}${passive.sharingRest.decisionCurrent===false?' · sharing changed since; deciding again':''}`:'Not reported'],
@@ -70,8 +58,7 @@ export function passiveRows(state){
   ['Background session released',passive.sessionReleases?`${passive.sessionReleases} times · last ${time(passive.sessionReleasedAt)}`:'Not this session'],
   ['Last precise GPS reason',passive.lastPreciseReason||'None yet'],
   ['Time per location mode (since app start)',modeSummary||'Not reported'],
-  ['Home Wi-Fi',wifi.configured?WIFI_MATCH_LABELS[wifi.match]||wifi.match:WIFI_MATCH_LABELS.notConfigured],
-  ['Home Wi-Fi last checked',wifi.configured?`${time(wifi.observedAt)}${wifi.source&&wifi.source!=='none'?` · ${wifi.source}`:''}`:'—'],
+  ['Wi-Fi connection',wifi.connected===true?'Connected':wifi.connected===false?'Unavailable':'Not reported'],
   ['Departure from rest',latency.engine==='passive'?[`woken by ${latency.cause}`,latency.motionOnsetToEvidenceSeconds!=null?`movement began ${latency.motionOnsetToEvidenceSeconds} s earlier`:null,latency.evidenceToFirstFixSeconds!=null?`first GPS ${latency.evidenceToFirstFixSeconds} s after waking`:null,latency.startGapMeters!=null?`route began ~${latency.startGapMeters} m beyond the place`:null].filter(Boolean).join(' · '):'No departure from passive rest measured yet']
  ];
 }

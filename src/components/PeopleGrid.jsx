@@ -2,6 +2,7 @@ import {useEffect,useId,useRef,useState} from 'react';
 import {flushSync} from 'react-dom';
 import PersonAvatar from './PersonAvatar.jsx';
 import {personTileLocation,shortAge} from '../lib/homePeople.js';
+import {PLACE_ICONS} from '../lib/placeIcons.js';
 import {travelDuration} from '../lib/useDriveTimes.js';
 import {Bike,CarFront,Check,CircleAlert,Clock3,Footprints,Hand,House,LoaderCircle,MapPin,MapPinOff,ShieldOff,Snail,TriangleAlert} from 'lucide-react';
 
@@ -87,6 +88,9 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  const atHome=status?.tone==='home';
  const lastKnown=(location?.state||person.state)==='stale'||status?.tone==='stale'||status?.lastKnown===true;
  const current=!lastKnown&&(location?.state==='live'||status?.tone==='live'||atHome);
+ const savedPlace=location?.savedPlace;
+ const savedPlaceLabel=savedPlace?`${lastKnown?'Last at':'At'} ${savedPlace.name}`:null;
+ const SavedPlaceIcon=PLACE_ICONS[savedPlace?.icon]?.Icon;
  const age=lastKnown?shortAge(location?.ageSeconds):'';
  const travel=!atHome&&(current||lastKnown)?[
   ...travelModes.map(([label,key,Icon])=>({label,Icon,time:travelDuration(person[key])})),
@@ -138,13 +142,19 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
     {refresh?.tone==='refreshing'&&<circle className="person-refresh-arc" cx="50" cy="50" r="49.25" pathLength="100" strokeDasharray="29 71"/>}
    </svg>
    {age&&<span className="person-freshness" aria-hidden="true">{age}</span>}
-   {travel.length>0?<TravelTimes travel={travel} destination={destination}/>:<span className="person-location-icon" role="img" aria-label={locationDescription||'Location unavailable'}><LocationIcon size={18} aria-hidden="true"/></span>}
+   {travel.length>0?<TravelTimes travel={travel} destination={destination}/>:!savedPlace&&<span className="person-location-icon" role="img" aria-label={locationDescription||'Location unavailable'}><LocationIcon size={18} aria-hidden="true"/></span>}
    {RefreshIcon&&<button type="button" className="person-edge person-refresh" aria-haspopup="dialog" aria-label={`${shown}: ${person.refreshLabel}. Show refresh details`} onClick={event=>openPanel('refresh',event)}>
     <span className="person-edge-icon"><RefreshIcon size={12} aria-hidden="true"/></span>
    </button>}
    <Wave poke={person.poke} received={person.receivedPoke} name={shown} onPoke={person.onPoke}/>
   </div>
-  <button type="button" className="person-tile-name" aria-haspopup="dialog" aria-label={`Location details for ${shown}`} onClick={event=>openPanel('details',event)}>{shown}</button>
+  <button type="button" className="person-tile-name" aria-haspopup="dialog" aria-label={`Location details for ${shown}`} onClick={event=>openPanel('details',event)}>
+   {SavedPlaceIcon&&<SavedPlaceIcon className="person-name-place-icon" size={13} aria-hidden="true"/>}
+   <span>{shown}</span>
+  </button>
+  {savedPlace&&<span className="person-saved-place" title={savedPlaceLabel}>
+   {savedPlaceLabel}
+  </span>}
   <span className="sr-only" role="status">{refresh?`${shown}: ${person.refreshLabel}`:''}</span>
   <dialog ref={dialog} className="person-details" role="dialog" aria-labelledby={titleId} onKeyDown={event=>{
    if(event.key==='Escape'){event.preventDefault();closePanel();}

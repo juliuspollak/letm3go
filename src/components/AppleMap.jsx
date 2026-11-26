@@ -33,7 +33,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
  const fittedContent=useRef({positions:false,focus:false});
  const openingFullscreen=useRef(false);
  const hiddenForDialog=useRef(false);
- const [reopenVersion]=useState(0);
+ const [reopenVersion,setReopenVersion]=useState(0);
  const [embedded,setEmbedded]=useState(false);
  const [previewState,setPreview]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  // While a sheet or the photo viewer is open the native map is hidden (never
@@ -157,7 +157,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
  useEffect(()=>{
   if(!appleMapsAvailable())return;
   if(!embeddedEnabled){const wasEmbedded=embeddedOnce.current;embeddedOnce.current=false;if(wasEmbedded)recordMapEvent('unembed',{reason:'disabled'});void appleMaps.unembed({mapID}).catch(()=>{}).finally(()=>setEmbedded(false));return;}
-  let active=true;let previous='';let heals=0;let lastReported='';
+  let active=true;let previous='';let heals=0;let lastReported='';let failed=false;
   // The overview data must reach the native side before a payload names it.
   // false: the overview did not arrive, so it is left out of this embed rather
   // than named and drawn empty.
@@ -193,9 +193,9 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
    sendResize(now);
   };
   const mount=(origin)=>{
-   if(!active||openingFullscreen.current||!mapSurface.current)return;
+   if(!active||failed||openingFullscreen.current||!mapSurface.current)return;
    const surface=mapSurface.current;
-   const dialog=document.querySelector('dialog[open], [aria-modal="true"], [role="dialog"], .lightbox');
+   const dialog=Array.from(document.querySelectorAll('dialog[open], [aria-modal="true"], [role="dialog"], .lightbox')).at(-1);
    if(dialog&&!dialog.contains(surface)&&document.visibilityState!=='hidden'){
     // A sheet or the photo viewer: MapKit would cover it, so hide the map and
     // show a still image of it. It comes back exactly as it was.
@@ -238,7 +238,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
    }).then(outcome=>{
     if(!outcome||!active)return;
     embeddedOnce.current=true;fittedViewport.current=viewportKey;fittedContent.current={positions,focus};
-    setEmbedded(true);setFrozen(null);
+    setEmbedded(true);setFrozen(null);if(pickable)setError('');
     verify(outcome.result?.frame,layoutNumber);
     // The native side no longer has this overview (it keeps a few): send it
     // again once, then report it.
@@ -249,7 +249,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
     setOverviewFailed(overviewKey&&(!outcome.arrived||outcome.result?.missingOverview)?overviewKey:null);
     // A sheet may have opened while this embed was in flight.
     mount();
-   }).catch(()=>{previous='';if(active){setEmbedded(false);setFrozen(null);if(pickable)setError('The map could not be shown. Close this screen and open it again.');}});
+   }).catch(()=>{previous='';if(active){setEmbedded(false);setFrozen(null);if(pickable){failed=true;setError('The map could not be shown.');}}});
   };
   // The detail page animates into place; ResizeObserver alone does not see
   // transforms. Follow its initial movement before leaving layout to observers.
@@ -318,7 +318,7 @@ export default function AppleMap({payload:basePayload,onResult,large=false,picka
   reopen.current=resumeFullscreen;onResumeFullscreen?.();void openHandler.current?.();
  },[resumeFullscreen,embedded,onResumeFullscreen]);
  // The saved-place editor's map is the live map or nothing: no still picture to tap, no chooser to open instead.
- if(pickable)return <div className="map-frame apple-map-frame" ref={mapSurface}><div className={`place-picker apple-map-preview${embedded?' native-embedded':''}`} role="img" aria-label="Map of the place">{!embedded&&!error&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Loading map…':'Maps are available in the iPhone app.'}</span>}</div>{error&&<p role="alert" className="notice">{error}</p>}</div>;
+ if(pickable)return <div className="map-frame apple-map-frame"><div ref={mapSurface} className={`place-picker apple-map-preview${embedded?' native-embedded':''}`} role="img" aria-label="Map of the place">{!embedded&&!error&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Loading map…':'Maps are available in the iPhone app.'}</span>}</div>{error&&<div className="notice" role="alert">{error} <button type="button" className="text-button" onClick={()=>{setError('');setReopenVersion(value=>value+1);}}>Retry map</button></div>}</div>;
  return <div className="map-frame apple-map-frame" ref={mapSurface}><button type="button" className={`journey-map ${large?'large':''} apple-map-preview ${embedded?'native-embedded':''}`} aria-label="Open interactive Apple journey map" disabled={busy||!appleMapsAvailable()} onClick={open}>{!embedded&&preview&&<img src={preview} alt="Apple map preview"/>}<span className="apple-map-attribution">Apple Maps</span>{!embedded&&<span className="apple-map-open">{busy?'Opening…':'Explore map'} <Maximize2 size={16} strokeWidth={1.8} aria-hidden="true"/></span>}{!preview&&<span className="apple-map-placeholder">{appleMapsAvailable()?'Apple Maps':'Maps are available in the iPhone app.'}</span>}</button>{frozen&&(!dynamic||frozen.content===latestContent)&&<img className="apple-map-freeze" src={frozen.src} alt="" aria-hidden="true" style={{height:`${frozen.height}px`}}/>}{!embedded&&basePayload.activityPreview&&<section className="map-activity-bubble" aria-label="Selected activity"><div><strong>{basePayload.activityPreview.title}</strong><small>{basePayload.activityPreview.detail}</small></div><button type="button" onClick={()=>onControl?.('pday:open:'+basePayload.activityPreview.activityID)}>Open activity</button><button type="button" aria-label="Close activity preview" onClick={()=>onControl?.('pday:clear:'+basePayload.activityPreview.activityID)}>×</button></section>}{controls&&!embedded&&<MapControls controls={controls} onAction={onControl}/>}{overviewFailed&&overviewFailed===overviewKey&&<div className="notice map-overview-error" role="alert"><span>Routes could not be drawn on the map.</span><button type="button" className="text-button" onClick={()=>{resent.current.delete(overviewKey);forgetOverview(overviewKey);setOverviewFailed(null);setOverviewAttempt(value=>value+1);}}>Retry</button></div>}{onLocate&&!embedded&&<button type="button" className="map-locate-button" aria-label="Show my location" title="Show my location" aria-pressed={locating||(basePayload.camera?.mode==='person'&&basePayload.camera?.personId==='self')} disabled={locating} onClick={onLocate}><Navigation size={20}/></button>}{!embedded&&!appleMapsAvailable()&&<PeopleActivityFallback pins={latestContent.pins}/>} {error&&<p role="status" className="notice">{error}</p>}</div>;
 }
 

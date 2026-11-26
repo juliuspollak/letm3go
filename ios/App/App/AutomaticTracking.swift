@@ -1097,6 +1097,7 @@ extension LocationRecorder {
     }
     func restoreDwell() {
         dwell = (try? storage?.readData(name:"dwell.data")).flatMap { try? JSONDecoder().decode(DwellArea.self,from:$0) }
+        clearRemovedSocialDwell()
     }
     // Idle fixes keep the current place up to date: a saved place wins, a fix
     // well outside the area drops it, and ten quiet minutes infer one.
@@ -1139,8 +1140,14 @@ extension LocationRecorder {
         setDwell(inferred,reason:"stayed in one small area for 10 minutes")
     }
     func recognizedPlace(at point: GPSPoint) -> SavedPlace? {
-        places.filter { $0.recognitionPlace.contains(point) }
+        let local = places.filter { $0.recognitionPlace.contains(point) }
             .min { $0.recognitionRadius < $1.recognitionRadius }
+        return local ?? socialRestPlaces.filter { $0.contains(point) }.min { $0.radius < $1.radius }
+    }
+    func clearRemovedSocialDwell() {
+        guard let area = dwell, area.source == .saved, area.placeKind == "social",
+              !socialRestPlaces.contains(where: { DwellArea.saved($0, now:area.since) == area }) else { return }
+        setDwell(nil,reason:"saved social place changed")
     }
     func retainWalkingEvidence(_ trip: RecordedActivity, reason: String) throws {
         guard let storage else { return }

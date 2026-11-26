@@ -92,7 +92,7 @@ extension LocationRecorder {
 
     var restPlaceKind: RestPlaceKind {
         guard let area = dwell else { return .none }
-        if area.source == .saved { return area.placeKind == "home" ? .home : .savedPlace }
+        if area.source == .saved { return .savedPlace }
         return .inferredPlace
     }
 
@@ -105,20 +105,17 @@ extension LocationRecorder {
         // A standby fix arrives because the phone moved 25 m. Just after Core Motion
         // changed its mind, that fix is the start of a departure, not proof of rest.
         let unsettled = RestConfirmation.motionUnsettled(lastMotionChangeAt: diagnosticLastMotionAt, stationary: AutomaticDetector.freshStationary(motion, now: now), now: now)
-        refreshWiFiIfDue(now: now)
-        wifiMatchState = HomeWiFi.match(homeWiFi, wifiObservation, now: now)
-        // Only a new rest needs current Wi-Fi to earn the shorter Home wait.
-        // Losing that corroboration does not undo the same uninterrupted rest.
-        let preservingConfirmedHome = passiveSince.map { since in
+        // Losing Wi-Fi alone does not undo the same uninterrupted rest.
+        let preservingConfirmedWiFiRest = passiveSince.map { since in
             locationMode == .passive && restDecision.confirmed &&
-                restDecision.requiredSeconds == RestConfirmation.homeWithWiFiSeconds &&
+                restDecision.requiredSeconds == RestConfirmation.savedWithWiFiSeconds &&
                 (dwell?.since ?? now) <= since && (restDisturbedAt ?? 0) <= since
         } ?? false
         let decision = RestConfirmation.decide(RestInputs(
             place: kind, placeSince: dwell?.since, lastDisturbanceAt: restDisturbedAt, placeAccuracy: restPlaceAccuracy,
             placeVerified: restPlaceFixAt.map { fix in dwell.map { fix >= $0.since - 120 } ?? false } ?? false,
             idle: automaticAvailable && !manualRecordingLive && automaticIdle, recentMovement: recent, motionMoving: moving || unsettled,
-            wifi: kind == .home ? wifiMatchState : .unknown, now: now), preservingConfirmedHome: preservingConfirmedHome)
+            wifi: wifiMatchState, now: now), preservingConfirmedWiFiRest: preservingConfirmedWiFiRest)
         if decision.code == "settling", restDecision.code != "settling" {
             recordDiagnostic("rest", "Rest confirmation started", details: ["restPlace": kind.rawValue, "restRequiredSeconds": String(Int(decision.requiredSeconds)), "wifiMatch": wifiMatchState.rawValue])
         }
@@ -127,7 +124,6 @@ extension LocationRecorder {
                              details: ["restReason": decision.reason, "restPlace": kind.rawValue, "wifiMatch": wifiMatchState.rawValue])
         }
         restDecision = decision
-        learnHomeWiFi(now: now)
         evaluatePassive()
         // One entry per distinct reason: a rest that never goes passive explains itself.
         let blocked = passiveRetainReason.isEmpty ? "" : restDecision.confirmed ? passiveRetainReason : restDecision.code
@@ -144,7 +140,7 @@ extension LocationRecorder {
             alwaysAuthorized: manager.authorizationStatus == .authorizedAlways,
             preciseAuthorized: manager.accuracyAuthorization == .fullAccuracy,
             serviceSessionHeld: serviceSession != nil, serviceSessionInUse: !serviceSessionInsufficient,
-            significantChanges: significantLocationRequested, exitRegion: registeredPlaceRegion != nil,
+            significantChanges: significantLocationRequested, exitRegion: restExitRegionReady,
             manualRecording: manualRecordingLive, liveSharing: false)
         let otherwiseAllowed = PassiveRestPolicy.retainReason(inputs) == nil
         evaluateSharingRest(passiveOtherwiseAllowed: otherwiseAllowed)
@@ -251,7 +247,6 @@ extension LocationRecorder {
     // Opening the app is a wake-up too: every background one may have been missed.
     // One location decides, so opening the app never restarts continuous tracking.
     func noteForegroundReturn(now: Double) {
-        refreshWiFiIfDue(now: now, foreground: true)
         guard automaticAvailable, !manualRecordingLive, locationMode == .passive, !continuousLocationRequested, now - foregroundCheckAt >= 300 else { return }
         foregroundCheckAt = now
         recordDiagnostic("rest", "App opened during passive rest: one location check requested")
@@ -353,7 +348,7 @@ extension LocationRecorder {
         persistPassiveSince(nil)
         endPassiveRest(reason: reason)
         endServiceSession(reason)
-        resetHomeWiFi()
+        stopWiFiPathMonitor()
         monitoringFailures = MonitoringFailures()
         restPlaceFixAt = nil; restPlaceAccuracy = nil; sessionReleasedAt = nil; sessionReleases = 0
         departurePlace = nil; departureMotionOnsetAt = nil; lastPreciseReason = "none yet"; keepAliveUpdates = 0
@@ -586,7 +581,7 @@ extension LocationRecorder {
     // MARK: Background recovery
     var backgroundRecoveryInputs: BackgroundRecoveryInputs {
         BackgroundRecoveryInputs(automaticAvailable: automaticAvailable, activitySessionHeld: backgroundSessionKeepsAppRunning,
-            alwaysAuthorized: manager.authorizationStatus == .authorizedAlways, exitRegion: registeredPlaceRegion != nil,
+            alwaysAuthorized: manager.authorizationStatus == .authorizedAlways, exitRegion: restExitRegionReady,
             significantChanges: significantLocationRequested, visits: visitMonitoringRequested, monitoringFailed: monitoringFailures.active,
             serviceSessionHeld: serviceSession != nil, serviceSessionInUse: !serviceSessionInsufficient,
             keepAliveWanted: keepAliveWanted, keepAliveRunning: keepAliveTask != nil)
@@ -667,12 +662,12 @@ extension LocationRecorder {
                                        "lastWakeOutcome": wakeOutcome, "lastWakeOutcomeAt": wakeOutcomeAt as Any? ?? NSNull()],
                 "restStage": RestStage.describe(reducedAccuracy: !manualRecordingLive && locationMode == .resting, confirmed: restDecision.confirmed, passive: locationMode == .passive),
                 "reducedAccuracyRest": ["active": !manualRecordingLive && locationMode == .resting, "insideSince": homeRest.insideSince as Any? ?? NSNull(),
-                                        "place": dwell != nil ? "currentPlace" : homePlace != nil ? "savedHome" : "none",
+                                        "place": dwell != nil ? "currentPlace" : "none",
                                         "requiredSeconds": Int(HomeRest.confirmSeconds)],
                 "falseWakeRestoresThisHour": falseWakeRestores.filter { now - $0 < 3600 }.count,
                 "lastPreciseReason": lastPreciseReason,
                 "modeSeconds": modeClock.totals(now: now).mapValues { Int($0) },
-                "wifi": wifiSnapshot]
+                "wifi": ["connected":wifiOnPath as Any? ?? NSNull()]]
     }
 
     static let placeRegionID = "letm3go-place-stationary"
@@ -690,15 +685,24 @@ extension LocationRecorder {
     func removePlaceRegion() {
         for region in manager.monitoredRegions where region.identifier == Self.placeRegionID { stopRegionMonitoring(region) }
     }
+    private func restExitSpec(for area: DwellArea) -> PlaceRegionSpec? {
+        let isSocial = area.placeKind == "social"
+        let cap = isSocial ? 500 : PlaceRegion.maximumRadius
+        let radius = min(PlaceRegion.radius(placeRadius: area.radius, anchorAccuracy: 65, cap: cap),
+                         manager.maximumRegionMonitoringDistance)
+        guard (!isSocial || radius >= area.radius),
+              PlaceRegion.valid(latitude: area.latitude, longitude: area.longitude, radius: radius, cap: cap) else { return nil }
+        return PlaceRegionSpec(latitude: area.latitude, longitude: area.longitude, radius: radius)
+    }
+    var restExitRegionReady: Bool {
+        guard let registered = registeredPlaceRegion else { return false }
+        guard let area = dwell, area.placeKind == "social" else { return true }
+        return restExitSpec(for: area)?.same(registered) == true
+    }
     func reconcileRestExitRegion() {
         guard automaticAvailable, restDecision.confirmed, passiveRestEnabled, serviceSession != nil,
-              let area = dwell, CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
-            removePlaceRegion()
-            return
-        }
-        let radius = min(PlaceRegion.radius(placeRadius: area.radius, anchorAccuracy: 65), manager.maximumRegionMonitoringDistance)
-        let spec = PlaceRegionSpec(latitude: area.latitude, longitude: area.longitude, radius: radius)
-        guard PlaceRegion.valid(latitude: spec.latitude, longitude: spec.longitude, radius: spec.radius) else {
+              let area = dwell, CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
+              let spec = restExitSpec(for: area) else {
             removePlaceRegion()
             return
         }

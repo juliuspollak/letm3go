@@ -3,14 +3,14 @@ import Foundation
 enum PlaceRegion {
     static let minimumRadius: Double = 100
     static let maximumRadius: Double = 300
-    static func valid(latitude: Double, longitude: Double, radius: Double) -> Bool {
+    static func valid(latitude: Double, longitude: Double, radius: Double, cap: Double = maximumRadius) -> Bool {
         latitude.isFinite && longitude.isFinite && abs(latitude) <= 90 && abs(longitude) <= 180 && !(latitude == 0 && longitude == 0) &&
-            radius.isFinite && radius >= minimumRadius && radius <= maximumRadius
+            radius.isFinite && radius >= minimumRadius && radius <= cap
     }
-    static func radius(placeRadius: Double, anchorAccuracy: Double) -> Double {
+    static func radius(placeRadius: Double, anchorAccuracy: Double, cap: Double = maximumRadius) -> Double {
         let accuracy = anchorAccuracy.isFinite && anchorAccuracy >= 0 ? anchorAccuracy : 65
         let place = placeRadius.isFinite && placeRadius > 0 ? placeRadius : minimumRadius
-        return min(maximumRadius, max(minimumRadius, place, accuracy * 2))
+        return min(cap, max(minimumRadius, place, accuracy * 2))
     }
 }
 

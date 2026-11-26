@@ -29,14 +29,14 @@ export default function ActivitySharingRow({client=supabase,cacheKey=null}){
  if(state.failed&&!state.ready)return null;
  if(!state.ready){
   return <div className="sharing-row-wrap" aria-hidden="true"><div className="sharing-row">
-   <div className="sharing-row-text"><span className="sharing-row-title">New activities</span><span className="sharing-row-caption">Checking…</span></div>
+   <div className="sharing-row-text"><span className="sharing-row-title">Share new activities</span><span className="sharing-row-caption">Checking…</span></div>
    <Switch checked={false} pending label="Share new activities with my household" onChange={()=>{}}/>
   </div></div>;
  }
  return <div className="sharing-row-wrap">
   <div className={`sharing-row${state.enabled?' is-on':''}`}>
-   <div className="sharing-row-text"><span className="sharing-row-title">New activities</span>
-    <span className="sharing-row-caption" aria-live="polite">{state.pending?'Updating…':state.enabled?`Shared with household automatically · you can make any one private${state.waiting?` · ${state.waiting} waiting to send, retried when you open the app`:''}`:'Not shared unless you choose'}</span></div>
+   <div className="sharing-row-text"><span className="sharing-row-title">Share new activities</span>
+    {(state.pending||(state.enabled&&state.waiting>0))&&<span className="sharing-row-caption" aria-live="polite">{state.pending?'Updating…':`${state.waiting} waiting to send, retried when you open the app`}</span>}</div>
    <Switch checked={state.enabled} pending={state.pending} label="Share new activities with my household" onChange={change}/>
   </div>
   {state.error&&<p role="alert" className="error sharing-row-error">{state.error}</p>}

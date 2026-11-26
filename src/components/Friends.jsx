@@ -10,13 +10,13 @@ import SocialActions from './SocialActions.jsx';
 import {connectedPeople} from '../lib/people.js';
 import {useCallback,useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase.js';
-import {UserMinus,UserPlus,X} from 'lucide-react';
+import {MapPin,UserMinus,UserPlus,X} from 'lucide-react';
 
 // Friends: my location for friends, the people, then Add friend. Invitations and
 // managing friends open only when asked for.
 //
 // The app supplies the same location entries used for Home and Household.
-export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onHouseholdJoined=null,household=[],peopleById=null,sharing=null,permission,precise,onShowPerson=null,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
+export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onHouseholdJoined=null,household=[],peopleById=null,sharing=null,permission,precise,onShowPerson=null,onOpenLocations,onShareLive,invitationCode=null,invitationPreview=null,onInviteConsumed}){
  const [inviteAccepted,setInviteAccepted]=useState(false),[shareBusy,setShareBusy]=useState(false),[shareError,setShareError]=useState('');
  // Opened before: show the last list at once and refresh it quietly. Only a first visit shows the spinner.
  const cacheKey='friends:'+(selfId||'');
@@ -53,7 +53,7 @@ export default function Friends({personPhotos={},selfId=null,selfAvatar=null,onH
   {!loaded&&<LoadingMark label="Loading friends"/>}
   <PeopleGrid people={people} photos={personPhotos} selfId={selfId} selfAvatar={selfAvatar} label="Friends"/>
   {loaded&&!people.length&&<p className="social-empty">No friends yet. Add someone to see each other on the map.</p>}
-  <SocialActions label="Friend actions" actions={[{id:'add',label:'Add friend',icon:UserPlus,onClick:()=>setAdding(true),expanded:adding}]}/>
+  <SocialActions label="Friend actions" actions={[{id:'add',label:'Add friend',icon:UserPlus,onClick:()=>setAdding(true),expanded:adding},onOpenLocations&&{id:'locations',label:'Locations',icon:MapPin,onClick:onOpenLocations,hasPopup:'dialog'}]}/>
   {inviteAccepted&&<InviteSharingPrompt kind="friend" busy={shareBusy} error={shareError} onClose={()=>{setInviteAccepted(false);setShareError('');}} onEnable={async()=>{setShareBusy(true);setShareError('');try{if(!onShareLive)throw new Error('Location sharing is unavailable.');await onShareLive();setInviteAccepted(false);setFeedback('Live location sharing is on.');}catch(e){setShareError(e.message||'Could not enable sharing.');}finally{setShareBusy(false);}}}/>}
   {feedback&&!adding&&<p role="status" className="notice">{feedback}</p>}
   {error&&!adding&&<p role="alert" className="error">{error}</p>}

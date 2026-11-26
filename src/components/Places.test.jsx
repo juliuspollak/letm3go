@@ -34,7 +34,7 @@ it('sets Home recognition independently from the saved arrival radius',async()=>
  const run=vi.fn().mockResolvedValue({});
  render(<Places places={[{id:'home',name:'Home',kind:'home',latitude:1,longitude:2,radius:250}]} run={run}/>);
  fireEvent.click(screen.getByRole('button',{name:'Edit Home'}));
- const homeRadius=screen.getByRole('slider',{name:/Home recognition radius/});
+ const homeRadius=screen.getByRole('slider',{name:/^Recognition radius/});
  expect(homeRadius).toHaveValue('30');
  expect(homeRadius).toHaveAttribute('min','15');
  expect(homeRadius).toHaveAttribute('max','100');
@@ -72,7 +72,7 @@ it('shows both of a Home\'s circles on the map and moves them with the sliders',
  // The recognition circle is the one that is solid; the arrival and place-name circle is the second ring.
  expect(map).toHaveAttribute('data-radius','100');
  expect(map).toHaveAttribute('data-arrival','100');
- fireEvent.change(screen.getByRole('slider',{name:/Home recognition radius/}),{target:{value:'60'}});
+ fireEvent.change(screen.getByRole('slider',{name:/^Recognition radius/}),{target:{value:'60'}});
  fireEvent.change(screen.getByRole('slider',{name:/Arrival and place-name radius/}),{target:{value:'85'}});
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-radius','60');
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-arrival','85');
@@ -83,34 +83,46 @@ it('draws only the one circle for a place that is not Home',()=>{
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-radius','120');
  expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-arrival','');
 });
-it('opens the existing Home directly from the Home shortcut',async()=>{
- const run=vi.fn().mockResolvedValue({}),onClose=vi.fn();
- render(<Places homeOnly places={[{id:'home',name:'Home',kind:'home',latitude:1,longitude:2,radius:25,homeRecognitionRadius:32}]} run={run} onClose={onClose}/>);
- expect(screen.getByRole('heading',{name:'Edit Home'})).toBeInTheDocument();
- expect(screen.getByRole('slider',{name:/Home recognition radius/})).toHaveValue('32');
- fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
- await waitFor(()=>expect(onClose).toHaveBeenCalledOnce());
- expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({id:'home',kind:'home',radius:25,homeRecognitionRadius:32}));
-});
-it('opens a new Home directly with the two defaults when no Home is saved',()=>{
- const onClose=vi.fn();
- render(<Places homeOnly places={[]} run={vi.fn()} onClose={onClose}/>);
- expect(screen.getByRole('heading',{name:'Set Home'})).toBeInTheDocument();
- expect(screen.getByRole('slider',{name:/Arrival and place-name radius/})).toHaveValue('30');
- expect(screen.getByRole('slider',{name:/Home recognition radius/})).toHaveValue('30');
- fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
- expect(onClose).toHaveBeenCalledOnce();
-});
-it('saves a valid radius when switching a new Home draft to a favourite',async()=>{
- const run=vi.fn().mockResolvedValue({});
- render(<Places places={[]} run={run}/>);
+it('offers ordinary place types for new private places',()=>{
+ render(<Places places={[]} run={vi.fn()}/>);
  fireEvent.click(screen.getByRole('button',{name:'Add a private place'}));
- fireEvent.change(screen.getByLabelText('Type'),{target:{value:'home'}});
- expect(screen.getByRole('slider',{name:/Arrival and place-name radius/})).toHaveValue('30');
- fireEvent.change(screen.getByLabelText('Type'),{target:{value:'favourite'}});
- expect(screen.getByRole('slider',{name:/Recognition radius/})).toHaveValue('50');
- fireEvent.change(screen.getByLabelText('Place name'),{target:{value:'Cafe'}});
- fireEvent.click(screen.getByRole('button',{name:'Choose map point'}));
- fireEvent.click(screen.getByRole('button',{name:'Save private place'}));
- await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({kind:'favourite',radius:50})));
+ expect(screen.getByLabelText('Type')).toHaveValue('favourite');
+ expect(screen.queryByRole('option',{name:/Home/})).not.toBeInTheDocument();
+});
+it('saves a named household location with its radius, icon and friend audience',async()=>{
+ const run=vi.fn().mockResolvedValue(true);
+ render(<Places household places={[]} run={run} memberPoints={[{user_id:'majka',display_name:'Majka',position:{latitude:3,longitude:4}}]}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Add a location'}));
+ fireEvent.change(screen.getByLabelText('Start from someone’s live location'),{target:{value:'majka'}});
+ fireEvent.change(screen.getByLabelText('Place name'),{target:{value:'Work'}});
+ expect(screen.getByRole('radio',{name:'No icon'})).toBeChecked();
+ expect(screen.getByRole('radio',{name:'Home'})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('radio',{name:'Home'}));
+ const radius=screen.getByRole('slider',{name:/Recognition radius/});
+ expect(radius).toHaveAttribute('min','15');
+ expect(radius).toHaveAttribute('max','50');
+ expect(radius).toHaveValue('30');
+ fireEvent.change(radius,{target:{value:'20'}});
+ const sharing=screen.getByLabelText(/Share with my friends/);
+ expect(sharing).not.toBeChecked();
+ fireEvent.click(sharing);
+ fireEvent.click(screen.getByRole('button',{name:'Save location'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('savePlace',expect.objectContaining({
+  name:'Work',icon:'home',latitude:3,longitude:4,radius:20,shareWithFriends:true
+ })));
+});
+
+it('keeps an older Social radius until it is explicitly reduced',async()=>{
+ const run=vi.fn().mockResolvedValue(true);
+ const location={id:'school',owner_id:'me',name:'School',icon:'school',latitude:1,longitude:2,radius:120};
+ render(<Places household selfId="me" places={[location]} run={run}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Edit School'}));
+ expect(screen.getByRole('button',{name:'Choose map point'})).toHaveAttribute('data-radius','120');
+ fireEvent.click(screen.getByRole('button',{name:'Save location'}));
+ await screen.findByRole('button',{name:'Edit School'});
+ expect(run).toHaveBeenLastCalledWith('savePlace',expect.objectContaining({radius:120}));
+ fireEvent.click(screen.getByRole('button',{name:'Edit School'}));
+ fireEvent.click(screen.getByRole('button',{name:'Reduce radius to 50 m'}));
+ fireEvent.click(screen.getByRole('button',{name:'Save location'}));
+ await waitFor(()=>expect(run).toHaveBeenLastCalledWith('savePlace',expect.objectContaining({radius:50})));
 });

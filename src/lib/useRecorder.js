@@ -48,10 +48,10 @@ export function snapshotKey(data,historyCache){
   svc.continuousGPSRequested,svc.pausedByIOS,svc.significantChangesRequested,svc.visitsRequested,svc.motionRequested,svc.registeredRegions,svc.automaticPauseEnabled,svc.lastExecutionGapSeconds,
   data.nativeFamilySharing?.armed,data.nativeFamilySharing?.uploadInFlight,data.nativeFamilySharing?.mode,data.nativeFamilySharing?.lastUploadOkAt,data.nativeFamilySharing?.status,
  data.lastDepartureLatency?.at,
- // Passive rest and Home Wi-Fi; stillness at minute resolution.
+ // Passive rest and Wi-Fi; stillness at minute resolution.
  data.passiveRest?.enabled,data.passiveRest?.active,data.passiveRest?.restConfirmed,data.passiveRest?.retainReason,data.passiveRest?.serviceSession,
  data.passiveRest?.keepAliveRunning,data.passiveRest?.sessionReleases,data.passiveRest?.lastPreciseReason,Math.floor((data.passiveRest?.stillSeconds||0)/60),
- data.passiveRest?.wifi?.configured,data.passiveRest?.wifi?.match,data.passiveRest?.wifi?.observedAt
+ data.passiveRest?.wifi?.connected
  ].join('~');
 }
 // Preserve immutable history across live-status polls. This also supports older

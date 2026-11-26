@@ -1,78 +1,16 @@
 import Foundation
 
-// MARK: Home Wi-Fi evidence
-//
-// Supporting evidence only. The network a person designates as Home Wi-Fi is
-// kept as keyed hashes (derived from this account's key) in the account's
-// encrypted store. The raw network name and access-point address are never
-// stored, logged or exported. A match counts only where location already places
-// the phone at the saved Home, so a network with the same name somewhere else
-// proves nothing. Wi-Fi never starts a journey and never suppresses a departure.
-enum WiFiMatch: String { case matched, notMatched, unavailable, unknown }
-
-struct WiFiObservation: Equatable {
-    // Keyed hashes. `network` is nil when iOS returned no current network: not
-    // connected, no Precise Location, or no Wi-Fi information entitlement. Those
-    // cannot be told apart, so nil means unavailable, never "disconnected".
-    var network: String?
-    var accessPoint: String?
-    var at: Double
-    var source: String
-}
-
-struct HomeWiFiProfile: Codable, Equatable {
-    var network: String
-    var accessPoints: [String]
-    var designatedAt: Double
-    // A mesh has several access points; old ones age out when a router changes.
-    static let accessPointLimit = 24
-}
-
-enum HomeWiFi {
-    // An observation older than this says nothing about the present.
-    static let freshSeconds: Double = 900
-    static func match(_ profile: HomeWiFiProfile?, _ observation: WiFiObservation?, now: Double) -> WiFiMatch {
-        guard let profile = profile, let observation = observation,
-              now - observation.at <= freshSeconds, observation.at <= now + 5 else { return .unknown }
-        guard let network = observation.network else { return .unavailable }
-        return network == profile.network ? .matched : .notMatched
-    }
-    // The network name identifies Home Wi-Fi, so any access point of a mesh, or a
-    // replacement router keeping the name, still matches. A new access point is
-    // remembered only while that network is connected and location places the
-    // phone at Home; it is reported, never required.
-    static func learning(_ profile: HomeWiFiProfile, from observation: WiFiObservation, atHome: Bool) -> HomeWiFiProfile? {
-        guard atHome, observation.network == profile.network, let accessPoint = observation.accessPoint,
-              !profile.accessPoints.contains(accessPoint) else { return nil }
-        var updated = profile
-        updated.accessPoints = Array((profile.accessPoints + [accessPoint]).suffix(HomeWiFiProfile.accessPointLimit))
-        return updated
-    }
-    // The network the phone is on once it is confirmed at Home is the Home network, so
-    // nobody has to set it up. A wrong guess (a hotspot at Home) costs little: Wi-Fi only
-    // shortens rest and asks for one location, and never starts or blocks a journey.
-    static let learnRetrySeconds: Double = 3600
-    static func shouldLearn(configured: Bool, declined: Bool, atHome: Bool, restConfirmed: Bool, precise: Bool, fetchInFlight: Bool, lastAttemptAt: Double, now: Double) -> Bool {
-        !configured && !declined && atHome && restConfirmed && precise && !fetchInFlight && now - lastAttemptAt >= learnRetrySeconds
-    }
-    static func accessPointKnown(_ profile: HomeWiFiProfile?, _ observation: WiFiObservation?) -> Bool {
-        guard let profile = profile, let accessPoint = observation?.accessPoint else { return false }
-        return profile.accessPoints.contains(accessPoint)
-    }
-    // Leaving the Home network while the app runs is worth one location check.
-    // It is not departure evidence: a router restart or Wi-Fi switched off looks
-    // the same, and an unknown reading is not a change.
-    static func leftHome(previous: WiFiMatch, current: WiFiMatch) -> Bool {
-        previous == .matched && (current == .notMatched || current == .unavailable)
-    }
-}
+enum WiFiMatch: String { case matched, unavailable, unknown }
 
 // MARK: Rest confirmation
 //
-// Whether the phone is confirmed settled, from place, stillness and (at Home
-// only) Home Wi-Fi. Wi-Fi can shorten the wait at Home; it can never confirm
-// rest on its own, and movement always wins over it.
-enum RestPlaceKind: String { case home, savedPlace, inferredPlace, none }
+// A Wi-Fi connection can shorten the wait at a saved place. A verified fix
+// and stillness are required even when Wi-Fi is connected.
+enum RestPlaceKind: String {
+    case home, savedPlace, inferredPlace, none
+
+    var isSaved: Bool { self == .savedPlace || self == .home }
+}
 
 struct RestInputs: Equatable {
     var place: RestPlaceKind
@@ -101,19 +39,19 @@ struct RestDecision: Equatable {
 }
 
 enum RestConfirmation {
-    static let homeWithWiFiSeconds: Double = 360
-    static let homeSeconds: Double = 480
+    static let savedWithWiFiSeconds: Double = 360
+    static let savedSeconds: Double = 480
     static let placeSeconds: Double = 1200
     static let maximumPlaceAccuracy: Double = 100
     static let motionSettleSeconds: Double = 60
     static func motionUnsettled(lastMotionChangeAt: Double, stationary: Bool, now: Double) -> Bool {
         !stationary && now >= lastMotionChangeAt && now - lastMotionChangeAt < motionSettleSeconds
     }
-    static func decide(_ i: RestInputs, preservingConfirmedHome: Bool = false) -> RestDecision {
+    static func decide(_ i: RestInputs, preservingConfirmedWiFiRest: Bool = false) -> RestDecision {
         let start = max(i.placeSince ?? i.now, i.lastDisturbanceAt ?? 0)
         let still = max(0, i.now - start)
-        let wifi = i.place == .home && i.wifi == .matched
-        let required = i.place == .home ? (wifi || preservingConfirmedHome ? homeWithWiFiSeconds : homeSeconds) : placeSeconds
+        let wifi = i.place.isSaved && i.wifi == .matched
+        let required = i.place.isSaved ? (wifi || preservingConfirmedWiFiRest ? savedWithWiFiSeconds : savedSeconds) : placeSeconds
         func no(_ code: String, _ reason: String) -> RestDecision {
             RestDecision(confirmed: false, code: code, reason: reason, stillSeconds: still, requiredSeconds: required, wifiCorroborated: wifi)
         }
@@ -126,9 +64,9 @@ enum RestConfirmation {
             return no("coarsePlace", "the place was established from a fix too coarse to trust")
         }
         guard still >= required else { return no("settling", "settling: still for \(Int(still/60)) of \(Int(required/60)) min") }
-        let place = i.place == .home ? "at Home" : i.place == .savedPlace ? "at a saved place" : "at an inferred place"
+        let place = i.place.isSaved ? "at a saved place" : "at an inferred place"
         return RestDecision(confirmed: true, code: wifi ? "\(i.place.rawValue)+wifi" : i.place.rawValue,
-                            reason: "\(place), still for \(Int(still/60)) min" + (wifi ? ", Home Wi-Fi connected" : ""),
+                            reason: "\(place), still for \(Int(still/60)) min" + (wifi ? ", Wi-Fi connected" : ""),
                             stillSeconds: still, requiredSeconds: required, wifiCorroborated: wifi)
     }
 }
@@ -394,7 +332,7 @@ enum WakeCheck {
 //   saved Home when no place is known. Standby location keeps running at 100 m
 //   and the background session stays held. Location mode `resting`.
 // - confirmed rest (RestConfirmation): 15 to 20 still minutes at a verified
-//   place, with Core Motion and optional Home Wi-Fi. It is what PassiveRestPolicy
+//   place, with Core Motion and optional Wi-Fi evidence. It is what PassiveRestPolicy
 //   needs to release location (`passive`). It does not change the mode by itself.
 enum RestStage {
     static func describe(reducedAccuracy: Bool, confirmed: Bool, passive: Bool) -> String {
