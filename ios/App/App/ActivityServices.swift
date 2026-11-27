@@ -615,6 +615,33 @@ extension ManualRecorderPlugin: PHPickerViewControllerDelegate {
             }])
         }
     } }
+    @objc func nearbyPeoplePlace(_ call: CAPPluginCall) { DispatchQueue.main.async {
+        guard self.requireAccount(call) else { return }
+        guard let latitude = call.getDouble("latitude"), let longitude = call.getDouble("longitude"),
+              latitude.isFinite, longitude.isFinite, abs(latitude) <= 90, abs(longitude) <= 180 else {
+            call.reject("Invalid shared location.")
+            return
+        }
+        let recorder = LocationRecorder.shared
+        let owner = recorder.ownerID
+        let moving = call.getBool("moving") == true
+        let coarse = call.getBool("coarse") == true
+        let geocoder = CLGeocoder()
+        geocoder.reverseGeocodeLocation(CLLocation(latitude: latitude, longitude: longitude)) { results, error in
+            _ = geocoder
+            guard owner == recorder.ownerID, recorder.uiUnlocked else { call.reject("Account changed."); return }
+            guard error == nil, let place = results?.first else { call.reject("Nearby place unavailable."); return }
+            let suburb = place.subLocality ?? place.locality ?? place.administrativeArea
+            // Use the geocoder's area at the fix. A nearest-POI search could pick a venue across the road.
+            let area = moving || coarse ? nil : place.areasOfInterest?.first
+            let street = coarse ? nil : place.thoroughfare
+            let parts = [area ?? street, suburb]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let label = parts.first == parts.last ? parts.first ?? "" : parts.joined(separator: ", ")
+            call.resolve(["label": String(label.prefix(120))])
+        }
+    } }
     @objc func recogniseTripPlace(_ call:CAPPluginCall){DispatchQueue.main.async {
         guard self.requireAccount(call) else {return}
         let r=LocationRecorder.shared,owner=r.ownerID

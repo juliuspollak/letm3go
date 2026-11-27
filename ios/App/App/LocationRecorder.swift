@@ -1576,6 +1576,7 @@ public class ManualRecorderPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "removePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "currentPosition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "searchAddress", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "nearbyPeoplePlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "recogniseTripPlace", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "roadRoute", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "editActivity", returnType: CAPPluginReturnPromise),

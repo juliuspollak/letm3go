@@ -85,6 +85,7 @@ import SharedActivityDetail from './components/SharedActivityDetail.jsx';
 import PersonMap from './components/PersonMap.jsx';
 import MapPersonBar from './components/MapPersonBar.jsx';
 import {useDriveTimes} from './lib/useDriveTimes.js';
+import {usePeoplePlaceLabels} from './lib/usePeoplePlaceLabels.js';
 import {useActivityWeather} from './lib/useActivityWeather.js';
 import { saveSyncReceipts } from './lib/syncReceipts.js';
 import {clearPersonDays} from './lib/personDayCache.js';
@@ -453,7 +454,8 @@ function PrivateApp(){
  const driveTimes=useDriveTimes({people:visibleRoutePeople,from:mapLocation.position,enabled:tab==='Map'||tileRoutesEnabled,scope:session.user.id});
  const walkTimes=useDriveTimes({people:visibleRoutePeople,from:mapLocation.position,enabled:tileRoutesEnabled,transport:'walking',scope:session.user.id});
  const cycleTimes=useDriveTimes({people:visibleRoutePeople,from:mapLocation.position,enabled:tileRoutesEnabled,transport:'cycling',scope:session.user.id});
- const peopleById=useMemo(()=>new Map(everyone.map(person=>[person.userId,{...person,driveSeconds:driveTimes[person.userId],walkSeconds:walkTimes[person.userId],cycleSeconds:cycleTimes[person.userId]}])),[everyone,driveTimes,walkTimes,cycleTimes]);
+ const nearbyLabels=usePeoplePlaceLabels(tab==='Home'?homeRoutePeople:everyone,{enabled:auth.status==='authenticated'&&tilesVisible&&!selected&&!openSocialJourney,scope:session.user.id});
+ const peopleById=useMemo(()=>new Map(everyone.map(person=>[person.userId,{...person,nearbyPlace:nearbyLabels[person.userId],driveSeconds:driveTimes[person.userId],walkSeconds:walkTimes[person.userId],cycleSeconds:cycleTimes[person.userId]}])),[everyone,nearbyLabels,driveTimes,walkTimes,cycleTimes]);
  // Until both lists have answered once, an empty list means "not loaded yet", not "nobody is sharing".
  // A failure, being offline or a slow answer (10 s) ends the wait so it never spins for ever.
  const [friendsWaitOver,setFriendsWaitOver]=useState(false);

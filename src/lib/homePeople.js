@@ -65,7 +65,7 @@ export function homePeople({household=[],friends=[],selfID,selfPosition=null,hom
   const verifiedHome=member.source==='household'&&member.state==='stale'&&atHome(false,member.position,homePlace);
   const savedPlace=home?null:matchVisibleSavedPlace(member.state,member.position,places);
   const placeName=savedPlace?.name||member.place_name;
-  const location={savedPlace,state:member.state,ageSeconds:member.ageSeconds,home,homeSeconds:home||verifiedHome?secondsAtPlace(member,{allowStale:verifiedHome}):null,activity:activities[member.user_id],lastKnownActivity:activities[member.user_id]?null:lastKnownActivity(member),verifiedHome,placeName,placeSince:member.place_since};
+  const location={savedPlace,speedKmh:member.ageSeconds<=30&&member.ageSeconds!=null?member.speed_kmh:null,state:member.state,ageSeconds:member.ageSeconds,home,homeSeconds:home||verifiedHome?secondsAtPlace(member,{allowStale:verifiedHome}):null,activity:activities[member.user_id],lastKnownActivity:activities[member.user_id]?null:lastKnownActivity(member),verifiedHome,placeName,placeSince:member.place_since};
   const status=personStatus(location);
   const away=member.state==='live'||member.state==='stale'?distanceAway(selfPosition,member.position,unit):null;
   const live=member.state==='live'||member.state==='stale';

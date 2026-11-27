@@ -90,6 +90,7 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
  const current=!lastKnown&&(location?.state==='live'||status?.tone==='live'||atHome);
  const savedPlace=location?.savedPlace;
  const savedPlaceLabel=savedPlace?`${lastKnown?'Last at':'At'} ${savedPlace.name}`:null;
+ const nearbyLabel=current&&!atHome&&!savedPlace&&!location?.placeName&&person.nearbyPlace?`Near ${person.nearbyPlace}`:null;
  const SavedPlaceIcon=PLACE_ICONS[savedPlace?.icon]?.Icon;
  const age=lastKnown?shortAge(location?.ageSeconds):'';
  const travel=!atHome&&(current||lastKnown)?[
@@ -102,7 +103,7 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
   ?location.activity
   :location?.lastKnownActivity?`Last activity: ${location.lastKnownActivity}`:null;
  const locationDescription=[atHome?(lastKnown?'Last verified at home':'At home'):lastKnown?'Last known location':null,
-  status?.text==='At home'?null:status?.text,activity&&!status?.text?.includes(activity)?activity:null,person.distance].filter(Boolean).join('. ');
+  status?.text==='At home'?null:status?.text,activity&&!status?.text?.includes(activity)?activity:null,nearbyLabel,person.distance].filter(Boolean).join('. ');
  const LocationIcon=atHome?House:status?.tone==='off'?ShieldOff:location?.state==='waiting'||person.self&&status?.tone==='none'?Clock3:status?.tone==='issue'?TriangleAlert:current||lastKnown?MapPin:MapPinOff;
  const refresh=refreshFeedback[person.refreshLabel];
  const RefreshIcon=refresh?.Icon;
@@ -152,8 +153,8 @@ export function PersonTile({person,photos,selfId,selfAvatar}){
    {SavedPlaceIcon&&<SavedPlaceIcon className="person-name-place-icon" size={13} aria-hidden="true"/>}
    <span>{shown}</span>
   </button>
-  {savedPlace&&<span className="person-saved-place" title={savedPlaceLabel}>
-   {savedPlaceLabel}
+  {(savedPlaceLabel||nearbyLabel)&&<span className={savedPlaceLabel?"person-saved-place":"person-saved-place person-nearby-place"} title={savedPlaceLabel||nearbyLabel}>
+   {savedPlaceLabel||nearbyLabel}
   </span>}
   <span className="sr-only" role="status">{refresh?`${shown}: ${person.refreshLabel}`:''}</span>
   <dialog ref={dialog} className="person-details" role="dialog" aria-labelledby={titleId} onKeyDown={event=>{

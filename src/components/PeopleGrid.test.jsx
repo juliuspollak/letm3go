@@ -162,3 +162,12 @@ it('shows one placeholder per loading tile',()=>{
  expect(list).toHaveAttribute('aria-busy','true');
  expect(list.querySelectorAll('li')).toHaveLength(3);
 });
+
+it('puts a nearby place below the name and gives saved places priority',()=>{
+ const nearby=person({nearbyPlace:'Warilla Grove, Warilla'});
+ const {rerender}=render(grid(nearby));
+ expect(screen.getByText('Near Warilla Grove, Warilla')).toBeVisible();
+ rerender(grid({...nearby,location:{...nearby.location,savedPlace:{name:'Work'}}}));
+ expect(screen.getByText('At Work')).toBeVisible();
+ expect(screen.queryByText('Near Warilla Grove, Warilla')).not.toBeInTheDocument();
+});

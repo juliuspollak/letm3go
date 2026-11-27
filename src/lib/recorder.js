@@ -74,6 +74,7 @@ export const recorder = {
  // Device test: live sharing may rest with the phone. Off by default.
  setSharingRest:enabled=>native.setSharingRest({enabled}),
  searchAddress:query=>native.searchAddress({query}),
+ nearbyPeoplePlace:({latitude,longitude,moving,coarse})=>native.nearbyPeoplePlace({latitude,longitude,moving,coarse}),
  recogniseTripPlace:(id,index,point,explore=false)=>native.recogniseTripPlace({id,index,cloud:!!point,latitude:point?.latitude,longitude:point?.longitude,explore}),
  roadRoute:(from,to,transport)=>native.roadRoute({fromLatitude:from.latitude,fromLongitude:from.longitude,toLatitude:to.latitude,toLongitude:to.longitude,...(transport?{transport}:{})}),
  editActivity:trip=>native.editActivity({...trip,activity:activityCode(trip.activity)}),

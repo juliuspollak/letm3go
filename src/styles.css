@@ -1505,3 +1505,4 @@ html,body{overscroll-behavior-y:none;background:var(--bg)}
 .place-icon-picker input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
 
 .person-saved-place{max-width:100%;min-width:0;color:var(--muted);font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.person-nearby-place{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere}
