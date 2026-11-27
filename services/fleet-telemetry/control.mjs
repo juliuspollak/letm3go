@@ -19,7 +19,7 @@ const server=https.createServer({cert:await readFile('/run/tls/fullchain.pem'),k
   const payload=configure?JSON.stringify({vins:[data.vin],config:{hostname:host,port:443,ca:data.config.ca,fields:FLEET_FIELDS}}):'';
   const result=await new Promise((resolve,reject)=>{
    const upstream=https.request({hostname:'command-proxy',port:4443,path,method:configure?'POST':'DELETE',ca:proxyCA,headers:{Authorization:`Bearer ${data.accessToken}`,'Content-Type':'application/json'},timeout:25000},response=>{
-    let output='';response.on('data',chunk=>{output+=chunk;if(output.length>100000)upstream.destroy();});response.on('end',()=>{try{const parsed=JSON.parse(output);const skipped=parsed.response?.skipped_vehicles;const wasSkipped=skipped&&Object.values(skipped).some(v=>Array.isArray(v)&&v.includes(data.vin));resolve(response.statusCode>=200&&response.statusCode<300&&!parsed.error&&!wasSkipped&&(!configure||parsed.response?.updated_vehicles===1));}catch{resolve(false);}});
+    let output='';response.on('data',chunk=>{output+=chunk;if(output.length>100000)upstream.destroy();});response.on('end',()=>{if(!configure&&response.statusCode===204)return resolve(true);try{const parsed=JSON.parse(output);const skipped=parsed.response?.skipped_vehicles;const wasSkipped=skipped&&Object.values(skipped).some(v=>Array.isArray(v)&&v.includes(data.vin));resolve(response.statusCode>=200&&response.statusCode<300&&!parsed.error&&!wasSkipped&&(!configure||parsed.response?.updated_vehicles===1));}catch{resolve(false);}});
    });upstream.on('timeout',()=>upstream.destroy());upstream.on('error',reject);upstream.end(payload);
   });finish(result?200:502);
  }catch{finish(503);}

@@ -4,22 +4,53 @@ export function pairingURL(vin){if(!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin))throw new 
 export function compatibility(status){
  if(!status||!status.firmware_version)return {ready:false,reason:'Vehicle compatibility not verified'};
  if(!status.fleet_telemetry_version)return {ready:false,reason:'Telemetry is not supported or firmware needs updating'};
- const parts=status.firmware_version.split('.').map(Number);
+ const match=typeof status.firmware_version==='string'&&/^(\d{4})\.(\d+)(?:[.\s]|$)/.exec(status.firmware_version);
+ if(!match)return {ready:false,reason:'Vehicle firmware could not be verified'};
+ const parts=[Number(match[1]),Number(match[2])];
  if(status.vehicle_command_protocol_required===false){if(parts[0]<2025||(parts[0]===2025&&parts[1]<20))return {ready:false,keyRequired:false,reason:'Legacy S/X requires firmware 2025.20 or newer'};return {ready:status.safety_screen_streaming_toggle_enabled===true,keyRequired:false,reason:status.safety_screen_streaming_toggle_enabled?'Vehicle streaming enabled':'Enable Allow Third-Party App Data Streaming in the vehicle Safety screen'};}
  if(parts[0]<2024||(parts[0]===2024&&parts[1]<26))return {ready:false,reason:'Firmware 2024.26 or newer required'};
  if(status.total_number_of_keys>=20&&!status.key_paired)return {ready:false,keyRequired:true,reason:'Vehicle has 20 keys. Remove an unused key before pairing.'};
  return {ready:status.key_paired===true,keyRequired:true,reason:status.key_paired?'Key paired':'Pair the Letm3go virtual key in the Tesla app'};
 }
+export const CONFIGURATION_PENDING='Waiting for the vehicle to adopt the configuration';
+export const REMOVAL_PENDING='Recording disabled; vehicle streaming removal pending and may still incur charges';
+
+export function receiverIsReady(receiver,now=Date.now()){
+ const age=now-Date.parse(receiver?.last_seen);
+ return receiver?.ready===true&&age>=0&&age<120000;
+}
 export function automaticRecordingStatus(setting,receiver,now=Date.now()){
- if(!setting?.enabled)return {active:false,label:'Setup required'};
- if(!receiver||now-Date.parse(receiver.last_seen)>120000||receiver.ready!==true)return {active:false,label:'Connection problem · receiver unavailable'};
- if(!setting.config_synced)return {active:false,label:'Setup pending · waiting for vehicle'};
- if(setting.error)return {active:false,label:'Connection problem'};
- if(setting.stream_connected===false)return {active:false,label:'Ready for future drives · vehicle not connected'};
- if(setting.last_received&&setting.enabled_since&&Date.parse(setting.last_received)<Date.parse(setting.enabled_since))return {active:false,label:'Configured · waiting for first telemetry'};
- if(!setting.last_received)return {active:false,label:'Configured · waiting for first telemetry'};
- if(now-Date.parse(setting.last_received)>24*3600000)return {active:false,label:'No recent telemetry · vehicle may be asleep'};
- return {active:true,label:'Automatic recording ready · last telemetry verified'};
+ const result=(code,label)=>({code,active:code==='active',label});
+ if(setting?.error===REMOVAL_PENDING)return result('removal_pending','Recording stopped · vehicle streaming removal pending');
+ if(!receiverIsReady(receiver,now))return result('receiver_unavailable',setting?.enabled?'Connection problem · receiver unavailable':'Waiting for receiver');
+ if(setting?.error===CONFIGURATION_PENDING)return result('configuration_pending','Setup pending · waiting for vehicle configuration');
+ if(!setting?.enabled){
+  if(setting?.key_required===true&&setting.key_paired===false)return result('pairing_required','Pair the Letm3go virtual key');
+  return result('setup_required','Setup required');
+ }
+ if(!setting.config_synced)return result('configuration_pending','Setup pending · waiting for vehicle configuration');
+ if(setting.error)return result('interrupted','Recording interrupted');
+ if(setting.stream_connected===false)return result('vehicle_offline','Ready for future drives · vehicle not connected');
+ const received=Date.parse(setting.last_received), activation=Date.parse(setting.enabled_since);
+ if(!Number.isFinite(received)||!Number.isFinite(activation)||received<activation||received>now+300000)
+  return result('awaiting_telemetry','Configured · waiting for first telemetry');
+ if(now-received>24*3600000)return result('stale_telemetry','No recent telemetry · vehicle may be asleep');
+ if(setting.location_verified!==true)return result('awaiting_location','Telemetry received · waiting for vehicle location');
+ if(Number(setting.projected_revision)<Number(setting.revision))return result('projection_pending','Telemetry received · waiting for processing');
+ return result('active','Recording active · telemetry verified');
+}
+// A compatibility check alone cannot activate an existing Tesla configuration.
+export function checkedFleetConfiguration(setting,support,report,host,now=Date.now()){
+ const synced=!!(report?.synced===true&&report.config?.hostname===host&&report.config?.port===443);
+ const requested=setting?.enabled===true||setting?.error===CONFIGURATION_PENDING;
+ const enabled=requested&&synced&&support.ready;
+ return {
+  config_synced:synced,enabled,enabled_since:requested?(setting?.enabled_since||(enabled?new Date(now).toISOString():null)):null,
+  error:setting?.error===REMOVAL_PENDING?REMOVAL_PENDING:requested&&!enabled?CONFIGURATION_PENDING:support.ready?null:support.reason
+ };
+}
+export function fleetConfigurationRemoved(report){
+ return report?.synced===true&&report.config===null;
 }
 const number=value=>{const n=Number(value);return value!==null&&value!==''&&Number.isFinite(n)?n:undefined;};
 const allowed=new Set(Object.keys(FLEET_FIELDS));
@@ -61,7 +92,9 @@ export async function reconstructFleet(events,{vehicleID,ownerID,enabledSince,ex
   if(f.location)lastLocation={...f.location,timestamp:t};
   if(['D','R'].includes(f.gear)){last.charging=false;if(charge){charge.endedAt=t;charge.incomplete=true;charges.push(charge);charge=null;}}
   if(f.charging===true)finish(t,true);
-  const moving=f.charging!==true&&last.charging!==true&&((['D','R'].includes(f.gear))||(f.location&&['D','R'].includes(last.gear)&&t-gearAt<=1800)||(f.speed>1.5&&last.gear!=='P'));
+  // A lost Drive transition must not let an earlier Park suppress sustained new motion.
+  const speedShowsMotion=f.speed>1.5&&(last.gear!=='P'||(parkedAt!==null&&t-parkedAt>=15&&f.speed>3));
+  const moving=f.charging!==true&&last.charging!==true&&(['D','R'].includes(f.gear)||(f.location&&['D','R'].includes(last.gear)&&t-gearAt<=1800)||speedShowsMotion);
   if(drive&&t-drive.lastAt>900)finish(drive.lastAt,true);
   if(moving&&!drive){drive={startedAt:t,endedAt:t,lastAt:t,points:[],distanceMeters:0,odometerStart:f.odometer??last.odometer,odometerEnd:f.odometer??last.odometer,incomplete:false};if(lastLocation&&t-lastLocation.timestamp<=30)drive.points.push({...lastLocation,accuracy:65,accuracySource:'unreported',speed:f.speed||0,segment:0});}
   if(drive){drive.lastAt=t;drive.endedAt=t;if(f.odometer!=null)drive.odometerEnd=f.odometer;
