@@ -516,8 +516,10 @@ final class WatchRecorder: NSObject, ObservableObject {
         activateScreenLock()
     }
     func softUnlock() {
+        guard softLocked else { return }
         softLocked = false
         waterLock.noteSoftUnlock()
+        WKInterfaceDevice.current().play(.success)
     }
 
     func discard() {

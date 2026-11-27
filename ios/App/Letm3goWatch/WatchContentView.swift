@@ -381,6 +381,8 @@ struct WatchRecordingView: View {
     @ObservedObject private var kiteDiagnostic = KiteDiagnosticRecorder.shared
     @ObservedObject var recorder: WatchRecorder
     @Binding var path: [WatchRoute]
+    @State private var unlockPressed = false
+    private let unlockHoldSeconds = 1.5
     #if DEBUG
     static var demoFinish = false
     @State private var confirming = WatchRecordingView.demoFinish
@@ -468,11 +470,29 @@ struct WatchRecordingView: View {
     }
 
     private var softLock: some View {
-        Text("Hold to Unlock")
-            .font(.footnote.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44)
-            .background(WatchStyle.card, in: Capsule())
-            .onLongPressGesture(minimumDuration: 1.5) { recorder.softUnlock() }
-            .accessibilityLabel("Screen locked. Touch and hold to unlock")
+        Label(unlockPressed ? "Keep holding…" : "Hold to Unlock", systemImage: "lock.fill")
+            .font(.footnote.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background {
+                Capsule().fill(WatchStyle.card)
+                    .overlay {
+                        Capsule().fill(WatchStyle.accent.opacity(0.4))
+                            .scaleEffect(x: unlockPressed ? 1 : 0, y: 1, anchor: .leading)
+                            .animation(unlockPressed ? .linear(duration: unlockHoldSeconds) : nil, value: unlockPressed)
+                    }
+                    .clipShape(Capsule())
+            }
+            .overlay {
+                Capsule().strokeBorder(WatchStyle.accent.opacity(unlockPressed ? 1 : 0), lineWidth: 1)
+            }
+            .contentShape(Capsule())
+            .onLongPressGesture(minimumDuration: unlockHoldSeconds, maximumDistance: 18, perform: recorder.softUnlock) {
+                unlockPressed = $0
+            }
+            .onDisappear { unlockPressed = false }
+            .accessibilityLabel("Hold to Unlock")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { recorder.softUnlock() }
     }
 
     private var metrics: some View {
