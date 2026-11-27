@@ -1,9 +1,8 @@
-#if KITE_DIAGNOSTIC
 import Foundation
 import Compression
 
 // Kitesurfing Sensor Diagnostic: pure logic, no Core Motion / WatchKit, so it can be unit tested on a Mac.
-// Nothing here touches normal activity recording. The Watch recorder (KiteDiagnosticRecorder.swift)
+// The Watch sensor recorder (KiteDiagnosticRecorder.swift)
 // feeds it samples; the phone only stores and exports the finished package.
 //
 // Timestamps: every row keeps the sensor's own monotonic timestamp (`t_mono`, seconds since boot, the
@@ -19,7 +18,7 @@ enum KiteDiagnostic {
     static let barometerHeader = "seq,t_mono,t_recv,t_wall,relative_altitude_m,pressure_kpa"
     static let gpsHeader = "seq,t_wall,t_recv,lat,lon,altitude_m,h_acc_m,v_acc_m,speed_mps,speed_acc_mps,course_deg,course_acc_deg"
     // A recording never runs forever or fills the watch.
-    static let maxSessionSeconds = 60.0 * 60   // also the extended-runtime session cap
+    static let maxSessionSeconds = 60.0 * 60
     // 3 motion streams at 100 Hz is ~34 KB/s, so one hour is ~125 MB: the motion cap must cover it.
     static let maxSessionBytes = 220 * 1024 * 1024
     static let maxTotalBytes = 500 * 1024 * 1024
@@ -256,6 +255,7 @@ struct KiteManifest: Codable, Equatable {
     var requestedHz: [String: Double]
     var extendedRuntimeRequested: Bool
     var notes: String
+    var rideID: String? = nil
 }
 
 // A session folder: <root>/<id>/{motion,barometer,gps}.csv, events.jsonl, manifest.json, and a
@@ -269,6 +269,10 @@ final class KiteSessionStore {
 
     func sessionIDs() -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).filter { UUID(uuidString: $0) != nil || $0.hasPrefix("kite-") }.sorted()
+    }
+
+    func owner(of id: String) -> String? {
+        try? String(contentsOf: directory(id).appendingPathComponent("owner.txt"), encoding: .utf8)
     }
 
     func size(of id: String) -> Int {
@@ -388,7 +392,10 @@ enum KitePackage {
     static func build(store: KiteSessionStore, id: String) throws -> URL {
         let dir = store.directory(id)
         let out = dir.appendingPathComponent("package.zip")
-        try? FileManager.default.removeItem(at: out)
+        let staging = dir.appendingPathComponent("package.partial")
+        let files = FileManager.default
+        try? files.removeItem(at: staging)
+        defer { try? files.removeItem(at: staging) }
         var entries: [(String, () throws -> InputStream)] = []
         func file(_ name: String) throws {
             let url = dir.appendingPathComponent(name)
@@ -402,7 +409,7 @@ enum KitePackage {
         for csv in ["motion.csv", "barometer.csv", "gps.csv"] { try file(csv) }
         blob("README.txt", Data(readme.utf8))
 
-        guard FileManager.default.createFile(atPath: out.path, contents: nil), let handle = try? FileHandle(forWritingTo: out) else { throw Failure.write }
+        guard files.createFile(atPath: staging.path, contents: nil), let handle = try? FileHandle(forWritingTo: staging) else { throw Failure.write }
         defer { try? handle.close() }
         var central = Data()
         var offset: UInt32 = 0
@@ -431,6 +438,12 @@ enum KitePackage {
         end.le32(UInt32(central.count)); end.le32(offset); end.le16(0)
         try handle.write(contentsOf: central)
         try handle.write(contentsOf: end)
+        try handle.close()
+        if files.fileExists(atPath: out.path) {
+            _ = try files.replaceItemAt(out, withItemAt: staging)
+        } else {
+            try files.moveItem(at: staging, to: out)
+        }
         return out
     }
 
@@ -522,7 +535,7 @@ final class KiteRecordingSession {
     private let wall: () -> Double
     private let mono: () -> Double
 
-    init(store: KiteSessionStore, manifest: KiteManifest, wall: @escaping () -> Double = { Date().timeIntervalSince1970 },
+    init(store: KiteSessionStore, manifest: KiteManifest, ownerID: String? = nil, wall: @escaping () -> Double = { Date().timeIntervalSince1970 },
          mono: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) throws {
         self.store = store
         self.id = manifest.sessionID
@@ -532,6 +545,9 @@ final class KiteRecordingSession {
         for s in KiteStream.allCases { trackers[s] = KiteStreamTracker(s); seq[s] = 0 }
         let dir = store.directory(id)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let ownerID {
+            try Data(ownerID.utf8).write(to: dir.appendingPathComponent("owner.txt"), options: .atomic)
+        }
         FileManager.default.createFile(atPath: dir.appendingPathComponent("recording.marker").path, contents: Data())
         try KiteJSON.encoder.encode(manifest).write(to: dir.appendingPathComponent("manifest.json"), options: .atomic)
         FileManager.default.createFile(atPath: dir.appendingPathComponent("events.jsonl").path, contents: nil)
@@ -662,7 +678,7 @@ final class KiteRecordingSession {
         for w in [motionWriter, baroWriter, gpsWriter] { do { try w?.close() } catch { writeFailed = true } }
         let streams = Dictionary(uniqueKeysWithValues: trackers.map { ($0.key.rawValue, $0.value.stats) })
         let summary = KiteSummary(sessionID: id, durationSeconds: elapsed(), startWall: startWall, endWall: wall(),
-                                  complete: !failed && !writeFailed && cappedStreams.isEmpty, endReason: reason, streams: streams,
+                                  complete: !failed && !writeFailed && cappedStreams.isEmpty && reason != "max-duration", endReason: reason, streams: streams,
                                   totalGaps: streams.values.reduce(0) { $0 + $1.gapCount }, eventCount: eventsWritten,
                                   cappedStreams: cappedStreams.sorted())
         let dir = store.directory(id)
@@ -717,4 +733,3 @@ struct KiteTransferLedger {
     mutating func noteDelivered(_ id: String) { var r = record(id); r.delivered = true; r.lastError = nil; records[id] = r; save() }
     mutating func forget(_ id: String) { records[id] = nil; save() }
 }
-#endif

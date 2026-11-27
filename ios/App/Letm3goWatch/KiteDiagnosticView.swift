@@ -1,9 +1,7 @@
-#if KITE_DIAGNOSTIC
 import SwiftUI
 
 struct KiteDiagnosticView: View {
     @ObservedObject private var kite = KiteDiagnosticRecorder.shared
-    @Environment(\.scenePhase) private var scenePhase
 
     private var verdict: (String, Color) {
         switch kite.status {
@@ -22,18 +20,11 @@ struct KiteDiagnosticView: View {
         List {
             Section {
                 Text(verdict.0).font(.headline).foregroundStyle(verdict.1)
-                if kite.isRecording {
-                    Button("Stop Diagnostic Recording", role: .destructive) { kite.stop() }
-                } else {
-                    Button("Start Diagnostic Recording") { kite.start() }
-                    Toggle("Extended runtime", isOn: $kite.useExtendedRuntime)
-                }
                 if !kite.message.isEmpty { Text(kite.message).font(.caption2) }
             }
             Section("Live") {
                 row("Duration", WatchFormat.clock(kite.elapsed))
                 row("Last sample", kite.lastSampleAgo.map { String(format: "%.1f s ago", $0) } ?? "none yet")
-                row("Extended runtime", kite.extendedState)
                 ForEach(KiteStream.allCases, id: \.self) { s in
                     row(s.rawValue, "\(kite.counts[s] ?? 0) · \(String(format: "%.1f", kite.rates[s] ?? 0)) Hz")
                 }
@@ -60,7 +51,6 @@ struct KiteDiagnosticView: View {
             }
         }
         .navigationTitle("Kite Diagnostic")
-        .onChange(of: scenePhase) { kite.scene($0) }
         .onAppear { kite.refreshRecordings(); kite.retryUndelivered() }
     }
 
@@ -68,4 +58,3 @@ struct KiteDiagnosticView: View {
         HStack { Text(k).font(.caption2); Spacer(); Text(v).font(.caption2).foregroundStyle(.secondary) }
     }
 }
-#endif

@@ -21,6 +21,7 @@ struct WatchContentView: View {
     @ObservedObject var recorder: WatchRecorder
     @ObservedObject private var link = WatchConnectivitySession.shared
     @State private var path: [WatchRoute]
+    @Environment(\.scenePhase) private var scenePhase
 
     init(recorder: WatchRecorder, initialPath: [WatchRoute] = []) {
         self.recorder = recorder
@@ -45,6 +46,7 @@ struct WatchContentView: View {
                 }
         }
         .onAppear { recorder.refresh() }
+        .onChange(of: scenePhase) { KiteDiagnosticRecorder.shared.scene($0) }
         .onChange(of: link.ownerID) { _ in recorder.loadAccountData() }
     }
 }
@@ -376,6 +378,7 @@ struct WatchReadyView: View {
 // MARK: - Recording
 
 struct WatchRecordingView: View {
+    @ObservedObject private var kiteDiagnostic = KiteDiagnosticRecorder.shared
     @ObservedObject var recorder: WatchRecorder
     @Binding var path: [WatchRoute]
     #if DEBUG
@@ -479,6 +482,9 @@ struct WatchRecordingView: View {
                     if isRope { ropeStatus } else { status(now: context.date.timeIntervalSince1970) }
                     if let warning = recorder.storageWarning {
                         Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption2.weight(.semibold)).foregroundStyle(WatchStyle.danger)
+                    }
+                    if recorder.activity == "Kitesurfing", let warning = kiteDiagnostic.captureWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption2).foregroundStyle(WatchStyle.hold)
                     }
                     if let other = recorder.otherRecording {
                         Label("Also \(other.label)", systemImage: "iphone").font(.caption2.weight(.semibold)).foregroundStyle(WatchStyle.hold)
@@ -616,9 +622,7 @@ struct WatchSettingsView: View {
                  ? "Hold the Digital Crown to unlock. If Water Lock is unavailable, hold Unlock on the screen."
                  : "Touch and hold Unlock on the recording screen.")
                 .font(.caption2).foregroundStyle(.secondary)
-            #if KITE_DIAGNOSTIC
             NavigationLink("Kite Diagnostic") { KiteDiagnosticView() }
-            #endif
         }
         .navigationTitle("Settings")
     }

@@ -394,6 +394,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
                         try AccountKeychain.set("active-account",data:nil)
                         call.resolve(["ownerID":id,"preferences":["displayName":"","vehicles":[],"onboardingStep":0,"onboardingComplete":false]]);return
                     }
+                    DispatchQueue.main.async { KiteDiagnosticInbox.shared.presentWhenActive() }
                     r.automaticEnabled = UserDefaults.standard.bool(forKey:"letm3go-automatic-\(id)"); r.passiveRestEnabled = !UserDefaults.standard.bool(forKey:LocationRecorder.passiveRestKey(id)); r.sharingRestEnabled = SharingRest.enabled(preference: UserDefaults.standard.object(forKey:LocationRecorder.sharingRestKey(id)) as? Bool); r.refreshAutomaticMonitoring()
                     // The caller reads only the owner, readiness and preferences. A full snapshot here
                     // encoded every recorded GPS fix on the main thread on each launch and each
@@ -473,6 +474,7 @@ public class SecureSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             // Key deletion cryptographically erases the store even if filesystem removal is interrupted.
             r.uiUnlocked=false; r.storeOpened=false; r.ownerID=nil; r.storage=nil; r.active=nil; r.automaticTrip=nil; r.settledAt=nil; r.settledTripID=nil; r.continuationEndsAt=nil; r.trips=[]; r.places=[]; r.socialRestPlaces=[]; r.dwell=nil; r.dwellInference.reset(); r.motionProbeGate.reset(); r.preferences=AccountPreferences(); r.automaticEnabled=false
             r.diagnosticWriter.flush()
+            KiteDiagnosticInbox.shared.deletePackages(for: id)
             if let directory=directory { try? FileManager.default.removeItem(at:directory) }
             UserDefaults.standard.removeObject(forKey:"letm3go-automatic-\(id)"); UserDefaults.standard.removeObject(forKey:LocationRecorder.sharingRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.passiveRestKey(id)); UserDefaults.standard.removeObject(forKey:LocationRecorder.boundSinceKey(id)); call.resolve()
         } catch { call.reject("Unable to finish local cleanup. Reconnect this account and retry.") }

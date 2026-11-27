@@ -228,6 +228,7 @@ final class WatchConnectivitySession: NSObject, ObservableObject, @unchecked Sen
             }
             equipment = Self.storedEquipment(for: owner)
             loadSegments()
+            KiteDiagnosticRecorder.shared.retryUndelivered()
         }
         if let revision=context["segmentRevision"] as? String,revision != expectedSegmentRevision {
             expectedSegmentRevision=revision
@@ -325,6 +326,7 @@ extension WatchConnectivitySession: WCSessionDelegate {
             if let presence = self.lastPresence { self.announce(presence) }
             self.requestHistory()
             self.flushDiagnostics()
+            if activationState == .activated { KiteDiagnosticRecorder.shared.retryUndelivered() }
         }
     }
 
@@ -349,9 +351,7 @@ extension WatchConnectivitySession: WCSessionDelegate {
     }
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
-        #if KITE_DIAGNOSTIC
         if let id = userInfo["kiteDiagnosticAck"] as? String { DispatchQueue.main.async { KiteDiagnosticRecorder.shared.phoneConfirmed(id: id) } }
-        #endif
         // The phone batches acknowledgements; older builds send a single id.
         let ids = (userInfo["acks"] as? [String]) ?? (userInfo["ack"] as? String).map { [$0] } ?? []
         let status = userInfo["status"] as? String ?? "saved"
@@ -381,13 +381,11 @@ extension WatchConnectivitySession: WCSessionDelegate {
     }
 
     nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
-        #if KITE_DIAGNOSTIC
         if fileTransfer.file.metadata?["kind"] as? String == "kiteDiagnostic" {
             let id = fileTransfer.file.metadata?["id"] as? String ?? ""
             DispatchQueue.main.async { KiteDiagnosticRecorder.shared.transferFinished(id: id, error: error) }
             return
         }
-        #endif
         // Metadata is the authoritative id, and it lives on the file, not on the
         // transfer. The filename is only a fallback for a transfer queued by an
         // older build.

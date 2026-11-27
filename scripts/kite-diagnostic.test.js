@@ -2,26 +2,33 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-// The diagnostic must stay out of production: no background mode in the shipping plist, and the
-// compile flag only on Debug configurations.
-describe('kitesurfing sensor diagnostic isolation', () => {
-  const watch = (f) => readFileSync(new URL(`../ios/App/Letm3goWatch/${f}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
-  it('keeps the physical-therapy background mode out of the shipping Watch plist', () => {
-    expect(watch('Info.plist')).not.toContain('physical-therapy');
-    expect(watch('Info-KiteDiagnostic.plist')).toContain('physical-therapy');
+const source = (file) => readFileSync(new URL(`../ios/App/${file}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
+describe('Kitesurfing workout diagnostics', () => {
+  it('uses the normal workout background mode in every build', () => {
+    expect(source('Letm3goWatch/Info.plist')).not.toContain('physical-therapy');
+    const project = source('App.xcodeproj/project.pbxproj');
+    expect(project).not.toMatch(/KITE_DIAGNOSTIC|Info-KiteDiagnostic/);
+    expect(source('Letm3goWatch/KiteDiagnosticRecorder.swift')).not.toMatch(/WKExtendedRuntimeSession|CLLocationManager\(/);
   });
-  it('differs from the shipping plist only by that mode', () => {
-    expect(watch('Info-KiteDiagnostic.plist').replace('\t\t<string>physical-therapy</string>\n', '')).toBe(watch('Info.plist'));
+
+  it('connects the normal workout lifecycle and GPS to capture', () => {
+    const recorder = source('Letm3goWatch/WatchRecorder.swift');
+    expect(recorder.match(/if ride\.activity == "Kitesurfing" \{ kiteDiagnostic\.begin\(rideID: ride\.id, ownerID: ride\.ownerID\) \}/g)).toHaveLength(2);
+    expect(recorder).toContain('kiteDiagnostic.pause(rideID: ride.id)');
+    expect(recorder).toContain('kiteDiagnostic.ingestGPS(samples, rideID: ride.id)');
+    expect(recorder).toContain('kiteDiagnostic.finish(rideID: ride.id)');
+    expect(recorder).toContain('kiteDiagnostic.finish(rideID: draft.id, discard: true)');
   });
-  it('enables KITE_DIAGNOSTIC only in Debug build configurations', () => {
-    const project = readFileSync(new URL('../ios/App/App.xcodeproj/project.pbxproj', import.meta.url), 'utf8');
-    const configs = project.split(/(?=\t\t[0-9A-F]{24} \/\* (?:Debug|Release) \*\/ = \{)/);
-    const flagged = configs.filter((c) => c.includes('KITE_DIAGNOSTIC'));
-    expect(flagged.length).toBe(2);
-    for (const c of flagged) expect(c).toMatch(/name = Debug;/);
-  });
-  it('wraps every diagnostic source in the compile flag', () => {
-    for (const f of ['KiteDiagnosticRecorder.swift', 'KiteDiagnosticView.swift']) expect(watch(f).startsWith('#if KITE_DIAGNOSTIC')).toBe(true);
-    for (const f of ['KiteDiagnosticInbox.swift', 'KiteDiagnosticCore.swift']) expect(readFileSync(new URL(`../ios/App/App/${f}`, import.meta.url), 'utf8').startsWith('#if KITE_DIAGNOSTIC')).toBe(true);
+
+  it('accepts and acknowledges diagnostic transfers in Release', () => {
+    const phone = source('App/WatchSessionManager.swift');
+    const watch = source('Letm3goWatch/WatchConnectivitySession.swift');
+    expect(phone).not.toContain('KITE_DIAGNOSTIC');
+    expect(watch).not.toContain('KITE_DIAGNOSTIC');
+    expect(phone).toContain('KiteDiagnosticInbox.shared.receive(file); return');
+    expect(watch).toContain('KiteDiagnosticRecorder.shared.phoneConfirmed(id: id)');
+    expect(source('App/KiteDiagnosticInbox.swift')).toContain('directory(for: owner)');
+    expect(source('App/KiteDiagnosticInbox.swift')).toContain('recorder.uiUnlocked');
   });
 });

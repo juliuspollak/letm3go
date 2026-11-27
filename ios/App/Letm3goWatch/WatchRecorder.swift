@@ -104,6 +104,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var heartSidecarLogged = false
     private let energyJobs = WatchEnergyJobStore(directory: WatchPaths.energyJobDirectory)
     private let ropeMotion = WatchRopeMotion()
+    private let kiteDiagnostic = KiteDiagnosticRecorder.shared
 
     override init() {
         super.init()
@@ -434,6 +435,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         if WatchCatalog.isRopeSkipping(ride.activity) { ropeMotion.begin(at: now); rope = ropeMotion.reading() }
         awaitingHealth = false; healthRequestRideID = nil
         collectionFailure = false; sessionFailure = false
+        if ride.activity == "Kitesurfing" { kiteDiagnostic.begin(rideID: ride.id, ownerID: ride.ownerID) }
         startLocation()
         activateLockIfWanted()
         requestHealthAccessThenStartWorkout()
@@ -457,6 +459,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         segmentFeedback=segmentEngine.feedback
         ride.pause(at: pausedNow)
         pauseRopeCounting(&ride, at: pausedNow)
+        kiteDiagnostic.pause(rideID: ride.id)
         apply(ride, now: pausedNow)
         heartRateSummary = ride.heartRateSummary
         state = "paused"
@@ -483,6 +486,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         let resumedNow = Date().timeIntervalSince1970
         ride.resume(at: resumedNow)
         draft = ride
+        if ride.activity == "Kitesurfing" { kiteDiagnostic.begin(rideID: ride.id, ownerID: ride.ownerID) }
         if WatchCatalog.isRopeSkipping(ride.activity) {
             ropeMotion.resume(at: resumedNow)
             rope = ropeMotion.reading()
@@ -517,6 +521,7 @@ final class WatchRecorder: NSObject, ObservableObject {
     }
 
     func discard() {
+        if let draft { kiteDiagnostic.finish(rideID: draft.id, discard: true) }
         ticker?.invalidate(); ticker = nil
         manager.stopUpdatingLocation()
         // A discarded ride leaves nothing behind in Apple Health.
@@ -580,6 +585,7 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func ingest(_ samples: [CLLocation]) {
         guard var ride = draft, ride.isRecording else { return }
+        kiteDiagnostic.ingestGPS(samples, rideID: ride.id)
         let now = Date().timeIntervalSince1970
         var accepted = false
         for location in samples {
@@ -713,6 +719,7 @@ final class WatchRecorder: NSObject, ObservableObject {
 
         let now = Date().timeIntervalSince1970
         var ride = current
+        kiteDiagnostic.pause(rideID: ride.id)
         ride.finish(at: now)
         if WatchCatalog.isRopeSkipping(ride.activity) {
             ropeMotion.finish(at: now)
@@ -724,6 +731,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         apply(ride, now: now)
 
         guard ride.isKeepable else {
+            kiteDiagnostic.finish(rideID: ride.id, discard: true)
             // Under a second with no fix and no reading: there is nothing to save. The
             // summary screen says so, and nothing is written to Apple Health.
             draft = nil
@@ -798,6 +806,8 @@ final class WatchRecorder: NSObject, ObservableObject {
                 WatchDiagnostics.log("error", "Energy finalization job could not be written", ["reason": error.localizedDescription])
             }
         }
+
+        kiteDiagnostic.finish(rideID: ride.id)
 
         // The ride joins the watch's recent list as soon as it is safe.
         let summary = ride.heartRateSummary

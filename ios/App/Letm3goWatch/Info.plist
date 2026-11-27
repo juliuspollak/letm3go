@@ -25,7 +25,7 @@
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>NSMotionUsageDescription</key>
-	<string>Letm3go counts your jumps from your wrist movement while you record rope skipping.</string>
+	<string>Letm3go uses wrist movement to count rope skips and records motion during Kitesurfing for jump analysis.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Letm3go reads your heart rate while you record an activity and shows it with that activity.</string>
 	<key>NSHealthUpdateUsageDescription</key>

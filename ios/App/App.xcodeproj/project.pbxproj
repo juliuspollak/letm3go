@@ -177,7 +177,6 @@
 		D10000000000000000000002 /* KiteDiagnosticInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticInbox.swift; sourceTree = "<group>"; };
 		D10000000000000000000003 /* KiteDiagnosticRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticRecorder.swift; sourceTree = "<group>"; };
 		D10000000000000000000004 /* KiteDiagnosticView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KiteDiagnosticView.swift; sourceTree = "<group>"; };
-		D10000000000000000000005 /* Info-KiteDiagnostic.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-KiteDiagnostic.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -287,7 +286,6 @@
 				C10000000000000000000045 /* WatchRopeMotion.swift */,
 				D10000000000000000000003 /* KiteDiagnosticRecorder.swift */,
 				D10000000000000000000004 /* KiteDiagnosticView.swift */,
-				D10000000000000000000005 /* Info-KiteDiagnostic.plist */,
 				C10000000000000000000046 /* PrivacyInfo.xcprivacy */,
 				C10000000000000000000005 /* WatchConnectivitySession.swift */,
 				C10000000000000000000006 /* Assets.xcassets */,
@@ -676,7 +674,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\" \"-DKITE_DIAGNOSTIC\"";
+				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = au.jpollak.journey;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -718,7 +716,7 @@
 				DEVELOPMENT_TEAM = 8YP6PFWVZ9;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Letm3goWatch/Info-KiteDiagnostic.plist";
+				INFOPLIST_FILE = Letm3goWatch/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -730,7 +728,7 @@
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "watchos watchsimulator";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG KITE_DIAGNOSTIC";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;

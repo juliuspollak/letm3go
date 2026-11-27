@@ -28,6 +28,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // The icon badge is the unread count at the time of the last push; opening the
     // app clears it. The profile bubble inside the app shows what is still unread.
     func sceneDidBecomeActive(_ scene: UIScene) {
+        KiteDiagnosticInbox.shared.presentWhenActive()
         if #available(iOS 16.0, *) { UNUserNotificationCenter.current().setBadgeCount(0) }
         else { UIApplication.shared.applicationIconBadgeNumber = 0 }
     }

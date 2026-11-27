@@ -11,6 +11,13 @@ func manifest(_ id: String = UUID().uuidString, startMono: Double = 1000) -> Kit
 }
 final class Clock { var mono = 1000.0; var wall = 1_700_000_000.0; func advance(_ s: Double) { mono += s; wall += s } }
 
+let legacyManifest = try! JSONEncoder().encode(manifest())
+check(try! JSONDecoder().decode(KiteManifest.self, from: legacyManifest).rideID == nil, "older packages decode without a workout ID")
+var linkedManifest = manifest()
+linkedManifest.rideID = UUID().uuidString
+let linkedJSON = try! JSONEncoder().encode(linkedManifest)
+check(try! JSONDecoder().decode(KiteManifest.self, from: linkedJSON) == linkedManifest, "workout ID survives package encoding")
+
 // lifecycle
 var life = KiteLifecycle()
 check(life.status == .idle, "starts idle")
@@ -164,6 +171,8 @@ check(capped.hasHitLimit, "duration limit reported")
 capped.barometer(mono: 9e6, recv: 9e6, wall: 0, altitude: 0, pressureKPa: 101)   // any stream, not just accelerometer
 check(capped.status == .saved && !capped.isActive, "limit finalises the session from any stream")
 check(capped.events.contains { $0.kind == "limit" }, "limit logged")
+let cappedSummary = try! Data(contentsOf: cs.directory(cm.sessionID).appendingPathComponent("summary.json"))
+check(try! JSONDecoder().decode(KiteSummary.self, from: cappedSummary).complete == false, "a capped diagnostic is marked incomplete")
 
 // failed session: finish() returns nil afterwards but the summary is already on disk for packaging
 let fstore = tempStore(); let fm = manifest()
