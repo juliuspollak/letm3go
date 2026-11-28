@@ -104,7 +104,7 @@ it('filters favourites and saves the star without opening the trip',()=>{
 });
 
 it('opens one Home summary instead of separate distance, duration and activity links',()=>{
- signedIn();const now=Date.now()/1000;
+ signedIn();const today=new Date();today.setHours(12,0,0,0);const now=today.getTime()/1000;
  const trip=(id,title,offset,distance,duration)=>({id,title,source:'device',activity:'Walking',startedAt:now-offset,endedAt:now-offset+duration,durationSeconds:duration,distanceMeters:distance,points:[],details:{}});
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[trip('long','Longest distance',1200,10000,600),trip('slow','Longest time',600,2000,1200),trip('new','Newest trip',0,1000,60)]},run:vi.fn(),busy:false,error:''});
  render(<App/>);
@@ -163,7 +163,7 @@ it('keeps an archived drive searchable by the equipment it used',()=>{
 });
 
 it('opens the trips that used a Collection item with the filter applied',()=>{
- signedIn();const now=Date.now()/1000;
+ signedIn();const today=new Date();today.setHours(12,0,0,0);const now=today.getTime()/1000;
  identity.value.preferences.vehicles=[{id:'car-1',name:'Geely',category:'car'}];
  const raw=(id,title)=>({id,title,source:'device',activity:'Driving',state:'finished',recordingMode:'manual',startedAt:now-3600,endedAt:now-3000,durationSeconds:600,distanceMeters:1000,points:[],equipment:[{id:'car-1',name:'Geely'}],details:{}});
  recorderHook.mockReturnValue({state:{...emptyRecorder,trips:[raw('one','First Geely drive'),raw('two','Second Geely drive')]},run:vi.fn(),busy:false,error:''});
